@@ -409,12 +409,17 @@ pub fn sanitize_buffer(buffer: &mut [f32]) {
     }
 }
 
+/// Absolute level below which the soft limiter passes audio through untouched.
+const SOFT_LIMIT_KNEE: f32 = 0.9;
+/// Width of the soft-knee region above [`SOFT_LIMIT_KNEE`].
+const SOFT_LIMIT_KNEE_WIDTH: f32 = 1.0 - SOFT_LIMIT_KNEE;
+
 /// Apply a soft limiter to a single audio sample.
 ///
-/// Uses `tanh` compression to smoothly limit the signal to approximately
-/// \[-1.0, 1.0\] without the harsh artifacts of hard clipping. Signals near
-/// zero pass through nearly unchanged; signals above ±1.0 are progressively
-/// compressed. The output is always within \[-1.0, 1.0\].
+/// Signals within ±[`SOFT_LIMIT_KNEE`] (0.9) pass through unchanged — no
+/// colouration, no distortion. Above that threshold a `tanh`-shaped knee
+/// smoothly compresses the signal so it never exceeds ±1.0, preventing the
+/// harsh artifacts of hard clipping at the DAC.
 ///
 /// This should be the last processing step before sending audio to the DAC.
 #[inline]
@@ -423,12 +428,21 @@ pub fn soft_limit(sample: f32) -> f32 {
     if !sample.is_finite() {
         return 0.0;
     }
-    sample.tanh()
+    let abs = sample.abs();
+    if abs <= SOFT_LIMIT_KNEE {
+        sample
+    } else {
+        // Excess above the knee mapped through tanh for smooth compression.
+        let excess = (abs - SOFT_LIMIT_KNEE) / SOFT_LIMIT_KNEE_WIDTH;
+        let compressed = SOFT_LIMIT_KNEE_WIDTH.mul_add(excess.tanh(), SOFT_LIMIT_KNEE);
+        sample.signum() * compressed
+    }
 }
 
 /// Apply a soft limiter to an entire audio buffer in-place.
 ///
-/// See [`soft_limit`] for details on the limiting curve.
+/// See [`soft_limit`] for details on the limiting curve. Signals below ±0.9
+/// pass through unchanged; signals above are smoothly compressed.
 pub fn soft_limit_buffer(buffer: &mut [f32]) {
     for sample in buffer.iter_mut() {
         *sample = soft_limit(*sample);
@@ -894,25 +908,52 @@ mod tests {
     // -- Soft limiter tests --
 
     #[test]
-    fn soft_limit_passes_small_signals() {
-        // Near-zero signals should pass through nearly unchanged.
-        let input = 0.1;
-        let output = soft_limit(input);
+    fn soft_limit_passes_small_signals_unchanged() {
+        // Signals below the knee (±0.9) should pass through bit-exact.
+        for val in [0.0, 0.1, 0.5, 0.7, 0.89, -0.1, -0.5, -0.89] {
+            let output = soft_limit(val);
+            assert!(
+                (output - val).abs() < f32::EPSILON,
+                "signal {val} should pass through unchanged, got {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn soft_limit_transparent_at_knee_boundary() {
+        // At exactly 0.9 the output should still be 0.9 (knee start).
+        let output = soft_limit(0.9);
         assert!(
-            (output - input).abs() < 0.01,
-            "small signal should pass through, got {output}"
+            (output - 0.9).abs() < f32::EPSILON,
+            "knee boundary should be exact, got {output}"
         );
     }
 
     #[test]
+    fn soft_limit_compresses_above_knee() {
+        // A signal at 1.0 should be compressed below 1.0 but above 0.9.
+        let output = soft_limit(1.0);
+        assert!(output > 0.9, "1.0 should stay above knee, got {output}");
+        assert!(output < 1.0, "1.0 should be compressed, got {output}");
+    }
+
+    #[test]
     fn soft_limit_compresses_hot_signals() {
-        // A signal at 2.0 should be compressed below 1.0.
-        let output = soft_limit(2.0);
+        // A signal at 1.0 is just above the knee — clearly compressed but below 1.0.
+        let at_one = soft_limit(1.0);
+        assert!(at_one < 1.0, "1.0 should be compressed, got {at_one}");
         assert!(
-            output < 1.0,
-            "hot signal should be compressed, got {output}"
+            at_one > 0.9,
+            "1.0 should stay above knee start, got {at_one}"
         );
-        assert!(output > 0.9, "tanh(2.0) ≈ 0.964, got {output}");
+
+        // A signal at 2.0 saturates the tanh, reaching approximately 1.0.
+        let at_two = soft_limit(2.0);
+        assert!(
+            at_two <= 1.0,
+            "hot signal should not exceed unity, got {at_two}"
+        );
+        assert!(at_two > 0.99, "2.0 should be near unity, got {at_two}");
     }
 
     #[test]
@@ -950,6 +991,22 @@ mod tests {
     }
 
     #[test]
+    fn soft_limit_monotonic() {
+        // The limiter must be monotonically increasing — louder in = louder out.
+        let mut prev = soft_limit(0.0);
+        for i in 1..=200 {
+            let val = i as f32 * 0.05;
+            let out = soft_limit(val);
+            assert!(
+                out >= prev,
+                "not monotonic: soft_limit({prev_val}) = {prev} > soft_limit({val}) = {out}",
+                prev_val = (i - 1) as f32 * 0.05,
+            );
+            prev = out;
+        }
+    }
+
+    #[test]
     fn soft_limit_buffer_limits_all_samples() {
         let mut buf = [0.5, 2.0, -3.0, f32::NAN, 0.0];
         soft_limit_buffer(&mut buf);
@@ -959,5 +1016,10 @@ mod tests {
                 "sample {i} = {s} should be in [-1, 1]"
             );
         }
+        // 0.5 is below knee — should be unchanged.
+        assert!(
+            (buf[0] - 0.5).abs() < f32::EPSILON,
+            "0.5 should pass through unchanged"
+        );
     }
 }

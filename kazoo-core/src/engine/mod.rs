@@ -106,7 +106,7 @@ impl RingBufferCapacities {
     fn from_buffer_size(buffer_size: usize) -> Self {
         let bs = buffer_size.max(1);
         Self {
-            mic_and_output: bs.saturating_mul(8),
+            mic_and_output: bs.saturating_mul(16),
             display: 4,
             analysis_input: bs.saturating_mul(16),
             analysis_results: 32,
@@ -198,19 +198,38 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     let mut cpal_mic_prod = mic_prod;
     let mut cpal_output_cons = output_cons;
 
+    // Capture input channel count so the callback can downmix to mono.
+    let input_channels = usize::from(stream_config.input_channels.max(1));
+
     let streams = crate::io::build_streams(
         stream_config,
         move |data: &[f32]| {
-            // Input callback: push raw mic samples into the ring buffer.
-            // If the buffer is full, samples are silently dropped (the
-            // processing thread has fallen behind).
-            let _ = cpal_mic_prod.push_slice(data);
+            // Input callback: push mic samples into the ring buffer as mono.
+            // If the device delivers multi-channel data we average across
+            // channels to produce a single mono sample per frame.
+            if input_channels <= 1 {
+                let _ = cpal_mic_prod.push_slice(data);
+            } else {
+                let frames = data.len() / input_channels;
+                let inv_ch = 1.0 / input_channels as f32;
+                for f in 0..frames {
+                    let base = f * input_channels;
+                    let mut sum = 0.0f32;
+                    for ch in 0..input_channels {
+                        sum += data[base + ch];
+                    }
+                    let _ = cpal_mic_prod.try_push(sum * inv_ch);
+                }
+            }
         },
         move |data: &mut [f32]| {
             // Output callback: pop mixed stereo samples from the ring buffer.
             let filled = cpal_output_cons.pop_slice(data);
-            // Zero any unfilled portion to avoid playing stale data.
-            for sample in &mut data[filled..] {
+            // Ensure stereo frame alignment — avoid leaving a lone L sample
+            // without its R partner, which would swap channels for the rest
+            // of the buffer.
+            let aligned = filled & !1;
+            for sample in &mut data[aligned..] {
                 *sample = 0.0;
             }
         },
@@ -347,7 +366,7 @@ mod tests {
     #[test]
     fn ring_buffer_capacities_default_buffer_size() {
         let caps = RingBufferCapacities::from_buffer_size(256);
-        assert_eq!(caps.mic_and_output, 256 * 8);
+        assert_eq!(caps.mic_and_output, 256 * 16);
         assert_eq!(caps.display, 4);
         assert_eq!(caps.analysis_input, 256 * 16);
         assert_eq!(caps.analysis_results, 32);
@@ -357,7 +376,7 @@ mod tests {
     #[test]
     fn ring_buffer_capacities_large_buffer_size() {
         let caps = RingBufferCapacities::from_buffer_size(1024);
-        assert_eq!(caps.mic_and_output, 1024 * 8);
+        assert_eq!(caps.mic_and_output, 1024 * 16);
         assert_eq!(caps.analysis_input, 1024 * 16);
         assert_eq!(caps.disk, 1024 * 32);
     }
@@ -365,7 +384,7 @@ mod tests {
     #[test]
     fn ring_buffer_capacities_zero_buffer_size_uses_one() {
         let caps = RingBufferCapacities::from_buffer_size(0);
-        assert_eq!(caps.mic_and_output, 8);
+        assert_eq!(caps.mic_and_output, 16);
         assert_eq!(caps.analysis_input, 16);
         assert_eq!(caps.disk, 32);
     }
