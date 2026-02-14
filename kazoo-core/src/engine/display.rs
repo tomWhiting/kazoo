@@ -138,6 +138,13 @@ impl DisplayState {
                 loop_region: None,
                 loop_enabled: false,
                 metronome_enabled: false,
+                current_beat: 0,
+                beat_active: false,
+                count_in_active: false,
+                count_in_bar: 0,
+                count_in_total: 0,
+                recording_workflow: crate::transport::RecordingWorkflow::FreeRecord,
+                auto_record_bars: 0,
             },
             mixer: MixerSnapshot {
                 track_meters: Vec::new(),

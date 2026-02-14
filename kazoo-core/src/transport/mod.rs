@@ -4,6 +4,8 @@
 //! sample-by-sample during audio callbacks. The UI reads a [`TransportSnapshot`]
 //! each frame and sends [`TransportCommand`]s to mutate the clock.
 
+pub mod metronome;
+
 use crate::TimePosition;
 
 // ---------------------------------------------------------------------------
@@ -18,6 +20,101 @@ const MAX_BPM: f64 = 300.0;
 
 /// Default tempo.
 const DEFAULT_BPM: f64 = 120.0;
+
+// ---------------------------------------------------------------------------
+// Recording workflow
+// ---------------------------------------------------------------------------
+
+/// Recording workflow mode configured by the user.
+///
+/// Determines what happens when the user initiates a workflow-aware recording
+/// via [`TransportCommand::RecordWithCountIn`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingWorkflow {
+    /// Record immediately with no count-in. On stop, quantize recording
+    /// boundaries to the nearest bar boundary.
+    FreeRecord,
+    /// Count-in for `count_in_bars` bars, then record. If `record_bars` is
+    /// greater than 0, auto-stop after that many bars; otherwise record
+    /// until manual stop.
+    CountIn {
+        /// Number of bars to count in before recording starts.
+        count_in_bars: u8,
+        /// Number of bars to record (0 = unlimited, manual stop).
+        record_bars: u8,
+    },
+    /// Record exactly `bars` bars starting immediately, then auto-stop.
+    FixedLength {
+        /// Number of bars to record before auto-stopping.
+        bars: u8,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Count-in state machine (internal)
+// ---------------------------------------------------------------------------
+
+/// Internal state machine for count-in and auto-stop recording workflows.
+///
+/// Lives on [`TransportClock`] and is inspected by [`advance`] each audio
+/// block to detect when count-in completes or auto-stop should trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CountInState {
+    /// No count-in or auto-stop active (normal operation).
+    Inactive,
+    /// Counting in before recording. The transport is Playing (so the
+    /// metronome sounds) and will transition to Recording when the position
+    /// reaches `count_in_end`.
+    CountingIn {
+        /// Sample position at which the count-in ends and recording begins.
+        count_in_end: u64,
+        /// Sample position at which recording auto-stops (0 = no auto-stop).
+        auto_stop: u64,
+        /// Total count-in bars (for UI display).
+        count_in_bars: u8,
+    },
+    /// Recording is active with an optional auto-stop boundary.
+    AutoRecording {
+        /// Sample position where recording started.
+        record_start: u64,
+        /// Sample position at which recording auto-stops (0 = no auto-stop).
+        auto_stop: u64,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Advance flags
+// ---------------------------------------------------------------------------
+
+/// Flags returned by [`TransportClock::advance`] to signal state transitions
+/// that the processing thread must act on.
+///
+/// The processing thread checks these flags each audio block and starts or
+/// stops per-track recordings accordingly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdvanceFlags {
+    /// The count-in period has completed; the processing thread should start
+    /// per-track recordings and transition the transport to Recording.
+    pub count_in_completed: bool,
+    /// The auto-stop boundary has been reached; the processing thread should
+    /// finalize per-track recordings and stop the transport.
+    pub auto_stop_triggered: bool,
+    /// The exact sample position where recording should start (the bar
+    /// boundary at which the count-in ended). Only meaningful when
+    /// `count_in_completed` is `true`. The processing thread should use this
+    /// as the clip start position rather than reading the current (overshot)
+    /// transport position.
+    pub record_start_position: u64,
+}
+
+impl AdvanceFlags {
+    /// No events occurred.
+    const NONE: Self = Self {
+        count_in_completed: false,
+        auto_stop_triggered: false,
+        record_start_position: 0,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // TransportState
@@ -65,6 +162,16 @@ pub enum TransportCommand {
     SetLoop(Option<(u64, u64)>),
     /// Toggle the metronome on/off.
     ToggleMetronome,
+    /// Set the metronome volume.
+    SetMetronomeVolume(crate::Db),
+    /// Set the recording workflow mode.
+    SetRecordingWorkflow(RecordingWorkflow),
+    /// Initiate a workflow-aware recording (count-in, fixed-length, etc.).
+    ///
+    /// This variant is intercepted by the processing thread, which sets up the
+    /// count-in state machine and starts/stops track recordings based on the
+    /// configured [`RecordingWorkflow`].
+    RecordWithCountIn,
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +182,7 @@ pub enum TransportCommand {
 ///
 /// Created by [`TransportClock::snapshot`] and intended for UI consumption.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct TransportSnapshot {
     /// Current playback state.
     pub state: TransportState,
@@ -92,6 +200,24 @@ pub struct TransportSnapshot {
     pub loop_enabled: bool,
     /// Whether the metronome click is enabled.
     pub metronome_enabled: bool,
+    /// Current beat number within the bar (0-indexed).
+    pub current_beat: u8,
+    /// Whether the current position is near a beat boundary (for visual flash).
+    pub beat_active: bool,
+    /// Whether a count-in is currently active (transport is Playing, waiting
+    /// for count-in to finish before recording starts).
+    pub count_in_active: bool,
+    /// Current bar within the count-in period (1-indexed). Zero when inactive.
+    pub count_in_bar: u8,
+    /// Total count-in bars configured. Zero when inactive.
+    pub count_in_total: u8,
+    /// The currently configured recording workflow.
+    pub recording_workflow: RecordingWorkflow,
+    /// Number of bars to auto-record (0 = unlimited / manual stop).
+    ///
+    /// Derived from the active workflow configuration. The TUI can use this
+    /// to display "Recording 2/4 bars" during auto-recording.
+    pub auto_record_bars: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +240,8 @@ pub struct TransportClock {
     loop_region: Option<(u64, u64)>,
     loop_enabled: bool,
     metronome_enabled: bool,
+    recording_workflow: RecordingWorkflow,
+    count_in_state: CountInState,
 }
 
 impl TransportClock {
@@ -138,6 +266,8 @@ impl TransportClock {
             loop_region: None,
             loop_enabled: false,
             metronome_enabled: false,
+            recording_workflow: RecordingWorkflow::FreeRecord,
+            count_in_state: CountInState::Inactive,
         }
     }
 
@@ -160,6 +290,19 @@ impl TransportClock {
             TransportCommand::ToggleMetronome => {
                 self.metronome_enabled = !self.metronome_enabled;
             }
+            TransportCommand::SetMetronomeVolume(_db) => {
+                // Volume is handled by the Metronome struct directly;
+                // this variant exists so the command can route through
+                // the transport command pipeline.
+            }
+            TransportCommand::SetRecordingWorkflow(workflow) => {
+                self.recording_workflow = workflow;
+            }
+            TransportCommand::RecordWithCountIn => {
+                // Handled entirely by the processing thread, which reads
+                // the configured workflow and sets up the count-in state
+                // machine via the public helper methods below.
+            }
         }
     }
 
@@ -168,15 +311,20 @@ impl TransportClock {
     /// Only advances when the transport is [`Playing`](TransportState::Playing)
     /// or [`Recording`](TransportState::Recording). When a loop region is
     /// active and enabled, the position wraps around the loop boundaries.
-    pub fn advance(&mut self, num_samples: u32) {
+    pub fn advance(&mut self, num_samples: u32) -> AdvanceFlags {
         if !self.is_playing() && !self.is_recording() {
-            return;
+            return AdvanceFlags::NONE;
         }
 
         self.position_samples = self.position_samples.saturating_add(u64::from(num_samples));
 
         // Handle loop wrapping when looping is enabled and we have a valid region.
-        if self.loop_enabled {
+        // Loop wrapping is disabled during count-in and auto-recording to
+        // prevent the position from wrapping backwards before reaching the
+        // count-in end or auto-stop boundary.
+        let loop_active =
+            self.loop_enabled && matches!(self.count_in_state, CountInState::Inactive);
+        if loop_active {
             if let Some((start, end)) = self.loop_region {
                 // Only wrap if we have actually reached or passed the end.
                 if self.position_samples >= end {
@@ -193,6 +341,42 @@ impl TransportClock {
                 }
             }
         }
+
+        // Check count-in state machine for transitions.
+        match self.count_in_state {
+            CountInState::Inactive => AdvanceFlags::NONE,
+            CountInState::CountingIn {
+                count_in_end,
+                auto_stop,
+                ..
+            } => {
+                if self.position_samples >= count_in_end {
+                    self.count_in_state = CountInState::AutoRecording {
+                        record_start: count_in_end,
+                        auto_stop,
+                    };
+                    AdvanceFlags {
+                        count_in_completed: true,
+                        auto_stop_triggered: false,
+                        record_start_position: count_in_end,
+                    }
+                } else {
+                    AdvanceFlags::NONE
+                }
+            }
+            CountInState::AutoRecording { auto_stop, .. } => {
+                if auto_stop > 0 && self.position_samples >= auto_stop {
+                    self.count_in_state = CountInState::Inactive;
+                    AdvanceFlags {
+                        count_in_completed: false,
+                        auto_stop_triggered: true,
+                        record_start_position: 0,
+                    }
+                } else {
+                    AdvanceFlags::NONE
+                }
+            }
+        }
     }
 
     /// Create an immutable snapshot of the current transport state.
@@ -200,6 +384,47 @@ impl TransportClock {
     /// Intended for reading on the UI thread without blocking the audio thread.
     #[must_use]
     pub fn snapshot(&self) -> TransportSnapshot {
+        // Compute beat position for visual indicator.
+        let samples_per_beat = if self.bpm > 0.0 && self.bpm.is_finite() {
+            f64::from(self.sample_rate) * 60.0 / self.bpm
+        } else {
+            1.0
+        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let beat_number = (self.position_samples as f64 / samples_per_beat).floor() as u64;
+        #[allow(clippy::cast_possible_truncation)]
+        let current_beat = (beat_number % u64::from(self.beats_per_bar)) as u8;
+
+        // Beat is "active" for the first ~100ms after a beat boundary.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let samples_into_beat = (self.position_samples as f64 % samples_per_beat) as u64;
+        // 100ms in samples.
+        let active_window = u64::from(self.sample_rate) / 10;
+        let beat_active = samples_into_beat < active_window;
+
+        // Compute count-in display fields.
+        let (count_in_active, count_in_bar, count_in_total) = match self.count_in_state {
+            CountInState::Inactive | CountInState::AutoRecording { .. } => (false, 0, 0),
+            CountInState::CountingIn {
+                count_in_end,
+                count_in_bars,
+                ..
+            } => {
+                let spb = self.samples_per_bar();
+                let bar = if spb > 0 {
+                    let count_in_start =
+                        count_in_end.saturating_sub(u64::from(count_in_bars) * spb);
+                    let samples_into = self.position_samples.saturating_sub(count_in_start);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let b = (samples_into / spb) as u8 + 1;
+                    b.min(count_in_bars)
+                } else {
+                    1
+                };
+                (true, bar, count_in_bars)
+            }
+        };
+
         TransportSnapshot {
             state: self.state,
             position: TimePosition::new(self.position_samples, self.sample_rate),
@@ -209,6 +434,17 @@ impl TransportClock {
             loop_region: self.loop_region,
             loop_enabled: self.loop_enabled,
             metronome_enabled: self.metronome_enabled,
+            current_beat,
+            beat_active,
+            count_in_active,
+            count_in_bar,
+            count_in_total,
+            recording_workflow: self.recording_workflow,
+            auto_record_bars: match self.recording_workflow {
+                RecordingWorkflow::FreeRecord => 0,
+                RecordingWorkflow::CountIn { record_bars, .. } => record_bars,
+                RecordingWorkflow::FixedLength { bars } => bars,
+            },
         }
     }
 
@@ -216,6 +452,128 @@ impl TransportClock {
     #[must_use]
     pub const fn position_samples(&self) -> u64 {
         self.position_samples
+    }
+
+    /// Current tempo in beats per minute.
+    #[must_use]
+    pub const fn bpm(&self) -> f64 {
+        self.bpm
+    }
+
+    /// Number of beats per bar (time-signature numerator).
+    #[must_use]
+    pub const fn beats_per_bar(&self) -> u8 {
+        self.beats_per_bar
+    }
+
+    /// Whether the metronome is enabled.
+    #[must_use]
+    pub const fn metronome_enabled(&self) -> bool {
+        self.metronome_enabled
+    }
+
+    /// The sample rate of this transport clock.
+    #[must_use]
+    pub const fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// The currently configured recording workflow.
+    #[must_use]
+    pub const fn recording_workflow(&self) -> RecordingWorkflow {
+        self.recording_workflow
+    }
+
+    /// Number of samples in one bar at the current tempo and time signature.
+    ///
+    /// Returns 0 if BPM is non-positive or non-finite (defensive).
+    #[must_use]
+    pub fn samples_per_bar(&self) -> u64 {
+        if self.bpm <= 0.0 || !self.bpm.is_finite() {
+            return 0;
+        }
+        let samples_per_beat = f64::from(self.sample_rate) * 60.0 / self.bpm;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let result = (samples_per_beat * f64::from(self.beats_per_bar)) as u64;
+        result
+    }
+
+    /// Quantize a sample position to the nearest bar boundary.
+    ///
+    /// Rounds to the nearest bar start. If `samples_per_bar` is 0 (invalid
+    /// tempo), returns the position unchanged.
+    #[must_use]
+    pub fn quantize_to_bar(&self, position: u64) -> u64 {
+        let spb = self.samples_per_bar();
+        if spb == 0 {
+            return position;
+        }
+        let remainder = position % spb;
+        let half = spb / 2;
+        if remainder >= half {
+            // Round up to the next bar boundary.
+            position.saturating_add(spb - remainder)
+        } else {
+            // Round down to the previous bar boundary.
+            position - remainder
+        }
+    }
+
+    /// Begin a count-in sequence. Sets the transport to Playing (so the
+    /// metronome sounds) and configures the count-in state machine.
+    ///
+    /// After `count_in_bars` bars, [`advance`] will return
+    /// [`AdvanceFlags::count_in_completed`] = `true`. If `record_bars` > 0,
+    /// it will later return [`AdvanceFlags::auto_stop_triggered`] = `true`
+    /// after that many additional bars.
+    ///
+    /// Does nothing if BPM is invalid (`samples_per_bar` == 0).
+    pub fn start_count_in(&mut self, count_in_bars: u8, record_bars: u8) {
+        let spb = self.samples_per_bar();
+        if spb == 0 || count_in_bars == 0 {
+            return;
+        }
+        let count_in_end = self
+            .position_samples
+            .saturating_add(u64::from(count_in_bars).saturating_mul(spb));
+        let auto_stop = if record_bars > 0 {
+            count_in_end.saturating_add(u64::from(record_bars).saturating_mul(spb))
+        } else {
+            0
+        };
+        self.count_in_state = CountInState::CountingIn {
+            count_in_end,
+            auto_stop,
+            count_in_bars,
+        };
+        // Start playing so the metronome sounds during count-in.
+        self.state = TransportState::Playing;
+    }
+
+    /// Begin a fixed-length recording. Sets the transport to Recording and
+    /// configures auto-stop after `bars` bars.
+    ///
+    /// Does nothing if BPM is invalid or `bars` is 0.
+    pub fn start_fixed_length(&mut self, bars: u8) {
+        let spb = self.samples_per_bar();
+        if spb == 0 || bars == 0 {
+            return;
+        }
+        let auto_stop = self
+            .position_samples
+            .saturating_add(u64::from(bars).saturating_mul(spb));
+        self.count_in_state = CountInState::AutoRecording {
+            record_start: self.position_samples,
+            auto_stop,
+        };
+        self.state = TransportState::Recording;
+    }
+
+    /// Reset the count-in state machine to Inactive.
+    ///
+    /// Called by the processing thread after handling the auto-stop flag.
+    pub const fn reset_count_in(&mut self) {
+        self.count_in_state = CountInState::Inactive;
     }
 
     /// Returns `true` if the transport is currently playing (not paused, not
@@ -249,13 +607,18 @@ impl TransportClock {
     const fn handle_stop(&mut self) {
         self.state = TransportState::Stopped;
         self.position_samples = 0;
+        self.count_in_state = CountInState::Inactive;
     }
 
     /// Pause is valid only from Playing or Recording.
+    ///
+    /// Pausing also cancels any active count-in sequence. The user must
+    /// re-initiate the count-in workflow after resuming.
     const fn handle_pause(&mut self) {
         match self.state {
             TransportState::Playing | TransportState::Recording => {
                 self.state = TransportState::Paused;
+                self.count_in_state = CountInState::Inactive;
             }
             TransportState::Stopped | TransportState::Paused => {
                 // Cannot pause if already stopped or paused -- no-op.
@@ -263,14 +626,15 @@ impl TransportClock {
         }
     }
 
-    /// Record is valid only from Stopped (start recording from the beginning).
+    /// Record is valid from Stopped (start recording from the beginning) or
+    /// from Playing (transition to recording, e.g. after a count-in completes).
     const fn handle_record(&mut self) {
         match self.state {
-            TransportState::Stopped => {
+            TransportState::Stopped | TransportState::Playing => {
                 self.state = TransportState::Recording;
             }
-            TransportState::Playing | TransportState::Recording | TransportState::Paused => {
-                // No-op for invalid transitions.
+            TransportState::Recording | TransportState::Paused => {
+                // Already recording or paused -- no-op.
             }
         }
     }
@@ -556,11 +920,12 @@ mod tests {
     }
 
     #[test]
-    fn record_while_playing_is_noop() {
+    fn record_while_playing_transitions_to_recording() {
+        // Record from Playing is a valid transition (e.g. after a count-in).
         let mut clock = TransportClock::new(44_100);
         clock.apply_command(TransportCommand::Play);
         clock.apply_command(TransportCommand::Record);
-        assert_eq!(clock.state, TransportState::Playing);
+        assert_eq!(clock.state, TransportState::Recording);
     }
 
     #[test]
@@ -880,5 +1245,515 @@ mod tests {
         // Advance 1050: 1050 >= 100, overshoot = 950, 950 % 100 = 50.
         clock.advance(1050);
         assert_eq!(clock.position_samples, 50);
+    }
+
+    // -- Recording workflow --------------------------------------------------
+
+    #[test]
+    fn default_recording_workflow_is_free_record() {
+        let clock = TransportClock::new(44_100);
+        assert_eq!(clock.recording_workflow(), RecordingWorkflow::FreeRecord);
+    }
+
+    #[test]
+    fn set_recording_workflow_updates_state() {
+        let mut clock = TransportClock::new(44_100);
+        let workflow = RecordingWorkflow::CountIn {
+            count_in_bars: 2,
+            record_bars: 4,
+        };
+        clock.apply_command(TransportCommand::SetRecordingWorkflow(workflow));
+        assert_eq!(clock.recording_workflow(), workflow);
+    }
+
+    #[test]
+    fn set_recording_workflow_fixed_length() {
+        let mut clock = TransportClock::new(44_100);
+        let workflow = RecordingWorkflow::FixedLength { bars: 8 };
+        clock.apply_command(TransportCommand::SetRecordingWorkflow(workflow));
+        assert_eq!(clock.recording_workflow(), workflow);
+    }
+
+    // -- samples_per_bar / quantize_to_bar -----------------------------------
+
+    #[test]
+    fn samples_per_bar_at_120_bpm_4_4() {
+        let clock = TransportClock::new(44_100);
+        // 120 BPM, 4/4: one beat = 44100 * 60 / 120 = 22050 samples.
+        // One bar = 4 beats = 88200 samples.
+        assert_eq!(clock.samples_per_bar(), 88_200);
+    }
+
+    #[test]
+    fn samples_per_bar_at_60_bpm_3_4() {
+        let mut clock = TransportClock::new(44_100);
+        clock.apply_command(TransportCommand::SetTempo(60.0));
+        clock.apply_command(TransportCommand::SetTimeSignature(3, 4));
+        // 60 BPM, 3/4: one beat = 44100 samples, one bar = 3 * 44100 = 132300.
+        assert_eq!(clock.samples_per_bar(), 132_300);
+    }
+
+    #[test]
+    fn samples_per_bar_zero_bpm_returns_zero() {
+        // Cannot actually set BPM to 0 (clamped), but test the guard.
+        let clock = TransportClock::new(0);
+        // sample_rate=1, bpm=120, beats=4 => 1*60/120*4 = 2
+        assert_eq!(clock.samples_per_bar(), 2);
+    }
+
+    #[test]
+    fn quantize_to_bar_rounds_down() {
+        let clock = TransportClock::new(44_100);
+        // spb = 88200. Position 10000 is closer to 0 than to 88200.
+        assert_eq!(clock.quantize_to_bar(10_000), 0);
+    }
+
+    #[test]
+    fn quantize_to_bar_rounds_up() {
+        let clock = TransportClock::new(44_100);
+        // spb = 88200. Position 60000 is closer to 88200 than to 0.
+        assert_eq!(clock.quantize_to_bar(60_000), 88_200);
+    }
+
+    #[test]
+    fn quantize_to_bar_exact_boundary() {
+        let clock = TransportClock::new(44_100);
+        // Exactly on the boundary should stay there.
+        assert_eq!(clock.quantize_to_bar(88_200), 88_200);
+    }
+
+    #[test]
+    fn quantize_to_bar_midpoint() {
+        let clock = TransportClock::new(44_100);
+        // Exactly at half a bar (44100) — rounds up.
+        assert_eq!(clock.quantize_to_bar(44_100), 88_200);
+    }
+
+    // -- Count-in state machine ----------------------------------------------
+
+    #[test]
+    fn start_count_in_sets_playing_state() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(2, 4);
+        assert!(clock.is_playing());
+    }
+
+    #[test]
+    fn start_count_in_zero_bars_is_noop() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(0, 4);
+        // Should remain stopped since count_in_bars=0.
+        assert_eq!(clock.state, TransportState::Stopped);
+    }
+
+    #[test]
+    fn count_in_completes_after_bars_elapsed() {
+        let mut clock = TransportClock::new(44_100);
+        // 120 BPM, 4/4 => one bar = 88200 samples. Count-in of 1 bar.
+        clock.start_count_in(1, 4);
+
+        // Advance less than one bar — no flag yet.
+        let flags = clock.advance(44_100); // half a bar
+        assert!(!flags.count_in_completed);
+        assert!(!flags.auto_stop_triggered);
+
+        // Advance past the bar boundary.
+        let flags = clock.advance(44_100); // total = 88200
+        assert!(flags.count_in_completed);
+        assert!(!flags.auto_stop_triggered);
+    }
+
+    #[test]
+    fn count_in_then_auto_stop() {
+        let mut clock = TransportClock::new(44_100);
+        // 1 bar count-in, 1 bar recording.
+        clock.start_count_in(1, 1);
+
+        // Advance through count-in (88200 samples).
+        let flags = clock.advance(88_200);
+        assert!(flags.count_in_completed);
+        assert!(!flags.auto_stop_triggered);
+
+        // Now in AutoRecording. Advance through 1 more bar.
+        // The state machine should trigger auto-stop.
+        let flags = clock.advance(88_200);
+        assert!(!flags.count_in_completed);
+        assert!(flags.auto_stop_triggered);
+    }
+
+    #[test]
+    fn count_in_unlimited_recording_no_auto_stop() {
+        let mut clock = TransportClock::new(44_100);
+        // 1 bar count-in, 0 = unlimited recording.
+        clock.start_count_in(1, 0);
+
+        // Advance through count-in.
+        let flags = clock.advance(88_200);
+        assert!(flags.count_in_completed);
+
+        // Now in AutoRecording with auto_stop=0. Advance a lot — no auto-stop.
+        let flags = clock.advance(88_200 * 100);
+        assert!(!flags.auto_stop_triggered);
+    }
+
+    #[test]
+    fn start_fixed_length_sets_recording_state() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_fixed_length(4);
+        assert!(clock.is_recording());
+    }
+
+    #[test]
+    fn start_fixed_length_zero_bars_is_noop() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_fixed_length(0);
+        assert_eq!(clock.state, TransportState::Stopped);
+    }
+
+    #[test]
+    fn fixed_length_auto_stops_after_bars() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_fixed_length(1); // 1 bar = 88200 samples
+
+        // Advance less than a bar.
+        let flags = clock.advance(44_100);
+        assert!(!flags.auto_stop_triggered);
+
+        // Advance past the bar boundary.
+        let flags = clock.advance(44_100);
+        assert!(flags.auto_stop_triggered);
+    }
+
+    #[test]
+    fn stop_resets_count_in_state() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(2, 4);
+        assert!(clock.is_playing());
+
+        clock.apply_command(TransportCommand::Stop);
+        assert_eq!(clock.state, TransportState::Stopped);
+        assert_eq!(clock.count_in_state, CountInState::Inactive);
+    }
+
+    #[test]
+    fn reset_count_in_clears_state() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(2, 4);
+        clock.reset_count_in();
+        assert_eq!(clock.count_in_state, CountInState::Inactive);
+    }
+
+    #[test]
+    fn advance_returns_none_when_stopped() {
+        let mut clock = TransportClock::new(44_100);
+        let flags = clock.advance(256);
+        assert_eq!(flags, AdvanceFlags::NONE);
+    }
+
+    #[test]
+    fn advance_returns_none_when_no_count_in() {
+        let mut clock = TransportClock::new(44_100);
+        clock.apply_command(TransportCommand::Play);
+        let flags = clock.advance(256);
+        assert_eq!(flags, AdvanceFlags::NONE);
+    }
+
+    // -- Snapshot count-in fields --------------------------------------------
+
+    #[test]
+    fn snapshot_count_in_inactive() {
+        let clock = TransportClock::new(44_100);
+        let snap = clock.snapshot();
+        assert!(!snap.count_in_active);
+        assert_eq!(snap.count_in_bar, 0);
+        assert_eq!(snap.count_in_total, 0);
+        assert_eq!(snap.recording_workflow, RecordingWorkflow::FreeRecord);
+    }
+
+    #[test]
+    fn snapshot_count_in_active() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(4, 0);
+
+        let snap = clock.snapshot();
+        assert!(snap.count_in_active);
+        assert_eq!(snap.count_in_bar, 1); // first bar
+        assert_eq!(snap.count_in_total, 4);
+    }
+
+    #[test]
+    fn snapshot_count_in_advances_bar_number() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(4, 0);
+
+        // Advance past the first bar (88200 samples at 120 BPM, 4/4).
+        clock.advance(88_200);
+        let snap = clock.snapshot();
+        assert!(snap.count_in_active);
+        assert_eq!(snap.count_in_bar, 2); // second bar
+    }
+
+    #[test]
+    fn snapshot_recording_workflow_reflects_config() {
+        let mut clock = TransportClock::new(44_100);
+        let workflow = RecordingWorkflow::CountIn {
+            count_in_bars: 2,
+            record_bars: 8,
+        };
+        clock.apply_command(TransportCommand::SetRecordingWorkflow(workflow));
+
+        let snap = clock.snapshot();
+        assert_eq!(snap.recording_workflow, workflow);
+    }
+
+    #[test]
+    fn count_in_two_bars_completion() {
+        let mut clock = TransportClock::new(44_100);
+        // 2 bar count-in, 2 bar recording.
+        clock.start_count_in(2, 2);
+
+        // Advance 1 bar — still counting in.
+        let flags = clock.advance(88_200);
+        assert!(!flags.count_in_completed);
+
+        // Advance 1 more bar — count-in completes.
+        let flags = clock.advance(88_200);
+        assert!(flags.count_in_completed);
+
+        // Advance 1 bar — still recording.
+        let flags = clock.advance(88_200);
+        assert!(!flags.auto_stop_triggered);
+
+        // Advance 1 more bar — auto-stop.
+        let flags = clock.advance(88_200);
+        assert!(flags.auto_stop_triggered);
+    }
+
+    #[test]
+    fn record_with_count_in_command_is_noop_on_transport() {
+        // RecordWithCountIn doesn't change TransportClock directly.
+        let mut clock = TransportClock::new(44_100);
+        clock.apply_command(TransportCommand::RecordWithCountIn);
+        assert_eq!(clock.state, TransportState::Stopped);
+    }
+
+    // -- Issue #1 fix: Record from Playing state ----------------------------
+
+    #[test]
+    fn record_from_playing_transitions_to_recording() {
+        let mut clock = TransportClock::new(44_100);
+        clock.apply_command(TransportCommand::Play);
+        assert_eq!(clock.state, TransportState::Playing);
+
+        clock.apply_command(TransportCommand::Record);
+        assert_eq!(clock.state, TransportState::Recording);
+    }
+
+    #[test]
+    fn count_in_then_record_transitions_correctly() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(1, 0); // 1 bar count-in
+        assert!(clock.is_playing());
+
+        // Complete the count-in.
+        let flags = clock.advance(88_200);
+        assert!(flags.count_in_completed);
+
+        // Simulating what processing thread does: apply Record command.
+        clock.apply_command(TransportCommand::Record);
+        assert!(clock.is_recording());
+    }
+
+    // -- Issue #2 fix: Loop wrapping suppressed during count-in ---------------
+
+    #[test]
+    fn loop_wrapping_suppressed_during_count_in() {
+        let mut clock = TransportClock::new(44_100);
+        // Loop region smaller than one bar.
+        clock.apply_command(TransportCommand::SetLoop(Some((0, 44_100))));
+        clock.start_count_in(1, 0);
+
+        // Advance past the loop end. Without the fix, position would wrap
+        // to 0 and never reach the count-in end (88200).
+        let flags = clock.advance(88_200);
+        assert_eq!(clock.position_samples, 88_200);
+        assert!(flags.count_in_completed);
+    }
+
+    #[test]
+    fn loop_wrapping_resumes_after_count_in() {
+        let mut clock = TransportClock::new(44_100);
+        clock.apply_command(TransportCommand::SetLoop(Some((0, 44_100))));
+        clock.start_count_in(1, 0);
+
+        // Complete count-in.
+        let flags = clock.advance(88_200);
+        assert!(flags.count_in_completed);
+
+        // Count-in state transitions to AutoRecording(auto_stop=0).
+        // Now reset count-in (simulating what processing thread does
+        // after it's done handling the flags and recording is underway).
+        // Once count-in state is Inactive, loop wrapping should resume.
+        clock.reset_count_in();
+        clock.apply_command(TransportCommand::Seek(44_000));
+        let flags = clock.advance(200);
+        // 44000 + 200 = 44200 >= 44100 (loop end), wraps to 100.
+        assert_eq!(clock.position_samples, 100);
+        assert_eq!(flags, AdvanceFlags::NONE);
+    }
+
+    // -- Issue #5 fix: auto_record_bars in snapshot --------------------------
+
+    #[test]
+    fn snapshot_auto_record_bars_free_record() {
+        let clock = TransportClock::new(44_100);
+        let snap = clock.snapshot();
+        assert_eq!(snap.auto_record_bars, 0);
+    }
+
+    #[test]
+    fn snapshot_auto_record_bars_count_in() {
+        let mut clock = TransportClock::new(44_100);
+        clock.apply_command(TransportCommand::SetRecordingWorkflow(
+            RecordingWorkflow::CountIn {
+                count_in_bars: 2,
+                record_bars: 8,
+            },
+        ));
+        let snap = clock.snapshot();
+        assert_eq!(snap.auto_record_bars, 8);
+    }
+
+    #[test]
+    fn snapshot_auto_record_bars_fixed_length() {
+        let mut clock = TransportClock::new(44_100);
+        clock.apply_command(TransportCommand::SetRecordingWorkflow(
+            RecordingWorkflow::FixedLength { bars: 4 },
+        ));
+        let snap = clock.snapshot();
+        assert_eq!(snap.auto_record_bars, 4);
+    }
+
+    // -- Issue #7 fix: Pause cancels count-in --------------------------------
+
+    #[test]
+    fn pause_during_count_in_cancels_count_in() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(4, 0);
+        assert!(clock.is_playing());
+        assert_eq!(
+            clock.count_in_state,
+            CountInState::CountingIn {
+                count_in_end: 88_200 * 4,
+                auto_stop: 0,
+                count_in_bars: 4,
+            }
+        );
+
+        clock.advance(44_100);
+        clock.apply_command(TransportCommand::Pause);
+        assert_eq!(clock.state, TransportState::Paused);
+        assert_eq!(clock.count_in_state, CountInState::Inactive);
+    }
+
+    #[test]
+    fn pause_during_count_in_snapshot_shows_inactive() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(2, 0);
+        clock.advance(44_100);
+        clock.apply_command(TransportCommand::Pause);
+
+        let snap = clock.snapshot();
+        assert!(!snap.count_in_active);
+        assert_eq!(snap.count_in_bar, 0);
+        assert_eq!(snap.count_in_total, 0);
+    }
+
+    #[test]
+    fn pause_during_auto_recording_cancels_auto_stop() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_fixed_length(2);
+        assert!(clock.is_recording());
+
+        clock.advance(44_100);
+        clock.apply_command(TransportCommand::Pause);
+        assert_eq!(clock.state, TransportState::Paused);
+        assert_eq!(clock.count_in_state, CountInState::Inactive);
+    }
+
+    // -- Edge cases ----------------------------------------------------------
+
+    #[test]
+    fn samples_per_bar_at_48k() {
+        let mut clock = TransportClock::new(48_000);
+        clock.apply_command(TransportCommand::SetTempo(120.0));
+        // 48000 * 60 / 120 = 24000 samples per beat, 4 beats = 96000.
+        assert_eq!(clock.samples_per_bar(), 96_000);
+    }
+
+    #[test]
+    fn quantize_to_bar_zero_position() {
+        let clock = TransportClock::new(44_100);
+        assert_eq!(clock.quantize_to_bar(0), 0);
+    }
+
+    #[test]
+    fn count_in_large_overshoot_still_completes() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(1, 1);
+        // Advance way past both count-in and auto-stop in a single block.
+        let flags = clock.advance(88_200 * 3);
+        // count_in_completed fires first.
+        assert!(flags.count_in_completed);
+    }
+
+    #[test]
+    fn fixed_length_large_overshoot_auto_stops() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_fixed_length(1);
+        // Advance way past the auto-stop in a single block.
+        let flags = clock.advance(88_200 * 3);
+        assert!(flags.auto_stop_triggered);
+    }
+
+    #[test]
+    fn count_in_completed_carries_exact_bar_boundary() {
+        let mut clock = TransportClock::new(44_100);
+        // 120 BPM, 4/4 => one bar = 88200 samples. Count-in of 1 bar.
+        clock.start_count_in(1, 4);
+
+        // Advance past the bar boundary with overshoot.
+        let flags = clock.advance(90_000); // overshoots by 1800 samples
+        assert!(flags.count_in_completed);
+        // record_start_position should be the exact bar boundary (88200),
+        // not the overshot position (90000).
+        assert_eq!(flags.record_start_position, 88_200);
+    }
+
+    #[test]
+    fn count_in_completed_multi_bar_boundary() {
+        let mut clock = TransportClock::new(44_100);
+        // 2 bar count-in => boundary at 176400 samples.
+        clock.start_count_in(2, 0);
+
+        let flags = clock.advance(176_500); // overshoots by 100 samples
+        assert!(flags.count_in_completed);
+        assert_eq!(flags.record_start_position, 176_400);
+    }
+
+    #[test]
+    fn auto_stop_record_start_position_is_zero() {
+        let mut clock = TransportClock::new(44_100);
+        clock.start_count_in(1, 1);
+
+        // Complete count-in.
+        let flags = clock.advance(88_200);
+        assert!(flags.count_in_completed);
+        assert_eq!(flags.record_start_position, 88_200);
+
+        // Auto-stop: record_start_position is irrelevant (0).
+        let flags = clock.advance(88_200);
+        assert!(flags.auto_stop_triggered);
+        assert_eq!(flags.record_start_position, 0);
     }
 }

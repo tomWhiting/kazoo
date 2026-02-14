@@ -375,6 +375,9 @@ pub const SPECTRUM_FFT_SIZE: usize = 2048;
 /// Maximum number of effects per track.
 pub const MAX_EFFECTS_PER_TRACK: usize = 8;
 
+/// Maximum number of synth layers per track.
+pub const MAX_SYNTH_LAYERS: usize = 4;
+
 // ---------------------------------------------------------------------------
 // Utility functions
 // ---------------------------------------------------------------------------

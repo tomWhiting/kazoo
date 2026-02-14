@@ -90,6 +90,19 @@ pub enum AppMode {
         /// Index of the selected entry.
         selected: usize,
     },
+    /// Synth control drawer open — bottom drawer replaces inspector panel.
+    SynthDrawer,
+}
+
+/// Which section of the synth drawer is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawerSection {
+    /// Synth type selector / layer list.
+    SynthSelector,
+    /// Parameter sliders for the selected synth.
+    Parameters,
+    /// Effect chain parameters.
+    Effects,
 }
 
 /// A single entry in the file browser.
@@ -116,6 +129,23 @@ pub enum InputMode {
 // Track metadata
 // ---------------------------------------------------------------------------
 
+/// Metadata for a single synth layer within a track.
+#[derive(Debug, Clone)]
+pub struct LayerInfo {
+    /// Synthesis mode for this layer.
+    pub mode: SynthesisMode,
+    /// Human-readable label for this layer.
+    pub label: String,
+    /// Layer gain in dB.
+    pub gain: Db,
+    /// Whether this layer is enabled.
+    pub enabled: bool,
+    /// Parameter metadata for this layer's synth.
+    pub param_infos: Vec<kazoo_core::ParamInfo>,
+    /// Current parameter values (parallel to `param_infos`).
+    pub param_values: Vec<f32>,
+}
+
 /// Local track metadata maintained by the TUI.
 ///
 /// Real-time meter data (peak/RMS levels) comes from [`DisplayState`] via
@@ -128,7 +158,7 @@ pub struct TrackInfo {
     pub id: TrackId,
     /// Human-readable track name.
     pub name: String,
-    /// Active synthesis mode.
+    /// Active synthesis mode (shortcut to layer 0).
     pub synthesis_mode: SynthesisMode,
     /// Whether this track is muted.
     pub muted: bool,
@@ -146,10 +176,14 @@ pub struct TrackInfo {
     pub effect_bypassed: Vec<bool>,
     /// Number of audio clips on this track.
     pub clip_count: usize,
-    /// Synth parameter metadata (names, ranges, units).
+    /// Synth parameter metadata for the primary layer (layer 0 shortcut).
     pub synth_param_infos: Vec<kazoo_core::ParamInfo>,
-    /// Current synth parameter values (parallel to `synth_param_infos`).
+    /// Current synth parameter values for the primary layer (layer 0 shortcut).
     pub synth_param_values: Vec<f32>,
+    /// Synth layers on this track. Always has at least one entry.
+    pub layers: Vec<LayerInfo>,
+    /// Currently selected layer index in the drawer.
+    pub selected_layer: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +265,23 @@ pub struct App {
     /// Currently selected clip ID, if any.
     pub selected_clip: Option<ClipId>,
 
+    // -- Drawer state -------------------------------------------------------
+    /// Which section of the synth drawer is active.
+    pub drawer_section: DrawerSection,
+
+    /// Scroll offset within the active drawer section (selected param index).
+    pub drawer_param_index: usize,
+
+    // -- Recording workflow state --------------------------------------------
+    /// The configured recording workflow (count-in, fixed-length, etc.).
+    pub recording_workflow: kazoo_core::transport::RecordingWorkflow,
+
+    /// Number of count-in bars before recording starts.
+    pub count_in_bars: u8,
+
+    /// Number of bars to record (0 = unlimited / until manual stop).
+    pub record_bars: u8,
+
     /// Set to `true` to exit the main event loop.
     pub should_quit: bool,
 }
@@ -265,6 +316,14 @@ impl App {
             timeline_zoom: 256.0,
             timeline_scroll: 0.0,
             selected_clip: None,
+            drawer_section: DrawerSection::Parameters,
+            drawer_param_index: 0,
+            recording_workflow: kazoo_core::transport::RecordingWorkflow::CountIn {
+                count_in_bars: 1,
+                record_bars: 4,
+            },
+            count_in_bars: 1,
+            record_bars: 4,
             should_quit: false,
         }
     }
@@ -352,6 +411,16 @@ impl App {
         self.next_track_id += 1;
 
         let sample_rate = self.engine.sample_rate() as f32;
+        let param_infos = synthesis_mode.param_infos(sample_rate);
+        let param_values = synthesis_mode.default_param_values(sample_rate);
+        let layer0 = LayerInfo {
+            mode: synthesis_mode,
+            label: synthesis_mode.display_name().into(),
+            gain: Db::UNITY,
+            enabled: true,
+            param_infos: param_infos.clone(),
+            param_values: param_values.clone(),
+        };
         let info = TrackInfo {
             id,
             name: name.clone(),
@@ -364,8 +433,10 @@ impl App {
             effect_names: Vec::new(),
             effect_bypassed: Vec::new(),
             clip_count: 0,
-            synth_param_infos: synthesis_mode.param_infos(sample_rate),
-            synth_param_values: synthesis_mode.default_param_values(sample_rate),
+            synth_param_infos: param_infos,
+            synth_param_values: param_values,
+            layers: vec![layer0],
+            selected_layer: 0,
         };
         self.tracks.push(info);
 
@@ -425,6 +496,8 @@ impl App {
     }
 
     /// Cycle the synthesis mode on the track at the given index.
+    ///
+    /// Updates both the primary synth shortcut fields and layer 0.
     pub fn cycle_synth_mode(&mut self, index: usize) {
         if let Some(track) = self.tracks.get_mut(index) {
             let next = match track.synthesis_mode {
@@ -436,13 +509,23 @@ impl App {
             };
             track.synthesis_mode = next;
             let sample_rate = self.engine.sample_rate() as f32;
-            track.synth_param_infos = next.param_infos(sample_rate);
-            track.synth_param_values = next.default_param_values(sample_rate);
+            let infos = next.param_infos(sample_rate);
+            let values = next.default_param_values(sample_rate);
+            track.synth_param_infos.clone_from(&infos);
+            track.synth_param_values.clone_from(&values);
+            // Update layer 0 to match.
+            if let Some(layer) = track.layers.first_mut() {
+                layer.mode = next;
+                layer.label = next.display_name().into();
+                layer.param_infos = infos;
+                layer.param_values = values;
+            }
             let _ = self
                 .engine
                 .send_command(EngineCommand::SetTrackSynthesisMode(track.id, next));
         }
         self.selected_synth_param = 0;
+        self.drawer_param_index = 0;
     }
 
     /// Set the volume for the track at the given index.
@@ -515,6 +598,105 @@ impl App {
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Layer management
+    // -----------------------------------------------------------------------
+
+    /// Add a synth layer to the selected track.
+    ///
+    /// Returns `true` if the layer was added, `false` if the track doesn't
+    /// exist or the maximum number of layers has been reached.
+    pub fn add_synth_layer(&mut self, mode: SynthesisMode) -> bool {
+        let Some(track) = self.tracks.get_mut(self.selected_track) else {
+            return false;
+        };
+        if track.layers.len() >= kazoo_core::MAX_SYNTH_LAYERS {
+            return false;
+        }
+
+        let sample_rate = self.engine.sample_rate() as f32;
+        let label: String = mode.display_name().into();
+        let layer = LayerInfo {
+            mode,
+            label: label.clone(),
+            gain: Db::UNITY,
+            enabled: true,
+            param_infos: mode.param_infos(sample_rate),
+            param_values: mode.default_param_values(sample_rate),
+        };
+        track.layers.push(layer);
+
+        let _ = self.engine.send_command(EngineCommand::AddSynthLayer {
+            track_id: track.id,
+            synthesis_mode: mode,
+            label,
+        });
+        true
+    }
+
+    /// Remove a synth layer from the selected track by index.
+    ///
+    /// Layer 0 cannot be removed. Returns `true` if the layer was removed.
+    pub fn remove_synth_layer(&mut self, layer_index: usize) -> bool {
+        let Some(track) = self.tracks.get_mut(self.selected_track) else {
+            return false;
+        };
+        if layer_index == 0 || layer_index >= track.layers.len() {
+            return false;
+        }
+
+        let id = track.id;
+        track.layers.remove(layer_index);
+
+        // Adjust selected layer.
+        if track.selected_layer >= track.layers.len() {
+            track.selected_layer = track.layers.len().saturating_sub(1);
+        }
+
+        let _ = self.engine.send_command(EngineCommand::RemoveSynthLayer {
+            track_id: id,
+            layer_index,
+        });
+        true
+    }
+
+    /// Toggle the enabled state of a layer on the selected track.
+    pub fn toggle_layer_enabled(&mut self, layer_index: usize) {
+        let Some(track) = self.tracks.get_mut(self.selected_track) else {
+            return;
+        };
+        let Some(layer) = track.layers.get_mut(layer_index) else {
+            return;
+        };
+
+        layer.enabled = !layer.enabled;
+        let _ = self
+            .engine
+            .send_command(EngineCommand::SetSynthLayerEnabled {
+                track_id: track.id,
+                layer_index,
+                enabled: layer.enabled,
+            });
+    }
+
+    /// Set the gain of a layer on the selected track.
+    #[allow(dead_code)]
+    pub fn set_layer_gain(&mut self, layer_index: usize, gain: Db) {
+        let Some(track) = self.tracks.get_mut(self.selected_track) else {
+            return;
+        };
+        let Some(layer) = track.layers.get_mut(layer_index) else {
+            return;
+        };
+
+        layer.gain = gain;
+        let _ = self.engine.send_command(EngineCommand::SetSynthLayerGain {
+            track_id: track.id,
+            layer_index,
+            gain,
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -986,6 +1168,96 @@ mod tests {
         };
         let dbg = format!("{entry:?}");
         assert!(dbg.contains("test.wav"));
+    }
+
+    // -- Layer management tests -----------------------------------------------
+
+    #[test]
+    fn add_track_creates_single_layer() {
+        let mut app = App::new(test_engine_handle());
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+
+        assert_eq!(app.tracks[0].layers.len(), 1);
+        assert_eq!(app.tracks[0].layers[0].mode, SynthesisMode::PitchTracked);
+        assert!(app.tracks[0].layers[0].enabled);
+        assert_eq!(app.tracks[0].selected_layer, 0);
+    }
+
+    #[test]
+    fn add_synth_layer_adds_to_selected_track() {
+        let mut app = App::new(test_engine_handle());
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+        app.selected_track = 0;
+
+        assert!(app.add_synth_layer(SynthesisMode::Wavetable));
+        assert_eq!(app.tracks[0].layers.len(), 2);
+        assert_eq!(app.tracks[0].layers[1].mode, SynthesisMode::Wavetable);
+    }
+
+    #[test]
+    fn add_synth_layer_respects_max() {
+        let mut app = App::new(test_engine_handle());
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+        app.selected_track = 0;
+
+        for _ in 1..kazoo_core::MAX_SYNTH_LAYERS {
+            assert!(app.add_synth_layer(SynthesisMode::Wavetable));
+        }
+        assert!(!app.add_synth_layer(SynthesisMode::Granular));
+        assert_eq!(app.tracks[0].layers.len(), kazoo_core::MAX_SYNTH_LAYERS);
+    }
+
+    #[test]
+    fn remove_synth_layer_cannot_remove_zero() {
+        let mut app = App::new(test_engine_handle());
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+        app.selected_track = 0;
+
+        assert!(!app.remove_synth_layer(0));
+        assert_eq!(app.tracks[0].layers.len(), 1);
+    }
+
+    #[test]
+    fn remove_synth_layer_adjusts_selection() {
+        let mut app = App::new(test_engine_handle());
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+        app.selected_track = 0;
+        app.add_synth_layer(SynthesisMode::Wavetable);
+        app.add_synth_layer(SynthesisMode::Granular);
+        app.tracks[0].selected_layer = 2;
+
+        assert!(app.remove_synth_layer(2));
+        assert_eq!(app.tracks[0].layers.len(), 2);
+        assert_eq!(app.tracks[0].selected_layer, 1);
+    }
+
+    #[test]
+    fn toggle_layer_enabled_flips() {
+        let mut app = App::new(test_engine_handle());
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+        app.selected_track = 0;
+        assert!(app.tracks[0].layers[0].enabled);
+
+        app.toggle_layer_enabled(0);
+        assert!(!app.tracks[0].layers[0].enabled);
+
+        app.toggle_layer_enabled(0);
+        assert!(app.tracks[0].layers[0].enabled);
+    }
+
+    #[test]
+    fn cycle_synth_mode_resets_drawer_and_layer() {
+        let mut app = App::new(test_engine_handle());
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+        app.drawer_param_index = 5;
+        app.selected_synth_param = 3;
+
+        app.cycle_synth_mode(0);
+
+        assert_eq!(app.selected_synth_param, 0);
+        assert_eq!(app.drawer_param_index, 0);
+        assert_eq!(app.tracks[0].synthesis_mode, SynthesisMode::Wavetable);
+        assert_eq!(app.tracks[0].layers[0].mode, SynthesisMode::Wavetable);
     }
 
     // -----------------------------------------------------------------------

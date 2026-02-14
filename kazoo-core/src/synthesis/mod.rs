@@ -69,33 +69,27 @@ impl SynthesisMode {
     #[must_use]
     pub fn format_param_value(self, param_index: usize, value: f32) -> String {
         match self {
-            Self::PitchTracked if param_index == 0 => {
-                match value.round() as i32 {
-                    0 => "Sine".into(),
-                    1 => "Saw".into(),
-                    2 => "Square".into(),
-                    3 => "Triangle".into(),
-                    _ => format!("{value:.0}"),
-                }
-            }
-            Self::Granular if param_index == 6 => {
-                match value.round() as i32 {
-                    0 => "Hann".into(),
-                    1 => "Triangle".into(),
-                    2 => "Gaussian".into(),
-                    3 => "Tukey".into(),
-                    _ => format!("{value:.0}"),
-                }
-            }
-            Self::Vocoder if param_index == 0 => {
-                match value.round() as i32 {
-                    0 => "Saw".into(),
-                    1 => "Square".into(),
-                    2 => "Noise".into(),
-                    3 => "External".into(),
-                    _ => format!("{value:.0}"),
-                }
-            }
+            Self::PitchTracked if param_index == 0 => match value.round() as i32 {
+                0 => "Sine".into(),
+                1 => "Saw".into(),
+                2 => "Square".into(),
+                3 => "Triangle".into(),
+                _ => format!("{value:.0}"),
+            },
+            Self::Granular if param_index == 6 => match value.round() as i32 {
+                0 => "Hann".into(),
+                1 => "Triangle".into(),
+                2 => "Gaussian".into(),
+                3 => "Tukey".into(),
+                _ => format!("{value:.0}"),
+            },
+            Self::Vocoder if param_index == 0 => match value.round() as i32 {
+                0 => "Saw".into(),
+                1 => "Square".into(),
+                2 => "Noise".into(),
+                3 => "External".into(),
+                _ => format!("{value:.0}"),
+            },
             _ => {
                 // Format numeric values: use integer display for whole numbers,
                 // 1 decimal for values with fractional parts, 2 for very small.

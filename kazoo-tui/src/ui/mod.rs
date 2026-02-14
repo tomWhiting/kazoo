@@ -4,6 +4,7 @@
 //! splitting the terminal into transport bar, track list, waveform,
 //! spectrum, meters, and inspector panels.
 
+pub mod drawer;
 pub mod effects;
 pub mod file_browser;
 pub mod meters;
@@ -49,42 +50,68 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     transport::draw(frame, app, main_chunks[0]);
 
-    // Content: tracks (26 cols) | center | inspector (36 cols).
-    let content_chunks = Layout::horizontal([
-        Constraint::Length(26),
-        Constraint::Min(20),
-        Constraint::Length(36),
-    ])
-    .split(main_chunks[1]);
+    if app.mode == AppMode::SynthDrawer {
+        // Drawer layout: tracks (26 cols) | right area (rest).
+        let content_chunks =
+            Layout::horizontal([Constraint::Length(26), Constraint::Min(40)]).split(main_chunks[1]);
 
-    tracks::draw(frame, app, content_chunks[0]);
+        tracks::draw(frame, app, content_chunks[0]);
 
-    // Center area: waveform/timeline (top 60%) | bottom 40%.
-    let center_chunks = Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
+        // Right area: waveform/timeline (compressed top) | drawer (bottom).
+        let right_chunks = Layout::vertical([
+            Constraint::Min(6),         // waveform/timeline compressed
+            Constraint::Percentage(60), // drawer
+        ])
         .split(content_chunks[1]);
 
-    // Show timeline when clips exist or Timeline panel is focused;
-    // otherwise show the oscilloscope waveform view.
-    if app.has_clips() || app.focused_panel == FocusedPanel::Timeline {
-        timeline::draw(frame, app, center_chunks[0]);
+        // Compressed waveform/timeline in the top portion.
+        if app.has_clips() || app.focused_panel == FocusedPanel::Timeline {
+            timeline::draw(frame, app, right_chunks[0]);
+        } else {
+            waveform::draw(frame, app, right_chunks[0]);
+        }
+
+        // Synth control drawer in the bottom portion.
+        drawer::draw(frame, app, right_chunks[1]);
     } else {
-        waveform::draw(frame, app, center_chunks[0]);
-    }
+        // Normal layout: tracks (26 cols) | center | inspector (36 cols).
+        let content_chunks = Layout::horizontal([
+            Constraint::Length(26),
+            Constraint::Min(20),
+            Constraint::Length(36),
+        ])
+        .split(main_chunks[1]);
 
-    // Bottom center: spectrum (70%) | meters (30%).
-    let bottom_chunks =
-        Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)])
-            .split(center_chunks[1]);
+        tracks::draw(frame, app, content_chunks[0]);
 
-    spectrum::draw(frame, app, bottom_chunks[0]);
-    meters::draw(frame, app, bottom_chunks[1]);
+        // Center area: waveform/timeline (top 60%) | bottom 40%.
+        let center_chunks =
+            Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .split(content_chunks[1]);
 
-    // Inspector: show mixer strip view when Mixer is focused, effects
-    // inspector otherwise.
-    if app.focused_panel == FocusedPanel::Mixer {
-        mixer::draw(frame, app, content_chunks[2]);
-    } else {
-        effects::draw(frame, app, content_chunks[2]);
+        // Show timeline when clips exist or Timeline panel is focused;
+        // otherwise show the oscilloscope waveform view.
+        if app.has_clips() || app.focused_panel == FocusedPanel::Timeline {
+            timeline::draw(frame, app, center_chunks[0]);
+        } else {
+            waveform::draw(frame, app, center_chunks[0]);
+        }
+
+        // Bottom center: spectrum (70%) | meters (30%).
+        let bottom_chunks =
+            Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)])
+                .split(center_chunks[1]);
+
+        spectrum::draw(frame, app, bottom_chunks[0]);
+        meters::draw(frame, app, bottom_chunks[1]);
+
+        // Inspector: show mixer strip view when Mixer is focused, effects
+        // inspector otherwise.
+        if app.focused_panel == FocusedPanel::Mixer {
+            mixer::draw(frame, app, content_chunks[2]);
+        } else {
+            effects::draw(frame, app, content_chunks[2]);
+        }
     }
 
     // Help overlay (rendered on top of everything).
@@ -124,6 +151,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         help_line("Space", "Play / Pause"),
         help_line("s", "Stop"),
         help_line("r", "Record"),
+        help_line("R", "Record with count-in"),
         help_line("q", "Quit"),
         help_line("?", "Toggle help"),
         help_line("Tab", "Next panel"),
@@ -140,6 +168,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         help_line("h/l", "Pan / cycle param"),
         help_line("+/-", "Volume / param"),
         help_line("[/]", "Zoom waveform"),
+        help_line("d", "Synth drawer"),
+        help_line("n/x", "Add/remove layer (drawer)"),
+        help_line("e", "Toggle layer (drawer)"),
+        help_line("[/]", "Select layer (drawer)"),
         help_line("o", "Open file browser"),
         help_line(",/.", "Select clip"),
         help_line("</>>", "Move clip"),
@@ -148,6 +180,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         help_line("C-x", "Delete clip"),
         help_line("L", "Toggle loop"),
         help_line("M", "Toggle metronome"),
+        help_line("=/-", "BPM \u{00b1}1 (Transport)"),
+        help_line("+/_", "BPM \u{00b1}10 (Transport)"),
+        help_line("w", "Cycle rec workflow (T)"),
+        help_line("[/]", "Rec bars \u{00b1}1 (T)"),
         help_line("Esc", "Close / cancel"),
     ];
 

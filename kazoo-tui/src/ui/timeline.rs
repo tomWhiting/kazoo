@@ -160,8 +160,12 @@ fn draw_track_row(
         let label_text = format!(" {name:<4}");
         let text_area = Rect::new(area.x + 1, area.y, label_width - 1, 1);
         frame.render_widget(
-            Paragraph::new(label_text)
-                .style(Style::new().fg(track_col).bg(lane_bg).add_modifier(Modifier::BOLD)),
+            Paragraph::new(label_text).style(
+                Style::new()
+                    .fg(track_col)
+                    .bg(lane_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
             text_area,
         );
     }
@@ -313,8 +317,8 @@ fn draw_mini_waveform(
 
     // Block characters: index 0 = empty, 8 = full block.
     let block_chars = [
-        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}',
-        '\u{2587}', '\u{2588}',
+        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
     ];
 
     // Render row by row. Waveform fills from bottom upward.

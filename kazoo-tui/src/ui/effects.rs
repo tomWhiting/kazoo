@@ -166,13 +166,7 @@ fn draw_param_section(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rec
 }
 
 /// Render synth parameter list with names, values, and selection highlight.
-fn draw_synth_params(
-    frame: &mut Frame,
-    app: &App,
-    track: &TrackInfo,
-    area: Rect,
-    focused: bool,
-) {
+fn draw_synth_params(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect, focused: bool) {
     if track.synth_param_infos.is_empty() {
         let empty = Paragraph::new("  No parameters").style(theme::style_text_dimmed());
         frame.render_widget(empty, area);

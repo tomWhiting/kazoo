@@ -74,9 +74,44 @@ pub enum EngineCommand {
         value: f32,
     },
 
-    /// Set a parameter value on a track's synth processor.
+    /// Set a parameter value on a track's primary synth processor (layer 0).
     SetSynthParameter {
         track_id: TrackId,
+        param_index: usize,
+        value: f32,
+    },
+
+    /// Add a new synth layer to a track.
+    AddSynthLayer {
+        track_id: TrackId,
+        synthesis_mode: SynthesisMode,
+        label: String,
+    },
+
+    /// Remove a synth layer from a track by index (layer 0 cannot be removed).
+    RemoveSynthLayer {
+        track_id: TrackId,
+        layer_index: usize,
+    },
+
+    /// Set the gain of a synth layer.
+    SetSynthLayerGain {
+        track_id: TrackId,
+        layer_index: usize,
+        gain: Db,
+    },
+
+    /// Enable or disable a synth layer.
+    SetSynthLayerEnabled {
+        track_id: TrackId,
+        layer_index: usize,
+        enabled: bool,
+    },
+
+    /// Set a parameter value on a specific synth layer.
+    SetSynthLayerParameter {
+        track_id: TrackId,
+        layer_index: usize,
         param_index: usize,
         value: f32,
     },
@@ -225,6 +260,56 @@ impl std::fmt::Debug for EngineCommand {
             } => f
                 .debug_struct("SetSynthParameter")
                 .field("track_id", track_id)
+                .field("param_index", param_index)
+                .field("value", value)
+                .finish(),
+            Self::AddSynthLayer {
+                track_id,
+                synthesis_mode,
+                label,
+            } => f
+                .debug_struct("AddSynthLayer")
+                .field("track_id", track_id)
+                .field("synthesis_mode", synthesis_mode)
+                .field("label", label)
+                .finish(),
+            Self::RemoveSynthLayer {
+                track_id,
+                layer_index,
+            } => f
+                .debug_struct("RemoveSynthLayer")
+                .field("track_id", track_id)
+                .field("layer_index", layer_index)
+                .finish(),
+            Self::SetSynthLayerGain {
+                track_id,
+                layer_index,
+                gain,
+            } => f
+                .debug_struct("SetSynthLayerGain")
+                .field("track_id", track_id)
+                .field("layer_index", layer_index)
+                .field("gain", gain)
+                .finish(),
+            Self::SetSynthLayerEnabled {
+                track_id,
+                layer_index,
+                enabled,
+            } => f
+                .debug_struct("SetSynthLayerEnabled")
+                .field("track_id", track_id)
+                .field("layer_index", layer_index)
+                .field("enabled", enabled)
+                .finish(),
+            Self::SetSynthLayerParameter {
+                track_id,
+                layer_index,
+                param_index,
+                value,
+            } => f
+                .debug_struct("SetSynthLayerParameter")
+                .field("track_id", track_id)
+                .field("layer_index", layer_index)
                 .field("param_index", param_index)
                 .field("value", value)
                 .finish(),
@@ -584,5 +669,65 @@ mod tests {
         let dbg = format!("{cmd:?}");
         assert!(dbg.contains("DuplicateClip"));
         assert!(dbg.contains("8000"));
+    }
+
+    #[test]
+    fn add_synth_layer_debug() {
+        let cmd = EngineCommand::AddSynthLayer {
+            track_id: TrackId(0),
+            synthesis_mode: SynthesisMode::Wavetable,
+            label: "Pad".into(),
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("AddSynthLayer"));
+        assert!(dbg.contains("Wavetable"));
+        assert!(dbg.contains("Pad"));
+    }
+
+    #[test]
+    fn remove_synth_layer_debug() {
+        let cmd = EngineCommand::RemoveSynthLayer {
+            track_id: TrackId(1),
+            layer_index: 2,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("RemoveSynthLayer"));
+        assert!(dbg.contains("2"));
+    }
+
+    #[test]
+    fn set_synth_layer_gain_debug() {
+        let cmd = EngineCommand::SetSynthLayerGain {
+            track_id: TrackId(0),
+            layer_index: 1,
+            gain: Db::new(-6.0),
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("SetSynthLayerGain"));
+    }
+
+    #[test]
+    fn set_synth_layer_enabled_debug() {
+        let cmd = EngineCommand::SetSynthLayerEnabled {
+            track_id: TrackId(0),
+            layer_index: 1,
+            enabled: false,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("SetSynthLayerEnabled"));
+        assert!(dbg.contains("false"));
+    }
+
+    #[test]
+    fn set_synth_layer_parameter_debug() {
+        let cmd = EngineCommand::SetSynthLayerParameter {
+            track_id: TrackId(0),
+            layer_index: 0,
+            param_index: 2,
+            value: 0.75,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("SetSynthLayerParameter"));
+        assert!(dbg.contains("0.75"));
     }
 }

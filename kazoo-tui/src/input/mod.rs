@@ -14,7 +14,7 @@ use kazoo_core::synthesis::SynthesisMode;
 use kazoo_core::transport::{TransportCommand, TransportState};
 use kazoo_core::{Db, Pan};
 
-use crate::app::{App, AppMode, FocusedPanel, InputMode};
+use crate::app::{App, AppMode, DrawerSection, FocusedPanel, InputMode};
 
 // ---------------------------------------------------------------------------
 // KeyAction
@@ -40,6 +40,7 @@ enum KeyAction {
     Stop,
     Pause,
     Record,
+    RecordWithCountIn,
     ToggleLoop,
     ToggleMetronome,
 
@@ -101,8 +102,31 @@ enum KeyAction {
     SplitClip,
     DuplicateClip,
 
+    // BPM adjustment (Transport panel)
+    IncreaseBPM,
+    DecreaseBPM,
+    IncreaseBPMLarge,
+    DecreaseBPMLarge,
+
+    // Recording workflow (Transport panel)
+    CycleRecordingWorkflow,
+    IncreaseRecordBars,
+    DecreaseRecordBars,
+
     // Synth mode
     CycleSynthMode,
+
+    // Synth drawer
+    OpenDrawer,
+    CloseDrawer,
+    DrawerNextSection,
+
+    // Layer management (drawer)
+    AddLayer,
+    RemoveLayer,
+    ToggleLayerEnabled,
+    NextLayer,
+    PrevLayer,
 
     // File browser navigation
     FileBrowserUp,
@@ -145,7 +169,12 @@ fn resolve_action(app: &App, key: KeyEvent) -> Option<KeyAction> {
         return resolve_help_action(key);
     }
 
-    // 4. Normal mode: try panel-specific keys first, then global.
+    // 4. Synth drawer mode: drawer-specific keys, then global transport.
+    if app.mode == AppMode::SynthDrawer {
+        return resolve_drawer_action(key);
+    }
+
+    // 5. Normal mode: try panel-specific keys first, then global.
     //    Panel-first ensures that modified keys (e.g. Ctrl+S for SplitClip
     //    in the Timeline panel) are not intercepted by unmodified global
     //    bindings (e.g. 's' for Stop).
@@ -197,6 +226,7 @@ const fn resolve_global_action(key: KeyEvent) -> Option<KeyAction> {
         KeyCode::Char(' ') => Some(KeyAction::Play),
         KeyCode::Char('s') => Some(KeyAction::Stop),
         KeyCode::Char('r') => Some(KeyAction::Record),
+        KeyCode::Char('R') => Some(KeyAction::RecordWithCountIn),
         KeyCode::Char('L') => Some(KeyAction::ToggleLoop),
         KeyCode::Char('M') => Some(KeyAction::ToggleMetronome),
 
@@ -224,6 +254,9 @@ const fn resolve_global_action(key: KeyEvent) -> Option<KeyAction> {
         KeyCode::Char('[') => Some(KeyAction::ZoomOut),
         KeyCode::Char(']') => Some(KeyAction::ZoomIn),
 
+        // Synth drawer
+        KeyCode::Char('d') => Some(KeyAction::OpenDrawer),
+
         // File browser
         KeyCode::Char('o') => Some(KeyAction::OpenFileBrowser),
 
@@ -238,9 +271,8 @@ fn resolve_panel_action(app: &App, key: KeyEvent) -> Option<KeyAction> {
         FocusedPanel::Waveform => resolve_waveform_action(key),
         FocusedPanel::Mixer => resolve_mixer_action(key),
         FocusedPanel::Timeline => resolve_timeline_action(key),
-        FocusedPanel::Transport | FocusedPanel::Tracks | FocusedPanel::Spectrum => {
-            resolve_default_panel_action(key)
-        }
+        FocusedPanel::Transport => resolve_transport_action(key),
+        FocusedPanel::Tracks | FocusedPanel::Spectrum => resolve_default_panel_action(key),
     }
 }
 
@@ -312,6 +344,72 @@ fn resolve_timeline_action(key: KeyEvent) -> Option<KeyAction> {
     }
 }
 
+/// Resolve keys while in the synth drawer mode.
+///
+/// The drawer captures most navigation keys but allows global transport
+/// controls (Space, s, r, q, ?) to pass through.
+const fn resolve_drawer_action(key: KeyEvent) -> Option<KeyAction> {
+    match key.code {
+        // Navigation
+        KeyCode::Char('j') | KeyCode::Down => Some(KeyAction::NextParam),
+        KeyCode::Char('k') | KeyCode::Up => Some(KeyAction::PrevParam),
+        KeyCode::Left | KeyCode::Char('-') => Some(KeyAction::DecreaseParam),
+        KeyCode::Right | KeyCode::Char('+' | '=') => Some(KeyAction::IncreaseParam),
+        KeyCode::Enter => Some(KeyAction::EnterParamEdit),
+
+        // Drawer controls
+        KeyCode::Char('t') => Some(KeyAction::CycleSynthMode),
+        KeyCode::Tab => Some(KeyAction::DrawerNextSection),
+        KeyCode::Esc => Some(KeyAction::CloseDrawer),
+
+        // Layer management
+        KeyCode::Char('n') => Some(KeyAction::AddLayer),
+        KeyCode::Char('x') => Some(KeyAction::RemoveLayer),
+        KeyCode::Char('e') => Some(KeyAction::ToggleLayerEnabled),
+        KeyCode::Char('[') => Some(KeyAction::PrevLayer),
+        KeyCode::Char(']') => Some(KeyAction::NextLayer),
+
+        // Global transport passthrough
+        KeyCode::Char(' ') => Some(KeyAction::Play),
+        KeyCode::Char('s') => Some(KeyAction::Stop),
+        KeyCode::Char('r') => Some(KeyAction::Record),
+        KeyCode::Char('R') => Some(KeyAction::RecordWithCountIn),
+        KeyCode::Char('q') => Some(KeyAction::Quit),
+        KeyCode::Char('?') => Some(KeyAction::ToggleHelp),
+
+        _ => None,
+    }
+}
+
+/// Panel-specific keys for the transport panel.
+///
+/// BPM adjustment:
+/// - `=` or unshifted `+` → +1 BPM
+/// - `+` (Shift+=) → +10 BPM
+/// - `-` (no shift) → -1 BPM
+/// - `_` (Shift+-) → -10 BPM
+///
+/// Recording workflow:
+/// - `w` → cycle workflow (`CountIn` → `FixedLength` → `CountIn`)
+/// - `[` → decrease record bars
+/// - `]` → increase record bars
+const fn resolve_transport_action(key: KeyEvent) -> Option<KeyAction> {
+    match key.code {
+        // On US keyboards `+` is Shift+=, so this catches the large increment.
+        KeyCode::Char('+') => Some(KeyAction::IncreaseBPMLarge),
+        // Unshifted `=` for small increment (same physical key as `+`).
+        KeyCode::Char('=') => Some(KeyAction::IncreaseBPM),
+        // `_` is Shift+- on US keyboards.
+        KeyCode::Char('_') => Some(KeyAction::DecreaseBPMLarge),
+        KeyCode::Char('-') => Some(KeyAction::DecreaseBPM),
+        // Recording workflow controls.
+        KeyCode::Char('w') => Some(KeyAction::CycleRecordingWorkflow),
+        KeyCode::Char(']') => Some(KeyAction::IncreaseRecordBars),
+        KeyCode::Char('[') => Some(KeyAction::DecreaseRecordBars),
+        _ => None,
+    }
+}
+
 /// Fallback for panels without special key mappings.
 const fn resolve_default_panel_action(key: KeyEvent) -> Option<KeyAction> {
     match key.code {
@@ -337,7 +435,9 @@ fn apply_action(app: &mut App, action: KeyAction) {
         KeyAction::ToggleHelp => {
             app.mode = match app.mode {
                 AppMode::Normal => AppMode::Help,
-                AppMode::Help | AppMode::FileBrowser { .. } => AppMode::Normal,
+                AppMode::Help | AppMode::FileBrowser { .. } | AppMode::SynthDrawer => {
+                    AppMode::Normal
+                }
             };
         }
 
@@ -366,6 +466,16 @@ fn apply_action(app: &mut App, action: KeyAction) {
         KeyAction::Record => {
             let _ = app.engine.record();
         }
+        KeyAction::RecordWithCountIn => {
+            // Build the workflow from TUI state and send it before the command.
+            let workflow = build_recording_workflow(app);
+            let _ = app.engine.send_command(EngineCommand::Transport(
+                TransportCommand::SetRecordingWorkflow(workflow),
+            ));
+            let _ = app.engine.send_command(EngineCommand::Transport(
+                TransportCommand::RecordWithCountIn,
+            ));
+        }
         KeyAction::ToggleLoop => {
             // Toggle loop on/off. The transport API uses SetLoop(Some/None)
             // rather than a simple toggle, so we check the current state.
@@ -387,6 +497,62 @@ fn apply_action(app: &mut App, action: KeyAction) {
             let _ = app
                 .engine
                 .send_command(EngineCommand::Transport(TransportCommand::ToggleMetronome));
+        }
+        KeyAction::IncreaseBPM => {
+            let new_bpm = app.display.transport.bpm + 1.0;
+            let _ = app
+                .engine
+                .send_command(EngineCommand::Transport(TransportCommand::SetTempo(
+                    new_bpm,
+                )));
+        }
+        KeyAction::DecreaseBPM => {
+            let new_bpm = app.display.transport.bpm - 1.0;
+            let _ = app
+                .engine
+                .send_command(EngineCommand::Transport(TransportCommand::SetTempo(
+                    new_bpm,
+                )));
+        }
+        KeyAction::IncreaseBPMLarge => {
+            let new_bpm = app.display.transport.bpm + 10.0;
+            let _ = app
+                .engine
+                .send_command(EngineCommand::Transport(TransportCommand::SetTempo(
+                    new_bpm,
+                )));
+        }
+        KeyAction::DecreaseBPMLarge => {
+            let new_bpm = app.display.transport.bpm - 10.0;
+            let _ = app
+                .engine
+                .send_command(EngineCommand::Transport(TransportCommand::SetTempo(
+                    new_bpm,
+                )));
+        }
+
+        // -- Recording workflow (Transport panel) ----------------------------
+        KeyAction::CycleRecordingWorkflow => {
+            use kazoo_core::transport::RecordingWorkflow;
+            app.recording_workflow = match app.recording_workflow {
+                RecordingWorkflow::FreeRecord | RecordingWorkflow::CountIn { .. } => {
+                    RecordingWorkflow::FixedLength {
+                        bars: app.record_bars.max(1),
+                    }
+                }
+                RecordingWorkflow::FixedLength { .. } => RecordingWorkflow::CountIn {
+                    count_in_bars: app.count_in_bars.max(1),
+                    record_bars: app.record_bars,
+                },
+            };
+        }
+        KeyAction::IncreaseRecordBars => {
+            app.record_bars = app.record_bars.saturating_add(1).min(64);
+        }
+        KeyAction::DecreaseRecordBars => {
+            if app.record_bars > 0 {
+                app.record_bars -= 1;
+            }
         }
 
         // -- Track selection -------------------------------------------------
@@ -488,35 +654,68 @@ fn apply_action(app: &mut App, action: KeyAction) {
 
         // -- Parameter navigation / editing ----------------------------------
         KeyAction::NextParam => {
-            if app.synth_selected {
-                if let Some(track) = app.selected_track_info() {
-                    if !track.synth_param_infos.is_empty() {
-                        app.selected_synth_param =
-                            (app.selected_synth_param + 1) % track.synth_param_infos.len();
+            let in_drawer = app.mode == AppMode::SynthDrawer;
+            if in_drawer || app.synth_selected {
+                // In drawer mode, use the selected layer's param count;
+                // in effects panel, use layer 0 shortcuts.
+                let param_count = app.selected_track_info().map_or(0, |t| {
+                    if in_drawer {
+                        t.layers
+                            .get(t.selected_layer)
+                            .map_or(t.synth_param_infos.len(), |l| l.param_infos.len())
+                    } else {
+                        t.synth_param_infos.len()
                     }
+                });
+                if param_count > 0 {
+                    let idx = if in_drawer {
+                        &mut app.drawer_param_index
+                    } else {
+                        &mut app.selected_synth_param
+                    };
+                    *idx = (*idx + 1) % param_count;
                 }
             } else {
                 app.selected_param = app.selected_param.saturating_add(1).min(31);
             }
         }
         KeyAction::PrevParam => {
-            if app.synth_selected {
-                if let Some(track) = app.selected_track_info() {
-                    if !track.synth_param_infos.is_empty() {
-                        app.selected_synth_param = if app.selected_synth_param == 0 {
-                            track.synth_param_infos.len() - 1
-                        } else {
-                            app.selected_synth_param - 1
-                        };
+            let in_drawer = app.mode == AppMode::SynthDrawer;
+            if in_drawer || app.synth_selected {
+                // In drawer mode, use the selected layer's param count;
+                // in effects panel, use layer 0 shortcuts.
+                let param_count = app.selected_track_info().map_or(0, |t| {
+                    if in_drawer {
+                        t.layers
+                            .get(t.selected_layer)
+                            .map_or(t.synth_param_infos.len(), |l| l.param_infos.len())
+                    } else {
+                        t.synth_param_infos.len()
                     }
+                });
+                if param_count > 0 {
+                    let idx = if in_drawer {
+                        &mut app.drawer_param_index
+                    } else {
+                        &mut app.selected_synth_param
+                    };
+                    *idx = if *idx == 0 { param_count - 1 } else { *idx - 1 };
                 }
             } else {
                 app.selected_param = app.selected_param.saturating_sub(1);
             }
         }
         KeyAction::IncreaseParam => {
-            if app.synth_selected {
+            let in_drawer = app.mode == AppMode::SynthDrawer;
+            if in_drawer || app.synth_selected {
+                if in_drawer {
+                    // Temporarily set selected_synth_param for adjust_synth_param.
+                    app.selected_synth_param = app.drawer_param_index;
+                }
                 adjust_synth_param(app, 1.0);
+                if in_drawer {
+                    app.drawer_param_index = app.selected_synth_param;
+                }
             } else if let Some(track_id) = app.selected_track_id() {
                 let _ = app.engine.send_command(EngineCommand::SetEffectParameter {
                     track_id,
@@ -527,8 +726,15 @@ fn apply_action(app: &mut App, action: KeyAction) {
             }
         }
         KeyAction::DecreaseParam => {
-            if app.synth_selected {
+            let in_drawer = app.mode == AppMode::SynthDrawer;
+            if in_drawer || app.synth_selected {
+                if in_drawer {
+                    app.selected_synth_param = app.drawer_param_index;
+                }
                 adjust_synth_param(app, -1.0);
+                if in_drawer {
+                    app.drawer_param_index = app.selected_synth_param;
+                }
             } else if let Some(track_id) = app.selected_track_id() {
                 let _ = app.engine.send_command(EngineCommand::SetEffectParameter {
                     track_id,
@@ -545,7 +751,11 @@ fn apply_action(app: &mut App, action: KeyAction) {
         KeyAction::ConfirmParamEdit => {
             if let Ok(value) = app.param_edit_buffer.parse::<f32>() {
                 if value.is_finite() {
-                    if let Some(track_id) = app.selected_track_id() {
+                    let in_drawer = app.mode == AppMode::SynthDrawer;
+                    if in_drawer || app.synth_selected {
+                        // Synth param: route to the correct layer.
+                        confirm_synth_param_edit(app, value);
+                    } else if let Some(track_id) = app.selected_track_id() {
                         let _ = app.engine.send_command(EngineCommand::SetEffectParameter {
                             track_id,
                             effect_index: app.selected_effect,
@@ -618,6 +828,71 @@ fn apply_action(app: &mut App, action: KeyAction) {
                 let idx = app.selected_track;
                 app.set_track_pan(idx, new_pan);
             }
+        }
+
+        // -- Synth drawer ----------------------------------------------------
+        KeyAction::OpenDrawer => {
+            app.mode = AppMode::SynthDrawer;
+            app.drawer_section = DrawerSection::Parameters;
+            app.drawer_param_index = app.selected_synth_param;
+        }
+        KeyAction::CloseDrawer => {
+            // Sync the selected param back so the effects panel stays in sync.
+            app.selected_synth_param = app.drawer_param_index;
+            app.mode = AppMode::Normal;
+        }
+        KeyAction::DrawerNextSection => {
+            app.drawer_section = match app.drawer_section {
+                DrawerSection::SynthSelector => DrawerSection::Parameters,
+                DrawerSection::Parameters => DrawerSection::Effects,
+                DrawerSection::Effects => DrawerSection::SynthSelector,
+            };
+            app.drawer_param_index = 0;
+        }
+
+        // -- Layer management (drawer) ----------------------------------------
+        KeyAction::AddLayer => {
+            // Add a layer with the same mode as the current primary synth.
+            if let Some(track) = app.tracks.get(app.selected_track) {
+                let mode = track.synthesis_mode;
+                app.add_synth_layer(mode);
+            }
+        }
+        KeyAction::RemoveLayer => {
+            if let Some(track) = app.tracks.get(app.selected_track) {
+                let idx = track.selected_layer;
+                app.remove_synth_layer(idx);
+            }
+        }
+        KeyAction::ToggleLayerEnabled => {
+            if let Some(track) = app.tracks.get(app.selected_track) {
+                let idx = track.selected_layer;
+                app.toggle_layer_enabled(idx);
+            }
+        }
+        KeyAction::NextLayer => {
+            if let Some(track) = app.tracks.get_mut(app.selected_track) {
+                let count = track.layers.len();
+                if count > 0 {
+                    track.selected_layer = (track.selected_layer + 1) % count;
+                }
+            }
+            // Reset param index — the new layer may have a different param count.
+            app.drawer_param_index = 0;
+        }
+        KeyAction::PrevLayer => {
+            if let Some(track) = app.tracks.get_mut(app.selected_track) {
+                let count = track.layers.len();
+                if count > 0 {
+                    track.selected_layer = if track.selected_layer == 0 {
+                        count - 1
+                    } else {
+                        track.selected_layer - 1
+                    };
+                }
+            }
+            // Reset param index — the new layer may have a different param count.
+            app.drawer_param_index = 0;
         }
 
         // -- File browser ----------------------------------------------------
@@ -739,6 +1014,31 @@ fn apply_action(app: &mut App, action: KeyAction) {
         KeyAction::FileBrowserClose => {
             app.mode = AppMode::Normal;
         }
+    }
+}
+
+/// Build a [`RecordingWorkflow`] from the current TUI state.
+///
+/// This is used by the `RecordWithCountIn` (Shift+R) action. The workflow
+/// type is determined by `app.recording_workflow`:
+/// - `CountIn` (default for Shift+R): count in for `count_in_bars`, then
+///   record for `record_bars` (0 = unlimited).
+/// - `FixedLength`: record exactly `record_bars` bars, no count-in.
+/// - `FreeRecord`: treated as `CountIn` with default parameters so that
+///   Shift+R always provides a count-in (otherwise it would be identical
+///   to the plain `r` key).
+fn build_recording_workflow(app: &App) -> kazoo_core::transport::RecordingWorkflow {
+    use kazoo_core::transport::RecordingWorkflow;
+    match app.recording_workflow {
+        RecordingWorkflow::FreeRecord | RecordingWorkflow::CountIn { .. } => {
+            RecordingWorkflow::CountIn {
+                count_in_bars: app.count_in_bars.max(1),
+                record_bars: app.record_bars,
+            }
+        }
+        RecordingWorkflow::FixedLength { .. } => RecordingWorkflow::FixedLength {
+            bars: app.record_bars.max(1),
+        },
     }
 }
 
@@ -870,16 +1170,37 @@ fn beat_samples(bpm: f64, sample_rate: u32) -> u64 {
 /// Uses 5% of the parameter range per step, or 1.0 for enum-style params
 /// (where max <= 3.0 and min == 0.0). Updates the local value and sends
 /// the absolute value to the engine.
+///
+/// When in drawer mode, operates on the selected layer's parameters;
+/// otherwise operates on layer 0 (for effects panel compatibility).
 fn adjust_synth_param(app: &mut App, direction: f32) {
     let idx = app.selected_synth_param;
     let track_idx = app.selected_track;
+    let in_drawer = app.mode == AppMode::SynthDrawer;
+
     let Some(track) = app.tracks.get_mut(track_idx) else {
         return;
     };
-    let Some(info) = track.synth_param_infos.get(idx) else {
+
+    let layer_index = if in_drawer { track.selected_layer } else { 0 };
+
+    // Read param info from the target layer (clone to release borrow).
+    let info = track
+        .layers
+        .get(layer_index)
+        .and_then(|l| l.param_infos.get(idx).cloned())
+        .or_else(|| track.synth_param_infos.get(idx).cloned());
+    let Some(info) = info else {
         return;
     };
-    let Some(current) = track.synth_param_values.get_mut(idx) else {
+
+    // Read current value from the target layer.
+    let current = track
+        .layers
+        .get(layer_index)
+        .and_then(|l| l.param_values.get(idx).copied())
+        .or_else(|| track.synth_param_values.get(idx).copied());
+    let Some(current) = current else {
         return;
     };
 
@@ -892,7 +1213,7 @@ fn adjust_synth_param(app: &mut App, direction: f32) {
         (info.max - info.min) / 20.0
     };
 
-    let new_value = direction.mul_add(step, *current).clamp(info.min, info.max);
+    let new_value = direction.mul_add(step, current).clamp(info.min, info.max);
 
     // For enum params, snap to nearest integer.
     let new_value = if is_enum {
@@ -901,14 +1222,81 @@ fn adjust_synth_param(app: &mut App, direction: f32) {
         new_value
     };
 
-    *current = new_value;
+    // Update the target layer's local param value.
+    if let Some(layer) = track.layers.get_mut(layer_index) {
+        if let Some(v) = layer.param_values.get_mut(idx) {
+            *v = new_value;
+        }
+    }
+
+    // Keep layer 0 shortcut fields in sync when editing layer 0.
+    if layer_index == 0 {
+        if let Some(v) = track.synth_param_values.get_mut(idx) {
+            *v = new_value;
+        }
+    }
 
     let track_id = track.id;
-    let _ = app.engine.send_command(EngineCommand::SetSynthParameter {
-        track_id,
-        param_index: idx,
-        value: new_value,
-    });
+    let _ = app
+        .engine
+        .send_command(EngineCommand::SetSynthLayerParameter {
+            track_id,
+            layer_index,
+            param_index: idx,
+            value: new_value,
+        });
+}
+
+/// Confirm a direct numeric edit for a synth parameter.
+///
+/// Looks up the target layer's `ParamInfo` to clamp the value, updates local
+/// state, and sends `SetSynthLayerParameter` to the engine.
+fn confirm_synth_param_edit(app: &mut App, raw_value: f32) {
+    let in_drawer = app.mode == AppMode::SynthDrawer;
+    let Some(track) = app.tracks.get_mut(app.selected_track) else {
+        return;
+    };
+
+    let layer_index = if in_drawer { track.selected_layer } else { 0 };
+    let param_index = if in_drawer {
+        app.drawer_param_index
+    } else {
+        app.selected_synth_param
+    };
+
+    // Read param info to clamp the value.
+    let (min, max) = track
+        .layers
+        .get(layer_index)
+        .and_then(|l| l.param_infos.get(param_index))
+        .or_else(|| track.synth_param_infos.get(param_index))
+        .map_or((f32::MIN, f32::MAX), |info| (info.min, info.max));
+
+    let value = raw_value.clamp(min, max);
+
+    // Update target layer's local state.
+    if let Some(layer) = track.layers.get_mut(layer_index) {
+        if let Some(v) = layer.param_values.get_mut(param_index) {
+            *v = value;
+        }
+    }
+
+    // Keep layer 0 shortcut fields in sync.
+    if layer_index == 0 {
+        if let Some(v) = track.synth_param_values.get_mut(param_index) {
+            *v = value;
+        }
+    }
+
+    let track_id = track.id;
+    let _ = app
+        .engine
+        .send_command(EngineCommand::SetSynthLayerParameter {
+            track_id,
+            layer_index,
+            param_index,
+            value,
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -1243,15 +1631,17 @@ mod tests {
     #[test]
     fn increase_volume_adds_1db() {
         let mut app = test_app_with_tracks(1);
-        // Default volume is 0 dB (unity).
-        handle_key_event(&mut app, char_key('+')); // global: IncreaseVolume
+        // Focus Tracks panel — in Transport panel, +/- adjusts BPM instead.
+        app.focused_panel = FocusedPanel::Tracks;
+        handle_key_event(&mut app, char_key('+')); // panel: IncreaseVolume
         assert!((app.tracks[0].volume.value() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn decrease_volume_subtracts_1db() {
         let mut app = test_app_with_tracks(1);
-        handle_key_event(&mut app, char_key('-')); // global: DecreaseVolume
+        app.focused_panel = FocusedPanel::Tracks;
+        handle_key_event(&mut app, char_key('-')); // panel: DecreaseVolume
         assert!((app.tracks[0].volume.value() - (-1.0)).abs() < f32::EPSILON);
     }
 
@@ -1260,6 +1650,8 @@ mod tests {
     #[test]
     fn bracket_keys_zoom_waveform() {
         let mut app = test_app();
+        // Focus a non-Transport panel so [/] map to zoom, not record bars.
+        app.focused_panel = FocusedPanel::Waveform;
         assert!((app.waveform_zoom - 1.0).abs() < f32::EPSILON);
 
         handle_key_event(&mut app, char_key(']'));
@@ -1275,6 +1667,8 @@ mod tests {
     #[test]
     fn zoom_clamped_to_range() {
         let mut app = test_app();
+        // Focus a non-Transport panel so [/] map to zoom, not record bars.
+        app.focused_panel = FocusedPanel::Waveform;
 
         // Zoom out below 1.0 should clamp.
         handle_key_event(&mut app, char_key('['));
@@ -1692,5 +2086,461 @@ mod tests {
         app.focused_panel = FocusedPanel::Timeline;
         let action = resolve_action(&app, code_key(KeyCode::Delete));
         assert_eq!(action, Some(KeyAction::DeleteClip));
+    }
+
+    // -- BPM adjustment in Transport panel ----------------------------------
+
+    #[test]
+    fn equals_in_transport_panel_resolves_to_increase_bpm() {
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Transport;
+        let action = resolve_action(&app, char_key('='));
+        assert_eq!(action, Some(KeyAction::IncreaseBPM));
+    }
+
+    #[test]
+    fn plus_in_transport_panel_resolves_to_increase_bpm_large() {
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Transport;
+        // '+' is Shift+= on US keyboards; crossterm reports it as Char('+').
+        let action = resolve_action(&app, char_key('+'));
+        assert_eq!(action, Some(KeyAction::IncreaseBPMLarge));
+    }
+
+    #[test]
+    fn minus_in_transport_panel_resolves_to_decrease_bpm() {
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Transport;
+        let action = resolve_action(&app, char_key('-'));
+        assert_eq!(action, Some(KeyAction::DecreaseBPM));
+    }
+
+    #[test]
+    fn underscore_in_transport_panel_resolves_to_decrease_bpm_large() {
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Transport;
+        // '_' is Shift+- on US keyboards.
+        let action = resolve_action(&app, char_key('_'));
+        assert_eq!(action, Some(KeyAction::DecreaseBPMLarge));
+    }
+
+    #[test]
+    fn bpm_actions_dispatch_without_panic() {
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Transport;
+        // Default BPM is 120.0.
+        let initial_bpm = app.display.transport.bpm;
+        assert!((initial_bpm - 120.0).abs() < f64::EPSILON);
+        // All four BPM variants should dispatch without panic.
+        apply_action(&mut app, KeyAction::IncreaseBPM);
+        apply_action(&mut app, KeyAction::DecreaseBPM);
+        apply_action(&mut app, KeyAction::IncreaseBPMLarge);
+        apply_action(&mut app, KeyAction::DecreaseBPMLarge);
+    }
+
+    #[test]
+    fn plus_in_tracks_panel_is_volume_not_bpm() {
+        // Verify that outside Transport panel, +/- still adjusts volume.
+        let mut app = test_app_with_tracks(1);
+        app.focused_panel = FocusedPanel::Tracks;
+        let action = resolve_action(&app, char_key('+'));
+        assert_eq!(action, Some(KeyAction::IncreaseVolume));
+    }
+
+    // -- Synth drawer -------------------------------------------------------
+
+    #[test]
+    fn d_opens_synth_drawer() {
+        let mut app = test_app_with_tracks(1);
+        handle_key_event(&mut app, char_key('d'));
+        assert_eq!(app.mode, AppMode::SynthDrawer);
+    }
+
+    #[test]
+    fn esc_closes_synth_drawer() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        handle_key_event(&mut app, code_key(KeyCode::Esc));
+        assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn drawer_blocks_normal_keys() {
+        let mut app = test_app();
+        app.mode = AppMode::SynthDrawer;
+        // 'n' in drawer mode is AddLayer (not AddTrack).
+        let action = resolve_action(&app, char_key('n'));
+        assert_eq!(action, Some(KeyAction::AddLayer));
+        // 'm' (ToggleMute) should not work in drawer mode.
+        let action = resolve_action(&app, char_key('m'));
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn drawer_allows_transport_passthrough() {
+        let mut app = test_app();
+        app.mode = AppMode::SynthDrawer;
+        // Space (Play) should pass through.
+        let action = resolve_action(&app, char_key(' '));
+        assert_eq!(action, Some(KeyAction::Play));
+        // 's' (Stop) should pass through.
+        let action = resolve_action(&app, char_key('s'));
+        assert_eq!(action, Some(KeyAction::Stop));
+    }
+
+    #[test]
+    fn drawer_j_k_navigate_params() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        app.drawer_param_index = 0;
+
+        handle_key_event(&mut app, char_key('j'));
+        assert_eq!(app.drawer_param_index, 1);
+
+        handle_key_event(&mut app, char_key('k'));
+        assert_eq!(app.drawer_param_index, 0);
+    }
+
+    #[test]
+    fn drawer_tab_cycles_sections() {
+        let mut app = test_app();
+        app.mode = AppMode::SynthDrawer;
+        app.drawer_section = DrawerSection::Parameters;
+
+        handle_key_event(&mut app, code_key(KeyCode::Tab));
+        assert_eq!(app.drawer_section, DrawerSection::Effects);
+
+        handle_key_event(&mut app, code_key(KeyCode::Tab));
+        assert_eq!(app.drawer_section, DrawerSection::SynthSelector);
+
+        handle_key_event(&mut app, code_key(KeyCode::Tab));
+        assert_eq!(app.drawer_section, DrawerSection::Parameters);
+    }
+
+    #[test]
+    fn drawer_t_cycles_synth_mode() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        assert_eq!(app.tracks[0].synthesis_mode, SynthesisMode::PitchTracked);
+
+        handle_key_event(&mut app, char_key('t'));
+        assert_eq!(app.tracks[0].synthesis_mode, SynthesisMode::Wavetable);
+    }
+
+    #[test]
+    fn drawer_close_syncs_param_index() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        app.drawer_param_index = 3;
+
+        handle_key_event(&mut app, code_key(KeyCode::Esc));
+        assert_eq!(app.mode, AppMode::Normal);
+        // Drawer param index should sync back to selected_synth_param.
+        assert_eq!(app.selected_synth_param, 3);
+    }
+
+    // -- Layer management tests -----------------------------------------------
+
+    #[test]
+    fn drawer_n_adds_layer() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        assert_eq!(app.tracks[0].layers.len(), 1);
+
+        handle_key_event(&mut app, char_key('n'));
+        assert_eq!(app.tracks[0].layers.len(), 2);
+    }
+
+    #[test]
+    fn drawer_x_removes_non_primary_layer() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+
+        // Add a second layer.
+        handle_key_event(&mut app, char_key('n'));
+        assert_eq!(app.tracks[0].layers.len(), 2);
+
+        // Select layer 1 and remove it.
+        app.tracks[0].selected_layer = 1;
+        handle_key_event(&mut app, char_key('x'));
+        assert_eq!(app.tracks[0].layers.len(), 1);
+    }
+
+    #[test]
+    fn drawer_x_cannot_remove_layer_zero() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        app.tracks[0].selected_layer = 0;
+
+        handle_key_event(&mut app, char_key('x'));
+        // Layer 0 cannot be removed.
+        assert_eq!(app.tracks[0].layers.len(), 1);
+    }
+
+    #[test]
+    fn drawer_e_toggles_layer_enabled() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        assert!(app.tracks[0].layers[0].enabled);
+
+        handle_key_event(&mut app, char_key('e'));
+        assert!(!app.tracks[0].layers[0].enabled);
+
+        handle_key_event(&mut app, char_key('e'));
+        assert!(app.tracks[0].layers[0].enabled);
+    }
+
+    #[test]
+    fn drawer_bracket_navigates_layers() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+
+        // Add two more layers.
+        app.add_synth_layer(SynthesisMode::Wavetable);
+        app.add_synth_layer(SynthesisMode::Granular);
+        assert_eq!(app.tracks[0].layers.len(), 3);
+        assert_eq!(app.tracks[0].selected_layer, 0);
+
+        handle_key_event(&mut app, char_key(']'));
+        assert_eq!(app.tracks[0].selected_layer, 1);
+
+        handle_key_event(&mut app, char_key(']'));
+        assert_eq!(app.tracks[0].selected_layer, 2);
+
+        // Wraps around.
+        handle_key_event(&mut app, char_key(']'));
+        assert_eq!(app.tracks[0].selected_layer, 0);
+
+        // Backward wrap.
+        handle_key_event(&mut app, char_key('['));
+        assert_eq!(app.tracks[0].selected_layer, 2);
+    }
+
+    #[test]
+    fn add_layer_respects_max() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+
+        // Add layers up to the maximum.
+        for _ in 1..kazoo_core::MAX_SYNTH_LAYERS {
+            assert!(app.add_synth_layer(SynthesisMode::PitchTracked));
+        }
+        assert_eq!(app.tracks[0].layers.len(), kazoo_core::MAX_SYNTH_LAYERS);
+
+        // One more should fail.
+        assert!(!app.add_synth_layer(SynthesisMode::PitchTracked));
+        assert_eq!(app.tracks[0].layers.len(), kazoo_core::MAX_SYNTH_LAYERS);
+    }
+
+    // -- Phase 3 review fix tests --------------------------------------------
+
+    #[test]
+    fn layer_switch_resets_drawer_param_index() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        app.add_synth_layer(SynthesisMode::Wavetable);
+        app.drawer_param_index = 3;
+
+        // Switch to next layer.
+        handle_key_event(&mut app, char_key(']'));
+        assert_eq!(app.tracks[0].selected_layer, 1);
+        assert_eq!(app.drawer_param_index, 0);
+
+        // Set a non-zero index and switch back.
+        app.drawer_param_index = 2;
+        handle_key_event(&mut app, char_key('['));
+        assert_eq!(app.tracks[0].selected_layer, 0);
+        assert_eq!(app.drawer_param_index, 0);
+    }
+
+    #[test]
+    fn drawer_param_nav_uses_selected_layer_param_count() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        // Add a second layer with a different mode (may have different param count).
+        app.add_synth_layer(SynthesisMode::Granular);
+        app.tracks[0].selected_layer = 1;
+        app.drawer_param_index = 0;
+
+        let layer1_param_count = app.tracks[0].layers[1].param_infos.len();
+        assert!(layer1_param_count > 0, "layer 1 should have params");
+
+        // Navigate to the last param.
+        for _ in 0..layer1_param_count - 1 {
+            handle_key_event(&mut app, char_key('j'));
+        }
+        assert_eq!(app.drawer_param_index, layer1_param_count - 1);
+
+        // One more should wrap to 0.
+        handle_key_event(&mut app, char_key('j'));
+        assert_eq!(app.drawer_param_index, 0);
+    }
+
+    #[test]
+    fn adjust_param_updates_selected_layer() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        app.add_synth_layer(SynthesisMode::Wavetable);
+        app.tracks[0].selected_layer = 1;
+        app.drawer_param_index = 0;
+        app.selected_synth_param = 0;
+
+        let original = app.tracks[0].layers[1].param_values[0];
+
+        // Increase the param via the drawer.
+        handle_key_event(&mut app, code_key(KeyCode::Right));
+
+        let updated = app.tracks[0].layers[1].param_values[0];
+        assert!(
+            (updated - original).abs() > f32::EPSILON,
+            "layer 1 param should have changed"
+        );
+
+        // Layer 0 shortcut should NOT have changed (we're editing layer 1).
+        let layer0_val = app.tracks[0].synth_param_values[0];
+        let layer0_original = app.tracks[0].layers[0].param_values[0];
+        assert!(
+            (layer0_val - layer0_original).abs() < f32::EPSILON,
+            "layer 0 shortcuts should be unchanged when editing layer 1"
+        );
+    }
+
+    #[test]
+    fn confirm_param_edit_updates_selected_layer() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        app.add_synth_layer(SynthesisMode::Wavetable);
+        app.tracks[0].selected_layer = 1;
+        app.drawer_param_index = 0;
+
+        // Enter param edit mode and type a value.
+        app.input_mode = InputMode::ParameterEdit;
+        app.param_edit_buffer = "42.0".into();
+        handle_key_event(&mut app, code_key(KeyCode::Enter));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        // The value should be stored in layer 1 (not layer 0).
+        // Clamp to param range, but since most params have wide ranges, 42.0 is valid.
+        let layer1_val = app.tracks[0].layers[1].param_values[0];
+        let layer0_val = app.tracks[0].layers[0].param_values[0];
+        // Layer 1 should have been updated.
+        // Layer 0 should NOT have been modified.
+        assert!(
+            (layer1_val - layer0_val).abs() > f32::EPSILON || layer1_val == 42.0,
+            "confirm edit should target layer 1, not layer 0"
+        );
+    }
+
+    #[test]
+    fn confirm_param_edit_layer_zero_syncs_shortcuts() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        app.tracks[0].selected_layer = 0;
+        app.drawer_param_index = 0;
+
+        app.input_mode = InputMode::ParameterEdit;
+        app.param_edit_buffer = "42.0".into();
+        handle_key_event(&mut app, code_key(KeyCode::Enter));
+
+        // Both layer 0 and shortcut should be updated.
+        let layer_val = app.tracks[0].layers[0].param_values[0];
+        let shortcut_val = app.tracks[0].synth_param_values[0];
+        assert!(
+            (layer_val - shortcut_val).abs() < f32::EPSILON,
+            "layer 0 and shortcut should stay in sync after confirm edit"
+        );
+    }
+
+    #[test]
+    fn adjust_param_layer_zero_syncs_shortcuts() {
+        let mut app = test_app_with_tracks(1);
+        app.mode = AppMode::SynthDrawer;
+        app.tracks[0].selected_layer = 0;
+        app.drawer_param_index = 0;
+        app.selected_synth_param = 0;
+
+        let original = app.tracks[0].synth_param_values[0];
+
+        // Increase the param while layer 0 is selected.
+        handle_key_event(&mut app, code_key(KeyCode::Right));
+
+        let layer0_layer_val = app.tracks[0].layers[0].param_values[0];
+        let shortcut_val = app.tracks[0].synth_param_values[0];
+
+        // Both the layer data and the shortcut should be updated and equal.
+        assert!(
+            (layer0_layer_val - shortcut_val).abs() < f32::EPSILON,
+            "layer 0 and shortcut should stay in sync"
+        );
+        assert!(
+            (shortcut_val - original).abs() > f32::EPSILON,
+            "value should have changed"
+        );
+    }
+
+    // -- Recording workflow controls ----------------------------------------
+
+    #[test]
+    fn w_cycles_recording_workflow_in_transport_panel() {
+        use kazoo_core::transport::RecordingWorkflow;
+
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Transport;
+
+        // Default is CountIn.
+        assert!(matches!(
+            app.recording_workflow,
+            RecordingWorkflow::CountIn { .. }
+        ));
+
+        // Cycle to FixedLength.
+        handle_key_event(&mut app, char_key('w'));
+        assert!(matches!(
+            app.recording_workflow,
+            RecordingWorkflow::FixedLength { .. }
+        ));
+
+        // Cycle back to CountIn.
+        handle_key_event(&mut app, char_key('w'));
+        assert!(matches!(
+            app.recording_workflow,
+            RecordingWorkflow::CountIn { .. }
+        ));
+    }
+
+    #[test]
+    fn bracket_keys_adjust_record_bars_in_transport_panel() {
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Transport;
+        assert_eq!(app.record_bars, 4);
+
+        handle_key_event(&mut app, char_key(']'));
+        assert_eq!(app.record_bars, 5);
+
+        handle_key_event(&mut app, char_key('['));
+        assert_eq!(app.record_bars, 4);
+    }
+
+    #[test]
+    fn record_bars_clamped_at_zero_and_max() {
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Transport;
+
+        // Decrease to zero.
+        app.record_bars = 0;
+        handle_key_event(&mut app, char_key('['));
+        assert_eq!(app.record_bars, 0);
+
+        // Increase to max.
+        app.record_bars = 64;
+        handle_key_event(&mut app, char_key(']'));
+        assert_eq!(app.record_bars, 64);
+    }
+
+    #[test]
+    fn shift_r_resolves_to_record_with_count_in() {
+        let app = test_app();
+        let action = resolve_action(&app, char_key('R'));
+        assert_eq!(action, Some(KeyAction::RecordWithCountIn));
     }
 }

@@ -15,6 +15,7 @@ use crate::mixer::Mixer;
 use crate::mixer::TrackId;
 use crate::mixer::clip::{AudioClip, ClipData, ClipId};
 use crate::synthesis::SynthesisMode;
+use crate::transport::metronome::Metronome;
 use crate::transport::{TransportClock, TransportCommand};
 use crate::{Db, sanitize_buffer};
 
@@ -91,6 +92,8 @@ struct ProcessingState {
     track_recordings: Vec<TrackRecordingState>,
     /// Whether clips have changed since the last timeline snapshot was built.
     clips_dirty: bool,
+    /// Metronome click generator.
+    metronome: Metronome,
 }
 
 impl ProcessingState {
@@ -125,6 +128,7 @@ impl ProcessingState {
             next_clip_id: 0,
             track_recordings: Vec::with_capacity(crate::MAX_TRACKS),
             clips_dirty: false,
+            metronome: Metronome::new(sample_rate),
         }
     }
 }
@@ -195,11 +199,22 @@ pub fn run(
         drain_analysis_results(&mut io, &mut state);
 
         let input_level_db = compute_input_level(&mut state, num_read);
-        let master_slice_len = run_mixer_and_output(&mut io, &mut state, num_samples);
-        feed_clip_analysis(&mut io, &state, num_samples);
-        capture_track_recordings(&mut state, num_samples);
-        advance_transport(&mut state, num_samples);
+        let position_before_advance = state.transport.position_samples();
+        let master_slice_len = run_mixer(&mut state, num_samples, position_before_advance);
         feed_disk(&mut io, &state, master_slice_len);
+        mix_metronome_and_push_output(
+            &mut io,
+            &mut state,
+            num_samples,
+            position_before_advance,
+            master_slice_len,
+        );
+        feed_clip_analysis(&mut io, &state, num_samples);
+        // Advance transport BEFORE capturing recordings so that count-in
+        // completion allocates recording buffers in time for this block's
+        // mic data to be captured (avoids one-block latency at count-in start).
+        advance_transport(&mut state, num_samples);
+        capture_track_recordings(&mut state, num_samples);
         capture_waveform(&mut state, num_read);
         let cpu_load = compute_cpu_load(block_start, num_samples, state.sample_rate);
 
@@ -289,15 +304,16 @@ fn drain_analysis_results(io: &mut ProcessingIO, state: &mut ProcessingState) {
         state.latest_formants = formant_data;
     }
 
-    // Feed detected pitch to tracks' synths.
+    // Feed detected pitch to all synth layers on tracks.
     // During playback: all tracks need pitch (synths process clip audio).
     // During recording/monitoring: only armed tracks need pitch.
     if let Some(freq) = state.latest_pitch.frequency {
-        let playback_mode =
-            state.transport.is_playing() && !state.transport.is_recording();
+        let playback_mode = state.transport.is_playing() && !state.transport.is_recording();
         for track in state.mixer.tracks_mut() {
             if playback_mode || track.is_armed() {
-                track.synth_mut().set_pitch(freq);
+                for layer in track.layers_mut() {
+                    layer.synth_mut().set_pitch(freq);
+                }
             }
         }
     }
@@ -314,28 +330,76 @@ fn compute_input_level(state: &mut ProcessingState, num_read: usize) -> f32 {
 }
 
 /// Advance the transport clock by the given number of samples.
+///
+/// After advancing, checks the returned [`AdvanceFlags`] for count-in
+/// completion and auto-stop triggers, starting or finalizing per-track
+/// recordings accordingly.
 fn advance_transport(state: &mut ProcessingState, num_samples: usize) {
     let n = u32::try_from(num_samples).unwrap_or(u32::MAX);
-    state.transport.advance(n);
+    let flags = state.transport.advance(n);
+
+    if flags.count_in_completed {
+        // Count-in finished — start recording on all armed tracks and
+        // transition the transport from Playing to Recording. Use the
+        // exact bar-boundary position from AdvanceFlags rather than the
+        // current (overshot) transport position for bar-aligned clips.
+        start_track_recordings_at(state, flags.record_start_position);
+        state.transport.apply_command(TransportCommand::Record);
+    }
+
+    if flags.auto_stop_triggered {
+        // Auto-stop boundary reached — finalize recordings and stop.
+        finalize_track_recordings(state);
+        state.transport.apply_command(TransportCommand::Stop);
+        state.metronome.reset();
+    }
 }
 
-/// Run the mixer, write output to ring buffer, return stereo slice length.
-fn run_mixer_and_output(
-    io: &mut ProcessingIO,
-    state: &mut ProcessingState,
-    num_samples: usize,
-) -> usize {
+/// Run the mixer to produce a stereo master buffer from all tracks.
+///
+/// Returns the number of interleaved stereo samples written. The master
+/// buffer is ready for disk recording at this point (no metronome mixed in).
+fn run_mixer(state: &mut ProcessingState, num_samples: usize, position: u64) -> usize {
     state.mixer.process(
         &state.mic_block[..num_samples],
         num_samples,
-        state.transport.position_samples(),
+        position,
         state.transport.is_playing() || state.transport.is_recording(),
         state.transport.is_recording(),
     );
+
+    (num_samples * 2).min(state.mixer.master_buffer().len())
+}
+
+/// Mix metronome clicks into the master buffer and push to the output ring.
+///
+/// The metronome is mixed AFTER the disk recorder has already captured the
+/// clean master buffer, so clicks go to speakers but NOT to disk recordings.
+/// A sanitization pass runs after the metronome to guard against NaN/Inf.
+fn mix_metronome_and_push_output(
+    io: &mut ProcessingIO,
+    state: &mut ProcessingState,
+    num_samples: usize,
+    position: u64,
+    stereo_len: usize,
+) {
+    if state.transport.metronome_enabled()
+        && (state.transport.is_playing() || state.transport.is_recording())
+    {
+        let master_buf = state.mixer.master_buffer_mut();
+        state.metronome.generate(
+            &mut master_buf[..stereo_len],
+            position,
+            state.transport.bpm(),
+            state.transport.beats_per_bar(),
+            num_samples,
+        );
+        // Sanitize after metronome mixing to uphold NaN/Inf defense.
+        sanitize_buffer(&mut master_buf[..stereo_len]);
+    }
+
     let master_buf = state.mixer.master_buffer();
-    let stereo_len = (num_samples * 2).min(master_buf.len());
     let _ = io.output_prod.push_slice(&master_buf[..stereo_len]);
-    stereo_len
 }
 
 /// Feed interleaved stereo output to the disk recorder ring buffer.
@@ -502,6 +566,7 @@ fn update_timeline_snapshot(
 // ---------------------------------------------------------------------------
 
 /// Apply a single engine command to the processing state.
+#[allow(clippy::too_many_lines)]
 fn apply_command(
     cmd: EngineCommand,
     state: &mut ProcessingState,
@@ -583,6 +648,51 @@ fn apply_command(
             if let Some(t) = state.mixer.track_mut(track_id) {
                 let _ = t.synth_mut().set_param(param_index, value);
             }
+        }
+        EngineCommand::AddSynthLayer {
+            track_id,
+            synthesis_mode,
+            label,
+        } => {
+            apply_add_synth_layer(state, track_id, synthesis_mode, label);
+        }
+        EngineCommand::RemoveSynthLayer {
+            track_id,
+            layer_index,
+        } => {
+            if let Some(t) = state.mixer.track_mut(track_id) {
+                t.remove_layer(layer_index);
+            }
+        }
+        EngineCommand::SetSynthLayerGain {
+            track_id,
+            layer_index,
+            gain,
+        } => {
+            if let Some(t) = state.mixer.track_mut(track_id) {
+                if let Some(layer) = t.layer_mut(layer_index) {
+                    layer.set_gain(gain);
+                }
+            }
+        }
+        EngineCommand::SetSynthLayerEnabled {
+            track_id,
+            layer_index,
+            enabled,
+        } => {
+            if let Some(t) = state.mixer.track_mut(track_id) {
+                if let Some(layer) = t.layer_mut(layer_index) {
+                    layer.set_enabled(enabled);
+                }
+            }
+        }
+        EngineCommand::SetSynthLayerParameter {
+            track_id,
+            layer_index,
+            param_index,
+            value,
+        } => {
+            apply_set_synth_layer_param(state, track_id, layer_index, param_index, value);
         }
         EngineCommand::SetMasterVolume(db) => state.mixer.set_master_volume(db),
         EngineCommand::StartRecording { path } => {
@@ -714,25 +824,80 @@ fn apply_transport_command(state: &mut ProcessingState, cmd: TransportCommand) {
             start_track_recordings(state);
             state.transport.apply_command(cmd);
         }
+        TransportCommand::RecordWithCountIn => {
+            apply_record_with_count_in(state);
+        }
         TransportCommand::Stop | TransportCommand::Pause => {
             // Finalize any active track recordings before changing state.
             finalize_track_recordings(state);
             state.transport.apply_command(cmd);
+            // Reset metronome click state on stop so it doesn't
+            // continue mid-click when playback resumes.
+            if matches!(cmd, TransportCommand::Stop) {
+                state.metronome.reset();
+            }
+        }
+        TransportCommand::SetMetronomeVolume(db) => {
+            state.metronome.set_volume(db);
         }
         other => state.transport.apply_command(other),
     }
 }
 
-/// Begin recording on all armed tracks. Pre-allocates a buffer for each
-/// armed track (this is a command handler, not the hot audio path).
+/// Apply the `RecordWithCountIn` command based on the configured workflow.
+///
+/// Depending on the [`RecordingWorkflow`], this either:
+/// - `FreeRecord`: starts recording immediately (same as `Record`)
+/// - `CountIn`: begins a count-in (transport plays with metronome, then
+///   recording starts automatically when `advance()` signals completion)
+/// - `FixedLength`: starts recording immediately with auto-stop
+fn apply_record_with_count_in(state: &mut ProcessingState) {
+    use crate::transport::RecordingWorkflow;
+
+    match state.transport.recording_workflow() {
+        RecordingWorkflow::FreeRecord => {
+            // Behaves identically to a normal Record command.
+            start_track_recordings(state);
+            state.transport.apply_command(TransportCommand::Record);
+        }
+        RecordingWorkflow::CountIn {
+            count_in_bars,
+            record_bars,
+        } => {
+            // Start playing with count-in. The metronome will sound.
+            // When advance() signals count_in_completed, we start
+            // track recordings and transition to Recording.
+            state.transport.start_count_in(count_in_bars, record_bars);
+        }
+        RecordingWorkflow::FixedLength { bars } => {
+            // Start recording immediately with auto-stop.
+            start_track_recordings(state);
+            state.transport.start_fixed_length(bars);
+        }
+    }
+}
+
+/// Begin recording on all armed tracks using the current transport position.
+///
+/// This is the normal entry point for free recording (`r` key). Pre-allocates
+/// a buffer for each armed track (this is a command handler, not the hot
+/// audio path).
 fn start_track_recordings(state: &mut ProcessingState) {
+    let position = state.transport.position_samples();
+    start_track_recordings_at(state, position);
+}
+
+/// Begin recording on all armed tracks at the given timeline position.
+///
+/// Used by the count-in workflow to place clips at the exact bar boundary
+/// (the count-in end) rather than the current (overshot) transport position.
+fn start_track_recordings_at(state: &mut ProcessingState, position: u64) {
     // Don't start if already recording.
     if !state.track_recordings.is_empty() {
         return;
     }
 
     let capacity = MAX_RECORDING_SECONDS * state.sample_rate as usize;
-    let position = state.transport.position_samples();
 
     for track in state.mixer.tracks() {
         if track.is_armed() {
@@ -748,23 +913,57 @@ fn start_track_recordings(state: &mut ProcessingState) {
 
 /// Finalize active track recordings: trim the buffers to the recorded
 /// length, create [`ClipData`] from each, and add as clips to the tracks.
+///
+/// For `FreeRecord` workflows, quantizes the clip start position and length
+/// to the nearest bar boundaries so recordings align with the tempo grid.
 fn finalize_track_recordings(state: &mut ProcessingState) {
+    use crate::transport::RecordingWorkflow;
+
     let recordings: Vec<TrackRecordingState> = state.track_recordings.drain(..).collect();
+    let is_free_record = matches!(
+        state.transport.recording_workflow(),
+        RecordingWorkflow::FreeRecord
+    );
 
     for mut rec in recordings {
         if rec.len == 0 {
             continue;
         }
 
-        // Trim the buffer to the actual recorded length.
-        rec.buffer.truncate(rec.len);
+        // For FreeRecord, quantize clip boundaries to the nearest bar
+        // so recordings align with the tempo grid. Only quantize when the
+        // recording spans at least one full bar — very short recordings
+        // (e.g. quick test punches) keep their raw boundaries.
+        let (clip_position, clip_len) = if is_free_record {
+            let spb = state.transport.samples_per_bar();
+            #[allow(clippy::cast_possible_truncation)]
+            let spb_usize = spb as usize;
+            if spb > 0 && rec.len >= spb_usize {
+                let quantized_start = state.transport.quantize_to_bar(rec.start_position);
+                let raw_end = rec.start_position.saturating_add(rec.len as u64);
+                let quantized_end = state.transport.quantize_to_bar(raw_end);
+                // Ensure quantized end is at least one bar past the start.
+                let quantized_end = quantized_end.max(quantized_start.saturating_add(spb));
+                let q_len = quantized_end.saturating_sub(quantized_start);
+                #[allow(clippy::cast_possible_truncation)]
+                let final_len = (q_len as usize).min(rec.len);
+                (quantized_start, final_len.max(1))
+            } else {
+                (rec.start_position, rec.len)
+            }
+        } else {
+            (rec.start_position, rec.len)
+        };
+
+        // Trim the buffer to the final clip length.
+        rec.buffer.truncate(clip_len);
 
         let clip_id = ClipId(state.next_clip_id);
         state.next_clip_id += 1;
 
         let name = format!("Recording {}", clip_id.0);
         let clip_data = ClipData::new(rec.buffer, name, None, state.sample_rate);
-        let clip = AudioClip::new(clip_id, clip_data, rec.start_position);
+        let clip = AudioClip::new(clip_id, clip_data, clip_position);
 
         if let Some(t) = state.mixer.track_mut(rec.track_id) {
             let _ = t.add_clip(clip);
@@ -805,7 +1004,7 @@ fn apply_add_track(state: &mut ProcessingState, name: String, mode: SynthesisMod
         #[allow(clippy::cast_precision_loss)]
         let sr = state.sample_rate as f32;
         let synth = create_synth(mode, sr);
-        state.mixer.add_track(name, synth);
+        state.mixer.add_track(name, synth, mode);
     }
 }
 
@@ -823,7 +1022,7 @@ fn apply_set_synth_mode(
     let mut new_synth = create_synth(mode, sr);
     new_synth.prepare(state.buffer_size);
 
-    track.replace_synth(new_synth);
+    track.replace_synth(new_synth, mode);
 }
 
 fn apply_add_effect(
@@ -837,6 +1036,41 @@ fn apply_add_effect(
             track.effects_mut().prepare(state.buffer_size);
         }
     }
+}
+
+fn apply_add_synth_layer(
+    state: &mut ProcessingState,
+    track_id: crate::mixer::TrackId,
+    mode: SynthesisMode,
+    label: String,
+) {
+    let Some(track) = state.mixer.track_mut(track_id) else {
+        return;
+    };
+    if track.layer_count() >= crate::MAX_SYNTH_LAYERS {
+        return;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let sr = state.sample_rate as f32;
+    let mut synth = create_synth(mode, sr);
+    synth.prepare(state.buffer_size);
+    track.add_layer(synth, mode, label);
+}
+
+fn apply_set_synth_layer_param(
+    state: &mut ProcessingState,
+    track_id: crate::mixer::TrackId,
+    layer_index: usize,
+    param_index: usize,
+    value: f32,
+) {
+    let Some(track) = state.mixer.track_mut(track_id) else {
+        return;
+    };
+    let Some(layer) = track.layer_mut(layer_index) else {
+        return;
+    };
+    let _ = layer.synth_mut().set_param(param_index, value);
 }
 
 fn apply_set_effect_param(
@@ -999,7 +1233,9 @@ mod tests {
     fn state_with_track() -> (ProcessingState, crossbeam_channel::Sender<DiskCommand>) {
         let mut state = ProcessingState::new(44_100, 256);
         let synth = create_synth(SynthesisMode::PitchTracked, 44_100.0);
-        state.mixer.add_track("Test".into(), synth);
+        state
+            .mixer
+            .add_track("Test".into(), synth, SynthesisMode::PitchTracked);
         let (tx, _rx) = crossbeam_channel::bounded(64);
         (state, tx)
     }
@@ -1474,7 +1710,9 @@ mod tests {
     fn state_with_armed_track() -> (ProcessingState, crossbeam_channel::Sender<DiskCommand>) {
         let mut state = ProcessingState::new(44_100, 256);
         let synth = create_synth(SynthesisMode::PitchTracked, 44_100.0);
-        let id = state.mixer.add_track("Armed".into(), synth);
+        let id = state
+            .mixer
+            .add_track("Armed".into(), synth, SynthesisMode::PitchTracked);
         state.mixer.track_mut(id).unwrap().set_armed(true);
         let (tx, _rx) = crossbeam_channel::bounded(64);
         (state, tx)
@@ -1623,8 +1861,12 @@ mod tests {
         let mut state = ProcessingState::new(44_100, 256);
         let synth_a = create_synth(SynthesisMode::PitchTracked, 44_100.0);
         let synth_b = create_synth(SynthesisMode::PitchTracked, 44_100.0);
-        let id_a = state.mixer.add_track("A".into(), synth_a);
-        let id_b = state.mixer.add_track("B".into(), synth_b);
+        let id_a = state
+            .mixer
+            .add_track("A".into(), synth_a, SynthesisMode::PitchTracked);
+        let id_b = state
+            .mixer
+            .add_track("B".into(), synth_b, SynthesisMode::PitchTracked);
         state.mixer.track_mut(id_a).unwrap().set_armed(true);
         state.mixer.track_mut(id_b).unwrap().set_armed(true);
         let (tx, _rx) = crossbeam_channel::bounded::<DiskCommand>(64);
@@ -1663,7 +1905,9 @@ mod tests {
     fn recording_buffer_full_stops_capturing() {
         let mut state = ProcessingState::new(44_100, 256);
         let synth = create_synth(SynthesisMode::PitchTracked, 44_100.0);
-        let id = state.mixer.add_track("T".into(), synth);
+        let id = state
+            .mixer
+            .add_track("T".into(), synth, SynthesisMode::PitchTracked);
         state.mixer.track_mut(id).unwrap().set_armed(true);
         let (tx, _rx) = crossbeam_channel::bounded::<DiskCommand>(64);
 
@@ -2093,7 +2337,9 @@ mod tests {
     fn update_timeline_snapshot_track_flags() {
         let mut state = ProcessingState::new(44_100, 256);
         let synth = create_synth(SynthesisMode::PitchTracked, 44_100.0);
-        let id = state.mixer.add_track("Flagged".into(), synth);
+        let id = state
+            .mixer
+            .add_track("Flagged".into(), synth, SynthesisMode::PitchTracked);
         state.mixer.track_mut(id).unwrap().set_armed(true);
         state.mixer.track_mut(id).unwrap().set_muted(true);
         state.mixer.track_mut(id).unwrap().set_soloed(true);

@@ -293,6 +293,24 @@ pub const fn style_help_desc() -> Style {
     Style::new().fg(FG_SECONDARY)
 }
 
+/// Style for the filled portion of a slider bar.
+#[must_use]
+pub const fn style_slider_filled() -> Style {
+    Style::new().fg(ACCENT_FOCUS)
+}
+
+/// Style for the empty portion of a slider bar.
+#[must_use]
+pub const fn style_slider_empty() -> Style {
+    Style::new().fg(FG_DIMMED)
+}
+
+/// Style for a drawer section header.
+#[must_use]
+pub const fn style_drawer_header() -> Style {
+    Style::new().fg(FG_PRIMARY).add_modifier(Modifier::BOLD)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
