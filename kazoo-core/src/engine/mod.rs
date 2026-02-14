@@ -90,7 +90,7 @@ impl Default for EngineConfig {
 
 /// Compute capacities for all ring buffers based on buffer size.
 struct RingBufferCapacities {
-    /// Mic input and output: `buffer_size` * 8.
+    /// Mic input and output: `buffer_size` * 16.
     mic_and_output: usize,
     /// Display state: 4 slots.
     display: usize,
@@ -198,8 +198,12 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     let mut cpal_mic_prod = mic_prod;
     let mut cpal_output_cons = output_cons;
 
-    // Capture input channel count so the callback can downmix to mono.
+    // Capture input channel count and pre-compute the reciprocal so the
+    // callback avoids division. The scratch buffer is pre-allocated here
+    // and moved into the closure — no allocations in the hot path.
     let input_channels = usize::from(stream_config.input_channels.max(1));
+    let inv_ch = 1.0_f32 / input_channels.max(1) as f32;
+    let mut downmix_scratch = vec![0.0f32; buffer_size];
 
     let streams = crate::io::build_streams(
         stream_config,
@@ -210,21 +214,28 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
             if input_channels <= 1 {
                 let _ = cpal_mic_prod.push_slice(data);
             } else {
-                let frames = data.len() / input_channels;
-                let inv_ch = 1.0 / input_channels as f32;
-                for f in 0..frames {
+                let frames = (data.len() / input_channels).min(downmix_scratch.len());
+                for (f, out) in downmix_scratch.iter_mut().enumerate().take(frames) {
                     let base = f * input_channels;
                     let mut sum = 0.0f32;
                     for ch in 0..input_channels {
                         sum += data[base + ch];
                     }
-                    let _ = cpal_mic_prod.try_push(sum * inv_ch);
+                    *out = sum * inv_ch;
                 }
+                let _ = cpal_mic_prod.push_slice(&downmix_scratch[..frames]);
             }
         },
         move |data: &mut [f32]| {
             // Output callback: pop mixed stereo samples from the ring buffer.
             let filled = cpal_output_cons.pop_slice(data);
+            // The processing thread always pushes even sample counts (stereo
+            // pairs), so `filled` should always be even. Assert in debug
+            // builds to catch violations early.
+            debug_assert!(
+                filled % 2 == 0 || filled == 0,
+                "output ring buffer had odd sample count: {filled}"
+            );
             // Ensure stereo frame alignment — avoid leaving a lone L sample
             // without its R partner, which would swap channels for the rest
             // of the buffer.
