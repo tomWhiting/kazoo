@@ -655,7 +655,7 @@ impl Mixer {
 
     /// Mutable access to the interleaved stereo master output buffer.
     ///
-    /// Used by the processing thread to mix metronome clicks into the output
+    /// Used by the output callback to mix metronome clicks into the output
     /// after the mixer has produced its output.
     pub fn master_buffer_mut(&mut self) -> &mut [f32] {
         &mut self.master_buffer
@@ -883,7 +883,7 @@ impl Mixer {
     }
 
     /// Write meter readings into an existing snapshot, reusing its allocated
-    /// `Vec` to avoid per-frame heap allocation on the processing thread.
+    /// `Vec` to avoid per-frame heap allocation in the output callback.
     pub fn write_snapshot(&self, snapshot: &mut MixerSnapshot) {
         snapshot.track_meters.clear();
         snapshot.track_meters.reserve(self.tracks.len());

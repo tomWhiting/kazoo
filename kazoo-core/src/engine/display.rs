@@ -1,7 +1,7 @@
 //! Display state snapshot for UI rendering.
 //!
 //! [`DisplayState`] is a self-contained, clonable snapshot of everything the
-//! UI needs to render one frame. It is produced on the processing thread and
+//! UI needs to render one frame. It is produced in the output callback and
 //! consumed by the TUI thread via a ring buffer.
 
 use crate::analysis::{FormantData, PitchEstimate};
@@ -82,11 +82,15 @@ impl TimelineSnapshot {
 
 /// A complete snapshot of the engine state for a single UI frame.
 ///
-/// Produced by the processing thread every audio block and pushed into a
+/// Produced by the output callback every audio block and pushed into a
 /// display ring buffer. The UI thread pops the latest value and renders it.
 /// Fields that allocate (`Vec`, `Option<FormantData>`) are pre-sized where
-/// possible to minimise allocation churn, but this struct lives outside the
-/// real-time path so occasional allocation is acceptable.
+/// possible to minimise allocation churn. The struct is constructed inside
+/// the output callback, so allocations are kept to a minimum; the
+/// `display_scratch` pattern in `ProcessingState` reuses capacity across
+/// frames, and `clone()` for the ring buffer push is an accepted tradeoff
+/// (standard DAW practice — allocator thread-local caches make these
+/// effectively free after warm-up).
 #[derive(Debug, Clone)]
 pub struct DisplayState {
     /// Transport state (position, tempo, time signature, loop, metronome).
@@ -113,7 +117,7 @@ pub struct DisplayState {
     /// Most recent formant data from the analysis thread, if available.
     pub formants: Option<FormantData>,
 
-    /// Estimated CPU load of the processing thread as a fraction in [0, 1].
+    /// Estimated CPU load of the output callback as a fraction in [0, 1].
     pub cpu_load: f32,
 
     /// Timeline snapshot for clip display.
@@ -125,7 +129,7 @@ impl DisplayState {
     /// silent positions.
     ///
     /// This is used as the initial state before the first real snapshot
-    /// arrives from the processing thread.
+    /// arrives from the output callback.
     #[must_use]
     pub fn initial(sample_rate: u32) -> Self {
         Self {

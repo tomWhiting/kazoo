@@ -55,13 +55,12 @@ Two-crate Rust workspace:
 
 ### Thread Architecture
 
-1. **cpal input callback** (OS-managed) -- writes mic samples to ring buffer. Zero processing.
-2. **cpal output callback** (OS-managed) -- reads mixed output from ring buffer. Zero processing.
-3. **Processing thread** -- reads mic, drains commands, runs mixer (synth layers + effects), metronome, writes output + display state.
-4. **Analysis thread** -- pitch detection, FFT spectrum, formant extraction, onset detection.
-5. **Disk I/O thread** -- writes recorded audio to WAV files.
+1. **cpal input callback** (OS-managed) -- writes mic samples to ring buffer. ZERO processing.
+2. **cpal output callback** (OS-managed) -- the main audio workhorse. Reads mic from ring buffer, drains commands, runs the mixer (synth layers + effects), applies soft limiter, writes directly to output buffer, pushes display state. All processing state is owned by this callback's closure.
+3. **Analysis thread** -- pitch detection, FFT spectrum, formant extraction, onset detection.
+4. **Disk I/O thread** -- writes recorded audio to WAV files.
 
-Communication is entirely lock-free: `ringbuf` (SPSC) between audio callbacks and processing thread, `crossbeam-channel` (bounded MPSC) for UI-to-engine commands, and `ringbuf` for display state snapshots back to the UI.
+Communication is entirely lock-free: `ringbuf` (SPSC) between input and output callbacks for mic samples, `crossbeam-channel` (bounded MPSC) for UI-to-engine commands, and `ringbuf` for display state snapshots back to the UI.
 
 ## Synthesis Modes
 

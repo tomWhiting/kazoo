@@ -12,15 +12,14 @@ Two-crate Rust workspace:
 
 ### Thread Architecture (kazoo-core)
 1. **cpal input callback** (OS-managed) — writes mic samples to ring buffer. ZERO processing.
-2. **cpal output callback** (OS-managed) — reads mixed output from ring buffer. ZERO processing.
-3. **Processing thread** — reads mic, drains commands, runs mixer (synth + effects), writes output + display state.
-4. **Analysis thread** — pitch detection, FFT spectrum, formant extraction, onset detection. Allowed to allocate.
-5. **Disk I/O thread** — writes recorded audio to WAV files.
+2. **cpal output callback** (OS-managed) — the main audio workhorse. Reads mic from ring buffer, drains commands, runs mixer (synth + effects), applies soft limiter, writes directly to output buffer, pushes display state. All processing state is owned by this callback's closure.
+3. **Analysis thread** — pitch detection, FFT spectrum, formant extraction, onset detection. Allowed to allocate.
+4. **Disk I/O thread** — writes recorded audio to WAV files.
 
 ### Communication
 - UI → Engine: `crossbeam-channel` (bounded MPSC) for commands
 - Engine → UI: `ringbuf` (lock-free SPSC) for display state snapshots
-- Audio callbacks ↔ Processing thread: `ringbuf` for audio samples
+- Input callback → Output callback: `ringbuf` for mic samples
 
 ## Coding Standards
 
@@ -39,7 +38,7 @@ This codebase runs mission-critical infrastructure for financial, legal, and hea
 
 ## Critical Architectural Rules
 
-1. **Audio callback thread is sacred:** No allocations, no locks, no file I/O, no panics. Only ring buffer reads/writes.
+1. **Output callback is the processing engine:** No allocations, no locks, no file I/O, no panics. Pre-allocated state is moved into the callback at engine start.
 2. **Pre-allocate everything:** All buffers allocated at engine creation, reused throughout lifetime.
 3. **`unsafe_code = "forbid"`** across the entire workspace. No exceptions.
 4. **Lock-free communication only:** Ring buffers between real-time threads, channels for command dispatch.
@@ -102,3 +101,4 @@ cargo run -p kazoo-tui --release
 Reviews must use the Opus model. There is no such thing as a minor issue. Everything needs to be dealt with. Nothing can be skipped, nothing can be deferred, nothing can be of any standard other than the highest.
 
 @.claude/plans/playful-rolling-prism.md
+@.claude/plans/output-callback-refactor.md

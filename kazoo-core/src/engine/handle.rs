@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 
 use crossbeam_channel::Sender;
 use ringbuf::HeapCons;
+
 use ringbuf::traits::Consumer;
 
 use crate::io::{read_audio_file, resample_mono, to_mono};
@@ -25,17 +26,17 @@ use super::display::DisplayState;
 /// Handle to a running engine instance.
 ///
 /// Created by [`super::start`] and used by the UI / TUI to:
-/// - send commands to the processing thread via `send_command`
+/// - send commands to the audio processing callback via `send_command`
 /// - poll the latest display state via `poll_display`
 ///
 /// Dropping the handle sends a [`EngineCommand::Shutdown`] to initiate a
 /// graceful teardown of all engine threads.
 pub struct EngineHandle {
-    /// Channel sender for commands destined for the processing thread.
+    /// Channel sender for commands destined for the audio processing callback.
     command_tx: Sender<EngineCommand>,
 
-    /// Ring buffer consumer for display snapshots produced by the processing
-    /// thread. The UI drains this each frame and keeps the latest.
+    /// Ring buffer consumer for display snapshots produced by the audio
+    /// processing callback. The UI drains this each frame and keeps the latest.
     display_rx: HeapCons<DisplayState>,
 
     /// Cached copy of the most recently received display state. This avoids
@@ -56,8 +57,6 @@ pub struct EngineHandle {
 
 /// Stores all spawned thread join handles and the stream holder shutdown flag.
 pub(super) struct ThreadHandles {
-    /// Processing thread handle.
-    pub processing: JoinHandle<()>,
     /// Analysis thread handle.
     pub analysis: JoinHandle<()>,
     /// Disk I/O thread handle.
@@ -66,6 +65,10 @@ pub(super) struct ThreadHandles {
     pub stream_holder: JoinHandle<()>,
     /// Flag to signal the stream holder to exit.
     pub stream_shutdown: Arc<AtomicBool>,
+    /// Disk command sender — used to signal the disk thread to shut down
+    /// during `EngineHandle` drop (since there is no processing thread to
+    /// relay the shutdown).
+    pub disk_cmd_tx: Sender<super::DiskCommand>,
 }
 
 // `HeapCons` is not `Debug`, so implement manually.
@@ -111,13 +114,12 @@ impl EngineHandle {
     // Core API
     // -----------------------------------------------------------------------
 
-    /// Send a command to the processing thread.
+    /// Send a command to the audio processing callback.
     ///
-    /// This is non-blocking. Commands are queued and drained by the processing
-    /// thread at the start of each audio block. If the command channel is full,
-    /// the command is silently dropped (the processing thread has fallen
-    /// behind). Returns `Err` only if the channel is disconnected (engine
-    /// not running).
+    /// This is non-blocking. Commands are queued and drained by the output
+    /// callback at the start of each audio block. If the command channel is
+    /// full, the command is silently dropped. Returns `Err` only if the
+    /// channel is disconnected (engine not running).
     pub fn send_command(&self, cmd: EngineCommand) -> crate::Result<()> {
         match self.command_tx.try_send(cmd) {
             Ok(()) | Err(crossbeam_channel::TrySendError::Full(_)) => Ok(()),
@@ -350,16 +352,21 @@ impl Drop for EngineHandle {
         let _ = self.command_tx.try_send(EngineCommand::Shutdown);
 
         if let Some(handles) = self.thread_handles.take() {
-            // Signal the stream holder thread to exit.
+            // Send disk shutdown directly — there is no processing thread
+            // to relay the shutdown signal.
+            let _ = handles.disk_cmd_tx.send(super::DiskCommand::Shutdown);
+
+            // Stop the stream holder first. This drops the cpal streams,
+            // which drops the output callback closure, which drops
+            // ProcessingIO — disconnecting the analysis ring buffer producer.
             handles.stream_shutdown.store(true, Ordering::Release);
             handles.stream_holder.thread().unpark();
+            let _ = handles.stream_holder.join();
 
-            // Join all worker threads. Errors from panicked threads are
-            // intentionally swallowed during shutdown.
-            let _ = handles.processing.join();
+            // Now the analysis and disk threads can exit. Errors from
+            // panicked threads are intentionally swallowed during shutdown.
             let _ = handles.analysis.join();
             let _ = handles.disk.join();
-            let _ = handles.stream_holder.join();
         }
     }
 }
@@ -602,7 +609,7 @@ mod tests {
 
         let handle = EngineHandle::new(cmd_tx, cons, 44_100, 256);
 
-        // Drop the receiver to simulate the processing thread having terminated.
+        // Drop the receiver to simulate the output callback having terminated.
         drop(cmd_rx);
 
         let result = handle.send_command(EngineCommand::Shutdown);

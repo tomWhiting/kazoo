@@ -1,6 +1,6 @@
 //! Disk I/O thread: writes recorded audio to WAV files.
 //!
-//! This thread runs independently of the real-time processing thread. It
+//! This thread runs independently of the real-time output callback. It
 //! reads interleaved stereo samples from a ring buffer and writes them to
 //! disk via the [`DiskRecorder`]. Commands to start/stop recording come
 //! through a dedicated crossbeam channel.

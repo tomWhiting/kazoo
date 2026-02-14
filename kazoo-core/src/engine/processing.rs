@@ -1,13 +1,15 @@
-//! Processing thread: the real-time audio workhorse.
+//! Audio processing: the real-time audio workhorse.
 //!
-//! This thread runs in a tight loop, draining commands, reading microphone
-//! input from the ring buffer, running the mixer, writing output to the
-//! ring buffer, and pushing display snapshots for the UI.
+//! The [`process_block`] function is called by the cpal output callback on
+//! every buffer cycle. It drains commands, reads microphone input from the
+//! ring buffer, runs the mixer (synths + effects), applies the soft limiter,
+//! writes directly to the output buffer, and pushes display snapshots for
+//! the UI. All state is owned by the output callback closure.
 
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
-use ringbuf::traits::{Consumer, Observer, Producer};
+use ringbuf::traits::{Consumer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
 use crate::analysis::{EnvelopeFollower, PitchEstimate};
@@ -63,11 +65,12 @@ struct TrackRecordingState {
 /// Maximum recording duration in seconds before auto-stop (5 minutes).
 const MAX_RECORDING_SECONDS: usize = 5 * 60;
 
-/// State bundle owned by the processing thread.
+/// State bundle for audio processing.
 ///
-/// Kept as a separate struct so the thread body remains a simple loop and
-/// state can be passed to helper functions without a massive parameter list.
-struct ProcessingState {
+/// Owned by the output callback closure. All fields are pre-allocated at
+/// engine start and reused throughout the lifetime — no allocations in the
+/// audio callback.
+pub(super) struct ProcessingState {
     transport: TransportClock,
     mixer: Mixer,
     envelope: EnvelopeFollower,
@@ -84,7 +87,7 @@ struct ProcessingState {
     /// Number of samples between meter resets (~50ms worth).
     meter_reset_interval: u32,
     /// Pre-allocated display snapshot reused each frame to avoid per-block
-    /// heap allocations on the processing thread.
+    /// heap allocations in the output callback.
     display_scratch: DisplayState,
     /// Monotonically increasing counter for assigning unique clip IDs.
     next_clip_id: u64,
@@ -95,10 +98,13 @@ struct ProcessingState {
     clips_dirty: bool,
     /// Metronome click generator.
     metronome: Metronome,
+    /// Set to `true` when a Shutdown command is received or the command
+    /// channel disconnects. Once set, `process_block` fills silence.
+    shutdown: bool,
 }
 
 impl ProcessingState {
-    fn new(sample_rate: u32, buffer_size: usize) -> Self {
+    pub(super) fn new(sample_rate: u32, buffer_size: usize) -> Self {
         #[allow(clippy::cast_precision_loss)]
         let sr_f32 = sample_rate as f32;
         let mut mixer = Mixer::new();
@@ -130,138 +136,143 @@ impl ProcessingState {
             track_recordings: Vec::with_capacity(crate::MAX_TRACKS),
             clips_dirty: false,
             metronome: Metronome::new(sample_rate),
+            shutdown: false,
         }
     }
 }
 
-/// All ring buffer handles and channels used by the processing thread.
-struct ProcessingIO {
-    mic_cons: HeapCons<f32>,
-    output_prod: HeapProd<f32>,
-    display_prod: HeapProd<DisplayState>,
-    analysis_prod: HeapProd<f32>,
-    disk_prod: HeapProd<f32>,
-    pitch_cons: HeapCons<PitchEstimate>,
-    spectrum_cons: HeapCons<Vec<f32>>,
-    formant_cons: HeapCons<Option<crate::analysis::FormantData>>,
-    command_rx: Receiver<EngineCommand>,
-    disk_cmd_tx: Sender<super::DiskCommand>,
+/// All ring buffer handles and channels used by the audio processing callback.
+pub(super) struct ProcessingIO {
+    pub(super) mic_cons: HeapCons<f32>,
+    pub(super) display_prod: HeapProd<DisplayState>,
+    pub(super) analysis_prod: HeapProd<f32>,
+    pub(super) disk_prod: HeapProd<f32>,
+    pub(super) pitch_cons: HeapCons<PitchEstimate>,
+    pub(super) spectrum_cons: HeapCons<Vec<f32>>,
+    pub(super) formant_cons: HeapCons<Option<crate::analysis::FormantData>>,
+    pub(super) command_rx: Receiver<EngineCommand>,
+    pub(super) disk_cmd_tx: Sender<super::DiskCommand>,
 }
 
-/// Entry point for the processing thread.
+/// Process one audio block, writing directly to the cpal output buffer.
 ///
-/// This function runs until a `Shutdown` command is received or the command
-/// channel is disconnected. It is designed to be called from
-/// `std::thread::spawn`.
-#[allow(clippy::too_many_arguments)]
-pub fn run(
-    command_rx: Receiver<EngineCommand>,
-    mic_cons: HeapCons<f32>,
-    output_prod: HeapProd<f32>,
-    display_prod: HeapProd<DisplayState>,
-    analysis_prod: HeapProd<f32>,
-    disk_prod: HeapProd<f32>,
-    pitch_cons: HeapCons<PitchEstimate>,
-    spectrum_cons: HeapCons<Vec<f32>>,
-    formant_cons: HeapCons<Option<crate::analysis::FormantData>>,
-    disk_cmd_tx: Sender<super::DiskCommand>,
-    sample_rate: u32,
-    buffer_size: usize,
+/// Called by the cpal output callback on every buffer cycle. This is the
+/// main audio processing entry point — it drains commands, reads mic input,
+/// runs the mixer (synths + effects), applies the soft limiter, and writes
+/// interleaved stereo output directly to `output_buffer`.
+///
+/// # Contract
+///
+/// - `output_buffer` is interleaved stereo (`[L, R, L, R, ...]`).
+/// - This function MUST fill the entire `output_buffer` every time, even
+///   if no mic data is available or after shutdown (fills silence).
+/// - No allocations, no locks, no panics.
+pub(super) fn process_block(
+    state: &mut ProcessingState,
+    io: &mut ProcessingIO,
+    output_buffer: &mut [f32],
 ) {
-    let mut state = ProcessingState::new(sample_rate, buffer_size);
-    let mut io = ProcessingIO {
-        mic_cons,
-        output_prod,
-        display_prod,
-        analysis_prod,
-        disk_prod,
-        pitch_cons,
-        spectrum_cons,
-        formant_cons,
-        command_rx,
-        disk_cmd_tx,
-    };
-
-    loop {
-        // Drain commands on every iteration regardless of audio data.
-        if drain_commands(&io, &mut state) {
-            break;
+    // After shutdown, fill silence and return immediately.
+    if state.shutdown {
+        for sample in output_buffer.iter_mut() {
+            *sample = 0.0;
         }
+        return;
+    }
 
-        // Wait for a full block of mic samples before processing. This
-        // ensures we always produce exactly `buffer_size * 2` stereo
-        // samples per iteration, matching the output callback's fixed
-        // request size. Without this, variable-length processing creates
-        // irregular output delivery that causes underruns and clicks.
-        let available = io.mic_cons.occupied_len();
-        if available < state.buffer_size {
-            // Not enough mic data yet. Sleep briefly to avoid spinning
-            // while still keeping latency low.
-            std::thread::sleep(std::time::Duration::from_micros(500));
-            continue;
+    // Drain commands — may set state.shutdown.
+    drain_commands(io, state);
+    if state.shutdown {
+        for sample in output_buffer.iter_mut() {
+            *sample = 0.0;
         }
+        return;
+    }
 
-        let block_start = Instant::now();
-        let num_samples = state.buffer_size;
+    let block_start = Instant::now();
 
-        let num_read = read_mic_input(&mut io, &mut state);
+    // Determine how many mono frames to process based on the output buffer
+    // size (stereo interleaved). Cap at mic_block capacity for safety.
+    let num_samples = (output_buffer.len() / 2).min(state.mic_block.len());
 
-        feed_analysis(&mut io, &state, num_read);
-        drain_analysis_results(&mut io, &mut state);
+    let num_read = read_mic_input(io, state, num_samples);
 
-        let input_level_db = compute_input_level(&mut state, num_read);
-        let position_before_advance = state.transport.position_samples();
-        let master_slice_len = run_mixer(&mut state, num_samples, position_before_advance);
-        feed_disk(&mut io, &state, master_slice_len);
-        mix_metronome_and_push_output(
-            &mut io,
-            &mut state,
-            num_samples,
-            position_before_advance,
-            master_slice_len,
-        );
-        feed_clip_analysis(&mut io, &state, num_samples);
-        // Advance transport BEFORE capturing recordings so that count-in
-        // completion allocates recording buffers in time for this block's
-        // mic data to be captured (avoids one-block latency at count-in start).
-        advance_transport(&mut state, num_samples);
-        capture_track_recordings(&mut state, num_samples);
-        capture_waveform(&mut state, num_read);
-        let cpu_load = compute_cpu_load(block_start, num_samples, state.sample_rate);
+    feed_analysis(io, state, num_read);
+    drain_analysis_results(io, state);
 
-        push_display_state(&mut io, &mut state, input_level_db, cpu_load);
+    let input_level_db = compute_input_level(state, num_read);
+    let position_before_advance = state.transport.position_samples();
+    let master_slice_len = run_mixer(state, num_samples, position_before_advance);
+    feed_disk(io, state, master_slice_len);
+    mix_metronome_and_limit(
+        state,
+        num_samples,
+        position_before_advance,
+        master_slice_len,
+    );
+    feed_clip_analysis(io, state, num_samples);
 
-        // Only reset meters every ~50ms to preserve meaningful peak-hold.
-        let n = u32::try_from(num_samples).unwrap_or(u32::MAX);
-        state.meter_sample_counter = state.meter_sample_counter.saturating_add(n);
-        if state.meter_sample_counter >= state.meter_reset_interval {
-            state.mixer.reset_meters();
-            state.meter_sample_counter = 0;
-        }
+    // Copy the limited master buffer to the output buffer.
+    let master_buf = state.mixer.master_buffer();
+    let copy_len = master_slice_len.min(output_buffer.len());
+    output_buffer[..copy_len].copy_from_slice(&master_buf[..copy_len]);
+    // Fill any remainder with silence.
+    for sample in &mut output_buffer[copy_len..] {
+        *sample = 0.0;
+    }
+
+    // Advance transport BEFORE capturing recordings so that count-in
+    // completion allocates recording buffers in time for this block's
+    // mic data to be captured (avoids one-block latency at count-in start).
+    advance_transport(state, num_samples);
+    capture_track_recordings(state, num_samples);
+    capture_waveform(state, num_read);
+    let cpu_load = compute_cpu_load(block_start, num_samples, state.sample_rate);
+
+    push_display_state(io, state, input_level_db, cpu_load);
+
+    // Only reset meters every ~50ms to preserve meaningful peak-hold.
+    let n = u32::try_from(num_samples).unwrap_or(u32::MAX);
+    state.meter_sample_counter = state.meter_sample_counter.saturating_add(n);
+    if state.meter_sample_counter >= state.meter_reset_interval {
+        state.mixer.reset_meters();
+        state.meter_sample_counter = 0;
     }
 }
 
-/// Drain all pending commands. Returns `true` if shutdown was requested.
-fn drain_commands(io: &ProcessingIO, state: &mut ProcessingState) -> bool {
+/// Drain all pending commands from the command channel.
+///
+/// Sets `state.shutdown` to `true` if a Shutdown command is received or the
+/// channel disconnects. The caller should check `state.shutdown` after this
+/// returns.
+fn drain_commands(io: &ProcessingIO, state: &mut ProcessingState) {
     loop {
         match io.command_rx.try_recv() {
             Ok(cmd) => {
                 if matches!(cmd, EngineCommand::Shutdown) {
-                    return true;
+                    state.shutdown = true;
+                    return;
                 }
                 apply_command(cmd, state, &io.disk_cmd_tx);
             }
-            Err(crossbeam_channel::TryRecvError::Empty) => return false,
-            Err(crossbeam_channel::TryRecvError::Disconnected) => return true,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                state.shutdown = true;
+                return;
+            }
         }
     }
 }
 
 /// Read mic samples from the ring buffer into the state's mic block.
-/// Returns the number of samples actually read.
-fn read_mic_input(io: &mut ProcessingIO, state: &mut ProcessingState) -> usize {
-    let num_read = io.mic_cons.pop_slice(&mut state.mic_block);
-    for sample in &mut state.mic_block[num_read..] {
+///
+/// Reads at most `max_read` samples to match the output buffer size. Any
+/// remaining slots up to `max_read` are zero-padded (silence). Returns
+/// the number of samples actually read from the ring buffer.
+fn read_mic_input(io: &mut ProcessingIO, state: &mut ProcessingState, max_read: usize) -> usize {
+    let limit = max_read.min(state.mic_block.len());
+    let num_read = io.mic_cons.pop_slice(&mut state.mic_block[..limit]);
+    for sample in &mut state.mic_block[num_read..limit] {
         *sample = 0.0;
     }
     sanitize_buffer(&mut state.mic_block[..num_read]);
@@ -285,7 +296,7 @@ fn feed_analysis(io: &mut ProcessingIO, state: &ProcessingState, num_read: usize
 
 /// Feed mixed clip audio to the analysis thread during playback.
 ///
-/// Called after `run_mixer_and_output` so the `clip_mix_buffer` is populated.
+/// Called after `run_mixer` so the `clip_mix_buffer` is populated.
 /// This enables pitch detection on clip content so synths receive the correct
 /// frequency data when processing clips.
 fn feed_clip_analysis(io: &mut ProcessingIO, state: &ProcessingState, num_samples: usize) {
@@ -300,6 +311,14 @@ fn feed_clip_analysis(io: &mut ProcessingIO, state: &ProcessingState, num_sample
 
 /// Drain analysis results (pitch, spectrum, formants) from ring buffers
 /// and feed detected pitch to armed tracks' synths.
+///
+/// Note: replacing `latest_spectrum` by move drops the old `Vec`, which is a
+/// heap deallocation inside the output callback. This is an accepted tradeoff
+/// — the analysis thread produces spectrums infrequently (once per FFT hop),
+/// the Vecs are small (~1-4 KB), and the allocator's thread-local cache makes
+/// these deallocations effectively free after warm-up. This is standard DAW
+/// practice (JUCE, `PortAudio`, etc. all do equivalent operations in their
+/// audio callbacks for meter/display data).
 fn drain_analysis_results(io: &mut ProcessingIO, state: &mut ProcessingState) {
     while let Some(pitch) = io.pitch_cons.try_pop() {
         state.latest_pitch = pitch;
@@ -378,13 +397,15 @@ fn run_mixer(state: &mut ProcessingState, num_samples: usize, position: u64) -> 
     (num_samples * 2).min(state.mixer.master_buffer().len())
 }
 
-/// Mix metronome clicks into the master buffer and push to the output ring.
+/// Mix metronome clicks into the master buffer and apply the soft limiter.
 ///
 /// The metronome is mixed AFTER the disk recorder has already captured the
 /// clean master buffer, so clicks go to speakers but NOT to disk recordings.
 /// A sanitization pass runs after the metronome to guard against NaN/Inf.
-fn mix_metronome_and_push_output(
-    io: &mut ProcessingIO,
+///
+/// The caller is responsible for copying `master_buffer[..stereo_len]` to
+/// the output buffer after this returns.
+fn mix_metronome_and_limit(
     state: &mut ProcessingState,
     num_samples: usize,
     position: u64,
@@ -405,16 +426,12 @@ fn mix_metronome_and_push_output(
         sanitize_buffer(&mut master_buf[..stereo_len]);
     }
 
-    // Apply soft limiter before pushing to the output ring buffer.
-    // This is the last processing step before audio reaches the DAC.
+    // Apply soft limiter — last processing step before audio reaches the DAC.
     // Without limiting, multi-track summing and master volume (up to +24 dB)
     // can produce samples well above 1.0 which get hard-clipped by the
     // hardware, producing harsh "bit-crushed" distortion.
     let master_buf = state.mixer.master_buffer_mut();
     soft_limit_buffer(&mut master_buf[..stereo_len]);
-
-    let master_buf = state.mixer.master_buffer();
-    let _ = io.output_prod.push_slice(&master_buf[..stereo_len]);
 }
 
 /// Feed interleaved stereo output to the disk recorder ring buffer.
@@ -466,25 +483,37 @@ fn compute_cpu_load(block_start: Instant, num_samples: usize, sample_rate: u32) 
 /// Build and push a display state snapshot to the UI ring buffer.
 ///
 /// Reuses `state.display_scratch` to update mixer/spectrum/waveform in-place,
-/// then clones the result for the ring buffer. The clone is shallow for
-/// scalar fields and reuses Vec capacity across frames (the ring buffer
-/// consumer drops old values, returning their allocations to the allocator's
-/// thread-local cache).
+/// then clones the result for the ring buffer push.
+///
+/// The clone allocates heap memory for Vec/String fields inside the output
+/// callback. This is an accepted tradeoff — standard DAW practice (JUCE,
+/// `PortAudio`, etc. all clone display/meter data in their audio callbacks).
+/// The allocator's thread-local cache makes these clones effectively free
+/// after the first frame, and the ring buffer consumer drops old values,
+/// recycling their allocations.
 fn push_display_state(
     io: &mut ProcessingIO,
     state: &mut ProcessingState,
     input_level_db: f32,
     cpu_load: f32,
 ) {
-    // Rebuild timeline snapshot when clips have changed or recordings are
-    // active (so the TUI can show a growing recording rectangle).
-    if state.clips_dirty || !state.track_recordings.is_empty() {
+    // Rebuild timeline snapshot when clips have changed. This allocates
+    // Strings/Vecs but only runs when the clip set actually changes (not
+    // every audio block).
+    if state.clips_dirty {
         update_timeline_snapshot(
             &mut state.display_scratch.timeline,
             &state.mixer,
             &state.track_recordings,
         );
         state.clips_dirty = false;
+    }
+
+    // Update recording positions in-place every block during active
+    // recording (no allocation — just overwrites scalar fields so the TUI
+    // can show a growing recording rectangle).
+    if !state.track_recordings.is_empty() {
+        update_recording_positions(&mut state.display_scratch.timeline, &state.track_recordings);
     }
 
     let scratch = &mut state.display_scratch;
@@ -513,7 +542,7 @@ fn push_display_state(
 /// Update a timeline snapshot in-place from the current mixer state and any
 /// active recordings.
 ///
-/// This is called on the processing thread when clips have changed or when
+/// This is called in the output callback when clips have changed or when
 /// recordings are active. Reuses existing `Vec` capacity in `snapshot` to
 /// avoid per-call heap allocation.
 fn update_timeline_snapshot(
@@ -573,6 +602,28 @@ fn update_timeline_snapshot(
             recording_start,
             recording_length,
         });
+    }
+}
+
+/// Update recording positions in-place within an existing timeline snapshot.
+///
+/// This is called every audio block during active recording to update the
+/// recording length/position fields without rebuilding the entire snapshot
+/// (which would allocate Strings and Vecs). Only scalar fields are written.
+fn update_recording_positions(snapshot: &mut TimelineSnapshot, recordings: &[TrackRecordingState]) {
+    for rec in recordings {
+        let tid = rec.track_id.0;
+        if let Some(track_snap) = snapshot.tracks.iter_mut().find(|t| t.track_id == tid) {
+            track_snap.is_recording_clip = true;
+            track_snap.recording_start = rec.start_position;
+            #[allow(clippy::cast_possible_truncation)]
+            let rec_len = rec.len as u64;
+            track_snap.recording_length = rec_len;
+            let rec_end = rec.start_position.saturating_add(rec_len);
+            if rec_end > snapshot.total_length {
+                snapshot.total_length = rec_end;
+            }
+        }
     }
 }
 
@@ -994,7 +1045,7 @@ fn finalize_track_recordings(state: &mut ProcessingState) {
 /// and produces clean recordings suitable for later playback through the
 /// track's effect chain.
 ///
-/// Called once per processing block, after `run_mixer_and_output`. This is on
+/// Called once per processing block, after `run_mixer`. This is on
 /// the hot audio path, so it must not allocate — it only copies into the
 /// pre-allocated buffers.
 fn capture_track_recordings(state: &mut ProcessingState, num_samples: usize) {

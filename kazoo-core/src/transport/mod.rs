@@ -87,21 +87,21 @@ enum CountInState {
 // ---------------------------------------------------------------------------
 
 /// Flags returned by [`TransportClock::advance`] to signal state transitions
-/// that the processing thread must act on.
+/// that the output callback must act on.
 ///
-/// The processing thread checks these flags each audio block and starts or
+/// The output callback checks these flags each audio block and starts or
 /// stops per-track recordings accordingly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdvanceFlags {
-    /// The count-in period has completed; the processing thread should start
+    /// The count-in period has completed; the output callback should start
     /// per-track recordings and transition the transport to Recording.
     pub count_in_completed: bool,
-    /// The auto-stop boundary has been reached; the processing thread should
+    /// The auto-stop boundary has been reached; the output callback should
     /// finalize per-track recordings and stop the transport.
     pub auto_stop_triggered: bool,
     /// The exact sample position where recording should start (the bar
     /// boundary at which the count-in ended). Only meaningful when
-    /// `count_in_completed` is `true`. The processing thread should use this
+    /// `count_in_completed` is `true`. The output callback should use this
     /// as the clip start position rather than reading the current (overshot)
     /// transport position.
     pub record_start_position: u64,
@@ -168,7 +168,7 @@ pub enum TransportCommand {
     SetRecordingWorkflow(RecordingWorkflow),
     /// Initiate a workflow-aware recording (count-in, fixed-length, etc.).
     ///
-    /// This variant is intercepted by the processing thread, which sets up the
+    /// This variant is intercepted by the output callback, which sets up the
     /// count-in state machine and starts/stops track recordings based on the
     /// configured [`RecordingWorkflow`].
     RecordWithCountIn,
@@ -299,7 +299,7 @@ impl TransportClock {
                 self.recording_workflow = workflow;
             }
             TransportCommand::RecordWithCountIn => {
-                // Handled entirely by the processing thread, which reads
+                // Handled entirely by the output callback, which reads
                 // the configured workflow and sets up the count-in state
                 // machine via the public helper methods below.
             }
@@ -571,7 +571,7 @@ impl TransportClock {
 
     /// Reset the count-in state machine to Inactive.
     ///
-    /// Called by the processing thread after handling the auto-stop flag.
+    /// Called by the output callback after handling the auto-stop flag.
     pub const fn reset_count_in(&mut self) {
         self.count_in_state = CountInState::Inactive;
     }
@@ -1559,7 +1559,7 @@ mod tests {
         let flags = clock.advance(88_200);
         assert!(flags.count_in_completed);
 
-        // Simulating what processing thread does: apply Record command.
+        // Simulating what output callback does: apply Record command.
         clock.apply_command(TransportCommand::Record);
         assert!(clock.is_recording());
     }
@@ -1591,7 +1591,7 @@ mod tests {
         assert!(flags.count_in_completed);
 
         // Count-in state transitions to AutoRecording(auto_stop=0).
-        // Now reset count-in (simulating what processing thread does
+        // Now reset count-in (simulating what output callback does
         // after it's done handling the flags and recording is underway).
         // Once count-in state is Inactive, loop wrapping should resume.
         clock.reset_count_in();

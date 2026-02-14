@@ -1,14 +1,15 @@
 //! Audio engine: real-time audio graph, buffer management, thread coordination.
 //!
-//! The engine orchestrates five threads:
+//! The engine orchestrates four threads:
 //!
 //! 1. **cpal input callback** (OS-managed) -- writes mic samples to ring buffer.
-//! 2. **cpal output callback** (OS-managed) -- reads mixed output from ring buffer.
-//! 3. **Processing thread** (`kazoo-processing`) -- main workhorse that drains
-//!    commands, runs the mixer, writes display state.
-//! 4. **Analysis thread** (`kazoo-analysis`) -- runs pitch, spectrum, formant,
+//! 2. **cpal output callback** (OS-managed) -- the main audio workhorse.
+//!    Drains commands, reads mic from ring buffer, runs the mixer (synth +
+//!    effects), applies the soft limiter, and writes directly to the output
+//!    buffer. All processing state is owned by this callback's closure.
+//! 3. **Analysis thread** (`kazoo-analysis`) -- runs pitch, spectrum, formant,
 //!    and onset detection.
-//! 5. **Disk I/O thread** (`kazoo-disk-io`) -- writes recorded audio to WAV files.
+//! 4. **Disk I/O thread** (`kazoo-disk-io`) -- writes recorded audio to WAV files.
 //!
 //! Communication between threads uses lock-free ring buffers (`ringbuf` crate)
 //! for audio data and `crossbeam-channel` for commands.
@@ -33,7 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ringbuf::HeapRb;
-use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::traits::{Producer, Split};
 
 use crate::analysis::{FormantData, PitchDetectorConfig, PitchEstimate};
 use crate::io::StreamConfig;
@@ -90,8 +91,8 @@ impl Default for EngineConfig {
 
 /// Compute capacities for all ring buffers based on buffer size.
 struct RingBufferCapacities {
-    /// Mic input and output: `buffer_size` * 16.
-    mic_and_output: usize,
+    /// Mic input: `buffer_size` * 16.
+    mic: usize,
     /// Display state: 4 slots.
     display: usize,
     /// Analysis input: `buffer_size` * 16.
@@ -106,7 +107,7 @@ impl RingBufferCapacities {
     fn from_buffer_size(buffer_size: usize) -> Self {
         let bs = buffer_size.max(1);
         Self {
-            mic_and_output: bs.saturating_mul(16),
+            mic: bs.saturating_mul(16),
             display: 4,
             analysis_input: bs.saturating_mul(16),
             analysis_results: 32,
@@ -122,9 +123,10 @@ impl RingBufferCapacities {
 /// Boot the audio engine and return a handle for controlling it.
 ///
 /// This function:
-/// 1. Builds audio I/O streams via `cpal`.
-/// 2. Creates all inter-thread ring buffers.
-/// 3. Spawns the processing, analysis, and disk I/O threads.
+/// 1. Creates all inter-thread ring buffers.
+/// 2. Builds audio I/O streams via `cpal`, moving all processing state into
+///    the output callback closure.
+/// 3. Spawns the analysis and disk I/O threads.
 /// 4. Returns an [`EngineHandle`] for the caller to send commands and poll
 ///    display state.
 ///
@@ -152,23 +154,19 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // -----------------------------------------------------------------------
     let caps = RingBufferCapacities::from_buffer_size(buffer_size);
 
-    // Mic input: cpal input callback -> processing thread.
-    let mic_rb = HeapRb::<f32>::new(caps.mic_and_output);
+    // Mic input: cpal input callback -> output callback.
+    let mic_rb = HeapRb::<f32>::new(caps.mic);
     let (mic_prod, mic_cons) = mic_rb.split();
 
-    // Output: processing thread -> cpal output callback.
-    let output_rb = HeapRb::<f32>::new(caps.mic_and_output);
-    let (output_prod, output_cons) = output_rb.split();
-
-    // Display: processing thread -> UI thread.
+    // Display: output callback -> UI thread.
     let display_rb = HeapRb::<DisplayState>::new(caps.display);
     let (display_prod, display_cons) = display_rb.split();
 
-    // Analysis input: processing thread -> analysis thread.
+    // Analysis input: output callback -> analysis thread.
     let analysis_in_rb = HeapRb::<f32>::new(caps.analysis_input);
     let (analysis_in_prod, analysis_in_cons) = analysis_in_rb.split();
 
-    // Analysis results: analysis thread -> processing thread.
+    // Analysis results: analysis thread -> output callback.
     let pitch_rb = HeapRb::<PitchEstimate>::new(caps.analysis_results);
     let (pitch_prod, pitch_cons) = pitch_rb.split();
 
@@ -178,7 +176,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     let formant_rb = HeapRb::<Option<FormantData>>::new(caps.analysis_results);
     let (formant_prod, formant_cons) = formant_rb.split();
 
-    // Disk recording: processing thread -> disk I/O thread.
+    // Disk recording: output callback -> disk I/O thread.
     let disk_rb = HeapRb::<f32>::new(caps.disk);
     let (disk_prod, disk_cons) = disk_rb.split();
 
@@ -191,12 +189,12 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // -----------------------------------------------------------------------
     // 3. Build audio streams
     // -----------------------------------------------------------------------
-    // Wrap the ring buffer producers/consumers in Mutex-free closures for the
-    // cpal callbacks. We use `move` closures that own one side of each ring
-    // buffer.
+    // The input callback pushes mic samples to the ring buffer. The output
+    // callback owns all processing state and does the actual audio work:
+    // draining commands, running the mixer, applying effects, and writing
+    // directly to the cpal output buffer.
 
     let mut cpal_mic_prod = mic_prod;
-    let mut cpal_output_cons = output_cons;
 
     // Capture input channel count and pre-compute the reciprocal so the
     // callback avoids division. The scratch buffer is pre-allocated here
@@ -204,6 +202,25 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     let input_channels = usize::from(stream_config.input_channels.max(1));
     let inv_ch = 1.0_f32 / input_channels.max(1) as f32;
     let mut downmix_scratch = vec![0.0f32; buffer_size];
+
+    // Clone disk_cmd_tx for ProcessingIO; the original stays for
+    // EngineHandle to send DiskCommand::Shutdown on drop.
+    let io_disk_cmd_tx = disk_cmd_tx.clone();
+
+    // Create processing state and I/O handles. These are moved into the
+    // output callback closure — the callback owns all processing state.
+    let mut proc_state = processing::ProcessingState::new(sample_rate, buffer_size);
+    let mut proc_io = processing::ProcessingIO {
+        mic_cons,
+        display_prod,
+        analysis_prod: analysis_in_prod,
+        disk_prod,
+        pitch_cons,
+        spectrum_cons,
+        formant_cons,
+        command_rx,
+        disk_cmd_tx: io_disk_cmd_tx,
+    };
 
     let streams = crate::io::build_streams(
         stream_config,
@@ -227,22 +244,9 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
             }
         },
         move |data: &mut [f32]| {
-            // Output callback: pop mixed stereo samples from the ring buffer.
-            let filled = cpal_output_cons.pop_slice(data);
-            // The processing thread always pushes even sample counts (stereo
-            // pairs), so `filled` should always be even. Assert in debug
-            // builds to catch violations early.
-            debug_assert!(
-                filled % 2 == 0 || filled == 0,
-                "output ring buffer had odd sample count: {filled}"
-            );
-            // Ensure stereo frame alignment — avoid leaving a lone L sample
-            // without its R partner, which would swap channels for the rest
-            // of the buffer.
-            let aligned = filled & !1;
-            for sample in &mut data[aligned..] {
-                *sample = 0.0;
-            }
+            // Output callback: run the entire audio processing pipeline.
+            // ProcessingState and ProcessingIO are owned by this closure.
+            processing::process_block(&mut proc_state, &mut proc_io, data);
         },
     )?;
 
@@ -263,36 +267,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         .map_err(|e| crate::Error::Stream(format!("failed to spawn streams holder: {e}")))?;
 
     // -----------------------------------------------------------------------
-    // 4. Spawn processing thread
-    // -----------------------------------------------------------------------
-    let proc_sample_rate = sample_rate;
-    let proc_buffer_size = buffer_size;
-    let proc_disk_cmd_tx = disk_cmd_tx.clone();
-
-    let processing_handle = std::thread::Builder::new()
-        .name("kazoo-processing".into())
-        .spawn(move || {
-            processing::run(
-                command_rx,
-                mic_cons,
-                output_prod,
-                display_prod,
-                analysis_in_prod,
-                disk_prod,
-                pitch_cons,
-                spectrum_cons,
-                formant_cons,
-                proc_disk_cmd_tx,
-                proc_sample_rate,
-                proc_buffer_size,
-            );
-            // When processing exits, signal the disk thread to shut down.
-            let _ = disk_cmd_tx.send(DiskCommand::Shutdown);
-        })
-        .map_err(|e| crate::Error::Stream(format!("failed to spawn processing thread: {e}")))?;
-
-    // -----------------------------------------------------------------------
-    // 5. Spawn analysis thread
+    // 4. Spawn analysis thread
     // -----------------------------------------------------------------------
     let analysis_config = AnalysisConfig {
         pitch: config.pitch,
@@ -318,7 +293,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         .map_err(|e| crate::Error::Stream(format!("failed to spawn analysis thread: {e}")))?;
 
     // -----------------------------------------------------------------------
-    // 6. Spawn disk I/O thread
+    // 5. Spawn disk I/O thread
     // -----------------------------------------------------------------------
     let disk_handle = std::thread::Builder::new()
         .name("kazoo-disk-io".into())
@@ -328,16 +303,16 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         .map_err(|e| crate::Error::Stream(format!("failed to spawn disk I/O thread: {e}")))?;
 
     // -----------------------------------------------------------------------
-    // 7. Build and return the engine handle
+    // 6. Build and return the engine handle
     // -----------------------------------------------------------------------
     let mut handle = EngineHandle::new(command_tx, display_cons, sample_rate, buffer_size);
 
     handle.set_thread_handles(ThreadHandles {
-        processing: processing_handle,
         analysis: analysis_handle,
         disk: disk_handle,
         stream_holder: stream_holder_handle,
         stream_shutdown,
+        disk_cmd_tx,
     });
 
     Ok(handle)
@@ -377,7 +352,7 @@ mod tests {
     #[test]
     fn ring_buffer_capacities_default_buffer_size() {
         let caps = RingBufferCapacities::from_buffer_size(256);
-        assert_eq!(caps.mic_and_output, 256 * 16);
+        assert_eq!(caps.mic, 256 * 16);
         assert_eq!(caps.display, 4);
         assert_eq!(caps.analysis_input, 256 * 16);
         assert_eq!(caps.analysis_results, 32);
@@ -387,7 +362,7 @@ mod tests {
     #[test]
     fn ring_buffer_capacities_large_buffer_size() {
         let caps = RingBufferCapacities::from_buffer_size(1024);
-        assert_eq!(caps.mic_and_output, 1024 * 16);
+        assert_eq!(caps.mic, 1024 * 16);
         assert_eq!(caps.analysis_input, 1024 * 16);
         assert_eq!(caps.disk, 1024 * 32);
     }
@@ -395,7 +370,7 @@ mod tests {
     #[test]
     fn ring_buffer_capacities_zero_buffer_size_uses_one() {
         let caps = RingBufferCapacities::from_buffer_size(0);
-        assert_eq!(caps.mic_and_output, 16);
+        assert_eq!(caps.mic, 16);
         assert_eq!(caps.analysis_input, 16);
         assert_eq!(caps.disk, 32);
     }

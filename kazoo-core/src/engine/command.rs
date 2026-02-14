@@ -1,4 +1,4 @@
-//! Engine command types sent from the UI thread to the processing thread.
+//! Engine command types sent from the UI thread to the output callback.
 
 use std::path::PathBuf;
 
@@ -8,10 +8,10 @@ use crate::synthesis::SynthesisMode;
 use crate::transport::TransportCommand;
 use crate::{Db, Pan, Processor};
 
-/// Commands that can be sent to the engine's processing thread.
+/// Commands that can be sent to the engine's output callback.
 ///
 /// All variants are designed to be constructed on the UI thread and sent via
-/// a `crossbeam_channel::Sender<EngineCommand>`. The processing thread drains
+/// a `crossbeam_channel::Sender<EngineCommand>`. The output callback drains
 /// the receiver each audio block and applies commands atomically.
 pub enum EngineCommand {
     /// Forward a transport control command (play, stop, pause, record, seek, etc.).

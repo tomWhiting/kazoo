@@ -35,7 +35,7 @@ impl std::fmt::Display for ClipId {
 /// Shared, immutable audio data backing one or more clips.
 ///
 /// All samples are **mono** and **pre-resampled** to the engine's sample rate
-/// at load time. This means the processing thread never needs to resample on
+/// at load time. This means the output callback never needs to resample on
 /// the fly — clip playback is a simple indexed read with gain.
 ///
 /// Uses [`Arc`] so the same audio can be placed on multiple tracks or
@@ -312,7 +312,7 @@ impl AudioClip {
     /// into `output`.
     ///
     /// This is the critical hot-path method called every audio block on the
-    /// processing thread. It reads directly from the `Arc<Vec<f32>>` backing
+    /// output callback. It reads directly from the `Arc<Vec<f32>>` backing
     /// store with no allocation.
     ///
     /// Returns the number of samples contributed.

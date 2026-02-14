@@ -1,7 +1,7 @@
 //! Sample rate conversion and channel format utilities.
 //!
 //! These functions run at file-load time on the UI thread. They are NOT
-//! called from the audio processing thread and may allocate freely.
+//! called from the audio output callback and may allocate freely.
 
 use audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{Fft, FixedSync, Resampler};

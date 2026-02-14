@@ -21,7 +21,7 @@ const BEAT_FREQ: f32 = 800.0;
 ///
 /// Pre-renders two click buffers at construction and plays them back
 /// when beat boundaries are crossed. All methods are O(1) per sample
-/// with no allocation, making this safe for the processing thread.
+/// with no allocation, making this safe for the output callback.
 #[derive(Debug)]
 pub struct Metronome {
     sample_rate: u32,

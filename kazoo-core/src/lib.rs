@@ -50,7 +50,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Universal interface for anything that processes audio: synth engines,
 /// effects, analysis stages, etc.
 ///
-/// Every implementor **must** be `Send` so it can live on the processing thread.
+/// Every implementor **must** be `Send` so it can live in the output callback.
 /// All internal buffers must be pre-allocated in `new()` or `set_sample_rate()`.
 /// The `process` method must never allocate, lock, or perform I/O.
 pub trait Processor: Send {
@@ -119,7 +119,7 @@ pub trait Processor: Send {
 
     /// Feed a detected pitch frequency (Hz) to this processor.
     ///
-    /// Called by the processing thread when the analysis thread detects a
+    /// Called by the output callback when the analysis thread detects a
     /// voiced pitch. Synthesis processors that track vocal pitch should
     /// override this to update their oscillator frequency.
     ///

@@ -1,8 +1,8 @@
 //! Analysis thread: pitch detection, spectrum analysis, formant extraction.
 //!
-//! Runs in a dedicated thread at lower priority than the processing thread.
+//! Runs in a dedicated thread at lower priority than the audio callback.
 //! Reads raw mic samples from a ring buffer, runs the analysis pipeline, and
-//! pushes results back into ring buffers consumed by the processing thread.
+//! pushes results back into ring buffers consumed by the output callback.
 
 use ringbuf::traits::{Consumer, Producer};
 use ringbuf::{HeapCons, HeapProd};

@@ -82,7 +82,7 @@ fn poly_blep(mut t: f32, dt: f32) -> f32 {
 /// Voice-pitch-driven synthesizer with band-limited oscillators.
 ///
 /// The analysis thread sets `target_frequency` via [`set_target_frequency`].
-/// The processing thread calls [`process`], which:
+/// The output callback calls [`process`], which:
 /// 1. Reads input to track envelope amplitude.
 /// 2. Smooths frequency via one-pole portamento.
 /// 3. Generates the selected waveform with `PolyBLEP` anti-aliasing.
