@@ -17,12 +17,14 @@ pub const BG_PRIMARY: Color = Color::Rgb(0x1E, 0x1E, 0x2E);
 #[allow(dead_code)]
 pub const BG_SECONDARY: Color = Color::Rgb(0x28, 0x28, 0x3C);
 
-/// Surface color for list items, input fields, etc.
-#[allow(dead_code)]
+/// Surface color for list items, input fields, and clip backgrounds.
 pub const BG_SURFACE: Color = Color::Rgb(0x31, 0x31, 0x4A);
 
 /// Elevated surface for popups and overlays.
 pub const BG_OVERLAY: Color = Color::Rgb(0x3A, 0x3A, 0x55);
+
+/// Background for odd-numbered track lanes (alternating with primary).
+pub const BG_LANE_ODD: Color = Color::Rgb(0x24, 0x24, 0x38);
 
 // ---------------------------------------------------------------------------
 // Foreground / text
@@ -105,6 +107,16 @@ const TRACK_COLORS: [Color; 8] = [
 #[must_use]
 pub const fn track_color(index: usize) -> Color {
     TRACK_COLORS[index % TRACK_COLORS.len()]
+}
+
+/// Return the lane background for a track index (alternating even/odd).
+#[must_use]
+pub const fn lane_bg(index: usize) -> Color {
+    if index % 2 == 0 {
+        BG_PRIMARY
+    } else {
+        BG_LANE_ODD
+    }
 }
 
 /// Return the meter color for a given linear ratio (0.0 = silence, 1.0+ = clipping).

@@ -426,6 +426,10 @@ impl Processor for WavetableOscillator {
         self.envelope_release_coeff = compute_envelope_coeff(50.0, sr);
         self.reset();
     }
+
+    fn set_pitch(&mut self, frequency: f32) {
+        self.set_frequency(frequency);
+    }
 }
 
 /// Compute a one-pole smoothing coefficient from time in ms.

@@ -25,7 +25,7 @@ pub mod processing;
 
 pub use command::EngineCommand;
 pub use disk::DiskCommand;
-pub use display::DisplayState;
+pub use display::{ClipSnapshot, DisplayState, TimelineSnapshot, TrackClipSnapshot};
 pub use handle::EngineHandle;
 pub use processing::create_synth;
 

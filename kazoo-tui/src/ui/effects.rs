@@ -1,12 +1,13 @@
 //! Effects chain inspector panel.
 //!
-//! Shows the effects chain for the currently selected track in a 30-column
-//! inspector area on the right side of the UI. The panel is divided into
-//! three sections:
+//! Shows the synth and effects chain for the currently selected track in a
+//! 36-column inspector area on the right side of the UI. The panel is divided
+//! into four sections:
 //!
 //! 1. **Track header** -- name, synthesis mode, M/S/R indicators.
-//! 2. **Effect chain list** -- ordered list of effects with bypass state.
-//! 3. **Parameter section** -- details and hints for the selected effect.
+//! 2. **Item list** -- synth entry followed by effects with bypass state.
+//! 3. **Parameter section** -- synth params or effect hints for the selected item.
+//! 4. **Hint bar** -- keyboard shortcut hints.
 
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
@@ -32,17 +33,26 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    // Split inner into 3 sections: header (3), effects list (40%), params (rest).
+    // Split inner into: header (2), item list (variable), params (rest), hint (1).
     let sections = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Percentage(40),
+        Constraint::Length(2),
+        Constraint::Length(item_list_height(track)),
         Constraint::Min(3),
+        Constraint::Length(1),
     ])
     .split(inner);
 
     draw_track_header(frame, app, track, sections[0]);
-    draw_effect_list(frame, app, track, sections[1]);
+    draw_item_list(frame, app, track, sections[1]);
     draw_param_section(frame, app, track, sections[2]);
+    draw_hint_bar(frame, app, sections[3]);
+}
+
+/// Calculate the height needed for the item list (synth + effects).
+fn item_list_height(track: &TrackInfo) -> u16 {
+    // 1 for synth entry + effect count, min 2 to avoid collapse.
+    let count = 1 + track.effect_names.len();
+    (count as u16).clamp(2, 6)
 }
 
 /// Render the track header: name, synthesis mode abbreviation, and M/S/R flags.
@@ -82,49 +92,132 @@ fn draw_track_header(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect
     frame.render_widget(header, area);
 }
 
-/// Render the effect chain list with bypass indicators and selection highlight.
-fn draw_effect_list(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
+/// Render the unified item list: synth entry at top, then effects.
+fn draw_item_list(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    if track.effect_names.is_empty() {
-        let empty = Paragraph::new("  No effects").style(theme::style_text_dimmed());
-        frame.render_widget(empty, area);
+    let focused = app.is_focused(FocusedPanel::Effects);
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Synth entry.
+    let synth_selected = app.synth_selected && focused;
+    let synth_style = if synth_selected {
+        theme::style_selected()
+    } else {
+        theme::style_text()
+    };
+    let marker = if app.synth_selected { "\u{25b6}" } else { " " };
+    lines.push(Line::from(vec![
+        Span::styled(marker, synth_style),
+        Span::raw(" "),
+        Span::styled(track.synthesis_mode.display_name(), synth_style),
+    ]));
+
+    // Effect entries.
+    for (i, name) in track.effect_names.iter().enumerate() {
+        let bypassed = track.effect_bypassed.get(i).copied().unwrap_or(false);
+        let selected = !app.synth_selected && i == app.selected_effect;
+
+        let bypass_indicator = if bypassed { "\u{25cb}" } else { "\u{25cf}" };
+        let bypass_color = if bypassed {
+            theme::FG_DIMMED
+        } else {
+            theme::ACCENT_PLAY
+        };
+
+        let name_style = if selected && focused {
+            theme::style_selected()
+        } else if bypassed {
+            theme::style_text_dimmed()
+        } else {
+            theme::style_text()
+        };
+
+        let marker = if selected { "\u{25b6}" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(marker, name_style),
+            Span::styled(bypass_indicator, Style::new().fg(bypass_color)),
+            Span::raw(" "),
+            Span::styled(name.as_str(), name_style),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, area);
+}
+
+/// Render the parameter section for the currently selected item.
+fn draw_param_section(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
 
     let focused = app.is_focused(FocusedPanel::Effects);
 
-    // Build lines manually so we can render them as a single Paragraph
-    // and handle overflow gracefully within the available height.
+    if app.synth_selected {
+        // Show synth parameters.
+        draw_synth_params(frame, app, track, area, focused);
+    } else {
+        // Show effect parameter hints.
+        draw_effect_params(frame, app, track, area);
+    }
+}
+
+/// Render synth parameter list with names, values, and selection highlight.
+fn draw_synth_params(
+    frame: &mut Frame,
+    app: &App,
+    track: &TrackInfo,
+    area: Rect,
+    focused: bool,
+) {
+    if track.synth_param_infos.is_empty() {
+        let empty = Paragraph::new("  No parameters").style(theme::style_text_dimmed());
+        frame.render_widget(empty, area);
+        return;
+    }
+
     let lines: Vec<Line<'_>> = track
-        .effect_names
+        .synth_param_infos
         .iter()
         .enumerate()
-        .map(|(i, name)| {
-            let bypassed = track.effect_bypassed.get(i).copied().unwrap_or(false);
-            let selected = i == app.selected_effect;
+        .map(|(i, info)| {
+            let value = track.synth_param_values.get(i).copied().unwrap_or(0.0);
+            let selected = i == app.selected_synth_param;
 
-            let bypass_indicator = if bypassed { "\u{25cb}" } else { "\u{25cf}" };
-            let bypass_color = if bypassed {
-                theme::FG_DIMMED
+            let formatted = track.synthesis_mode.format_param_value(i, value);
+            let unit = if info.unit.is_empty() {
+                String::new()
             } else {
-                theme::ACCENT_PLAY
+                format!(" {}", info.unit)
             };
 
+            // Truncate param name to fit the panel.
+            let name = if info.name.len() > 12 {
+                &info.name[..12]
+            } else {
+                &info.name
+            };
+
+            let marker = if selected { "\u{25b6}" } else { " " };
             let name_style = if selected && focused {
                 theme::style_selected()
-            } else if bypassed {
-                theme::style_text_dimmed()
+            } else {
+                theme::style_text_secondary()
+            };
+            let value_style = if selected && focused {
+                theme::style_selected()
             } else {
                 theme::style_text()
             };
 
             Line::from(vec![
-                Span::styled(bypass_indicator, Style::new().fg(bypass_color)),
+                Span::styled(marker, name_style),
+                Span::styled(format!("{name:<12}"), name_style),
                 Span::raw(" "),
-                Span::styled(name.as_str(), name_style),
+                Span::styled(format!("{formatted}{unit}"), value_style),
             ])
         })
         .collect();
@@ -133,18 +226,10 @@ fn draw_effect_list(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect)
     frame.render_widget(paragraph, area);
 }
 
-/// Render the parameter section for the currently selected effect.
-///
-/// Since [`TrackInfo`] does not carry full parameter metadata (that lives in
-/// the engine), this section shows contextual hints and the edit buffer when
-/// the user is in parameter-edit mode.
-fn draw_param_section(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
+/// Render effect parameter hints (existing behavior).
+fn draw_effect_params(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
     let text = if track.effect_names.is_empty() {
-        String::from("  Add effects with\n  effect commands")
+        String::from("  No effects")
     } else {
         let fx_name = track
             .effect_names
@@ -161,5 +246,21 @@ fn draw_param_section(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rec
     };
 
     let para = Paragraph::new(text).style(theme::style_text_secondary());
+    frame.render_widget(para, area);
+}
+
+/// Render the hint bar at the bottom of the panel.
+fn draw_hint_bar(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let hint = if app.synth_selected {
+        "\u{2191}\u{2193} nav  h/l param  \u{2190}\u{2192} adj  t synth"
+    } else {
+        "\u{2191}\u{2193} nav  h/l param  \u{2190}\u{2192} adj"
+    };
+
+    let para = Paragraph::new(hint).style(theme::style_text_dimmed());
     frame.render_widget(para, area);
 }

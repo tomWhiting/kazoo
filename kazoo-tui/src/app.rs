@@ -15,11 +15,12 @@ use ratatui::widgets::ListState;
 
 use kazoo_core::engine::{DisplayState, EngineCommand, EngineHandle};
 use kazoo_core::mixer::TrackId;
+use kazoo_core::mixer::clip::ClipId;
 use kazoo_core::synthesis::SynthesisMode;
 use kazoo_core::{Db, Pan};
 
 /// Target frames per second for UI rendering.
-const TARGET_FPS: u64 = 30;
+const TARGET_FPS: u64 = 60;
 
 // ---------------------------------------------------------------------------
 // Panel focus
@@ -32,6 +33,7 @@ const TARGET_FPS: u64 = 30;
 pub enum FocusedPanel {
     Transport,
     Tracks,
+    Timeline,
     Waveform,
     Spectrum,
     Effects,
@@ -44,7 +46,8 @@ impl FocusedPanel {
     pub const fn next(self) -> Self {
         match self {
             Self::Transport => Self::Tracks,
-            Self::Tracks => Self::Waveform,
+            Self::Tracks => Self::Timeline,
+            Self::Timeline => Self::Waveform,
             Self::Waveform => Self::Spectrum,
             Self::Spectrum => Self::Effects,
             Self::Effects => Self::Mixer,
@@ -58,7 +61,8 @@ impl FocusedPanel {
         match self {
             Self::Transport => Self::Mixer,
             Self::Tracks => Self::Transport,
-            Self::Waveform => Self::Tracks,
+            Self::Timeline => Self::Tracks,
+            Self::Waveform => Self::Timeline,
             Self::Spectrum => Self::Waveform,
             Self::Effects => Self::Spectrum,
             Self::Mixer => Self::Effects,
@@ -71,12 +75,32 @@ impl FocusedPanel {
 // ---------------------------------------------------------------------------
 
 /// Top-level application mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppMode {
     /// Normal operating mode — all panels active.
     Normal,
     /// Help overlay displayed on top of the normal view.
     Help,
+    /// File browser modal overlay for loading audio files.
+    FileBrowser {
+        /// Current directory being browsed.
+        directory: std::path::PathBuf,
+        /// Entries in the current directory (directories first, then audio files).
+        entries: Vec<FileBrowserEntry>,
+        /// Index of the selected entry.
+        selected: usize,
+    },
+}
+
+/// A single entry in the file browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileBrowserEntry {
+    /// Display name.
+    pub name: String,
+    /// Full path.
+    pub path: std::path::PathBuf,
+    /// Whether this entry is a directory.
+    pub is_dir: bool,
 }
 
 /// Input sub-mode for parameter editing.
@@ -120,6 +144,12 @@ pub struct TrackInfo {
     pub effect_names: Vec<String>,
     /// Bypass state of each effect (parallel to `effect_names`).
     pub effect_bypassed: Vec<bool>,
+    /// Number of audio clips on this track.
+    pub clip_count: usize,
+    /// Synth parameter metadata (names, ranges, units).
+    pub synth_param_infos: Vec<kazoo_core::ParamInfo>,
+    /// Current synth parameter values (parallel to `synth_param_infos`).
+    pub synth_param_values: Vec<f32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +191,12 @@ pub struct App {
     /// Index of the selected track in the track list.
     pub selected_track: usize,
 
+    /// Whether the synth entry is selected in the effects panel (vs an effect).
+    pub synth_selected: bool,
+
+    /// Index of the selected synth parameter.
+    pub selected_synth_param: usize,
+
     /// Index of the selected effect in the focused track's effect chain.
     pub selected_effect: usize,
 
@@ -186,6 +222,15 @@ pub struct App {
     /// Text buffer for numeric input in `ParameterEdit` mode.
     pub param_edit_buffer: String,
 
+    /// Timeline view zoom factor (samples per pixel). Higher = more zoomed out.
+    pub timeline_zoom: f64,
+
+    /// Timeline view horizontal scroll position in samples.
+    pub timeline_scroll: f64,
+
+    /// Currently selected clip ID, if any.
+    pub selected_clip: Option<ClipId>,
+
     /// Set to `true` to exit the main event loop.
     pub should_quit: bool,
 }
@@ -207,6 +252,8 @@ impl App {
             focused_panel: FocusedPanel::Transport,
             input_mode: InputMode::Normal,
             selected_track: 0,
+            synth_selected: true,
+            selected_synth_param: 0,
             selected_effect: 0,
             selected_param: 0,
             waveform_zoom: 1.0,
@@ -215,6 +262,9 @@ impl App {
             frame_count: 0,
             master_volume: Db::UNITY,
             param_edit_buffer: String::new(),
+            timeline_zoom: 256.0,
+            timeline_scroll: 0.0,
+            selected_clip: None,
             should_quit: false,
         }
     }
@@ -269,6 +319,17 @@ impl App {
             self.selected_track = self.tracks.len().saturating_sub(1);
             self.track_list_state.select(Some(self.selected_track));
         }
+
+        // Sync clip counts from the timeline snapshot.
+        for track_snap in &self.display.timeline.tracks {
+            if let Some(track_info) = self
+                .tracks
+                .iter_mut()
+                .find(|t| t.id.0 == track_snap.track_id)
+            {
+                track_info.clip_count = track_snap.clips.len();
+            }
+        }
     }
 
     /// Dispatch a crossterm event to the input handler.
@@ -290,6 +351,7 @@ impl App {
         let id = TrackId(self.next_track_id);
         self.next_track_id += 1;
 
+        let sample_rate = self.engine.sample_rate() as f32;
         let info = TrackInfo {
             id,
             name: name.clone(),
@@ -301,6 +363,9 @@ impl App {
             pan: Pan::CENTER,
             effect_names: Vec::new(),
             effect_bypassed: Vec::new(),
+            clip_count: 0,
+            synth_param_infos: synthesis_mode.param_infos(sample_rate),
+            synth_param_values: synthesis_mode.default_param_values(sample_rate),
         };
         self.tracks.push(info);
 
@@ -357,6 +422,27 @@ impl App {
                 .engine
                 .send_command(EngineCommand::SetTrackArm(track.id, track.armed));
         }
+    }
+
+    /// Cycle the synthesis mode on the track at the given index.
+    pub fn cycle_synth_mode(&mut self, index: usize) {
+        if let Some(track) = self.tracks.get_mut(index) {
+            let next = match track.synthesis_mode {
+                SynthesisMode::PitchTracked => SynthesisMode::Wavetable,
+                SynthesisMode::Wavetable => SynthesisMode::Granular,
+                SynthesisMode::Granular => SynthesisMode::Vocoder,
+                SynthesisMode::Vocoder => SynthesisMode::PhaseVocoder,
+                SynthesisMode::PhaseVocoder => SynthesisMode::PitchTracked,
+            };
+            track.synthesis_mode = next;
+            let sample_rate = self.engine.sample_rate() as f32;
+            track.synth_param_infos = next.param_infos(sample_rate);
+            track.synth_param_values = next.default_param_values(sample_rate);
+            let _ = self
+                .engine
+                .send_command(EngineCommand::SetTrackSynthesisMode(track.id, next));
+        }
+        self.selected_synth_param = 0;
     }
 
     /// Set the volume for the track at the given index.
@@ -449,16 +535,82 @@ impl App {
 
     /// Whether the recording blink animation should show the indicator.
     ///
-    /// Blinks at approximately 2 Hz (toggles every 15 frames at 30 fps).
+    /// Blinks at approximately 2 Hz (toggles every 30 frames at 60 fps).
     #[must_use]
     pub const fn recording_blink_visible(&self) -> bool {
-        (self.frame_count / 15) % 2 == 0
+        (self.frame_count / 30) % 2 == 0
     }
 
     /// The number of tracks.
     #[must_use]
     pub fn track_count(&self) -> usize {
         self.tracks.len()
+    }
+
+    /// Whether any track has clips (used to decide timeline vs waveform).
+    #[must_use]
+    pub fn has_clips(&self) -> bool {
+        !self.display.timeline.tracks.is_empty()
+            && self
+                .display
+                .timeline
+                .tracks
+                .iter()
+                .any(|t| !t.clips.is_empty() || t.is_recording_clip)
+    }
+
+    /// Open the file browser starting in the current working directory.
+    pub fn open_file_browser(&mut self) {
+        let dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        let entries = Self::scan_directory(&dir);
+        self.mode = AppMode::FileBrowser {
+            directory: dir,
+            entries,
+            selected: 0,
+        };
+    }
+
+    /// Scan a directory for subdirectories and audio files.
+    ///
+    /// Returns entries sorted: directories first (alphabetical), then audio
+    /// files (alphabetical). Non-readable entries are silently skipped.
+    #[must_use]
+    pub fn scan_directory(dir: &std::path::Path) -> Vec<FileBrowserEntry> {
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+
+            // Skip hidden entries.
+            if name.starts_with('.') {
+                continue;
+            }
+
+            if path.is_dir() {
+                dirs.push(FileBrowserEntry {
+                    name,
+                    path,
+                    is_dir: true,
+                });
+            } else if is_audio_file(&name) {
+                files.push(FileBrowserEntry {
+                    name,
+                    path,
+                    is_dir: false,
+                });
+            }
+        }
+
+        dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        dirs.extend(files);
+        dirs
     }
 
     /// Check whether a specific panel has focus.
@@ -468,12 +620,25 @@ impl App {
             (&self.focused_panel, &panel),
             (FocusedPanel::Transport, FocusedPanel::Transport)
                 | (FocusedPanel::Tracks, FocusedPanel::Tracks)
+                | (FocusedPanel::Timeline, FocusedPanel::Timeline)
                 | (FocusedPanel::Waveform, FocusedPanel::Waveform)
                 | (FocusedPanel::Spectrum, FocusedPanel::Spectrum)
                 | (FocusedPanel::Effects, FocusedPanel::Effects)
                 | (FocusedPanel::Mixer, FocusedPanel::Mixer)
         )
     }
+}
+
+/// Check whether a filename has a recognised audio extension.
+fn is_audio_file(name: &str) -> bool {
+    std::path::Path::new(name).extension().is_some_and(|ext| {
+        ext.eq_ignore_ascii_case("wav")
+            || ext.eq_ignore_ascii_case("mp3")
+            || ext.eq_ignore_ascii_case("flac")
+            || ext.eq_ignore_ascii_case("ogg")
+            || ext.eq_ignore_ascii_case("aiff")
+            || ext.eq_ignore_ascii_case("aif")
+    })
 }
 
 #[cfg(test)]
@@ -486,6 +651,7 @@ mod tests {
         let mut panel = start;
         let panels = [
             FocusedPanel::Tracks,
+            FocusedPanel::Timeline,
             FocusedPanel::Waveform,
             FocusedPanel::Spectrum,
             FocusedPanel::Effects,
@@ -507,6 +673,7 @@ mod tests {
             FocusedPanel::Effects,
             FocusedPanel::Spectrum,
             FocusedPanel::Waveform,
+            FocusedPanel::Timeline,
             FocusedPanel::Tracks,
             FocusedPanel::Transport,
         ];
@@ -521,6 +688,7 @@ mod tests {
         for panel in [
             FocusedPanel::Transport,
             FocusedPanel::Tracks,
+            FocusedPanel::Timeline,
             FocusedPanel::Waveform,
             FocusedPanel::Spectrum,
             FocusedPanel::Effects,
@@ -536,22 +704,22 @@ mod tests {
         let engine_handle = test_engine_handle();
         let mut app = App::new(engine_handle);
 
-        // Frames 0-14: visible (frame_count/15 == 0, 0%2 == 0)
+        // Frames 0-29: visible (frame_count/30 == 0, 0%2 == 0)
         app.frame_count = 0;
         assert!(app.recording_blink_visible());
 
-        app.frame_count = 14;
+        app.frame_count = 29;
         assert!(app.recording_blink_visible());
 
-        // Frames 15-29: hidden (frame_count/15 == 1, 1%2 == 1)
-        app.frame_count = 15;
-        assert!(!app.recording_blink_visible());
-
-        app.frame_count = 29;
-        assert!(!app.recording_blink_visible());
-
-        // Frames 30-44: visible again
+        // Frames 30-59: hidden (frame_count/30 == 1, 1%2 == 1)
         app.frame_count = 30;
+        assert!(!app.recording_blink_visible());
+
+        app.frame_count = 59;
+        assert!(!app.recording_blink_visible());
+
+        // Frames 60-89: visible again
+        app.frame_count = 60;
         assert!(app.recording_blink_visible());
     }
 
@@ -757,6 +925,67 @@ mod tests {
         // Selection on the selected track should be untouched.
         assert_eq!(app.selected_effect, 1);
         assert_eq!(app.selected_param, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test helpers
+    // -----------------------------------------------------------------------
+
+    // -- Timeline state -------------------------------------------------------
+
+    #[test]
+    fn initial_timeline_state() {
+        let app = App::new(test_engine_handle());
+        assert!((app.timeline_zoom - 256.0).abs() < f64::EPSILON);
+        assert!((app.timeline_scroll - 0.0).abs() < f64::EPSILON);
+        assert!(app.selected_clip.is_none());
+    }
+
+    #[test]
+    fn has_clips_returns_false_with_no_clips() {
+        let app = App::new(test_engine_handle());
+        assert!(!app.has_clips());
+    }
+
+    #[test]
+    fn timeline_panel_in_focus_cycle() {
+        let mut app = App::new(test_engine_handle());
+        app.focused_panel = FocusedPanel::Tracks;
+        assert_eq!(app.focused_panel.next(), FocusedPanel::Timeline);
+        assert_eq!(FocusedPanel::Timeline.next(), FocusedPanel::Waveform);
+        assert_eq!(FocusedPanel::Waveform.prev(), FocusedPanel::Timeline);
+    }
+
+    #[test]
+    fn is_audio_file_recognises_extensions() {
+        assert!(super::is_audio_file("song.wav"));
+        assert!(super::is_audio_file("song.WAV"));
+        assert!(super::is_audio_file("beat.mp3"));
+        assert!(super::is_audio_file("track.flac"));
+        assert!(super::is_audio_file("sound.ogg"));
+        assert!(super::is_audio_file("clip.aiff"));
+        assert!(super::is_audio_file("clip.aif"));
+        assert!(!super::is_audio_file("readme.txt"));
+        assert!(!super::is_audio_file("image.png"));
+        assert!(!super::is_audio_file("code.rs"));
+    }
+
+    #[test]
+    fn add_track_has_zero_clip_count() {
+        let mut app = App::new(test_engine_handle());
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+        assert_eq!(app.tracks[0].clip_count, 0);
+    }
+
+    #[test]
+    fn file_browser_entry_debug() {
+        let entry = FileBrowserEntry {
+            name: "test.wav".into(),
+            path: std::path::PathBuf::from("/tmp/test.wav"),
+            is_dir: false,
+        };
+        let dbg = format!("{entry:?}");
+        assert!(dbg.contains("test.wav"));
     }
 
     // -----------------------------------------------------------------------

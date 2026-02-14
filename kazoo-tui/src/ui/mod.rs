@@ -5,9 +5,11 @@
 //! spectrum, meters, and inspector panels.
 
 pub mod effects;
+pub mod file_browser;
 pub mod meters;
 pub mod mixer;
 pub mod spectrum;
+pub mod timeline;
 pub mod tracks;
 pub mod transport;
 pub mod waveform;
@@ -23,7 +25,7 @@ use crate::theme;
 /// Layout:
 /// ```text
 /// +-- Transport (3 rows) -----------------------------------------------+
-/// +-- Tracks (22c) --+-- Waveform (top 60%) -----+-- Inspector (30c) ---+
+/// +-- Tracks (26c) --+-- Waveform (top 60%) -----+-- Inspector (36c) ---+
 /// |                  |                           |  (Effects/Mixer)     |
 /// |                  +-- Spectrum (bot 70%) -----+                     |
 /// |                  |   Meters (bot 30%)        |                     |
@@ -47,21 +49,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     transport::draw(frame, app, main_chunks[0]);
 
-    // Content: tracks (22 cols) | center | inspector (30 cols).
+    // Content: tracks (26 cols) | center | inspector (36 cols).
     let content_chunks = Layout::horizontal([
-        Constraint::Length(22),
+        Constraint::Length(26),
         Constraint::Min(20),
-        Constraint::Length(30),
+        Constraint::Length(36),
     ])
     .split(main_chunks[1]);
 
     tracks::draw(frame, app, content_chunks[0]);
 
-    // Center area: waveform (top 60%) | bottom 40%.
+    // Center area: waveform/timeline (top 60%) | bottom 40%.
     let center_chunks = Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(content_chunks[1]);
 
-    waveform::draw(frame, app, center_chunks[0]);
+    // Show timeline when clips exist or Timeline panel is focused;
+    // otherwise show the oscilloscope waveform view.
+    if app.has_clips() || app.focused_panel == FocusedPanel::Timeline {
+        timeline::draw(frame, app, center_chunks[0]);
+    } else {
+        waveform::draw(frame, app, center_chunks[0]);
+    }
 
     // Bottom center: spectrum (70%) | meters (30%).
     let bottom_chunks =
@@ -82,6 +90,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Help overlay (rendered on top of everything).
     if app.mode == AppMode::Help {
         render_help_overlay(frame, terminal_area);
+    }
+
+    // File browser overlay (rendered on top of everything).
+    if matches!(app.mode, AppMode::FileBrowser { .. }) {
+        file_browser::draw(frame, app, terminal_area);
     }
 }
 
@@ -121,10 +134,18 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         help_line("a", "Arm track"),
         help_line("n", "New track"),
         help_line("x", "Delete track"),
-        help_line("J/K", "Next/prev effect"),
+        help_line("t", "Cycle synth mode"),
+        help_line("\u{2191}/\u{2193}", "Synth/effect nav"),
+        help_line("\u{2190}/\u{2192}", "Adjust param"),
+        help_line("h/l", "Pan / cycle param"),
         help_line("+/-", "Volume / param"),
-        help_line("h/l", "Pan / navigate"),
         help_line("[/]", "Zoom waveform"),
+        help_line("o", "Open file browser"),
+        help_line(",/.", "Select clip"),
+        help_line("</>>", "Move clip"),
+        help_line("C-d", "Duplicate clip"),
+        help_line("C-s", "Split clip"),
+        help_line("C-x", "Delete clip"),
         help_line("L", "Toggle loop"),
         help_line("M", "Toggle metronome"),
         help_line("Esc", "Close / cancel"),
@@ -154,7 +175,7 @@ fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
 /// Compute a centered `Rect` within `area`, taking the given percentage
 /// of width and height.
 #[must_use]
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let popup_layout = Layout::vertical([
         Constraint::Percentage((100 - percent_y) / 2),
         Constraint::Percentage(percent_y),

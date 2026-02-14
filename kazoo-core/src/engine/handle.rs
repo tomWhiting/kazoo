@@ -3,6 +3,7 @@
 //! [`EngineHandle`] provides methods to send commands and poll display state.
 //! It is the sole interface between any frontend and the engine subsystem.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -11,7 +12,9 @@ use crossbeam_channel::Sender;
 use ringbuf::HeapCons;
 use ringbuf::traits::Consumer;
 
+use crate::io::{read_audio_file, resample_mono, to_mono};
 use crate::mixer::TrackId;
+use crate::mixer::clip::{ClipData, ClipId};
 use crate::synthesis::SynthesisMode;
 use crate::transport::TransportCommand;
 use crate::{Db, Pan, Processor};
@@ -228,6 +231,110 @@ impl EngineHandle {
     /// Stop recording.
     pub fn stop_recording(&self) -> crate::Result<()> {
         self.send_command(EngineCommand::StopRecording)
+    }
+
+    // -----------------------------------------------------------------------
+    // Clip convenience methods
+    // -----------------------------------------------------------------------
+
+    /// Load an audio file, resample to the engine rate, and add as a clip on a track.
+    ///
+    /// This reads and decodes the file, converts to mono, resamples to the
+    /// engine's sample rate if necessary, and sends an `AddClip` command.
+    /// File I/O happens on the calling thread (UI thread) -- acceptable for
+    /// files under ~10 minutes.
+    pub fn load_clip(&self, track_id: TrackId, path: &Path, position: u64) -> crate::Result<()> {
+        let audio = read_audio_file(path)?;
+        let mono = to_mono(&audio.samples, audio.channels);
+        let resampled = if audio.sample_rate == self.sample_rate {
+            mono
+        } else {
+            resample_mono(&mono, audio.sample_rate, self.sample_rate)?
+        };
+
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled")
+            .to_string();
+
+        let clip_data = ClipData::new(resampled, name, Some(path.to_path_buf()), audio.sample_rate);
+
+        self.send_command(EngineCommand::AddClip {
+            track_id,
+            clip_data,
+            position,
+        })
+    }
+
+    /// Remove a clip from a track.
+    pub fn remove_clip(&self, track_id: TrackId, clip_id: ClipId) -> crate::Result<()> {
+        self.send_command(EngineCommand::RemoveClip { track_id, clip_id })
+    }
+
+    /// Move a clip to a new timeline position.
+    pub fn move_clip(
+        &self,
+        track_id: TrackId,
+        clip_id: ClipId,
+        position: u64,
+    ) -> crate::Result<()> {
+        self.send_command(EngineCommand::MoveClip {
+            track_id,
+            clip_id,
+            new_position: position,
+        })
+    }
+
+    /// Split a clip at the given timeline position.
+    pub fn split_clip(
+        &self,
+        track_id: TrackId,
+        clip_id: ClipId,
+        position: u64,
+    ) -> crate::Result<()> {
+        self.send_command(EngineCommand::SplitClip {
+            track_id,
+            clip_id,
+            split_position: position,
+        })
+    }
+
+    /// Duplicate a clip to a new timeline position.
+    pub fn duplicate_clip(
+        &self,
+        track_id: TrackId,
+        clip_id: ClipId,
+        position: u64,
+    ) -> crate::Result<()> {
+        self.send_command(EngineCommand::DuplicateClip {
+            track_id,
+            clip_id,
+            new_position: position,
+        })
+    }
+
+    /// Set the gain of a specific clip.
+    pub fn set_clip_gain(&self, track_id: TrackId, clip_id: ClipId, gain: Db) -> crate::Result<()> {
+        self.send_command(EngineCommand::SetClipGain {
+            track_id,
+            clip_id,
+            gain,
+        })
+    }
+
+    /// Mute or unmute a specific clip.
+    pub fn set_clip_mute(
+        &self,
+        track_id: TrackId,
+        clip_id: ClipId,
+        muted: bool,
+    ) -> crate::Result<()> {
+        self.send_command(EngineCommand::SetClipMute {
+            track_id,
+            clip_id,
+            muted,
+        })
     }
 
     /// Initiate a graceful shutdown of the engine.
@@ -503,5 +610,123 @@ mod tests {
 
         // Prevent the drop impl from printing an error by forgetting the handle.
         std::mem::forget(handle);
+    }
+
+    // -----------------------------------------------------------------------
+    // Clip convenience method tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn convenience_remove_clip() {
+        let (handle, rx) = test_handle();
+        handle.remove_clip(TrackId(0), ClipId(1)).unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd,
+            EngineCommand::RemoveClip {
+                track_id: TrackId(0),
+                clip_id: ClipId(1),
+            }
+        ));
+    }
+
+    #[test]
+    fn convenience_move_clip() {
+        let (handle, rx) = test_handle();
+        handle.move_clip(TrackId(2), ClipId(5), 44_100).unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd,
+            EngineCommand::MoveClip {
+                track_id: TrackId(2),
+                clip_id: ClipId(5),
+                new_position: 44_100,
+            }
+        ));
+    }
+
+    #[test]
+    fn convenience_split_clip() {
+        let (handle, rx) = test_handle();
+        handle.split_clip(TrackId(1), ClipId(3), 88_200).unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd,
+            EngineCommand::SplitClip {
+                track_id: TrackId(1),
+                clip_id: ClipId(3),
+                split_position: 88_200,
+            }
+        ));
+    }
+
+    #[test]
+    fn convenience_duplicate_clip() {
+        let (handle, rx) = test_handle();
+        handle
+            .duplicate_clip(TrackId(0), ClipId(7), 132_300)
+            .unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd,
+            EngineCommand::DuplicateClip {
+                track_id: TrackId(0),
+                clip_id: ClipId(7),
+                new_position: 132_300,
+            }
+        ));
+    }
+
+    #[test]
+    fn convenience_set_clip_gain() {
+        let (handle, rx) = test_handle();
+        handle
+            .set_clip_gain(TrackId(1), ClipId(2), Db::new(-6.0))
+            .unwrap();
+        let cmd = rx.try_recv().unwrap();
+        match cmd {
+            EngineCommand::SetClipGain {
+                track_id: TrackId(1),
+                clip_id: ClipId(2),
+                gain,
+            } => {
+                assert!(
+                    (gain.value() - (-6.0)).abs() < f32::EPSILON,
+                    "expected -6.0 dB, got {}",
+                    gain.value()
+                );
+            }
+            other => panic!("expected SetClipGain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convenience_set_clip_mute() {
+        let (handle, rx) = test_handle();
+        handle.set_clip_mute(TrackId(0), ClipId(4), true).unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd,
+            EngineCommand::SetClipMute {
+                track_id: TrackId(0),
+                clip_id: ClipId(4),
+                muted: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn convenience_set_clip_mute_false() {
+        let (handle, rx) = test_handle();
+        handle.set_clip_mute(TrackId(3), ClipId(9), false).unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd,
+            EngineCommand::SetClipMute {
+                track_id: TrackId(3),
+                clip_id: ClipId(9),
+                muted: false,
+            }
+        ));
     }
 }

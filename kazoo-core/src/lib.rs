@@ -116,6 +116,16 @@ pub trait Processor: Send {
     /// The default implementation is a no-op — most processors use fixed-size
     /// internal buffers and do not need this.
     fn prepare(&mut self, _max_block_size: usize) {}
+
+    /// Feed a detected pitch frequency (Hz) to this processor.
+    ///
+    /// Called by the processing thread when the analysis thread detects a
+    /// voiced pitch. Synthesis processors that track vocal pitch should
+    /// override this to update their oscillator frequency.
+    ///
+    /// The default implementation is a no-op — effects and synths that do not
+    /// use pitch tracking ignore this.
+    fn set_pitch(&mut self, _frequency: f32) {}
 }
 
 // ---------------------------------------------------------------------------

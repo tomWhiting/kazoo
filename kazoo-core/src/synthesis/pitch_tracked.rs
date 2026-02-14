@@ -415,6 +415,10 @@ impl Processor for PitchTrackedSynth {
         self.filter.set_sample_rate(sr);
         self.reset();
     }
+
+    fn set_pitch(&mut self, frequency: f32) {
+        self.set_target_frequency(frequency);
+    }
 }
 
 /// Compute one-pole smoothing coefficient for portamento.

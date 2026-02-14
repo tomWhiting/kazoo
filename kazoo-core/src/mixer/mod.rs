@@ -4,10 +4,14 @@
 //! effect chain, volume/pan controls, and per-channel metering. All internal
 //! buffers are pre-allocated — [`Mixer::process`] never allocates.
 
+pub mod clip;
+
 use crate::effects::EffectChain;
 use crate::{DEFAULT_BUFFER_SIZE, Db, Pan, Processor, sanitize_buffer, sanitize_sample};
 
 use std::fmt;
+
+use clip::{AudioClip, ClipId};
 
 // ---------------------------------------------------------------------------
 // TrackId
@@ -44,11 +48,21 @@ pub struct Track {
     // Pre-allocated processing buffers (mono, sized to buffer_size).
     synth_buffer: Vec<f32>,
     effect_buffer: Vec<f32>,
+    // Pre-allocated buffer for clip audio before synth processing.
+    // During playback, clips are read into this buffer, then fed through the
+    // synth as "virtual mic input" so the user can shape clips with synth settings.
+    clip_buffer: Vec<f32>,
     // Per-channel peak values (linear). Held until explicit reset.
     peak_meter: [f32; 2],
     // Per-channel sum-of-squares for RMS computation (f64 for precision).
     rms_accumulator: [f64; 2],
     rms_sample_count: usize,
+    // Number of valid samples in `effect_buffer` after the last
+    // [`Mixer::process`] call. Only `effect_buffer[..processed_samples]` is
+    // meaningful; the rest is stale pre-allocated capacity.
+    processed_samples: usize,
+    // Audio clips placed on this track's timeline.
+    clips: Vec<AudioClip>,
 }
 
 impl fmt::Debug for Track {
@@ -63,6 +77,8 @@ impl fmt::Debug for Track {
             .field("muted", &self.muted)
             .field("soloed", &self.soloed)
             .field("armed", &self.armed)
+            .field("clips", &self.clips.len())
+            .field("processed_samples", &self.processed_samples)
             .field("peak_meter", &self.peak_meter)
             .field("rms_sample_count", &self.rms_sample_count)
             .finish_non_exhaustive()
@@ -174,6 +190,52 @@ impl Track {
         self.synth = synth;
     }
 
+    /// All clips on this track, in insertion order.
+    #[must_use]
+    pub fn clips(&self) -> &[AudioClip] {
+        &self.clips
+    }
+
+    /// Add a clip to this track. Respects [`clip::MAX_CLIPS_PER_TRACK`].
+    /// Returns `true` if the clip was added, `false` if the limit was reached.
+    pub fn add_clip(&mut self, clip: AudioClip) -> bool {
+        if self.clips.len() >= clip::MAX_CLIPS_PER_TRACK {
+            return false;
+        }
+        self.clips.push(clip);
+        true
+    }
+
+    /// Remove a clip by its [`ClipId`]. Returns `true` if found and removed.
+    pub fn remove_clip(&mut self, clip_id: ClipId) -> bool {
+        if let Some(pos) = self.clips.iter().position(|c| c.id() == clip_id) {
+            self.clips.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Find a clip by its [`ClipId`].
+    #[must_use]
+    pub fn find_clip(&self, clip_id: ClipId) -> Option<&AudioClip> {
+        self.clips.iter().find(|c| c.id() == clip_id)
+    }
+
+    /// Find a clip by its [`ClipId`] (mutable).
+    pub fn find_clip_mut(&mut self, clip_id: ClipId) -> Option<&mut AudioClip> {
+        self.clips.iter_mut().find(|c| c.id() == clip_id)
+    }
+
+    /// Access the post-effect mono buffer (valid after [`Mixer::process`]).
+    ///
+    /// Returns only the `[..processed_samples]` slice that was filled by the
+    /// most recent [`Mixer::process`] call, not the full pre-allocated buffer.
+    #[must_use]
+    pub fn effect_buffer(&self) -> &[f32] {
+        &self.effect_buffer[..self.processed_samples]
+    }
+
     /// Reset peak and RMS meters to zero.
     const fn reset_meters(&mut self) {
         self.peak_meter = [0.0; 2];
@@ -246,6 +308,9 @@ pub struct Mixer {
     master_volume: Db,
     /// Interleaved stereo output buffer: `[L0, R0, L1, R1, ...]`.
     master_buffer: Vec<f32>,
+    /// Mixed clip audio from all tracks (mono), for feeding to the analysis
+    /// thread during playback so pitch detection runs on clip content.
+    clip_mix_buffer: Vec<f32>,
     master_peak: [f32; 2],
     master_rms_accumulator: [f64; 2],
     master_rms_count: usize,
@@ -276,6 +341,7 @@ impl Mixer {
             tracks: Vec::with_capacity(crate::MAX_TRACKS),
             master_volume: Db::UNITY,
             master_buffer: vec![0.0; DEFAULT_BUFFER_SIZE * 2],
+            clip_mix_buffer: vec![0.0; DEFAULT_BUFFER_SIZE],
             master_peak: [0.0; 2],
             master_rms_accumulator: [0.0; 2],
             master_rms_count: 0,
@@ -294,13 +360,15 @@ impl Mixer {
         self.sample_rate = sample_rate;
         self.buffer_size = buffer_size;
 
-        // Resize master buffer (interleaved stereo).
+        // Resize master buffer (interleaved stereo) and clip mix buffer (mono).
         self.master_buffer.resize(buffer_size * 2, 0.0);
+        self.clip_mix_buffer.resize(buffer_size, 0.0);
 
         // Update every track.
         for track in &mut self.tracks {
             track.synth_buffer.resize(buffer_size, 0.0);
             track.effect_buffer.resize(buffer_size, 0.0);
+            track.clip_buffer.resize(buffer_size, 0.0);
             track.effects.prepare(buffer_size);
             track.synth.set_sample_rate(sample_rate);
             track.synth.prepare(buffer_size);
@@ -331,9 +399,12 @@ impl Mixer {
             armed: false,
             synth_buffer: vec![0.0; self.buffer_size],
             effect_buffer: vec![0.0; self.buffer_size],
+            clip_buffer: vec![0.0; self.buffer_size],
+            processed_samples: 0,
             peak_meter: [0.0; 2],
             rms_accumulator: [0.0; 2],
             rms_sample_count: 0,
+            clips: Vec::with_capacity(32),
         };
 
         self.tracks.push(track);
@@ -368,6 +439,11 @@ impl Mixer {
         &self.tracks
     }
 
+    /// All tracks in insertion order (mutable).
+    pub fn tracks_mut(&mut self) -> &mut [Track] {
+        &mut self.tracks
+    }
+
     /// Number of tracks currently in the mixer.
     #[must_use]
     pub fn track_count(&self) -> usize {
@@ -392,6 +468,16 @@ impl Mixer {
         &self.master_buffer
     }
 
+    /// Mixed clip audio from all tracks (mono), valid after [`process`].
+    ///
+    /// During playback, this buffer contains the raw clip audio before synth
+    /// processing. Fed to the analysis thread so pitch detection runs on clip
+    /// content rather than ambient mic noise.
+    #[must_use]
+    pub fn clip_mix_buffer(&self) -> &[f32] {
+        &self.clip_mix_buffer
+    }
+
     /// Current sample rate.
     #[must_use]
     pub const fn sample_rate(&self) -> f32 {
@@ -406,20 +492,37 @@ impl Mixer {
 
     /// Process one block of audio through all tracks and sum to the master bus.
     ///
-    /// `input` is the mono microphone/voice data passed to each track's synth.
+    /// `input` is the mono microphone/voice data passed to armed tracks' synths.
     /// `num_samples` is the number of frames to process (capped to `buffer_size`).
+    /// `position_samples` is the current transport timeline position; clips on
+    /// tracks are read from this position when `is_playing` is true.
+    /// `is_playing` indicates whether the transport is in Playing or Recording
+    /// state (clips only play when the transport is running).
+    /// `is_recording` indicates whether the transport is in Recording state;
+    /// armed tracks only run their synth during recording to avoid interference
+    /// with clip playback.
     ///
     /// After this call, [`Mixer::master_buffer`] contains interleaved stereo
     /// output of length `2 * num_samples`.
-    pub fn process(&mut self, input: &[f32], num_samples: usize) {
+    pub fn process(
+        &mut self,
+        input: &[f32],
+        num_samples: usize,
+        position_samples: u64,
+        is_playing: bool,
+        is_recording: bool,
+    ) {
         let num_samples = num_samples.min(self.buffer_size);
         if num_samples == 0 {
             return;
         }
         let stereo_len = num_samples * 2;
 
-        // 1. Zero the master buffer for this block.
+        // 1. Zero the master and clip-mix buffers for this block.
         for sample in &mut self.master_buffer[..stereo_len] {
+            *sample = 0.0;
+        }
+        for sample in &mut self.clip_mix_buffer[..num_samples] {
             *sample = 0.0;
         }
 
@@ -437,18 +540,64 @@ impl Mixer {
                 continue;
             }
 
-            // 3a. Synth: voice input → mono synthesis.
-            track
-                .synth
-                .process(input, &mut track.synth_buffer[..num_samples]);
+            // 3a. Zero buffers for this block.
+            for s in &mut track.synth_buffer[..num_samples] {
+                *s = 0.0;
+            }
+            for s in &mut track.clip_buffer[..num_samples] {
+                *s = 0.0;
+            }
 
-            // 3b. Effects: mono → mono through the chain.
+            // 3b. Read clip audio into the clip buffer (if playing).
+            let has_clips = is_playing && !track.clips.is_empty();
+            if has_clips {
+                for clip in &track.clips {
+                    clip.read_into(position_samples, &mut track.clip_buffer[..num_samples]);
+                }
+                // Accumulate raw clip audio for analysis-thread pitch detection.
+                for i in 0..num_samples {
+                    self.clip_mix_buffer[i] += track.clip_buffer[i];
+                }
+            }
+
+            // 3c. Route audio through the synth.
+            //
+            // Three modes:
+            //  - Playback: clip audio → synth → synth_buffer
+            //    (each track's clips are shaped by that track's synth settings)
+            //  - Recording: mic → synth → synth_buffer, plus raw clips for backing
+            //  - Monitoring (stopped/paused): mic → synth → synth_buffer
+            if has_clips && !is_recording {
+                // Playback: feed clip audio through the synth as virtual input.
+                track
+                    .synth
+                    .process(&track.clip_buffer[..num_samples], &mut track.synth_buffer[..num_samples]);
+            } else if track.armed && is_recording {
+                // Recording: live mic through synth.
+                track
+                    .synth
+                    .process(input, &mut track.synth_buffer[..num_samples]);
+                // Sum raw clip audio for backing (hear existing clips while recording).
+                if has_clips {
+                    for i in 0..num_samples {
+                        track.synth_buffer[i] += track.clip_buffer[i];
+                    }
+                }
+            } else if track.armed && !is_playing {
+                // Monitoring: live mic through synth for sound design.
+                track
+                    .synth
+                    .process(input, &mut track.synth_buffer[..num_samples]);
+            }
+
+            // 3d. Effects: mono → mono through the chain.
             track.effects.process(
                 &track.synth_buffer[..num_samples],
                 &mut track.effect_buffer[..num_samples],
             );
+            track.processed_samples = num_samples;
 
-            // 3c. Apply volume, pan, sum into master, and update meters.
+            // 3e. Apply volume, pan, sum into master, and update meters.
             let volume_gain = track.volume.to_linear();
             let (pan_l, pan_r) = track.pan.gains();
 
@@ -519,6 +668,7 @@ impl Mixer {
     /// `Vec` to avoid per-frame heap allocation on the processing thread.
     pub fn write_snapshot(&self, snapshot: &mut MixerSnapshot) {
         snapshot.track_meters.clear();
+        snapshot.track_meters.reserve(self.tracks.len());
         snapshot
             .track_meters
             .extend(self.tracks.iter().map(Track::meter_snapshot));
@@ -623,10 +773,11 @@ mod tests {
         fn set_sample_rate(&mut self, _sample_rate: f32) {}
     }
 
-    /// Creates a mixer with a single unity-gain track (centered, 0 dB).
+    /// Creates a mixer with a single unity-gain, armed track (centered, 0 dB).
     fn mixer_with_unity_track() -> (Mixer, TrackId) {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("Test".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         (mixer, id)
     }
 
@@ -677,7 +828,8 @@ mod tests {
 
     #[test]
     fn track_default_state() {
-        let (mixer, id) = mixer_with_unity_track();
+        let mut mixer = Mixer::new();
+        let id = mixer.add_track("Test".into(), Box::new(TestSynth::new(1.0)));
         let track = mixer.track(id).unwrap();
 
         assert_eq!(track.volume(), Db::UNITY);
@@ -719,7 +871,7 @@ mod tests {
     fn process_no_tracks_outputs_silence() {
         let mut mixer = Mixer::new();
         let input = [0.5_f32; 64];
-        mixer.process(&input, 64);
+        mixer.process(&input, 64, 0, false, false);
 
         let master = mixer.master_buffer();
         for (i, &s) in master[..128].iter().enumerate() {
@@ -733,14 +885,14 @@ mod tests {
     #[test]
     fn process_empty_input_no_panic() {
         let (mut mixer, _id) = mixer_with_unity_track();
-        mixer.process(&[], 0);
+        mixer.process(&[], 0, 0, false, false);
     }
 
     #[test]
     fn process_unity_track_center_pan() {
         let (mut mixer, _id) = mixer_with_unity_track();
         let input = [0.8_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         let (pan_l, pan_r) = Pan::CENTER.gains();
@@ -767,10 +919,11 @@ mod tests {
     fn pan_hard_left_routes_left_only() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("L".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_pan(Pan::new(-1.0));
 
         let input = [1.0_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         for i in 0..4 {
@@ -789,10 +942,11 @@ mod tests {
     fn pan_hard_right_routes_right_only() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("R".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_pan(Pan::new(1.0));
 
         let input = [1.0_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         for i in 0..4 {
@@ -812,7 +966,7 @@ mod tests {
         // At center, each channel should receive ≈ 0.707 of the signal.
         let (mut mixer, _id) = mixer_with_unity_track();
         let input = [1.0_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         for i in 0..4 {
@@ -835,7 +989,7 @@ mod tests {
     fn volume_unity_passes_through() {
         let (mut mixer, _id) = mixer_with_unity_track();
         let input = [0.5_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         let (pan_l, _) = Pan::CENTER.gains();
@@ -851,10 +1005,11 @@ mod tests {
     fn volume_silence_outputs_zero() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("Silent".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_volume(Db::SILENCE);
 
         let input = [1.0_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         for (i, &s) in master[..8].iter().enumerate() {
@@ -869,11 +1024,12 @@ mod tests {
     fn volume_minus_6db_halves_amplitude() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("Half".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_pan(Pan::new(-1.0)); // hard left for simplicity
         mixer.track_mut(id).unwrap().set_volume(Db::new(-6.0));
 
         let input = [1.0_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         let expected = Db::new(-6.0).to_linear(); // ≈ 0.501
@@ -892,11 +1048,12 @@ mod tests {
     fn master_volume_scales_output() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("T".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_pan(Pan::new(-1.0)); // hard left
         mixer.set_master_volume(Db::new(-6.0));
 
         let input = [1.0_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         let expected = Db::new(-6.0).to_linear(); // ≈ 0.501
@@ -921,10 +1078,11 @@ mod tests {
     fn muted_track_produces_silence() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("Muted".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_muted(true);
 
         let input = [1.0_f32; 8];
-        mixer.process(&input, 8);
+        mixer.process(&input, 8, 0, false, false);
 
         let master = mixer.master_buffer();
         for (i, &s) in master[..16].iter().enumerate() {
@@ -943,6 +1101,9 @@ mod tests {
         let id_a = mixer.add_track("A".into(), Box::new(TestSynth::new(1.0)));
         let id_b = mixer.add_track("B".into(), Box::new(TestSynth::new(0.5)));
 
+        mixer.track_mut(id_a).unwrap().set_armed(true);
+        mixer.track_mut(id_b).unwrap().set_armed(true);
+
         // Both panned hard left for easy measurement.
         mixer.track_mut(id_a).unwrap().set_pan(Pan::new(-1.0));
         mixer.track_mut(id_b).unwrap().set_pan(Pan::new(-1.0));
@@ -951,7 +1112,7 @@ mod tests {
         mixer.track_mut(id_b).unwrap().set_soloed(true);
 
         let input = [1.0_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         // Only track B (gain 0.5) should be heard.
@@ -968,11 +1129,12 @@ mod tests {
     fn solo_muted_track_is_still_silent() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("Both".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_soloed(true);
         mixer.track_mut(id).unwrap().set_muted(true);
 
         let input = [1.0_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         for (i, &s) in master[..8].iter().enumerate() {
@@ -989,12 +1151,15 @@ mod tests {
         let id_a = mixer.add_track("A".into(), Box::new(TestSynth::new(1.0)));
         let id_b = mixer.add_track("B".into(), Box::new(TestSynth::new(1.0)));
 
+        mixer.track_mut(id_a).unwrap().set_armed(true);
+        mixer.track_mut(id_b).unwrap().set_armed(true);
+
         // Both panned hard left, unity volume.
         mixer.track_mut(id_a).unwrap().set_pan(Pan::new(-1.0));
         mixer.track_mut(id_b).unwrap().set_pan(Pan::new(-1.0));
 
         let input = [0.3_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         // Both tracks sum: 0.3 + 0.3 = 0.6
@@ -1015,12 +1180,15 @@ mod tests {
         let id_a = mixer.add_track("A".into(), Box::new(TestSynth::new(0.25)));
         let id_b = mixer.add_track("B".into(), Box::new(TestSynth::new(0.75)));
 
+        mixer.track_mut(id_a).unwrap().set_armed(true);
+        mixer.track_mut(id_b).unwrap().set_armed(true);
+
         // Both hard left for easy measurement.
         mixer.track_mut(id_a).unwrap().set_pan(Pan::new(-1.0));
         mixer.track_mut(id_b).unwrap().set_pan(Pan::new(-1.0));
 
         let input = [1.0_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let master = mixer.master_buffer();
         // Sum: 0.25 + 0.75 = 1.0
@@ -1039,10 +1207,11 @@ mod tests {
     fn peak_detection() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("Peak".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_pan(Pan::new(-1.0)); // hard left
 
         let input = [0.3, 0.7, 0.5, 0.1_f32];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let snap = mixer.snapshot();
         // Peak should be 0.7 on left channel.
@@ -1065,15 +1234,16 @@ mod tests {
     fn peak_hold_persists_across_calls() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("Hold".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_pan(Pan::new(-1.0));
 
         // First block: loud.
         let loud = [0.9_f32; 4];
-        mixer.process(&loud, 4);
+        mixer.process(&loud, 4, 0, false, false);
 
         // Second block: quiet.
         let quiet = [0.1_f32; 4];
-        mixer.process(&quiet, 4);
+        mixer.process(&quiet, 4, 0, false, false);
 
         let snap = mixer.snapshot();
         // Peak should still reflect the loud block.
@@ -1091,12 +1261,14 @@ mod tests {
         let id_a = mixer.add_track("A".into(), Box::new(TestSynth::new(1.0)));
         let id_b = mixer.add_track("B".into(), Box::new(TestSynth::new(1.0)));
 
+        mixer.track_mut(id_a).unwrap().set_armed(true);
+        mixer.track_mut(id_b).unwrap().set_armed(true);
         mixer.track_mut(id_a).unwrap().set_pan(Pan::new(-1.0));
         mixer.track_mut(id_b).unwrap().set_pan(Pan::new(-1.0));
 
         // Both tracks at full volume, summing to > 1.0.
         let input = [0.8_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let snap = mixer.snapshot();
         // Master left peak should be 1.6 → clipping.
@@ -1107,7 +1279,7 @@ mod tests {
     fn no_clipping_below_unity() {
         let (mut mixer, _id) = mixer_with_unity_track();
         let input = [0.5_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let snap = mixer.snapshot();
         assert!(!snap.master_clipping, "should not be clipping at 0.5");
@@ -1117,7 +1289,7 @@ mod tests {
     fn reset_meters_clears_peak_and_rms() {
         let (mut mixer, _id) = mixer_with_unity_track();
         let input = [0.9_f32; 64];
-        mixer.process(&input, 64);
+        mixer.process(&input, 64, 0, false, false);
 
         // Verify meters are non-zero.
         let snap_before = mixer.snapshot();
@@ -1147,11 +1319,12 @@ mod tests {
     fn rms_value_is_reasonable() {
         let mut mixer = Mixer::new();
         let id = mixer.add_track("RMS".into(), Box::new(TestSynth::new(1.0)));
+        mixer.track_mut(id).unwrap().set_armed(true);
         mixer.track_mut(id).unwrap().set_pan(Pan::new(-1.0)); // hard left
 
         // Constant signal of 0.5 → RMS should be 0.5.
         let input = [0.5_f32; 64];
-        mixer.process(&input, 64);
+        mixer.process(&input, 64, 0, false, false);
 
         let snap = mixer.snapshot();
         let expected_rms_db = Db::from_linear(0.5).value();
@@ -1179,7 +1352,7 @@ mod tests {
 
         // Process should work with the new size.
         let input = [0.5_f32; 512];
-        mixer.process(&input, 512);
+        mixer.process(&input, 512, 0, false, false);
     }
 
     #[test]
@@ -1199,7 +1372,7 @@ mod tests {
         mixer.add_track("B".into(), Box::new(TestSynth::new(1.0)));
 
         let input = [0.1_f32; 4];
-        mixer.process(&input, 4);
+        mixer.process(&input, 4, 0, false, false);
 
         let snap = mixer.snapshot();
         assert_eq!(snap.track_meters.len(), 2);
@@ -1223,7 +1396,7 @@ mod tests {
     fn nan_input_produces_finite_output() {
         let (mut mixer, _id) = mixer_with_unity_track();
         let input = [f32::NAN; 8];
-        mixer.process(&input, 8);
+        mixer.process(&input, 8, 0, false, false);
 
         let master = mixer.master_buffer();
         for (i, &s) in master[..16].iter().enumerate() {
@@ -1235,7 +1408,7 @@ mod tests {
     fn inf_input_produces_finite_output() {
         let (mut mixer, _id) = mixer_with_unity_track();
         let input = [f32::INFINITY; 8];
-        mixer.process(&input, 8);
+        mixer.process(&input, 8, 0, false, false);
 
         let master = mixer.master_buffer();
         for (i, &s) in master[..16].iter().enumerate() {
@@ -1267,7 +1440,7 @@ mod tests {
         let (mut mixer, _id) = mixer_with_unity_track();
         // Request more samples than the buffer size — should not panic.
         let input = [0.5_f32; 1024];
-        mixer.process(&input, 1024);
+        mixer.process(&input, 1024, 0, false, false);
     }
 
     #[test]

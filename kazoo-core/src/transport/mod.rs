@@ -212,6 +212,12 @@ impl TransportClock {
         }
     }
 
+    /// Current timeline position in samples.
+    #[must_use]
+    pub const fn position_samples(&self) -> u64 {
+        self.position_samples
+    }
+
     /// Returns `true` if the transport is currently playing (not paused, not
     /// stopped, not recording).
     #[must_use]

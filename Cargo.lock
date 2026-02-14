@@ -1141,6 +1141,7 @@ dependencies = [
 name = "kazoo-core"
 version = "0.1.0"
 dependencies = [
+ "audioadapter-buffers",
  "cpal",
  "crossbeam-channel",
  "dasp_sample",

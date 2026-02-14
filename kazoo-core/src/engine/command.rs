@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::mixer::TrackId;
+use crate::mixer::clip::{ClipData, ClipId};
 use crate::synthesis::SynthesisMode;
 use crate::transport::TransportCommand;
 use crate::{Db, Pan, Processor};
@@ -89,6 +90,65 @@ pub enum EngineCommand {
     /// Stop an active recording session and finalize the WAV file.
     StopRecording,
 
+    /// Add a new audio clip to a track at the specified timeline position.
+    AddClip {
+        track_id: TrackId,
+        clip_data: ClipData,
+        position: u64,
+    },
+
+    /// Remove a clip from a track by clip ID.
+    RemoveClip { track_id: TrackId, clip_id: ClipId },
+
+    /// Move a clip to a new timeline position.
+    MoveClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+        new_position: u64,
+    },
+
+    /// Trim samples from the start of a clip (non-destructive).
+    TrimClipStart {
+        track_id: TrackId,
+        clip_id: ClipId,
+        samples: usize,
+    },
+
+    /// Trim samples from the end of a clip (non-destructive).
+    TrimClipEnd {
+        track_id: TrackId,
+        clip_id: ClipId,
+        samples: usize,
+    },
+
+    /// Split a clip at the given timeline position into two clips.
+    SplitClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+        split_position: u64,
+    },
+
+    /// Set the gain of a clip.
+    SetClipGain {
+        track_id: TrackId,
+        clip_id: ClipId,
+        gain: Db,
+    },
+
+    /// Mute or unmute a clip.
+    SetClipMute {
+        track_id: TrackId,
+        clip_id: ClipId,
+        muted: bool,
+    },
+
+    /// Duplicate a clip to a new timeline position.
+    DuplicateClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+        new_position: u64,
+    },
+
     /// Shut down the engine gracefully. All threads should terminate.
     Shutdown,
 }
@@ -96,6 +156,7 @@ pub enum EngineCommand {
 // `EngineCommand` cannot derive `Debug` because `Box<dyn Processor>` is not
 // Debug-compatible in every variant. Provide a manual implementation.
 impl std::fmt::Debug for EngineCommand {
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Transport(cmd) => f.debug_tuple("Transport").field(cmd).finish(),
@@ -173,6 +234,91 @@ impl std::fmt::Debug for EngineCommand {
                 .field("path", path)
                 .finish(),
             Self::StopRecording => write!(f, "StopRecording"),
+            Self::AddClip {
+                track_id,
+                clip_data,
+                position,
+            } => f
+                .debug_struct("AddClip")
+                .field("track_id", track_id)
+                .field("clip_data", &clip_data.name())
+                .field("position", position)
+                .finish(),
+            Self::RemoveClip { track_id, clip_id } => f
+                .debug_struct("RemoveClip")
+                .field("track_id", track_id)
+                .field("clip_id", clip_id)
+                .finish(),
+            Self::MoveClip {
+                track_id,
+                clip_id,
+                new_position,
+            } => f
+                .debug_struct("MoveClip")
+                .field("track_id", track_id)
+                .field("clip_id", clip_id)
+                .field("new_position", new_position)
+                .finish(),
+            Self::TrimClipStart {
+                track_id,
+                clip_id,
+                samples,
+            } => f
+                .debug_struct("TrimClipStart")
+                .field("track_id", track_id)
+                .field("clip_id", clip_id)
+                .field("samples", samples)
+                .finish(),
+            Self::TrimClipEnd {
+                track_id,
+                clip_id,
+                samples,
+            } => f
+                .debug_struct("TrimClipEnd")
+                .field("track_id", track_id)
+                .field("clip_id", clip_id)
+                .field("samples", samples)
+                .finish(),
+            Self::SplitClip {
+                track_id,
+                clip_id,
+                split_position,
+            } => f
+                .debug_struct("SplitClip")
+                .field("track_id", track_id)
+                .field("clip_id", clip_id)
+                .field("split_position", split_position)
+                .finish(),
+            Self::SetClipGain {
+                track_id,
+                clip_id,
+                gain,
+            } => f
+                .debug_struct("SetClipGain")
+                .field("track_id", track_id)
+                .field("clip_id", clip_id)
+                .field("gain", gain)
+                .finish(),
+            Self::SetClipMute {
+                track_id,
+                clip_id,
+                muted,
+            } => f
+                .debug_struct("SetClipMute")
+                .field("track_id", track_id)
+                .field("clip_id", clip_id)
+                .field("muted", muted)
+                .finish(),
+            Self::DuplicateClip {
+                track_id,
+                clip_id,
+                new_position,
+            } => f
+                .debug_struct("DuplicateClip")
+                .field("track_id", track_id)
+                .field("clip_id", clip_id)
+                .field("new_position", new_position)
+                .finish(),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }
@@ -181,6 +327,7 @@ impl std::fmt::Debug for EngineCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mixer::clip::{ClipData, ClipId};
     use crate::transport::TransportCommand;
 
     #[test]
@@ -324,5 +471,118 @@ mod tests {
         let cmd = EngineCommand::StopRecording;
         let dbg = format!("{cmd:?}");
         assert!(dbg.contains("StopRecording"));
+    }
+
+    /// Helper to create test clip data for command tests.
+    fn test_clip_data() -> ClipData {
+        ClipData::new(vec![0.0; 100], "TestClip".into(), None, 44_100)
+    }
+
+    #[test]
+    fn add_clip_debug() {
+        let cmd = EngineCommand::AddClip {
+            track_id: TrackId(0),
+            clip_data: test_clip_data(),
+            position: 1000,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("AddClip"));
+        assert!(dbg.contains("TestClip"));
+        assert!(dbg.contains("1000"));
+    }
+
+    #[test]
+    fn remove_clip_debug() {
+        let cmd = EngineCommand::RemoveClip {
+            track_id: TrackId(1),
+            clip_id: ClipId(5),
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("RemoveClip"));
+        assert!(dbg.contains("5"));
+    }
+
+    #[test]
+    fn move_clip_debug() {
+        let cmd = EngineCommand::MoveClip {
+            track_id: TrackId(0),
+            clip_id: ClipId(3),
+            new_position: 2000,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("MoveClip"));
+        assert!(dbg.contains("3"));
+        assert!(dbg.contains("2000"));
+    }
+
+    #[test]
+    fn trim_clip_start_debug() {
+        let cmd = EngineCommand::TrimClipStart {
+            track_id: TrackId(0),
+            clip_id: ClipId(1),
+            samples: 500,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("TrimClipStart"));
+        assert!(dbg.contains("500"));
+    }
+
+    #[test]
+    fn trim_clip_end_debug() {
+        let cmd = EngineCommand::TrimClipEnd {
+            track_id: TrackId(2),
+            clip_id: ClipId(7),
+            samples: 300,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("TrimClipEnd"));
+        assert!(dbg.contains("300"));
+    }
+
+    #[test]
+    fn split_clip_debug() {
+        let cmd = EngineCommand::SplitClip {
+            track_id: TrackId(0),
+            clip_id: ClipId(1),
+            split_position: 5000,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("SplitClip"));
+        assert!(dbg.contains("5000"));
+    }
+
+    #[test]
+    fn set_clip_gain_debug() {
+        let cmd = EngineCommand::SetClipGain {
+            track_id: TrackId(0),
+            clip_id: ClipId(2),
+            gain: Db::new(-6.0),
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("SetClipGain"));
+    }
+
+    #[test]
+    fn set_clip_mute_debug() {
+        let cmd = EngineCommand::SetClipMute {
+            track_id: TrackId(1),
+            clip_id: ClipId(4),
+            muted: true,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("SetClipMute"));
+        assert!(dbg.contains("true"));
+    }
+
+    #[test]
+    fn duplicate_clip_debug() {
+        let cmd = EngineCommand::DuplicateClip {
+            track_id: TrackId(0),
+            clip_id: ClipId(1),
+            new_position: 8000,
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("DuplicateClip"));
+        assert!(dbg.contains("8000"));
     }
 }

@@ -12,12 +12,14 @@ use ringbuf::{HeapCons, HeapProd};
 
 use crate::analysis::{EnvelopeFollower, PitchEstimate};
 use crate::mixer::Mixer;
+use crate::mixer::TrackId;
+use crate::mixer::clip::{AudioClip, ClipData, ClipId};
 use crate::synthesis::SynthesisMode;
-use crate::transport::TransportClock;
+use crate::transport::{TransportClock, TransportCommand};
 use crate::{Db, sanitize_buffer};
 
 use super::command::EngineCommand;
-use super::display::DisplayState;
+use super::display::{ClipSnapshot, DisplayState, TimelineSnapshot, TrackClipSnapshot};
 
 /// Create a synthesis processor for the given mode and sample rate.
 ///
@@ -38,6 +40,26 @@ pub fn create_synth(mode: SynthesisMode, sample_rate: f32) -> Box<dyn crate::Pro
         SynthesisMode::PhaseVocoder => Box::new(crate::synthesis::PhaseVocoder::new(sample_rate)),
     }
 }
+
+/// Per-track recording buffer state.
+///
+/// Created when recording starts for each armed track. The buffer is
+/// pre-allocated on the command handler (not the tight audio loop). When
+/// recording stops, the captured audio is converted into a [`ClipData`] and
+/// added to the track as a clip.
+struct TrackRecordingState {
+    /// Pre-allocated sample buffer. Only `len` samples are valid.
+    buffer: Vec<f32>,
+    /// Number of valid samples written so far.
+    len: usize,
+    /// Transport position (in samples) when recording began.
+    start_position: u64,
+    /// The track being recorded.
+    track_id: TrackId,
+}
+
+/// Maximum recording duration in seconds before auto-stop (5 minutes).
+const MAX_RECORDING_SECONDS: usize = 5 * 60;
 
 /// State bundle owned by the processing thread.
 ///
@@ -62,6 +84,13 @@ struct ProcessingState {
     /// Pre-allocated display snapshot reused each frame to avoid per-block
     /// heap allocations on the processing thread.
     display_scratch: DisplayState,
+    /// Monotonically increasing counter for assigning unique clip IDs.
+    next_clip_id: u64,
+    /// Active per-track recording sessions. Each armed track gets one when
+    /// the transport enters Record state.
+    track_recordings: Vec<TrackRecordingState>,
+    /// Whether clips have changed since the last timeline snapshot was built.
+    clips_dirty: bool,
 }
 
 impl ProcessingState {
@@ -93,6 +122,9 @@ impl ProcessingState {
             meter_sample_counter: 0,
             meter_reset_interval,
             display_scratch: DisplayState::initial(sample_rate),
+            next_clip_id: 0,
+            track_recordings: Vec::with_capacity(crate::MAX_TRACKS),
+            clips_dirty: false,
         }
     }
 }
@@ -163,8 +195,10 @@ pub fn run(
         drain_analysis_results(&mut io, &mut state);
 
         let input_level_db = compute_input_level(&mut state, num_read);
-        advance_transport(&mut state, num_samples);
         let master_slice_len = run_mixer_and_output(&mut io, &mut state, num_samples);
+        feed_clip_analysis(&mut io, &state, num_samples);
+        capture_track_recordings(&mut state, num_samples);
+        advance_transport(&mut state, num_samples);
         feed_disk(&mut io, &state, master_slice_len);
         capture_waveform(&mut state, num_read);
         let cpu_load = compute_cpu_load(block_start, num_samples, state.sample_rate);
@@ -213,13 +247,37 @@ fn read_mic_input(io: &mut ProcessingIO, state: &mut ProcessingState) -> usize {
 }
 
 /// Feed raw mic samples to the analysis thread's ring buffer.
+///
+/// Called before the mixer runs to feed mic audio for pitch detection during
+/// recording and monitoring. During playback, [`feed_clip_analysis`] is
+/// called after the mixer to feed clip audio instead.
 fn feed_analysis(io: &mut ProcessingIO, state: &ProcessingState, num_read: usize) {
+    // During playback (not recording), skip mic — clip audio will be fed after the mixer.
+    if state.transport.is_playing() && !state.transport.is_recording() {
+        return;
+    }
     if num_read > 0 {
         let _ = io.analysis_prod.push_slice(&state.mic_block[..num_read]);
     }
 }
 
-/// Drain analysis results (pitch, spectrum, formants) from ring buffers.
+/// Feed mixed clip audio to the analysis thread during playback.
+///
+/// Called after `run_mixer_and_output` so the `clip_mix_buffer` is populated.
+/// This enables pitch detection on clip content so synths receive the correct
+/// frequency data when processing clips.
+fn feed_clip_analysis(io: &mut ProcessingIO, state: &ProcessingState, num_samples: usize) {
+    if state.transport.is_playing() && !state.transport.is_recording() {
+        let clip_buf = state.mixer.clip_mix_buffer();
+        let len = num_samples.min(clip_buf.len());
+        if len > 0 {
+            let _ = io.analysis_prod.push_slice(&clip_buf[..len]);
+        }
+    }
+}
+
+/// Drain analysis results (pitch, spectrum, formants) from ring buffers
+/// and feed detected pitch to armed tracks' synths.
 fn drain_analysis_results(io: &mut ProcessingIO, state: &mut ProcessingState) {
     while let Some(pitch) = io.pitch_cons.try_pop() {
         state.latest_pitch = pitch;
@@ -229,6 +287,19 @@ fn drain_analysis_results(io: &mut ProcessingIO, state: &mut ProcessingState) {
     }
     while let Some(formant_data) = io.formant_cons.try_pop() {
         state.latest_formants = formant_data;
+    }
+
+    // Feed detected pitch to tracks' synths.
+    // During playback: all tracks need pitch (synths process clip audio).
+    // During recording/monitoring: only armed tracks need pitch.
+    if let Some(freq) = state.latest_pitch.frequency {
+        let playback_mode =
+            state.transport.is_playing() && !state.transport.is_recording();
+        for track in state.mixer.tracks_mut() {
+            if playback_mode || track.is_armed() {
+                track.synth_mut().set_pitch(freq);
+            }
+        }
     }
 }
 
@@ -254,9 +325,13 @@ fn run_mixer_and_output(
     state: &mut ProcessingState,
     num_samples: usize,
 ) -> usize {
-    state
-        .mixer
-        .process(&state.mic_block[..num_samples], num_samples);
+    state.mixer.process(
+        &state.mic_block[..num_samples],
+        num_samples,
+        state.transport.position_samples(),
+        state.transport.is_playing() || state.transport.is_recording(),
+        state.transport.is_recording(),
+    );
     let master_buf = state.mixer.master_buffer();
     let stereo_len = (num_samples * 2).min(master_buf.len());
     let _ = io.output_prod.push_slice(&master_buf[..stereo_len]);
@@ -274,15 +349,19 @@ fn feed_disk(io: &mut ProcessingIO, state: &ProcessingState, stereo_len: usize) 
 
 /// Capture a downsampled waveform snapshot for the oscilloscope display.
 fn capture_waveform(state: &mut ProcessingState, num_read: usize) {
+    // Only update when we actually received new mic samples. Keeping the
+    // previous snapshot avoids blinking on frames where the ring buffer
+    // had nothing new (common at higher UI refresh rates).
+    if num_read == 0 {
+        return;
+    }
     state.waveform_snapshot.clear();
     let max_len = 256;
-    if num_read > 0 {
-        let step = (num_read / max_len).max(1);
-        let mut i = 0;
-        while i < num_read && state.waveform_snapshot.len() < max_len {
-            state.waveform_snapshot.push(state.mic_block[i]);
-            i += step;
-        }
+    let step = (num_read / max_len).max(1);
+    let mut i = 0;
+    while i < num_read && state.waveform_snapshot.len() < max_len {
+        state.waveform_snapshot.push(state.mic_block[i]);
+        i += step;
     }
 }
 
@@ -318,6 +397,17 @@ fn push_display_state(
     input_level_db: f32,
     cpu_load: f32,
 ) {
+    // Rebuild timeline snapshot when clips have changed or recordings are
+    // active (so the TUI can show a growing recording rectangle).
+    if state.clips_dirty || !state.track_recordings.is_empty() {
+        update_timeline_snapshot(
+            &mut state.display_scratch.timeline,
+            &state.mixer,
+            &state.track_recordings,
+        );
+        state.clips_dirty = false;
+    }
+
     let scratch = &mut state.display_scratch;
     scratch.transport = state.transport.snapshot();
     state.mixer.write_snapshot(&mut scratch.mixer);
@@ -338,6 +428,76 @@ fn push_display_state(
 }
 
 // ---------------------------------------------------------------------------
+// Timeline snapshot construction
+// ---------------------------------------------------------------------------
+
+/// Update a timeline snapshot in-place from the current mixer state and any
+/// active recordings.
+///
+/// This is called on the processing thread when clips have changed or when
+/// recordings are active. Reuses existing `Vec` capacity in `snapshot` to
+/// avoid per-call heap allocation.
+fn update_timeline_snapshot(
+    snapshot: &mut TimelineSnapshot,
+    mixer: &Mixer,
+    recordings: &[TrackRecordingState],
+) {
+    snapshot.tracks.clear();
+    snapshot.total_length = 0;
+
+    for track in mixer.tracks() {
+        let mut clip_snapshots: Vec<ClipSnapshot> = track
+            .clips()
+            .iter()
+            .map(|clip| {
+                let end = clip.end_position();
+                if end > snapshot.total_length {
+                    snapshot.total_length = end;
+                }
+                ClipSnapshot {
+                    id: clip.id().0,
+                    name: clip.data().name().to_string(),
+                    position: clip.position(),
+                    #[allow(clippy::cast_possible_truncation)]
+                    length: clip.effective_length() as u64,
+                    gain_db: clip.gain().value(),
+                    muted: clip.is_muted(),
+                    waveform_overview: clip.waveform_overview().to_vec(),
+                }
+            })
+            .collect();
+
+        // Sort clips by position for consistent rendering.
+        clip_snapshots.sort_by_key(|c| c.position);
+
+        // Check if this track has an active recording.
+        let active_rec = recordings.iter().find(|r| r.track_id == track.id());
+        let (is_recording_clip, recording_start, recording_length) =
+            active_rec.map_or((false, 0, 0), |rec| {
+                #[allow(clippy::cast_possible_truncation)]
+                let rec_len = rec.len as u64;
+                let rec_end = rec.start_position.saturating_add(rec_len);
+                if rec_end > snapshot.total_length {
+                    snapshot.total_length = rec_end;
+                }
+                (true, rec.start_position, rec_len)
+            });
+
+        snapshot.tracks.push(TrackClipSnapshot {
+            track_id: track.id().0,
+            track_name: track.name().to_string(),
+            clips: clip_snapshots,
+            armed: track.is_armed(),
+            muted: track.is_muted(),
+            soloed: track.is_soloed(),
+            is_recording_clip,
+            recording_start,
+            recording_length,
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Command application (split into sub-functions for line count compliance)
 // ---------------------------------------------------------------------------
 
@@ -349,7 +509,7 @@ fn apply_command(
 ) {
     match cmd {
         EngineCommand::Shutdown => {}
-        EngineCommand::Transport(c) => state.transport.apply_command(c),
+        EngineCommand::Transport(c) => apply_transport_command(state, c),
         EngineCommand::AddTrack {
             name,
             synthesis_mode,
@@ -433,6 +593,210 @@ fn apply_command(
             let _ = disk_cmd_tx.try_send(super::DiskCommand::Stop);
             state.is_recording = false;
         }
+        cmd @ (EngineCommand::AddClip { .. }
+        | EngineCommand::RemoveClip { .. }
+        | EngineCommand::MoveClip { .. }
+        | EngineCommand::TrimClipStart { .. }
+        | EngineCommand::TrimClipEnd { .. }
+        | EngineCommand::SplitClip { .. }
+        | EngineCommand::SetClipGain { .. }
+        | EngineCommand::SetClipMute { .. }
+        | EngineCommand::DuplicateClip { .. }) => {
+            apply_clip_command(cmd, state);
+        }
+    }
+}
+
+/// Apply a clip-related engine command to the processing state.
+///
+/// Factored out of [`apply_command`] to keep each function within clippy's
+/// line-count limit.
+fn apply_clip_command(cmd: EngineCommand, state: &mut ProcessingState) {
+    match cmd {
+        EngineCommand::AddClip {
+            track_id,
+            clip_data,
+            position,
+        } => {
+            apply_add_clip(state, track_id, clip_data, position);
+        }
+        EngineCommand::RemoveClip { track_id, clip_id } => {
+            if let Some(t) = state.mixer.track_mut(track_id) {
+                t.remove_clip(clip_id);
+                state.clips_dirty = true;
+            }
+        }
+        EngineCommand::MoveClip {
+            track_id,
+            clip_id,
+            new_position,
+        } => {
+            if let Some(t) = state.mixer.track_mut(track_id) {
+                if let Some(clip) = t.find_clip_mut(clip_id) {
+                    clip.set_position(new_position);
+                    state.clips_dirty = true;
+                }
+            }
+        }
+        EngineCommand::TrimClipStart {
+            track_id,
+            clip_id,
+            samples,
+        } => {
+            if let Some(t) = state.mixer.track_mut(track_id) {
+                if let Some(clip) = t.find_clip_mut(clip_id) {
+                    clip.trim_start(samples);
+                    state.clips_dirty = true;
+                }
+            }
+        }
+        EngineCommand::TrimClipEnd {
+            track_id,
+            clip_id,
+            samples,
+        } => {
+            if let Some(t) = state.mixer.track_mut(track_id) {
+                if let Some(clip) = t.find_clip_mut(clip_id) {
+                    clip.trim_end(samples);
+                    state.clips_dirty = true;
+                }
+            }
+        }
+        EngineCommand::SplitClip {
+            track_id,
+            clip_id,
+            split_position,
+        } => {
+            apply_split_clip(state, track_id, clip_id, split_position);
+        }
+        EngineCommand::SetClipGain {
+            track_id,
+            clip_id,
+            gain,
+        } => {
+            if let Some(t) = state.mixer.track_mut(track_id) {
+                if let Some(clip) = t.find_clip_mut(clip_id) {
+                    clip.set_gain(gain);
+                    state.clips_dirty = true;
+                }
+            }
+        }
+        EngineCommand::SetClipMute {
+            track_id,
+            clip_id,
+            muted,
+        } => {
+            if let Some(t) = state.mixer.track_mut(track_id) {
+                if let Some(clip) = t.find_clip_mut(clip_id) {
+                    clip.set_muted(muted);
+                    state.clips_dirty = true;
+                }
+            }
+        }
+        EngineCommand::DuplicateClip {
+            track_id,
+            clip_id,
+            new_position,
+        } => {
+            apply_duplicate_clip(state, track_id, clip_id, new_position);
+        }
+        // Non-clip commands are never passed to this function.
+        _ => {}
+    }
+}
+
+/// Handle a transport command, starting or finalizing per-track recordings
+/// when the transport enters or leaves Record state.
+fn apply_transport_command(state: &mut ProcessingState, cmd: TransportCommand) {
+    match cmd {
+        TransportCommand::Record => {
+            // Start per-track recording for each armed track.
+            start_track_recordings(state);
+            state.transport.apply_command(cmd);
+        }
+        TransportCommand::Stop | TransportCommand::Pause => {
+            // Finalize any active track recordings before changing state.
+            finalize_track_recordings(state);
+            state.transport.apply_command(cmd);
+        }
+        other => state.transport.apply_command(other),
+    }
+}
+
+/// Begin recording on all armed tracks. Pre-allocates a buffer for each
+/// armed track (this is a command handler, not the hot audio path).
+fn start_track_recordings(state: &mut ProcessingState) {
+    // Don't start if already recording.
+    if !state.track_recordings.is_empty() {
+        return;
+    }
+
+    let capacity = MAX_RECORDING_SECONDS * state.sample_rate as usize;
+    let position = state.transport.position_samples();
+
+    for track in state.mixer.tracks() {
+        if track.is_armed() {
+            state.track_recordings.push(TrackRecordingState {
+                buffer: vec![0.0; capacity],
+                len: 0,
+                start_position: position,
+                track_id: track.id(),
+            });
+        }
+    }
+}
+
+/// Finalize active track recordings: trim the buffers to the recorded
+/// length, create [`ClipData`] from each, and add as clips to the tracks.
+fn finalize_track_recordings(state: &mut ProcessingState) {
+    let recordings: Vec<TrackRecordingState> = state.track_recordings.drain(..).collect();
+
+    for mut rec in recordings {
+        if rec.len == 0 {
+            continue;
+        }
+
+        // Trim the buffer to the actual recorded length.
+        rec.buffer.truncate(rec.len);
+
+        let clip_id = ClipId(state.next_clip_id);
+        state.next_clip_id += 1;
+
+        let name = format!("Recording {}", clip_id.0);
+        let clip_data = ClipData::new(rec.buffer, name, None, state.sample_rate);
+        let clip = AudioClip::new(clip_id, clip_data, rec.start_position);
+
+        if let Some(t) = state.mixer.track_mut(rec.track_id) {
+            let _ = t.add_clip(clip);
+            state.clips_dirty = true;
+        }
+    }
+}
+
+/// Capture raw mic input into the recording buffers for each armed track.
+///
+/// Records the unprocessed microphone signal so clips contain the user's
+/// actual voice rather than synthesized output. This avoids feedback loops
+/// and produces clean recordings suitable for later playback through the
+/// track's effect chain.
+///
+/// Called once per processing block, after `run_mixer_and_output`. This is on
+/// the hot audio path, so it must not allocate — it only copies into the
+/// pre-allocated buffers.
+fn capture_track_recordings(state: &mut ProcessingState, num_samples: usize) {
+    let mic = &state.mic_block[..num_samples];
+
+    for rec in &mut state.track_recordings {
+        let remaining = rec.buffer.len() - rec.len;
+        if remaining == 0 {
+            // Buffer full — can't record any more.
+            continue;
+        }
+        let to_copy = num_samples.min(remaining).min(mic.len());
+        if to_copy > 0 {
+            rec.buffer[rec.len..rec.len + to_copy].copy_from_slice(&mic[..to_copy]);
+            rec.len += to_copy;
+        }
     }
 }
 
@@ -488,6 +852,66 @@ fn apply_set_effect_param(
     let _ = track
         .effects_mut()
         .set_effect_param(effect_index, param_index, value);
+}
+
+fn apply_add_clip(
+    state: &mut ProcessingState,
+    track_id: crate::mixer::TrackId,
+    clip_data: ClipData,
+    position: u64,
+) {
+    if let Some(t) = state.mixer.track_mut(track_id) {
+        let clip_id = ClipId(state.next_clip_id);
+        state.next_clip_id += 1;
+        let clip = AudioClip::new(clip_id, clip_data, position);
+        // Silently ignore if the track is full (MAX_CLIPS_PER_TRACK).
+        let _ = t.add_clip(clip);
+        state.clips_dirty = true;
+    }
+}
+
+fn apply_split_clip(
+    state: &mut ProcessingState,
+    track_id: crate::mixer::TrackId,
+    clip_id: ClipId,
+    split_position: u64,
+) {
+    let new_clip_id = ClipId(state.next_clip_id);
+    if let Some(t) = state.mixer.track_mut(track_id) {
+        // Do the split. `find_clip_mut` returns a mutable reference; `split_at`
+        // modifies the clip in place and returns the right half as an owned value.
+        let right_half = t
+            .find_clip_mut(clip_id)
+            .and_then(|clip| clip.split_at(split_position, new_clip_id));
+        if let Some(right) = right_half {
+            // Silently ignore if the track is full.
+            if t.add_clip(right) {
+                state.next_clip_id += 1;
+            }
+            state.clips_dirty = true;
+        }
+    }
+}
+
+fn apply_duplicate_clip(
+    state: &mut ProcessingState,
+    track_id: crate::mixer::TrackId,
+    clip_id: ClipId,
+    new_position: u64,
+) {
+    let new_id = ClipId(state.next_clip_id);
+    if let Some(t) = state.mixer.track_mut(track_id) {
+        let new_clip = t
+            .find_clip(clip_id)
+            .map(|source| AudioClip::new(new_id, source.data().clone(), new_position));
+        if let Some(clip) = new_clip {
+            // Silently ignore if the track is full.
+            if t.add_clip(clip) {
+                state.next_clip_id += 1;
+                state.clips_dirty = true;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -556,5 +980,1191 @@ mod tests {
         assert_eq!(state.sample_rate, 48_000);
         assert_eq!(state.buffer_size, 512);
         assert_eq!(state.mic_block.len(), 512);
+    }
+
+    #[test]
+    fn processing_state_next_clip_id_starts_at_zero() {
+        let state = ProcessingState::new(44_100, 256);
+        assert_eq!(state.next_clip_id, 0);
+    }
+
+    // -- Clip command handler tests ------------------------------------------
+
+    use crate::engine::DiskCommand;
+    use crate::mixer::TrackId;
+    use crate::mixer::clip::ClipData;
+
+    /// Create a `ProcessingState` with one track (id=`TrackId(0)`) and a
+    /// disk command sender/receiver pair.
+    fn state_with_track() -> (ProcessingState, crossbeam_channel::Sender<DiskCommand>) {
+        let mut state = ProcessingState::new(44_100, 256);
+        let synth = create_synth(SynthesisMode::PitchTracked, 44_100.0);
+        state.mixer.add_track("Test".into(), synth);
+        let (tx, _rx) = crossbeam_channel::bounded(64);
+        (state, tx)
+    }
+
+    /// Create test clip data of a given length.
+    fn test_clip_data(len: usize) -> ClipData {
+        let samples: Vec<f32> = (0..len).map(|i| (i as f32) / len as f32).collect();
+        ClipData::new(samples, "TestClip".into(), None, 44_100)
+    }
+
+    #[test]
+    fn apply_add_clip_assigns_unique_ids() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(200),
+                position: 1000,
+            },
+            &mut state,
+            &tx,
+        );
+
+        assert_eq!(state.next_clip_id, 2);
+        let track = state.mixer.track(track_id).unwrap();
+        assert_eq!(track.clips().len(), 2);
+        assert_eq!(track.clips()[0].id(), ClipId(0));
+        assert_eq!(track.clips()[1].id(), ClipId(1));
+    }
+
+    #[test]
+    fn apply_add_clip_nonexistent_track_is_noop() {
+        let (mut state, tx) = state_with_track();
+        let bogus_id = TrackId(999);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: bogus_id,
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+
+        // next_clip_id should not have been incremented.
+        assert_eq!(state.next_clip_id, 0);
+    }
+
+    #[test]
+    fn apply_remove_clip_removes_correct_clip() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(50),
+                position: 500,
+            },
+            &mut state,
+            &tx,
+        );
+        assert_eq!(state.mixer.track(track_id).unwrap().clips().len(), 2);
+
+        apply_command(
+            EngineCommand::RemoveClip {
+                track_id,
+                clip_id: ClipId(0),
+            },
+            &mut state,
+            &tx,
+        );
+
+        let clips = state.mixer.track(track_id).unwrap().clips();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].id(), ClipId(1));
+    }
+
+    #[test]
+    fn apply_move_clip_changes_position() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::MoveClip {
+                track_id,
+                clip_id: ClipId(0),
+                new_position: 5000,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let clip = state
+            .mixer
+            .track(track_id)
+            .unwrap()
+            .find_clip(ClipId(0))
+            .unwrap();
+        assert_eq!(clip.position(), 5000);
+    }
+
+    #[test]
+    fn apply_trim_clip_start() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::TrimClipStart {
+                track_id,
+                clip_id: ClipId(0),
+                samples: 20,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let clip = state
+            .mixer
+            .track(track_id)
+            .unwrap()
+            .find_clip(ClipId(0))
+            .unwrap();
+        assert_eq!(clip.source_start(), 20);
+        assert_eq!(clip.effective_length(), 80);
+    }
+
+    #[test]
+    fn apply_trim_clip_end() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::TrimClipEnd {
+                track_id,
+                clip_id: ClipId(0),
+                samples: 30,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let clip = state
+            .mixer
+            .track(track_id)
+            .unwrap()
+            .find_clip(ClipId(0))
+            .unwrap();
+        assert_eq!(clip.source_end(), 70);
+        assert_eq!(clip.effective_length(), 70);
+    }
+
+    #[test]
+    fn apply_split_clip_creates_two_clips() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 1000,
+            },
+            &mut state,
+            &tx,
+        );
+        // Split at position 1040 (40 samples into the clip).
+        apply_command(
+            EngineCommand::SplitClip {
+                track_id,
+                clip_id: ClipId(0),
+                split_position: 1040,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let clips = state.mixer.track(track_id).unwrap().clips();
+        assert_eq!(clips.len(), 2);
+
+        // Left half: ClipId(0), position 1000, length 40.
+        let left = state
+            .mixer
+            .track(track_id)
+            .unwrap()
+            .find_clip(ClipId(0))
+            .unwrap();
+        assert_eq!(left.position(), 1000);
+        assert_eq!(left.effective_length(), 40);
+
+        // Right half: ClipId(1), position 1040, length 60.
+        let right = state
+            .mixer
+            .track(track_id)
+            .unwrap()
+            .find_clip(ClipId(1))
+            .unwrap();
+        assert_eq!(right.position(), 1040);
+        assert_eq!(right.effective_length(), 60);
+
+        // next_clip_id incremented for AddClip (0->1) and SplitClip (1->2).
+        assert_eq!(state.next_clip_id, 2);
+    }
+
+    #[test]
+    fn apply_split_clip_at_boundary_is_noop() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 1000,
+            },
+            &mut state,
+            &tx,
+        );
+        // Split at the clip start should be a no-op.
+        apply_command(
+            EngineCommand::SplitClip {
+                track_id,
+                clip_id: ClipId(0),
+                split_position: 1000,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let clips = state.mixer.track(track_id).unwrap().clips();
+        assert_eq!(clips.len(), 1);
+        // next_clip_id: 1 from AddClip, not incremented by failed split.
+        assert_eq!(state.next_clip_id, 1);
+    }
+
+    #[test]
+    fn apply_set_clip_gain() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::SetClipGain {
+                track_id,
+                clip_id: ClipId(0),
+                gain: Db::new(-12.0),
+            },
+            &mut state,
+            &tx,
+        );
+
+        let clip = state
+            .mixer
+            .track(track_id)
+            .unwrap()
+            .find_clip(ClipId(0))
+            .unwrap();
+        assert!((clip.gain().value() - (-12.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn apply_set_clip_mute() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(
+            !state
+                .mixer
+                .track(track_id)
+                .unwrap()
+                .find_clip(ClipId(0))
+                .unwrap()
+                .is_muted()
+        );
+
+        apply_command(
+            EngineCommand::SetClipMute {
+                track_id,
+                clip_id: ClipId(0),
+                muted: true,
+            },
+            &mut state,
+            &tx,
+        );
+
+        assert!(
+            state
+                .mixer
+                .track(track_id)
+                .unwrap()
+                .find_clip(ClipId(0))
+                .unwrap()
+                .is_muted()
+        );
+    }
+
+    #[test]
+    fn apply_duplicate_clip_creates_new_clip() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id,
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::DuplicateClip {
+                track_id,
+                clip_id: ClipId(0),
+                new_position: 5000,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let clips = state.mixer.track(track_id).unwrap().clips();
+        assert_eq!(clips.len(), 2);
+
+        let original = state
+            .mixer
+            .track(track_id)
+            .unwrap()
+            .find_clip(ClipId(0))
+            .unwrap();
+        let duplicate = state
+            .mixer
+            .track(track_id)
+            .unwrap()
+            .find_clip(ClipId(1))
+            .unwrap();
+
+        assert_eq!(original.position(), 0);
+        assert_eq!(duplicate.position(), 5000);
+        assert_eq!(original.effective_length(), duplicate.effective_length());
+        // Both share the same underlying data (Arc clone).
+        assert_eq!(
+            original.data().samples().as_ptr(),
+            duplicate.data().samples().as_ptr(),
+        );
+
+        assert_eq!(state.next_clip_id, 2);
+    }
+
+    #[test]
+    fn apply_duplicate_clip_nonexistent_is_noop() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::DuplicateClip {
+                track_id,
+                clip_id: ClipId(99),
+                new_position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let clips = state.mixer.track(track_id).unwrap().clips();
+        assert!(clips.is_empty());
+        assert_eq!(state.next_clip_id, 0);
+    }
+
+    #[test]
+    fn apply_move_clip_nonexistent_clip_is_noop() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        // Move a clip that does not exist -- should not panic.
+        apply_command(
+            EngineCommand::MoveClip {
+                track_id,
+                clip_id: ClipId(42),
+                new_position: 9999,
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.mixer.track(track_id).unwrap().clips().is_empty());
+    }
+
+    #[test]
+    fn apply_remove_clip_nonexistent_is_noop() {
+        let (mut state, tx) = state_with_track();
+        let track_id = TrackId(0);
+
+        apply_command(
+            EngineCommand::RemoveClip {
+                track_id,
+                clip_id: ClipId(0),
+            },
+            &mut state,
+            &tx,
+        );
+        // No panic, no clips affected.
+        assert!(state.mixer.track(track_id).unwrap().clips().is_empty());
+    }
+
+    // -- Per-track recording tests --------------------------------------------
+
+    /// Create a `ProcessingState` with one armed track for recording tests.
+    fn state_with_armed_track() -> (ProcessingState, crossbeam_channel::Sender<DiskCommand>) {
+        let mut state = ProcessingState::new(44_100, 256);
+        let synth = create_synth(SynthesisMode::PitchTracked, 44_100.0);
+        let id = state.mixer.add_track("Armed".into(), synth);
+        state.mixer.track_mut(id).unwrap().set_armed(true);
+        let (tx, _rx) = crossbeam_channel::bounded(64);
+        (state, tx)
+    }
+
+    #[test]
+    fn start_recording_creates_track_recording_state() {
+        let (mut state, tx) = state_with_armed_track();
+
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        assert_eq!(state.track_recordings.len(), 1);
+        assert_eq!(state.track_recordings[0].track_id, TrackId(0));
+        assert_eq!(state.track_recordings[0].len, 0);
+        assert_eq!(
+            state.track_recordings[0].buffer.len(),
+            MAX_RECORDING_SECONDS * 44_100
+        );
+    }
+
+    #[test]
+    fn start_recording_unarmed_track_not_recorded() {
+        let (mut state, tx) = state_with_track(); // unarmed track
+
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        assert!(state.track_recordings.is_empty());
+    }
+
+    #[test]
+    fn capture_track_recordings_fills_buffer() {
+        let (mut state, tx) = state_with_armed_track();
+
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        // Simulate processing a block — fill mic_block with sample data,
+        // then capture raw mic input into the recording buffer.
+        for sample in &mut state.mic_block[..64] {
+            *sample = 0.5;
+        }
+        capture_track_recordings(&mut state, 64);
+
+        assert_eq!(state.track_recordings[0].len, 64);
+    }
+
+    #[test]
+    fn stop_recording_creates_clip() {
+        let (mut state, tx) = state_with_armed_track();
+
+        // Start recording.
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        // Simulate a few processing blocks — fill mic_block with sample data.
+        for _ in 0..4 {
+            for sample in &mut state.mic_block[..64] {
+                *sample = 0.5;
+            }
+            capture_track_recordings(&mut state, 64);
+        }
+        assert_eq!(state.track_recordings[0].len, 256);
+
+        // Stop recording — should finalize into a clip.
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Stop),
+            &mut state,
+            &tx,
+        );
+
+        // Recording state should be drained.
+        assert!(state.track_recordings.is_empty());
+
+        // A clip should now exist on the track.
+        let clips = state.mixer.track(TrackId(0)).unwrap().clips();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].effective_length(), 256);
+    }
+
+    #[test]
+    fn pause_recording_creates_clip() {
+        let (mut state, tx) = state_with_armed_track();
+
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        for sample in &mut state.mic_block[..64] {
+            *sample = 0.5;
+        }
+        capture_track_recordings(&mut state, 64);
+
+        // Pause also finalizes recordings.
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Pause),
+            &mut state,
+            &tx,
+        );
+
+        assert!(state.track_recordings.is_empty());
+        let clips = state.mixer.track(TrackId(0)).unwrap().clips();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].effective_length(), 64);
+    }
+
+    #[test]
+    fn recording_empty_produces_no_clip() {
+        let (mut state, tx) = state_with_armed_track();
+
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        // Stop immediately — no samples captured.
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Stop),
+            &mut state,
+            &tx,
+        );
+
+        assert!(state.track_recordings.is_empty());
+        let clips = state.mixer.track(TrackId(0)).unwrap().clips();
+        assert!(clips.is_empty(), "empty recording should not create a clip");
+    }
+
+    #[test]
+    fn multiple_armed_tracks_record_independently() {
+        let mut state = ProcessingState::new(44_100, 256);
+        let synth_a = create_synth(SynthesisMode::PitchTracked, 44_100.0);
+        let synth_b = create_synth(SynthesisMode::PitchTracked, 44_100.0);
+        let id_a = state.mixer.add_track("A".into(), synth_a);
+        let id_b = state.mixer.add_track("B".into(), synth_b);
+        state.mixer.track_mut(id_a).unwrap().set_armed(true);
+        state.mixer.track_mut(id_b).unwrap().set_armed(true);
+        let (tx, _rx) = crossbeam_channel::bounded::<DiskCommand>(64);
+
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        assert_eq!(state.track_recordings.len(), 2);
+
+        // Fill mic_block and capture.
+        for sample in &mut state.mic_block[..32] {
+            *sample = 0.5;
+        }
+        capture_track_recordings(&mut state, 32);
+
+        // Stop.
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Stop),
+            &mut state,
+            &tx,
+        );
+
+        // Each track should have a clip.
+        let clips_a = state.mixer.track(TrackId(0)).unwrap().clips();
+        let clips_b = state.mixer.track(TrackId(1)).unwrap().clips();
+        assert_eq!(clips_a.len(), 1);
+        assert_eq!(clips_b.len(), 1);
+        assert_eq!(clips_a[0].effective_length(), 32);
+        assert_eq!(clips_b[0].effective_length(), 32);
+    }
+
+    #[test]
+    fn recording_buffer_full_stops_capturing() {
+        let mut state = ProcessingState::new(44_100, 256);
+        let synth = create_synth(SynthesisMode::PitchTracked, 44_100.0);
+        let id = state.mixer.add_track("T".into(), synth);
+        state.mixer.track_mut(id).unwrap().set_armed(true);
+        let (tx, _rx) = crossbeam_channel::bounded::<DiskCommand>(64);
+
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        // Manually set len to near capacity to simulate a nearly full buffer.
+        let cap = state.track_recordings[0].buffer.len();
+        state.track_recordings[0].len = cap - 10;
+
+        // Try to capture 64 samples — only 10 should fit.
+        for sample in &mut state.mic_block[..64] {
+            *sample = 0.5;
+        }
+        capture_track_recordings(&mut state, 64);
+
+        assert_eq!(state.track_recordings[0].len, cap);
+    }
+
+    #[test]
+    fn double_record_command_does_not_double_allocate() {
+        let (mut state, tx) = state_with_armed_track();
+
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+        assert_eq!(state.track_recordings.len(), 1);
+
+        // Second Record command should be a no-op (recordings already active).
+        start_track_recordings(&mut state);
+        assert_eq!(state.track_recordings.len(), 1);
+    }
+
+    #[test]
+    fn track_recordings_empty_after_init() {
+        let state = ProcessingState::new(44_100, 256);
+        assert!(state.track_recordings.is_empty());
+    }
+
+    // -- clips_dirty flag tests -----------------------------------------------
+
+    #[test]
+    fn clips_dirty_initially_false() {
+        let state = ProcessingState::new(44_100, 256);
+        assert!(!state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_add_clip() {
+        let (mut state, tx) = state_with_track();
+        assert!(!state.clips_dirty);
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_remove_clip() {
+        let (mut state, tx) = state_with_track();
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        state.clips_dirty = false;
+
+        apply_command(
+            EngineCommand::RemoveClip {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_move_clip() {
+        let (mut state, tx) = state_with_track();
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        state.clips_dirty = false;
+
+        apply_command(
+            EngineCommand::MoveClip {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+                new_position: 500,
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_trim_start() {
+        let (mut state, tx) = state_with_track();
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        state.clips_dirty = false;
+
+        apply_command(
+            EngineCommand::TrimClipStart {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+                samples: 10,
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_trim_end() {
+        let (mut state, tx) = state_with_track();
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        state.clips_dirty = false;
+
+        apply_command(
+            EngineCommand::TrimClipEnd {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+                samples: 10,
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_split_clip() {
+        let (mut state, tx) = state_with_track();
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 1000,
+            },
+            &mut state,
+            &tx,
+        );
+        state.clips_dirty = false;
+
+        apply_command(
+            EngineCommand::SplitClip {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+                split_position: 1050,
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_set_clip_gain() {
+        let (mut state, tx) = state_with_track();
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        state.clips_dirty = false;
+
+        apply_command(
+            EngineCommand::SetClipGain {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+                gain: Db::new(-6.0),
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_set_clip_mute() {
+        let (mut state, tx) = state_with_track();
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        state.clips_dirty = false;
+
+        apply_command(
+            EngineCommand::SetClipMute {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+                muted: true,
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_duplicate_clip() {
+        let (mut state, tx) = state_with_track();
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        state.clips_dirty = false;
+
+        apply_command(
+            EngineCommand::DuplicateClip {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+                new_position: 500,
+            },
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    #[test]
+    fn clips_dirty_flag_set_on_finalize_recording() {
+        let (mut state, tx) = state_with_armed_track();
+
+        // Start recording.
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        // Simulate a processing block — fill mic_block with sample data.
+        for sample in &mut state.mic_block[..64] {
+            *sample = 0.5;
+        }
+        capture_track_recordings(&mut state, 64);
+
+        state.clips_dirty = false;
+
+        // Stop recording -- should finalize into a clip and set dirty.
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Stop),
+            &mut state,
+            &tx,
+        );
+        assert!(state.clips_dirty);
+    }
+
+    // -- update_timeline_snapshot tests ----------------------------------------
+
+    #[test]
+    fn update_timeline_snapshot_empty_mixer() {
+        let mixer = Mixer::new();
+        let recordings: Vec<TrackRecordingState> = Vec::new();
+        let mut snapshot = TimelineSnapshot::empty();
+        update_timeline_snapshot(&mut snapshot, &mixer, &recordings);
+
+        assert!(snapshot.tracks.is_empty());
+        assert_eq!(snapshot.total_length, 0);
+    }
+
+    #[test]
+    fn update_timeline_snapshot_with_clips() {
+        let (mut state, tx) = state_with_track();
+
+        // Add two clips at different positions.
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(200),
+                position: 500,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let mut snapshot = TimelineSnapshot::empty();
+        update_timeline_snapshot(&mut snapshot, &state.mixer, &state.track_recordings);
+
+        assert_eq!(snapshot.tracks.len(), 1);
+        assert_eq!(snapshot.tracks[0].clips.len(), 2);
+        assert_eq!(snapshot.tracks[0].track_name, "Test");
+
+        // First clip: position 0, length 100.
+        assert_eq!(snapshot.tracks[0].clips[0].position, 0);
+        assert_eq!(snapshot.tracks[0].clips[0].length, 100);
+
+        // Second clip: position 500, length 200.
+        assert_eq!(snapshot.tracks[0].clips[1].position, 500);
+        assert_eq!(snapshot.tracks[0].clips[1].length, 200);
+
+        // Total length should be end of the last clip: 500 + 200 = 700.
+        assert_eq!(snapshot.total_length, 700);
+    }
+
+    #[test]
+    fn update_timeline_snapshot_clips_sorted_by_position() {
+        let (mut state, tx) = state_with_track();
+
+        // Add clips in reverse order.
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(50),
+                position: 1000,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(50),
+                position: 200,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let mut snapshot = TimelineSnapshot::empty();
+        update_timeline_snapshot(&mut snapshot, &state.mixer, &state.track_recordings);
+
+        assert_eq!(snapshot.tracks[0].clips[0].position, 200);
+        assert_eq!(snapshot.tracks[0].clips[1].position, 1000);
+    }
+
+    #[test]
+    fn update_timeline_snapshot_with_active_recording() {
+        let (mut state, tx) = state_with_armed_track();
+
+        apply_command(
+            EngineCommand::Transport(TransportCommand::Record),
+            &mut state,
+            &tx,
+        );
+
+        // Simulate some recording — fill mic_block with sample data.
+        for sample in &mut state.mic_block[..64] {
+            *sample = 0.5;
+        }
+        capture_track_recordings(&mut state, 64);
+
+        let mut snapshot = TimelineSnapshot::empty();
+        update_timeline_snapshot(&mut snapshot, &state.mixer, &state.track_recordings);
+
+        assert_eq!(snapshot.tracks.len(), 1);
+        assert!(snapshot.tracks[0].is_recording_clip);
+        assert_eq!(snapshot.tracks[0].recording_start, 0);
+        assert_eq!(snapshot.tracks[0].recording_length, 64);
+        assert_eq!(snapshot.total_length, 64);
+    }
+
+    #[test]
+    fn update_timeline_snapshot_track_flags() {
+        let mut state = ProcessingState::new(44_100, 256);
+        let synth = create_synth(SynthesisMode::PitchTracked, 44_100.0);
+        let id = state.mixer.add_track("Flagged".into(), synth);
+        state.mixer.track_mut(id).unwrap().set_armed(true);
+        state.mixer.track_mut(id).unwrap().set_muted(true);
+        state.mixer.track_mut(id).unwrap().set_soloed(true);
+
+        let mut snapshot = TimelineSnapshot::empty();
+        update_timeline_snapshot(&mut snapshot, &state.mixer, &state.track_recordings);
+
+        assert_eq!(snapshot.tracks.len(), 1);
+        assert!(snapshot.tracks[0].armed);
+        assert!(snapshot.tracks[0].muted);
+        assert!(snapshot.tracks[0].soloed);
+        assert!(!snapshot.tracks[0].is_recording_clip);
+    }
+
+    #[test]
+    fn update_timeline_snapshot_clip_gain_and_mute() {
+        let (mut state, tx) = state_with_track();
+
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(100),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::SetClipGain {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+                gain: Db::new(-12.0),
+            },
+            &mut state,
+            &tx,
+        );
+        apply_command(
+            EngineCommand::SetClipMute {
+                track_id: TrackId(0),
+                clip_id: ClipId(0),
+                muted: true,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let mut snapshot = TimelineSnapshot::empty();
+        update_timeline_snapshot(&mut snapshot, &state.mixer, &state.track_recordings);
+
+        let clip = &snapshot.tracks[0].clips[0];
+        assert!((clip.gain_db - (-12.0)).abs() < f32::EPSILON);
+        assert!(clip.muted);
+    }
+
+    #[test]
+    fn update_timeline_snapshot_waveform_overview_populated() {
+        let (mut state, tx) = state_with_track();
+
+        // Create a clip with enough samples to generate a waveform overview.
+        apply_command(
+            EngineCommand::AddClip {
+                track_id: TrackId(0),
+                clip_data: test_clip_data(1000),
+                position: 0,
+            },
+            &mut state,
+            &tx,
+        );
+
+        let mut snapshot = TimelineSnapshot::empty();
+        update_timeline_snapshot(&mut snapshot, &state.mixer, &state.track_recordings);
+        assert!(!snapshot.tracks[0].clips[0].waveform_overview.is_empty());
     }
 }

@@ -1,15 +1,16 @@
 //! Track list and arrangement view.
 //!
-//! Renders a scrollable list of tracks in a 22-column panel. Each track
+//! Renders a scrollable list of tracks in a 26-column panel. Each track
 //! line shows a numeric index, a color bar, the track name (truncated),
-//! mute/solo/arm indicators, and a mini level bar derived from the
-//! engine's meter data.
+//! synthesis mode abbreviation, mute/solo/arm indicators, and a mini
+//! level bar derived from the engine's meter data.
 
 use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, Paragraph};
 
 use crate::app::{App, FocusedPanel};
 use crate::theme;
+use kazoo_core::synthesis::SynthesisMode;
 
 /// Draw the track list into the given area.
 ///
@@ -38,11 +39,19 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             // Track index (1-based).
             let idx = format!("{}", i + 1);
 
-            // Truncate name to 8 characters for the narrow panel.
+            // Truncate name to 6 characters for the narrow panel.
             // Use char_indices for safe UTF-8 boundary handling.
-            let name: &str = match track.name.char_indices().nth(8) {
+            let name: &str = match track.name.char_indices().nth(6) {
                 Some((byte_idx, _)) => &track.name[..byte_idx],
                 None => &track.name,
+            };
+
+            let mode_str = match track.synthesis_mode {
+                SynthesisMode::PitchTracked => "Pt",
+                SynthesisMode::Wavetable => "Wt",
+                SynthesisMode::Granular => "Gr",
+                SynthesisMode::Vocoder => "Vc",
+                SynthesisMode::PhaseVocoder => "Pv",
             };
 
             let mut spans: Vec<Span<'_>> = vec![
@@ -50,7 +59,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                 Span::raw(" "),
                 Span::styled("\u{2588}\u{2588}", Style::new().fg(color)),
                 Span::raw(" "),
-                Span::styled(format!("{name:<8}"), Style::new().fg(color)),
+                Span::styled(format!("{name:<6}"), Style::new().fg(color)),
+                Span::raw(" "),
+                Span::styled(format!("{mode_str:<2}"), theme::style_text_secondary()),
                 Span::raw(" "),
             ];
 

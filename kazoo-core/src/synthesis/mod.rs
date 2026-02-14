@@ -30,3 +30,94 @@ pub enum SynthesisMode {
     /// STFT-based time stretching and pitch shifting.
     PhaseVocoder,
 }
+
+impl SynthesisMode {
+    /// Human-readable name for this synthesis mode.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::PitchTracked => "Pitch Tracked Synth",
+            Self::Wavetable => "Wavetable Oscillator",
+            Self::Granular => "Granular Synth",
+            Self::Vocoder => "Vocoder",
+            Self::PhaseVocoder => "Phase Vocoder",
+        }
+    }
+
+    /// Return parameter metadata for this synthesis mode.
+    ///
+    /// Creates a temporary synth instance to query its [`crate::ParamInfo`]
+    /// entries. Only call this on mode changes, not in hot paths.
+    #[must_use]
+    pub fn param_infos(self, sample_rate: f32) -> Vec<crate::ParamInfo> {
+        let synth = self.create_synth(sample_rate);
+        (0..synth.param_count())
+            .filter_map(|i| synth.param_info(i))
+            .collect()
+    }
+
+    /// Return default parameter values for this synthesis mode.
+    #[must_use]
+    pub fn default_param_values(self, sample_rate: f32) -> Vec<f32> {
+        let synth = self.create_synth(sample_rate);
+        (0..synth.param_count())
+            .filter_map(|i| synth.param_value(i))
+            .collect()
+    }
+
+    /// Format a parameter value for display, using labels for enum params.
+    #[must_use]
+    pub fn format_param_value(self, param_index: usize, value: f32) -> String {
+        match self {
+            Self::PitchTracked if param_index == 0 => {
+                match value.round() as i32 {
+                    0 => "Sine".into(),
+                    1 => "Saw".into(),
+                    2 => "Square".into(),
+                    3 => "Triangle".into(),
+                    _ => format!("{value:.0}"),
+                }
+            }
+            Self::Granular if param_index == 6 => {
+                match value.round() as i32 {
+                    0 => "Hann".into(),
+                    1 => "Triangle".into(),
+                    2 => "Gaussian".into(),
+                    3 => "Tukey".into(),
+                    _ => format!("{value:.0}"),
+                }
+            }
+            Self::Vocoder if param_index == 0 => {
+                match value.round() as i32 {
+                    0 => "Saw".into(),
+                    1 => "Square".into(),
+                    2 => "Noise".into(),
+                    3 => "External".into(),
+                    _ => format!("{value:.0}"),
+                }
+            }
+            _ => {
+                // Format numeric values: use integer display for whole numbers,
+                // 1 decimal for values with fractional parts, 2 for very small.
+                if value.fract().abs() < 0.005 {
+                    format!("{value:.0}")
+                } else if value.abs() >= 10.0 {
+                    format!("{value:.1}")
+                } else {
+                    format!("{value:.2}")
+                }
+            }
+        }
+    }
+
+    /// Create a boxed synth processor for this mode (internal helper).
+    fn create_synth(self, sample_rate: f32) -> Box<dyn crate::Processor> {
+        match self {
+            Self::PitchTracked => Box::new(PitchTrackedSynth::new(sample_rate)),
+            Self::Wavetable => Box::new(WavetableOscillator::new(sample_rate)),
+            Self::Granular => Box::new(GranularSynth::new(sample_rate)),
+            Self::Vocoder => Box::new(Vocoder::new(sample_rate)),
+            Self::PhaseVocoder => Box::new(PhaseVocoder::new(sample_rate)),
+        }
+    }
+}
