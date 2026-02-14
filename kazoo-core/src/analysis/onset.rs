@@ -58,6 +58,8 @@ pub struct OnsetDetector {
     flux_history_count: usize,
     /// Peak flux ever observed, used for normalizing strength to [0, 1].
     peak_flux: f32,
+    /// Pre-allocated buffer for per-frame magnitude computation.
+    current_magnitudes: Vec<f32>,
 }
 
 impl std::fmt::Debug for OnsetDetector {
@@ -133,6 +135,7 @@ impl OnsetDetector {
             flux_history_pos: 0,
             flux_history_count: 0,
             peak_flux: f32::EPSILON,
+            current_magnitudes: vec![0.0; num_bins],
         }
     }
 
@@ -223,26 +226,29 @@ impl OnsetDetector {
         self.fft
             .process_with_scratch(&mut self.complex_buffer, &mut self.scratch);
 
-        // Compute magnitudes for the positive-frequency bins.
-        let current_magnitudes: Vec<f32> = self.complex_buffer[..num_bins]
-            .iter()
-            .map(|c| {
-                let re = if c.re.is_finite() { c.re } else { 0.0 };
-                let im = if c.im.is_finite() { c.im } else { 0.0 };
-                re.hypot(im)
-            })
-            .collect();
+        // Compute magnitudes for the positive-frequency bins, writing in-place.
+        for i in 0..num_bins {
+            let c = self.complex_buffer[i];
+            let re = if c.re.is_finite() { c.re } else { 0.0 };
+            let im = if c.im.is_finite() { c.im } else { 0.0 };
+            self.current_magnitudes[i] = re.hypot(im);
+        }
 
         if !self.has_prev {
             // First frame: just store magnitudes, no onset possible.
-            self.prev_magnitudes.copy_from_slice(&current_magnitudes);
+            self.prev_magnitudes
+                .copy_from_slice(&self.current_magnitudes);
             self.has_prev = true;
             return None;
         }
 
         // Spectral flux: sum of positive half-wave rectified differences.
         let mut flux = 0.0_f32;
-        for (cur, prev) in current_magnitudes.iter().zip(self.prev_magnitudes.iter()) {
+        for (cur, prev) in self
+            .current_magnitudes
+            .iter()
+            .zip(self.prev_magnitudes.iter())
+        {
             let diff = cur - prev;
             if diff > 0.0 {
                 flux += diff;
@@ -266,10 +272,11 @@ impl OnsetDetector {
 
         // Compute spectral centroid for brightness classification.
         let centroid =
-            compute_spectral_centroid(&current_magnitudes, self.sample_rate, self.fft_size);
+            compute_spectral_centroid(&self.current_magnitudes, self.sample_rate, self.fft_size);
 
         // Store current magnitudes for next frame.
-        self.prev_magnitudes.copy_from_slice(&current_magnitudes);
+        self.prev_magnitudes
+            .copy_from_slice(&self.current_magnitudes);
 
         // Fire onset if the flux exceeds the adaptive threshold.
         if flux > adaptive_threshold && flux > f32::EPSILON {

@@ -17,7 +17,9 @@ pub struct SpectrumData {
     /// Magnitude of each frequency bin in dB (length = `num_bins`).
     pub magnitudes_db: Vec<f32>,
     /// Centre frequency of each bin in Hz (length = `num_bins`).
-    pub bin_frequencies: Vec<f32>,
+    ///
+    /// Shared via `Arc` to avoid cloning the frequency vector on every frame.
+    pub bin_frequencies: Arc<Vec<f32>>,
     /// Number of bins (FFT size / 2 + 1).
     pub num_bins: usize,
 }
@@ -38,7 +40,9 @@ pub struct SpectrumAnalyzer {
     scratch: Vec<Complex<f32>>,
     magnitudes: Vec<f32>,
     smoothing: f32,
-    bin_frequencies: Vec<f32>,
+    bin_frequencies: Arc<Vec<f32>>,
+    /// Pre-allocated output buffer for per-frame magnitude computation.
+    output_magnitudes: Vec<f32>,
 }
 
 impl std::fmt::Debug for SpectrumAnalyzer {
@@ -89,9 +93,11 @@ impl SpectrumAnalyzer {
             .collect();
 
         // Pre-compute bin centre frequencies.
-        let bin_frequencies: Vec<f32> = (0..num_bins)
-            .map(|i| i as f32 * safe_sr / fft_size as f32)
-            .collect();
+        let bin_frequencies: Arc<Vec<f32>> = Arc::new(
+            (0..num_bins)
+                .map(|i| i as f32 * safe_sr / fft_size as f32)
+                .collect(),
+        );
 
         Self {
             fft,
@@ -105,6 +111,7 @@ impl SpectrumAnalyzer {
             magnitudes: vec![-100.0; num_bins],
             smoothing: safe_smoothing,
             bin_frequencies,
+            output_magnitudes: vec![-100.0; num_bins],
         }
     }
 
@@ -169,7 +176,7 @@ impl SpectrumAnalyzer {
             .process_with_scratch(&mut self.complex_buffer, &mut self.scratch);
 
         // Compute magnitudes and convert to dB with EMA smoothing.
-        let mut magnitudes_db = Vec::with_capacity(num_bins);
+        // Write in-place into the pre-allocated output buffer.
         for i in 0..num_bins {
             let c = self.complex_buffer[i];
             // Compute magnitude. Guard against non-finite FFT output.
@@ -194,12 +201,12 @@ impl SpectrumAnalyzer {
                 -100.0
             };
             self.magnitudes[i] = smoothed;
-            magnitudes_db.push(smoothed);
+            self.output_magnitudes[i] = smoothed;
         }
 
         SpectrumData {
-            magnitudes_db,
-            bin_frequencies: self.bin_frequencies.clone(),
+            magnitudes_db: self.output_magnitudes[..num_bins].to_vec(),
+            bin_frequencies: Arc::clone(&self.bin_frequencies),
             num_bins,
         }
     }

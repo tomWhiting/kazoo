@@ -64,6 +64,26 @@ impl EffectChain {
         }
     }
 
+    /// Create an empty effect chain with scratch buffer pre-allocated to
+    /// `max_block_size` samples, avoiding runtime allocation in [`process`].
+    #[must_use]
+    pub fn new_with_capacity(max_block_size: usize) -> Self {
+        Self {
+            effects: Vec::new(),
+            scratch_buffer: vec![0.0; max_block_size],
+        }
+    }
+
+    /// Pre-allocate the internal scratch buffer for the given block size.
+    ///
+    /// Call this from [`crate::mixer::Mixer::prepare`] so that subsequent
+    /// [`process`] calls never need to resize.
+    pub fn prepare(&mut self, buffer_size: usize) {
+        if self.scratch_buffer.len() < buffer_size {
+            self.scratch_buffer.resize(buffer_size, 0.0);
+        }
+    }
+
     /// Append an effect to the end of the chain.
     pub fn push(&mut self, effect: Box<dyn Processor>) {
         self.effects.push(EffectSlot {
@@ -136,6 +156,22 @@ impl EffectChain {
         }
 
         sanitize_buffer(&mut output[..len]);
+    }
+
+    /// Set a parameter value on the effect at `effect_index`.
+    ///
+    /// Returns an error if the effect index is out of range or if
+    /// `set_param` on the underlying processor fails.
+    pub fn set_effect_param(
+        &mut self,
+        effect_index: usize,
+        param_index: usize,
+        value: f32,
+    ) -> crate::Result<()> {
+        let slot = self.effects.get_mut(effect_index).ok_or_else(|| {
+            crate::Error::Config(format!("effect index {effect_index} out of range"))
+        })?;
+        slot.processor.set_param(param_index, value)
     }
 
     /// Number of effects in the chain.
@@ -313,6 +349,41 @@ mod tests {
 
         for (i, &s) in output.iter().enumerate() {
             assert!(s.is_finite(), "chain output[{i}] = {s}");
+        }
+    }
+
+    #[test]
+    fn chain_new_with_capacity_preallocates() {
+        let mut chain = EffectChain::new_with_capacity(512);
+        chain.push(Box::new(TestGain::new(0.5)));
+
+        let input = [1.0_f32; 256];
+        let mut output = [0.0_f32; 256];
+        chain.process(&input, &mut output);
+
+        for (i, &out) in output.iter().enumerate() {
+            assert!(
+                (out - 0.5).abs() < 1e-6,
+                "new_with_capacity: [{i}] expected 0.5, got {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn chain_prepare_resizes_scratch() {
+        let mut chain = EffectChain::new();
+        chain.prepare(1024);
+        chain.push(Box::new(TestGain::new(2.0)));
+
+        let input = [0.25_f32; 512];
+        let mut output = [0.0_f32; 512];
+        chain.process(&input, &mut output);
+
+        for (i, &out) in output.iter().enumerate() {
+            assert!(
+                (out - 0.5).abs() < 1e-6,
+                "prepare: [{i}] expected 0.5, got {out}"
+            );
         }
     }
 }

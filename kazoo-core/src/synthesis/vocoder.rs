@@ -97,9 +97,10 @@ pub struct Vocoder {
     carrier_filters: Vec<BiquadFilter>,
     envelopes: Vec<EnvelopeFollower>,
 
-    // Per-band scratch buffers (pre-allocated).
+    // Per-band scratch buffers (pre-allocated for block processing).
     mod_band_buf: Vec<f32>,
     carrier_band_buf: Vec<f32>,
+    carrier_block: Vec<f32>,
 
     // Internal carrier oscillator state.
     carrier_phase: f32,
@@ -158,14 +159,18 @@ impl Vocoder {
             ));
         }
 
+        // Pre-allocate scratch buffers sized for the default block size.
+        let block_cap = crate::DEFAULT_BUFFER_SIZE;
+
         Self {
             sample_rate: sr,
             num_bands,
             mod_filters,
             carrier_filters,
             envelopes,
-            mod_band_buf: vec![0.0; 1],
-            carrier_band_buf: vec![0.0; 1],
+            mod_band_buf: vec![0.0; block_cap],
+            carrier_band_buf: vec![0.0; block_cap],
+            carrier_block: vec![0.0; block_cap],
             carrier_phase: 0.0,
             noise_gen: NoiseGen::new(0xCAFE_BABE),
             carrier_mode: VocoderCarrierMode::InternalSaw,
@@ -250,6 +255,18 @@ impl Vocoder {
     }
 }
 
+/// Fill `dest` with sanitized samples from `src`, zero-padding if `src` is
+/// shorter. Free function to avoid borrow conflicts with `self`.
+fn fill_sanitized_input(dest: &mut [f32], src: &[f32]) {
+    let copy_len = dest.len().min(src.len());
+    for (d, &s) in dest[..copy_len].iter_mut().zip(&src[..copy_len]) {
+        *d = sanitize_sample(s);
+    }
+    for d in &mut dest[copy_len..] {
+        *d = 0.0;
+    }
+}
+
 /// Compute logarithmically spaced band centre frequencies.
 fn compute_band_frequencies(num_bands: usize, sample_rate: f32) -> Vec<f32> {
     if num_bands == 0 {
@@ -276,43 +293,81 @@ impl Processor for Vocoder {
             return;
         }
 
-        let input_len = input.len();
+        let len = output.len();
 
-        for (i, out_sample) in output.iter_mut().enumerate() {
-            let modulator_sample = if i < input_len {
-                sanitize_sample(input[i])
-            } else {
-                0.0
-            };
+        // Safety: buffers are pre-sized via prepare(). Debug-assert so tests
+        // catch mis-use without a release-mode cost.
+        debug_assert!(
+            self.mod_band_buf.len() >= len
+                && self.carrier_band_buf.len() >= len
+                && self.carrier_block.len() >= len,
+            "Vocoder::prepare() must be called with a block size >= {len}"
+        );
 
-            // Generate or use carrier sample.
-            let carrier_sample = if self.carrier_mode == VocoderCarrierMode::ExternalInput {
-                modulator_sample
-            } else {
-                self.generate_carrier_sample()
-            };
+        // Generate the carrier signal for the entire block.
+        if self.carrier_mode == VocoderCarrierMode::ExternalInput {
+            fill_sanitized_input(&mut self.carrier_block[..len], input);
+        } else {
+            // Generate carrier samples. We iterate by index because
+            // generate_carrier_sample() requires &mut self, creating a
+            // borrow conflict with iter_mut().
+            for i in 0..len {
+                self.carrier_block[i] = self.generate_carrier_sample();
+            }
+        }
 
-            let mut sum = 0.0_f32;
+        // Prepare sanitized modulator input in mod_band_buf (reused per band).
+        fill_sanitized_input(&mut self.mod_band_buf[..len], input);
 
-            for band in 0..self.num_bands {
-                // Filter modulator through bandpass.
-                self.mod_band_buf[0] = modulator_sample;
-                let mut mod_out = [0.0_f32; 1];
-                self.mod_filters[band].process(&self.mod_band_buf, &mut mod_out);
+        // Zero the output buffer before accumulating.
+        for sample in &mut output[..len] {
+            *sample = 0.0;
+        }
 
-                // Track envelope of the modulator band.
-                let env = self.envelopes[band].process_sample(mod_out[0]);
+        // Process each band as a block: filter entire block, extract envelope,
+        // multiply carrier, accumulate into output.
+        //
+        // Buffer usage per band iteration:
+        //   1. mod_band_buf (modulator input) -> mod_filters -> carrier_band_buf (filtered mod)
+        //   2. carrier_band_buf in-place -> envelopes -> carrier_band_buf (envelope values)
+        //   3. carrier_block (carrier input) -> carrier_filters -> mod_band_buf (filtered carrier)
+        //   4. output[i] += mod_band_buf[i] * carrier_band_buf[i]
+        //   5. Re-fill mod_band_buf from input for the next band.
+        for band in 0..self.num_bands {
+            // 1. Filter modulator through bandpass (entire block).
+            self.mod_filters[band]
+                .process(&self.mod_band_buf[..len], &mut self.carrier_band_buf[..len]);
 
-                // Filter carrier through matching bandpass.
-                self.carrier_band_buf[0] = carrier_sample;
-                let mut car_out = [0.0_f32; 1];
-                self.carrier_filters[band].process(&self.carrier_band_buf, &mut car_out);
-
-                // Multiply carrier band by modulator envelope.
-                sum += car_out[0] * env;
+            // 2. Extract envelope from filtered modulator output in-place.
+            for i in 0..len {
+                self.carrier_band_buf[i] =
+                    self.envelopes[band].process_sample(self.carrier_band_buf[i]);
             }
 
-            *out_sample = sanitize_sample(sum);
+            // 3. Filter carrier through matching bandpass (entire block).
+            //    mod_band_buf has been consumed by step 1, safe to overwrite.
+            //    carrier_block is never modified, so it's stable across bands.
+            self.carrier_filters[band]
+                .process(&self.carrier_block[..len], &mut self.mod_band_buf[..len]);
+
+            // 4. Accumulate: filtered_carrier * envelope.
+            for ((out, &carrier), &env) in output[..len]
+                .iter_mut()
+                .zip(&self.mod_band_buf[..len])
+                .zip(&self.carrier_band_buf[..len])
+            {
+                *out += carrier * env;
+            }
+
+            // 5. Re-fill modulator input for the next band.
+            if band + 1 < self.num_bands {
+                fill_sanitized_input(&mut self.mod_band_buf[..len], input);
+            }
+        }
+
+        // Final sanitization.
+        for sample in &mut output[..len] {
+            *sample = sanitize_sample(*sample);
         }
     }
 
@@ -400,6 +455,19 @@ impl Processor for Vocoder {
         self.rebuild_envelopes();
         self.reset();
     }
+
+    fn prepare(&mut self, max_block_size: usize) {
+        let cap = max_block_size.max(crate::DEFAULT_BUFFER_SIZE);
+        if self.mod_band_buf.len() < cap {
+            self.mod_band_buf.resize(cap, 0.0);
+        }
+        if self.carrier_band_buf.len() < cap {
+            self.carrier_band_buf.resize(cap, 0.0);
+        }
+        if self.carrier_block.len() < cap {
+            self.carrier_block.resize(cap, 0.0);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +489,7 @@ mod tests {
     fn voice_modulates_carrier() {
         let sr = 44100.0;
         let mut vocoder = Vocoder::new(sr);
+        vocoder.prepare(4096);
         vocoder.set_carrier_mode(VocoderCarrierMode::InternalSaw);
 
         // Voice input: 220 Hz sine.
@@ -440,6 +509,7 @@ mod tests {
     fn silence_input_produces_quiet_output() {
         let sr = 44100.0;
         let mut vocoder = Vocoder::new(sr);
+        vocoder.prepare(4096);
 
         let silence = vec![0.0_f32; 4096];
         let mut output = vec![0.0_f32; 4096];
@@ -464,6 +534,7 @@ mod tests {
             VocoderCarrierMode::ExternalInput,
         ] {
             let mut vocoder = Vocoder::new(sr);
+            vocoder.prepare(4096);
             vocoder.set_carrier_mode(mode);
 
             let mut output = vec![0.0_f32; 4096];
@@ -526,6 +597,7 @@ mod tests {
     #[test]
     fn reset_clears_state() {
         let mut vocoder = Vocoder::new(44100.0);
+        vocoder.prepare(2048);
         let voice = sine_wave(220.0, 44100.0, 2048);
         let mut output = vec![0.0_f32; 2048];
         vocoder.process(&voice, &mut output);
@@ -538,6 +610,7 @@ mod tests {
     fn sample_rate_change() {
         let mut vocoder = Vocoder::new(44100.0);
         vocoder.set_sample_rate(96000.0);
+        vocoder.prepare(2048);
         let voice = sine_wave(220.0, 96000.0, 2048);
         let mut output = vec![0.0_f32; 2048];
         vocoder.process(&voice, &mut output);

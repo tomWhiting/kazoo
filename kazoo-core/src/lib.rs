@@ -105,6 +105,17 @@ pub trait Processor: Send {
     /// Called when the host sample rate changes. Implementations must
     /// recalculate coefficients, resize internal buffers, and reset state.
     fn set_sample_rate(&mut self, sample_rate: f32);
+
+    /// Prepare internal buffers for the given maximum block size.
+    ///
+    /// Called once after construction and whenever the engine's buffer size
+    /// changes. Implementations that hold scratch buffers sized to the block
+    /// length should resize them here so that [`process`](Self::process) never
+    /// allocates.
+    ///
+    /// The default implementation is a no-op — most processors use fixed-size
+    /// internal buffers and do not need this.
+    fn prepare(&mut self, _max_block_size: usize) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +260,7 @@ impl TimePosition {
     /// Position expressed in beats at the given tempo.
     #[must_use]
     pub fn beats(&self, bpm: f64) -> f64 {
-        if bpm <= 0.0 {
+        if !bpm.is_finite() || bpm <= 0.0 {
             return 0.0;
         }
         self.seconds() * bpm / 60.0
@@ -409,12 +420,15 @@ pub fn midi_note_to_frequency(note: u8) -> f32 {
 }
 
 /// MIDI note name (e.g. `"A4"`, `"C#3"`).
+///
+/// Uses the standard MIDI convention where MIDI note 0 is C-1, MIDI note 12
+/// is C0, MIDI note 60 is C4, and MIDI note 69 is A4.
 #[must_use]
 pub fn midi_note_name(note: u8) -> String {
     const NAMES: [&str; 12] = [
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     ];
-    let octave = (note / 12).saturating_sub(1);
+    let octave = i16::from(note / 12) - 1;
     let name = NAMES[note as usize % 12];
     format!("{name}{octave}")
 }
@@ -634,6 +648,18 @@ mod tests {
     }
 
     #[test]
+    fn time_position_beats_nan_bpm() {
+        let tp = TimePosition::new(44_100, 44_100);
+        assert!((tp.beats(f64::NAN) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn time_position_beats_inf_bpm() {
+        let tp = TimePosition::new(44_100, 44_100);
+        assert!((tp.beats(f64::INFINITY) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn time_position_format_time() {
         let tp = TimePosition::new(44_100 * 65, 44_100); // 1 min 5 sec
         let formatted = tp.format_time();
@@ -769,6 +795,18 @@ mod tests {
     fn midi_note_name_c0() {
         // MIDI note 12 = C0 (octave = 12/12 - 1 = 0)
         assert_eq!(midi_note_name(12), "C0");
+    }
+
+    #[test]
+    fn midi_note_name_c_minus_1() {
+        // MIDI note 0 = C-1 (octave = 0/12 - 1 = -1)
+        assert_eq!(midi_note_name(0), "C-1");
+    }
+
+    #[test]
+    fn midi_note_name_b_minus_1() {
+        // MIDI note 11 = B-1
+        assert_eq!(midi_note_name(11), "B-1");
     }
 
     // -- Utility tests --

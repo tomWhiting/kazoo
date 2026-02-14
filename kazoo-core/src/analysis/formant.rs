@@ -35,6 +35,14 @@ pub struct FormantExtractor {
     autocorrelation: Vec<f64>,
     /// Scratch space for LPC coefficients (length = `lpc_order` + 1).
     lpc_coefficients: Vec<f64>,
+    /// Pre-allocated scratch buffer for windowed frame data.
+    windowed: Vec<f64>,
+    /// Pre-allocated scratch buffer for pre-emphasized frame data.
+    emphasized: Vec<f64>,
+    /// Pre-allocated scratch buffer for Levinson-Durbin coefficients.
+    ld_a: Vec<f64>,
+    /// Pre-allocated scratch buffer for previous Levinson-Durbin coefficients.
+    ld_a_prev: Vec<f64>,
 }
 
 impl FormantExtractor {
@@ -63,6 +71,10 @@ impl FormantExtractor {
             buffer_pos: 0,
             autocorrelation: vec![0.0; lpc_order + 1],
             lpc_coefficients: vec![0.0; lpc_order + 1],
+            windowed: vec![0.0; frame_size],
+            emphasized: vec![0.0; frame_size],
+            ld_a: vec![0.0; lpc_order + 1],
+            ld_a_prev: vec![0.0; lpc_order + 1],
         }
     }
 
@@ -106,26 +118,24 @@ impl FormantExtractor {
 
     /// Analyse the current buffer to extract formant data.
     fn analyze_frame(&mut self) -> FormantData {
-        // Apply a Hamming window to the frame.
-        let windowed: Vec<f64> = (0..self.frame_size)
-            .map(|i| {
-                let w = 0.46f64.mul_add(
-                    -(2.0 * std::f64::consts::PI * i as f64 / (self.frame_size as f64 - 1.0)).cos(),
-                    0.54,
-                );
-                f64::from(self.buffer[i]) * w
-            })
-            .collect();
+        // Apply a Hamming window to the frame, reusing pre-allocated buffer.
+        for i in 0..self.frame_size {
+            let w = 0.46f64.mul_add(
+                -(2.0 * std::f64::consts::PI * i as f64 / (self.frame_size as f64 - 1.0)).cos(),
+                0.54,
+            );
+            self.windowed[i] = f64::from(self.buffer[i]) * w;
+        }
 
         // Pre-emphasis to boost high frequencies (common in speech analysis).
-        let mut emphasized = vec![0.0_f64; windowed.len()];
-        emphasized[0] = windowed[0];
-        for i in 1..windowed.len() {
-            emphasized[i] = 0.97f64.mul_add(-windowed[i - 1], windowed[i]);
+        // Reuse pre-allocated buffer.
+        self.emphasized[0] = self.windowed[0];
+        for i in 1..self.frame_size {
+            self.emphasized[i] = 0.97f64.mul_add(-self.windowed[i - 1], self.windowed[i]);
         }
 
         // Compute autocorrelation.
-        self.compute_autocorrelation(&emphasized);
+        self.compute_autocorrelation();
 
         // Check for silence / degenerate input.
         if self.autocorrelation[0] < 1e-10 {
@@ -149,13 +159,13 @@ impl FormantExtractor {
         self.extract_formants_from_lpc()
     }
 
-    /// Compute the autocorrelation of the signal for lags `0..=lpc_order`.
-    fn compute_autocorrelation(&mut self, signal: &[f64]) {
-        let n = signal.len();
+    /// Compute the autocorrelation of the pre-emphasized signal for lags `0..=lpc_order`.
+    fn compute_autocorrelation(&mut self) {
+        let n = self.frame_size;
         for lag in 0..=self.lpc_order {
             let mut sum = 0.0_f64;
             for i in 0..n - lag {
-                sum += signal[i] * signal[i + lag];
+                sum += self.emphasized[i] * self.emphasized[i + lag];
             }
             self.autocorrelation[lag] = if sum.is_finite() { sum } else { 0.0 };
         }
@@ -167,24 +177,23 @@ impl FormantExtractor {
     /// with the input signal).
     fn levinson_durbin(&mut self) -> bool {
         let order = self.lpc_order;
-        let r = &self.autocorrelation;
 
-        if r[0].abs() < 1e-30 {
+        if self.autocorrelation[0].abs() < 1e-30 {
             self.lpc_coefficients.fill(0.0);
             return false;
         }
 
-        let mut a = vec![0.0_f64; order + 1];
-        let mut a_prev = vec![0.0_f64; order + 1];
-        a[0] = 1.0;
-        a_prev[0] = 1.0;
-        let mut error = r[0];
+        self.ld_a.fill(0.0);
+        self.ld_a_prev.fill(0.0);
+        self.ld_a[0] = 1.0;
+        self.ld_a_prev[0] = 1.0;
+        let mut error = self.autocorrelation[0];
 
         for i in 1..=order {
             // Compute reflection coefficient.
             let mut lambda = 0.0_f64;
             for j in 0..i {
-                lambda += a_prev[j] * r[i - j];
+                lambda += self.ld_a_prev[j] * self.autocorrelation[i - j];
             }
 
             if error.abs() < 1e-30 {
@@ -202,7 +211,7 @@ impl FormantExtractor {
 
             // Update coefficients.
             for j in 0..=i {
-                a[j] = lambda.mul_add(a_prev[i - j], a_prev[j]);
+                self.ld_a[j] = lambda.mul_add(self.ld_a_prev[i - j], self.ld_a_prev[j]);
             }
 
             error *= lambda.mul_add(-lambda, 1.0);
@@ -210,10 +219,10 @@ impl FormantExtractor {
                 break;
             }
 
-            a_prev[..=i].copy_from_slice(&a[..=i]);
+            self.ld_a_prev[..=i].copy_from_slice(&self.ld_a[..=i]);
         }
 
-        self.lpc_coefficients[..=order].copy_from_slice(&a[..=order]);
+        self.lpc_coefficients[..=order].copy_from_slice(&self.ld_a[..=order]);
         true
     }
 

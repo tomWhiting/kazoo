@@ -69,6 +69,7 @@ enum KeyAction {
     ConfirmParamEdit,
     CancelParamEdit,
     ParamEditChar(char),
+    ParamEditBackspace,
 
     // Waveform view
     ZoomIn,
@@ -121,6 +122,7 @@ const fn resolve_param_edit_action(key: KeyEvent) -> Option<KeyAction> {
     match key.code {
         KeyCode::Enter => Some(KeyAction::ConfirmParamEdit),
         KeyCode::Esc => Some(KeyAction::CancelParamEdit),
+        KeyCode::Backspace => Some(KeyAction::ParamEditBackspace),
         KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
             Some(KeyAction::ParamEditChar(c))
         }
@@ -193,6 +195,8 @@ const fn resolve_panel_action(app: &App, key: KeyEvent) -> Option<KeyAction> {
 /// Panel-specific keys for the effects panel.
 const fn resolve_effects_action(key: KeyEvent) -> Option<KeyAction> {
     match key.code {
+        KeyCode::Char('J') => Some(KeyAction::NextEffect),
+        KeyCode::Char('K') => Some(KeyAction::PrevEffect),
         KeyCode::Char('h') | KeyCode::Left => Some(KeyAction::PrevParam),
         KeyCode::Char('l') | KeyCode::Right => Some(KeyAction::NextParam),
         KeyCode::Char('+' | '=') => Some(KeyAction::IncreaseParam),
@@ -420,13 +424,15 @@ fn apply_action(app: &mut App, action: KeyAction) {
         }
         KeyAction::ConfirmParamEdit => {
             if let Ok(value) = app.param_edit_buffer.parse::<f32>() {
-                if let Some(track_id) = app.selected_track_id() {
-                    let _ = app.engine.send_command(EngineCommand::SetEffectParameter {
-                        track_id,
-                        effect_index: app.selected_effect,
-                        param_index: app.selected_param,
-                        value,
-                    });
+                if value.is_finite() {
+                    if let Some(track_id) = app.selected_track_id() {
+                        let _ = app.engine.send_command(EngineCommand::SetEffectParameter {
+                            track_id,
+                            effect_index: app.selected_effect,
+                            param_index: app.selected_param,
+                            value,
+                        });
+                    }
                 }
             }
             app.input_mode = InputMode::Normal;
@@ -437,7 +443,12 @@ fn apply_action(app: &mut App, action: KeyAction) {
             app.param_edit_buffer.clear();
         }
         KeyAction::ParamEditChar(c) => {
-            app.param_edit_buffer.push(c);
+            if app.param_edit_buffer.len() < 16 {
+                app.param_edit_buffer.push(c);
+            }
+        }
+        KeyAction::ParamEditBackspace => {
+            app.param_edit_buffer.pop();
         }
 
         // -- Waveform view ---------------------------------------------------
@@ -1031,5 +1042,85 @@ mod tests {
         let mut app = test_app_with_tracks(2);
         handle_key_event(&mut app, code_key(KeyCode::Delete));
         assert_eq!(app.track_count(), 1);
+    }
+
+    // -- H11: Shift+J/K navigate effects in effects panel -------------------
+
+    #[test]
+    fn capital_j_resolves_to_next_effect_in_effects_panel() {
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Effects;
+        let action = resolve_action(&app, char_key('J'));
+        assert_eq!(action, Some(KeyAction::NextEffect));
+    }
+
+    #[test]
+    fn capital_k_resolves_to_prev_effect_in_effects_panel() {
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Effects;
+        let action = resolve_action(&app, char_key('K'));
+        assert_eq!(action, Some(KeyAction::PrevEffect));
+    }
+
+    #[test]
+    fn capital_j_outside_effects_panel_is_global_noop() {
+        // In the mixer panel, Shift+J is not bound — falls through to None.
+        let mut app = test_app();
+        app.focused_panel = FocusedPanel::Mixer;
+        let action = resolve_action(&app, char_key('J'));
+        assert_eq!(action, None);
+    }
+
+    // -- H12: Backspace in parameter edit mode ------------------------------
+
+    #[test]
+    fn backspace_in_param_edit_removes_last_char() {
+        let mut app = test_app();
+        app.input_mode = InputMode::ParameterEdit;
+        app.param_edit_buffer = "42.0".into();
+
+        handle_key_event(&mut app, code_key(KeyCode::Backspace));
+        assert_eq!(app.param_edit_buffer, "42.");
+
+        handle_key_event(&mut app, code_key(KeyCode::Backspace));
+        assert_eq!(app.param_edit_buffer, "42");
+    }
+
+    #[test]
+    fn backspace_on_empty_buffer_is_noop() {
+        let mut app = test_app();
+        app.input_mode = InputMode::ParameterEdit;
+        app.param_edit_buffer.clear();
+
+        handle_key_event(&mut app, code_key(KeyCode::Backspace));
+        assert_eq!(app.param_edit_buffer, "");
+    }
+
+    // -- H13: Param edit buffer cap and finite validation -------------------
+
+    #[test]
+    fn param_edit_buffer_capped_at_16_chars() {
+        let mut app = test_app();
+        app.input_mode = InputMode::ParameterEdit;
+        app.param_edit_buffer.clear();
+
+        // Push 20 digits; only 16 should be accepted.
+        for _ in 0..20 {
+            handle_key_event(&mut app, char_key('1'));
+        }
+        assert_eq!(app.param_edit_buffer.len(), 16);
+    }
+
+    #[test]
+    fn confirm_param_edit_rejects_infinity() {
+        let mut app = test_app_with_tracks(1);
+        app.input_mode = InputMode::ParameterEdit;
+        // A value that parses to infinity in f32
+        app.param_edit_buffer = "999999999999999999999999999999999999999".into();
+
+        handle_key_event(&mut app, code_key(KeyCode::Enter));
+        // Should have exited param edit mode but not sent the command.
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.param_edit_buffer, "");
     }
 }

@@ -30,6 +30,8 @@ pub struct FormantShift {
     window: Vec<f32>,
     fft_scratch: Vec<Complex<f32>>,
     fft_buffer: Vec<Complex<f32>>,
+    shifted_buffer: Vec<Complex<f32>>,
+    inv_scratch: Vec<Complex<f32>>,
     fft_forward: Arc<dyn rustfft::Fft<f32>>,
     fft_inverse: Arc<dyn rustfft::Fft<f32>>,
     // Track how many input samples have been accumulated since the last hop.
@@ -84,6 +86,8 @@ impl FormantShift {
             window,
             fft_scratch: vec![Complex::new(0.0, 0.0); FFT_SIZE],
             fft_buffer: vec![Complex::new(0.0, 0.0); FFT_SIZE],
+            shifted_buffer: vec![Complex::new(0.0, 0.0); FFT_SIZE],
+            inv_scratch: vec![Complex::new(0.0, 0.0); FFT_SIZE],
             fft_forward,
             fft_inverse,
             samples_since_hop: 0,
@@ -122,30 +126,34 @@ impl FormantShift {
         let shift_bins = self.shift_hz * fft_size as f32 / self.sample_rate;
         let shift_int = shift_bins.round() as i32;
 
-        // Create a shifted copy.
+        // Create a shifted copy using pre-allocated buffer (zero it first).
         let half = fft_size / 2 + 1;
-        let mut shifted = vec![Complex::new(0.0_f32, 0.0); fft_size];
+        for c in &mut self.shifted_buffer {
+            *c = Complex::new(0.0, 0.0);
+        }
 
         for k in 0..half {
             #[allow(clippy::cast_possible_wrap)]
             let dst = k as i32 + shift_int;
             if dst >= 0 && (dst as usize) < half {
-                shifted[dst as usize] = self.fft_buffer[k];
+                self.shifted_buffer[dst as usize] = self.fft_buffer[k];
                 // Mirror for negative frequencies.
                 if dst > 0 && (dst as usize) < half {
-                    shifted[fft_size - dst as usize] = self.fft_buffer[k].conj();
+                    self.shifted_buffer[fft_size - dst as usize] = self.fft_buffer[k].conj();
                 }
             }
         }
         // Ensure DC and Nyquist are real.
-        shifted[0].im = 0.0;
-        shifted[fft_size / 2].im = 0.0;
+        self.shifted_buffer[0].im = 0.0;
+        self.shifted_buffer[fft_size / 2].im = 0.0;
 
-        // Inverse FFT.
-        self.fft_buffer.copy_from_slice(&shifted);
-        let mut inv_scratch = vec![Complex::new(0.0_f32, 0.0); FFT_SIZE];
+        // Inverse FFT using pre-allocated scratch.
+        self.fft_buffer.copy_from_slice(&self.shifted_buffer);
+        for c in &mut self.inv_scratch {
+            *c = Complex::new(0.0, 0.0);
+        }
         self.fft_inverse
-            .process_with_scratch(&mut self.fft_buffer, &mut inv_scratch);
+            .process_with_scratch(&mut self.fft_buffer, &mut self.inv_scratch);
 
         // Overlap-add: window the output and accumulate.
         let out_len = self.output_accum.len();
@@ -221,6 +229,12 @@ impl Processor for FormantShift {
         self.samples_since_hop = 0;
         self.primed = false;
         self.frames_accumulated = 0;
+        for c in &mut self.shifted_buffer {
+            *c = Complex::new(0.0, 0.0);
+        }
+        for c in &mut self.inv_scratch {
+            *c = Complex::new(0.0, 0.0);
+        }
     }
 
     fn name(&self) -> &'static str {

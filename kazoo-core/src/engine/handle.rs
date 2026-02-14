@@ -3,6 +3,10 @@
 //! [`EngineHandle`] provides methods to send commands and poll display state.
 //! It is the sole interface between any frontend and the engine subsystem.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+
 use crossbeam_channel::Sender;
 use ringbuf::HeapCons;
 use ringbuf::traits::Consumer;
@@ -41,6 +45,24 @@ pub struct EngineHandle {
 
     /// The negotiated audio buffer size in samples.
     buffer_size: usize,
+
+    /// Worker thread join handles. Joined on Drop after sending Shutdown.
+    /// Wrapped in `Option` so we can take them during drop.
+    thread_handles: Option<ThreadHandles>,
+}
+
+/// Stores all spawned thread join handles and the stream holder shutdown flag.
+pub(super) struct ThreadHandles {
+    /// Processing thread handle.
+    pub processing: JoinHandle<()>,
+    /// Analysis thread handle.
+    pub analysis: JoinHandle<()>,
+    /// Disk I/O thread handle.
+    pub disk: JoinHandle<()>,
+    /// Stream holder thread handle.
+    pub stream_holder: JoinHandle<()>,
+    /// Flag to signal the stream holder to exit.
+    pub stream_shutdown: Arc<AtomicBool>,
 }
 
 // `HeapCons` is not `Debug`, so implement manually.
@@ -71,7 +93,15 @@ impl EngineHandle {
             last_display: DisplayState::initial(sample_rate),
             sample_rate,
             buffer_size,
+            thread_handles: None,
         }
+    }
+
+    /// Attach worker thread handles so they can be joined on shutdown.
+    ///
+    /// Called by [`super::start`] after all threads have been spawned.
+    pub(super) fn set_thread_handles(&mut self, handles: ThreadHandles) {
+        self.thread_handles = Some(handles);
     }
 
     // -----------------------------------------------------------------------
@@ -81,14 +111,17 @@ impl EngineHandle {
     /// Send a command to the processing thread.
     ///
     /// This is non-blocking. Commands are queued and drained by the processing
-    /// thread at the start of each audio block.
-    ///
-    /// Returns `Err` if the processing thread has terminated and the channel
-    /// is disconnected.
+    /// thread at the start of each audio block. If the command channel is full,
+    /// the command is silently dropped (the processing thread has fallen
+    /// behind). Returns `Err` only if the channel is disconnected (engine
+    /// not running).
     pub fn send_command(&self, cmd: EngineCommand) -> crate::Result<()> {
-        self.command_tx
-            .send(cmd)
-            .map_err(|_| crate::Error::EngineNotRunning)
+        match self.command_tx.try_send(cmd) {
+            Ok(()) | Err(crossbeam_channel::TrySendError::Full(_)) => Ok(()),
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                Err(crate::Error::EngineNotRunning)
+            }
+        }
     }
 
     /// Poll the display ring buffer and return the most recent snapshot.
@@ -205,9 +238,22 @@ impl EngineHandle {
 
 impl Drop for EngineHandle {
     fn drop(&mut self) {
-        // Best-effort shutdown: if the channel is already closed this is a
-        // harmless no-op.
-        let _ = self.command_tx.send(EngineCommand::Shutdown);
+        // Best-effort shutdown: if the channel is full or already closed
+        // this is a harmless no-op.
+        let _ = self.command_tx.try_send(EngineCommand::Shutdown);
+
+        if let Some(handles) = self.thread_handles.take() {
+            // Signal the stream holder thread to exit.
+            handles.stream_shutdown.store(true, Ordering::Release);
+            handles.stream_holder.thread().unpark();
+
+            // Join all worker threads. Errors from panicked threads are
+            // intentionally swallowed during shutdown.
+            let _ = handles.processing.join();
+            let _ = handles.analysis.join();
+            let _ = handles.disk.join();
+            let _ = handles.stream_holder.join();
+        }
     }
 }
 

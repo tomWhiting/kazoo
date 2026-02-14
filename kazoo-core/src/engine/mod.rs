@@ -29,6 +29,9 @@ pub use display::DisplayState;
 pub use handle::EngineHandle;
 pub use processing::create_synth;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Producer, Split};
 
@@ -37,6 +40,7 @@ use crate::io::StreamConfig;
 use crate::{DEFAULT_BUFFER_SIZE, DEFAULT_SAMPLE_RATE, Result, SPECTRUM_FFT_SIZE};
 
 use analysis_thread::AnalysisConfig;
+use handle::ThreadHandles;
 
 // ---------------------------------------------------------------------------
 // EngineConfig
@@ -179,10 +183,10 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     let (disk_prod, disk_cons) = disk_rb.split();
 
     // -----------------------------------------------------------------------
-    // 2. Create command channels
+    // 2. Create command channels (bounded per CLAUDE.md)
     // -----------------------------------------------------------------------
-    let (command_tx, command_rx) = crossbeam_channel::unbounded::<EngineCommand>();
-    let (disk_cmd_tx, disk_cmd_rx) = crossbeam_channel::unbounded::<DiskCommand>();
+    let (command_tx, command_rx) = crossbeam_channel::bounded::<EngineCommand>(256);
+    let (disk_cmd_tx, disk_cmd_rx) = crossbeam_channel::bounded::<DiskCommand>(64);
 
     // -----------------------------------------------------------------------
     // 3. Build audio streams
@@ -214,24 +218,28 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
 
     // cpal::Stream is !Send on some platforms, so we hold streams alive in a
     // dedicated parked thread rather than storing them in EngineHandle.
-    let holder = std::thread::Builder::new()
+    // Use an AtomicBool shutdown flag so the thread exits cleanly on drop.
+    let stream_shutdown = Arc::new(AtomicBool::new(false));
+    let stream_shutdown_clone = Arc::clone(&stream_shutdown);
+
+    let stream_holder_handle = std::thread::Builder::new()
         .name("kazoo-streams".into())
         .spawn(move || {
             let _keep_alive = streams;
-            loop {
+            while !stream_shutdown_clone.load(Ordering::Acquire) {
                 std::thread::park();
             }
         })
         .map_err(|e| crate::Error::Stream(format!("failed to spawn streams holder: {e}")))?;
-    drop(holder);
 
     // -----------------------------------------------------------------------
     // 4. Spawn processing thread
     // -----------------------------------------------------------------------
     let proc_sample_rate = sample_rate;
     let proc_buffer_size = buffer_size;
+    let proc_disk_cmd_tx = disk_cmd_tx.clone();
 
-    std::thread::Builder::new()
+    let processing_handle = std::thread::Builder::new()
         .name("kazoo-processing".into())
         .spawn(move || {
             processing::run(
@@ -244,6 +252,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
                 pitch_cons,
                 spectrum_cons,
                 formant_cons,
+                proc_disk_cmd_tx,
                 proc_sample_rate,
                 proc_buffer_size,
             );
@@ -265,7 +274,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         buffer_size,
     };
 
-    std::thread::Builder::new()
+    let analysis_handle = std::thread::Builder::new()
         .name("kazoo-analysis".into())
         .spawn(move || {
             analysis_thread::run(
@@ -281,7 +290,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // -----------------------------------------------------------------------
     // 6. Spawn disk I/O thread
     // -----------------------------------------------------------------------
-    std::thread::Builder::new()
+    let disk_handle = std::thread::Builder::new()
         .name("kazoo-disk-io".into())
         .spawn(move || {
             disk::run(disk_cons, disk_cmd_rx, sample_rate);
@@ -291,12 +300,17 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // -----------------------------------------------------------------------
     // 7. Build and return the engine handle
     // -----------------------------------------------------------------------
-    Ok(EngineHandle::new(
-        command_tx,
-        display_cons,
-        sample_rate,
-        buffer_size,
-    ))
+    let mut handle = EngineHandle::new(command_tx, display_cons, sample_rate, buffer_size);
+
+    handle.set_thread_handles(ThreadHandles {
+        processing: processing_handle,
+        analysis: analysis_handle,
+        disk: disk_handle,
+        stream_holder: stream_holder_handle,
+        stream_shutdown,
+    });
+
+    Ok(handle)
 }
 
 // ---------------------------------------------------------------------------

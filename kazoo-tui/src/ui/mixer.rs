@@ -215,7 +215,8 @@ fn draw_mini_meter(frame: &mut Frame, peak_db: f32, area: Rect) {
             ("\u{2591}", theme::FG_DIMMED)
         };
 
-        let cell = Paragraph::new(ch).style(Style::new().fg(color));
+        let bar_text = ch.repeat(render_width as usize);
+        let cell = Paragraph::new(bar_text).style(Style::new().fg(color));
         frame.render_widget(cell, row_area);
     }
 }

@@ -186,7 +186,7 @@ impl GranularSynth {
         } else {
             44100.0
         };
-        let source_len = (sr * SOURCE_BUFFER_SECONDS) as usize;
+        let source_len = ((sr * SOURCE_BUFFER_SECONDS) as usize).max(1);
 
         Self {
             sample_rate: sr,
@@ -401,7 +401,7 @@ impl Processor for GranularSynth {
             44100.0
         };
         self.sample_rate = sr;
-        let new_len = (sr * SOURCE_BUFFER_SECONDS) as usize;
+        let new_len = ((sr * SOURCE_BUFFER_SECONDS) as usize).max(1);
         self.source_buffer.resize(new_len, 0.0);
         self.source_len = new_len;
         self.reset();

@@ -206,6 +206,9 @@ impl PhaseVocoder {
 
             // Accumulate phase with time-stretch scaling.
             self.sum_phase[k] += freq_dev * time_scale;
+            // Wrap phase to (-pi, pi] to prevent unbounded growth and
+            // resulting f32 precision loss in cos/sin after long playback.
+            self.sum_phase[k] = wrap_phase(self.sum_phase[k]);
 
             let new_phase = self.sum_phase[k];
             self.complex_buf[k] = Complex::new(mag * new_phase.cos(), mag * new_phase.sin());
@@ -382,7 +385,13 @@ impl Processor for PhaseVocoder {
 
         match index {
             Self::PARAM_TIME_STRETCH => self.time_stretch = clamped,
-            Self::PARAM_PITCH_SHIFT => self.pitch_shift = clamped,
+            Self::PARAM_PITCH_SHIFT => {
+                self.pitch_shift = clamped;
+                // Clear phase accumulators to avoid audible discontinuities
+                // from stale state when pitch changes.
+                self.sum_phase.fill(0.0);
+                self.last_phase.fill(0.0);
+            }
             _ => unreachable!(),
         }
         Ok(())

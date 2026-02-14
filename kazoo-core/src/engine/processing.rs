@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use ringbuf::traits::{Consumer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
@@ -55,6 +55,13 @@ struct ProcessingState {
     buffer_size: usize,
     mic_block: Vec<f32>,
     waveform_snapshot: Vec<f32>,
+    /// Samples processed since last meter reset.
+    meter_sample_counter: u32,
+    /// Number of samples between meter resets (~50ms worth).
+    meter_reset_interval: u32,
+    /// Pre-allocated display snapshot reused each frame to avoid per-block
+    /// heap allocations on the processing thread.
+    display_scratch: DisplayState,
 }
 
 impl ProcessingState {
@@ -63,6 +70,9 @@ impl ProcessingState {
         let sr_f32 = sample_rate as f32;
         let mut mixer = Mixer::new();
         mixer.prepare(sr_f32, buffer_size);
+
+        // Reset meters every ~50ms (sample_rate / 20 samples).
+        let meter_reset_interval = sample_rate / 20;
 
         Self {
             transport: TransportClock::new(sample_rate),
@@ -80,6 +90,9 @@ impl ProcessingState {
             buffer_size,
             mic_block: vec![0.0; buffer_size],
             waveform_snapshot: Vec::with_capacity(buffer_size),
+            meter_sample_counter: 0,
+            meter_reset_interval,
+            display_scratch: DisplayState::initial(sample_rate),
         }
     }
 }
@@ -95,6 +108,7 @@ struct ProcessingIO {
     spectrum_cons: HeapCons<Vec<f32>>,
     formant_cons: HeapCons<Option<crate::analysis::FormantData>>,
     command_rx: Receiver<EngineCommand>,
+    disk_cmd_tx: Sender<super::DiskCommand>,
 }
 
 /// Entry point for the processing thread.
@@ -113,6 +127,7 @@ pub fn run(
     pitch_cons: HeapCons<PitchEstimate>,
     spectrum_cons: HeapCons<Vec<f32>>,
     formant_cons: HeapCons<Option<crate::analysis::FormantData>>,
+    disk_cmd_tx: Sender<super::DiskCommand>,
     sample_rate: u32,
     buffer_size: usize,
 ) {
@@ -127,6 +142,7 @@ pub fn run(
         spectrum_cons,
         formant_cons,
         command_rx,
+        disk_cmd_tx,
     };
 
     loop {
@@ -153,8 +169,15 @@ pub fn run(
         capture_waveform(&mut state, num_read);
         let cpu_load = compute_cpu_load(block_start, num_samples, state.sample_rate);
 
-        push_display_state(&mut io, &state, input_level_db, cpu_load);
-        state.mixer.reset_meters();
+        push_display_state(&mut io, &mut state, input_level_db, cpu_load);
+
+        // Only reset meters every ~50ms to preserve meaningful peak-hold.
+        let n = u32::try_from(num_samples).unwrap_or(u32::MAX);
+        state.meter_sample_counter = state.meter_sample_counter.saturating_add(n);
+        if state.meter_sample_counter >= state.meter_reset_interval {
+            state.mixer.reset_meters();
+            state.meter_sample_counter = 0;
+        }
 
         if num_read == 0 {
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -170,7 +193,7 @@ fn drain_commands(io: &ProcessingIO, state: &mut ProcessingState) -> bool {
                 if matches!(cmd, EngineCommand::Shutdown) {
                     return true;
                 }
-                apply_command(cmd, state);
+                apply_command(cmd, state, &io.disk_cmd_tx);
             }
             Err(crossbeam_channel::TryRecvError::Empty) => return false,
             Err(crossbeam_channel::TryRecvError::Disconnected) => return true,
@@ -283,24 +306,35 @@ fn compute_cpu_load(block_start: Instant, num_samples: usize, sample_rate: u32) 
 }
 
 /// Build and push a display state snapshot to the UI ring buffer.
+///
+/// Reuses `state.display_scratch` to update mixer/spectrum/waveform in-place,
+/// then clones the result for the ring buffer. The clone is shallow for
+/// scalar fields and reuses Vec capacity across frames (the ring buffer
+/// consumer drops old values, returning their allocations to the allocator's
+/// thread-local cache).
 fn push_display_state(
     io: &mut ProcessingIO,
-    state: &ProcessingState,
+    state: &mut ProcessingState,
     input_level_db: f32,
     cpu_load: f32,
 ) {
-    let display = DisplayState {
-        transport: state.transport.snapshot(),
-        mixer: state.mixer.snapshot(),
-        pitch: state.latest_pitch,
-        spectrum_magnitudes: state.latest_spectrum.clone(),
-        waveform: state.waveform_snapshot.clone(),
-        input_level_db,
-        is_recording: state.is_recording,
-        formants: state.latest_formants.clone(),
-        cpu_load,
-    };
-    let _ = io.display_prod.try_push(display);
+    let scratch = &mut state.display_scratch;
+    scratch.transport = state.transport.snapshot();
+    state.mixer.write_snapshot(&mut scratch.mixer);
+    scratch.pitch = state.latest_pitch;
+
+    // Reuse existing Vec capacity — clone_from only reallocates if capacity
+    // is insufficient, which after the first frame it never is.
+    scratch
+        .spectrum_magnitudes
+        .clone_from(&state.latest_spectrum);
+    scratch.waveform.clone_from(&state.waveform_snapshot);
+    scratch.input_level_db = input_level_db;
+    scratch.is_recording = state.is_recording;
+    scratch.formants.clone_from(&state.latest_formants);
+    scratch.cpu_load = cpu_load;
+
+    let _ = io.display_prod.try_push(scratch.clone());
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +342,11 @@ fn push_display_state(
 // ---------------------------------------------------------------------------
 
 /// Apply a single engine command to the processing state.
-fn apply_command(cmd: EngineCommand, state: &mut ProcessingState) {
+fn apply_command(
+    cmd: EngineCommand,
+    state: &mut ProcessingState,
+    disk_cmd_tx: &Sender<super::DiskCommand>,
+) {
     match cmd {
         EngineCommand::Shutdown => {}
         EngineCommand::Transport(c) => state.transport.apply_command(c),
@@ -387,10 +425,12 @@ fn apply_command(cmd: EngineCommand, state: &mut ProcessingState) {
             }
         }
         EngineCommand::SetMasterVolume(db) => state.mixer.set_master_volume(db),
-        EngineCommand::StartRecording { path: _ } => {
+        EngineCommand::StartRecording { path } => {
+            let _ = disk_cmd_tx.try_send(super::DiskCommand::Start(path));
             state.is_recording = true;
         }
         EngineCommand::StopRecording => {
+            let _ = disk_cmd_tx.try_send(super::DiskCommand::Stop);
             state.is_recording = false;
         }
     }
@@ -416,25 +456,10 @@ fn apply_set_synth_mode(
 
     #[allow(clippy::cast_precision_loss)]
     let sr = state.sample_rate as f32;
-    let new_synth = create_synth(mode, sr);
+    let mut new_synth = create_synth(mode, sr);
+    new_synth.prepare(state.buffer_size);
 
-    let name = track.name().to_owned();
-    let volume = track.volume();
-    let pan = track.pan();
-    let muted = track.is_muted();
-    let soloed = track.is_soloed();
-    let armed = track.is_armed();
-
-    state.mixer.remove_track(track_id);
-    let new_id = state.mixer.add_track(name, new_synth);
-
-    if let Some(new_track) = state.mixer.track_mut(new_id) {
-        new_track.set_volume(volume);
-        new_track.set_pan(pan);
-        new_track.set_muted(muted);
-        new_track.set_soloed(soloed);
-        new_track.set_armed(armed);
-    }
+    track.replace_synth(new_synth);
 }
 
 fn apply_add_effect(
@@ -445,6 +470,7 @@ fn apply_add_effect(
     if let Some(track) = state.mixer.track_mut(track_id) {
         if track.effects().len() < crate::MAX_EFFECTS_PER_TRACK {
             track.effects_mut().push(effect);
+            track.effects_mut().prepare(state.buffer_size);
         }
     }
 }
@@ -459,27 +485,9 @@ fn apply_set_effect_param(
     let Some(track) = state.mixer.track_mut(track_id) else {
         return;
     };
-    let effects = track.effects_mut();
-
-    // EffectChain only exposes push/remove/set_bypass. To set a param on an
-    // effect at a specific index, we temporarily remove it, set the param,
-    // then re-insert at the same position. O(n) but chains are short (max 8).
-    let Some(mut processor) = effects.remove(effect_index) else {
-        return;
-    };
-    let _ = processor.set_param(param_index, value);
-
-    let remaining = effects.len() - effect_index;
-    let mut tail: Vec<Box<dyn crate::Processor>> = Vec::with_capacity(remaining);
-    for _ in 0..remaining {
-        if let Some(p) = effects.remove(effect_index) {
-            tail.push(p);
-        }
-    }
-    effects.push(processor);
-    for p in tail {
-        effects.push(p);
-    }
+    let _ = track
+        .effects_mut()
+        .set_effect_param(effect_index, param_index, value);
 }
 
 #[cfg(test)]

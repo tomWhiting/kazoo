@@ -95,7 +95,7 @@ impl AllpassFilter {
     #[inline]
     fn process(&mut self, input: f32) -> f32 {
         let buffered = self.buffer[self.pos];
-        let output = -input + buffered;
+        let output = sanitize_sample(-input + buffered);
 
         self.buffer[self.pos] = sanitize_sample(ALLPASS_FEEDBACK.mul_add(buffered, input));
 
@@ -119,7 +119,6 @@ pub struct Reverb {
     room_size: f32,
     damping: f32,
     mix: f32,
-    width: f32,
     combs: Vec<CombFilter>,
     allpasses: Vec<AllpassFilter>,
     // Derived coefficients cached for the audio loop.
@@ -132,7 +131,6 @@ impl Reverb {
     const PARAM_ROOM_SIZE: usize = 0;
     const PARAM_DAMPING: usize = 1;
     const PARAM_MIX: usize = 2;
-    const PARAM_WIDTH: usize = 3;
 
     const ROOM_SIZE_MIN: f32 = 0.0;
     const ROOM_SIZE_MAX: f32 = 1.0;
@@ -145,10 +143,6 @@ impl Reverb {
     const MIX_MIN: f32 = 0.0;
     const MIX_MAX: f32 = 1.0;
     const MIX_DEFAULT: f32 = 0.33;
-
-    const WIDTH_MIN: f32 = 0.0;
-    const WIDTH_MAX: f32 = 1.0;
-    const WIDTH_DEFAULT: f32 = 1.0;
 
     /// Create a new Freeverb processor at the given sample rate.
     #[must_use]
@@ -171,7 +165,6 @@ impl Reverb {
             room_size: Self::ROOM_SIZE_DEFAULT,
             damping: Self::DAMPING_DEFAULT,
             mix: Self::MIX_DEFAULT,
-            width: Self::WIDTH_DEFAULT,
             combs,
             allpasses,
             feedback: 0.0,
@@ -189,7 +182,7 @@ impl Reverb {
         self.damp2 = 1.0 - self.damp1;
     }
 
-    fn param_infos() -> [ParamInfo; 4] {
+    fn param_infos() -> [ParamInfo; 3] {
         [
             ParamInfo {
                 name: "Room Size".into(),
@@ -210,13 +203,6 @@ impl Reverb {
                 min: Self::MIX_MIN,
                 max: Self::MIX_MAX,
                 default: Self::MIX_DEFAULT,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Width".into(),
-                min: Self::WIDTH_MIN,
-                max: Self::WIDTH_MAX,
-                default: Self::WIDTH_DEFAULT,
                 unit: String::new(),
             },
         ]
@@ -240,8 +226,8 @@ impl Processor for Reverb {
                 comb_sum += comb.process(x, damp1, damp2, feedback);
             }
 
-            // Pass through series allpass filters.
-            let mut out = comb_sum;
+            // Sanitize comb sum before feeding to allpass chain.
+            let mut out = sanitize_sample(comb_sum);
             for ap in &mut self.allpasses {
                 out = ap.process(out);
             }
@@ -265,7 +251,7 @@ impl Processor for Reverb {
     }
 
     fn param_count(&self) -> usize {
-        4
+        3
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
@@ -278,7 +264,6 @@ impl Processor for Reverb {
             Self::PARAM_ROOM_SIZE => Some(self.room_size),
             Self::PARAM_DAMPING => Some(self.damping),
             Self::PARAM_MIX => Some(self.mix),
-            Self::PARAM_WIDTH => Some(self.width),
             _ => None,
         }
     }
@@ -294,7 +279,6 @@ impl Processor for Reverb {
             Self::PARAM_ROOM_SIZE => self.room_size = clamped,
             Self::PARAM_DAMPING => self.damping = clamped,
             Self::PARAM_MIX => self.mix = clamped,
-            Self::PARAM_WIDTH => self.width = clamped,
             _ => unreachable!(),
         }
 
@@ -389,6 +373,6 @@ mod tests {
     #[test]
     fn reverb_param_count() {
         let reverb = Reverb::new(44100.0);
-        assert_eq!(reverb.param_count(), 4);
+        assert_eq!(reverb.param_count(), 3);
     }
 }

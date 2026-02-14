@@ -243,8 +243,10 @@ impl App {
         while !self.should_quit {
             tokio::select! {
                 maybe_event = event_stream.next() => {
-                    if let Some(Ok(event)) = maybe_event {
-                        self.handle_event(&event);
+                    match maybe_event {
+                        Some(Ok(event)) => self.handle_event(&event),
+                        Some(Err(_)) => self.should_quit = true,
+                        None => {}
                     }
                 }
                 _ = tick_interval.tick() => {
@@ -414,6 +416,17 @@ impl App {
                     track_id: track.id,
                     effect_index,
                 });
+
+                // Adjust selection indices if the removed effect was on the
+                // currently selected track.
+                if track_index == self.selected_track {
+                    if track.effect_names.is_empty() {
+                        self.selected_effect = 0;
+                    } else if self.selected_effect >= track.effect_names.len() {
+                        self.selected_effect = track.effect_names.len() - 1;
+                    }
+                    self.selected_param = 0;
+                }
             }
         }
     }
@@ -678,6 +691,72 @@ mod tests {
 
         app.set_track_pan(0, Pan::new(0.5));
         assert!((app.tracks[0].pan.value() - 0.5).abs() < f32::EPSILON);
+    }
+
+    // -- M8: remove_effect adjusts selected_effect --------------------------
+
+    #[test]
+    fn remove_effect_clamps_selected_effect() {
+        let engine_handle = test_engine_handle();
+        let mut app = App::new(engine_handle);
+
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+        // Manually add effect metadata (we can't add real Processor objects
+        // in unit tests, but we can simulate the metadata).
+        app.tracks[0].effect_names = vec!["FX1".into(), "FX2".into(), "FX3".into()];
+        app.tracks[0].effect_bypassed = vec![false, false, false];
+        app.selected_track = 0;
+        app.selected_effect = 2; // pointing at FX3
+        app.selected_param = 3;
+
+        app.remove_effect(0, 2); // remove FX3
+
+        // selected_effect should clamp to the new last index (1).
+        assert_eq!(app.selected_effect, 1);
+        // selected_param should reset to 0.
+        assert_eq!(app.selected_param, 0);
+        assert_eq!(app.tracks[0].effect_names.len(), 2);
+    }
+
+    #[test]
+    fn remove_all_effects_resets_selected_effect() {
+        let engine_handle = test_engine_handle();
+        let mut app = App::new(engine_handle);
+
+        app.add_track("T".into(), SynthesisMode::PitchTracked);
+        app.tracks[0].effect_names = vec!["FX1".into()];
+        app.tracks[0].effect_bypassed = vec![false];
+        app.selected_track = 0;
+        app.selected_effect = 0;
+
+        app.remove_effect(0, 0);
+
+        assert_eq!(app.selected_effect, 0);
+        assert_eq!(app.selected_param, 0);
+        assert!(app.tracks[0].effect_names.is_empty());
+    }
+
+    #[test]
+    fn remove_effect_on_other_track_does_not_change_selection() {
+        let engine_handle = test_engine_handle();
+        let mut app = App::new(engine_handle);
+
+        app.add_track("T1".into(), SynthesisMode::PitchTracked);
+        app.add_track("T2".into(), SynthesisMode::Granular);
+        app.tracks[0].effect_names = vec!["FX1".into(), "FX2".into()];
+        app.tracks[0].effect_bypassed = vec![false, false];
+        app.tracks[1].effect_names = vec!["FX3".into()];
+        app.tracks[1].effect_bypassed = vec![false];
+        app.selected_track = 0;
+        app.selected_effect = 1;
+        app.selected_param = 2;
+
+        // Remove from track 1 (not the selected track).
+        app.remove_effect(1, 0);
+
+        // Selection on the selected track should be untouched.
+        assert_eq!(app.selected_effect, 1);
+        assert_eq!(app.selected_param, 2);
     }
 
     // -----------------------------------------------------------------------

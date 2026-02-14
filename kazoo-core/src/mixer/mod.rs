@@ -164,6 +164,16 @@ impl Track {
         &mut *self.synth
     }
 
+    /// Replace the synth processor in-place without changing the track ID,
+    /// name, effects chain, volume, pan, or any other track state.
+    ///
+    /// The new synth's [`Processor::set_sample_rate`] is NOT called here;
+    /// the caller is responsible for ensuring the synth is already configured
+    /// at the correct sample rate.
+    pub fn replace_synth(&mut self, synth: Box<dyn Processor>) {
+        self.synth = synth;
+    }
+
     /// Reset peak and RMS meters to zero.
     const fn reset_meters(&mut self) {
         self.peak_meter = [0.0; 2];
@@ -211,7 +221,7 @@ pub struct TrackMeter {
 // ---------------------------------------------------------------------------
 
 /// A snapshot of all mixer meters, suitable for sending to the UI thread.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MixerSnapshot {
     /// Per-track meter readings (same order as [`Mixer::tracks`]).
     pub track_meters: Vec<TrackMeter>,
@@ -291,7 +301,9 @@ impl Mixer {
         for track in &mut self.tracks {
             track.synth_buffer.resize(buffer_size, 0.0);
             track.effect_buffer.resize(buffer_size, 0.0);
+            track.effects.prepare(buffer_size);
             track.synth.set_sample_rate(sample_rate);
+            track.synth.prepare(buffer_size);
         }
     }
 
@@ -305,12 +317,13 @@ impl Mixer {
         self.next_track_id += 1;
 
         synth.set_sample_rate(self.sample_rate);
+        synth.prepare(self.buffer_size);
 
         let track = Track {
             id,
             name,
             synth,
-            effects: EffectChain::new(),
+            effects: EffectChain::new_with_capacity(self.buffer_size),
             volume: Db::UNITY,
             pan: Pan::CENTER,
             muted: false,
@@ -497,23 +510,31 @@ impl Mixer {
     /// Build a snapshot of all meter readings for UI display.
     #[must_use]
     pub fn snapshot(&self) -> MixerSnapshot {
-        let track_meters: Vec<TrackMeter> = self.tracks.iter().map(Track::meter_snapshot).collect();
+        let mut snap = MixerSnapshot::default();
+        self.write_snapshot(&mut snap);
+        snap
+    }
+
+    /// Write meter readings into an existing snapshot, reusing its allocated
+    /// `Vec` to avoid per-frame heap allocation on the processing thread.
+    pub fn write_snapshot(&self, snapshot: &mut MixerSnapshot) {
+        snapshot.track_meters.clear();
+        snapshot
+            .track_meters
+            .extend(self.tracks.iter().map(Track::meter_snapshot));
 
         let master_rms_l = rms_linear(self.master_rms_accumulator[0], self.master_rms_count);
         let master_rms_r = rms_linear(self.master_rms_accumulator[1], self.master_rms_count);
 
-        MixerSnapshot {
-            track_meters,
-            master_peak_db: [
-                Db::from_linear(self.master_peak[0]).value(),
-                Db::from_linear(self.master_peak[1]).value(),
-            ],
-            master_rms_db: [
-                Db::from_linear(master_rms_l).value(),
-                Db::from_linear(master_rms_r).value(),
-            ],
-            master_clipping: self.master_peak[0] > 1.0 || self.master_peak[1] > 1.0,
-        }
+        snapshot.master_peak_db = [
+            Db::from_linear(self.master_peak[0]).value(),
+            Db::from_linear(self.master_peak[1]).value(),
+        ];
+        snapshot.master_rms_db = [
+            Db::from_linear(master_rms_l).value(),
+            Db::from_linear(master_rms_r).value(),
+        ];
+        snapshot.master_clipping = self.master_peak[0] > 1.0 || self.master_peak[1] > 1.0;
     }
 
     /// Reset all peak and RMS meters (tracks + master) to zero.
