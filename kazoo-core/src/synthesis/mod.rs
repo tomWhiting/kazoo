@@ -1,0 +1,32 @@
+//! Synthesis engines: granular, wavetable, vocoder, phase vocoder, pitch-tracked resynthesis.
+//!
+//! Each engine implements [`crate::Processor`]. Voice audio arrives as `input`;
+//! synthesized audio is written to `output`. The analysis thread provides
+//! pitch and envelope data via setter methods called from the command channel.
+
+pub mod granular;
+pub mod phase_vocoder;
+pub mod pitch_tracked;
+pub mod vocoder;
+pub mod wavetable;
+
+pub use granular::{GrainEnvelope, GranularSynth};
+pub use phase_vocoder::PhaseVocoder;
+pub use pitch_tracked::{OscillatorShape, PitchTrackedSynth};
+pub use vocoder::{Vocoder, VocoderCarrierMode};
+pub use wavetable::{Wavetable, WavetableExtractor, WavetableOscillator};
+
+/// Active synthesis mode selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SynthesisMode {
+    /// Voice pitch drives band-limited oscillators.
+    PitchTracked,
+    /// Extracted single-cycle waveforms played back with morphing.
+    Wavetable,
+    /// Voice decomposed into grains and reassembled as clouds.
+    Granular,
+    /// Voice spectral envelope applied to a carrier signal.
+    Vocoder,
+    /// STFT-based time stretching and pitch shifting.
+    PhaseVocoder,
+}
