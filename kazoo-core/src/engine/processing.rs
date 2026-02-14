@@ -17,7 +17,7 @@ use crate::mixer::clip::{AudioClip, ClipData, ClipId};
 use crate::synthesis::SynthesisMode;
 use crate::transport::metronome::Metronome;
 use crate::transport::{TransportClock, TransportCommand};
-use crate::{Db, sanitize_buffer};
+use crate::{Db, sanitize_buffer, soft_limit_buffer};
 
 use super::command::EngineCommand;
 use super::display::{ClipSnapshot, DisplayState, TimelineSnapshot, TrackClipSnapshot};
@@ -397,6 +397,14 @@ fn mix_metronome_and_push_output(
         // Sanitize after metronome mixing to uphold NaN/Inf defense.
         sanitize_buffer(&mut master_buf[..stereo_len]);
     }
+
+    // Apply soft limiter before pushing to the output ring buffer.
+    // This is the last processing step before audio reaches the DAC.
+    // Without limiting, multi-track summing and master volume (up to +24 dB)
+    // can produce samples well above 1.0 which get hard-clipped by the
+    // hardware, producing harsh "bit-crushed" distortion.
+    let master_buf = state.mixer.master_buffer_mut();
+    soft_limit_buffer(&mut master_buf[..stereo_len]);
 
     let master_buf = state.mixer.master_buffer();
     let _ = io.output_prod.push_slice(&master_buf[..stereo_len]);

@@ -409,6 +409,32 @@ pub fn sanitize_buffer(buffer: &mut [f32]) {
     }
 }
 
+/// Apply a soft limiter to a single audio sample.
+///
+/// Uses `tanh` compression to smoothly limit the signal to approximately
+/// \[-1.0, 1.0\] without the harsh artifacts of hard clipping. Signals near
+/// zero pass through nearly unchanged; signals above ±1.0 are progressively
+/// compressed. The output is always within \[-1.0, 1.0\].
+///
+/// This should be the last processing step before sending audio to the DAC.
+#[inline]
+#[must_use]
+pub fn soft_limit(sample: f32) -> f32 {
+    if !sample.is_finite() {
+        return 0.0;
+    }
+    sample.tanh()
+}
+
+/// Apply a soft limiter to an entire audio buffer in-place.
+///
+/// See [`soft_limit`] for details on the limiting curve.
+pub fn soft_limit_buffer(buffer: &mut [f32]) {
+    for sample in buffer.iter_mut() {
+        *sample = soft_limit(*sample);
+    }
+}
+
 /// Convert a frequency in Hz to the nearest MIDI note number.
 ///
 /// Returns `None` if the frequency is outside the MIDI range (roughly 8–13kHz).
@@ -863,5 +889,75 @@ mod tests {
     #[test]
     fn clamp_finite_inf() {
         assert!((clamp_finite(f32::INFINITY, 0.0, 10.0) - 0.0).abs() < f32::EPSILON);
+    }
+
+    // -- Soft limiter tests --
+
+    #[test]
+    fn soft_limit_passes_small_signals() {
+        // Near-zero signals should pass through nearly unchanged.
+        let input = 0.1;
+        let output = soft_limit(input);
+        assert!(
+            (output - input).abs() < 0.01,
+            "small signal should pass through, got {output}"
+        );
+    }
+
+    #[test]
+    fn soft_limit_compresses_hot_signals() {
+        // A signal at 2.0 should be compressed below 1.0.
+        let output = soft_limit(2.0);
+        assert!(
+            output < 1.0,
+            "hot signal should be compressed, got {output}"
+        );
+        assert!(output > 0.9, "tanh(2.0) ≈ 0.964, got {output}");
+    }
+
+    #[test]
+    fn soft_limit_never_exceeds_unity() {
+        for val in [1.0, 2.0, 5.0, 10.0, 100.0, 1000.0] {
+            let pos = soft_limit(val);
+            let neg = soft_limit(-val);
+            assert!(
+                pos <= 1.0 && pos >= 0.0,
+                "positive {val} -> {pos} should be in [0, 1]"
+            );
+            assert!(
+                neg >= -1.0 && neg <= 0.0,
+                "negative {val} -> {neg} should be in [-1, 0]"
+            );
+        }
+    }
+
+    #[test]
+    fn soft_limit_handles_nan_inf() {
+        assert!((soft_limit(f32::NAN) - 0.0).abs() < f32::EPSILON);
+        assert!((soft_limit(f32::INFINITY) - 0.0).abs() < f32::EPSILON);
+        assert!((soft_limit(f32::NEG_INFINITY) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn soft_limit_preserves_zero() {
+        assert!((soft_limit(0.0) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn soft_limit_preserves_sign() {
+        assert!(soft_limit(0.5) > 0.0);
+        assert!(soft_limit(-0.5) < 0.0);
+    }
+
+    #[test]
+    fn soft_limit_buffer_limits_all_samples() {
+        let mut buf = [0.5, 2.0, -3.0, f32::NAN, 0.0];
+        soft_limit_buffer(&mut buf);
+        for (i, &s) in buf.iter().enumerate() {
+            assert!(
+                s.is_finite() && s >= -1.0 && s <= 1.0,
+                "sample {i} = {s} should be in [-1, 1]"
+            );
+        }
     }
 }
