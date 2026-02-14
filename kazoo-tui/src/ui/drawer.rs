@@ -190,6 +190,7 @@ fn format_layer_gain(gain: Db) -> String {
 /// Short synthesis mode name for the layer list.
 const fn short_mode_name(mode: SynthesisMode) -> &'static str {
     match mode {
+        SynthesisMode::Passthrough => "Passthrough",
         SynthesisMode::PitchTracked => "Pitch Tracked",
         SynthesisMode::Wavetable => "Wavetable",
         SynthesisMode::Granular => "Granular",
@@ -378,6 +379,7 @@ fn render_slider(ratio: f32, width: usize) -> Vec<Span<'static>> {
 /// Get the display name for a synthesis mode (full name for the drawer).
 const fn synth_mode_name(mode: SynthesisMode) -> &'static str {
     match mode {
+        SynthesisMode::Passthrough => "Passthrough (Raw)",
         SynthesisMode::PitchTracked => "Pitch Tracked Synth",
         SynthesisMode::Wavetable => "Wavetable Synth",
         SynthesisMode::Granular => "Granular Synth",
@@ -434,6 +436,7 @@ mod tests {
     #[test]
     fn synth_mode_names_are_not_empty() {
         for mode in [
+            SynthesisMode::Passthrough,
             SynthesisMode::PitchTracked,
             SynthesisMode::Wavetable,
             SynthesisMode::Granular,

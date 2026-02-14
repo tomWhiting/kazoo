@@ -47,6 +47,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             };
 
             let mode_str = match track.synthesis_mode {
+                SynthesisMode::Passthrough => "Rw",
                 SynthesisMode::PitchTracked => "Pt",
                 SynthesisMode::Wavetable => "Wt",
                 SynthesisMode::Granular => "Gr",

@@ -69,6 +69,7 @@ Each track has one or more synth layers (up to 4). Each layer can use a differen
 
 | Mode | Description |
 |------|-------------|
+| **Passthrough** | Raw microphone signal with no synthesis processing. The signal still passes through the track's effect chain, volume, and pan. Use this to monitor your voice directly or to apply effects without synthesis. |
 | **Pitch Tracked** | Voice pitch drives band-limited oscillators (saw, square, sine, triangle). Parameters: shape, detune, cutoff, filter Q, portamento, envelope sensitivity. |
 | **Wavetable** | Single-cycle waveforms extracted from voice, played back with wavetable morphing. |
 | **Granular** | Voice buffer decomposed into grains and reassembled as clouds with control over grain size, scatter, and density. |

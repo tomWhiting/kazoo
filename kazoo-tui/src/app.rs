@@ -501,11 +501,12 @@ impl App {
     pub fn cycle_synth_mode(&mut self, index: usize) {
         if let Some(track) = self.tracks.get_mut(index) {
             let next = match track.synthesis_mode {
+                SynthesisMode::Passthrough => SynthesisMode::PitchTracked,
                 SynthesisMode::PitchTracked => SynthesisMode::Wavetable,
                 SynthesisMode::Wavetable => SynthesisMode::Granular,
                 SynthesisMode::Granular => SynthesisMode::Vocoder,
                 SynthesisMode::Vocoder => SynthesisMode::PhaseVocoder,
-                SynthesisMode::PhaseVocoder => SynthesisMode::PitchTracked,
+                SynthesisMode::PhaseVocoder => SynthesisMode::Passthrough,
             };
             track.synthesis_mode = next;
             let sample_rate = self.engine.sample_rate() as f32;

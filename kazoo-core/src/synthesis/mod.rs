@@ -19,6 +19,8 @@ pub use wavetable::{Wavetable, WavetableExtractor, WavetableOscillator};
 /// Active synthesis mode selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SynthesisMode {
+    /// Raw mic input passed through unprocessed (no synthesis).
+    Passthrough,
     /// Voice pitch drives band-limited oscillators.
     PitchTracked,
     /// Extracted single-cycle waveforms played back with morphing.
@@ -36,6 +38,7 @@ impl SynthesisMode {
     #[must_use]
     pub const fn display_name(self) -> &'static str {
         match self {
+            Self::Passthrough => "Passthrough (Raw)",
             Self::PitchTracked => "Pitch Tracked Synth",
             Self::Wavetable => "Wavetable Oscillator",
             Self::Granular => "Granular Synth",
@@ -107,6 +110,7 @@ impl SynthesisMode {
     /// Create a boxed synth processor for this mode (internal helper).
     fn create_synth(self, sample_rate: f32) -> Box<dyn crate::Processor> {
         match self {
+            Self::Passthrough => Box::new(PassthroughSynth),
             Self::PitchTracked => Box::new(PitchTrackedSynth::new(sample_rate)),
             Self::Wavetable => Box::new(WavetableOscillator::new(sample_rate)),
             Self::Granular => Box::new(GranularSynth::new(sample_rate)),
@@ -114,4 +118,35 @@ impl SynthesisMode {
             Self::PhaseVocoder => Box::new(PhaseVocoder::new(sample_rate)),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Passthrough "synth" — raw mic signal, no processing
+// ---------------------------------------------------------------------------
+
+/// A no-op synthesizer that copies input directly to output.
+///
+/// Used for monitoring the raw microphone signal without any synthesis
+/// processing. The signal still passes through the track's effect chain,
+/// volume, and pan — only the synthesis stage is bypassed.
+#[derive(Debug)]
+pub struct PassthroughSynth;
+
+impl crate::Processor for PassthroughSynth {
+    fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        let len = input.len().min(output.len());
+        output[..len].copy_from_slice(&input[..len]);
+        // Zero any remaining output if output is longer than input.
+        for s in &mut output[len..] {
+            *s = 0.0;
+        }
+    }
+
+    fn reset(&mut self) {}
+
+    fn name(&self) -> &'static str {
+        "Passthrough"
+    }
+
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
 }

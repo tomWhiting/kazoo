@@ -30,6 +30,7 @@ use super::display::{ClipSnapshot, DisplayState, TimelineSnapshot, TrackClipSnap
 #[must_use]
 pub fn create_synth(mode: SynthesisMode, sample_rate: f32) -> Box<dyn crate::Processor> {
     match mode {
+        SynthesisMode::Passthrough => Box::new(crate::synthesis::PassthroughSynth),
         SynthesisMode::PitchTracked => {
             Box::new(crate::synthesis::PitchTrackedSynth::new(sample_rate))
         }

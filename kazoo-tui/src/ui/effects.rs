@@ -64,6 +64,7 @@ fn draw_track_header(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect
     let idx = app.selected_track;
     let name_style = theme::style_track_name(idx);
     let mode_str = match track.synthesis_mode {
+        SynthesisMode::Passthrough => "Raw",
         SynthesisMode::PitchTracked => "Pitch",
         SynthesisMode::Wavetable => "Wave",
         SynthesisMode::Granular => "Gran",
