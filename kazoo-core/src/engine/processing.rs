@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
-use ringbuf::traits::{Consumer, Producer};
+use ringbuf::traits::{Consumer, Observer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
 use crate::analysis::{EnvelopeFollower, PitchEstimate};
@@ -183,18 +183,28 @@ pub fn run(
     };
 
     loop {
-        let block_start = Instant::now();
-
+        // Drain commands on every iteration regardless of audio data.
         if drain_commands(&io, &mut state) {
             break;
         }
 
+        // Wait for a full block of mic samples before processing. This
+        // ensures we always produce exactly `buffer_size * 2` stereo
+        // samples per iteration, matching the output callback's fixed
+        // request size. Without this, variable-length processing creates
+        // irregular output delivery that causes underruns and clicks.
+        let available = io.mic_cons.occupied_len();
+        if available < state.buffer_size {
+            // Not enough mic data yet. Sleep briefly to avoid spinning
+            // while still keeping latency low.
+            std::thread::sleep(std::time::Duration::from_micros(500));
+            continue;
+        }
+
+        let block_start = Instant::now();
+        let num_samples = state.buffer_size;
+
         let num_read = read_mic_input(&mut io, &mut state);
-        let num_samples = if num_read == 0 {
-            state.buffer_size
-        } else {
-            num_read
-        };
 
         feed_analysis(&mut io, &state, num_read);
         drain_analysis_results(&mut io, &mut state);
@@ -227,10 +237,6 @@ pub fn run(
         if state.meter_sample_counter >= state.meter_reset_interval {
             state.mixer.reset_meters();
             state.meter_sample_counter = 0;
-        }
-
-        if num_read == 0 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 }
