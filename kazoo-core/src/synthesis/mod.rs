@@ -135,7 +135,9 @@ pub struct PassthroughSynth;
 impl crate::Processor for PassthroughSynth {
     fn process(&mut self, input: &[f32], output: &mut [f32]) {
         let len = input.len().min(output.len());
-        output[..len].copy_from_slice(&input[..len]);
+        for i in 0..len {
+            output[i] = crate::sanitize_sample(input[i]);
+        }
         // Zero any remaining output if output is longer than input.
         for s in &mut output[len..] {
             *s = 0.0;
@@ -149,4 +151,134 @@ impl crate::Processor for PassthroughSynth {
     }
 
     fn set_sample_rate(&mut self, _sample_rate: f32) {}
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Processor;
+
+    #[test]
+    fn passthrough_copies_input_to_output() {
+        let mut synth = PassthroughSynth;
+        let input = [0.1, 0.5, -0.3, 0.0];
+        let mut output = [0.0; 4];
+        synth.process(&input, &mut output);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn passthrough_empty_buffers() {
+        let mut synth = PassthroughSynth;
+        let input: [f32; 0] = [];
+        let mut output: [f32; 0] = [];
+        synth.process(&input, &mut output);
+    }
+
+    #[test]
+    fn passthrough_output_longer_than_input_zeros_remainder() {
+        let mut synth = PassthroughSynth;
+        let input = [0.5, -0.5];
+        let mut output = [1.0; 5];
+        synth.process(&input, &mut output);
+        assert_eq!(output[0], 0.5);
+        assert_eq!(output[1], -0.5);
+        assert_eq!(output[2], 0.0);
+        assert_eq!(output[3], 0.0);
+        assert_eq!(output[4], 0.0);
+    }
+
+    #[test]
+    fn passthrough_input_longer_than_output_truncates() {
+        let mut synth = PassthroughSynth;
+        let input = [0.1, 0.2, 0.3, 0.4, 0.5];
+        let mut output = [0.0; 3];
+        synth.process(&input, &mut output);
+        assert_eq!(output, [0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn passthrough_sanitizes_nan_and_inf() {
+        let mut synth = PassthroughSynth;
+        let input = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5];
+        let mut output = [1.0; 4];
+        synth.process(&input, &mut output);
+        assert_eq!(output[0], 0.0);
+        assert_eq!(output[1], 0.0);
+        assert_eq!(output[2], 0.0);
+        assert_eq!(output[3], 0.5);
+    }
+
+    #[test]
+    fn passthrough_reset_does_not_panic() {
+        let mut synth = PassthroughSynth;
+        synth.reset();
+    }
+
+    #[test]
+    fn passthrough_set_sample_rate_does_not_panic() {
+        let mut synth = PassthroughSynth;
+        synth.set_sample_rate(96000.0);
+    }
+
+    #[test]
+    fn passthrough_set_pitch_does_not_panic() {
+        let mut synth = PassthroughSynth;
+        synth.set_pitch(440.0);
+    }
+
+    #[test]
+    fn passthrough_name() {
+        let synth = PassthroughSynth;
+        assert_eq!(synth.name(), "Passthrough");
+    }
+
+    #[test]
+    fn passthrough_has_zero_params() {
+        let synth = PassthroughSynth;
+        assert_eq!(synth.param_count(), 0);
+        assert!(synth.param_info(0).is_none());
+        assert!(synth.param_value(0).is_none());
+    }
+
+    #[test]
+    fn passthrough_param_infos_empty() {
+        let infos = SynthesisMode::Passthrough.param_infos(44100.0);
+        assert!(infos.is_empty());
+    }
+
+    #[test]
+    fn passthrough_default_param_values_empty() {
+        let values = SynthesisMode::Passthrough.default_param_values(44100.0);
+        assert!(values.is_empty());
+    }
+
+    #[test]
+    fn passthrough_display_name() {
+        assert_eq!(
+            SynthesisMode::Passthrough.display_name(),
+            "Passthrough (Raw)"
+        );
+    }
+
+    #[test]
+    fn all_modes_have_display_names() {
+        for mode in [
+            SynthesisMode::Passthrough,
+            SynthesisMode::PitchTracked,
+            SynthesisMode::Wavetable,
+            SynthesisMode::Granular,
+            SynthesisMode::Vocoder,
+            SynthesisMode::PhaseVocoder,
+        ] {
+            assert!(
+                !mode.display_name().is_empty(),
+                "{mode:?} has empty display name"
+            );
+        }
+    }
 }

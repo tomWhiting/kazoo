@@ -1192,8 +1192,15 @@ mod tests {
     }
 
     #[test]
+    fn create_synth_passthrough() {
+        let synth = create_synth(SynthesisMode::Passthrough, 44100.0);
+        assert_eq!(synth.name(), "Passthrough");
+    }
+
+    #[test]
     fn create_synth_all_modes_at_48k() {
         for mode in [
+            SynthesisMode::Passthrough,
             SynthesisMode::PitchTracked,
             SynthesisMode::Wavetable,
             SynthesisMode::Granular,
