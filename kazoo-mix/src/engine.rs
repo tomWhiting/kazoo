@@ -210,7 +210,8 @@ impl MixerEngine {
             sum_sq.right += right * right;
 
             for channel in 2..output_channels {
-                output[base + channel] = kazoo_core::soft_limit(output[base + channel] * self.master_gain);
+                output[base + channel] =
+                    kazoo_core::soft_limit(output[base + channel] * self.master_gain);
             }
         }
 
