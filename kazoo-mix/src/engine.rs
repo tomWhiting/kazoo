@@ -14,12 +14,54 @@ pub const DEFAULT_CHANNEL_SLOTS: usize = 16;
 /// Maximum number of interleaved output samples rendered by one callback.
 pub const MAX_CALLBACK_SAMPLES: usize = 8192;
 
+/// Linear stereo level pair.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct StereoLevel {
+    /// Left-channel value.
+    pub left: f32,
+    /// Right-channel value.
+    pub right: f32,
+}
+
+impl StereoLevel {
+    /// Zeroed stereo level.
+    pub const ZERO: Self = Self {
+        left: 0.0,
+        right: 0.0,
+    };
+}
+
+/// Channel-strip controls applied during mixing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChannelControls {
+    /// Linear pre-fader gain.
+    pub gain: f32,
+    /// Stereo pan position.
+    pub pan: Pan,
+    /// Hard mute.
+    pub muted: bool,
+    /// Solo state.
+    pub soloed: bool,
+}
+
+impl Default for ChannelControls {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            pan: Pan::CENTER,
+            muted: false,
+            soloed: false,
+        }
+    }
+}
+
 /// Mutable mixer engine owned by the audio callback.
 #[derive(Debug)]
 pub struct MixerEngine {
     channels: Vec<ChannelStrip>,
     next_frame: u64,
-    master_peak: f32,
+    master_peak: StereoLevel,
+    master_rms: StereoLevel,
     master_gain: f32,
 }
 
@@ -37,7 +79,8 @@ impl MixerEngine {
         Self {
             channels,
             next_frame: 0,
-            master_peak: 0.0,
+            master_peak: StereoLevel::ZERO,
+            master_rms: StereoLevel::ZERO,
             master_gain: 1.0,
         }
     }
@@ -50,8 +93,14 @@ impl MixerEngine {
 
     /// Last rendered master peak in normalized sample units.
     #[must_use]
-    pub const fn master_peak(&self) -> f32 {
+    pub const fn master_peak(&self) -> StereoLevel {
         self.master_peak
+    }
+
+    /// Last rendered master RMS in normalized sample units.
+    #[must_use]
+    pub const fn master_rms(&self) -> StereoLevel {
+        self.master_rms
     }
 
     /// Current absolute output frame.
@@ -97,6 +146,25 @@ impl MixerEngine {
         Ok(())
     }
 
+    /// Update channel-strip controls for a slot.
+    pub fn configure_channel(
+        &mut self,
+        slot: usize,
+        controls: ChannelControls,
+    ) -> Result<(), MixerEngineError> {
+        let Some(channel) = self.channels.get_mut(slot) else {
+            return Err(MixerEngineError::InvalidSlot { slot });
+        };
+
+        channel.controls = controls;
+        Ok(())
+    }
+
+    /// Set final master gain.
+    pub fn set_master_gain(&mut self, gain: f32) {
+        self.master_gain = gain.clamp(0.0, 4.0);
+    }
+
     /// Render one output callback into an interleaved `f32` buffer.
     pub fn render_f32(&mut self, output: &mut [f32], output_channels: usize) {
         let output_channels = output_channels.max(1);
@@ -105,9 +173,12 @@ impl MixerEngine {
         output[..render_len].fill(0.0);
 
         if render_len == 0 {
-            self.master_peak = 0.0;
+            self.master_peak = StereoLevel::ZERO;
+            self.master_rms = StereoLevel::ZERO;
             return;
         }
+
+        let any_solo = self.channels.iter().any(ChannelStrip::soloed);
 
         for channel in &mut self.channels {
             channel.render_into(
@@ -115,17 +186,39 @@ impl MixerEngine {
                 frames,
                 output_channels,
                 &mut output[..render_len],
+                any_solo,
             );
         }
 
-        let mut peak = 0.0_f32;
-        for sample in &mut output[..render_len] {
-            let limited = kazoo_core::soft_limit(*sample * self.master_gain);
-            *sample = limited;
-            peak = peak.max(limited.abs());
+        let mut peak = StereoLevel::ZERO;
+        let mut sum_sq = StereoLevel::ZERO;
+        for frame_idx in 0..frames {
+            let base = frame_idx * output_channels;
+            let left = kazoo_core::soft_limit(output[base] * self.master_gain);
+            output[base] = left;
+            peak.left = peak.left.max(left.abs());
+            sum_sq.left += left * left;
+
+            let right = if output_channels > 1 {
+                let limited = kazoo_core::soft_limit(output[base + 1] * self.master_gain);
+                output[base + 1] = limited;
+                limited
+            } else {
+                left
+            };
+            peak.right = peak.right.max(right.abs());
+            sum_sq.right += right * right;
+
+            for channel in 2..output_channels {
+                output[base + channel] = kazoo_core::soft_limit(output[base + channel] * self.master_gain);
+            }
         }
 
         self.master_peak = peak;
+        self.master_rms = StereoLevel {
+            left: (sum_sq.left / frames as f32).sqrt(),
+            right: (sum_sq.right / frames as f32).sqrt(),
+        };
         self.next_frame = self.next_frame.wrapping_add(frames as u64);
     }
 }
@@ -145,9 +238,9 @@ struct ChannelStrip {
     id: ChannelId,
     name: String,
     consumer: Option<AudioBlockConsumer>,
-    gain: f32,
-    pan: Pan,
-    peak: f32,
+    controls: ChannelControls,
+    peak: StereoLevel,
+    rms: StereoLevel,
     underruns: u64,
     sequence_gaps: u64,
     buffered_block: Option<PoppedAudioBlock>,
@@ -161,9 +254,9 @@ impl ChannelStrip {
             id,
             name: "empty".to_string(),
             consumer: None,
-            gain: 1.0,
-            pan: Pan::CENTER,
-            peak: 0.0,
+            controls: ChannelControls::default(),
+            peak: StereoLevel::ZERO,
+            rms: StereoLevel::ZERO,
             underruns: 0,
             sequence_gaps: 0,
             buffered_block: None,
@@ -176,7 +269,8 @@ impl ChannelStrip {
         let samples_per_block = consumer.config().samples_per_block();
         self.name = name;
         self.consumer = Some(consumer);
-        self.peak = 0.0;
+        self.peak = StereoLevel::ZERO;
+        self.rms = StereoLevel::ZERO;
         self.underruns = 0;
         self.sequence_gaps = 0;
         self.buffered_block = None;
@@ -184,14 +278,24 @@ impl ChannelStrip {
         self.buffered_samples.resize(samples_per_block, 0.0);
     }
 
-    const fn snapshot(&self) -> ChannelSnapshot {
+    fn snapshot(&self) -> ChannelSnapshot {
         ChannelSnapshot {
             id: self.id,
             connected: self.consumer.is_some(),
+            name: short_name(&self.name),
             peak: self.peak,
+            rms: self.rms,
+            gain: self.controls.gain,
+            pan: self.controls.pan.value(),
+            muted: self.controls.muted,
+            soloed: self.controls.soloed,
             underruns: self.underruns,
             sequence_gaps: self.sequence_gaps,
         }
+    }
+
+    const fn soloed(&self) -> bool {
+        self.controls.soloed
     }
 
     fn render_into(
@@ -200,14 +304,24 @@ impl ChannelStrip {
         frames: usize,
         output_channels: usize,
         output: &mut [f32],
+        any_solo: bool,
     ) {
         if self.consumer.is_none() {
-            self.peak = 0.0;
+            self.peak = StereoLevel::ZERO;
+            self.rms = StereoLevel::ZERO;
+            return;
+        }
+
+        if self.controls.muted || (any_solo && !self.controls.soloed) {
+            self.refresh_consumer_stats();
+            self.peak = StereoLevel::ZERO;
+            self.rms = StereoLevel::ZERO;
             return;
         }
 
         let mut frames_mixed = 0;
-        let mut peak = 0.0_f32;
+        let mut peak = StereoLevel::ZERO;
+        let mut sum_sq = StereoLevel::ZERO;
 
         while frames_mixed < frames {
             if self.buffered_block.is_none() {
@@ -222,20 +336,10 @@ impl ChannelStrip {
                         self.buffered_block = Some(block);
                         self.buffered_offset_frames = 0;
                     }
-                    Ok(block) => {
+                    Ok(_block) => {
                         self.sequence_gaps = self.sequence_gaps.wrapping_add(1);
                         self.buffered_block = None;
                         self.buffered_offset_frames = 0;
-                        peak = peak.max(fill_silence_segment(
-                            frames_mixed,
-                            frames,
-                            output_channels,
-                            output,
-                        ));
-                        // The mismatched block has been consumed by design:
-                        // late/early blocks become silence rather than being
-                        // held and replayed at the wrong frame.
-                        let _ = block;
                         break;
                     }
                     Err(AudioRingPopError::Empty | AudioRingPopError::OutputTooSmall { .. }) => {
@@ -251,7 +355,9 @@ impl ChannelStrip {
 
             let mixed =
                 self.mix_buffered_block(frames_mixed, frames, output_channels, output, block);
-            peak = peak.max(mixed.peak);
+            peak = max_level(peak, mixed.peak);
+            sum_sq.left += mixed.sum_sq.left;
+            sum_sq.right += mixed.sum_sq.right;
             frames_mixed += mixed.frames;
             self.buffered_offset_frames += mixed.frames;
 
@@ -263,6 +369,14 @@ impl ChannelStrip {
 
         self.refresh_consumer_stats();
         self.peak = peak;
+        self.rms = if frames > 0 {
+            StereoLevel {
+                left: (sum_sq.left / frames as f32).sqrt(),
+                right: (sum_sq.right / frames as f32).sqrt(),
+            }
+        } else {
+            StereoLevel::ZERO
+        };
     }
 
     fn mix_buffered_block(
@@ -276,8 +390,9 @@ impl ChannelStrip {
         let input_channels = usize::from(block.header.channels.max(1));
         let available_frames = block.header.frames as usize - self.buffered_offset_frames;
         let frames_to_mix = available_frames.min(total_output_frames - output_frame_offset);
-        let (left_gain, right_gain) = self.pan.gains();
-        let mut peak = 0.0_f32;
+        let (left_gain, right_gain) = self.controls.pan.gains();
+        let mut peak = StereoLevel::ZERO;
+        let mut sum_sq = StereoLevel::ZERO;
 
         for frame_idx in 0..frames_to_mix {
             let input_frame = self.buffered_offset_frames + frame_idx;
@@ -294,22 +409,25 @@ impl ChannelStrip {
                 left
             };
 
-            let mono = (left + right) * 0.5 * self.gain;
+            let mono = (left + right) * 0.5 * self.controls.gain;
             let out_left = mono * left_gain;
             let out_right = mono * right_gain;
 
             if output_channels == 1 {
                 output[out_base] += (out_left + out_right) * 0.5;
-                peak = peak.max(output[out_base].abs());
+                peak.left = peak.left.max(output[out_base].abs());
+                peak.right = peak.left;
+                sum_sq.left += output[out_base] * output[out_base];
+                sum_sq.right = sum_sq.left;
             } else {
                 output[out_base] += out_left;
                 output[out_base + 1] += out_right;
-                peak = peak
-                    .max(output[out_base].abs())
-                    .max(output[out_base + 1].abs());
+                peak.left = peak.left.max(output[out_base].abs());
+                peak.right = peak.right.max(output[out_base + 1].abs());
+                sum_sq.left += output[out_base] * output[out_base];
+                sum_sq.right += output[out_base + 1] * output[out_base + 1];
                 for channel in 2..output_channels {
                     output[out_base + channel] += mono;
-                    peak = peak.max(output[out_base + channel].abs());
                 }
             }
         }
@@ -317,6 +435,7 @@ impl ChannelStrip {
         MixResult {
             frames: frames_to_mix,
             peak,
+            sum_sq,
         }
     }
 
@@ -331,19 +450,23 @@ impl ChannelStrip {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct MixResult {
     frames: usize,
-    peak: f32,
+    peak: StereoLevel,
+    sum_sq: StereoLevel,
 }
 
-fn fill_silence_segment(
-    start_frame: usize,
-    total_frames: usize,
-    output_channels: usize,
-    output: &mut [f32],
-) -> f32 {
-    let start = start_frame * output_channels;
-    let end = total_frames * output_channels;
-    output[start..end].fill(0.0);
-    0.0
+const fn max_level(a: StereoLevel, b: StereoLevel) -> StereoLevel {
+    StereoLevel {
+        left: if a.left > b.left { a.left } else { b.left },
+        right: if a.right > b.right { a.right } else { b.right },
+    }
+}
+
+fn short_name(name: &str) -> [u8; 12] {
+    let mut out = [0_u8; 12];
+    for (idx, byte) in name.as_bytes().iter().copied().take(out.len()).enumerate() {
+        out[idx] = byte;
+    }
+    out
 }
 
 /// UI-safe snapshot of a channel strip.
@@ -353,8 +476,20 @@ pub struct ChannelSnapshot {
     pub id: ChannelId,
     /// Whether an audio consumer is attached.
     pub connected: bool,
+    /// Fixed-size short name buffer.
+    pub name: [u8; 12],
     /// Last rendered peak.
-    pub peak: f32,
+    pub peak: StereoLevel,
+    /// Last rendered RMS.
+    pub rms: StereoLevel,
+    /// Current linear gain.
+    pub gain: f32,
+    /// Current pan.
+    pub pan: f32,
+    /// Mute state.
+    pub muted: bool,
+    /// Solo state.
+    pub soloed: bool,
     /// Missing-block count observed by this channel.
     pub underruns: u64,
     /// Sequence discontinuities observed by this channel.
@@ -366,7 +501,13 @@ impl ChannelSnapshot {
     pub const EMPTY: Self = Self {
         id: ChannelId(0),
         connected: false,
-        peak: 0.0,
+        name: [0; 12],
+        peak: StereoLevel::ZERO,
+        rms: StereoLevel::ZERO,
+        gain: 1.0,
+        pan: 0.0,
+        muted: false,
+        soloed: false,
         underruns: 0,
         sequence_gaps: 0,
     };
@@ -387,7 +528,7 @@ mod tests {
 
         assert_eq!(output, [0.0; 16]);
         assert_eq!(engine.next_frame(), 8);
-        assert_eq!(engine.master_peak(), 0.0);
+        assert_eq!(engine.master_peak(), StereoLevel::ZERO);
     }
 
     #[test]
@@ -464,5 +605,79 @@ mod tests {
 
         assert_eq!(output, [0.0; 8]);
         assert_eq!(snapshot.underruns, 1);
+    }
+
+    #[test]
+    fn muted_channel_does_not_mix() {
+        let config = AudioRingConfig::new(BufferId(1), 2, 4, 2);
+        let (mut producer, consumer) = audio_block_ring(config);
+        let samples = [0.75; 8];
+        producer
+            .push_block(AudioBlock {
+                header: AudioBlockHeader {
+                    start_frame: 0,
+                    frames: 4,
+                    channels: 2,
+                    sequence: 0,
+                    flags: BlockFlags::default(),
+                },
+                samples: &samples,
+            })
+            .unwrap();
+
+        let mut engine = MixerEngine::new(1);
+        engine.attach_consumer(0, "test", consumer).unwrap();
+        engine
+            .configure_channel(
+                0,
+                ChannelControls {
+                    muted: true,
+                    ..ChannelControls::default()
+                },
+            )
+            .unwrap();
+
+        let mut output = [0.0; 8];
+        engine.render_f32(&mut output, 2);
+
+        assert_eq!(output, [0.0; 8]);
+    }
+
+    #[test]
+    fn hard_pan_biases_energy_to_one_side() {
+        let config = AudioRingConfig::new(BufferId(1), 2, 4, 2);
+        let (mut producer, consumer) = audio_block_ring(config);
+        let samples = [0.5; 8];
+        producer
+            .push_block(AudioBlock {
+                header: AudioBlockHeader {
+                    start_frame: 0,
+                    frames: 4,
+                    channels: 2,
+                    sequence: 0,
+                    flags: BlockFlags::default(),
+                },
+                samples: &samples,
+            })
+            .unwrap();
+
+        let mut engine = MixerEngine::new(1);
+        engine.attach_consumer(0, "test", consumer).unwrap();
+        engine
+            .configure_channel(
+                0,
+                ChannelControls {
+                    pan: Pan::new(-1.0),
+                    ..ChannelControls::default()
+                },
+            )
+            .unwrap();
+
+        let mut output = [0.0; 8];
+        engine.render_f32(&mut output, 2);
+
+        let left: f32 = output.iter().step_by(2).map(|s| s.abs()).sum();
+        let right: f32 = output.iter().skip(1).step_by(2).map(|s| s.abs()).sum();
+        assert!(left > right);
     }
 }

@@ -22,7 +22,7 @@ use kazoo_core::audio_transport::{AudioRingConfig, audio_block_ring};
 use kazoo_core::protocol::{BufferId, ChannelId};
 use kazoo_mix::control::{ControlServer, ControlSnapshot};
 use kazoo_mix::engine::{
-    ChannelSnapshot, DEFAULT_CHANNEL_SLOTS, MAX_CALLBACK_SAMPLES, MixerEngine,
+    ChannelSnapshot, DEFAULT_CHANNEL_SLOTS, MAX_CALLBACK_SAMPLES, MixerEngine, StereoLevel,
 };
 use kazoo_mix::session::MixSession;
 use kazoo_mix::source::EightOhEightSource;
@@ -201,7 +201,7 @@ where
 
             render_state
                 .master_peak_bits
-                .store(engine.master_peak().to_bits(), Ordering::Relaxed);
+                .store(stereo_max(engine.master_peak()).to_bits(), Ordering::Relaxed);
             engine.copy_channel_snapshots(&mut channel_snapshots);
             render_state.publish_channels(&channel_snapshots);
             render_state.frames_rendered.fetch_add(
@@ -226,7 +226,12 @@ struct AudioCallbackState {
     stream_errors: AtomicU64,
     xruns: AtomicU64,
     channel_peak_bits: [AtomicU32; UI_CHANNELS],
+    channel_rms_bits: [AtomicU32; UI_CHANNELS],
+    channel_gain_bits: [AtomicU32; UI_CHANNELS],
+    channel_pan_bits: [AtomicU32; UI_CHANNELS],
     channel_connected: [AtomicBool; UI_CHANNELS],
+    channel_muted: [AtomicBool; UI_CHANNELS],
+    channel_soloed: [AtomicBool; UI_CHANNELS],
     channel_underruns: [AtomicU64; UI_CHANNELS],
     channel_sequence_gaps: [AtomicU64; UI_CHANNELS],
 }
@@ -239,7 +244,12 @@ impl AudioCallbackState {
             stream_errors: AtomicU64::new(0),
             xruns: AtomicU64::new(0),
             channel_peak_bits: [const { AtomicU32::new(0.0_f32.to_bits()) }; UI_CHANNELS],
+            channel_rms_bits: [const { AtomicU32::new(0.0_f32.to_bits()) }; UI_CHANNELS],
+            channel_gain_bits: [const { AtomicU32::new(1.0_f32.to_bits()) }; UI_CHANNELS],
+            channel_pan_bits: [const { AtomicU32::new(0.0_f32.to_bits()) }; UI_CHANNELS],
             channel_connected: [const { AtomicBool::new(false) }; UI_CHANNELS],
+            channel_muted: [const { AtomicBool::new(false) }; UI_CHANNELS],
+            channel_soloed: [const { AtomicBool::new(false) }; UI_CHANNELS],
             channel_underruns: [const { AtomicU64::new(0) }; UI_CHANNELS],
             channel_sequence_gaps: [const { AtomicU64::new(0) }; UI_CHANNELS],
         }
@@ -251,8 +261,13 @@ impl AudioCallbackState {
 
     fn publish_channels(&self, snapshots: &[ChannelSnapshot]) {
         for (idx, snapshot) in snapshots.iter().enumerate().take(UI_CHANNELS) {
-            self.channel_peak_bits[idx].store(snapshot.peak.to_bits(), Ordering::Relaxed);
+            self.channel_peak_bits[idx].store(stereo_max(snapshot.peak).to_bits(), Ordering::Relaxed);
+            self.channel_rms_bits[idx].store(stereo_max(snapshot.rms).to_bits(), Ordering::Relaxed);
+            self.channel_gain_bits[idx].store(snapshot.gain.to_bits(), Ordering::Relaxed);
+            self.channel_pan_bits[idx].store(snapshot.pan.to_bits(), Ordering::Relaxed);
             self.channel_connected[idx].store(snapshot.connected, Ordering::Relaxed);
+            self.channel_muted[idx].store(snapshot.muted, Ordering::Relaxed);
+            self.channel_soloed[idx].store(snapshot.soloed, Ordering::Relaxed);
             self.channel_underruns[idx].store(snapshot.underruns, Ordering::Relaxed);
             self.channel_sequence_gaps[idx].store(snapshot.sequence_gaps, Ordering::Relaxed);
         }
@@ -309,6 +324,11 @@ impl App {
                 id: ChannelId(u16::try_from(idx).unwrap_or(u16::MAX)),
                 connected: audio.state.channel_connected[idx].load(Ordering::Relaxed),
                 peak: f32::from_bits(audio.state.channel_peak_bits[idx].load(Ordering::Relaxed)),
+                rms: f32::from_bits(audio.state.channel_rms_bits[idx].load(Ordering::Relaxed)),
+                gain: f32::from_bits(audio.state.channel_gain_bits[idx].load(Ordering::Relaxed)),
+                pan: f32::from_bits(audio.state.channel_pan_bits[idx].load(Ordering::Relaxed)),
+                muted: audio.state.channel_muted[idx].load(Ordering::Relaxed),
+                soloed: audio.state.channel_soloed[idx].load(Ordering::Relaxed),
                 underruns: audio.state.channel_underruns[idx].load(Ordering::Relaxed),
                 sequence_gaps: audio.state.channel_sequence_gaps[idx].load(Ordering::Relaxed),
             };
@@ -321,6 +341,11 @@ struct UiChannel {
     id: ChannelId,
     connected: bool,
     peak: f32,
+    rms: f32,
+    gain: f32,
+    pan: f32,
+    muted: bool,
+    soloed: bool,
     underruns: u64,
     sequence_gaps: u64,
 }
@@ -330,6 +355,11 @@ impl UiChannel {
         id: ChannelId(0),
         connected: false,
         peak: 0.0,
+        rms: 0.0,
+        gain: 1.0,
+        pan: 0.0,
+        muted: false,
+        soloed: false,
         underruns: 0,
         sequence_gaps: 0,
     };
@@ -400,40 +430,95 @@ fn draw_console(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "empty"
         };
         let health = if channel.connected {
-            "IN ●"
+            "LINE ●"
         } else {
-            "IN ○"
+            "LINE ○"
         };
-        let peak_db = if channel.peak <= 0.000_001 {
-            "-∞ dB".to_string()
-        } else {
-            format!("{:.1} dB", 20.0 * channel.peak.log10())
-        };
+        let mute = if channel.muted { "MUTE" } else { "----" };
+        let solo = if channel.soloed { "SOLO" } else { "----" };
         Row::new([
             format!("CH {:02}", usize::from(channel.id.0) + 1),
             name.to_string(),
             health.to_string(),
+            format!("{:.2}", channel.gain),
+            pan_label(channel.pan),
+            mute.to_string(),
+            solo.to_string(),
+            meter_bar(channel.rms, channel.peak, 18),
+            db_label(channel.peak),
             channel.underruns.to_string(),
-            peak_db,
         ])
     });
     let table = Table::new(
         rows,
         [
             Constraint::Length(8),
-            Constraint::Length(18),
+            Constraint::Length(14),
             Constraint::Length(8),
-            Constraint::Length(10),
-            Constraint::Length(10),
+            Constraint::Length(6),
+            Constraint::Length(7),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(20),
+            Constraint::Length(9),
+            Constraint::Length(5),
         ],
     )
     .header(
-        Row::new(["Strip", "Client", "Health", "Underruns", "Peak"])
-            .style(Style::default().fg(Color::Cyan)),
+        Row::new([
+            "Strip", "Client", "Pre", "Fader", "Pan", "Mute", "Solo", "VU / Peak", "Peak", "Xrun",
+        ])
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
     )
-    .block(Block::default().title(" Console ").borders(Borders::ALL));
+    .block(
+        Block::default()
+            .title(" Allen & Kazoo GL2400 terminal console ")
+            .borders(Borders::ALL),
+    );
 
     frame.render_widget(table, area);
+}
+
+fn stereo_max(level: StereoLevel) -> f32 {
+    level.left.max(level.right)
+}
+
+fn db_label(level: f32) -> String {
+    if level <= 0.000_001 {
+        "-∞ dB".to_string()
+    } else {
+        format!("{:.1} dB", 20.0 * level.log10())
+    }
+}
+
+fn pan_label(pan: f32) -> String {
+    if pan.abs() < 0.01 {
+        "C".to_string()
+    } else if pan < 0.0 {
+        format!("L{:02}", (pan.abs() * 10.0).round() as u8)
+    } else {
+        format!("R{:02}", (pan * 10.0).round() as u8)
+    }
+}
+
+fn meter_bar(rms: f32, peak: f32, width: usize) -> String {
+    let rms_cells = ((rms.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
+    let peak_cell = ((peak.clamp(0.0, 1.0) * width as f32).round() as usize).min(width.saturating_sub(1));
+    let mut out = String::with_capacity(width + 2);
+    out.push('[');
+    for idx in 0..width {
+        if peak > 0.0 && idx == peak_cell {
+            out.push('│');
+        } else if idx < rms_cells {
+            out.push('█');
+        } else if idx + 1 == width {
+            out.push('╎');
+        } else {
+            out.push(' ');
+        }
+    }
+    out.push(']');
+    out
 }
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
