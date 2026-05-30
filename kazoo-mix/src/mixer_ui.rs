@@ -109,10 +109,11 @@ fn draw_console(frame: &mut Frame<'_>, area: Rect, app: &App) {
             name,
             health.to_string(),
             state.to_string(),
-            format!("{:.2}", channel.gain),
-            format_pan(channel.pan),
+            knob("TRIM", channel.gain * 0.5),
+            pan_knob(channel.pan),
+            led_meter(max_stereo(channel.rms), max_stereo(channel.peak), 14),
+            fader(channel.gain * 0.5, 13),
             format_db(max_stereo(channel.peak)),
-            format_db(max_stereo(channel.rms)),
             channel.underruns.to_string(),
         ])
     });
@@ -123,22 +124,23 @@ fn draw_console(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Constraint::Length(12),
             Constraint::Length(7),
             Constraint::Length(5),
-            Constraint::Length(6),
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Length(16),
+            Constraint::Length(15),
             Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(9),
+            Constraint::Length(7),
         ],
     )
     .header(
         Row::new([
-            "Strip", "Source", "I/O", "Bus", "Gain", "Pan", "Peak", "RMS", "Drops",
+            "Strip", "Source", "I/O", "Bus", "Trim", "Pan", "VU", "Fader", "Peak", "Drops",
         ])
         .style(Style::default().fg(BRASS).add_modifier(Modifier::BOLD)),
     )
     .block(
         Block::default()
-            .title(" Console / Channel Strips ")
+            .title(" Console / Channel Strips — trim · pan · meter · long throw fader ")
             .borders(Borders::ALL)
             .style(Style::default().bg(PANEL_ALT).fg(STEEL)),
     )
@@ -251,22 +253,59 @@ fn draw_meter_block(frame: &mut Frame<'_>, area: Rect, title: &str, level: Stere
     );
 }
 
+fn knob(label: &str, value: f32) -> String {
+    let pointer = knob_pointer(value);
+    format!("{label} {pointer}")
+}
+
+fn pan_knob(pan: f32) -> String {
+    format!("PAN {}", knob_pointer((pan + 1.0) * 0.5))
+}
+
+fn knob_pointer(value: f32) -> char {
+    const POINTERS: [char; 9] = ['◜', '◠', '◝', '◞', '●', '◟', '◜', '◠', '◝'];
+    let idx = ((value.clamp(0.0, 1.0) * (POINTERS.len() - 1) as f32).round() as usize)
+        .min(POINTERS.len() - 1);
+    POINTERS[idx]
+}
+
+fn led_meter(rms: f32, peak: f32, width: usize) -> String {
+    let rms_cells = ((rms.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
+    let peak_cell =
+        ((peak.clamp(0.0, 1.0) * width as f32).round() as usize).min(width.saturating_sub(1));
+    let mut out = String::with_capacity(width + 2);
+    out.push('[');
+    for idx in 0..width {
+        if peak > 0.000_001 && idx == peak_cell {
+            out.push('┃');
+        } else if idx < rms_cells {
+            out.push(if idx > width * 4 / 5 { '▰' } else { '▱' });
+        } else {
+            out.push('·');
+        }
+    }
+    out.push(']');
+    out
+}
+
+fn fader(value: f32, width: usize) -> String {
+    let cap = ((value.clamp(0.0, 1.0) * width.saturating_sub(1) as f32).round() as usize)
+        .min(width.saturating_sub(1));
+    let mut out = String::with_capacity(width + 2);
+    out.push('╞');
+    for idx in 0..width {
+        out.push(if idx == cap { '▣' } else { '═' });
+    }
+    out.push('╡');
+    out
+}
+
 fn name_string(bytes: [u8; 12]) -> String {
     let len = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
     if len == 0 {
         return "empty".to_string();
     }
     String::from_utf8_lossy(&bytes[..len]).into_owned()
-}
-
-fn format_pan(pan: f32) -> String {
-    if pan <= -0.05 {
-        format!("L{:02.0}", (-pan * 10.0).round())
-    } else if pan >= 0.05 {
-        format!("R{:02.0}", (pan * 10.0).round())
-    } else {
-        "C".to_string()
-    }
 }
 
 fn format_db(level: f32) -> String {

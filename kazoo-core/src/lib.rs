@@ -11,6 +11,7 @@ pub mod engine;
 pub mod io;
 pub mod ipc;
 pub mod mixer;
+pub mod notation;
 pub mod protocol;
 pub mod synthesis;
 pub mod transport;
