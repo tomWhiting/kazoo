@@ -1250,6 +1250,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kazoo-play"
+version = "0.1.0"
+dependencies = [
+ "kazoo-core",
+]
+
+[[package]]
 name = "kazoo-prophet"
 version = "0.1.0"
 dependencies = [

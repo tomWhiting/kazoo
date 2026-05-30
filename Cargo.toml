@@ -10,6 +10,7 @@ members = [
     "kazoo-arp",
     "kazoo-303",
     "kazoo-juno",
+    "kazoo-play",
 ]
 resolver = "2"
 
