@@ -603,4 +603,158 @@ mod tests {
             "3*pi should wrap near +/-pi, got {wrapped}"
         );
     }
+
+    #[test]
+    fn wrap_phase_large_multiples() {
+        let pi = std::f32::consts::PI;
+        // Large positive multiple of pi.
+        let wrapped = wrap_phase(10.0 * pi);
+        assert!(
+            wrapped.abs() < pi + 0.01,
+            "10*pi should wrap to [-pi, pi], got {wrapped}"
+        );
+
+        // Large negative multiple.
+        let wrapped_neg = wrap_phase(-10.0 * pi);
+        assert!(
+            wrapped_neg.abs() < pi + 0.01,
+            "-10*pi should wrap to [-pi, pi], got {wrapped_neg}"
+        );
+
+        // Very small near-zero.
+        let tiny = wrap_phase(1e-7);
+        assert!(
+            (tiny - 1e-7).abs() < 1e-6,
+            "tiny value should pass through: {tiny}"
+        );
+    }
+
+    #[test]
+    fn stretch_extremes_produce_finite_output() {
+        let sr = 44100.0;
+        let input = sine_wave(440.0, sr, 8192);
+
+        for stretch in [0.25, 0.5, 2.0, 4.0] {
+            let mut pv = PhaseVocoder::new(sr);
+            pv.set_param(PhaseVocoder::PARAM_TIME_STRETCH, stretch)
+                .unwrap();
+
+            let mut output = vec![0.0_f32; 8192];
+            pv.process(&input, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite(),
+                    "stretch={stretch}: output[{i}] = {s} not finite"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pitch_shift_extremes_produce_finite_output() {
+        let sr = 44100.0;
+        let input = sine_wave(440.0, sr, 8192);
+
+        for shift in [-24.0, -12.0, 12.0, 24.0] {
+            let mut pv = PhaseVocoder::new(sr);
+            pv.set_param(PhaseVocoder::PARAM_PITCH_SHIFT, shift)
+                .unwrap();
+
+            let mut output = vec![0.0_f32; 8192];
+            pv.process(&input, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(s.is_finite(), "shift={shift}: output[{i}] = {s} not finite");
+            }
+        }
+    }
+
+    #[test]
+    fn short_input_does_not_panic() {
+        let mut pv = PhaseVocoder::new(44100.0);
+        // Input shorter than hop size (FFT_SIZE/4 = 512).
+        let input = [0.5_f32; 64];
+        let mut output = [0.0_f32; 64];
+        pv.process(&input, &mut output);
+
+        for &s in &output {
+            assert!(s.is_finite());
+        }
+    }
+
+    #[test]
+    fn stability_with_noise() {
+        let mut pv = PhaseVocoder::new(44100.0);
+        pv.set_param(PhaseVocoder::PARAM_TIME_STRETCH, 1.5).unwrap();
+        pv.set_param(PhaseVocoder::PARAM_PITCH_SHIFT, 5.0).unwrap();
+
+        let mut rng: u32 = 0xCAFE_BABE;
+        let noise: Vec<f32> = (0..8192)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect();
+        let mut output = vec![0.0_f32; 8192];
+        pv.process(&noise, &mut output);
+
+        for (i, &s) in output.iter().enumerate() {
+            assert!(
+                s.is_finite() && s.abs() < 100.0,
+                "noise stability: output[{i}] = {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn param_info_names_not_empty() {
+        let pv = PhaseVocoder::new(44100.0);
+        for i in 0..pv.param_count() {
+            let info = pv.param_info(i).unwrap();
+            assert!(!info.name.is_empty(), "param {i} has empty name");
+        }
+    }
+
+    #[test]
+    fn param_values_roundtrip() {
+        let mut pv = PhaseVocoder::new(44100.0);
+        pv.set_param(PhaseVocoder::PARAM_TIME_STRETCH, 2.0).unwrap();
+        pv.set_param(PhaseVocoder::PARAM_PITCH_SHIFT, -7.0).unwrap();
+
+        assert!(
+            (pv.param_value(PhaseVocoder::PARAM_TIME_STRETCH).unwrap() - 2.0).abs() < f32::EPSILON
+        );
+        assert!(
+            (pv.param_value(PhaseVocoder::PARAM_PITCH_SHIFT).unwrap() - (-7.0)).abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn name_is_not_empty() {
+        let pv = PhaseVocoder::new(44100.0);
+        assert!(!pv.name().is_empty());
+    }
+
+    #[test]
+    fn long_sustained_processing() {
+        let sr = 44100.0;
+        let mut pv = PhaseVocoder::new(sr);
+        pv.set_param(PhaseVocoder::PARAM_TIME_STRETCH, 1.5).unwrap();
+
+        let input: Vec<f32> = (0..1024)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sr).sin())
+            .collect();
+        let mut output = vec![0.0_f32; 1024];
+
+        for _ in 0..20 {
+            pv.process(&input, &mut output);
+            for &s in &output {
+                assert!(s.is_finite() && s.abs() < 100.0);
+            }
+        }
+    }
 }

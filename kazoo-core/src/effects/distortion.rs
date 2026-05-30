@@ -334,4 +334,270 @@ mod tests {
         let dist = Distortion::new(DistortionType::SoftClip, 44100.0);
         assert_eq!(dist.param_count(), 3);
     }
+
+    #[test]
+    fn distortion_fully_dry_passes_input() {
+        for mode in [
+            DistortionType::SoftClip,
+            DistortionType::HardClip,
+            DistortionType::Waveshape,
+            DistortionType::Bitcrush,
+        ] {
+            let mut dist = Distortion::new(mode, 44100.0);
+            dist.set_param(Distortion::PARAM_MIX, 0.0).unwrap();
+
+            let input = [0.5, -0.3, 0.8, -0.1, 0.0];
+            let mut output = [0.0_f32; 5];
+            dist.process(&input, &mut output);
+
+            for (i, (&inp, &out)) in input.iter().zip(output.iter()).enumerate() {
+                assert!(
+                    (inp - out).abs() < 1e-6,
+                    "{mode:?} dry pass: [{i}] expected {inp}, got {out}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn distortion_zero_drive_soft_clip_near_unity() {
+        let sr = 44100.0;
+        let mut dist = Distortion::new(DistortionType::SoftClip, sr);
+        dist.set_param(Distortion::PARAM_DRIVE, 0.0).unwrap();
+        dist.set_param(Distortion::PARAM_MIX, 1.0).unwrap();
+        dist.set_param(Distortion::PARAM_TONE, 1.0).unwrap(); // bright (wide open)
+
+        // At drive=0, gain = 0*20 + 1 = 1, so tanh(1*x) ≈ x for small x.
+        let input = generate_sine(2048, 440.0, sr);
+        let mut output = vec![0.0_f32; 2048];
+        dist.process(&input, &mut output);
+
+        // Compare second half (after transient).
+        let diff_energy: f32 = input[1024..]
+            .iter()
+            .zip(output[1024..].iter())
+            .map(|(a, b)| {
+                let d = a - b;
+                d * d
+            })
+            .sum();
+        let in_energy: f32 = input[1024..].iter().map(|s| s * s).sum();
+
+        // The difference should be small relative to input.
+        assert!(
+            diff_energy / in_energy < 0.1,
+            "zero drive soft clip should be near unity: diff/energy = {}",
+            diff_energy / in_energy
+        );
+    }
+
+    #[test]
+    fn distortion_max_drive_all_modes_bounded() {
+        let sr = 44100.0;
+        let input = generate_sine(2048, 440.0, sr);
+
+        for mode in [
+            DistortionType::SoftClip,
+            DistortionType::HardClip,
+            DistortionType::Waveshape,
+            DistortionType::Bitcrush,
+        ] {
+            let mut dist = Distortion::new(mode, sr);
+            dist.set_param(Distortion::PARAM_DRIVE, 1.0).unwrap();
+            dist.set_param(Distortion::PARAM_MIX, 1.0).unwrap();
+            dist.set_param(Distortion::PARAM_TONE, 1.0).unwrap();
+
+            let mut output = vec![0.0_f32; 2048];
+            dist.process(&input, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite() && s.abs() <= 1.1,
+                    "{mode:?} max drive: output[{i}] = {s} exceeds bounds"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn distortion_tone_dark_vs_bright() {
+        let sr = 44100.0;
+
+        // Generate a signal with both low and high frequency content.
+        let input: Vec<f32> = (0..4096)
+            .map(|i| {
+                let t = i as f32 / sr;
+                // 200 Hz + 8 kHz mixed.
+                (2.0 * PI * 200.0 * t).sin() * 0.5 + (2.0 * PI * 8000.0 * t).sin() * 0.5
+            })
+            .collect();
+
+        // Dark tone (tone=0).
+        let mut dist_dark = Distortion::new(DistortionType::SoftClip, sr);
+        dist_dark.set_param(Distortion::PARAM_DRIVE, 0.5).unwrap();
+        dist_dark.set_param(Distortion::PARAM_MIX, 1.0).unwrap();
+        dist_dark.set_param(Distortion::PARAM_TONE, 0.0).unwrap();
+
+        let mut output_dark = vec![0.0_f32; 4096];
+        dist_dark.process(&input, &mut output_dark);
+
+        // Bright tone (tone=1).
+        let mut dist_bright = Distortion::new(DistortionType::SoftClip, sr);
+        dist_bright.set_param(Distortion::PARAM_DRIVE, 0.5).unwrap();
+        dist_bright.set_param(Distortion::PARAM_MIX, 1.0).unwrap();
+        dist_bright.set_param(Distortion::PARAM_TONE, 1.0).unwrap();
+
+        let mut output_bright = vec![0.0_f32; 4096];
+        dist_bright.process(&input, &mut output_bright);
+
+        // The dark output should have less high-frequency energy.
+        // Measure this by looking at sample-to-sample differences (a proxy for HF).
+        let hf_dark: f32 = output_dark
+            .windows(2)
+            .skip(1024)
+            .map(|w| {
+                let d = w[1] - w[0];
+                d * d
+            })
+            .sum();
+        let hf_bright: f32 = output_bright
+            .windows(2)
+            .skip(1024)
+            .map(|w| {
+                let d = w[1] - w[0];
+                d * d
+            })
+            .sum();
+
+        assert!(
+            hf_bright > hf_dark * 1.5,
+            "bright ({hf_bright}) should have more HF content than dark ({hf_dark})"
+        );
+    }
+
+    #[test]
+    fn distortion_sample_rate_change() {
+        let mut dist = Distortion::new(DistortionType::SoftClip, 44100.0);
+        let input = [0.5_f32; 64];
+        let mut output = [0.0_f32; 64];
+        dist.process(&input, &mut output);
+
+        dist.set_sample_rate(96000.0);
+
+        // After SR change, tone_state is reset — should not produce artifacts.
+        let mut out2 = [0.0_f32; 64];
+        dist.process(&input, &mut out2);
+        for &s in &out2 {
+            assert!(s.is_finite());
+        }
+    }
+
+    #[test]
+    fn distortion_stability_with_noise_all_modes() {
+        let mut rng: u32 = 0xDEAD_C0DE;
+        let noise: Vec<f32> = (0..4096)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect();
+
+        for mode in [
+            DistortionType::SoftClip,
+            DistortionType::HardClip,
+            DistortionType::Waveshape,
+            DistortionType::Bitcrush,
+        ] {
+            let mut dist = Distortion::new(mode, 44100.0);
+            dist.set_param(Distortion::PARAM_DRIVE, 0.8).unwrap();
+            let mut output = vec![0.0_f32; 4096];
+            dist.process(&noise, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite() && s.abs() < 100.0,
+                    "{mode:?} noise: output[{i}] = {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn distortion_all_mode_names_not_empty() {
+        for mode in [
+            DistortionType::SoftClip,
+            DistortionType::HardClip,
+            DistortionType::Waveshape,
+            DistortionType::Bitcrush,
+        ] {
+            let dist = Distortion::new(mode, 44100.0);
+            assert!(!dist.name().is_empty(), "{mode:?} has empty name");
+        }
+    }
+
+    #[test]
+    fn distortion_all_param_info_names() {
+        let dist = Distortion::new(DistortionType::SoftClip, 44100.0);
+        for i in 0..dist.param_count() {
+            let info = dist.param_info(i).unwrap();
+            assert!(!info.name.is_empty(), "param {i} has empty name");
+        }
+    }
+
+    #[test]
+    fn distortion_invalid_param_index() {
+        let mut dist = Distortion::new(DistortionType::SoftClip, 44100.0);
+        assert!(dist.set_param(99, 0.0).is_err());
+        assert!(dist.param_value(99).is_none());
+        assert!(dist.param_info(99).is_none());
+    }
+
+    #[test]
+    fn distortion_param_clamping() {
+        let mut dist = Distortion::new(DistortionType::SoftClip, 44100.0);
+
+        // Drive above max (1.0) should clamp.
+        dist.set_param(Distortion::PARAM_DRIVE, 5.0).unwrap();
+        assert!((dist.param_value(Distortion::PARAM_DRIVE).unwrap() - 1.0).abs() < f32::EPSILON);
+
+        // Mix below min (0.0) should clamp.
+        dist.set_param(Distortion::PARAM_MIX, -1.0).unwrap();
+        assert!(dist.param_value(Distortion::PARAM_MIX).unwrap().abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn distortion_param_values_roundtrip() {
+        let mut dist = Distortion::new(DistortionType::SoftClip, 44100.0);
+        dist.set_param(Distortion::PARAM_DRIVE, 0.7).unwrap();
+        dist.set_param(Distortion::PARAM_MIX, 0.3).unwrap();
+        dist.set_param(Distortion::PARAM_TONE, 0.8).unwrap();
+
+        assert!((dist.param_value(0).unwrap() - 0.7).abs() < f32::EPSILON);
+        assert!((dist.param_value(1).unwrap() - 0.3).abs() < f32::EPSILON);
+        assert!((dist.param_value(2).unwrap() - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn distortion_reset_clears_tone_state() {
+        let mut dist = Distortion::new(DistortionType::SoftClip, 44100.0);
+        let input = generate_sine(512, 440.0, 44100.0);
+        let mut output = vec![0.0_f32; 512];
+        dist.process(&input, &mut output);
+
+        dist.reset();
+
+        // After reset, processing silence should yield silence (tone_state = 0).
+        let silence = [0.0_f32; 64];
+        let mut out2 = [0.0_f32; 64];
+        dist.process(&silence, &mut out2);
+
+        for (i, &s) in out2.iter().enumerate() {
+            assert!(
+                s.abs() < 1e-10,
+                "after reset, output[{i}] should be ~0, got {s}"
+            );
+        }
+    }
 }

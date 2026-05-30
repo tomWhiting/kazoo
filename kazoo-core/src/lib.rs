@@ -5,10 +5,13 @@
 //! any frontend consumes this API through [`engine::EngineHandle`].
 
 pub mod analysis;
+pub mod audio_transport;
 pub mod effects;
 pub mod engine;
 pub mod io;
+pub mod ipc;
 pub mod mixer;
+pub mod protocol;
 pub mod synthesis;
 pub mod transport;
 
@@ -364,7 +367,7 @@ impl ParamInfo {
 pub const DEFAULT_SAMPLE_RATE: u32 = 44_100;
 
 /// Default audio buffer size in samples.
-pub const DEFAULT_BUFFER_SIZE: usize = 256;
+pub const DEFAULT_BUFFER_SIZE: usize = 128;
 
 /// Maximum number of mixer tracks.
 pub const MAX_TRACKS: usize = 16;

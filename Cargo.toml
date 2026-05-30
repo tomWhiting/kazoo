@@ -1,5 +1,16 @@
 [workspace]
-members = ["kazoo-core", "kazoo-tui"]
+members = [
+    "kazoo-core",
+    "kazoo-tui",
+    "kazoo-mix",
+    "kazoo-808",
+    "kazoo-cs80",
+    "kazoo-mini",
+    "kazoo-prophet",
+    "kazoo-arp",
+    "kazoo-303",
+    "kazoo-juno",
+]
 resolver = "2"
 
 [workspace.lints.rust]

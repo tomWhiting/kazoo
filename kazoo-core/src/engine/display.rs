@@ -4,6 +4,8 @@
 //! UI needs to render one frame. It is produced in the output callback and
 //! consumed by the TUI thread via a ring buffer.
 
+use std::sync::Arc;
+
 use crate::analysis::{FormantData, PitchEstimate};
 use crate::mixer::MixerSnapshot;
 use crate::transport::TransportSnapshot;
@@ -77,6 +79,23 @@ impl TimelineSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// IPC instrument connection snapshot
+// ---------------------------------------------------------------------------
+
+/// Snapshot of one connected IPC instrument for the TUI header.
+#[derive(Debug, Clone)]
+pub struct IpcInstrumentSnapshot {
+    /// Instrument display name (e.g. "mini", "808").
+    /// Uses `Arc<str>` so the clone in the audio callback is a cheap
+    /// reference-count bump instead of a heap allocation.
+    pub name: Arc<str>,
+    /// Whether the instrument is still connected.
+    pub connected: bool,
+    /// Assigned mixer strip index.
+    pub strip_index: u8,
+}
+
+// ---------------------------------------------------------------------------
 // Display state
 // ---------------------------------------------------------------------------
 
@@ -122,6 +141,9 @@ pub struct DisplayState {
 
     /// Timeline snapshot for clip display.
     pub timeline: TimelineSnapshot,
+
+    /// Connected IPC instruments for the header status display.
+    pub ipc_instruments: Vec<IpcInstrumentSnapshot>,
 }
 
 impl DisplayState {
@@ -168,6 +190,7 @@ impl DisplayState {
             formants: None,
             cpu_load: 0.0,
             timeline: TimelineSnapshot::empty(),
+            ipc_instruments: Vec::new(),
         }
     }
 }
@@ -311,5 +334,38 @@ mod tests {
         let state = DisplayState::initial(44_100);
         assert!(state.timeline.tracks.is_empty());
         assert_eq!(state.timeline.total_length, 0);
+    }
+
+    // -- IPC instrument snapshot tests --
+
+    #[test]
+    fn initial_ipc_instruments_empty() {
+        let state = DisplayState::initial(44_100);
+        assert!(state.ipc_instruments.is_empty());
+    }
+
+    #[test]
+    fn ipc_instrument_snapshot_debug() {
+        let snap = IpcInstrumentSnapshot {
+            name: "mini".into(),
+            connected: true,
+            strip_index: 0,
+        };
+        let dbg = format!("{snap:?}");
+        assert!(dbg.contains("IpcInstrumentSnapshot"));
+        assert!(dbg.contains("mini"));
+    }
+
+    #[test]
+    fn ipc_instrument_snapshot_clone() {
+        let snap = IpcInstrumentSnapshot {
+            name: "808".into(),
+            connected: false,
+            strip_index: 2,
+        };
+        let cloned = snap.clone();
+        assert_eq!(&*cloned.name, "808");
+        assert!(!cloned.connected);
+        assert_eq!(cloned.strip_index, 2);
     }
 }

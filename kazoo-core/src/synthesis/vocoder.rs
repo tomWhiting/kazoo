@@ -635,4 +635,188 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn band_frequencies_low_sample_rate() {
+        // At 8 kHz, Nyquist is 4 kHz — bands should still be valid.
+        let freqs = compute_band_frequencies(16, 8000.0);
+        assert_eq!(freqs.len(), 16);
+        for (i, &f) in freqs.iter().enumerate() {
+            assert!(f > 0.0, "band {i} freq should be positive: {f}");
+            assert!(
+                f < 4000.0,
+                "band {i} freq should be below Nyquist (4000): {f}"
+            );
+        }
+    }
+
+    #[test]
+    fn carrier_mode_from_param_roundtrip() {
+        for mode in [
+            VocoderCarrierMode::InternalSaw,
+            VocoderCarrierMode::InternalSquare,
+            VocoderCarrierMode::InternalNoise,
+            VocoderCarrierMode::ExternalInput,
+        ] {
+            let param = mode.to_param();
+            let recovered = VocoderCarrierMode::from_param(param);
+            assert_eq!(mode, recovered, "roundtrip failed for {mode:?}");
+        }
+    }
+
+    #[test]
+    fn carrier_mode_from_param_out_of_range_defaults_to_saw() {
+        assert_eq!(
+            VocoderCarrierMode::from_param(-1.0),
+            VocoderCarrierMode::InternalSaw
+        );
+        assert_eq!(
+            VocoderCarrierMode::from_param(99.0),
+            VocoderCarrierMode::InternalSaw
+        );
+    }
+
+    #[test]
+    fn vocoder_carrier_frequency_extremes() {
+        let sr = 44100.0;
+        let voice = sine_wave(220.0, sr, 4096);
+
+        for freq in [20.0, 20_000.0] {
+            let mut vocoder = Vocoder::new(sr);
+            vocoder.prepare(4096);
+            vocoder
+                .set_param(Vocoder::PARAM_CARRIER_FREQ, freq)
+                .unwrap();
+
+            let mut output = vec![0.0_f32; 4096];
+            vocoder.process(&voice, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite() && s.abs() < 100.0,
+                    "freq={freq}: output[{i}] = {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vocoder_attack_release_extremes() {
+        let sr = 44100.0;
+        let voice = sine_wave(220.0, sr, 4096);
+
+        // Fast attack, fast release.
+        let mut fast = Vocoder::new(sr);
+        fast.prepare(4096);
+        fast.set_param(Vocoder::PARAM_ATTACK, 0.1).unwrap();
+        fast.set_param(Vocoder::PARAM_RELEASE, 1.0).unwrap();
+        let mut out_fast = vec![0.0_f32; 4096];
+        fast.process(&voice, &mut out_fast);
+
+        // Slow attack, slow release.
+        let mut slow = Vocoder::new(sr);
+        slow.prepare(4096);
+        slow.set_param(Vocoder::PARAM_ATTACK, 100.0).unwrap();
+        slow.set_param(Vocoder::PARAM_RELEASE, 500.0).unwrap();
+        let mut out_slow = vec![0.0_f32; 4096];
+        slow.process(&voice, &mut out_slow);
+
+        // Both should produce finite output.
+        for &s in &out_fast {
+            assert!(s.is_finite());
+        }
+        for &s in &out_slow {
+            assert!(s.is_finite());
+        }
+
+        // Fast vs slow should differ.
+        let diff: f32 = out_fast
+            .iter()
+            .zip(out_slow.iter())
+            .skip(1024)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum();
+        assert!(
+            diff > 0.001,
+            "fast vs slow attack/release should differ, diff = {diff}"
+        );
+    }
+
+    #[test]
+    fn vocoder_param_info_names_not_empty() {
+        let vocoder = Vocoder::new(44100.0);
+        for i in 0..vocoder.param_count() {
+            let info = vocoder.param_info(i).unwrap();
+            assert!(!info.name.is_empty(), "param {i} has empty name");
+        }
+    }
+
+    #[test]
+    fn vocoder_param_values_roundtrip() {
+        let mut vocoder = Vocoder::new(44100.0);
+        vocoder
+            .set_param(Vocoder::PARAM_CARRIER_FREQ, 440.0)
+            .unwrap();
+        vocoder.set_param(Vocoder::PARAM_ATTACK, 10.0).unwrap();
+        vocoder.set_param(Vocoder::PARAM_RELEASE, 100.0).unwrap();
+
+        assert!(
+            (vocoder.param_value(Vocoder::PARAM_CARRIER_FREQ).unwrap() - 440.0).abs()
+                < f32::EPSILON
+        );
+        assert!((vocoder.param_value(Vocoder::PARAM_ATTACK).unwrap() - 10.0).abs() < f32::EPSILON);
+        assert!(
+            (vocoder.param_value(Vocoder::PARAM_RELEASE).unwrap() - 100.0).abs() < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn vocoder_stability_with_noise() {
+        let mut vocoder = Vocoder::new(44100.0);
+        vocoder.prepare(4096);
+
+        let mut rng: u32 = 0xDEAD_C0DE;
+        let noise: Vec<f32> = (0..4096)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect();
+        let mut output = vec![0.0_f32; 4096];
+        vocoder.process(&noise, &mut output);
+
+        for (i, &s) in output.iter().enumerate() {
+            assert!(
+                s.is_finite() && s.abs() < 100.0,
+                "noise stability: output[{i}] = {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn vocoder_name_is_not_empty() {
+        let vocoder = Vocoder::new(44100.0);
+        assert!(!vocoder.name().is_empty());
+    }
+
+    #[test]
+    fn vocoder_long_sustained_processing() {
+        let sr = 44100.0;
+        let mut vocoder = Vocoder::new(sr);
+        vocoder.prepare(512);
+
+        let voice: Vec<f32> = (0..512)
+            .map(|i| (2.0 * PI * 220.0 * i as f32 / sr).sin())
+            .collect();
+        let mut output = vec![0.0_f32; 512];
+
+        for _ in 0..50 {
+            vocoder.process(&voice, &mut output);
+            for &s in &output {
+                assert!(s.is_finite() && s.abs() < 100.0);
+            }
+        }
+    }
 }

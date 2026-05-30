@@ -667,4 +667,250 @@ mod tests {
             "near-zero blep should be non-zero"
         );
     }
+
+    #[test]
+    fn poly_blep_near_wrap() {
+        // Near phase wrap (t close to 1.0), correction should be non-zero.
+        let correction = poly_blep(0.999, 0.01);
+        assert!(
+            correction.abs() > 1e-6,
+            "near-wrap blep should be non-zero, got {correction}"
+        );
+    }
+
+    #[test]
+    fn poly_blep_zero_dt_returns_zero() {
+        // dt=0 should always return 0 (no correction possible).
+        assert!(poly_blep(0.0, 0.0).abs() < f32::EPSILON);
+        assert!(poly_blep(0.5, 0.0).abs() < f32::EPSILON);
+        assert!(poly_blep(0.999, 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn all_shapes_produce_output() {
+        let sr = 44100.0;
+        let input: Vec<f32> = (0..4096)
+            .map(|i| (2.0 * PI * 220.0 * i as f32 / sr).sin() * 0.8)
+            .collect();
+
+        for shape in [
+            OscillatorShape::Sine,
+            OscillatorShape::Saw,
+            OscillatorShape::Square,
+            OscillatorShape::Triangle,
+        ] {
+            let mut synth = PitchTrackedSynth::new(sr);
+            synth.shape = shape;
+            synth.set_target_frequency(440.0);
+
+            let mut output = vec![0.0_f32; 4096];
+            synth.process(&input, &mut output);
+
+            let energy: f32 = output[1024..].iter().map(|s| s * s).sum();
+            assert!(
+                energy > 0.01,
+                "{shape:?}: should produce audible output, energy = {energy}"
+            );
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite() && s.abs() < 10.0,
+                    "{shape:?}: output[{i}] = {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shapes_produce_different_waveforms() {
+        let sr = 44100.0;
+        let input: Vec<f32> = (0..4096)
+            .map(|i| (2.0 * PI * 220.0 * i as f32 / sr).sin() * 0.8)
+            .collect();
+
+        let mut outputs: Vec<Vec<f32>> = Vec::new();
+        for shape in [
+            OscillatorShape::Sine,
+            OscillatorShape::Saw,
+            OscillatorShape::Square,
+            OscillatorShape::Triangle,
+        ] {
+            let mut synth = PitchTrackedSynth::new(sr);
+            synth.shape = shape;
+            synth.set_target_frequency(440.0);
+            let mut output = vec![0.0_f32; 4096];
+            synth.process(&input, &mut output);
+            outputs.push(output);
+        }
+
+        // Each pair of shapes should produce different output.
+        for i in 0..outputs.len() {
+            for j in (i + 1)..outputs.len() {
+                let diff: f32 = outputs[i][2048..]
+                    .iter()
+                    .zip(outputs[j][2048..].iter())
+                    .map(|(a, b)| (a - b).powi(2))
+                    .sum();
+                assert!(
+                    diff > 0.01,
+                    "shape {i} and shape {j} should differ, diff = {diff}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn portamento_smooths_frequency_transition() {
+        let sr = 44100.0;
+        let mut synth = PitchTrackedSynth::new(sr);
+        let _ = synth.set_param(PitchTrackedSynth::PARAM_PORTAMENTO, 100.0); // 100ms glide
+
+        synth.set_target_frequency(220.0);
+        let input = vec![0.5_f32; 4096];
+        let mut output = vec![0.0_f32; 4096];
+        synth.process(&input, &mut output);
+
+        let freq_before_change = synth.current_frequency();
+
+        // Change target — current frequency should not jump immediately.
+        synth.set_target_frequency(880.0);
+        let mut output2 = vec![0.0_f32; 64];
+        synth.process(&input[..64], &mut output2);
+        let freq_after_one_block = synth.current_frequency();
+
+        // With 100ms portamento, frequency should not have reached target yet.
+        assert!(
+            freq_after_one_block < 880.0,
+            "portamento: should not reach target immediately ({freq_after_one_block})"
+        );
+        assert!(
+            freq_after_one_block > freq_before_change,
+            "portamento: should have started moving ({freq_after_one_block} > {freq_before_change})"
+        );
+    }
+
+    #[test]
+    fn detune_changes_pitch() {
+        let sr = 44100.0;
+        let input: Vec<f32> = (0..4096)
+            .map(|i| (2.0 * PI * 220.0 * i as f32 / sr).sin() * 0.8)
+            .collect();
+
+        let mut synth_no_detune = PitchTrackedSynth::new(sr);
+        synth_no_detune.set_target_frequency(440.0);
+        let _ = synth_no_detune.set_param(PitchTrackedSynth::PARAM_DETUNE, 0.0);
+        let mut out1 = vec![0.0_f32; 4096];
+        synth_no_detune.process(&input, &mut out1);
+
+        let mut synth_detuned = PitchTrackedSynth::new(sr);
+        synth_detuned.set_target_frequency(440.0);
+        let _ = synth_detuned.set_param(PitchTrackedSynth::PARAM_DETUNE, 50.0);
+        let mut out2 = vec![0.0_f32; 4096];
+        synth_detuned.process(&input, &mut out2);
+
+        // Detuned output should differ from non-detuned.
+        let diff: f32 = out1[2048..]
+            .iter()
+            .zip(out2[2048..].iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum();
+        assert!(diff > 0.01, "detune should change output, diff = {diff}");
+    }
+
+    #[test]
+    fn envelope_sensitivity_affects_filter() {
+        let sr = 44100.0;
+        // Loud input to drive envelope.
+        let input = vec![0.8_f32; 4096];
+
+        let mut synth_no_env = PitchTrackedSynth::new(sr);
+        synth_no_env.set_target_frequency(440.0);
+        let _ = synth_no_env.set_param(PitchTrackedSynth::PARAM_ENV_SENSITIVITY, 0.0);
+        let mut out1 = vec![0.0_f32; 4096];
+        synth_no_env.process(&input, &mut out1);
+
+        let mut synth_full_env = PitchTrackedSynth::new(sr);
+        synth_full_env.set_target_frequency(440.0);
+        let _ = synth_full_env.set_param(PitchTrackedSynth::PARAM_ENV_SENSITIVITY, 1.0);
+        let mut out2 = vec![0.0_f32; 4096];
+        synth_full_env.process(&input, &mut out2);
+
+        // Different envelope sensitivities should produce different outputs.
+        let diff: f32 = out1[2048..]
+            .iter()
+            .zip(out2[2048..].iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum();
+        assert!(
+            diff > 0.001,
+            "envelope sensitivity should affect output, diff = {diff}"
+        );
+    }
+
+    #[test]
+    fn oscillator_shape_from_param_roundtrip() {
+        for shape in [
+            OscillatorShape::Sine,
+            OscillatorShape::Saw,
+            OscillatorShape::Square,
+            OscillatorShape::Triangle,
+        ] {
+            let param = shape.to_param();
+            let recovered = OscillatorShape::from_param(param);
+            assert_eq!(shape, recovered, "roundtrip failed for {shape:?}");
+        }
+    }
+
+    #[test]
+    fn oscillator_shape_from_param_out_of_range_defaults_to_sine() {
+        assert_eq!(OscillatorShape::from_param(-1.0), OscillatorShape::Sine);
+        assert_eq!(OscillatorShape::from_param(99.0), OscillatorShape::Sine);
+    }
+
+    #[test]
+    fn name_is_not_empty() {
+        let synth = PitchTrackedSynth::new(44100.0);
+        assert!(!synth.name().is_empty());
+    }
+
+    #[test]
+    fn zero_frequency_produces_silence() {
+        let mut synth = PitchTrackedSynth::new(44100.0);
+        // target_frequency defaults to 0, which means no oscillation.
+        let input = vec![0.5_f32; 512];
+        let mut output = vec![0.0_f32; 512];
+        synth.process(&input, &mut output);
+
+        let energy: f32 = output.iter().map(|s| s * s).sum();
+        assert!(
+            energy < 0.001,
+            "zero frequency should produce near-silence, energy = {energy}"
+        );
+    }
+
+    #[test]
+    fn stability_with_noise_input() {
+        let mut synth = PitchTrackedSynth::new(44100.0);
+        synth.set_target_frequency(440.0);
+        synth.shape = OscillatorShape::Saw;
+
+        let mut rng: u32 = 0xBAD_F00D;
+        let noise: Vec<f32> = (0..4096)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect();
+        let mut output = vec![0.0_f32; 4096];
+        synth.process(&noise, &mut output);
+
+        for (i, &s) in output.iter().enumerate() {
+            assert!(
+                s.is_finite() && s.abs() < 10.0,
+                "noise stability: output[{i}] = {s}"
+            );
+        }
+    }
 }

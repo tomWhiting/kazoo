@@ -4,3 +4,5 @@
 *.swo
 .DS_Store
 .claude/
+.jj/
+.meridian/worksites/

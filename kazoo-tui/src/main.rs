@@ -7,6 +7,7 @@
 
 mod app;
 mod input;
+mod state;
 mod theme;
 mod ui;
 
@@ -31,7 +32,31 @@ async fn main() -> Result<()> {
     // Start the audio engine *before* entering the alternate screen so that
     // initialisation errors (missing audio device, etc.) are printed in the
     // user's normal terminal.
-    let engine = kazoo_core::engine::start(EngineConfig::default())?;
+    let mut engine = kazoo_core::engine::start(EngineConfig::default())?;
+
+    // Start the IPC hub server so instruments can connect. This must happen
+    // after engine start (which creates the IPC handles) but before the event
+    // loop. The server runs a background polling thread that accepts instrument
+    // connections and pipes their audio into the output callback's mixer.
+    let _ipc_server = if let Some(handles) = engine.take_ipc_handles() {
+        match kazoo_core::ipc::HubIpcServer::start(
+            engine.sample_rate(),
+            engine.buffer_size(),
+            handles.instrument_tx,
+            handles.transport_cons,
+        ) {
+            Ok(server) => {
+                eprintln!("IPC hub server started — instruments can connect");
+                Some(server)
+            }
+            Err(err) => {
+                eprintln!("IPC hub server failed to start: {err} — running without IPC");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Enter the alternate screen and enable raw mode.
     let mut terminal = ratatui::init();

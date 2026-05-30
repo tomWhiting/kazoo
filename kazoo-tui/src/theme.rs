@@ -1,109 +1,108 @@
 //! Visual theme: color palette, text styles, and panel styling.
 //!
-//! All colors are specified as RGB hex triplets for true-color terminals.
-//! The palette is designed for readability on dark backgrounds and follows
-//! the Catppuccin Mocha aesthetic.
+//! The palette evokes a 1970s recording studio: warm espresso backgrounds,
+//! brushed-metal silver text, burnished gold accents, and vintage VU meter
+//! colours. All values are RGB hex triplets for true-color terminals.
 
 use ratatui::style::{Color, Modifier, Style};
 
 // ---------------------------------------------------------------------------
-// Background / surface
+// Background / surface — warm dark tones
 // ---------------------------------------------------------------------------
 
-/// Deep navy background for the entire terminal.
-pub const BG_PRIMARY: Color = Color::Rgb(0x1E, 0x1E, 0x2E);
+/// Deep espresso background for the entire terminal.
+pub const BG_PRIMARY: Color = Color::Rgb(0x1A, 0x14, 0x10);
 
-/// Slightly lighter surface for secondary panels.
-#[allow(dead_code)]
-pub const BG_SECONDARY: Color = Color::Rgb(0x28, 0x28, 0x3C);
+/// Warm dark brown for secondary panels.
+pub const BG_SECONDARY: Color = Color::Rgb(0x24, 0x1C, 0x16);
 
-/// Surface color for list items, input fields, and clip backgrounds.
-pub const BG_SURFACE: Color = Color::Rgb(0x31, 0x31, 0x4A);
+/// Walnut surface for list items, input fields, and clip backgrounds.
+pub const BG_SURFACE: Color = Color::Rgb(0x2E, 0x24, 0x1C);
 
-/// Elevated surface for popups and overlays.
-pub const BG_OVERLAY: Color = Color::Rgb(0x3A, 0x3A, 0x55);
+/// Coffee-toned elevated surface for popups and overlays.
+pub const BG_OVERLAY: Color = Color::Rgb(0x38, 0x2C, 0x22);
 
 /// Background for odd-numbered track lanes (alternating with primary).
-pub const BG_LANE_ODD: Color = Color::Rgb(0x24, 0x24, 0x38);
+pub const BG_LANE_ODD: Color = Color::Rgb(0x20, 0x18, 0x12);
 
 // ---------------------------------------------------------------------------
-// Foreground / text
+// Foreground / text — warm silver and cream
 // ---------------------------------------------------------------------------
 
-/// Primary text color (high contrast).
-pub const FG_PRIMARY: Color = Color::Rgb(0xCD, 0xD6, 0xF4);
+/// Warm cream primary text (high contrast against espresso).
+pub const FG_PRIMARY: Color = Color::Rgb(0xE8, 0xDE, 0xD0);
 
-/// Secondary text color (labels, descriptions).
-pub const FG_SECONDARY: Color = Color::Rgb(0x9C, 0x9C, 0xB0);
+/// Dusty silver secondary text (labels, descriptions).
+pub const FG_SECONDARY: Color = Color::Rgb(0xA8, 0x9C, 0x8C);
 
-/// Dimmed text (disabled items, decorative).
-pub const FG_DIMMED: Color = Color::Rgb(0x6C, 0x70, 0x86);
+/// Warm gray dimmed text (disabled items, decorative).
+pub const FG_DIMMED: Color = Color::Rgb(0x6E, 0x62, 0x56);
 
-/// Border color for unfocused panels.
-pub const BORDER_NORMAL: Color = Color::Rgb(0x45, 0x47, 0x5A);
+/// Tarnished silver for unfocused panel borders.
+pub const BORDER_NORMAL: Color = Color::Rgb(0x5A, 0x50, 0x44);
 
-/// Border color for focused panels.
-pub const BORDER_FOCUS: Color = Color::Rgb(0x89, 0xB4, 0xFA);
-
-// ---------------------------------------------------------------------------
-// Accent / state colors
-// ---------------------------------------------------------------------------
-
-/// Recording indicator (pulsing pink).
-pub const ACCENT_RECORD: Color = Color::Rgb(0xF3, 0x8B, 0xA8);
-
-/// Playing indicator (green).
-pub const ACCENT_PLAY: Color = Color::Rgb(0xA6, 0xE3, 0xA1);
-
-/// Stopped state (off-white).
-pub const ACCENT_STOP: Color = Color::Rgb(0xBA, 0xC2, 0xDE);
-
-/// Paused state (amber).
-pub const ACCENT_PAUSE: Color = Color::Rgb(0xF9, 0xE2, 0xAF);
-
-/// Focus highlight (blue).
-pub const ACCENT_FOCUS: Color = Color::Rgb(0x89, 0xB4, 0xFA);
-
-/// Selected item highlight (amber).
-pub const ACCENT_SELECTED: Color = Color::Rgb(0xF9, 0xE2, 0xAF);
-
-/// Error / warning indicator.
-pub const ACCENT_ERROR: Color = Color::Rgb(0xF3, 0x8B, 0xA8);
+/// Burnished gold for focused panel borders.
+pub const BORDER_FOCUS: Color = Color::Rgb(0xD4, 0xA0, 0x40);
 
 // ---------------------------------------------------------------------------
-// Meter colors
+// Accent / state colours — warm analogue palette
 // ---------------------------------------------------------------------------
 
-/// Meter level: safe / nominal (green).
-pub const METER_GREEN: Color = Color::Rgb(0xA6, 0xE3, 0xA1);
+/// Vintage red for recording indicators (tube glow).
+pub const ACCENT_RECORD: Color = Color::Rgb(0xE0, 0x44, 0x30);
 
-/// Meter level: caution / approaching clip (yellow).
-pub const METER_YELLOW: Color = Color::Rgb(0xF9, 0xE2, 0xAF);
+/// Olive green for playing / safe levels (classic VU).
+pub const ACCENT_PLAY: Color = Color::Rgb(0x7C, 0xB0, 0x50);
 
-/// Meter level: clipping / hot (red).
-pub const METER_RED: Color = Color::Rgb(0xF3, 0x8B, 0xA8);
+/// Warm off-white for stopped state.
+pub const ACCENT_STOP: Color = Color::Rgb(0xC0, 0xB4, 0xA4);
+
+/// Amber for paused state (warm tube glow).
+pub const ACCENT_PAUSE: Color = Color::Rgb(0xE0, 0xA8, 0x30);
+
+/// Burnished gold for keyboard focus highlight.
+pub const ACCENT_FOCUS: Color = Color::Rgb(0xD4, 0xA0, 0x40);
+
+/// Amber for selected item highlight.
+pub const ACCENT_SELECTED: Color = Color::Rgb(0xE0, 0xA8, 0x30);
+
+/// Vintage red for errors and warnings.
+pub const ACCENT_ERROR: Color = Color::Rgb(0xE0, 0x44, 0x30);
 
 // ---------------------------------------------------------------------------
-// Track colors (8 distinct hues for visual differentiation)
+// Meter colours — classic VU needle progression
 // ---------------------------------------------------------------------------
 
-/// Track color palette — cycled via [`track_color`].
+/// Meter level: safe / nominal (olive green).
+pub const METER_GREEN: Color = Color::Rgb(0x7C, 0xB0, 0x50);
+
+/// Meter level: caution / approaching clip (warm amber).
+pub const METER_YELLOW: Color = Color::Rgb(0xE0, 0xA8, 0x30);
+
+/// Meter level: clipping / hot (vintage red).
+pub const METER_RED: Color = Color::Rgb(0xE0, 0x44, 0x30);
+
+// ---------------------------------------------------------------------------
+// Track colours (8 earth tones + warm metals for visual differentiation)
+// ---------------------------------------------------------------------------
+
+/// Track colour palette — cycled via [`track_color`].
 const TRACK_COLORS: [Color; 8] = [
-    Color::Rgb(0x89, 0xB4, 0xFA), // steel blue
-    Color::Rgb(0xF3, 0x8B, 0xA8), // soft red
-    Color::Rgb(0xA6, 0xE3, 0xA1), // leaf green
-    Color::Rgb(0xF9, 0xE2, 0xAF), // amber
-    Color::Rgb(0xCB, 0xA6, 0xF7), // lavender
-    Color::Rgb(0x94, 0xE2, 0xD5), // teal
-    Color::Rgb(0xFA, 0xB3, 0x87), // peach
-    Color::Rgb(0xEB, 0xA0, 0xAC), // brick / rose
+    Color::Rgb(0xD4, 0xA0, 0x40), // burnished gold
+    Color::Rgb(0xC0, 0x64, 0x40), // rust / copper
+    Color::Rgb(0x7C, 0xB0, 0x50), // sage green
+    Color::Rgb(0xE0, 0xA8, 0x30), // warm amber
+    Color::Rgb(0xA0, 0x80, 0xB0), // dusty mauve
+    Color::Rgb(0x60, 0x9C, 0x90), // verdigris / patina
+    Color::Rgb(0xD0, 0x90, 0x60), // tan / sandstone
+    Color::Rgb(0xB0, 0x70, 0x60), // terracotta
 ];
 
 // ---------------------------------------------------------------------------
 // Public helpers
 // ---------------------------------------------------------------------------
 
-/// Return the track color for a given track index (wraps every 8).
+/// Return the track colour for a given track index (wraps every 8).
 #[must_use]
 pub const fn track_color(index: usize) -> Color {
     TRACK_COLORS[index % TRACK_COLORS.len()]
@@ -119,7 +118,7 @@ pub const fn lane_bg(index: usize) -> Color {
     }
 }
 
-/// Return the meter color for a given linear ratio (0.0 = silence, 1.0+ = clipping).
+/// Return the meter colour for a given linear ratio (0.0 = silence, 1.0+ = clipping).
 ///
 /// - `[0.0, 0.7)` — green
 /// - `[0.7, 0.9)` — yellow
@@ -135,7 +134,7 @@ pub const fn meter_color(ratio: f32) -> Color {
     }
 }
 
-/// Return the meter color for a dB value.
+/// Return the meter colour for a dB value.
 ///
 /// - `< -6 dB` — green
 /// - `[-6 dB, -1 dB)` — yellow
@@ -246,12 +245,6 @@ pub const fn style_armed() -> Style {
     Style::new().fg(ACCENT_RECORD).add_modifier(Modifier::BOLD)
 }
 
-/// Style for a track name, colored by track index.
-#[must_use]
-pub const fn style_track_name(index: usize) -> Style {
-    Style::new().fg(track_color(index))
-}
-
 /// Style for a parameter name.
 #[must_use]
 #[allow(dead_code)]
@@ -299,16 +292,19 @@ pub const fn style_slider_filled() -> Style {
     Style::new().fg(ACCENT_FOCUS)
 }
 
-/// Style for the empty portion of a slider bar.
+/// Style for an active view tab in the header.
 #[must_use]
-pub const fn style_slider_empty() -> Style {
-    Style::new().fg(FG_DIMMED)
+pub const fn style_view_tab_active() -> Style {
+    Style::new()
+        .fg(BG_PRIMARY)
+        .bg(ACCENT_FOCUS)
+        .add_modifier(Modifier::BOLD)
 }
 
-/// Style for a drawer section header.
+/// Style for an inactive view tab in the header.
 #[must_use]
-pub const fn style_drawer_header() -> Style {
-    Style::new().fg(FG_PRIMARY).add_modifier(Modifier::BOLD)
+pub const fn style_view_tab_inactive() -> Style {
+    Style::new().fg(FG_SECONDARY).bg(BG_SECONDARY)
 }
 
 // ---------------------------------------------------------------------------
@@ -363,5 +359,19 @@ mod tests {
         let visible = style_recording(true);
         let hidden = style_recording(false);
         assert_ne!(visible.fg, hidden.fg);
+    }
+
+    #[test]
+    fn view_tab_styles_differ() {
+        let active = style_view_tab_active();
+        let inactive = style_view_tab_inactive();
+        assert_ne!(active.fg, inactive.fg);
+    }
+
+    #[test]
+    fn lane_bg_alternates() {
+        assert_eq!(lane_bg(0), BG_PRIMARY);
+        assert_eq!(lane_bg(1), BG_LANE_ODD);
+        assert_eq!(lane_bg(2), BG_PRIMARY);
     }
 }

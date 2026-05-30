@@ -62,7 +62,7 @@ fn draw_track_header(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect
     }
 
     let idx = app.selected_track;
-    let name_style = theme::style_track_name(idx);
+    let name_style = Style::new().fg(theme::track_color(idx));
     let mode_str = match track.synthesis_mode {
         SynthesisMode::Passthrough => "Raw",
         SynthesisMode::PitchTracked => "Pitch",
@@ -103,13 +103,17 @@ fn draw_item_list(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
     let mut lines: Vec<Line<'_>> = Vec::new();
 
     // Synth entry.
-    let synth_selected = app.synth_selected && focused;
+    let synth_selected = app.synth_state.synth_selected && focused;
     let synth_style = if synth_selected {
         theme::style_selected()
     } else {
         theme::style_text()
     };
-    let marker = if app.synth_selected { "\u{25b6}" } else { " " };
+    let marker = if app.synth_state.synth_selected {
+        "\u{25b6}"
+    } else {
+        " "
+    };
     lines.push(Line::from(vec![
         Span::styled(marker, synth_style),
         Span::raw(" "),
@@ -119,7 +123,7 @@ fn draw_item_list(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
     // Effect entries.
     for (i, name) in track.effect_names.iter().enumerate() {
         let bypassed = track.effect_bypassed.get(i).copied().unwrap_or(false);
-        let selected = !app.synth_selected && i == app.selected_effect;
+        let selected = !app.synth_state.synth_selected && i == app.synth_state.selected_effect;
 
         let bypass_indicator = if bypassed { "\u{25cb}" } else { "\u{25cf}" };
         let bypass_color = if bypassed {
@@ -157,7 +161,7 @@ fn draw_param_section(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rec
 
     let focused = app.is_focused(FocusedPanel::Effects);
 
-    if app.synth_selected {
+    if app.synth_state.synth_selected {
         // Show synth parameters.
         draw_synth_params(frame, app, track, area, focused);
     } else {
@@ -180,7 +184,7 @@ fn draw_synth_params(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect
         .enumerate()
         .map(|(i, info)| {
             let value = track.synth_param_values.get(i).copied().unwrap_or(0.0);
-            let selected = i == app.selected_synth_param;
+            let selected = i == app.synth_state.selected_synth_param;
 
             let formatted = track.synthesis_mode.format_param_value(i, value);
             let unit = if info.unit.is_empty() {
@@ -228,7 +232,7 @@ fn draw_effect_params(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rec
     } else {
         let fx_name = track
             .effect_names
-            .get(app.selected_effect)
+            .get(app.synth_state.selected_effect)
             .map_or("\u{2014}", String::as_str);
         format!("  {fx_name}\n  Parameters:\n  (use +/- to adjust)")
     };
@@ -250,7 +254,7 @@ fn draw_hint_bar(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let hint = if app.synth_selected {
+    let hint = if app.synth_state.synth_selected {
         "\u{2191}\u{2193} nav  h/l param  \u{2190}\u{2192} adj  t synth"
     } else {
         "\u{2191}\u{2193} nav  h/l param  \u{2190}\u{2192} adj"

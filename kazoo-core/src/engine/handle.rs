@@ -31,6 +31,32 @@ use super::display::DisplayState;
 ///
 /// Dropping the handle sends a [`EngineCommand::Shutdown`] to initiate a
 /// graceful teardown of all engine threads.
+/// IPC handles needed to start the hub IPC server.
+///
+/// These are created during [`super::start`] and taken by the TUI (or any
+/// frontend) via [`EngineHandle::take_ipc_handles`]. The frontend passes
+/// them to [`crate::ipc::HubIpcServer::start`] to begin accepting
+/// instrument connections.
+pub struct IpcHandles {
+    /// Channel sender for new instrument consumer handles. The IPC server
+    /// sends an [`crate::ipc::IpcInstrumentConsumer`] through this channel
+    /// whenever an instrument registers. The output callback's
+    /// `ProcessingIO` holds the receiving end.
+    pub instrument_tx: crossbeam_channel::Sender<crate::ipc::IpcInstrumentConsumer>,
+
+    /// Ring buffer consumer for transport state notifications from the
+    /// output callback. The IPC server thread reads these and forwards
+    /// `TransportSyncMsg` to all connected instruments.
+    pub transport_cons: ringbuf::HeapCons<crate::ipc::IpcTransportNotify>,
+}
+
+// HeapCons is !Debug; implement manually.
+impl std::fmt::Debug for IpcHandles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IpcHandles").finish_non_exhaustive()
+    }
+}
+
 pub struct EngineHandle {
     /// Channel sender for commands destined for the audio processing callback.
     command_tx: Sender<EngineCommand>,
@@ -53,6 +79,12 @@ pub struct EngineHandle {
     /// Worker thread join handles. Joined on Drop after sending Shutdown.
     /// Wrapped in `Option` so we can take them during drop.
     thread_handles: Option<ThreadHandles>,
+
+    /// IPC handles for starting the hub server. Taken once by the frontend.
+    ipc_handles: Option<IpcHandles>,
+
+    /// Active MIDI input connection. Dropping disconnects the MIDI device.
+    midi_handle: Option<super::midi::MidiHandle>,
 }
 
 /// Stores all spawned thread join handles and the stream holder shutdown flag.
@@ -100,6 +132,8 @@ impl EngineHandle {
             sample_rate,
             buffer_size,
             thread_handles: None,
+            ipc_handles: None,
+            midi_handle: None,
         }
     }
 
@@ -108,6 +142,42 @@ impl EngineHandle {
     /// Called by [`super::start`] after all threads have been spawned.
     pub(super) fn set_thread_handles(&mut self, handles: ThreadHandles) {
         self.thread_handles = Some(handles);
+    }
+
+    /// Attach IPC handles created during engine startup.
+    ///
+    /// Called by [`super::start`] after the IPC channels and ring buffers
+    /// are created.
+    pub(super) fn set_ipc_handles(&mut self, handles: IpcHandles) {
+        self.ipc_handles = Some(handles);
+    }
+
+    /// Store the MIDI input handle. Dropping it disconnects the device.
+    pub(super) fn set_midi_handle(&mut self, handle: Option<super::midi::MidiHandle>) {
+        self.midi_handle = handle;
+    }
+
+    /// Whether a MIDI input device is connected.
+    #[must_use]
+    pub const fn midi_connected(&self) -> bool {
+        self.midi_handle.is_some()
+    }
+
+    /// Name of the connected MIDI port, if any.
+    #[must_use]
+    pub fn midi_port_name(&self) -> Option<&str> {
+        self.midi_handle
+            .as_ref()
+            .map(super::midi::MidiHandle::port_name)
+    }
+
+    /// Take the IPC handles needed to start the hub IPC server.
+    ///
+    /// Returns `None` if the handles have already been taken. This is a
+    /// one-shot operation — the TUI calls this once during startup to get
+    /// the handles it needs to start [`crate::ipc::HubIpcServer`].
+    pub const fn take_ipc_handles(&mut self) -> Option<IpcHandles> {
+        self.ipc_handles.take()
     }
 
     // -----------------------------------------------------------------------

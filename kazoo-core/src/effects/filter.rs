@@ -452,4 +452,426 @@ mod tests {
             assert!(s.is_finite());
         }
     }
+
+    // -----------------------------------------------------------------------
+    // All filter types: response curve validation
+    // -----------------------------------------------------------------------
+
+    /// Measure energy ratio (output/input) over the second half of a block.
+    fn energy_ratio(filter: &mut BiquadFilter, input: &[f32]) -> f32 {
+        let mut output = vec![0.0_f32; input.len()];
+        filter.process(input, &mut output);
+        let half = input.len() / 2;
+        let in_energy: f32 = input[half..].iter().map(|s| s * s).sum();
+        let out_energy: f32 = output[half..].iter().map(|s| s * s).sum();
+        if in_energy > 0.0 {
+            out_energy / in_energy
+        } else {
+            0.0
+        }
+    }
+
+    /// Generate a sine wave at the given frequency.
+    fn sine_wave(freq_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+        (0..len)
+            .map(|i| (2.0 * PI * freq_hz * i as f32 / sample_rate).sin())
+            .collect()
+    }
+
+    /// Generate white noise using a deterministic PRNG.
+    fn white_noise(len: usize) -> Vec<f32> {
+        let mut rng: u32 = 0xDEAD_BEEF;
+        (0..len)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bandpass_passes_center_attenuates_edges() {
+        let sr = 44100.0;
+        let mut filter = BiquadFilter::new(FilterType::BandPass, sr);
+        filter
+            .set_param(BiquadFilter::PARAM_FREQUENCY, 1000.0)
+            .unwrap();
+        filter.set_param(BiquadFilter::PARAM_Q, 5.0).unwrap();
+
+        // 1 kHz sine (at center) should pass through well.
+        let center = sine_wave(1000.0, sr, 4096);
+        let center_ratio = energy_ratio(&mut filter, &center);
+        filter.reset();
+
+        // 100 Hz sine (far below) should be attenuated.
+        let low = sine_wave(100.0, sr, 4096);
+        let low_ratio = energy_ratio(&mut filter, &low);
+        filter.reset();
+
+        // 10 kHz sine (far above) should be attenuated.
+        let high = sine_wave(10000.0, sr, 4096);
+        let high_ratio = energy_ratio(&mut filter, &high);
+
+        assert!(
+            center_ratio > low_ratio * 5.0,
+            "BP: center ({center_ratio}) should pass much more than low ({low_ratio})"
+        );
+        assert!(
+            center_ratio > high_ratio * 5.0,
+            "BP: center ({center_ratio}) should pass much more than high ({high_ratio})"
+        );
+    }
+
+    #[test]
+    fn notch_rejects_center_passes_edges() {
+        let sr = 44100.0;
+        let mut filter = BiquadFilter::new(FilterType::Notch, sr);
+        filter
+            .set_param(BiquadFilter::PARAM_FREQUENCY, 1000.0)
+            .unwrap();
+        filter.set_param(BiquadFilter::PARAM_Q, 5.0).unwrap();
+
+        // 1 kHz should be strongly attenuated.
+        let center = sine_wave(1000.0, sr, 4096);
+        let center_ratio = energy_ratio(&mut filter, &center);
+        filter.reset();
+
+        // 100 Hz should pass through.
+        let low = sine_wave(100.0, sr, 4096);
+        let low_ratio = energy_ratio(&mut filter, &low);
+        filter.reset();
+
+        // 10 kHz should pass through.
+        let high = sine_wave(10000.0, sr, 4096);
+        let high_ratio = energy_ratio(&mut filter, &high);
+
+        assert!(
+            center_ratio < 0.1,
+            "Notch: center frequency should be strongly rejected ({center_ratio})"
+        );
+        assert!(
+            low_ratio > 0.5,
+            "Notch: low frequency should pass ({low_ratio})"
+        );
+        assert!(
+            high_ratio > 0.5,
+            "Notch: high frequency should pass ({high_ratio})"
+        );
+    }
+
+    #[test]
+    fn peak_boosts_center_frequency() {
+        let sr = 44100.0;
+        let mut filter = BiquadFilter::new(FilterType::Peak, sr);
+        filter
+            .set_param(BiquadFilter::PARAM_FREQUENCY, 1000.0)
+            .unwrap();
+        filter.set_param(BiquadFilter::PARAM_Q, 2.0).unwrap();
+        filter.set_param(BiquadFilter::PARAM_GAIN_DB, 12.0).unwrap();
+
+        // 1 kHz sine should be boosted.
+        let center = sine_wave(1000.0, sr, 4096);
+        let center_ratio = energy_ratio(&mut filter, &center);
+        filter.reset();
+
+        // 100 Hz should be mostly unchanged.
+        let low = sine_wave(100.0, sr, 4096);
+        let low_ratio = energy_ratio(&mut filter, &low);
+
+        // +12 dB boost = ~16x power at center.
+        assert!(
+            center_ratio > 4.0,
+            "Peak +12dB: center should be significantly boosted ({center_ratio})"
+        );
+        assert!(
+            low_ratio < center_ratio * 0.5,
+            "Peak: off-center should be boosted less ({low_ratio} vs {center_ratio})"
+        );
+    }
+
+    #[test]
+    fn peak_cuts_center_frequency() {
+        let sr = 44100.0;
+        let mut filter = BiquadFilter::new(FilterType::Peak, sr);
+        filter
+            .set_param(BiquadFilter::PARAM_FREQUENCY, 1000.0)
+            .unwrap();
+        filter.set_param(BiquadFilter::PARAM_Q, 2.0).unwrap();
+        filter
+            .set_param(BiquadFilter::PARAM_GAIN_DB, -12.0)
+            .unwrap();
+
+        let center = sine_wave(1000.0, sr, 4096);
+        let center_ratio = energy_ratio(&mut filter, &center);
+
+        // -12 dB cut = ~1/16 power at center.
+        assert!(
+            center_ratio < 0.25,
+            "Peak -12dB: center should be strongly cut ({center_ratio})"
+        );
+    }
+
+    #[test]
+    fn lowshelf_boosts_below_frequency() {
+        let sr = 44100.0;
+        let mut filter = BiquadFilter::new(FilterType::LowShelf, sr);
+        filter
+            .set_param(BiquadFilter::PARAM_FREQUENCY, 1000.0)
+            .unwrap();
+        filter.set_param(BiquadFilter::PARAM_GAIN_DB, 12.0).unwrap();
+
+        // 100 Hz (below shelf) should be boosted.
+        let low = sine_wave(100.0, sr, 4096);
+        let low_ratio = energy_ratio(&mut filter, &low);
+        filter.reset();
+
+        // 10 kHz (above shelf) should be ~unity.
+        let high = sine_wave(10000.0, sr, 4096);
+        let high_ratio = energy_ratio(&mut filter, &high);
+
+        assert!(
+            low_ratio > 4.0,
+            "LowShelf +12dB: bass should be boosted ({low_ratio})"
+        );
+        assert!(
+            high_ratio < low_ratio * 0.5,
+            "LowShelf: treble ({high_ratio}) should be boosted less than bass ({low_ratio})"
+        );
+    }
+
+    #[test]
+    fn highshelf_boosts_above_frequency() {
+        let sr = 44100.0;
+        let mut filter = BiquadFilter::new(FilterType::HighShelf, sr);
+        filter
+            .set_param(BiquadFilter::PARAM_FREQUENCY, 1000.0)
+            .unwrap();
+        filter.set_param(BiquadFilter::PARAM_GAIN_DB, 12.0).unwrap();
+
+        // 10 kHz (above shelf) should be boosted.
+        let high = sine_wave(10000.0, sr, 4096);
+        let high_ratio = energy_ratio(&mut filter, &high);
+        filter.reset();
+
+        // 100 Hz (below shelf) should be ~unity.
+        let low = sine_wave(100.0, sr, 4096);
+        let low_ratio = energy_ratio(&mut filter, &low);
+
+        assert!(
+            high_ratio > 4.0,
+            "HighShelf +12dB: treble should be boosted ({high_ratio})"
+        );
+        assert!(
+            low_ratio < high_ratio * 0.5,
+            "HighShelf: bass ({low_ratio}) should be boosted less than treble ({high_ratio})"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases and stability
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn all_filter_types_handle_nan_input() {
+        let bad_input = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5, -0.5];
+
+        for ft in [
+            FilterType::LowPass,
+            FilterType::HighPass,
+            FilterType::BandPass,
+            FilterType::Notch,
+            FilterType::Peak,
+            FilterType::LowShelf,
+            FilterType::HighShelf,
+        ] {
+            let mut filter = BiquadFilter::new(ft, 44100.0);
+            let mut output = [0.0_f32; 5];
+            filter.process(&bad_input, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(s.is_finite(), "{:?}: output[{i}] = {s} is not finite", ft);
+            }
+        }
+    }
+
+    #[test]
+    fn all_filter_types_stable_with_noise() {
+        let noise = white_noise(8192);
+
+        for ft in [
+            FilterType::LowPass,
+            FilterType::HighPass,
+            FilterType::BandPass,
+            FilterType::Notch,
+            FilterType::Peak,
+            FilterType::LowShelf,
+            FilterType::HighShelf,
+        ] {
+            let mut filter = BiquadFilter::new(ft, 44100.0);
+            let mut output = vec![0.0_f32; 8192];
+            filter.process(&noise, &mut output);
+
+            // No sample should explode (stability check).
+            for (i, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite() && s.abs() < 100.0,
+                    "{ft:?}: output[{i}] = {s} is unstable",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frequency_at_nyquist_boundary() {
+        let sr = 44100.0;
+        let mut filter = BiquadFilter::new(FilterType::LowPass, sr);
+
+        // Set frequency to Nyquist (22050) — should be clamped below.
+        filter
+            .set_param(BiquadFilter::PARAM_FREQUENCY, 22050.0)
+            .unwrap();
+
+        let input = white_noise(1024);
+        let mut output = vec![0.0_f32; 1024];
+        filter.process(&input, &mut output);
+
+        // Should not produce NaN/Inf even at Nyquist boundary.
+        for &s in &output {
+            assert!(s.is_finite());
+        }
+    }
+
+    #[test]
+    fn q_at_extremes() {
+        let sr = 44100.0;
+
+        // Q at minimum (0.1) — very broad filter.
+        let mut filter = BiquadFilter::new(FilterType::BandPass, sr);
+        filter.set_param(BiquadFilter::PARAM_Q, 0.1).unwrap();
+        let noise = white_noise(2048);
+        let mut output = vec![0.0_f32; 2048];
+        filter.process(&noise, &mut output);
+        for &s in &output {
+            assert!(s.is_finite(), "Q=0.1: output is not finite");
+        }
+
+        // Q at maximum (30.0) — very narrow filter.
+        filter.reset();
+        filter.set_param(BiquadFilter::PARAM_Q, 30.0).unwrap();
+        filter.process(&noise, &mut output);
+        for &s in &output {
+            assert!(s.is_finite(), "Q=30.0: output is not finite");
+        }
+    }
+
+    #[test]
+    fn denormal_flushing_after_silence() {
+        let mut filter = BiquadFilter::new(FilterType::LowPass, 44100.0);
+
+        // Process a loud signal to set state.
+        let loud = [1.0_f32; 64];
+        let mut output = [0.0_f32; 64];
+        filter.process(&loud, &mut output);
+
+        // Process silence — state should converge to zero (denormals flushed).
+        for _ in 0..100 {
+            let silence = [0.0_f32; 64];
+            filter.process(&silence, &mut output);
+        }
+
+        // After many blocks of silence, state should be flushed.
+        // The denormal threshold is 1e-30.
+        assert!(
+            filter.z1.abs() < 1e-20,
+            "z1 should be flushed: {}",
+            filter.z1
+        );
+        assert!(
+            filter.z2.abs() < 1e-20,
+            "z2 should be flushed: {}",
+            filter.z2
+        );
+    }
+
+    #[test]
+    fn zero_gain_peak_is_unity() {
+        let sr = 44100.0;
+        let mut filter = BiquadFilter::new(FilterType::Peak, sr);
+        filter.set_param(BiquadFilter::PARAM_GAIN_DB, 0.0).unwrap();
+
+        let input = sine_wave(1000.0, sr, 4096);
+        let ratio = energy_ratio(&mut filter, &input);
+
+        // 0 dB gain should be ~unity (ratio ≈ 1.0).
+        assert!(
+            (ratio - 1.0).abs() < 0.05,
+            "Peak at 0dB should be unity: ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn low_sample_rate_stability() {
+        // 8 kHz: Nyquist is 4 kHz, default frequency 1000 Hz is valid.
+        let mut filter = BiquadFilter::new(FilterType::LowPass, 8000.0);
+        let noise = white_noise(1024);
+        let mut output = vec![0.0_f32; 1024];
+        filter.process(&noise, &mut output);
+
+        for &s in &output {
+            assert!(s.is_finite(), "8 kHz LP output is not finite");
+        }
+    }
+
+    #[test]
+    fn very_low_sample_rate_clamps_frequency() {
+        // At sample rate 100 Hz, Nyquist is 50 Hz, which is below FREQ_MIN (20 Hz).
+        // Frequency gets clamped to (Nyquist-1).max(FREQ_MIN) = max(49, 20) = 49 Hz.
+        let mut filter = BiquadFilter::new(FilterType::LowPass, 100.0);
+        let input = [0.5_f32; 64];
+        let mut output = [0.0_f32; 64];
+        filter.process(&input, &mut output);
+
+        for &s in &output {
+            assert!(s.is_finite());
+        }
+    }
+
+    #[test]
+    fn all_filter_types_name_not_empty() {
+        for ft in [
+            FilterType::LowPass,
+            FilterType::HighPass,
+            FilterType::BandPass,
+            FilterType::Notch,
+            FilterType::Peak,
+            FilterType::LowShelf,
+            FilterType::HighShelf,
+        ] {
+            let filter = BiquadFilter::new(ft, 44100.0);
+            assert!(!filter.name().is_empty(), "{ft:?} has empty name");
+        }
+    }
+
+    #[test]
+    fn param_value_returns_correct_values() {
+        let mut filter = BiquadFilter::new(FilterType::Peak, 44100.0);
+        filter
+            .set_param(BiquadFilter::PARAM_FREQUENCY, 5000.0)
+            .unwrap();
+        filter.set_param(BiquadFilter::PARAM_Q, 2.5).unwrap();
+        filter.set_param(BiquadFilter::PARAM_GAIN_DB, -6.0).unwrap();
+
+        assert!((filter.param_value(0).unwrap() - 5000.0).abs() < f32::EPSILON);
+        assert!((filter.param_value(1).unwrap() - 2.5).abs() < f32::EPSILON);
+        assert!((filter.param_value(2).unwrap() - (-6.0)).abs() < f32::EPSILON);
+        assert!(filter.param_value(3).is_none());
+    }
+
+    #[test]
+    fn set_param_invalid_index_returns_error() {
+        let mut filter = BiquadFilter::new(FilterType::LowPass, 44100.0);
+        assert!(filter.set_param(99, 0.0).is_err());
+    }
 }

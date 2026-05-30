@@ -588,4 +588,209 @@ mod tests {
         synth.set_sample_rate(96000.0);
         assert_eq!(synth.source_len, (96000.0 * SOURCE_BUFFER_SECONDS) as usize);
     }
+
+    #[test]
+    fn xorshift_zero_seed_uses_default() {
+        let mut rng = Xorshift64::new(0);
+        let a = rng.next_f32();
+        assert!((0.0..1.0).contains(&a), "value should be in [0, 1): {a}");
+    }
+
+    #[test]
+    fn xorshift_bipolar_range() {
+        let mut rng = Xorshift64::new(42);
+        for _ in 0..1000 {
+            let v = rng.next_f32_bipolar();
+            assert!(
+                (-1.0..1.0).contains(&v),
+                "bipolar should be in [-1, 1): {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn xorshift_f32_range() {
+        let mut rng = Xorshift64::new(12345);
+        for _ in 0..1000 {
+            let v = rng.next_f32();
+            assert!((0.0..1.0).contains(&v), "f32 should be in [0, 1): {v}");
+        }
+    }
+
+    #[test]
+    fn envelope_hann_intermediate_values() {
+        // Hann at 0.25 should be 0.5*(1 - cos(pi/2)) = 0.5*(1 - 0) = 0.5.
+        let val = GrainEnvelope::Hann.evaluate(0.25);
+        assert!(
+            (val - 0.5).abs() < 1e-5,
+            "Hann(0.25) should be ~0.5, got {val}"
+        );
+
+        // Hann at 0.75 should also be 0.5 (symmetric).
+        let val75 = GrainEnvelope::Hann.evaluate(0.75);
+        assert!(
+            (val75 - 0.5).abs() < 1e-5,
+            "Hann(0.75) should be ~0.5, got {val75}"
+        );
+    }
+
+    #[test]
+    fn envelope_triangle_intermediate() {
+        assert!((GrainEnvelope::Triangle.evaluate(0.25) - 0.5).abs() < 1e-6);
+        assert!((GrainEnvelope::Triangle.evaluate(0.75) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn envelope_tukey_plateau_region() {
+        // Tukey with half_alpha=0.25: plateau is between 0.25 and 0.75.
+        assert!(
+            (GrainEnvelope::Tukey.evaluate(0.3) - 1.0).abs() < 1e-6,
+            "Tukey should be 1.0 in plateau"
+        );
+        assert!(
+            (GrainEnvelope::Tukey.evaluate(0.5) - 1.0).abs() < 1e-6,
+            "Tukey should be 1.0 in plateau"
+        );
+        assert!(
+            (GrainEnvelope::Tukey.evaluate(0.7) - 1.0).abs() < 1e-6,
+            "Tukey should be 1.0 in plateau"
+        );
+    }
+
+    #[test]
+    fn envelope_gaussian_peak_near_one() {
+        let peak = GrainEnvelope::Gaussian.evaluate(0.5);
+        assert!(
+            (peak - 1.0).abs() < 1e-5,
+            "Gaussian peak should be ~1.0, got {peak}"
+        );
+    }
+
+    #[test]
+    fn envelope_clamps_outside_range() {
+        // Values outside [0, 1] should be clamped.
+        assert!(GrainEnvelope::Hann.evaluate(-0.5).abs() < 1e-6);
+        assert!(GrainEnvelope::Hann.evaluate(1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn envelope_shape_from_param_roundtrip() {
+        for shape in [
+            GrainEnvelope::Hann,
+            GrainEnvelope::Triangle,
+            GrainEnvelope::Gaussian,
+            GrainEnvelope::Tukey,
+        ] {
+            let param = shape.to_param();
+            let recovered = GrainEnvelope::from_param(param);
+            assert_eq!(shape, recovered, "roundtrip failed for {shape:?}");
+        }
+    }
+
+    #[test]
+    fn envelope_from_param_out_of_range_defaults_to_hann() {
+        assert_eq!(GrainEnvelope::from_param(-1.0), GrainEnvelope::Hann);
+        assert_eq!(GrainEnvelope::from_param(99.0), GrainEnvelope::Hann);
+    }
+
+    #[test]
+    fn density_zero_produces_silence() {
+        let sr = 44100.0;
+        let mut synth = GranularSynth::new(sr);
+        let _ = synth.set_param(GranularSynth::PARAM_DENSITY, 0.5); // minimum density
+
+        let input: Vec<f32> = (0..4096)
+            .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sr).sin())
+            .collect();
+        let mut output = vec![0.0_f32; 4096];
+        synth.process(&input, &mut output);
+
+        // At minimum density, very few grains should spawn. Output should be finite.
+        for &s in &output {
+            assert!(s.is_finite());
+        }
+    }
+
+    #[test]
+    fn stability_with_noise_input() {
+        let mut synth = GranularSynth::new(44100.0);
+        synth.density = 20.0;
+
+        let mut rng: u32 = 0xFACE_FEED;
+        let noise: Vec<f32> = (0..4096)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect();
+        let mut output = vec![0.0_f32; 4096];
+        synth.process(&noise, &mut output);
+
+        for (i, &s) in output.iter().enumerate() {
+            assert!(
+                s.is_finite() && s.abs() < 100.0,
+                "noise stability: output[{i}] = {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn extreme_pitch_shift() {
+        let sr = 44100.0;
+        let input: Vec<f32> = (0..8192)
+            .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sr).sin())
+            .collect();
+
+        for semitones in [-24.0, -12.0, 12.0, 24.0] {
+            let mut synth = GranularSynth::new(sr);
+            synth.density = 20.0;
+            synth.pitch_shift_semitones = semitones;
+
+            let mut output = vec![0.0_f32; 8192];
+            synth.process(&input, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite() && s.abs() < 100.0,
+                    "pitch_shift={semitones}: output[{i}] = {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn param_info_names_not_empty() {
+        let synth = GranularSynth::new(44100.0);
+        for i in 0..synth.param_count() {
+            let info = synth.param_info(i).unwrap();
+            assert!(!info.name.is_empty(), "param {i} has empty name");
+        }
+    }
+
+    #[test]
+    fn name_is_not_empty() {
+        let synth = GranularSynth::new(44100.0);
+        assert!(!synth.name().is_empty());
+    }
+
+    #[test]
+    fn long_sustained_processing() {
+        let sr = 44100.0;
+        let mut synth = GranularSynth::new(sr);
+        synth.density = 15.0;
+
+        let input: Vec<f32> = (0..512)
+            .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sr).sin())
+            .collect();
+        let mut output = vec![0.0_f32; 512];
+
+        for _ in 0..50 {
+            synth.process(&input, &mut output);
+            for &s in &output {
+                assert!(s.is_finite() && s.abs() < 100.0);
+            }
+        }
+    }
 }

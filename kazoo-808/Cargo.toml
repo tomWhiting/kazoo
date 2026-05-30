@@ -1,0 +1,17 @@
+[package]
+name = "kazoo-808"
+version = "0.1.0"
+edition = "2024"
+description = "TR-808 drum machine — all-synthesis, no samples"
+
+[lints]
+workspace = true
+
+[dependencies]
+kazoo-core = { version = "0.1.0", path = "../kazoo-core" }
+cpal = "0.17.1"
+crossbeam-channel = "0.5.15"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+ratatui = "0.30.0"
+color-eyre = "0.6.5"
+rand = "0.9"

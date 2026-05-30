@@ -36,7 +36,7 @@ impl Default for StreamConfig {
     fn default() -> Self {
         Self {
             sample_rate: None,
-            buffer_size: None,
+            buffer_size: Some(DEFAULT_BUFFER_SIZE),
             input_device: None,
             output_device: None,
             input_channels: 1,
@@ -235,16 +235,57 @@ pub fn build_streams(
     let output_device = resolve_output_device(&host, config.output_device.as_deref())?;
 
     // -- determine sample rate --------------------------------------------
-    let sample_rate = config.sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE);
+    // Use the output device's native rate when no explicit rate is requested.
+    // This avoids Core Audio inserting an internal resampler (which adds
+    // 11-23 ms of latency) when the device runs at e.g. 48000 Hz but we
+    // request 44100 Hz.
+    let native_rate = output_device
+        .default_output_config()
+        .map(|c| c.sample_rate())
+        .unwrap_or(DEFAULT_SAMPLE_RATE);
+    let sample_rate = config.sample_rate.unwrap_or(native_rate);
 
     // -- determine buffer size --------------------------------------------
     let buffer_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
 
     // -- build cpal StreamConfig ------------------------------------------
-    let cpal_buffer = cpal::BufferSize::Fixed(
-        u32::try_from(buffer_size)
-            .map_err(|_| Error::Config("buffer size too large for u32".into()))?,
-    );
+    // When a buffer size is set (the default), prefer Fixed mode for low
+    // latency. Bluetooth audio devices cannot honour Fixed sizes, so we
+    // probe the output device first and fall back to Default if needed.
+    let cpal_buffer = if config.buffer_size.is_some() {
+        let fixed = cpal::BufferSize::Fixed(
+            u32::try_from(buffer_size)
+                .map_err(|_| Error::Config("buffer size too large for u32".into()))?,
+        );
+
+        // Probe whether the output device accepts a Fixed buffer size by
+        // building a no-op stream. Bluetooth HALs typically reject Fixed
+        // sizes with a BuildStreamError. The probe stream is dropped
+        // immediately, releasing the device for the real stream.
+        let probe_cfg = cpal::StreamConfig {
+            channels: config.output_channels,
+            sample_rate,
+            buffer_size: fixed,
+        };
+        let probe = output_device.build_output_stream(
+            &probe_cfg,
+            |_: &mut [f32], _: &cpal::OutputCallbackInfo| {},
+            |_| {},
+            None,
+        );
+        match probe {
+            Ok(_) => {
+                // Fixed works. Drop the probe stream and use Fixed for real.
+                fixed
+            }
+            Err(_) => {
+                // Fixed rejected (likely Bluetooth). Fall back to Default.
+                cpal::BufferSize::Default
+            }
+        }
+    } else {
+        cpal::BufferSize::Default
+    };
 
     let input_stream_cfg = cpal::StreamConfig {
         channels: config.input_channels,
@@ -357,7 +398,7 @@ mod tests {
     fn stream_config_default_values() {
         let cfg = StreamConfig::default();
         assert!(cfg.sample_rate.is_none());
-        assert!(cfg.buffer_size.is_none());
+        assert_eq!(cfg.buffer_size, Some(crate::DEFAULT_BUFFER_SIZE));
         assert!(cfg.input_device.is_none());
         assert!(cfg.output_device.is_none());
         assert_eq!(cfg.input_channels, 1);

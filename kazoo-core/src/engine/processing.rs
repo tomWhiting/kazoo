@@ -4,15 +4,17 @@
 //! every buffer cycle. It drains commands, reads microphone input from the
 //! ring buffer, runs the mixer (synths + effects), applies the soft limiter,
 //! writes directly to the output buffer, and pushes display snapshots for
-//! the UI. All state is owned by the output callback closure.
+//! the UI. All state is owned by the output callback closure, keeping the
+//! real-time path explicit and easy to audit.
 
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
-use ringbuf::traits::{Consumer, Producer};
+use ringbuf::traits::{Consumer, Observer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
 use crate::analysis::{EnvelopeFollower, PitchEstimate};
+use crate::ipc::IpcInstrumentConsumer;
 use crate::mixer::Mixer;
 use crate::mixer::TrackId;
 use crate::mixer::clip::{AudioClip, ClipData, ClipId};
@@ -22,7 +24,9 @@ use crate::transport::{TransportClock, TransportCommand};
 use crate::{Db, sanitize_buffer, soft_limit_buffer};
 
 use super::command::EngineCommand;
-use super::display::{ClipSnapshot, DisplayState, TimelineSnapshot, TrackClipSnapshot};
+use super::display::{
+    ClipSnapshot, DisplayState, IpcInstrumentSnapshot, TimelineSnapshot, TrackClipSnapshot,
+};
 
 /// Create a synthesis processor for the given mode and sample rate.
 ///
@@ -101,6 +105,16 @@ pub(super) struct ProcessingState {
     /// Set to `true` when a Shutdown command is received or the command
     /// channel disconnects. Once set, `process_block` fills silence.
     shutdown: bool,
+    /// Connected IPC instrument consumers. Each receives audio from an
+    /// external instrument process via a lock-free ring buffer. Accepted
+    /// from the `ipc_instrument_rx` channel at the start of each block.
+    ipc_instruments: Vec<IpcInstrumentConsumer>,
+    /// Engine start time (monotonic). Used for IPC transport timestamps
+    /// instead of `SystemTime::now()` to avoid non-monotonic syscalls in
+    /// the audio callback.
+    engine_start: Instant,
+    /// Last MIDI note that was pressed (for pitch bend calculation).
+    midi_last_note: Option<u8>,
 }
 
 impl ProcessingState {
@@ -137,6 +151,9 @@ impl ProcessingState {
             clips_dirty: false,
             metronome: Metronome::new(sample_rate),
             shutdown: false,
+            ipc_instruments: Vec::with_capacity(crate::ipc::MAX_INSTRUMENTS),
+            engine_start: Instant::now(),
+            midi_last_note: None,
         }
     }
 }
@@ -152,6 +169,12 @@ pub(super) struct ProcessingIO {
     pub(super) formant_cons: HeapCons<Option<crate::analysis::FormantData>>,
     pub(super) command_rx: Receiver<EngineCommand>,
     pub(super) disk_cmd_tx: Sender<super::DiskCommand>,
+    /// Receives newly connected IPC instrument consumers from the IPC server
+    /// thread. Drained at the start of each audio block.
+    pub(super) ipc_instrument_rx: crossbeam_channel::Receiver<IpcInstrumentConsumer>,
+    /// Pushes transport state to the IPC server thread for forwarding to
+    /// connected instruments.
+    pub(super) ipc_transport_prod: HeapProd<crate::ipc::IpcTransportNotify>,
 }
 
 /// Process one audio block, writing directly to the cpal output buffer.
@@ -166,7 +189,7 @@ pub(super) struct ProcessingIO {
 /// - `output_buffer` is interleaved stereo (`[L, R, L, R, ...]`).
 /// - This function MUST fill the entire `output_buffer` every time, even
 ///   if no mic data is available or after shutdown (fills silence).
-/// - No allocations, no locks, no panics.
+/// - No allocations, no locks, and no panics.
 pub(super) fn process_block(
     state: &mut ProcessingState,
     io: &mut ProcessingIO,
@@ -203,6 +226,14 @@ pub(super) fn process_block(
     let input_level_db = compute_input_level(state, num_read);
     let position_before_advance = state.transport.position_samples();
     let master_slice_len = run_mixer(state, num_samples, position_before_advance);
+
+    // Accept newly connected IPC instruments and mix their audio into
+    // the master bus. This happens after run_mixer (so local tracks are
+    // already summed) and before the metronome + limiter stage.
+    accept_ipc_instruments(io, state);
+    mix_ipc_instruments(state, master_slice_len);
+    push_ipc_transport(io, state);
+
     feed_disk(io, state, master_slice_len);
     mix_metronome_and_limit(
         state,
@@ -266,11 +297,27 @@ fn drain_commands(io: &ProcessingIO, state: &mut ProcessingState) {
 
 /// Read mic samples from the ring buffer into the state's mic block.
 ///
+/// Always reads the **newest** samples available, discarding any stale
+/// data that has accumulated in the ring buffer. This prevents latency
+/// from growing when the output callback runs slightly behind the input
+/// callback — we always process the most recent audio rather than a
+/// backlog of old samples.
+///
 /// Reads at most `max_read` samples to match the output buffer size. Any
 /// remaining slots up to `max_read` are zero-padded (silence). Returns
 /// the number of samples actually read from the ring buffer.
 fn read_mic_input(io: &mut ProcessingIO, state: &mut ProcessingState, max_read: usize) -> usize {
     let limit = max_read.min(state.mic_block.len());
+    let available = io.mic_cons.occupied_len();
+
+    // If more than one block has accumulated, skip stale samples so we
+    // always process the newest audio. This is the key latency reduction:
+    // without this, accumulated samples add proportional latency.
+    if available > limit {
+        let excess = available - limit;
+        io.mic_cons.skip(excess);
+    }
+
     let num_read = io.mic_cons.pop_slice(&mut state.mic_block[..limit]);
     for sample in &mut state.mic_block[num_read..limit] {
         *sample = 0.0;
@@ -532,6 +579,16 @@ fn push_display_state(
     scratch.formants.clone_from(&state.latest_formants);
     scratch.cpu_load = cpu_load;
 
+    // Snapshot IPC instrument connection status. Reuse Vec capacity.
+    scratch.ipc_instruments.clear();
+    for inst in &state.ipc_instruments {
+        scratch.ipc_instruments.push(IpcInstrumentSnapshot {
+            name: inst.name.clone(),
+            connected: inst.connected.load(std::sync::atomic::Ordering::Relaxed),
+            strip_index: inst.strip_index,
+        });
+    }
+
     let _ = io.display_prod.try_push(scratch.clone());
 }
 
@@ -639,7 +696,8 @@ fn apply_command(
     disk_cmd_tx: &Sender<super::DiskCommand>,
 ) {
     match cmd {
-        EngineCommand::Shutdown => {}
+        // Shutdown is handled in drain_commands; MidiCC mapping is Phase 2.
+        EngineCommand::Shutdown | EngineCommand::MidiCC { .. } => {}
         EngineCommand::Transport(c) => apply_transport_command(state, c),
         EngineCommand::AddTrack {
             name,
@@ -779,6 +837,48 @@ fn apply_command(
         | EngineCommand::SetClipMute { .. }
         | EngineCommand::DuplicateClip { .. }) => {
             apply_clip_command(cmd, state);
+        }
+
+        // -- MIDI input --------------------------------------------------------
+        EngineCommand::MidiNoteOn {
+            note,
+            velocity,
+            channel: _,
+        } => {
+            let freq = crate::midi_note_to_frequency(note);
+            let vel_f32 = f32::from(velocity) / 127.0;
+            // Route to all armed tracks — MIDI drives synth layers just like
+            // the pitch detector does, but with explicit note events.
+            for track in state.mixer.tracks_mut() {
+                if track.is_armed() {
+                    for layer in track.layers_mut() {
+                        layer.synth_mut().set_pitch(freq);
+                        let _ = layer.synth_mut().set_param(0, vel_f32);
+                    }
+                }
+            }
+            state.midi_last_note = Some(note);
+        }
+        EngineCommand::MidiNoteOff {
+            note: _,
+            channel: _,
+        } => {
+            state.midi_last_note = None;
+        }
+        EngineCommand::MidiPitchBend { value, channel: _ } => {
+            // Pitch bend: 8192 = center, range is +/- 2 semitones.
+            let bend_semitones = (f32::from(value) - 8192.0) / 8192.0 * 2.0;
+            if let Some(base_note) = state.midi_last_note {
+                let base_freq = crate::midi_note_to_frequency(base_note);
+                let bent_freq = base_freq * (bend_semitones / 12.0).exp2();
+                for track in state.mixer.tracks_mut() {
+                    if track.is_armed() {
+                        for layer in track.layers_mut() {
+                            layer.synth_mut().set_pitch(bent_freq);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1212,6 +1312,136 @@ fn apply_duplicate_clip(
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// IPC instrument mixing
+// ---------------------------------------------------------------------------
+
+/// Accept newly connected IPC instruments from the server thread.
+///
+/// Drains the instrument channel and appends consumers to the processing
+/// state's instrument list. This is the only place `ipc_instruments` grows —
+/// bounded by `MAX_INSTRUMENTS` and pre-allocated with that capacity.
+fn accept_ipc_instruments(io: &ProcessingIO, state: &mut ProcessingState) {
+    while let Ok(consumer) = io.ipc_instrument_rx.try_recv() {
+        if state.ipc_instruments.len() < crate::ipc::MAX_INSTRUMENTS {
+            state.ipc_instruments.push(consumer);
+        }
+    }
+
+    // Prune disconnected instruments.
+    state
+        .ipc_instruments
+        .retain(|inst| inst.connected.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+/// Mix IPC instrument audio into the master bus.
+///
+/// For each connected instrument, reads audio from its ring buffer into
+/// `last_block`. If the ring buffer has fewer samples than needed, the
+/// previous block is held (hold-last-value). The audio is then summed
+/// into the master buffer as interleaved stereo.
+///
+/// Zero allocations. All buffers are pre-allocated.
+fn mix_ipc_instruments(state: &mut ProcessingState, master_slice_len: usize) {
+    let stereo_frames = master_slice_len / 2;
+
+    for inst in &mut state.ipc_instruments {
+        if !inst.connected.load(std::sync::atomic::Ordering::Relaxed) {
+            continue;
+        }
+
+        let ch = usize::from(inst.channel_count.max(1));
+        let needed = stereo_frames * ch;
+        let block_len = inst.last_block.len();
+
+        // Read audio from the ring buffer. If not enough, keep last_block
+        // unchanged (hold-last-value).
+        if needed <= block_len {
+            let read = inst.audio_cons.pop_slice(&mut inst.last_block[..needed]);
+            if read < needed {
+                // Not enough data — zero the unread portion so we don't
+                // play stale data from a partial fill.
+                if read == 0 {
+                    // Hold last value: leave last_block as-is.
+                } else {
+                    // Partial read: zero the rest.
+                    for s in &mut inst.last_block[read..needed] {
+                        *s = 0.0;
+                    }
+                }
+            }
+        }
+
+        // Sum into master buffer. The master buffer is interleaved stereo.
+        let master = state.mixer.master_buffer_mut();
+        if ch == 2 {
+            // Stereo instrument: direct interleaved sum.
+            let copy_len = needed.min(master_slice_len).min(block_len);
+            for (m, &s) in master[..copy_len]
+                .iter_mut()
+                .zip(&inst.last_block[..copy_len])
+            {
+                let sanitized = if s.is_finite() { s } else { 0.0 };
+                *m += sanitized;
+            }
+        } else {
+            // Mono instrument: duplicate to L+R.
+            let frames = stereo_frames.min(block_len);
+            for (i, &s) in inst.last_block[..frames].iter().enumerate() {
+                let sanitized = if s.is_finite() { s } else { 0.0 };
+                let idx = i * 2;
+                if idx + 1 < master.len() {
+                    master[idx] += sanitized;
+                    master[idx + 1] += sanitized;
+                }
+            }
+        }
+    }
+}
+
+/// Push the current transport state to the IPC server thread.
+///
+/// The server thread picks these up and forwards them as `TransportSyncMsg`
+/// to all connected instruments. Only pushes when the ring buffer has space —
+/// a dropped notification is acceptable since the server will get the next one.
+fn push_ipc_transport(io: &mut ProcessingIO, state: &ProcessingState) {
+    use crate::ipc::types::{
+        TRANSPORT_PAUSED, TRANSPORT_PLAYING, TRANSPORT_RECORDING, TRANSPORT_STOPPED,
+    };
+    use crate::transport::TransportState;
+
+    // No connected instruments — skip the work.
+    if state.ipc_instruments.is_empty() {
+        return;
+    }
+
+    // Map transport state to IPC protocol constant. Must include Paused
+    // so instruments can distinguish pause from stop (stop resets position,
+    // pause preserves it).
+    let transport_state = match state.transport.state() {
+        TransportState::Recording => TRANSPORT_RECORDING,
+        TransportState::Playing => TRANSPORT_PLAYING,
+        TransportState::Paused => TRANSPORT_PAUSED,
+        TransportState::Stopped => TRANSPORT_STOPPED,
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let bpm = state.transport.bpm() as f32;
+
+    // Use monotonic elapsed time from engine start for IPC timestamps.
+    // Avoids SystemTime::now() syscall in the real-time audio callback.
+    let timestamp_nanos = state.engine_start.elapsed().as_nanos() as u64;
+
+    let notify = crate::ipc::IpcTransportNotify {
+        state: transport_state,
+        bpm,
+        position_samples: state.transport.position_samples(),
+        timestamp_nanos,
+    };
+
+    let _ = io.ipc_transport_prod.try_push(notify);
 }
 
 #[cfg(test)]

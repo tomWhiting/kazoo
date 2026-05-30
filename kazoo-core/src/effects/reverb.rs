@@ -375,4 +375,211 @@ mod tests {
         let reverb = Reverb::new(44100.0);
         assert_eq!(reverb.param_count(), 3);
     }
+
+    #[test]
+    fn reverb_fully_dry_passes_input() {
+        let mut reverb = Reverb::new(44100.0);
+        reverb.set_param(Reverb::PARAM_MIX, 0.0).unwrap();
+
+        let input = [0.5, -0.3, 0.8, -0.1, 0.0];
+        let mut output = [0.0_f32; 5];
+        reverb.process(&input, &mut output);
+
+        // mix=0 means output = dry * 1.0 + wet * 0.0 = input.
+        for (i, (&inp, &out)) in input.iter().zip(output.iter()).enumerate() {
+            assert!(
+                (inp - out).abs() < 1e-6,
+                "dry pass: [{i}] expected {inp}, got {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn reverb_room_size_extremes() {
+        let sr = 44100.0;
+        let input: Vec<f32> = {
+            let mut v = vec![0.0_f32; 4096];
+            v[0] = 1.0;
+            v
+        };
+
+        for room_size in [0.0, 1.0] {
+            let mut reverb = Reverb::new(sr);
+            reverb
+                .set_param(Reverb::PARAM_ROOM_SIZE, room_size)
+                .unwrap();
+            reverb.set_param(Reverb::PARAM_MIX, 1.0).unwrap();
+
+            let mut output = vec![0.0_f32; 4096];
+            reverb.process(&input, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite() && s.abs() < 100.0,
+                    "room_size={room_size}: output[{i}] = {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reverb_damping_extremes() {
+        let sr = 44100.0;
+        let input: Vec<f32> = {
+            let mut v = vec![0.0_f32; 4096];
+            v[0] = 1.0;
+            v
+        };
+
+        for damping in [0.0, 1.0] {
+            let mut reverb = Reverb::new(sr);
+            reverb.set_param(Reverb::PARAM_DAMPING, damping).unwrap();
+            reverb.set_param(Reverb::PARAM_MIX, 1.0).unwrap();
+
+            let mut output = vec![0.0_f32; 4096];
+            reverb.process(&input, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite() && s.abs() < 100.0,
+                    "damping={damping}: output[{i}] = {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reverb_stability_with_noise() {
+        let mut reverb = Reverb::new(44100.0);
+        reverb.set_param(Reverb::PARAM_ROOM_SIZE, 0.9).unwrap();
+        reverb.set_param(Reverb::PARAM_MIX, 0.5).unwrap();
+
+        let mut rng: u32 = 0xFACE_FEED;
+        let noise: Vec<f32> = (0..8192)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect();
+        let mut output = vec![0.0_f32; 8192];
+        reverb.process(&noise, &mut output);
+
+        for (i, &s) in output.iter().enumerate() {
+            assert!(
+                s.is_finite() && s.abs() < 100.0,
+                "noise stability: output[{i}] = {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn reverb_sample_rate_change() {
+        let mut reverb = Reverb::new(44100.0);
+        let mut input = vec![0.0_f32; 1024];
+        input[0] = 1.0;
+        let mut output = vec![0.0_f32; 1024];
+        reverb.process(&input, &mut output);
+
+        // Change to 96 kHz — should rebuild comb/allpass buffers.
+        reverb.set_sample_rate(96000.0);
+
+        let silence = vec![0.0_f32; 2048];
+        let mut out2 = vec![0.0_f32; 2048];
+        reverb.set_param(Reverb::PARAM_MIX, 1.0).unwrap();
+        reverb.process(&silence, &mut out2);
+
+        // After SR change (which rebuilds buffers), silence in = silence out.
+        for (i, &s) in out2.iter().enumerate() {
+            assert!(
+                s.abs() < 1e-10,
+                "after SR change, output[{i}] should be ~0, got {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn reverb_low_sample_rate() {
+        // 8 kHz — comb/allpass buffers should scale correctly.
+        let mut reverb = Reverb::new(8000.0);
+        reverb.set_param(Reverb::PARAM_MIX, 0.5).unwrap();
+
+        let mut input = vec![0.0_f32; 2048];
+        input[0] = 1.0;
+        let mut output = vec![0.0_f32; 2048];
+        reverb.process(&input, &mut output);
+
+        for (i, &s) in output.iter().enumerate() {
+            assert!(s.is_finite(), "8 kHz reverb: output[{i}] = {s}");
+        }
+    }
+
+    #[test]
+    fn reverb_all_param_info_names() {
+        let reverb = Reverb::new(44100.0);
+        for i in 0..reverb.param_count() {
+            let info = reverb.param_info(i).unwrap();
+            assert!(!info.name.is_empty(), "param {i} has empty name");
+        }
+    }
+
+    #[test]
+    fn reverb_invalid_param_index() {
+        let mut reverb = Reverb::new(44100.0);
+        assert!(reverb.set_param(99, 0.0).is_err());
+        assert!(reverb.param_value(99).is_none());
+        assert!(reverb.param_info(99).is_none());
+    }
+
+    #[test]
+    fn reverb_param_values_roundtrip() {
+        let mut reverb = Reverb::new(44100.0);
+        reverb.set_param(Reverb::PARAM_ROOM_SIZE, 0.7).unwrap();
+        reverb.set_param(Reverb::PARAM_DAMPING, 0.3).unwrap();
+        reverb.set_param(Reverb::PARAM_MIX, 0.8).unwrap();
+
+        assert!((reverb.param_value(0).unwrap() - 0.7).abs() < f32::EPSILON);
+        assert!((reverb.param_value(1).unwrap() - 0.3).abs() < f32::EPSILON);
+        assert!((reverb.param_value(2).unwrap() - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reverb_name() {
+        let reverb = Reverb::new(44100.0);
+        assert_eq!(reverb.name(), "Reverb");
+    }
+
+    #[test]
+    fn reverb_param_clamping() {
+        let mut reverb = Reverb::new(44100.0);
+
+        // Room size above max (1.0) should clamp.
+        reverb.set_param(Reverb::PARAM_ROOM_SIZE, 5.0).unwrap();
+        assert!((reverb.param_value(Reverb::PARAM_ROOM_SIZE).unwrap() - 1.0).abs() < f32::EPSILON);
+
+        // Mix below min (0.0) should clamp.
+        reverb.set_param(Reverb::PARAM_MIX, -1.0).unwrap();
+        assert!(reverb.param_value(Reverb::PARAM_MIX).unwrap().abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reverb_long_sustained_processing() {
+        let mut reverb = Reverb::new(44100.0);
+        reverb.set_param(Reverb::PARAM_ROOM_SIZE, 1.0).unwrap();
+        reverb.set_param(Reverb::PARAM_MIX, 0.5).unwrap();
+
+        let input: Vec<f32> = (0..256)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 44100.0).sin())
+            .collect();
+        let mut output = vec![0.0_f32; 256];
+
+        // Process 100 blocks at max room size — should stay stable.
+        for _ in 0..100 {
+            reverb.process(&input, &mut output);
+            for &s in &output {
+                assert!(s.is_finite() && s.abs() < 100.0);
+            }
+        }
+    }
 }

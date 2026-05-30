@@ -100,5 +100,50 @@ cargo run -p kazoo-tui --release
 
 Reviews must use the Opus model. There is no such thing as a minor issue. Everything needs to be dealt with. Nothing can be skipped, nothing can be deferred, nothing can be of any standard other than the highest.
 
+When requesting a review, provide: the plan (if any), original task intent, relevant files/folders. The reviewer must explore beyond those files to their satisfaction and give robust, constructive feedback. Every issue must be addressed before shipping.
+
+## Vision: Terminal Core
+
+This is real music software for real musicians. David Hirschfelder, Sam Hirschfelder — this is their calibre. Built in Melbourne where there are more roasteries than people and you can't walk down a street without passing a world-class musician. The tone already sounds good. Glitchy pops and cracks are part of the character. But it has to do what it's asked to do.
+
+### Multi-Crate Instrument Architecture (Future)
+
+Keep the current single TUI as the main workspace for mixing, tracking, and moving through a session. But split instruments into separate crates — each one its own terminal app:
+
+- **`kazoo-808`** — TR-808 drum machine. All-synthesis, no samples. Step sequencer TUI.
+- **`kazoo-cs80`** — Yamaha CS-80 pad synth. 8-voice poly, two layers per voice, per-voice drift. Also the home for generative/modular synthesis (node graph patching).
+- **`kazoo-mini`** — Moog Minimoog bass/lead. Monophonic. 3 VCOs, ladder filter with nonlinear saturation (ZDF implementation), rate-based glide.
+- **`kazoo-arp`** — Jupiter-8 style arpeggiator. Note scheduler that drives any synth. Up/Down/Up-Down/Random/As-Played, latch, swing, octave spanning.
+
+All instruments connect into a central server (Unix domain sockets or shared-memory ring buffers — whichever benchmarks faster). Each gets its own terminal window. The genre is **Terminal Core**.
+
+Full specs: `studio/INSTRUMENTS.md`
+
+Do NOT throw away the current single-app TUI. It stays as the hub.
+
+## Current Task List
+
+These are active requirements. Do not defer, reorder, or skip any.
+
+1. **Mixer redesign** — faders on the right side of the tracking view. Per track: gain slider, L/R pan, level indicator (bouncing meter) on either side of the slider. Master L/R out with VU meters.
+
+2. **Synth: kill the drawer, direct editing** — no duplicate controls. Synths are separate modules you put down and control directly. No drawer that duplicates what's already visible.
+
+3. **Effects: make accessible** — currently unreachable in a sidebar. Must be able to add/remove/tweak without fighting the UI.
+
+4. **Tracking: per-track waveforms** — each track gets its own waveform lane like every DAW. Not one shared waveform.
+
+5. **Timeline: real time scale** — show actual time values (not all 0:00). Support zoom in/out.
+
+6. **Header: add tempo + metronome** — BPM display and metronome toggle in the persistent header bar.
+
+7. **Track names: no "Track" prefix** — don't label tracks as "Track". It's obvious. Just show the name or number.
+
+8. **Header cleanup** — the header layout is broken. Fix it.
+
+9. **Kill the Synth view** — it duplicates controls. Synth settings live inline where you use them.
+
+10. **Latency: native sample rate** — done. Uses device native rate to avoid Core Audio resampler.
+
 @.claude/plans/playful-rolling-prism.md
 @.claude/plans/output-callback-refactor.md

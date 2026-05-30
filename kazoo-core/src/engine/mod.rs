@@ -22,12 +22,15 @@ pub mod command;
 pub mod disk;
 pub mod display;
 pub mod handle;
+pub mod midi;
 pub mod processing;
 
 pub use command::EngineCommand;
 pub use disk::DiskCommand;
-pub use display::{ClipSnapshot, DisplayState, TimelineSnapshot, TrackClipSnapshot};
-pub use handle::EngineHandle;
+pub use display::{
+    ClipSnapshot, DisplayState, IpcInstrumentSnapshot, TimelineSnapshot, TrackClipSnapshot,
+};
+pub use handle::{EngineHandle, IpcHandles};
 pub use processing::create_synth;
 
 use std::sync::Arc;
@@ -91,11 +94,11 @@ impl Default for EngineConfig {
 
 /// Compute capacities for all ring buffers based on buffer size.
 struct RingBufferCapacities {
-    /// Mic input: `buffer_size` * 16.
+    /// Mic input: `buffer_size` * 4.
     mic: usize,
     /// Display state: 4 slots.
     display: usize,
-    /// Analysis input: `buffer_size` * 16.
+    /// Analysis input: `buffer_size` * 4.
     analysis_input: usize,
     /// Analysis results (pitch, spectrum, formant): 32 slots each.
     analysis_results: usize,
@@ -107,9 +110,13 @@ impl RingBufferCapacities {
     fn from_buffer_size(buffer_size: usize) -> Self {
         let bs = buffer_size.max(1);
         Self {
-            mic: bs.saturating_mul(16),
+            // Mic and analysis use ×4: enough headroom for scheduling jitter
+            // while keeping latency low (at 128 samples / 44.1 kHz ≈ 12 ms
+            // maximum backlog). Disk stays at ×32 because writes are bursty
+            // and latency-insensitive.
+            mic: bs.saturating_mul(4),
             display: 4,
-            analysis_input: bs.saturating_mul(16),
+            analysis_input: bs.saturating_mul(4),
             analysis_results: 32,
             disk: bs.saturating_mul(32),
         }
@@ -186,6 +193,19 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     let (command_tx, command_rx) = crossbeam_channel::bounded::<EngineCommand>(256);
     let (disk_cmd_tx, disk_cmd_rx) = crossbeam_channel::bounded::<DiskCommand>(64);
 
+    // IPC instrument channel: server thread -> output callback.
+    // When an instrument connects, the server sends its consumer handle
+    // through this channel. The output callback drains it each block.
+    let (ipc_instrument_tx, ipc_instrument_rx) = crossbeam_channel::bounded::<
+        crate::ipc::IpcInstrumentConsumer,
+    >(crate::ipc::MAX_INSTRUMENTS);
+
+    // IPC transport ring buffer: output callback -> server thread.
+    // The output callback pushes transport state, the server thread
+    // forwards it to connected instruments.
+    let ipc_transport_rb = HeapRb::<crate::ipc::IpcTransportNotify>::new(16);
+    let (ipc_transport_prod, ipc_transport_cons) = ipc_transport_rb.split();
+
     // -----------------------------------------------------------------------
     // 3. Build audio streams
     // -----------------------------------------------------------------------
@@ -220,6 +240,8 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         formant_cons,
         command_rx,
         disk_cmd_tx: io_disk_cmd_tx,
+        ipc_instrument_rx,
+        ipc_transport_prod,
     };
 
     let streams = crate::io::build_streams(
@@ -303,9 +325,18 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         .map_err(|e| crate::Error::Stream(format!("failed to spawn disk I/O thread: {e}")))?;
 
     // -----------------------------------------------------------------------
-    // 6. Build and return the engine handle
+    // 6. Connect MIDI input (auto-discover first available device)
+    // -----------------------------------------------------------------------
+    let midi_handle = midi::connect_first_port(command_tx.clone());
+    if let Some(ref mh) = midi_handle {
+        eprintln!("MIDI connected: {}", mh.port_name());
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. Build and return the engine handle
     // -----------------------------------------------------------------------
     let mut handle = EngineHandle::new(command_tx, display_cons, sample_rate, buffer_size);
+    handle.set_midi_handle(midi_handle);
 
     handle.set_thread_handles(ThreadHandles {
         analysis: analysis_handle,
@@ -313,6 +344,11 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         stream_holder: stream_holder_handle,
         stream_shutdown,
         disk_cmd_tx,
+    });
+
+    handle.set_ipc_handles(handle::IpcHandles {
+        instrument_tx: ipc_instrument_tx,
+        transport_cons: ipc_transport_cons,
     });
 
     Ok(handle)
@@ -351,27 +387,27 @@ mod tests {
 
     #[test]
     fn ring_buffer_capacities_default_buffer_size() {
-        let caps = RingBufferCapacities::from_buffer_size(256);
-        assert_eq!(caps.mic, 256 * 16);
+        let caps = RingBufferCapacities::from_buffer_size(128);
+        assert_eq!(caps.mic, 128 * 4);
         assert_eq!(caps.display, 4);
-        assert_eq!(caps.analysis_input, 256 * 16);
+        assert_eq!(caps.analysis_input, 128 * 4);
         assert_eq!(caps.analysis_results, 32);
-        assert_eq!(caps.disk, 256 * 32);
+        assert_eq!(caps.disk, 128 * 32);
     }
 
     #[test]
     fn ring_buffer_capacities_large_buffer_size() {
         let caps = RingBufferCapacities::from_buffer_size(1024);
-        assert_eq!(caps.mic, 1024 * 16);
-        assert_eq!(caps.analysis_input, 1024 * 16);
+        assert_eq!(caps.mic, 1024 * 4);
+        assert_eq!(caps.analysis_input, 1024 * 4);
         assert_eq!(caps.disk, 1024 * 32);
     }
 
     #[test]
     fn ring_buffer_capacities_zero_buffer_size_uses_one() {
         let caps = RingBufferCapacities::from_buffer_size(0);
-        assert_eq!(caps.mic, 16);
-        assert_eq!(caps.analysis_input, 16);
+        assert_eq!(caps.mic, 4);
+        assert_eq!(caps.analysis_input, 4);
         assert_eq!(caps.disk, 32);
     }
 

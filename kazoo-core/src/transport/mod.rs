@@ -271,6 +271,12 @@ impl TransportClock {
         }
     }
 
+    /// Current transport state.
+    #[must_use]
+    pub const fn state(&self) -> TransportState {
+        self.state
+    }
+
     /// Apply a command to mutate the transport state.
     ///
     /// Invalid state transitions (e.g. `Pause` while `Stopped`) are silently

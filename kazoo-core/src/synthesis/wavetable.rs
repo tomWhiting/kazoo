@@ -634,4 +634,161 @@ mod tests {
             assert!(s.is_finite());
         }
     }
+
+    #[test]
+    fn wavetable_read_sample_boundary_wrap() {
+        let wt = Wavetable {
+            frames: vec![vec![1.0, 2.0, 3.0, 4.0]],
+            frame_size: 4,
+            source_frequency: 440.0,
+            num_frames: 1,
+        };
+
+        // Phase=0.0 should return frame[0] = 1.0.
+        assert!((wt.read_sample(0, 0.0) - 1.0).abs() < f32::EPSILON);
+
+        // Phase just below 1.0 should interpolate between last and first.
+        let near_end = wt.read_sample(0, 0.99);
+        assert!(
+            near_end.is_finite(),
+            "near-end should be finite: {near_end}"
+        );
+    }
+
+    #[test]
+    fn wavetable_multi_frame_crossfade() {
+        let wt = Wavetable {
+            frames: vec![vec![1.0, 1.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 0.0]],
+            frame_size: 4,
+            source_frequency: 440.0,
+            num_frames: 2,
+        };
+
+        // Frame 0 should read ~1.0.
+        assert!((wt.read_sample(0, 0.0) - 1.0).abs() < f32::EPSILON);
+        // Frame 1 should read ~0.0.
+        assert!(wt.read_sample(1, 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn oscillator_load_and_clear() {
+        let sr = 44100.0;
+        let freq = 440.0;
+        let audio = sine_wave(freq, sr, 4096);
+        let extractor = WavetableExtractor::new(2048);
+        let wt = extractor.extract(&audio, freq, sr).expect("should extract");
+
+        let mut osc = WavetableOscillator::new(sr);
+        assert!(!osc.has_wavetable());
+
+        osc.load_wavetable(wt);
+        assert!(osc.has_wavetable());
+
+        osc.clear_wavetable();
+        assert!(!osc.has_wavetable());
+
+        // After clearing, processing should produce silence.
+        let input = vec![0.5_f32; 256];
+        let mut output = vec![0.0_f32; 256];
+        osc.process(&input, &mut output);
+        for &s in &output {
+            assert!(s.abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn extractor_very_short_audio_returns_error() {
+        let extractor = WavetableExtractor::new(2048);
+        // Audio shorter than one expected cycle.
+        let audio = vec![0.5_f32; 10];
+        let result = extractor.extract(&audio, 440.0, 44100.0);
+        assert!(result.is_err(), "very short audio should fail extraction");
+    }
+
+    #[test]
+    fn extractor_invalid_frequency_returns_error() {
+        let extractor = WavetableExtractor::new(2048);
+        let audio = sine_wave(440.0, 44100.0, 4096);
+
+        // Zero frequency.
+        assert!(extractor.extract(&audio, 0.0, 44100.0).is_err());
+
+        // Negative frequency.
+        assert!(extractor.extract(&audio, -100.0, 44100.0).is_err());
+
+        // NaN frequency.
+        assert!(extractor.extract(&audio, f32::NAN, 44100.0).is_err());
+    }
+
+    #[test]
+    fn oscillator_frequency_extremes() {
+        let sr = 44100.0;
+        let audio = sine_wave(440.0, sr, 4096);
+        let extractor = WavetableExtractor::new(2048);
+        let wt = extractor
+            .extract(&audio, 440.0, sr)
+            .expect("should extract");
+
+        for freq in [20.0, 20_000.0] {
+            let mut osc = WavetableOscillator::new(sr);
+            osc.load_wavetable(wt.clone());
+            osc.set_frequency(freq);
+
+            let input = vec![0.5_f32; 1024];
+            let mut output = vec![0.0_f32; 1024];
+            osc.process(&input, &mut output);
+
+            for (i, &s) in output.iter().enumerate() {
+                assert!(s.is_finite(), "freq={freq}: output[{i}] = {s} not finite");
+            }
+        }
+    }
+
+    #[test]
+    fn oscillator_param_info_names_not_empty() {
+        let osc = WavetableOscillator::new(44100.0);
+        for i in 0..osc.param_count() {
+            let info = osc.param_info(i).unwrap();
+            assert!(!info.name.is_empty(), "param {i} has empty name");
+        }
+    }
+
+    #[test]
+    fn oscillator_name_is_not_empty() {
+        let osc = WavetableOscillator::new(44100.0);
+        assert!(!osc.name().is_empty());
+    }
+
+    #[test]
+    fn oscillator_stability_with_noise() {
+        let sr = 44100.0;
+        let audio = sine_wave(440.0, sr, 4096);
+        let extractor = WavetableExtractor::new(2048);
+        let wt = extractor
+            .extract(&audio, 440.0, sr)
+            .expect("should extract");
+
+        let mut osc = WavetableOscillator::new(sr);
+        osc.load_wavetable(wt);
+        osc.set_frequency(440.0);
+
+        let mut rng: u32 = 0xABCD_1234;
+        let noise: Vec<f32> = (0..4096)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect();
+        let mut output = vec![0.0_f32; 4096];
+        osc.process(&noise, &mut output);
+
+        for (i, &s) in output.iter().enumerate() {
+            assert!(
+                s.is_finite() && s.abs() < 100.0,
+                "noise stability: output[{i}] = {s}"
+            );
+        }
+    }
 }

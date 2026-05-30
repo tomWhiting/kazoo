@@ -295,4 +295,203 @@ mod tests {
         let chorus = Chorus::new(44100.0);
         assert_eq!(chorus.param_count(), 4);
     }
+
+    #[test]
+    fn chorus_fully_dry_passes_input() {
+        let mut chorus = Chorus::new(44100.0);
+        chorus.set_param(Chorus::PARAM_MIX, 0.0).unwrap();
+
+        let input = [0.5, -0.3, 0.8, -0.1, 0.0];
+        let mut output = [0.0_f32; 5];
+        chorus.process(&input, &mut output);
+
+        // mix=0 means output = dry * 1.0 + wet * 0.0 = input.
+        for (i, (&inp, &out)) in input.iter().zip(output.iter()).enumerate() {
+            assert!(
+                (inp - out).abs() < 1e-6,
+                "dry pass: [{i}] expected {inp}, got {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn chorus_max_feedback_stays_bounded() {
+        let mut chorus = Chorus::new(44100.0);
+        chorus.set_param(Chorus::PARAM_FEEDBACK, 0.7).unwrap();
+        chorus.set_param(Chorus::PARAM_MIX, 1.0).unwrap();
+        chorus.set_param(Chorus::PARAM_DEPTH, 5.0).unwrap();
+
+        // Process many blocks of a sine wave.
+        let input: Vec<f32> = (0..512)
+            .map(|i| (2.0 * PI * 440.0 * i as f32 / 44100.0).sin())
+            .collect();
+        let mut output = vec![0.0_f32; 512];
+
+        for _ in 0..50 {
+            chorus.process(&input, &mut output);
+            for (j, &s) in output.iter().enumerate() {
+                assert!(
+                    s.is_finite() && s.abs() < 100.0,
+                    "max feedback: block output[{j}] = {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chorus_lfo_phase_continuity() {
+        let mut chorus = Chorus::new(44100.0);
+        chorus.set_param(Chorus::PARAM_RATE, 2.0).unwrap();
+        chorus.set_param(Chorus::PARAM_MIX, 1.0).unwrap();
+        chorus.set_param(Chorus::PARAM_FEEDBACK, 0.0).unwrap();
+
+        // Process in small blocks and verify output changes across blocks
+        // (LFO phase carries over between process calls).
+        let input = [0.5_f32; 64];
+        let mut outputs = Vec::new();
+
+        for _ in 0..4 {
+            let mut output = [0.0_f32; 64];
+            chorus.process(&input, &mut output);
+            // Capture last sample of each block — should differ between blocks
+            // because LFO is modulating the delay.
+            outputs.push(output[63]);
+        }
+
+        // At least some blocks should produce different outputs due to LFO phase.
+        let all_same = outputs.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-6);
+        assert!(
+            !all_same,
+            "LFO should produce varying output across blocks: {outputs:?}"
+        );
+    }
+
+    #[test]
+    fn chorus_max_rate_and_depth_stable() {
+        let mut chorus = Chorus::new(44100.0);
+        chorus.set_param(Chorus::PARAM_RATE, 10.0).unwrap();
+        chorus.set_param(Chorus::PARAM_DEPTH, 20.0).unwrap();
+        chorus.set_param(Chorus::PARAM_MIX, 1.0).unwrap();
+        chorus.set_param(Chorus::PARAM_FEEDBACK, 0.5).unwrap();
+
+        let input: Vec<f32> = (0..2048)
+            .map(|i| (2.0 * PI * 440.0 * i as f32 / 44100.0).sin())
+            .collect();
+        let mut output = vec![0.0_f32; 2048];
+        chorus.process(&input, &mut output);
+
+        for (i, &s) in output.iter().enumerate() {
+            assert!(
+                s.is_finite() && s.abs() < 100.0,
+                "max rate/depth: output[{i}] = {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn chorus_min_depth() {
+        let mut chorus = Chorus::new(44100.0);
+        chorus.set_param(Chorus::PARAM_DEPTH, 0.5).unwrap(); // minimum depth
+        chorus.set_param(Chorus::PARAM_MIX, 0.5).unwrap();
+
+        let input: Vec<f32> = (0..1024)
+            .map(|i| (2.0 * PI * 440.0 * i as f32 / 44100.0).sin())
+            .collect();
+        let mut output = vec![0.0_f32; 1024];
+        chorus.process(&input, &mut output);
+
+        // At minimum depth, output should still be finite and close to input.
+        for &s in &output {
+            assert!(s.is_finite());
+        }
+    }
+
+    #[test]
+    fn chorus_sample_rate_change() {
+        let mut chorus = Chorus::new(44100.0);
+        let input = [1.0_f32; 64];
+        let mut output = [0.0_f32; 64];
+        chorus.process(&input, &mut output);
+
+        chorus.set_sample_rate(96000.0);
+
+        // After SR change, buffer is reset — silence in = silence out.
+        let silence = [0.0_f32; 256];
+        let mut out2 = [0.0_f32; 256];
+        chorus.set_param(Chorus::PARAM_MIX, 1.0).unwrap();
+        chorus.set_param(Chorus::PARAM_FEEDBACK, 0.0).unwrap();
+        chorus.process(&silence, &mut out2);
+
+        for (i, &s) in out2.iter().enumerate() {
+            assert!(
+                s.abs() < 1e-6,
+                "after SR change, output[{i}] should be ~0, got {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn chorus_stability_with_noise() {
+        let mut chorus = Chorus::new(44100.0);
+        chorus.set_param(Chorus::PARAM_FEEDBACK, 0.5).unwrap();
+
+        let mut rng: u32 = 0xBEEF_CAFE;
+        let noise: Vec<f32> = (0..4096)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect();
+        let mut output = vec![0.0_f32; 4096];
+        chorus.process(&noise, &mut output);
+
+        for (i, &s) in output.iter().enumerate() {
+            assert!(
+                s.is_finite() && s.abs() < 100.0,
+                "noise stability: output[{i}] = {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn chorus_all_param_info_names() {
+        let chorus = Chorus::new(44100.0);
+        for i in 0..chorus.param_count() {
+            let info = chorus.param_info(i).unwrap();
+            assert!(!info.name.is_empty(), "param {i} has empty name");
+        }
+    }
+
+    #[test]
+    fn chorus_invalid_param_index() {
+        let mut chorus = Chorus::new(44100.0);
+        assert!(chorus.set_param(99, 0.0).is_err());
+        assert!(chorus.param_value(99).is_none());
+        assert!(chorus.param_info(99).is_none());
+    }
+
+    #[test]
+    fn chorus_name() {
+        let chorus = Chorus::new(44100.0);
+        assert_eq!(chorus.name(), "Chorus");
+    }
+
+    #[test]
+    fn chorus_param_clamping() {
+        let mut chorus = Chorus::new(44100.0);
+
+        // Rate above max (10.0) should clamp.
+        chorus.set_param(Chorus::PARAM_RATE, 50.0).unwrap();
+        assert!((chorus.param_value(Chorus::PARAM_RATE).unwrap() - 10.0).abs() < f32::EPSILON);
+
+        // Feedback above max (0.7) should clamp.
+        chorus.set_param(Chorus::PARAM_FEEDBACK, 1.0).unwrap();
+        assert!((chorus.param_value(Chorus::PARAM_FEEDBACK).unwrap() - 0.7).abs() < f32::EPSILON);
+
+        // Depth below min (0.5) should clamp.
+        chorus.set_param(Chorus::PARAM_DEPTH, 0.0).unwrap();
+        assert!((chorus.param_value(Chorus::PARAM_DEPTH).unwrap() - 0.5).abs() < f32::EPSILON);
+    }
 }

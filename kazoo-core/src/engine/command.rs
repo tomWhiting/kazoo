@@ -184,6 +184,21 @@ pub enum EngineCommand {
         new_position: u64,
     },
 
+    /// MIDI Note On — route to the first armed track's synth layers.
+    ///
+    /// `note` is a MIDI note number (0-127), `velocity` is 0-127.
+    /// `channel` is the MIDI channel (0-15).
+    MidiNoteOn { note: u8, velocity: u8, channel: u8 },
+
+    /// MIDI Note Off — release the given note.
+    MidiNoteOff { note: u8, channel: u8 },
+
+    /// MIDI Control Change — map CC number to synth/effect parameter.
+    MidiCC { cc: u8, value: u8, channel: u8 },
+
+    /// MIDI Pitch Bend — 14-bit pitch bend value (0-16383, center 8192).
+    MidiPitchBend { value: u16, channel: u8 },
+
     /// Shut down the engine gracefully. All threads should terminate.
     Shutdown,
 }
@@ -403,6 +418,32 @@ impl std::fmt::Debug for EngineCommand {
                 .field("track_id", track_id)
                 .field("clip_id", clip_id)
                 .field("new_position", new_position)
+                .finish(),
+            Self::MidiNoteOn {
+                note,
+                velocity,
+                channel,
+            } => f
+                .debug_struct("MidiNoteOn")
+                .field("note", note)
+                .field("velocity", velocity)
+                .field("channel", channel)
+                .finish(),
+            Self::MidiNoteOff { note, channel } => f
+                .debug_struct("MidiNoteOff")
+                .field("note", note)
+                .field("channel", channel)
+                .finish(),
+            Self::MidiCC { cc, value, channel } => f
+                .debug_struct("MidiCC")
+                .field("cc", cc)
+                .field("value", value)
+                .field("channel", channel)
+                .finish(),
+            Self::MidiPitchBend { value, channel } => f
+                .debug_struct("MidiPitchBend")
+                .field("value", value)
+                .field("channel", channel)
                 .finish(),
             Self::Shutdown => write!(f, "Shutdown"),
         }
