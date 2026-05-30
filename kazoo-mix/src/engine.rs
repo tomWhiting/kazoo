@@ -55,6 +55,34 @@ impl Default for ChannelControls {
     }
 }
 
+/// Commands applied to the callback-owned mixer at buffer boundaries.
+#[derive(Debug)]
+pub enum MixerCommand {
+    /// Attach a newly registered audio source to a mixer slot.
+    AttachConsumer {
+        /// Mixer slot to attach.
+        slot: usize,
+        /// Short name shown on the desk.
+        name: String,
+        /// Consumer half of the source audio ring.
+        consumer: AudioBlockConsumer,
+    },
+    /// Detach a mixer slot and return it to an empty strip.
+    DetachConsumer {
+        /// Mixer slot to detach.
+        slot: usize,
+    },
+    /// Update controls for a mixer strip.
+    ConfigureChannel {
+        /// Mixer slot to configure.
+        slot: usize,
+        /// New strip controls.
+        controls: ChannelControls,
+    },
+    /// Update master output gain.
+    SetMasterGain(f32),
+}
+
 /// Mutable mixer engine owned by the audio callback.
 #[derive(Debug)]
 pub struct MixerEngine {
@@ -158,6 +186,35 @@ impl MixerEngine {
 
         channel.controls = controls;
         Ok(())
+    }
+
+    /// Detach a channel slot from its source.
+    pub fn detach_consumer(&mut self, slot: usize) -> Result<(), MixerEngineError> {
+        let Some(channel) = self.channels.get_mut(slot) else {
+            return Err(MixerEngineError::InvalidSlot { slot });
+        };
+
+        channel.detach();
+        Ok(())
+    }
+
+    /// Apply a command on the callback-owned engine.
+    pub fn apply_command(&mut self, command: MixerCommand) -> Result<(), MixerEngineError> {
+        match command {
+            MixerCommand::AttachConsumer {
+                slot,
+                name,
+                consumer,
+            } => self.attach_consumer(slot, name, consumer),
+            MixerCommand::DetachConsumer { slot } => self.detach_consumer(slot),
+            MixerCommand::ConfigureChannel { slot, controls } => {
+                self.configure_channel(slot, controls)
+            }
+            MixerCommand::SetMasterGain(gain) => {
+                self.set_master_gain(gain);
+                Ok(())
+            }
+        }
     }
 
     /// Set final master gain.
@@ -277,6 +334,19 @@ impl ChannelStrip {
         self.buffered_block = None;
         self.buffered_offset_frames = 0;
         self.buffered_samples.resize(samples_per_block, 0.0);
+    }
+
+    fn detach(&mut self) {
+        self.name = "empty".to_string();
+        self.consumer = None;
+        self.controls = ChannelControls::default();
+        self.peak = StereoLevel::ZERO;
+        self.rms = StereoLevel::ZERO;
+        self.underruns = 0;
+        self.sequence_gaps = 0;
+        self.buffered_block = None;
+        self.buffered_offset_frames = 0;
+        self.buffered_samples.clear();
     }
 
     fn snapshot(&self) -> ChannelSnapshot {
@@ -680,5 +750,42 @@ mod tests {
         let left: f32 = output.iter().step_by(2).map(|s| s.abs()).sum();
         let right: f32 = output.iter().skip(1).step_by(2).map(|s| s.abs()).sum();
         assert!(left > right);
+    }
+
+    #[test]
+    fn command_can_attach_configure_and_detach_channel() {
+        let config = AudioRingConfig::new(BufferId(1), 2, 4, 2);
+        let (_producer, consumer) = audio_block_ring(config);
+        let mut engine = MixerEngine::new(1);
+
+        engine
+            .apply_command(MixerCommand::AttachConsumer {
+                slot: 0,
+                name: "cmd".to_string(),
+                consumer,
+            })
+            .unwrap();
+        assert!(engine.channel_snapshots()[0].connected);
+
+        engine
+            .apply_command(MixerCommand::ConfigureChannel {
+                slot: 0,
+                controls: ChannelControls {
+                    gain: 0.5,
+                    muted: true,
+                    ..ChannelControls::default()
+                },
+            })
+            .unwrap();
+        let snapshot = engine.channel_snapshots()[0];
+        assert_eq!(snapshot.gain, 0.5);
+        assert!(snapshot.muted);
+
+        engine
+            .apply_command(MixerCommand::DetachConsumer { slot: 0 })
+            .unwrap();
+        let snapshot = engine.channel_snapshots()[0];
+        assert!(!snapshot.connected);
+        assert_eq!(snapshot.name, short_name("empty"));
     }
 }

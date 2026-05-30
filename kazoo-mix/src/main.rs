@@ -12,14 +12,16 @@ use std::time::{Duration, Instant};
 use color_eyre::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use ringbuf::HeapRb;
+use ringbuf::traits::{Consumer, Producer, Split};
 
 use kazoo_core::Pan;
 use kazoo_core::audio_transport::{AudioRingConfig, audio_block_ring};
 use kazoo_core::protocol::{BufferId, ChannelId};
 use kazoo_mix::control::{ControlServer, ControlSnapshot};
 use kazoo_mix::engine::{
-    ChannelControls, ChannelSnapshot, DEFAULT_CHANNEL_SLOTS, MAX_CALLBACK_SAMPLES, MixerEngine,
-    StereoLevel,
+    ChannelControls, ChannelSnapshot, DEFAULT_CHANNEL_SLOTS, MAX_CALLBACK_SAMPLES, MixerCommand,
+    MixerEngine, StereoLevel,
 };
 use kazoo_mix::session::MixSession;
 use kazoo_mix::source::EightOhEightSource;
@@ -27,6 +29,7 @@ use kazoo_mix::terminal::{MixTerminal, TerminalGuard};
 
 const UI_TICK: Duration = Duration::from_millis(33);
 const MAX_EVENTS_PER_FRAME: usize = 8;
+const MIXER_COMMAND_CAPACITY: usize = 64;
 pub(crate) const UI_CHANNELS: usize = 8;
 
 fn main() -> Result<()> {
@@ -35,10 +38,15 @@ fn main() -> Result<()> {
     let session = MixSession::create_default()?;
     let control = ControlServer::start(&session)?;
     let mut terminal_guard = TerminalGuard::enter();
-    let audio = MixerAudio::start()?;
+    let mut audio = MixerAudio::start()?;
     let mut app = App::new(audio.info(), session);
 
-    let result = run_app(terminal_guard.terminal_mut(), &mut app, &audio, &control);
+    let result = run_app(
+        terminal_guard.terminal_mut(),
+        &mut app,
+        &mut audio,
+        &control,
+    );
 
     drop(control);
     drop(audio);
@@ -50,7 +58,7 @@ fn main() -> Result<()> {
 fn run_app(
     terminal: &mut MixTerminal,
     app: &mut App,
-    audio: &MixerAudio,
+    audio: &mut MixerAudio,
     control: &ControlServer,
 ) -> Result<()> {
     while !app.should_quit {
@@ -75,7 +83,7 @@ fn run_app(
     Ok(())
 }
 
-fn handle_key(app: &mut App, audio: &MixerAudio, key: KeyEvent) {
+fn handle_key(app: &mut App, audio: &mut MixerAudio, key: KeyEvent) {
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c' | 'q' | 'd'))
     {
@@ -116,6 +124,7 @@ struct MixerAudio {
     _stream: cpal::Stream,
     _source: EightOhEightSource,
     state: Arc<AudioCallbackState>,
+    command_producer: ringbuf::HeapProd<MixerCommand>,
     info: AudioInfo,
 }
 
@@ -138,21 +147,35 @@ impl MixerAudio {
         };
 
         let state = Arc::new(AudioCallbackState::new());
+        let command_ring = HeapRb::<MixerCommand>::new(MIXER_COMMAND_CAPACITY);
+        let (command_producer, command_consumer) = command_ring.split();
         let block_frames = info.buffer_size.unwrap_or(128).max(1);
         let ring_config = AudioRingConfig::new(BufferId(1), info.channels, block_frames, 8);
         let (producer, consumer) = audio_block_ring(ring_config);
         let source =
             EightOhEightSource::start(producer, info.sample_rate, info.channels, block_frames);
         let stream = match sample_format {
-            cpal::SampleFormat::F32 => {
-                build_output_stream::<f32>(&device, &config, Arc::clone(&state), consumer)?
-            }
-            cpal::SampleFormat::I16 => {
-                build_output_stream::<i16>(&device, &config, Arc::clone(&state), consumer)?
-            }
-            cpal::SampleFormat::U16 => {
-                build_output_stream::<u16>(&device, &config, Arc::clone(&state), consumer)?
-            }
+            cpal::SampleFormat::F32 => build_output_stream::<f32>(
+                &device,
+                &config,
+                Arc::clone(&state),
+                consumer,
+                command_consumer,
+            )?,
+            cpal::SampleFormat::I16 => build_output_stream::<i16>(
+                &device,
+                &config,
+                Arc::clone(&state),
+                consumer,
+                command_consumer,
+            )?,
+            cpal::SampleFormat::U16 => build_output_stream::<u16>(
+                &device,
+                &config,
+                Arc::clone(&state),
+                consumer,
+                command_consumer,
+            )?,
             other => {
                 return Err(color_eyre::eyre::eyre!(
                     "unsupported output sample format: {other:?}"
@@ -161,10 +184,11 @@ impl MixerAudio {
         };
         stream.play()?;
 
-        let audio = Self {
+        let mut audio = Self {
             _stream: stream,
             _source: source,
             state,
+            command_producer,
             info,
         };
         audio.store_controls(
@@ -187,35 +211,38 @@ impl MixerAudio {
         self.state.controls(slot)
     }
 
-    fn store_controls(&self, slot: usize, controls: ChannelControls) {
+    fn store_controls(&mut self, slot: usize, controls: ChannelControls) {
         self.state.store_controls(slot, controls);
+        let _ = self
+            .command_producer
+            .try_push(MixerCommand::ConfigureChannel { slot, controls });
     }
 
-    fn adjust_gain(&self, slot: usize, delta: f32) {
+    fn adjust_gain(&mut self, slot: usize, delta: f32) {
         let mut controls = self.controls(slot);
         controls.gain = (controls.gain + delta).clamp(0.0, 2.0);
         self.store_controls(slot, controls);
     }
 
-    fn adjust_pan(&self, slot: usize, delta: f32) {
+    fn adjust_pan(&mut self, slot: usize, delta: f32) {
         let mut controls = self.controls(slot);
         controls.pan = Pan::new((controls.pan.value() + delta).clamp(-1.0, 1.0));
         self.store_controls(slot, controls);
     }
 
-    fn toggle_mute(&self, slot: usize) {
+    fn toggle_mute(&mut self, slot: usize) {
         let mut controls = self.controls(slot);
         controls.muted = !controls.muted;
         self.store_controls(slot, controls);
     }
 
-    fn toggle_solo(&self, slot: usize) {
+    fn toggle_solo(&mut self, slot: usize) {
         let mut controls = self.controls(slot);
         controls.soloed = !controls.soloed;
         self.store_controls(slot, controls);
     }
 
-    fn reset_channel(&self, slot: usize) {
+    fn reset_channel(&mut self, slot: usize) {
         self.store_controls(slot, ChannelControls::default());
     }
 }
@@ -225,6 +252,7 @@ fn build_output_stream<T>(
     config: &cpal::StreamConfig,
     state: Arc<AudioCallbackState>,
     consumer: kazoo_core::audio_transport::AudioBlockConsumer,
+    mut command_consumer: ringbuf::HeapCons<MixerCommand>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -256,6 +284,9 @@ where
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            while let Some(command) = command_consumer.try_pop() {
+                let _ = engine.apply_command(command);
+            }
             for slot in 0..DEFAULT_CHANNEL_SLOTS.min(UI_CHANNELS) {
                 let _ = engine.configure_channel(slot, control_state.controls(slot));
             }
