@@ -1212,6 +1212,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kazoo-dx"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "cpal",
+ "crossbeam-channel",
+ "crossterm",
+ "kazoo-core",
+ "ratatui",
+]
+
+[[package]]
 name = "kazoo-juno"
 version = "0.1.0"
 dependencies = [

@@ -113,6 +113,7 @@ Keep the current single TUI as the main workspace for mixing, tracking, and movi
 - **`kazoo-808`** — TR-808 drum machine. All-synthesis, no samples. Step sequencer TUI.
 - **`kazoo-cs80`** — Yamaha CS-80 pad synth. 8-voice poly, two layers per voice, per-voice drift. Also the home for generative/modular synthesis (node graph patching).
 - **`kazoo-mini`** — Moog Minimoog bass/lead. Monophonic. 3 VCOs, ladder filter with nonlinear saturation (ZDF implementation), rate-based glide.
+- **`kazoo-dx`** — DX/TX81Z-style four-operator FM synth. 8 voices, 8 algorithms, per-operator ADSR, OP4 feedback, LFO vibrato. Plays from the computer keyboard, from hub note events, or a looped `kazoo-play` phrase (`--phrase`) that follows the hub transport. Spec: `studio/kazoo-dx.md`
 - **`kazoo-arp`** — Jupiter-8 style arpeggiator. Note scheduler that drives any synth. Up/Down/Up-Down/Random/As-Played, latch, swing, octave spanning.
 
 All instruments connect into a central server (Unix domain sockets or shared-memory ring buffers — whichever benchmarks faster). Each gets its own terminal window. The genre is **Terminal Core**.

@@ -1,0 +1,16 @@
+[package]
+name = "kazoo-dx"
+version = "0.1.0"
+edition = "2024"
+description = "Four-operator FM synth in the DX/TX81Z tradition — pure sine math, eight algorithms, eight voices"
+
+[lints]
+workspace = true
+
+[dependencies]
+kazoo-core = { version = "0.1.0", path = "../kazoo-core" }
+color-eyre = "0.6.5"
+cpal = "0.17"
+crossbeam-channel = "0.5"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+ratatui = "0.30.0"
