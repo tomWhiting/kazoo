@@ -713,6 +713,6 @@ mod tests {
             -1.0,
         );
 
-        assert_eq!(event.value, 0.0);
+        assert!(event.value.abs() < f32::EPSILON);
     }
 }

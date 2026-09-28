@@ -162,8 +162,16 @@ impl DiskRecorder {
 
 impl Drop for DiskRecorder {
     fn drop(&mut self) {
-        // Best-effort finalization so the file is always valid if possible.
-        let _ = self.finish();
+        // Finalize an unfinished recording so the file is valid if at all
+        // possible. `Drop` cannot return the error, so report it: a WAV that
+        // failed to finalize has a broken header and the user must know.
+        // Callers that care should call `finish()` themselves and handle it.
+        if let Err(e) = self.finish() {
+            eprintln!(
+                "disk recorder: failed to finalize {} on drop: {e}",
+                self.path.display()
+            );
+        }
     }
 }
 

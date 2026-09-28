@@ -8,7 +8,7 @@
 
 use crate::analysis::EnvelopeFollower;
 use crate::effects::{BiquadFilter, FilterType};
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
 
 // ---------------------------------------------------------------------------
 // Oscillator shape
@@ -138,9 +138,8 @@ impl PitchTrackedSynth {
         };
 
         let mut filter = BiquadFilter::new(FilterType::LowPass, sr);
-        // Ignore the result — defaults are always valid.
-        let _ = filter.set_param(0, Self::DEFAULT_CUTOFF);
-        let _ = filter.set_param(1, Self::DEFAULT_Q);
+        filter.set_frequency(Self::DEFAULT_CUTOFF);
+        filter.set_q(Self::DEFAULT_Q);
 
         Self {
             sample_rate: sr,
@@ -235,65 +234,57 @@ impl PitchTrackedSynth {
         sanitize_sample(sample)
     }
 
-    fn param_infos() -> [ParamInfo; Self::PARAM_COUNT] {
-        [
-            ParamInfo {
-                name: "Shape".into(),
-                min: 0.0,
-                max: 3.0,
-                default: OscillatorShape::Saw.to_param(),
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Detune".into(),
-                min: -100.0,
-                max: 100.0,
-                default: 0.0,
-                unit: "cents".into(),
-            },
-            ParamInfo {
-                name: "Filter Cutoff".into(),
-                min: 20.0,
-                max: 20_000.0,
-                default: Self::DEFAULT_CUTOFF,
-                unit: "Hz".into(),
-            },
-            ParamInfo {
-                name: "Filter Q".into(),
-                min: 0.1,
-                max: 30.0,
-                default: Self::DEFAULT_Q,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Portamento".into(),
-                min: 0.0,
-                max: 500.0,
-                default: Self::DEFAULT_PORTAMENTO_MS,
-                unit: "ms".into(),
-            },
-            ParamInfo {
-                name: "Env Sensitivity".into(),
-                min: 0.0,
-                max: 1.0,
-                default: Self::DEFAULT_ENV_SENSITIVITY,
-                unit: String::new(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; Self::PARAM_COUNT] = [
+        ParamInfo {
+            name: "Shape",
+            min: 0.0,
+            max: 3.0,
+            default: OscillatorShape::Saw.to_param(),
+            unit: "",
+        },
+        ParamInfo {
+            name: "Detune",
+            min: -100.0,
+            max: 100.0,
+            default: 0.0,
+            unit: "cents",
+        },
+        ParamInfo {
+            name: "Filter Cutoff",
+            min: 20.0,
+            max: 20_000.0,
+            default: Self::DEFAULT_CUTOFF,
+            unit: "Hz",
+        },
+        ParamInfo {
+            name: "Filter Q",
+            min: 0.1,
+            max: 30.0,
+            default: Self::DEFAULT_Q,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Portamento",
+            min: 0.0,
+            max: 500.0,
+            default: Self::DEFAULT_PORTAMENTO_MS,
+            unit: "ms",
+        },
+        ParamInfo {
+            name: "Env Sensitivity",
+            min: 0.0,
+            max: 1.0,
+            default: Self::DEFAULT_ENV_SENSITIVITY,
+            unit: "",
+        },
+    ];
 }
 
-impl Processor for PitchTrackedSynth {
-    fn process(&mut self, input: &[f32], output: &mut [f32]) {
-        let len = input.len().min(output.len());
-        if len == 0 {
-            return;
-        }
-
-        // Ensure scratch buffer is large enough (no per-call alloc if already big enough).
-        if self.filter_scratch.len() < len {
-            self.filter_scratch.resize(len, 0.0);
-        }
+impl PitchTrackedSynth {
+    /// Render one piece no longer than the filter scratch buffer.
+    fn render_piece(&mut self, input: &[f32], output: &mut [f32]) {
+        let len = input.len().min(output.len()).min(self.filter_scratch.len());
 
         for (i, &inp_sample) in input.iter().enumerate().take(len) {
             // Track envelope from voice input.
@@ -331,14 +322,38 @@ impl Processor for PitchTrackedSynth {
                 self.filter_cutoff * self.envelope_sensitivity.mul_add(env_val, 1.0);
             let clamped_cutoff = modulated_cutoff.clamp(20.0, 20_000.0);
             // Only update filter coefficients if cutoff changed significantly.
-            if (clamped_cutoff - self.filter.param_value(0).unwrap_or(0.0)).abs() > 1.0 {
-                let _ = self.filter.set_param(0, clamped_cutoff);
+            if (clamped_cutoff - self.filter.frequency()).abs() > 1.0 {
+                self.filter.set_frequency(clamped_cutoff);
             }
         }
 
         // Apply filter to the generated audio.
         self.filter
             .process(&self.filter_scratch[..len], &mut output[..len]);
+    }
+}
+
+impl Processor for PitchTrackedSynth {
+    /// Never allocates: a block longer than the scratch buffer (see
+    /// [`Processor::prepare`]) is rendered in scratch-sized pieces.
+    fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        let len = input.len().min(output.len());
+        if len == 0 {
+            return;
+        }
+        let piece = self.filter_scratch.len().max(1);
+        for (input, output) in input[..len]
+            .chunks(piece)
+            .zip(output[..len].chunks_mut(piece))
+        {
+            self.render_piece(input, output);
+        }
+    }
+
+    fn prepare(&mut self, max_block_size: usize) {
+        if self.filter_scratch.len() < max_block_size {
+            self.filter_scratch.resize(max_block_size, 0.0);
+        }
     }
 
     fn reset(&mut self) {
@@ -359,8 +374,7 @@ impl Processor for PitchTrackedSynth {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        let infos = Self::param_infos();
-        infos.get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -375,30 +389,31 @@ impl Processor for PitchTrackedSynth {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
 
         match index {
             Self::PARAM_SHAPE => self.shape = OscillatorShape::from_param(clamped),
             Self::PARAM_DETUNE => self.detune_cents = clamped,
             Self::PARAM_FILTER_CUTOFF => {
                 self.filter_cutoff = clamped;
-                let _ = self.filter.set_param(0, clamped);
+                self.filter.set_frequency(clamped);
             }
             Self::PARAM_FILTER_Q => {
                 self.filter_q = clamped;
-                let _ = self.filter.set_param(1, clamped);
+                self.filter.set_q(clamped);
             }
             Self::PARAM_PORTAMENTO => {
                 self.portamento_ms = clamped;
                 self.portamento_coeff = compute_portamento_coeff(clamped, self.sample_rate);
             }
             Self::PARAM_ENV_SENSITIVITY => self.envelope_sensitivity = clamped,
-            _ => unreachable!(),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
         Ok(())
     }
@@ -527,7 +542,9 @@ mod tests {
         let mut bright = PitchTrackedSynth::new(44100.0);
         bright.set_target_frequency(440.0);
         bright.shape = OscillatorShape::Saw;
-        let _ = bright.set_param(PitchTrackedSynth::PARAM_FILTER_CUTOFF, 15000.0);
+        bright
+            .set_param(PitchTrackedSynth::PARAM_FILTER_CUTOFF, 15000.0)
+            .unwrap();
 
         let mut out_bright = vec![0.0_f32; 4096];
         bright.process(&input, &mut out_bright);
@@ -536,7 +553,8 @@ mod tests {
         let mut dark = PitchTrackedSynth::new(44100.0);
         dark.set_target_frequency(440.0);
         dark.shape = OscillatorShape::Saw;
-        let _ = dark.set_param(PitchTrackedSynth::PARAM_FILTER_CUTOFF, 200.0);
+        dark.set_param(PitchTrackedSynth::PARAM_FILTER_CUTOFF, 200.0)
+            .unwrap();
 
         let mut out_dark = vec![0.0_f32; 4096];
         dark.process(&input, &mut out_dark);
@@ -763,7 +781,9 @@ mod tests {
     fn portamento_smooths_frequency_transition() {
         let sr = 44100.0;
         let mut synth = PitchTrackedSynth::new(sr);
-        let _ = synth.set_param(PitchTrackedSynth::PARAM_PORTAMENTO, 100.0); // 100ms glide
+        synth
+            .set_param(PitchTrackedSynth::PARAM_PORTAMENTO, 100.0)
+            .unwrap(); // 100ms glide
 
         synth.set_target_frequency(220.0);
         let input = vec![0.5_f32; 4096];
@@ -798,13 +818,17 @@ mod tests {
 
         let mut synth_no_detune = PitchTrackedSynth::new(sr);
         synth_no_detune.set_target_frequency(440.0);
-        let _ = synth_no_detune.set_param(PitchTrackedSynth::PARAM_DETUNE, 0.0);
+        synth_no_detune
+            .set_param(PitchTrackedSynth::PARAM_DETUNE, 0.0)
+            .unwrap();
         let mut out1 = vec![0.0_f32; 4096];
         synth_no_detune.process(&input, &mut out1);
 
         let mut synth_detuned = PitchTrackedSynth::new(sr);
         synth_detuned.set_target_frequency(440.0);
-        let _ = synth_detuned.set_param(PitchTrackedSynth::PARAM_DETUNE, 50.0);
+        synth_detuned
+            .set_param(PitchTrackedSynth::PARAM_DETUNE, 50.0)
+            .unwrap();
         let mut out2 = vec![0.0_f32; 4096];
         synth_detuned.process(&input, &mut out2);
 
@@ -825,13 +849,17 @@ mod tests {
 
         let mut synth_no_env = PitchTrackedSynth::new(sr);
         synth_no_env.set_target_frequency(440.0);
-        let _ = synth_no_env.set_param(PitchTrackedSynth::PARAM_ENV_SENSITIVITY, 0.0);
+        synth_no_env
+            .set_param(PitchTrackedSynth::PARAM_ENV_SENSITIVITY, 0.0)
+            .unwrap();
         let mut out1 = vec![0.0_f32; 4096];
         synth_no_env.process(&input, &mut out1);
 
         let mut synth_full_env = PitchTrackedSynth::new(sr);
         synth_full_env.set_target_frequency(440.0);
-        let _ = synth_full_env.set_param(PitchTrackedSynth::PARAM_ENV_SENSITIVITY, 1.0);
+        synth_full_env
+            .set_param(PitchTrackedSynth::PARAM_ENV_SENSITIVITY, 1.0)
+            .unwrap();
         let mut out2 = vec![0.0_f32; 4096];
         synth_full_env.process(&input, &mut out2);
 
@@ -900,7 +928,7 @@ mod tests {
                 rng ^= rng << 13;
                 rng ^= rng >> 17;
                 rng ^= rng << 5;
-                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect();
         let mut output = vec![0.0_f32; 4096];
@@ -912,5 +940,31 @@ mod tests {
                 "noise stability: output[{i}] = {s}"
             );
         }
+    }
+
+    #[test]
+    fn long_blocks_are_rendered_without_growing_the_scratch() {
+        let mut synth = PitchTrackedSynth::new(44_100.0);
+        synth.set_target_frequency(220.0);
+        let scratch = (synth.filter_scratch.as_ptr(), synth.filter_scratch.len());
+        let input = vec![0.5_f32; scratch.1 * 3 + 17];
+        let mut output = vec![0.0_f32; input.len()];
+        synth.process(&input, &mut output);
+        assert_eq!(
+            (synth.filter_scratch.as_ptr(), synth.filter_scratch.len()),
+            scratch,
+            "process() reallocated its scratch buffer"
+        );
+        assert!(output.iter().all(|s| s.is_finite()));
+        assert!(output.iter().any(|s| s.abs() > 1e-4), "silent");
+    }
+
+    #[test]
+    fn prepare_sizes_the_scratch_for_the_block() {
+        let mut synth = PitchTrackedSynth::new(44_100.0);
+        synth.prepare(1024);
+        assert_eq!(synth.filter_scratch.len(), 1024);
+        synth.prepare(64);
+        assert_eq!(synth.filter_scratch.len(), 1024, "prepare never shrinks");
     }
 }

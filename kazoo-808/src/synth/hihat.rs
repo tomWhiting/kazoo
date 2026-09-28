@@ -146,8 +146,8 @@ impl Voice for ClosedHiHat {
 
         // HP then LP to approximate bandpass.
         let hp = raw - self.bp_state_1;
-        self.bp_state_1 += (1.0 - self.bp_coeff_1) * (raw - self.bp_state_1);
-        self.bp_state_2 += (1.0 - self.bp_coeff_2) * (hp - self.bp_state_2);
+        self.bp_state_1 = (1.0 - self.bp_coeff_1).mul_add(raw - self.bp_state_1, self.bp_state_1);
+        self.bp_state_2 = (1.0 - self.bp_coeff_2).mul_add(hp - self.bp_state_2, self.bp_state_2);
 
         let output = self.bp_state_2 * self.amplitude;
 
@@ -234,8 +234,8 @@ impl Voice for OpenHiHat {
 
         let raw = self.osc_bank.process();
         let hp = raw - self.bp_state_1;
-        self.bp_state_1 += (1.0 - self.bp_coeff_1) * (raw - self.bp_state_1);
-        self.bp_state_2 += (1.0 - self.bp_coeff_2) * (hp - self.bp_state_2);
+        self.bp_state_1 = (1.0 - self.bp_coeff_1).mul_add(raw - self.bp_state_1, self.bp_state_1);
+        self.bp_state_2 = (1.0 - self.bp_coeff_2).mul_add(hp - self.bp_state_2, self.bp_state_2);
 
         let output = self.bp_state_2 * self.amplitude;
         self.amplitude *= self.amp_decay;
@@ -325,8 +325,8 @@ impl Voice for Cymbal {
         let raw = self.osc_bank.process();
 
         let hp = raw - self.bp_state_1;
-        self.bp_state_1 += (1.0 - self.bp_coeff_1) * (raw - self.bp_state_1);
-        self.bp_state_2 += (1.0 - self.bp_coeff_2) * (hp - self.bp_state_2);
+        self.bp_state_1 = (1.0 - self.bp_coeff_1).mul_add(raw - self.bp_state_1, self.bp_state_1);
+        self.bp_state_2 = (1.0 - self.bp_coeff_2).mul_add(hp - self.bp_state_2, self.bp_state_2);
 
         let output = self.bp_state_2 * self.amplitude;
         self.amplitude *= self.amp_decay;

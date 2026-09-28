@@ -69,25 +69,13 @@ pub enum InputMode {
 // Synth view state
 // ---------------------------------------------------------------------------
 
-/// Navigation and selection state for the Synth/Effects view.
-///
-/// Some fields are reserved for future synth view input handling (module-level
-/// focus, expanded effect card, per-view parameter editing).
+/// Navigation and selection state for the synth + effects sidebar.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SynthViewState {
-    /// Which module card has focus (0=voice input, 1=synth engine, 2=effects chain, 3=layers).
-    pub selected_module: usize,
     /// Which effect in the effects chain is selected.
     pub selected_effect: usize,
-    /// Which parameter within the active module is selected.
+    /// Which parameter within the selected effect is selected.
     pub selected_param: usize,
-    /// Which effect card is expanded for detailed editing.
-    pub expanded_effect: Option<usize>,
-    /// Text buffer for numeric input in `ParameterEdit` mode.
-    pub param_edit_buffer: String,
-    /// Current input sub-mode.
-    pub input_mode: InputMode,
     /// Whether the synth entry is selected (vs an effect) in the effects list.
     pub synth_selected: bool,
     /// Index of the selected synth parameter (in the primary layer).
@@ -97,12 +85,8 @@ pub struct SynthViewState {
 impl Default for SynthViewState {
     fn default() -> Self {
         Self {
-            selected_module: 0,
             selected_effect: 0,
             selected_param: 0,
-            expanded_effect: None,
-            param_edit_buffer: String::new(),
-            input_mode: InputMode::Normal,
             synth_selected: true,
             selected_synth_param: 0,
         }
@@ -155,11 +139,7 @@ impl MixerControl {
 }
 
 /// Navigation and selection state for the Mixing Desk view.
-///
-/// `param_edit_buffer` and `input_mode` are reserved for future per-view
-/// parameter editing (direct numeric input on fader/pan values).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MixerViewState {
     /// Which channel strip has focus (index into tracks, or `tracks.len()` for master).
     pub selected_channel: usize,
@@ -167,10 +147,6 @@ pub struct MixerViewState {
     pub channel_scroll: usize,
     /// Which control within the strip is focused.
     pub selected_control: MixerControl,
-    /// Text buffer for numeric input.
-    pub param_edit_buffer: String,
-    /// Current input sub-mode.
-    pub input_mode: InputMode,
 }
 
 impl Default for MixerViewState {
@@ -179,8 +155,6 @@ impl Default for MixerViewState {
             selected_channel: 0,
             channel_scroll: 0,
             selected_control: MixerControl::Fader,
-            param_edit_buffer: String::new(),
-            input_mode: InputMode::Normal,
         }
     }
 }
@@ -191,7 +165,6 @@ impl Default for MixerViewState {
 
 /// Navigation and selection state for the Tracking / arrangement view.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TrackingViewState {
     /// Zoom factor: samples per pixel. Higher = more zoomed out.
     pub timeline_zoom: f64,
@@ -199,8 +172,6 @@ pub struct TrackingViewState {
     pub timeline_scroll: f64,
     /// Currently selected clip ID, if any.
     pub selected_clip: Option<ClipId>,
-    /// Which track lane has focus (for vertical navigation).
-    pub selected_track_lane: usize,
     /// Waveform display zoom factor (1.0 = fit entire buffer).
     pub waveform_zoom: f32,
     /// Waveform display horizontal scroll position (0.0–1.0).
@@ -213,7 +184,6 @@ impl Default for TrackingViewState {
             timeline_zoom: 256.0,
             timeline_scroll: 0.0,
             selected_clip: None,
-            selected_track_lane: 0,
             waveform_zoom: 1.0,
             waveform_scroll: 0.0,
         }
@@ -225,29 +195,13 @@ impl Default for TrackingViewState {
 // ---------------------------------------------------------------------------
 
 /// Navigation state for the Project Setup view.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
 pub struct ProjectViewState {
     /// Which settings card has focus (0=tempo, 1=time sig, 2=count-in,
     /// 3=metronome, 4=loop, 5=recording).
     pub selected_card: usize,
     /// Which field within the active card is selected.
     pub selected_field: usize,
-    /// Text buffer for numeric input.
-    pub param_edit_buffer: String,
-    /// Current input sub-mode.
-    pub input_mode: InputMode,
-}
-
-impl Default for ProjectViewState {
-    fn default() -> Self {
-        Self {
-            selected_card: 0,
-            selected_field: 0,
-            param_edit_buffer: String::new(),
-            input_mode: InputMode::Normal,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +232,10 @@ pub struct AudioIOViewState {
     pub input_devices: Vec<String>,
     /// Cached output device names (populated at startup).
     pub output_devices: Vec<String>,
+    /// Why input device enumeration failed, if it did.
+    pub input_device_error: Option<String>,
+    /// Why output device enumeration failed, if it did.
+    pub output_device_error: Option<String>,
 }
 
 impl Default for AudioIOViewState {
@@ -288,6 +246,8 @@ impl Default for AudioIOViewState {
             selected_output_device: 0,
             input_devices: Vec::new(),
             output_devices: Vec::new(),
+            input_device_error: None,
+            output_device_error: None,
         }
     }
 }
@@ -331,8 +291,8 @@ mod tests {
     #[test]
     fn default_states_are_sane() {
         let synth = SynthViewState::default();
-        assert_eq!(synth.selected_module, 0);
-        assert_eq!(synth.input_mode, InputMode::Normal);
+        assert_eq!(synth.selected_effect, 0);
+        assert!(synth.synth_selected);
 
         let mixer = MixerViewState::default();
         assert_eq!(mixer.selected_channel, 0);

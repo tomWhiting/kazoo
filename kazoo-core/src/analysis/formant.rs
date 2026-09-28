@@ -165,7 +165,7 @@ impl FormantExtractor {
         for lag in 0..=self.lpc_order {
             let mut sum = 0.0_f64;
             for i in 0..n - lag {
-                sum += self.emphasized[i] * self.emphasized[i + lag];
+                sum = self.emphasized[i].mul_add(self.emphasized[i + lag], sum);
             }
             self.autocorrelation[lag] = if sum.is_finite() { sum } else { 0.0 };
         }
@@ -193,7 +193,7 @@ impl FormantExtractor {
             // Compute reflection coefficient.
             let mut lambda = 0.0_f64;
             for j in 0..i {
-                lambda += self.ld_a_prev[j] * self.autocorrelation[i - j];
+                lambda = self.ld_a_prev[j].mul_add(self.autocorrelation[i - j], lambda);
             }
 
             if error.abs() < 1e-30 {
@@ -536,7 +536,8 @@ mod tests {
     fn reset_clears_state() {
         let mut extractor = FormantExtractor::new(12, 512, 44100.0);
         let samples = vec![0.5_f32; 256];
-        let _ = extractor.push_samples(&samples);
+        // Half a frame: no analysis yet, samples accumulate in the buffer.
+        assert!(extractor.push_samples(&samples).is_none());
         assert!(extractor.buffer_pos > 0);
 
         extractor.reset();

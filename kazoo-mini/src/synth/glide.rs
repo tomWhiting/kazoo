@@ -48,11 +48,6 @@ impl Glide {
         }
     }
 
-    /// Update sample rate.
-    pub const fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate.max(1.0);
-    }
-
     /// Set a new target pitch.
     ///
     /// If `legato` is true and we already have a note, the glide activates.
@@ -103,21 +98,6 @@ impl Glide {
         }
 
         semitone_to_freq(self.current_semitone)
-    }
-
-    /// Get the current output frequency without advancing.
-    #[must_use]
-    pub fn current_frequency(&self) -> f32 {
-        if !self.has_note {
-            return 0.0;
-        }
-        semitone_to_freq(self.current_semitone)
-    }
-
-    /// Whether the glide is currently moving (not yet at target).
-    #[must_use]
-    pub fn is_gliding(&self) -> bool {
-        self.has_note && (self.target_semitone - self.current_semitone).abs() > 0.001
     }
 
     /// Reset all state.
@@ -188,7 +168,11 @@ mod tests {
 
         // First note: instant
         glide.set_target(440.0, false);
-        let _ = glide.tick();
+        let first = glide.tick();
+        assert!(
+            (first - 440.0).abs() < 1.0,
+            "first note should jump, got {first}"
+        );
 
         // Second note: legato, should glide
         glide.set_target(880.0, true); // one octave up
@@ -206,14 +190,18 @@ mod tests {
         glide.rate = 1200.0; // very fast
 
         glide.set_target(440.0, false);
-        let _ = glide.tick();
+        let first = glide.tick();
+        assert!(
+            (first - 440.0).abs() < 1.0,
+            "first note should jump, got {first}"
+        );
 
         glide.set_target(880.0, true);
+        let mut f = first;
         for _ in 0..44100 {
-            let _ = glide.tick();
+            f = glide.tick();
         }
 
-        let f = glide.current_frequency();
         assert!(
             (f - 880.0).abs() < 1.0,
             "should have reached target 880, got {f}"
@@ -226,13 +214,43 @@ mod tests {
         glide.enabled = false;
 
         glide.set_target(440.0, false);
-        let _ = glide.tick();
+        let first = glide.tick();
+        assert!(
+            (first - 440.0).abs() < 1.0,
+            "first note should jump, got {first}"
+        );
 
         glide.set_target(880.0, true);
         let f = glide.tick();
         assert!(
             (f - 880.0).abs() < 1.0,
             "disabled glide should jump, got {f}"
+        );
+    }
+
+    #[test]
+    fn reset_clears_pitch() {
+        let mut glide = Glide::new(44100.0);
+        glide.set_target(440.0, false);
+        let first = glide.tick();
+        assert!(
+            (first - 440.0).abs() < 1.0,
+            "first note should jump, got {first}"
+        );
+
+        glide.reset();
+        let silent = glide.tick();
+        assert!(
+            silent.abs() < f32::EPSILON,
+            "reset glide should report no pitch, got {silent}"
+        );
+
+        // After reset the next note must jump, not glide from the old pitch.
+        glide.set_target(880.0, true);
+        let f = glide.tick();
+        assert!(
+            (f - 880.0).abs() < 1.0,
+            "note after reset should jump, got {f}"
         );
     }
 }

@@ -6,7 +6,7 @@
 //!
 //! 1. **Track header** -- name, synthesis mode, M/S/R indicators.
 //! 2. **Item list** -- synth entry followed by effects with bypass state.
-//! 3. **Parameter section** -- synth params or effect hints for the selected item.
+//! 3. **Parameter section** -- parameters of the selected synth or effect.
 //! 4. **Hint bar** -- keyboard shortcut hints.
 
 use ratatui::prelude::*;
@@ -51,7 +51,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 /// Calculate the height needed for the item list (synth + effects).
 fn item_list_height(track: &TrackInfo) -> u16 {
     // 1 for synth entry + effect count, min 2 to avoid collapse.
-    let count = 1 + track.effect_names.len();
+    let count = 1 + track.effects.len();
     (count as u16).clamp(2, 6)
 }
 
@@ -121,8 +121,8 @@ fn draw_item_list(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
     ]));
 
     // Effect entries.
-    for (i, name) in track.effect_names.iter().enumerate() {
-        let bypassed = track.effect_bypassed.get(i).copied().unwrap_or(false);
+    for (i, effect) in track.effects.iter().enumerate() {
+        let bypassed = effect.bypassed;
         let selected = !app.synth_state.synth_selected && i == app.synth_state.selected_effect;
 
         let bypass_indicator = if bypassed { "\u{25cb}" } else { "\u{25cf}" };
@@ -145,7 +145,7 @@ fn draw_item_list(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
             Span::styled(marker, name_style),
             Span::styled(bypass_indicator, Style::new().fg(bypass_color)),
             Span::raw(" "),
-            Span::styled(name.as_str(), name_style),
+            Span::styled(effect.name.as_str(), name_style),
         ]));
     }
 
@@ -153,99 +153,113 @@ fn draw_item_list(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-/// Render the parameter section for the currently selected item.
+/// Render the parameter section for the currently selected item: the
+/// synth's parameters or the selected effect's parameters, plus the numeric
+/// edit buffer while a value is being typed.
 fn draw_param_section(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
     let focused = app.is_focused(FocusedPanel::Effects);
-
-    if app.synth_state.synth_selected {
-        // Show synth parameters.
-        draw_synth_params(frame, app, track, area, focused);
+    let mut lines = if app.synth_state.synth_selected {
+        param_lines(
+            &track.synth_param_infos,
+            &track.synth_param_values,
+            app.synth_state.selected_synth_param,
+            focused,
+            |i, value| track.synthesis_mode.format_param_value(i, value),
+        )
+    } else if let Some(effect) = track.effects.get(app.synth_state.selected_effect) {
+        param_lines(
+            &effect.param_infos,
+            &effect.param_values,
+            app.synth_state.selected_param,
+            focused,
+            |_, value| format_effect_value(value),
+        )
     } else {
-        // Show effect parameter hints.
-        draw_effect_params(frame, app, track, area);
+        vec![Line::from(Span::styled(
+            "  No effects \u{2014} A to add",
+            theme::style_text_dimmed(),
+        ))]
+    };
+
+    // Show the value being typed so the user can see what Enter will apply.
+    if app.input_mode == InputMode::ParameterEdit {
+        lines.push(Line::from(vec![
+            Span::styled("  Value: ", theme::style_text_secondary()),
+            Span::styled(
+                format!("{}_", app.param_edit_buffer),
+                theme::style_selected(),
+            ),
+        ]));
     }
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Render synth parameter list with names, values, and selection highlight.
-fn draw_synth_params(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect, focused: bool) {
-    if track.synth_param_infos.is_empty() {
-        let empty = Paragraph::new("  No parameters").style(theme::style_text_dimmed());
-        frame.render_widget(empty, area);
-        return;
+/// Maximum characters of a parameter name shown in the sidebar.
+const PARAM_NAME_WIDTH: usize = 12;
+
+/// Build one line per parameter: marker, name, formatted value and unit.
+fn param_lines<'a>(
+    infos: &'a [kazoo_core::ParamInfo],
+    values: &[f32],
+    selected: usize,
+    focused: bool,
+    format_value: impl Fn(usize, f32) -> String,
+) -> Vec<Line<'a>> {
+    if infos.is_empty() {
+        return vec![Line::from(Span::styled(
+            "  No parameters",
+            theme::style_text_dimmed(),
+        ))];
     }
 
-    let lines: Vec<Line<'_>> = track
-        .synth_param_infos
+    infos
         .iter()
+        .zip(values)
         .enumerate()
-        .map(|(i, info)| {
-            let value = track.synth_param_values.get(i).copied().unwrap_or(0.0);
-            let selected = i == app.synth_state.selected_synth_param;
-
-            let formatted = track.synthesis_mode.format_param_value(i, value);
+        .map(|(i, (info, &value))| {
+            let is_selected = i == selected;
+            let formatted = format_value(i, value);
             let unit = if info.unit.is_empty() {
                 String::new()
             } else {
                 format!(" {}", info.unit)
             };
+            // Truncate by characters, never by bytes: names may contain
+            // multi-byte characters.
+            let name: String = info.name.chars().take(PARAM_NAME_WIDTH).collect();
 
-            // Truncate param name to fit the panel.
-            let name = if info.name.len() > 12 {
-                &info.name[..12]
+            let marker = if is_selected { "\u{25b6}" } else { " " };
+            let (name_style, value_style) = if is_selected && focused {
+                (theme::style_selected(), theme::style_selected())
             } else {
-                &info.name
-            };
-
-            let marker = if selected { "\u{25b6}" } else { " " };
-            let name_style = if selected && focused {
-                theme::style_selected()
-            } else {
-                theme::style_text_secondary()
-            };
-            let value_style = if selected && focused {
-                theme::style_selected()
-            } else {
-                theme::style_text()
+                (theme::style_text_secondary(), theme::style_text())
             };
 
             Line::from(vec![
                 Span::styled(marker, name_style),
-                Span::styled(format!("{name:<12}"), name_style),
+                Span::styled(format!("{name:<PARAM_NAME_WIDTH$}"), name_style),
                 Span::raw(" "),
                 Span::styled(format!("{formatted}{unit}"), value_style),
             ])
         })
-        .collect();
-
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, area);
+        .collect()
 }
 
-/// Render effect parameter hints (existing behavior).
-fn draw_effect_params(frame: &mut Frame, app: &App, track: &TrackInfo, area: Rect) {
-    let text = if track.effect_names.is_empty() {
-        String::from("  No effects")
+/// Format an effect parameter value with precision suited to its magnitude.
+fn format_effect_value(value: f32) -> String {
+    let magnitude = value.abs();
+    if magnitude >= 100.0 {
+        format!("{value:.0}")
+    } else if magnitude >= 10.0 {
+        format!("{value:.1}")
     } else {
-        let fx_name = track
-            .effect_names
-            .get(app.synth_state.selected_effect)
-            .map_or("\u{2014}", String::as_str);
-        format!("  {fx_name}\n  Parameters:\n  (use +/- to adjust)")
-    };
-
-    // If in parameter edit mode, append the edit buffer with a cursor.
-    let text = if app.input_mode == InputMode::ParameterEdit {
-        format!("{text}\n  Value: {}_", app.param_edit_buffer)
-    } else {
-        text
-    };
-
-    let para = Paragraph::new(text).style(theme::style_text_secondary());
-    frame.render_widget(para, area);
+        format!("{value:.2}")
+    }
 }
 
 /// Render the hint bar at the bottom of the panel.
@@ -262,4 +276,45 @@ fn draw_hint_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let para = Paragraph::new(hint).style(theme::style_text_dimmed());
     frame.render_widget(para, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn info(name: &'static str) -> kazoo_core::ParamInfo {
+        kazoo_core::ParamInfo {
+            name,
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            unit: "",
+        }
+    }
+
+    #[test]
+    fn param_lines_truncate_multibyte_names_without_panicking() {
+        // 13 multi-byte characters: byte slicing at 12 would split a char.
+        let infos = [info(
+            "\u{00e9}\u{00e9}\u{00e9}\u{00e9}\u{00e9}\u{00e9}\u{00e9}\u{00e9}\u{00e9}\u{00e9}\u{00e9}\u{00e9}\u{00e9}",
+        )];
+        let lines = param_lines(&infos, &[0.5], 0, true, |_, v| format!("{v}"));
+        assert_eq!(lines.len(), 1);
+        let name = lines[0].spans[1].content.to_string();
+        assert_eq!(name.chars().count(), PARAM_NAME_WIDTH);
+    }
+
+    #[test]
+    fn param_lines_empty_shows_placeholder() {
+        let lines = param_lines(&[], &[], 0, true, |_, v| format!("{v}"));
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].spans[0].content.contains("No parameters"));
+    }
+
+    #[test]
+    fn format_effect_value_precision() {
+        assert_eq!(format_effect_value(1234.56), "1235");
+        assert_eq!(format_effect_value(12.345), "12.3");
+        assert_eq!(format_effect_value(0.707), "0.71");
+    }
 }

@@ -245,29 +245,6 @@ pub const fn style_armed() -> Style {
     Style::new().fg(ACCENT_RECORD).add_modifier(Modifier::BOLD)
 }
 
-/// Style for a parameter name.
-#[must_use]
-#[allow(dead_code)]
-pub const fn style_param_name() -> Style {
-    Style::new().fg(FG_SECONDARY)
-}
-
-/// Style for a parameter value.
-#[must_use]
-#[allow(dead_code)]
-pub const fn style_param_value() -> Style {
-    Style::new().fg(FG_PRIMARY).add_modifier(Modifier::BOLD)
-}
-
-/// Style for a parameter value currently being edited.
-#[must_use]
-#[allow(dead_code)]
-pub const fn style_param_editing() -> Style {
-    Style::new()
-        .fg(ACCENT_FOCUS)
-        .add_modifier(Modifier::BOLD.union(Modifier::UNDERLINED))
-}
-
 /// Style for the help overlay background.
 #[must_use]
 pub const fn style_help_bg() -> Style {
@@ -317,9 +294,8 @@ mod tests {
 
     #[test]
     fn track_colors_wrap_around() {
-        for i in 0..8 {
-            let c = track_color(i);
-            assert_eq!(c, TRACK_COLORS[i]);
+        for (i, expected) in TRACK_COLORS.iter().enumerate() {
+            assert_eq!(track_color(i), *expected);
         }
         assert_eq!(track_color(8), track_color(0));
         assert_eq!(track_color(15), track_color(7));

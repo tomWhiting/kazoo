@@ -1,0 +1,15 @@
+id: no-empty-error-arm
+language: rust
+severity: error
+message: Error arm does nothing. Handle, count or report the error.
+rule:
+  kind: match_arm
+  all:
+    - has:
+        field: pattern
+        regex: '^Err\s*\('
+    - has:
+        field: value
+        any:
+          - regex: '^\{\s*\}$'
+          - regex: '^\(\s*\)$'

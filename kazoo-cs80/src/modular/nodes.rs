@@ -628,7 +628,6 @@ impl ModularNode for LfoNode {
         match index {
             0 => self.rate = value.clamp(0.01, 100.0),
             1 => self.depth = value.clamp(0.0, 1.0),
-            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
             2 => self.waveform = LfoWaveform::from_index(value.round() as usize),
             _ => {}
         }
@@ -1254,7 +1253,6 @@ impl ModularNode for QuantizerNode {
         }
     }
 
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn set_param(&mut self, index: usize, value: f32) {
         if index == 0 {
             self.scale = Scale::from_index(value.round() as usize);
@@ -1296,7 +1294,6 @@ impl DelayNode {
     #[must_use]
     pub fn new(sample_rate: f32) -> Self {
         let sr = sample_rate.max(1.0);
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let buf_size = (sr * MAX_DELAY_SECS) as usize + 1;
         Self {
             buffer: vec![0.0; buf_size],
@@ -1396,7 +1393,6 @@ impl ModularNode for DelayNode {
         let sr = sample_rate.max(1.0);
         self.sample_rate = sr;
         // Reallocate buffer for new sample rate.
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let buf_size = (sr * MAX_DELAY_SECS) as usize + 1;
         self.buffer = vec![0.0; buf_size];
         self.write_pos = 0;
@@ -1682,7 +1678,7 @@ mod tests {
 
         for &s in &*outputs[0] {
             assert!(
-                s.is_finite() && s >= -1.1 && s <= 1.1,
+                s.is_finite() && (-1.1..=1.1).contains(&s),
                 "LFO output out of range: {s}"
             );
         }
@@ -1787,7 +1783,7 @@ mod tests {
 
         for (i, &s) in outputs[0].iter().enumerate() {
             assert!(
-                s.is_finite() && s >= 0.0 && s <= 1.0,
+                s.is_finite() && (0.0..=1.0).contains(&s),
                 "ADSR output at sample {i} out of range: {s}"
             );
         }
@@ -1810,7 +1806,7 @@ mod tests {
         // Count triggers (should be ~2 per second at 120 BPM).
         let trigger_count = outputs[0].iter().filter(|&&s| s > 0.5).count();
         assert!(
-            trigger_count >= 1 && trigger_count <= 3,
+            (1..=3).contains(&trigger_count),
             "120 BPM should produce ~2 triggers per second, got {trigger_count}"
         );
     }
@@ -1885,12 +1881,12 @@ mod tests {
         sh.process(&inputs, &mut outputs);
 
         // Now process with different input but no trigger.
-        let input2 = vec![0.9; 128];
-        let trigger2 = vec![0.0; 128];
-        let mut output2 = vec![0.0; 128];
+        let next_input = vec![0.9; 128];
+        let no_trigger = vec![0.0; 128];
+        let mut held_output = vec![0.0; 128];
 
-        let inputs = [input2.as_slice(), trigger2.as_slice()];
-        let mut outputs = [output2.as_mut_slice()];
+        let inputs = [next_input.as_slice(), no_trigger.as_slice()];
+        let mut outputs = [held_output.as_mut_slice()];
         sh.process(&inputs, &mut outputs);
 
         // Should still hold 0.5 (the previously sampled value).

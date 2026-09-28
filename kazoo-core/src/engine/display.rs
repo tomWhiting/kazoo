@@ -1,15 +1,21 @@
 //! Display state snapshot for UI rendering.
 //!
 //! [`DisplayState`] is a self-contained, clonable snapshot of everything the
-//! UI needs to render one frame. It is produced in the output callback and
-//! consumed by the TUI thread via a ring buffer.
-
-use std::sync::Arc;
+//! UI needs to render one frame. The output callback writes it and the UI
+//! reads it through [`super::EngineHandle::poll_display`]; the timeline part
+//! is built off the audio thread and merged in by the handle.
 
 use crate::analysis::{FormantData, PitchEstimate};
 use crate::mixer::MixerSnapshot;
 use crate::transport::TransportSnapshot;
-use crate::{Db, TimePosition};
+use crate::{Db, MAX_TRACKS, TimePosition};
+
+/// Most waveform points in a snapshot's oscilloscope trace.
+pub const WAVEFORM_POINTS: usize = 256;
+
+/// Most formants a snapshot carries (the analysis thread's LPC order bounds
+/// the real number far below this).
+pub const FORMANT_CAPACITY: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Timeline snapshot types
@@ -34,9 +40,28 @@ pub struct ClipSnapshot {
     pub waveform_overview: Vec<(f32, f32)>,
 }
 
+/// The part of the timeline a recording in progress has covered so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordingSpan {
+    /// Timeline position (in samples) where the recording started.
+    pub start: u64,
+    /// Samples recorded so far.
+    pub length: u64,
+}
+
+impl RecordingSpan {
+    /// Timeline position just past the last recorded sample.
+    #[must_use]
+    pub const fn end(&self) -> u64 {
+        self.start.saturating_add(self.length)
+    }
+}
+
 /// Display data for one track's clips on the timeline.
+///
+/// Arm, mute and solo are not repeated here: they belong to the track's
+/// mixer state, which the UI already owns and edits.
 #[derive(Debug, Clone)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct TrackClipSnapshot {
     /// Track identifier (index).
     pub track_id: usize,
@@ -44,18 +69,8 @@ pub struct TrackClipSnapshot {
     pub track_name: String,
     /// All clips on this track, sorted by position.
     pub clips: Vec<ClipSnapshot>,
-    /// Whether this track is armed for recording.
-    pub armed: bool,
-    /// Whether this track is muted.
-    pub muted: bool,
-    /// Whether this track is soloed.
-    pub soloed: bool,
-    /// Whether a recording is currently in progress on this track.
-    pub is_recording_clip: bool,
-    /// Start position of the current recording, if any.
-    pub recording_start: u64,
-    /// Length (in samples) of the current recording, if any.
-    pub recording_length: u64,
+    /// The recording in progress on this track, if one is.
+    pub recording: Option<RecordingSpan>,
 }
 
 /// Timeline snapshot for the TUI to render.
@@ -78,21 +93,13 @@ impl TimelineSnapshot {
     }
 }
 
-// ---------------------------------------------------------------------------
-// IPC instrument connection snapshot
-// ---------------------------------------------------------------------------
-
-/// Snapshot of one connected IPC instrument for the TUI header.
-#[derive(Debug, Clone)]
-pub struct IpcInstrumentSnapshot {
-    /// Instrument display name (e.g. "mini", "808").
-    /// Uses `Arc<str>` so the clone in the audio callback is a cheap
-    /// reference-count bump instead of a heap allocation.
-    pub name: Arc<str>,
-    /// Whether the instrument is still connected.
-    pub connected: bool,
-    /// Assigned mixer strip index.
-    pub strip_index: u8,
+/// A recording in progress on one track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackRecording {
+    /// The track being recorded (`TrackId.0`).
+    pub track_id: usize,
+    /// The part of the timeline recorded so far.
+    pub span: RecordingSpan,
 }
 
 // ---------------------------------------------------------------------------
@@ -101,15 +108,13 @@ pub struct IpcInstrumentSnapshot {
 
 /// A complete snapshot of the engine state for a single UI frame.
 ///
-/// Produced by the output callback every audio block and pushed into a
-/// display ring buffer. The UI thread pops the latest value and renders it.
-/// Fields that allocate (`Vec`, `Option<FormantData>`) are pre-sized where
-/// possible to minimise allocation churn. The struct is constructed inside
-/// the output callback, so allocations are kept to a minimum; the
-/// `display_scratch` pattern in `ProcessingState` reuses capacity across
-/// frames, and `clone()` for the ring buffer push is an accepted tradeoff
-/// (standard DAW practice — allocator thread-local caches make these
-/// effectively free after warm-up).
+/// The output callback writes snapshots at the UI's frame rate into frames
+/// that circulate between it and the [`super::EngineHandle`]: each frame's
+/// buffers are sized when the engine starts
+/// ([`DisplayState::with_capacity`]) and only ever overwritten within that
+/// capacity, so the callback never allocates or frees one. The handle keeps
+/// the newest frame, fills in the [`TimelineSnapshot`] (built off the audio
+/// thread) and the recording spans on it, and hands older frames back.
 #[derive(Debug, Clone)]
 pub struct DisplayState {
     /// Transport state (position, tempo, time signature, loop, metronome).
@@ -133,17 +138,20 @@ pub struct DisplayState {
     /// Whether disk recording is currently active.
     pub is_recording: bool,
 
-    /// Most recent formant data from the analysis thread, if available.
-    pub formants: Option<FormantData>,
+    /// Most recent formant data from the analysis thread
+    /// (`num_formants == 0` until formants have been detected).
+    pub formants: FormantData,
 
     /// Estimated CPU load of the output callback as a fraction in [0, 1].
     pub cpu_load: f32,
 
-    /// Timeline snapshot for clip display.
+    /// Timeline snapshot for clip display, with each track's recording in
+    /// progress (from `recordings`) filled in.
     pub timeline: TimelineSnapshot,
 
-    /// Connected IPC instruments for the header status display.
-    pub ipc_instruments: Vec<IpcInstrumentSnapshot>,
+    /// Recordings in progress, one per recording track, in no particular
+    /// order; unused slots are `None`.
+    pub recordings: [Option<TrackRecording>; MAX_TRACKS],
 }
 
 impl DisplayState {
@@ -162,13 +170,12 @@ impl DisplayState {
                 beats_per_bar: 4,
                 beat_unit: 4,
                 loop_region: None,
-                loop_enabled: false,
                 metronome_enabled: false,
-                current_beat: 0,
-                beat_active: false,
-                count_in_active: false,
-                count_in_bar: 0,
-                count_in_total: 0,
+                beat: crate::transport::BeatIndicator {
+                    beat: 0,
+                    flash: false,
+                },
+                count_in: None,
                 recording_workflow: crate::transport::RecordingWorkflow::FreeRecord,
                 auto_record_bars: 0,
             },
@@ -187,11 +194,40 @@ impl DisplayState {
             waveform: Vec::new(),
             input_level_db: Db::SILENCE.value(),
             is_recording: false,
-            formants: None,
+            formants: FormantData {
+                frequencies: Vec::new(),
+                bandwidths: Vec::new(),
+                num_formants: 0,
+            },
             cpu_load: 0.0,
             timeline: TimelineSnapshot::empty(),
-            ipc_instruments: Vec::new(),
+            recordings: [None; MAX_TRACKS],
         }
+    }
+
+    /// Like [`DisplayState::initial`], with every buffer the output callback
+    /// writes sized in advance: meters for [`MAX_TRACKS`] tracks,
+    /// `spectrum_len` spectrum bins, [`WAVEFORM_POINTS`] waveform points and
+    /// [`FORMANT_CAPACITY`] formants. Allocates.
+    #[must_use]
+    pub fn with_capacity(sample_rate: u32, spectrum_len: usize) -> Self {
+        let mut state = Self::initial(sample_rate);
+        state.mixer.track_meters.reserve_exact(MAX_TRACKS);
+        state.spectrum_magnitudes.reserve_exact(spectrum_len);
+        state.waveform.reserve_exact(WAVEFORM_POINTS);
+        state.formants.frequencies.reserve_exact(FORMANT_CAPACITY);
+        state.formants.bandwidths.reserve_exact(FORMANT_CAPACITY);
+        state
+    }
+
+    /// The recording in progress on track `track_id` (`TrackId.0`), if any.
+    #[must_use]
+    pub fn recording_on(&self, track_id: usize) -> Option<RecordingSpan> {
+        self.recordings
+            .iter()
+            .flatten()
+            .find(|recording| recording.track_id == track_id)
+            .map(|recording| recording.span)
     }
 }
 
@@ -211,7 +247,8 @@ mod tests {
         assert_eq!(state.transport.beats_per_bar, 4);
         assert_eq!(state.transport.beat_unit, 4);
         assert!(state.transport.loop_region.is_none());
-        assert!(!state.transport.loop_enabled);
+        assert!(!state.transport.is_looping());
+        assert_eq!(state.transport.count_in, None);
         assert!(!state.transport.metronome_enabled);
     }
 
@@ -249,9 +286,33 @@ mod tests {
     }
 
     #[test]
-    fn initial_formants_are_none() {
+    fn initial_formants_are_empty() {
         let state = DisplayState::initial(44_100);
-        assert!(state.formants.is_none());
+        assert_eq!(state.formants.num_formants, 0);
+        assert!(state.formants.frequencies.is_empty());
+    }
+
+    #[test]
+    fn with_capacity_sizes_every_buffer_the_callback_writes() {
+        let state = DisplayState::with_capacity(48_000, 1025);
+        assert!(state.mixer.track_meters.capacity() >= MAX_TRACKS);
+        assert!(state.spectrum_magnitudes.capacity() >= 1025);
+        assert!(state.waveform.capacity() >= WAVEFORM_POINTS);
+        assert!(state.formants.frequencies.capacity() >= FORMANT_CAPACITY);
+        assert!(state.formants.bandwidths.capacity() >= FORMANT_CAPACITY);
+        assert!(state.recordings.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn recording_on_finds_the_track() {
+        let mut state = DisplayState::initial(44_100);
+        let span = RecordingSpan {
+            start: 10,
+            length: 20,
+        };
+        state.recordings[3] = Some(TrackRecording { track_id: 7, span });
+        assert_eq!(state.recording_on(7), Some(span));
+        assert_eq!(state.recording_on(3), None);
     }
 
     #[test]
@@ -311,13 +372,12 @@ mod tests {
             track_id: 0,
             track_name: "Track 1".into(),
             clips: Vec::new(),
-            armed: false,
-            muted: false,
-            soloed: false,
-            is_recording_clip: false,
-            recording_start: 0,
-            recording_length: 0,
+            recording: Some(RecordingSpan {
+                start: u64::MAX - 1,
+                length: 5,
+            }),
         };
+        assert_eq!(snap.recording.map(|span| span.end()), Some(u64::MAX));
         let dbg = format!("{snap:?}");
         assert!(dbg.contains("TrackClipSnapshot"));
     }
@@ -334,38 +394,5 @@ mod tests {
         let state = DisplayState::initial(44_100);
         assert!(state.timeline.tracks.is_empty());
         assert_eq!(state.timeline.total_length, 0);
-    }
-
-    // -- IPC instrument snapshot tests --
-
-    #[test]
-    fn initial_ipc_instruments_empty() {
-        let state = DisplayState::initial(44_100);
-        assert!(state.ipc_instruments.is_empty());
-    }
-
-    #[test]
-    fn ipc_instrument_snapshot_debug() {
-        let snap = IpcInstrumentSnapshot {
-            name: "mini".into(),
-            connected: true,
-            strip_index: 0,
-        };
-        let dbg = format!("{snap:?}");
-        assert!(dbg.contains("IpcInstrumentSnapshot"));
-        assert!(dbg.contains("mini"));
-    }
-
-    #[test]
-    fn ipc_instrument_snapshot_clone() {
-        let snap = IpcInstrumentSnapshot {
-            name: "808".into(),
-            connected: false,
-            strip_index: 2,
-        };
-        let cloned = snap.clone();
-        assert_eq!(&*cloned.name, "808");
-        assert!(!cloned.connected);
-        assert_eq!(cloned.strip_index, 2);
     }
 }

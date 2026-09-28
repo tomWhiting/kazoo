@@ -65,6 +65,25 @@ impl ArpMode {
     }
 }
 
+/// Distinct MIDI notes: the most notes a pool can ever hold. Pools reserve
+/// this much up front so `note_on` never allocates on the audio thread.
+pub const MAX_HELD_NOTES: usize = 128;
+
+/// Where an arpeggiator is in its pattern: everything [`Arpeggiator::step`]
+/// reads and writes besides the note pools and settings.
+///
+/// A display copy of an arpeggiator restores the audio thread's cursor after
+/// every step instead of stepping itself, so it can never drift out of sync
+/// (random mode, dropped display events).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArpCursor {
+    position: usize,
+    played_position: usize,
+    direction: Direction,
+    current_note: Option<u8>,
+    rng_state: u64,
+}
+
 /// Direction state for `UpDown` mode traversal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -106,6 +125,8 @@ pub struct Arpeggiator {
 
     /// Linear position in the expanded (octave-spanning) pool.
     position: usize,
+    /// Position of the note the most recent step played.
+    played_position: usize,
     /// Direction for `UpDown` mode.
     direction: Direction,
 
@@ -133,9 +154,10 @@ impl Arpeggiator {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            pitch_sorted: Vec::with_capacity(16),
-            insertion_order: Vec::with_capacity(16),
+            pitch_sorted: Vec::with_capacity(MAX_HELD_NOTES),
+            insertion_order: Vec::with_capacity(MAX_HELD_NOTES),
             position: 0,
+            played_position: 0,
             direction: Direction::Forward,
             mode: ArpMode::Up,
             octave_range: 1,
@@ -243,6 +265,36 @@ impl Arpeggiator {
         self.position
     }
 
+    /// Position in the expanded pool of the note the last step played.
+    #[must_use]
+    pub const fn played_position(&self) -> usize {
+        self.played_position
+    }
+
+    /// Snapshot of where the arpeggiator is in its pattern.
+    #[must_use]
+    pub const fn cursor(&self) -> ArpCursor {
+        ArpCursor {
+            position: self.position,
+            played_position: self.played_position,
+            direction: self.direction,
+            current_note: self.current_note,
+            rng_state: self.rng_state,
+        }
+    }
+
+    /// Move to a cursor taken from an arpeggiator with the same notes and
+    /// settings. A position the pool cannot hold is clamped, as after a
+    /// note is released.
+    pub fn restore_cursor(&mut self, cursor: ArpCursor) {
+        self.position = cursor.position;
+        self.played_position = cursor.played_position;
+        self.direction = cursor.direction;
+        self.current_note = cursor.current_note;
+        self.rng_state = cursor.rng_state;
+        self.clamp_position();
+    }
+
     // ----- Stepping -----
 
     /// Advance to the next step and return a note-on event.
@@ -272,6 +324,7 @@ impl Arpeggiator {
         }
 
         // Read note at current position.
+        self.played_position = self.position;
         let note_index = self.position % pool_len;
         let octave = (self.position / pool_len) as u8;
         let base = self.read_pool(note_index);
@@ -318,9 +371,12 @@ impl Arpeggiator {
         }
     }
 
-    /// Set gate percentage (clamped to 0.1–1.0).
+    /// Set gate percentage (clamped to 0.1–1.0). A non-finite value is
+    /// ignored: NaN would stop gates from ever closing.
     pub const fn set_gate_pct(&mut self, pct: f32) {
-        self.gate_pct = pct.clamp(0.1, 1.0);
+        if pct.is_finite() {
+            self.gate_pct = pct.clamp(0.1, 1.0);
+        }
     }
 
     /// Toggle latch. Turning latch off clears the pool.
@@ -702,7 +758,13 @@ mod tests {
     #[test]
     fn gate_off_returns_current_note() {
         let mut arp = make_arp(&[(60, 100)]);
-        let _ = arp.step();
+        assert_eq!(
+            arp.step(),
+            Some(NoteEvent::NoteOn {
+                midi_note: 60,
+                velocity: 100
+            })
+        );
         assert_eq!(arp.gate_off(), Some(NoteEvent::NoteOff { midi_note: 60 }));
     }
 
@@ -715,8 +777,8 @@ mod tests {
     #[test]
     fn gate_off_clears_after_first_call() {
         let mut arp = make_arp(&[(60, 100)]);
-        let _ = arp.step();
-        let _ = arp.gate_off();
+        assert!(arp.step().is_some());
+        assert_eq!(arp.gate_off(), Some(NoteEvent::NoteOff { midi_note: 60 }));
         assert!(arp.gate_off().is_none());
     }
 
@@ -761,11 +823,83 @@ mod tests {
     #[test]
     fn peek_does_not_modify_state() {
         let mut arp = make_arp(&[(60, 100), (64, 100), (67, 100)]);
-        let _ = arp.step(); // position advances
+        assert!(arp.step().is_some(), "step must play a note");
         let pos_before = arp.position();
         let peeked = arp.peek_pattern(6);
         assert_eq!(arp.position(), pos_before);
         assert_eq!(peeked.len(), 6);
+    }
+
+    // -- Real-time safety and display sync --
+
+    #[test]
+    fn full_note_pool_never_reallocates() {
+        let mut arp = Arpeggiator::new();
+        let sorted_cap = arp.pitch_sorted.capacity();
+        let order_cap = arp.insertion_order.capacity();
+        assert!(sorted_cap >= MAX_HELD_NOTES && order_cap >= MAX_HELD_NOTES);
+        for note in 0..=127_u8 {
+            arp.note_on(note, 100);
+        }
+        // Re-triggering replaces, never grows past one entry per note.
+        for note in 0..=127_u8 {
+            arp.note_on(note, 90);
+        }
+        assert_eq!(arp.note_count(), MAX_HELD_NOTES);
+        assert_eq!(arp.pitch_sorted.capacity(), sorted_cap);
+        assert_eq!(arp.insertion_order.capacity(), order_cap);
+    }
+
+    #[test]
+    fn played_position_tracks_the_played_note() {
+        let mut arp = make_arp(&[(60, 100), (64, 100), (67, 100)]);
+        for expected in [0, 1, 2, 0] {
+            assert!(arp.step().is_some());
+            assert_eq!(arp.played_position(), expected);
+        }
+    }
+
+    #[test]
+    fn restored_cursor_follows_the_source_in_every_mode() {
+        for mode in ArpMode::ALL {
+            let mut audio = make_arp(&[(60, 100), (64, 100), (67, 100), (71, 100)]);
+            audio.set_octave_range(2);
+            audio.set_mode(mode);
+            let mut display = audio.clone();
+            for _ in 0..20 {
+                let played = audio.step();
+                display.restore_cursor(audio.cursor());
+                assert!(played.is_some());
+                assert_eq!(display.cursor(), audio.cursor(), "mode {mode:?}");
+                assert_eq!(
+                    display.peek_pattern(8),
+                    audio.peek_pattern(8),
+                    "mode {mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn restored_cursor_is_clamped_to_a_smaller_pool() {
+        let mut audio = make_arp(&[(60, 100), (64, 100), (67, 100)]);
+        for _ in 0..2 {
+            assert!(audio.step().is_some());
+        }
+        let mut display = make_arp(&[(60, 100)]);
+        display.restore_cursor(audio.cursor());
+        assert_eq!(display.position(), 0);
+        assert!(display.step().is_some());
+    }
+
+    #[test]
+    fn non_finite_gate_is_ignored() {
+        let mut arp = Arpeggiator::new();
+        arp.set_gate_pct(0.4);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            arp.set_gate_pct(bad);
+        }
+        assert!((arp.gate_pct - 0.4).abs() < f32::EPSILON);
     }
 
     // -- Octave range setter --

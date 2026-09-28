@@ -100,7 +100,6 @@ impl Metronome {
             let sample_pos = position.saturating_add(i as u64);
 
             // Determine which beat number this sample falls on.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let beat_number = (sample_pos as f64 / samples_per_beat).floor() as u64;
 
             // Check if we've crossed into a new beat.
@@ -122,7 +121,6 @@ impl Metronome {
                     self.click_pos = 0;
 
                     // Beat 1 (downbeat) is when beat_number % beats_per_bar == 0.
-                    #[allow(clippy::cast_possible_truncation)]
                     let beat_in_bar = (beat_number % u64::from(beats_per_bar)) as u8;
                     self.is_downbeat = beat_in_bar == 0;
                 }
@@ -164,7 +162,6 @@ impl Metronome {
 /// Duration is [`CLICK_DURATION_SECS`] at the given sample rate.
 fn render_click(sample_rate: u32, frequency: f32) -> Vec<f32> {
     let sr = sample_rate.max(1) as f32;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let num_samples = (sr * CLICK_DURATION_SECS) as usize;
     let num_samples = num_samples.max(1);
 
@@ -308,7 +305,6 @@ mod tests {
     #[test]
     fn render_click_produces_correct_length() {
         let buf = render_click(44_100, 1000.0);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let expected = (44_100.0_f32 * CLICK_DURATION_SECS) as usize;
         assert_eq!(buf.len(), expected);
     }

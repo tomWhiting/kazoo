@@ -17,14 +17,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
             Constraint::Length(3),
             Constraint::Length(8),
             Constraint::Min(10),
-            Constraint::Length(4),
+            Constraint::Length(5),
         ])
         .split(frame.area());
 
     draw_header(frame, chunks[0], app);
     draw_pattern(frame, chunks[1], app);
     draw_params(frame, chunks[2], app);
-    draw_footer(frame, chunks[3]);
+    draw_footer(frame, chunks[3], app);
 
     if app.show_help {
         draw_help(frame);
@@ -32,14 +32,43 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let state = if app.playing { "PLAY" } else { "STOP" };
-    let text = format!(
-        " kazoo-303  |  {state}  |  {:.1} BPM  |  waveform: {}  |  all procedural synthesis, no samples ",
-        app.sequencer.clock.bpm(),
-        app.synth.waveform().label()
-    );
+    let (state, state_style) = if app.playing {
+        ("PLAY", Style::new().fg(Color::Black).bg(Color::Green))
+    } else {
+        ("STOP", Style::new().fg(Color::Gray))
+    };
+    let connected = app.hub.as_ref().is_some_and(|hub| hub.connected);
+    let link_style = if connected {
+        Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::Yellow)
+    };
+    let mut spans = vec![
+        Span::raw(" kazoo-303  "),
+        Span::styled(
+            format!(" {state} "),
+            state_style.add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(
+            "  {:.1} BPM  swing {:.0}%  {}  ",
+            app.sequencer.clock.bpm(),
+            app.sequencer.clock.swing() * 100.0,
+            app.synth.waveform().label()
+        )),
+        Span::styled(app.link_label(), link_style),
+    ];
+    if let Some(note) = app.hub_note {
+        spans.push(Span::styled(
+            format!("  desk note {}", kazoo_core::midi_note_name(note)),
+            Style::new().fg(Color::Cyan),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Acid Bassline")),
+        Paragraph::new(Line::from(spans)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Acid Bassline"),
+        ),
         area,
     );
 }
@@ -56,9 +85,15 @@ fn draw_pattern(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let selected = idx == app.cursor_step;
         let playing = idx == app.playback_step && app.playing;
         let style = if selected {
-            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else if playing {
-            Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD)
         } else if step.active {
             Style::default().fg(Color::Cyan)
         } else {
@@ -88,37 +123,100 @@ fn draw_pattern(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(pattern.name.as_str()))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(pattern.name.as_str()),
+            )
             .wrap(Wrap { trim: false }),
         area,
     );
 }
 
 fn draw_params(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let rows = AcidSynthParam::ALL.into_iter().enumerate().map(|(idx, param)| {
-        let value = app.synth.param_value(param);
-        let marker = if idx == app.selected_param { ">" } else { " " };
-        Row::new(vec![
-            format!("{marker} {}", param.label()),
-            bar(value),
-            format!("{:>3}%", (value * 100.0).round()),
-        ])
-    });
+    let rows = AcidSynthParam::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(idx, param)| {
+            let value = app.synth.param_value(param);
+            let marker = if idx == app.selected_param { ">" } else { " " };
+            Row::new(vec![
+                format!("{marker} {}", param.label()),
+                bar(value),
+                format!("{:>3}%", (value * 100.0).round()),
+            ])
+        });
 
     let table = Table::new(
         rows,
-        [Constraint::Length(16), Constraint::Length(28), Constraint::Length(6)],
+        [
+            Constraint::Length(16),
+            Constraint::Length(28),
+            Constraint::Length(6),
+        ],
     )
-    .block(Block::default().borders(Borders::ALL).title("Voice controls"))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Voice controls"),
+    )
     .column_spacing(2);
     frame.render_widget(table, area);
 }
 
-fn draw_footer(frame: &mut Frame<'_>, area: Rect) {
-    let text = vec![
+fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let mut text = vec![
         Line::from("Enter play/stop  arrows select  Space step  a accent  s slide  z/x transpose"),
-        Line::from(",/. adjust param  +/- BPM  w waveform  r acid pattern  ? help  q quit"),
+        Line::from(
+            ",/. adjust param  +/- BPM  [/] swing  w waveform  r acid pattern  ? help  q quit",
+        ),
     ];
+    let alert = Style::new().fg(Color::Black).bg(Color::Red);
+    let warn = Style::new().fg(Color::Yellow);
+    let mut problems = Vec::new();
+    if app.commands_dropped > 0 {
+        let reason = app
+            .delivery_warning
+            .unwrap_or("earlier edits were not applied");
+        problems.push(Span::styled(
+            format!("{reason} ({} edits refused so far) ", app.commands_dropped),
+            alert,
+        ));
+    }
+    if app.stream.lost {
+        problems.push(Span::styled(
+            "AUDIO DEVICE LOST - restart kazoo-303 ",
+            alert,
+        ));
+    } else if app.stream.errors > 0 {
+        problems.push(Span::styled(
+            format!("{} audio stream errors ", app.stream.errors),
+            warn,
+        ));
+    }
+    if app.desk_lost > 0 {
+        problems.push(Span::styled(
+            format!("{} desk messages lost ", app.desk_lost),
+            warn,
+        ));
+    }
+    if let Some(hub) = app.hub.as_ref() {
+        if hub.blocks_dropped > 0 {
+            problems.push(Span::styled(
+                format!("{} blocks lost to desk ", hub.blocks_dropped),
+                warn,
+            ));
+        }
+        if hub.messages_dropped > 0 {
+            problems.push(Span::styled(
+                format!("{} link messages lost ", hub.messages_dropped),
+                warn,
+            ));
+        }
+    }
+    if !problems.is_empty() {
+        text.push(Line::from(problems));
+    }
     frame.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Keys")),
         area,
@@ -129,7 +227,10 @@ fn draw_help(frame: &mut Frame<'_>) {
     let area = centered_rect(70, 60, frame.area());
     frame.render_widget(Clear, area);
     let text = vec![
-        Line::from(Span::styled("kazoo-303", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "kazoo-303",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from("A TB-303-inspired acid bassline synth built from code only:"),
         Line::from("oscillator math, envelopes, glide, accent, nonlinear filtering, saturation."),
@@ -138,7 +239,11 @@ fn draw_help(frame: &mut Frame<'_>) {
         Line::from(""),
         Line::from("Step data: active note, accent, slide."),
         Line::from("Controls: Space toggles a note, a toggles accent, s toggles slide."),
-        Line::from("Use z/x to transpose the selected step."),
+        Line::from("Use z/x to transpose the selected step, [ and ] to swing the off-beats."),
+        Line::from(""),
+        Line::from("With kazoo-mix running, the 303 plays through the desk: play/stop and"),
+        Line::from("tempo go to the desk, and every instrument starts on the same frame."),
+        Line::from("Notes the desk sends play the 303 live; loud ones accent, legato slides."),
         Line::from(""),
         Line::from("Press any key to close this help."),
     ];

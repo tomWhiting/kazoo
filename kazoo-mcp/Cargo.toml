@@ -1,0 +1,29 @@
+[package]
+name = "kazoo-mcp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "The wall for Claude seats: an MCP server that plays kazoo-wall and tells a seat when others change it"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The wall's protocol types, paths and name rules. The socket I/O is this
+# crate's own, on tokio.
+kazoo-wall = { path = "../kazoo-wall" }
+# The MCP server over stdio. Pinned the way dot-seat pins it, because the
+# Claude channel notification shape is tied to this release.
+rmcp = { version = "=3.2.0", default-features = false, features = ["macros", "server", "transport-io"] }
+# Tool argument schemas, at the version rmcp's macros generate against.
+schemars = "1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+# The server is tested as a real child process, driven by rmcp's own client
+# over the child-process transport, against a real headless daemon.
+rmcp = { version = "=3.2.0", default-features = false, features = ["client", "macros", "server", "transport-child-process", "transport-io"] }
+tempfile = "3"
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }

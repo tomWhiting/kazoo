@@ -19,6 +19,15 @@ impl Waveform {
             Self::Square => "square",
         }
     }
+
+    /// The other waveform.
+    #[must_use]
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Saw => Self::Square,
+            Self::Square => Self::Saw,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,14 +119,6 @@ impl AcidSynth {
         self.waveform = waveform;
     }
 
-    pub const fn toggle_waveform(&mut self) -> Waveform {
-        self.waveform = match self.waveform {
-            Waveform::Saw => Waveform::Square,
-            Waveform::Square => Waveform::Saw,
-        };
-        self.waveform
-    }
-
     #[must_use]
     pub const fn param_value(&self, param: AcidSynthParam) -> f32 {
         match param {
@@ -142,12 +143,6 @@ impl AcidSynth {
             AcidSynthParam::SlideTime => self.slide_time = value,
             AcidSynthParam::Drive => self.drive = value,
         }
-    }
-
-    pub fn adjust_param(&mut self, param: AcidSynthParam, delta: f32) -> f32 {
-        let value = self.param_value(param) + delta;
-        self.set_param(param, value);
-        self.param_value(param)
     }
 
     pub fn note_on(&mut self, note: i8, accent: bool, slide: bool) {
@@ -186,12 +181,9 @@ impl AcidSynth {
         let accent_cutoff = self.accent_env * self.accent_amount * 1_800.0;
         let cutoff_hz = (base_cutoff + env_cutoff + accent_cutoff).clamp(45.0, 12_000.0);
 
-        let filtered = self.filter.process(
-            driven,
-            cutoff_hz,
-            self.resonance,
-            self.sample_rate,
-        );
+        let filtered = self
+            .filter
+            .process(driven, cutoff_hz, self.resonance, self.sample_rate);
         (filtered * self.amp_env * 1.6).tanh()
     }
 

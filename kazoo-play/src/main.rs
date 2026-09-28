@@ -6,7 +6,8 @@
 
 use std::env;
 use std::f32::consts::TAU;
-use std::io::{self, Read};
+use std::fmt;
+use std::io::{self, Read, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -16,6 +17,8 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use kazoo_core::notation::{NotationError, parse_note_events};
 use kazoo_core::protocol::{NoteEvent, NoteEventKind};
+
+mod jam;
 
 const DEFAULT_BPM: f64 = 120.0;
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
@@ -30,6 +33,9 @@ struct Options {
     format: OutputFormat,
     mode: Mode,
     notation: Option<String>,
+    name: String,
+    velocity: u8,
+    drive: bool,
 }
 
 impl Default for Options {
@@ -41,6 +47,9 @@ impl Default for Options {
             format: OutputFormat::Lines,
             mode: Mode::Events,
             notation: None,
+            name: "kazoo-play".to_string(),
+            velocity: 100,
+            drive: false,
         }
     }
 }
@@ -55,14 +64,21 @@ enum OutputFormat {
 enum Mode {
     Events,
     Play,
+    Jam,
 }
 
 fn main() -> ExitCode {
     match run(env::args().skip(1)) {
-        Ok(output) => {
-            print!("{output}");
-            ExitCode::SUCCESS
-        }
+        Ok(output) => match write_output(&mut io::stdout().lock(), &output) {
+            Ok(()) => ExitCode::SUCCESS,
+            // The reader went away (for example `| head`): nothing is left to
+            // tell, but the run did not deliver everything, so it is not a success.
+            Err(err) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::from(1),
+            Err(err) => {
+                eprintln!("kazoo-play: failed to write output: {err}");
+                ExitCode::from(1)
+            }
+        },
         Err(err) => {
             eprintln!("kazoo-play: {err}");
             ExitCode::from(2)
@@ -70,14 +86,32 @@ fn main() -> ExitCode {
     }
 }
 
+/// Write the whole output and flush it, so a write failure is reported
+/// instead of panicking the way `print!` does.
+fn write_output(out: &mut impl Write, output: &str) -> io::Result<()> {
+    out.write_all(output.as_bytes())?;
+    out.flush()
+}
+
 fn run(args: impl IntoIterator<Item = String>) -> Result<String, String> {
     let options = parse_args(args)?;
+    if options.mode == Mode::Jam {
+        jam::run_jam(&jam::JamOptions {
+            name: options.name.clone(),
+            bpm: options.bpm,
+            channel: options.channel,
+            velocity: options.velocity,
+            drive: options.drive,
+            phrase: options.notation,
+        })?;
+        return Ok(String::new());
+    }
     let notation = match options.notation.as_ref() {
         Some(notation) => notation.clone(),
         None => read_stdin()?,
     };
     let events = parse_note_events(&notation, options.bpm, options.sample_rate, options.channel)
-        .map_err(format_notation_error)?;
+        .map_err(|err| format_notation_error(&err))?;
 
     match options.mode {
         Mode::Events => Ok(format_events(&events, options.format)),
@@ -85,6 +119,7 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<String, String> {
             play_events(&events, options.sample_rate)?;
             Ok(String::new())
         }
+        Mode::Jam => Err("jam mode is handled above".to_string()),
     }
 }
 
@@ -98,6 +133,20 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
             "-h" | "--help" => return Err(help()),
             "--play" => options.mode = Mode::Play,
             "--events" => options.mode = Mode::Events,
+            "--jam" => options.mode = Mode::Jam,
+            "--drive" => options.drive = true,
+            "--name" => {
+                options.name = iter
+                    .next()
+                    .ok_or_else(|| "missing value after --name".to_string())?;
+            }
+            "--velocity" => {
+                let velocity: u8 = parse_value(&mut iter, "--velocity")?;
+                if velocity > 127 {
+                    return Err("--velocity must be 0-127".to_string());
+                }
+                options.velocity = velocity;
+            }
             "--bpm" => {
                 options.bpm = parse_value(&mut iter, "--bpm")?;
                 if !options.bpm.is_finite() || options.bpm <= 0.0 {
@@ -162,7 +211,7 @@ fn read_stdin() -> Result<String, String> {
     Ok(input)
 }
 
-fn format_notation_error(err: NotationError) -> String {
+fn format_notation_error(err: &NotationError) -> String {
     format!("token {}: {}", err.token_index + 1, err.message)
 }
 
@@ -179,28 +228,49 @@ fn play_events(events: &[NoteEvent], requested_sample_rate: u32) -> Result<(), S
     let output_rate = config.sample_rate;
     let render = Arc::new(RenderState::new(events, requested_sample_rate, output_rate));
     let done = Arc::clone(&render.done);
+    let failed = Arc::new(AtomicBool::new(false));
 
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => build_stream::<f32>(&device, &config, Arc::clone(&render))?,
-        cpal::SampleFormat::I16 => build_stream::<i16>(&device, &config, Arc::clone(&render))?,
-        cpal::SampleFormat::U16 => build_stream::<u16>(&device, &config, Arc::clone(&render))?,
+        cpal::SampleFormat::F32 => {
+            build_stream::<f32>(&device, &config, Arc::clone(&render), Arc::clone(&failed))?
+        }
+        cpal::SampleFormat::I16 => {
+            build_stream::<i16>(&device, &config, Arc::clone(&render), Arc::clone(&failed))?
+        }
+        cpal::SampleFormat::U16 => {
+            build_stream::<u16>(&device, &config, Arc::clone(&render), Arc::clone(&failed))?
+        }
         other => return Err(format!("unsupported output sample format: {other:?}")),
     };
     stream
         .play()
         .map_err(|err| format!("failed to start output stream: {err}"))?;
 
+    // Without this check a stream that dies (device unplugged) would never
+    // reach the end of the phrase, and the process would wait forever.
     while !done.load(Ordering::Acquire) {
+        if failed.load(Ordering::Acquire) {
+            return Err("output stream stopped before the phrase finished".to_string());
+        }
         thread::sleep(Duration::from_millis(10));
     }
     drop(stream);
     Ok(())
 }
 
+/// Whether a stream error means no more audio will be rendered.
+const fn is_fatal(err: &cpal::StreamError) -> bool {
+    matches!(
+        err,
+        cpal::StreamError::DeviceNotAvailable | cpal::StreamError::StreamInvalidated
+    )
+}
+
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     render: Arc<RenderState>,
+    failed: Arc<AtomicBool>,
 ) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -217,7 +287,12 @@ where
                     }
                 }
             },
-            move |err| eprintln!("kazoo-play stream error: {err}"),
+            move |err| {
+                eprintln!("kazoo-play stream error: {err}");
+                if is_fatal(&err) {
+                    failed.store(true, Ordering::Release);
+                }
+            },
             None,
         )
         .map_err(|err| format!("failed to build output stream: {err}"))
@@ -244,10 +319,10 @@ impl RenderState {
                 continue;
             };
             let frame = scale_frame(event.frame, rate_ratio);
-            let end_frame = find_note_off(events, idx + 1, event.channel, note)
-                .map_or(frame + scale_frame(RELEASE_FRAMES, rate_ratio), |off| {
-                    scale_frame(off, rate_ratio)
-                });
+            let end_frame = find_note_off(events, idx + 1, event.channel, note).map_or_else(
+                || frame + scale_frame(RELEASE_FRAMES, rate_ratio),
+                |off| scale_frame(off, rate_ratio),
+            );
             last_frame = last_frame.max(end_frame);
             render_events.push(RenderEvent {
                 frame,
@@ -283,7 +358,8 @@ impl RenderState {
             }
             sample += voice_sample(event, frame as u64, self.sample_rate);
         }
-        (sample * 0.25).tanh()
+        // Non-finite input renders as silence, never as noise.
+        kazoo_core::sanitize_sample((sample * 0.25).tanh())
     }
 }
 
@@ -328,84 +404,71 @@ fn voice_sample(event: &RenderEvent, frame: u64, sample_rate: f32) -> f32 {
     let phase = TAU * freq * age / sample_rate;
     let sine = phase.sin();
     let soft_saw = (phase / TAU).fract().mul_add(2.0, -1.0).tanh();
-    (sine * 0.75 + soft_saw * 0.25) * amp * event.velocity
+    sine.mul_add(0.75, soft_saw * 0.25) * amp * event.velocity
 }
 
 fn midi_frequency(note: u8) -> f32 {
-    440.0 * 2.0_f32.powf((f32::from(note) - 69.0) / 12.0)
+    440.0 * ((f32::from(note) - 69.0) / 12.0).exp2()
 }
 
 fn format_events(events: &[NoteEvent], format: OutputFormat) -> String {
-    let mut out = String::new();
-    for event in events {
-        match format {
-            OutputFormat::Lines => format_event_line(&mut out, event),
-            OutputFormat::Tsv => format_event_tsv(&mut out, event),
-        }
-    }
-    out
+    EventListing { events, format }.to_string()
 }
 
-fn format_event_line(out: &mut String, event: &NoteEvent) {
-    match event.kind {
-        NoteEventKind::NoteOn { note, velocity } => {
-            out.push_str(&format!(
-                "@{} ch{} note_on {} {:.3}\n",
-                event.frame, event.channel, note, velocity
-            ));
+/// Every event, one per line, in the chosen format.
+struct EventListing<'a> {
+    events: &'a [NoteEvent],
+    format: OutputFormat,
+}
+
+impl fmt::Display for EventListing<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for event in self.events {
+            match self.format {
+                OutputFormat::Lines => write_event_line(f, event)?,
+                OutputFormat::Tsv => write_event_tsv(f, event)?,
+            }
         }
-        NoteEventKind::NoteOff { note, velocity } => {
-            out.push_str(&format!(
-                "@{} ch{} note_off {} {:.3}\n",
-                event.frame, event.channel, note, velocity
-            ));
-        }
-        NoteEventKind::ControlChange { controller, value } => {
-            out.push_str(&format!(
-                "@{} ch{} cc {} {:.3}\n",
-                event.frame, event.channel, controller, value
-            ));
-        }
-        NoteEventKind::PitchBend(value) => {
-            out.push_str(&format!(
-                "@{} ch{} bend {:.3}\n",
-                event.frame, event.channel, value
-            ));
-        }
+        Ok(())
     }
 }
 
-fn format_event_tsv(out: &mut String, event: &NoteEvent) {
+fn write_event_line(f: &mut fmt::Formatter<'_>, event: &NoteEvent) -> fmt::Result {
+    let (frame, channel) = (event.frame, event.channel);
     match event.kind {
         NoteEventKind::NoteOn { note, velocity } => {
-            out.push_str(&format!(
-                "{}\t{}\tnote_on\t{}\t{:.3}\n",
-                event.frame, event.channel, note, velocity
-            ));
+            writeln!(f, "@{frame} ch{channel} note_on {note} {velocity:.3}")
         }
         NoteEventKind::NoteOff { note, velocity } => {
-            out.push_str(&format!(
-                "{}\t{}\tnote_off\t{}\t{:.3}\n",
-                event.frame, event.channel, note, velocity
-            ));
+            writeln!(f, "@{frame} ch{channel} note_off {note} {velocity:.3}")
         }
         NoteEventKind::ControlChange { controller, value } => {
-            out.push_str(&format!(
-                "{}\t{}\tcc\t{}\t{:.3}\n",
-                event.frame, event.channel, controller, value
-            ));
+            writeln!(f, "@{frame} ch{channel} cc {controller} {value:.3}")
+        }
+        NoteEventKind::PitchBend(value) => writeln!(f, "@{frame} ch{channel} bend {value:.3}"),
+    }
+}
+
+fn write_event_tsv(f: &mut fmt::Formatter<'_>, event: &NoteEvent) -> fmt::Result {
+    let (frame, channel) = (event.frame, event.channel);
+    match event.kind {
+        NoteEventKind::NoteOn { note, velocity } => {
+            writeln!(f, "{frame}\t{channel}\tnote_on\t{note}\t{velocity:.3}")
+        }
+        NoteEventKind::NoteOff { note, velocity } => {
+            writeln!(f, "{frame}\t{channel}\tnote_off\t{note}\t{velocity:.3}")
+        }
+        NoteEventKind::ControlChange { controller, value } => {
+            writeln!(f, "{frame}\t{channel}\tcc\t{controller}\t{value:.3}")
         }
         NoteEventKind::PitchBend(value) => {
-            out.push_str(&format!(
-                "{}\t{}\tbend\t\t{:.3}\n",
-                event.frame, event.channel, value
-            ));
+            writeln!(f, "{frame}\t{channel}\tbend\t\t{value:.3}")
         }
     }
 }
 
 fn help() -> String {
-    "usage: kazoo-play [--play|--events] [--bpm N] [--sample-rate HZ] [--channel 0-15] [--format lines|tsv] [NOTATION...]\n\nexamples:\n  echo 'c4/8 d4/8 e4/8 [g4 b4 d5]/4 r/8' | kazoo-play --play\n  kazoo-play --bpm 96 --channel 2 'c3/4 [g3 bb3]/4 r/8 c4/8'\n"
+    "usage: kazoo-play [--play|--events|--jam] [--bpm N] [--sample-rate HZ] [--channel 0-15] [--format lines|tsv] [--name NAME] [--velocity 0-127] [--drive] [NOTATION...]\n\n--jam plugs into the kazoo-mix desk and loops the phrase on the song, locked to the desk's play/stop and tempo; each line on stdin is a new phrase, taking over at the next loop. --drive sends the notes to the other instruments instead of sounding.\n\nexamples:\n  kazoo-play --jam --name bass 'c2/8 c2/8 r/4 eb2/8 g2/8 r/4'\n  echo 'c4/8 d4/8 e4/8 [g4 b4 d5]/4 r/8' | kazoo-play --play\n  kazoo-play --bpm 96 --channel 2 'c3/4 [g3 bb3]/4 r/8 c4/8'\n"
         .to_string()
 }
 
@@ -460,6 +523,60 @@ mod tests {
         let err = run(["nope/4".to_string()]).unwrap_err();
 
         assert!(err.contains("token 1"));
+    }
+
+    #[test]
+    fn formats_every_event_kind() {
+        let event = |frame, kind| NoteEvent {
+            frame,
+            source: None,
+            destination: None,
+            channel: 1,
+            kind,
+        };
+        let events = [
+            event(
+                0,
+                NoteEventKind::ControlChange {
+                    controller: 7,
+                    value: 0.5,
+                },
+            ),
+            event(5, NoteEventKind::PitchBend(-0.25)),
+        ];
+        assert_eq!(
+            format_events(&events, OutputFormat::Lines),
+            "@0 ch1 cc 7 0.500\n@5 ch1 bend -0.250\n"
+        );
+        assert_eq!(
+            format_events(&events, OutputFormat::Tsv),
+            "0\t1\tcc\t7\t0.500\n5\t1\tbend\t\t-0.250\n"
+        );
+    }
+
+    #[test]
+    fn output_write_errors_are_returned() {
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let err = write_output(&mut Closed, "@0 ch0 note_on 60 0.800\n").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+        let mut buffer = Vec::new();
+        write_output(&mut buffer, "abc").unwrap();
+        assert_eq!(buffer, b"abc");
+    }
+
+    #[test]
+    fn only_lost_devices_are_fatal() {
+        assert!(is_fatal(&cpal::StreamError::DeviceNotAvailable));
+        assert!(is_fatal(&cpal::StreamError::StreamInvalidated));
+        assert!(!is_fatal(&cpal::StreamError::BufferUnderrun));
     }
 
     #[test]

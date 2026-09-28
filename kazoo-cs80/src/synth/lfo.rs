@@ -184,7 +184,7 @@ mod tests {
             let (pitch, filter, vca) = lfo.tick();
             assert!(pitch.is_finite() && pitch > 0.0);
             assert!(filter.is_finite());
-            assert!(vca.is_finite() && vca >= 0.0 && vca <= 1.0);
+            assert!(vca.is_finite() && (0.0..=1.0).contains(&vca));
         }
     }
 

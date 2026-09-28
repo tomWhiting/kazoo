@@ -62,7 +62,7 @@ impl AdsrEnvelope {
             }
             EnvelopeStage::Attack => {
                 let coeff = time_coeff(params.attack.max(0.001), self.sample_rate);
-                self.value += (1.0 - self.value) * coeff;
+                self.value = (1.0 - self.value).mul_add(coeff, self.value);
                 if self.value >= 0.995 {
                     self.value = 1.0;
                     self.stage = EnvelopeStage::Decay;
@@ -71,7 +71,7 @@ impl AdsrEnvelope {
             EnvelopeStage::Decay => {
                 let target = params.sustain.clamp(0.0, 1.0);
                 let coeff = time_coeff(params.decay.max(0.001), self.sample_rate);
-                self.value += (target - self.value) * coeff;
+                self.value = (target - self.value).mul_add(coeff, self.value);
                 if (self.value - target).abs() < 0.001 {
                     self.value = target;
                     self.stage = EnvelopeStage::Sustain;
@@ -82,7 +82,7 @@ impl AdsrEnvelope {
             }
             EnvelopeStage::Release => {
                 let coeff = time_coeff(params.release.max(0.001), self.sample_rate);
-                self.value += (0.0 - self.value) * coeff;
+                self.value = (-self.value).mul_add(coeff, self.value);
                 if self.value <= 0.0005 {
                     self.value = 0.0;
                     self.stage = EnvelopeStage::Idle;

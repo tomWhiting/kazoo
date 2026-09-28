@@ -1,0 +1,18 @@
+[package]
+name = "kazoo-sampler"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Kazoo's sampler: record your own sounds, keep them, play them back beautifully"
+
+[lints]
+workspace = true
+
+[dependencies]
+hound = "3.5.1"
+kazoo-fx = { path = "../kazoo-fx" }
+ringbuf = "0.4.8"
+
+[dev-dependencies]
+assert_no_alloc = "1.1.2"
+tempfile = "3"

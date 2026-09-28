@@ -1,0 +1,12 @@
+id: no-discarded-result
+language: rust
+severity: error
+message: Value discarded with `let _ =`. Handle the result or error explicitly.
+note: |
+  `let _ = fallible()` swallows errors silently. Handle the error, count it,
+  report it, or restructure so there is nothing to discard.
+rule:
+  kind: let_declaration
+  has:
+    field: pattern
+    regex: '^_$'

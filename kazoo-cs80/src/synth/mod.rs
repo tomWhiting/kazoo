@@ -260,18 +260,26 @@ impl Cs80Synth {
         })
     }
 
-    /// Get recent output samples for waveform/spectrum display.
+    /// Copy the most recent output samples into `out`, oldest first.
     ///
-    /// Returns a linearized view starting from the oldest sample. The caller
-    /// receives two slices: `[history_pos..end]` then `[0..history_pos]`.
-    /// We copy into a pre-allocated buffer to avoid returning disjoint slices.
-    #[must_use]
-    pub fn output_history_linearized(&self) -> Vec<f32> {
-        let pos = self.history_pos;
-        let mut out = Vec::with_capacity(self.output_history.len());
-        out.extend_from_slice(&self.output_history[pos..]);
-        out.extend_from_slice(&self.output_history[..pos]);
-        out
+    /// Never allocates, so it is safe to call from the audio callback. When
+    /// `out` is shorter than the history, the newest `out.len()` samples are
+    /// copied; when it is longer, the part beyond the history is zeroed.
+    pub fn copy_output_history(&self, out: &mut [f32]) {
+        let len = self.output_history.len();
+        let n = out.len().min(len);
+        if n == 0 {
+            out.fill(0.0);
+            return;
+        }
+        // `history_pos` is the oldest sample; the newest `n` start `n`
+        // samples before it (wrapping).
+        let start = (self.history_pos + len - n) % len;
+        let (head, tail) = self.output_history.split_at(start);
+        let from_tail = tail.len().min(n);
+        out[..from_tail].copy_from_slice(&tail[..from_tail]);
+        out[from_tail..n].copy_from_slice(&head[..n - from_tail]);
+        out[n..].fill(0.0);
     }
 
     /// Set sample rate for all voices.
@@ -528,7 +536,7 @@ mod tests {
         synth.note_off(60);
 
         // Find the voice that was playing note 60
-        let has_releasing = synth.voices.iter().any(|v| v.is_releasing());
+        let has_releasing = synth.voices.iter().any(Voice::is_releasing);
         assert!(
             has_releasing,
             "should have a releasing voice after note_off"
@@ -565,5 +573,55 @@ mod tests {
         for &sample in &buffer {
             assert!(sample.is_finite());
         }
+    }
+
+    /// Fill the history with a ramp so every slot is distinguishable, with
+    /// the write position part-way through so the ring wraps.
+    fn synth_with_ramp_history(pos: usize) -> Cs80Synth {
+        let mut synth = Cs80Synth::new(44100.0);
+        let len = synth.output_history.len();
+        for i in 0..len {
+            // Value = age order: the slot at `pos` is the oldest (0).
+            let age = (i + len - pos) % len;
+            synth.output_history[i] = age as f32;
+        }
+        synth.history_pos = pos;
+        synth
+    }
+
+    #[test]
+    fn copy_output_history_is_oldest_first_across_wrap() {
+        let synth = synth_with_ramp_history(700);
+        let mut out = vec![-1.0; Cs80Synth::HISTORY_SIZE];
+        synth.copy_output_history(&mut out);
+        for (i, &v) in out.iter().enumerate() {
+            assert!((v - i as f32).abs() < f32::EPSILON, "slot {i} was {v}");
+        }
+    }
+
+    #[test]
+    fn copy_output_history_short_buffer_gets_newest() {
+        let synth = synth_with_ramp_history(5);
+        let mut out = [-1.0_f32; 16];
+        synth.copy_output_history(&mut out);
+        let first = (Cs80Synth::HISTORY_SIZE - 16) as f32;
+        for (i, &v) in out.iter().enumerate() {
+            assert!(
+                (v - (first + i as f32)).abs() < f32::EPSILON,
+                "slot {i} was {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_output_history_long_buffer_zero_pads() {
+        let synth = synth_with_ramp_history(0);
+        let mut out = vec![-1.0; Cs80Synth::HISTORY_SIZE + 8];
+        synth.copy_output_history(&mut out);
+        assert!(
+            (out[Cs80Synth::HISTORY_SIZE - 1] - (Cs80Synth::HISTORY_SIZE - 1) as f32).abs()
+                < f32::EPSILON
+        );
+        assert!(out[Cs80Synth::HISTORY_SIZE..].iter().all(|&v| v == 0.0));
     }
 }

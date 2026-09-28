@@ -5,7 +5,7 @@
 //! Tuning constants are from the original Freeverb source, scaled by
 //! `sample_rate / 44100`.
 
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
 
 // ---------------------------------------------------------------------------
 // Freeverb tuning constants (Jezar, at 44100 Hz)
@@ -182,31 +182,30 @@ impl Reverb {
         self.damp2 = 1.0 - self.damp1;
     }
 
-    fn param_infos() -> [ParamInfo; 3] {
-        [
-            ParamInfo {
-                name: "Room Size".into(),
-                min: Self::ROOM_SIZE_MIN,
-                max: Self::ROOM_SIZE_MAX,
-                default: Self::ROOM_SIZE_DEFAULT,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Damping".into(),
-                min: Self::DAMPING_MIN,
-                max: Self::DAMPING_MAX,
-                default: Self::DAMPING_DEFAULT,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Mix".into(),
-                min: Self::MIX_MIN,
-                max: Self::MIX_MAX,
-                default: Self::MIX_DEFAULT,
-                unit: String::new(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; 3] = [
+        ParamInfo {
+            name: "Room Size",
+            min: Self::ROOM_SIZE_MIN,
+            max: Self::ROOM_SIZE_MAX,
+            default: Self::ROOM_SIZE_DEFAULT,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Damping",
+            min: Self::DAMPING_MIN,
+            max: Self::DAMPING_MAX,
+            default: Self::DAMPING_DEFAULT,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Mix",
+            min: Self::MIX_MIN,
+            max: Self::MIX_MAX,
+            default: Self::MIX_DEFAULT,
+            unit: "",
+        },
+    ];
 }
 
 impl Processor for Reverb {
@@ -255,8 +254,7 @@ impl Processor for Reverb {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        let infos = Self::param_infos();
-        infos.get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -268,18 +266,19 @@ impl Processor for Reverb {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
 
         match index {
             Self::PARAM_ROOM_SIZE => self.room_size = clamped,
             Self::PARAM_DAMPING => self.damping = clamped,
             Self::PARAM_MIX => self.mix = clamped,
-            _ => unreachable!(),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
 
         self.update_coefficients();
@@ -460,7 +459,7 @@ mod tests {
                 rng ^= rng << 13;
                 rng ^= rng >> 17;
                 rng ^= rng << 5;
-                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect();
         let mut output = vec![0.0_f32; 8192];

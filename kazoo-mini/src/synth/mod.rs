@@ -140,8 +140,6 @@ pub struct MiniVoice {
     /// Current MIDI note number (for display).
     current_note: Option<u8>,
 
-    sample_rate: f32,
-
     /// Pre-allocated scratch buffer for output waveform display.
     /// Stores the last block's output for the TUI waveform monitor.
     display_buffer: Vec<f32>,
@@ -205,7 +203,6 @@ impl MiniVoice {
             retrigger: false,
             note_stack: NoteStack::new(),
             current_note: None,
-            sample_rate: sr,
             display_buffer: vec![0.0; DISPLAY_BUFFER_SIZE],
             display_write_pos: 0,
         }
@@ -262,14 +259,16 @@ impl MiniVoice {
     fn process_sample(&mut self) -> f32 {
         // 1. Glide: get current pitch frequency
         let pitch_freq = self.glide.tick();
-        if pitch_freq <= 0.0 {
-            // No active note
-            let env = self.amp_env.tick();
-            let _ = self.filter_env.tick();
-            if env < 1e-6 {
-                self.store_display_sample(0.0);
-                return 0.0;
-            }
+
+        // Advance both envelopes exactly once per sample, whether or not a
+        // note is sounding, so their timing never depends on the path taken.
+        let filter_env_val = self.filter_env.tick();
+        let amp_env_val = self.amp_env.tick();
+
+        if pitch_freq <= 0.0 && amp_env_val < 1e-6 {
+            // No pitch and the VCA is closed: nothing to render.
+            self.store_display_sample(0.0);
+            return 0.0;
         }
 
         // 2. Compute oscillator frequencies with cross-mod
@@ -307,7 +306,6 @@ impl MiniVoice {
         let mixed = self.mixer.mix(osc1_out, osc2_out, osc3_out, 0.0);
 
         // 4. Filter envelope -> cutoff modulation
-        let filter_env_val = self.filter_env.tick();
         let base_cutoff = self.filter.base_cutoff;
 
         // Envelope modulates cutoff: env * amount * (max - base) + base
@@ -338,7 +336,6 @@ impl MiniVoice {
         let filtered = self.filter.process_sample(mixed);
 
         // 6. Amplitude envelope (VCA)
-        let amp_env_val = self.amp_env.tick();
         let output = filtered * amp_env_val;
 
         // 7. Soft limit and sanitize
@@ -394,19 +391,6 @@ impl MiniVoice {
     /// Set the display note (for snapshot copies from the audio thread).
     pub const fn set_display_note(&mut self, note: Option<u8>) {
         self.current_note = note;
-    }
-
-    /// Set sample rate on all sub-components.
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        let sr = sample_rate.max(1.0);
-        self.sample_rate = sr;
-        self.osc1.set_sample_rate(sr);
-        self.osc2.set_sample_rate(sr);
-        self.osc3.set_sample_rate(sr);
-        self.filter.set_sample_rate(sr);
-        self.filter_env.set_sample_rate(sr);
-        self.amp_env.set_sample_rate(sr);
-        self.glide.set_sample_rate(sr);
     }
 
     /// Reset all state.
@@ -526,7 +510,7 @@ mod tests {
 
         for (i, &s) in output.iter().enumerate() {
             assert!(
-                s.is_finite() && s >= -1.0 && s <= 1.0,
+                s.is_finite() && (-1.0..=1.0).contains(&s),
                 "sample {i} out of range: {s}"
             );
         }
@@ -544,7 +528,14 @@ mod tests {
         voice.process_block(&mut buf);
 
         voice.note_on(48); // C3 — lower than C4, so lowest-note priority changes pitch
-        // The glide should be active (pitch changed from C4 to C3)
-        assert!(voice.glide.is_gliding());
+        // The glide should be active: the pitch starts moving from C4 towards
+        // C3 rather than jumping.
+        let c3 = 130.81;
+        let c4 = 261.63;
+        let f = voice.glide.tick();
+        assert!(
+            f > c3 + 1.0 && f < c4 + 1.0,
+            "pitch should be gliding between C3 and C4, got {f}"
+        );
     }
 }

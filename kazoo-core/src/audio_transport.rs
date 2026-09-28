@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(popped.header.start_frame, 128);
         assert_eq!(popped.header.sequence, 1);
         assert_eq!(popped.samples_copied, 8);
-        assert_eq!(out, samples);
+        assert_eq!(out.map(f32::to_bits), samples.map(f32::to_bits));
     }
 
     #[test]
@@ -458,7 +458,7 @@ mod tests {
         let mut out = [0.0; 8];
         let popped = cons.pop_block(&mut out).unwrap();
         assert_eq!(popped.header.start_frame, 256);
-        assert_eq!(out, samples);
+        assert_eq!(out.map(f32::to_bits), samples.map(f32::to_bits));
     }
 
     #[test]
@@ -491,10 +491,10 @@ mod tests {
         let mut out = [1.0; 8];
         cons.pop_block(&mut out).unwrap();
 
-        assert_eq!(out[0], 0.0);
-        assert_eq!(out[1], 0.0);
-        assert_eq!(out[2], 0.0);
-        assert_eq!(out[3], 0.5);
+        assert_eq!(
+            out[..4].iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            [0.0_f32, 0.0, 0.0, 0.5].map(f32::to_bits)
+        );
     }
 
     #[test]
@@ -504,6 +504,6 @@ mod tests {
 
         assert_eq!(cons.pop_expected_or_silence(0, &mut out), None);
         assert_eq!(cons.underruns(), 1);
-        assert_eq!(out, [0.0; 8]);
+        assert_eq!(out.map(f32::to_bits), [0.0_f32; 8].map(f32::to_bits));
     }
 }

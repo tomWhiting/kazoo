@@ -12,7 +12,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use self::grid::GridWidget;
 use self::params::ParamsWidget;
 use crate::app::{App, Focus};
-use crate::synth::VOICE_COUNT;
+use crate::audio::SendFailure;
+use kazoo_808::synth::VOICE_COUNT;
 
 /// Static voice labels — avoids per-frame allocation.
 const VOICE_LABELS: [&str; VOICE_COUNT] = [
@@ -41,6 +42,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Constraint::Length(13), // Grid with border (2 border + 10 voices + 1 numbers).
             Constraint::Min(5),     // Params with border.
             Constraint::Length(1),  // Status bar.
+            Constraint::Length(1),  // Desk link and health alerts.
         ])
         .split(inner);
 
@@ -48,6 +50,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_grid_panel(frame, app, chunks[1]);
     draw_params_panel(frame, app, chunks[2]);
     draw_status_bar(frame, app, chunks[3]);
+    draw_alert_line(frame, app, chunks[4]);
 
     // Help overlay on top of everything.
     if app.show_help {
@@ -122,114 +125,208 @@ fn draw_params_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(ParamsWidget::new(app), inner);
 }
 
-/// Draw the status bar at the bottom, adapting to terminal width.
-#[allow(clippy::too_many_lines)]
-fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let w = area.width as usize;
-    let pattern_name = &app.sequencer.current_pattern_ref().name;
-    let pattern_count = app.sequencer.patterns.len();
-    let bpm = app.sequencer.clock.bpm();
-    let swing = app.sequencer.clock.swing();
-    let playing_label = if app.sequencer.playing {
-        "PLAY"
-    } else {
-        "STOP"
-    };
-    let playing_color = if app.sequencer.playing {
-        Color::Green
-    } else {
-        Color::Red
-    };
-    let focus_label = match app.focus {
-        Focus::Grid => "Grid",
-        Focus::Params => "Params",
-    };
+/// Status bar fields, formatted once per frame.
+struct StatusFields<'a> {
+    pattern_name: String,
+    pattern_count: usize,
+    bpm: f64,
+    swing: f64,
+    playing_label: &'a str,
+    playing_color: Color,
+    focus_label: &'a str,
+    /// Pattern select mode indicator, empty when inactive.
+    mode_indicator: &'a str,
+}
 
-    // Show pattern select mode indicator.
-    let mode_indicator = if app.pattern_select_mode { " P+_" } else { "" };
+impl StatusFields<'_> {
+    fn new(app: &App) -> Self {
+        Self {
+            pattern_name: app.sequencer.current_pattern_ref().name.to_string(),
+            pattern_count: app.sequencer.patterns.len(),
+            bpm: app.sequencer.clock.bpm(),
+            swing: app.sequencer.clock.swing(),
+            playing_label: if app.sequencer.playing {
+                "PLAY"
+            } else {
+                "STOP"
+            },
+            playing_color: if app.sequencer.playing {
+                Color::Green
+            } else {
+                Color::Red
+            },
+            focus_label: match app.focus {
+                Focus::Grid => "Grid",
+                Focus::Params => "Params",
+            },
+            mode_indicator: if app.pattern_select_mode { " P+_" } else { "" },
+        }
+    }
 
-    let mut spans = Vec::with_capacity(8);
+    const fn playing_style(&self) -> Style {
+        Style::new()
+            .fg(self.playing_color)
+            .add_modifier(Modifier::BOLD)
+    }
 
-    if w >= 80 {
-        // Full layout.
-        spans.push(Span::styled(
-            format!(" Pat:{pattern_name}/{pattern_count}"),
-            Style::new().fg(Color::Cyan),
-        ));
-        spans.push(Span::styled(
-            format!("  Sw:{swing:.0}%"),
-            Style::new().fg(Color::White),
-        ));
-        spans.push(Span::styled(
-            format!("  BPM:{bpm:.0}"),
-            Style::new().fg(Color::White),
-        ));
-        spans.push(Span::styled(
-            format!("  [{playing_label}]"),
-            Style::new().fg(playing_color).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!("  {focus_label}"),
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ));
-        if !mode_indicator.is_empty() {
-            spans.push(Span::styled(mode_indicator, Style::new().fg(Color::Yellow)));
+    /// Layout for terminals at least 80 columns wide.
+    fn full(&self) -> Vec<Span<'static>> {
+        let mut spans = vec![
+            Span::styled(
+                format!(" Pat:{}/{}", self.pattern_name, self.pattern_count),
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::styled(
+                format!("  Sw:{:.0}%", self.swing),
+                Style::new().fg(Color::White),
+            ),
+            Span::styled(
+                format!("  BPM:{:.0}", self.bpm),
+                Style::new().fg(Color::White),
+            ),
+            Span::styled(format!("  [{}]", self.playing_label), self.playing_style()),
+            Span::styled(
+                format!("  {}", self.focus_label),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if !self.mode_indicator.is_empty() {
+            spans.push(Span::styled(
+                self.mode_indicator.to_string(),
+                Style::new().fg(Color::Yellow),
+            ));
         }
         spans.push(Span::styled(
             "  [Space]=step [a]=acc [t]=trig [?]=help",
             Style::new().fg(Color::DarkGray),
         ));
-    } else if w >= 50 {
-        // Medium layout.
-        spans.push(Span::styled(
-            format!(" {pattern_name}"),
-            Style::new().fg(Color::Cyan),
-        ));
-        spans.push(Span::styled(
-            format!(" {bpm:.0}bpm"),
-            Style::new().fg(Color::White),
-        ));
-        spans.push(Span::styled(
-            format!(" [{playing_label}]"),
-            Style::new().fg(playing_color).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!(" {focus_label}"),
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ));
-        if !mode_indicator.is_empty() {
-            spans.push(Span::styled(mode_indicator, Style::new().fg(Color::Yellow)));
+        spans
+    }
+
+    /// Layout for terminals 50..80 columns wide.
+    fn medium(&self) -> Vec<Span<'static>> {
+        let mut spans = vec![
+            Span::styled(
+                format!(" {}", self.pattern_name),
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::styled(
+                format!(" {:.0}bpm", self.bpm),
+                Style::new().fg(Color::White),
+            ),
+            Span::styled(format!(" [{}]", self.playing_label), self.playing_style()),
+            Span::styled(
+                format!(" {}", self.focus_label),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if !self.mode_indicator.is_empty() {
+            spans.push(Span::styled(
+                self.mode_indicator.to_string(),
+                Style::new().fg(Color::Yellow),
+            ));
         }
         spans.push(Span::styled(" [?]=help", Style::new().fg(Color::DarkGray)));
-    } else {
-        // Minimal layout for narrow terminals.
+        spans
+    }
+
+    /// Layout for narrow terminals.
+    fn minimal(&self) -> Vec<Span<'static>> {
+        vec![
+            Span::styled(
+                format!(" {}", self.pattern_name),
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::styled(format!(" {:.0}", self.bpm), Style::new().fg(Color::White)),
+            Span::styled(format!(" [{}]", self.playing_label), self.playing_style()),
+            Span::styled(
+                format!(" {}", self.focus_label),
+                Style::new().fg(Color::Yellow),
+            ),
+        ]
+    }
+}
+
+/// Draw the status bar at the bottom, adapting to terminal width.
+fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let fields = StatusFields::new(app);
+    let spans = match area.width {
+        80.. => fields.full(),
+        50..80 => fields.medium(),
+        _ => fields.minimal(),
+    };
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Draw the link and health line: where the audio goes, and anything that
+/// went wrong (dropped commands, stream errors, refused requests).
+fn draw_alert_line(frame: &mut Frame, app: &App, area: Rect) {
+    let mut spans = Vec::with_capacity(4);
+
+    if let Some(hub) = &app.hub {
+        if let Some(strip) = hub.strip.filter(|_| hub.connected) {
+            spans.push(Span::styled(
+                format!(" \u{2192} kazoo-mix strip {}", u16::from(strip) + 1),
+                Style::new().fg(Color::Green),
+            ));
+            if hub.blocks_dropped > 0 {
+                spans.push(Span::styled(
+                    format!("  {} blocks lost to desk", hub.blocks_dropped),
+                    Style::new().fg(Color::Yellow),
+                ));
+            }
+            if app.desk_lost > 0 {
+                spans.push(Span::styled(
+                    format!("  {} desk transport messages lost", app.desk_lost),
+                    Style::new().fg(Color::Yellow),
+                ));
+            }
+        } else if let Some(refusal) = &hub.last_refusal {
+            spans.push(Span::styled(
+                format!(" desk: {refusal}"),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM),
+            ));
+        }
+    }
+
+    if app.stream.lost {
         spans.push(Span::styled(
-            format!(" {pattern_name}"),
-            Style::new().fg(Color::Cyan),
+            "  AUDIO DEVICE LOST - restart kazoo-808",
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         ));
+    } else if app.stream.errors > 0 {
         spans.push(Span::styled(
-            format!(" {bpm:.0}"),
-            Style::new().fg(Color::White),
-        ));
-        spans.push(Span::styled(
-            format!(" [{playing_label}]"),
-            Style::new().fg(playing_color).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!(" {focus_label}"),
+            format!("  {} audio stream errors", app.stream.errors),
             Style::new().fg(Color::Yellow),
         ));
     }
 
-    let line = Line::from(spans);
-    let para = Paragraph::new(line);
-    frame.render_widget(para, area);
+    let failed = app.commands.failed();
+    if failed > 0 {
+        let why = match app.commands.last_failure() {
+            Some(SendFailure::EngineGone) => "audio engine stopped",
+            Some(SendFailure::QueueFull) | None => "audio engine busy",
+        };
+        spans.push(Span::styled(
+            format!("  {failed} edits not applied ({why})"),
+            Style::new().fg(Color::Red),
+        ));
+    }
+
+    if let Some(notice) = app.notice {
+        spans.push(Span::styled(
+            format!("  {}", notice.text()),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Draw the help overlay (centered popup with all keybindings).
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
     let popup_width = 52_u16.min(area.width.saturating_sub(4));
-    let popup_height = 22_u16.min(area.height.saturating_sub(4));
+    let popup_height = 23_u16.min(area.height.saturating_sub(4));
     let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -261,7 +358,8 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
             Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )),
         Line::from("  +/-           Adjust BPM"),
-        Line::from("  p + 1-9       Select pattern"),
+        Line::from("  [ / ]         Adjust swing"),
+        Line::from("  p + 1-9,0,a-f Select pattern"),
         Line::from("  n             New pattern"),
         Line::from(""),
         Line::from(Span::styled(

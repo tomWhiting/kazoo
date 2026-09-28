@@ -33,15 +33,18 @@ pub struct Step {
 
 impl Default for Step {
     fn default() -> Self {
-        Self {
-            active: false,
-            velocity: NORMAL_VELOCITY,
-            accent: false,
-        }
+        Self::DEFAULT
     }
 }
 
 impl Step {
+    /// An inactive step at normal velocity.
+    pub const DEFAULT: Self = Self {
+        active: false,
+        velocity: NORMAL_VELOCITY,
+        accent: false,
+    };
+
     /// Effective trigger velocity accounting for accent.
     #[must_use]
     pub const fn effective_velocity(self) -> f32 {
@@ -53,19 +56,60 @@ impl Step {
     }
 }
 
+/// Name of a pattern in the bank: a bank letter and a slot number, as on
+/// the original 808 (`A1`..`A4`, `B1`..`B4`, ...).
+///
+/// Derived from the pattern's bank index, so naming a pattern never
+/// allocates — patterns are created inside the audio callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PatternName {
+    bank: u8,
+    slot: u8,
+}
+
+impl PatternName {
+    /// Patterns per bank letter.
+    const SLOTS_PER_BANK: usize = 4;
+
+    /// Name of the pattern at `index` in the bank (0 = `A1`, 4 = `B1`).
+    #[must_use]
+    pub const fn for_index(index: usize) -> Self {
+        let bank = index / Self::SLOTS_PER_BANK;
+        Self {
+            // Letters run A..Z; the bank never holds more than MAX_PATTERNS.
+            bank: if bank > 25 { b'Z' } else { b'A' + bank as u8 },
+            slot: b'1' + (index % Self::SLOTS_PER_BANK) as u8,
+        }
+    }
+}
+
+impl std::fmt::Display for PatternName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", char::from(self.bank), char::from(self.slot))
+    }
+}
+
 /// A single pattern: one row per voice, 16 steps each.
 #[derive(Debug, Clone)]
 pub struct Pattern {
-    pub name: String,
+    pub name: PatternName,
     pub steps: [[Step; STEPS_PER_PATTERN]; VOICE_COUNT],
+}
+
+impl Pattern {
+    /// An empty pattern for bank slot `index`.
+    #[must_use]
+    pub const fn empty(index: usize) -> Self {
+        Self {
+            name: PatternName::for_index(index),
+            steps: [[Step::DEFAULT; STEPS_PER_PATTERN]; VOICE_COUNT],
+        }
+    }
 }
 
 impl Default for Pattern {
     fn default() -> Self {
-        Self {
-            name: String::from("A1"),
-            steps: [[Step::default(); STEPS_PER_PATTERN]; VOICE_COUNT],
-        }
+        Self::empty(0)
     }
 }
 
@@ -79,7 +123,8 @@ pub struct TriggerEvent {
 /// The full sequencer engine.
 #[derive(Debug)]
 pub struct Sequencer {
-    /// Pattern bank.
+    /// Pattern bank. Holds at most [`MAX_PATTERNS`]; capacity for all of
+    /// them is reserved up front so adding a pattern never allocates.
     pub patterns: Vec<Pattern>,
     /// Index of the currently playing pattern.
     pub current_pattern: usize,
@@ -144,8 +189,15 @@ impl Sequencer {
         &self.patterns[self.current_pattern]
     }
 
-    /// Start playback.
-    pub const fn play(&mut self) {
+    /// Start playback from the top: step 0 fires on the next tick.
+    pub fn play(&mut self) {
+        self.play_from(0.0);
+    }
+
+    /// Start (or keep) playing from song position `beat`, in beats from the
+    /// first downbeat: how the sequencer follows the desk's transport.
+    pub fn play_from(&mut self, beat: f64) {
+        self.clock.seek(beat);
         self.playing = true;
     }
 
@@ -203,17 +255,24 @@ impl Sequencer {
         }
     }
 
-    /// Add a new empty pattern to the bank. Returns the index.
-    pub fn add_pattern(&mut self) -> usize {
+    /// Whether the bank has room for another pattern.
+    #[must_use]
+    pub fn can_add_pattern(&self) -> bool {
+        self.patterns.len() < MAX_PATTERNS
+    }
+
+    /// Add a new empty pattern to the bank. Returns its index, or `None`
+    /// when the bank already holds [`MAX_PATTERNS`].
+    ///
+    /// Real-time safe: the bank's capacity is reserved at construction and
+    /// pattern names never allocate.
+    pub fn add_pattern(&mut self) -> Option<usize> {
+        if !self.can_add_pattern() {
+            return None;
+        }
         let idx = self.patterns.len();
-        let mut pat = Pattern::default();
-        // Name patterns A1, A2, ... B1, B2, etc.
-        let bank = (idx / 4) as u8;
-        let num = (idx % 4) + 1;
-        let bank_letter = char::from(b'A' + bank.min(25));
-        pat.name = format!("{bank_letter}{num}");
-        self.patterns.push(pat);
-        idx
+        self.patterns.push(Pattern::empty(idx));
+        Some(idx)
     }
 
     /// Select a pattern by index (clamped to valid range).
@@ -305,9 +364,38 @@ mod tests {
         let mut seq = Sequencer::new(44100.0);
         assert_eq!(seq.patterns.len(), 1);
         let idx = seq.add_pattern();
-        assert_eq!(idx, 1);
+        assert_eq!(idx, Some(1));
         assert_eq!(seq.patterns.len(), 2);
-        assert_eq!(seq.patterns[1].name, "A2");
+        assert_eq!(seq.patterns[1].name.to_string(), "A2");
+    }
+
+    #[test]
+    fn pattern_names_follow_bank_layout() {
+        let names: Vec<String> = (0..MAX_PATTERNS)
+            .map(|idx| PatternName::for_index(idx).to_string())
+            .collect();
+        assert_eq!(names[0], "A1");
+        assert_eq!(names[3], "A4");
+        assert_eq!(names[4], "B1");
+        assert_eq!(names[MAX_PATTERNS - 1], "D4");
+    }
+
+    #[test]
+    fn pattern_bank_is_bounded_and_never_reallocates() {
+        let mut seq = Sequencer::new(44100.0);
+        let capacity = seq.patterns.capacity();
+        for expected in 1..MAX_PATTERNS {
+            assert_eq!(seq.add_pattern(), Some(expected));
+        }
+        assert_eq!(seq.patterns.len(), MAX_PATTERNS);
+        assert!(!seq.can_add_pattern());
+        assert_eq!(seq.add_pattern(), None, "a full bank must refuse");
+        assert_eq!(seq.patterns.len(), MAX_PATTERNS);
+        assert_eq!(
+            seq.patterns.capacity(),
+            capacity,
+            "bank must not reallocate"
+        );
     }
 
     #[test]

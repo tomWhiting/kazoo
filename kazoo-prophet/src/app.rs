@@ -1,5 +1,6 @@
 //! Application state for the Prophet TUI.
 
+use kazoo_core::ipc::link::LinkStatus;
 use kazoo_prophet::synth::oscillator::{OctaveRange, Waveform};
 use kazoo_prophet::{NUM_VOICES, SynthParams, VoiceStatus};
 
@@ -70,6 +71,15 @@ impl Section {
     }
 }
 
+/// Audio stream health, read from the engine each frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamHealth {
+    /// Errors cpal reported for the output stream.
+    pub errors: u64,
+    /// The output device is gone: no more audio until restart.
+    pub lost: bool,
+}
+
 /// Full UI-side state.
 #[derive(Debug)]
 pub struct App {
@@ -81,6 +91,20 @@ pub struct App {
     pub voice_status: [VoiceStatus; NUM_VOICES],
     pub waveform_buf: [f32; WAVEFORM_BUF_SIZE],
     pub held_notes: [Option<u8>; 16],
+    /// Commands the audio thread refused (queue full or engine stopped).
+    pub commands_dropped: u64,
+    /// Why the most recent command was refused, until one gets through.
+    pub delivery_warning: Option<&'static str>,
+    /// Edited parameters not yet accepted by the audio thread.
+    pub params_pending: bool,
+    /// Display snapshots the UI was too far behind to receive.
+    pub display_dropped: u64,
+    /// Set when notes cannot follow key releases, explaining why.
+    pub key_release_note: Option<String>,
+    /// Output stream health, mirrored from the audio side.
+    pub stream: StreamHealth,
+    /// State of the link to the kazoo-mix desk (None until first polled).
+    pub hub: Option<LinkStatus>,
 }
 
 impl App {
@@ -101,7 +125,39 @@ impl App {
             }; NUM_VOICES],
             waveform_buf: [0.0; WAVEFORM_BUF_SIZE],
             held_notes: [None; 16],
+            commands_dropped: 0,
+            delivery_warning: None,
+            params_pending: false,
+            display_dropped: 0,
+            key_release_note: None,
+            stream: StreamHealth::default(),
+            hub: None,
         }
+    }
+
+    /// Desk link badge: the text and whether it is a warning. `None` until
+    /// the link has been polled.
+    #[must_use]
+    pub fn hub_badge(&self) -> Option<(String, bool)> {
+        let hub = self.hub.as_ref()?;
+        if !hub.connected {
+            return Some(hub.last_refusal.as_ref().map_or_else(
+                || ("local output (desk not running)".to_owned(), false),
+                |why| (format!("desk: {why}"), true),
+            ));
+        }
+        let strip = hub.strip.map_or_else(String::new, |strip| {
+            format!(" strip {}", u16::from(strip) + 1)
+        });
+        let dropped = if hub.blocks_dropped > 0 {
+            format!(" ({} blocks dropped)", hub.blocks_dropped)
+        } else {
+            String::new()
+        };
+        Some((
+            format!("\u{2192} kazoo-mix{strip}{dropped}"),
+            hub.blocks_dropped > 0,
+        ))
     }
 
     pub fn next_section(&mut self) {
@@ -419,4 +475,60 @@ const fn octave_name(octave: OctaveRange) -> &'static str {
 
 const fn on_off(value: bool) -> &'static str {
     if value { "ON" } else { "OFF" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(connected: bool) -> LinkStatus {
+        LinkStatus {
+            connected,
+            strip: connected.then_some(3),
+            blocks_sent: 0,
+            blocks_dropped: 0,
+            messages_dropped: 0,
+            connections: u64::from(connected),
+            last_refusal: None,
+        }
+    }
+
+    #[test]
+    fn hub_badge_names_the_strip_or_the_reason() {
+        let mut app = App::new(48_000);
+        assert_eq!(app.hub_badge(), None);
+
+        app.hub = Some(status(false));
+        assert_eq!(
+            app.hub_badge(),
+            Some(("local output (desk not running)".to_owned(), false))
+        );
+
+        app.hub = Some(LinkStatus {
+            last_refusal: Some("every strip is taken".to_owned()),
+            ..status(false)
+        });
+        assert_eq!(
+            app.hub_badge(),
+            Some(("desk: every strip is taken".to_owned(), true))
+        );
+
+        app.hub = Some(status(true));
+        assert_eq!(
+            app.hub_badge(),
+            Some(("\u{2192} kazoo-mix strip 4".to_owned(), false))
+        );
+
+        app.hub = Some(LinkStatus {
+            blocks_dropped: 7,
+            ..status(true)
+        });
+        assert_eq!(
+            app.hub_badge(),
+            Some((
+                "\u{2192} kazoo-mix strip 4 (7 blocks dropped)".to_owned(),
+                true
+            ))
+        );
+    }
 }

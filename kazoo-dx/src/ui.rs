@@ -13,7 +13,9 @@ use ratatui::widgets::canvas::{Canvas, Line as CanvasLine};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::synth::{ALGORITHMS, OPERATORS, OperatorField, PATCHES, note_name};
-use crate::{App, Focus, GLOBAL_FIELDS, piano_offset};
+use kazoo_core::ipc::link::LinkStatus;
+
+use crate::{App, Focus, GLOBAL_FIELDS, PhraseState, piano_offset};
 
 const ACCENT: Color = Color::Rgb(255, 176, 0);
 const CARRIER: Color = Color::Rgb(90, 220, 170);
@@ -52,22 +54,117 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_voices(frame, voices, app);
     draw_keyboard(frame, keys, app);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" ? ", Style::new().fg(Color::Black).bg(ACCENT)),
-            Span::raw(" help  "),
-            Span::styled(app.status.as_str(), Style::new().fg(DIM)),
-        ])),
-        footer,
-    );
+    let mut footer_spans = vec![
+        Span::styled(" ? ", Style::new().fg(Color::Black).bg(ACCENT)),
+        Span::raw(" help  "),
+    ];
+    footer_spans.extend(delivery_warnings(app));
+    footer_spans.push(Span::styled(app.status.as_str(), Style::new().fg(DIM)));
+    frame.render_widget(Paragraph::new(Line::from(footer_spans)), footer);
 
     if app.show_help {
         draw_help(frame);
     }
 }
 
+/// Warnings for messages that could not be delivered between the UI and the
+/// audio thread. Empty while everything is getting through.
+fn delivery_warnings(app: &App) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    if app.commands_dropped > 0 {
+        spans.push(Span::styled(
+            format!(
+                "audio busy: {} edits/notes lost (space clears notes)  ",
+                app.commands_dropped
+            ),
+            Style::new().fg(Color::Black).bg(Color::Red),
+        ));
+    }
+    if app.stats.stream_lost.load(Ordering::Acquire) {
+        spans.push(Span::styled(
+            "AUDIO DEVICE LOST - restart kazoo-dx  ",
+            Style::new().fg(Color::Black).bg(Color::Red),
+        ));
+    } else {
+        let errors = app.stats.stream_errors.load(Ordering::Relaxed);
+        if errors > 0 {
+            spans.push(Span::styled(
+                format!("{errors} audio stream errors  "),
+                Style::new().fg(Color::Yellow),
+            ));
+        }
+    }
+    let desk_lost = app.stats.desk_lost.load(Ordering::Relaxed);
+    if desk_lost > 0 {
+        spans.push(Span::styled(
+            format!("desk: {desk_lost} transport messages lost  "),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+    let display_dropped = app.stats.display_dropped.load(Ordering::Relaxed);
+    if display_dropped > 0 {
+        spans.push(Span::styled(
+            format!("screen lagging: {display_dropped} frames skipped  "),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+    spans
+}
+
+/// The phrase: playing or not, its tempo, and who is driving it (the desk
+/// when plugged in, this synth when not).
+fn phrase_spans(app: &App) -> Vec<Span<'static>> {
+    if app.phrase == PhraseState::Absent {
+        return Vec::new();
+    }
+    let driver = if app.link.connected { "desk" } else { "local" };
+    let (mark, style) = match app.phrase {
+        PhraseState::Looping => ("  ▶ phrase", Style::new().fg(CARRIER)),
+        PhraseState::Stopped | PhraseState::Absent => ("  ■ phrase (n)", Style::new().fg(DIM)),
+    };
+    vec![
+        Span::styled(mark, style),
+        Span::styled(
+            format!(" {:.0} BPM [ ] ({driver})", app.bpm),
+            Style::new().fg(DIM),
+        ),
+    ]
+}
+
+/// Where this synth's audio is going: the desk strip it is plugged into, or
+/// why it is not, plus any audio or messages the link has lost.
+fn link_spans(link: &LinkStatus) -> Vec<Span<'static>> {
+    let mut spans = Vec::with_capacity(3);
+    spans.push(Span::raw("  "));
+    if link.connected {
+        spans.push(Span::styled(
+            link.strip.map_or_else(
+                || "● → kazoo-mix".to_owned(),
+                |strip| format!("● → kazoo-mix strip {}", u16::from(strip) + 1),
+            ),
+            Style::new().fg(CARRIER),
+        ));
+    } else if let Some(refusal) = &link.last_refusal {
+        spans.push(Span::styled(
+            format!("○ standalone: {refusal}"),
+            Style::new().fg(ACCENT).add_modifier(Modifier::DIM),
+        ));
+    } else {
+        spans.push(Span::styled("○ standalone", Style::new().fg(DIM)));
+    }
+    if link.blocks_dropped > 0 || link.messages_dropped > 0 {
+        spans.push(Span::styled(
+            format!(
+                "  link lost {} blocks, {} msgs",
+                link.blocks_dropped, link.messages_dropped
+            ),
+            Style::new().fg(ACCENT),
+        ));
+    }
+    spans
+}
+
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let hub = app.hub_connected.load(Ordering::Acquire);
     let alg = ALGORITHMS[app.patch.algorithm];
     let global = |i: usize, text: String| {
         let style = if app.focus == Focus::Global(i) {
@@ -80,7 +177,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         };
         Span::styled(text, style)
     };
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             " KAZOO-DX ",
             Style::new()
@@ -108,19 +205,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::raw(format!("oct {}  vel {}  ", app.octave, app.velocity)),
         level_meter(app.display.peak),
         Span::raw("  "),
-        if hub {
-            Span::styled("● HUB", Style::new().fg(CARRIER))
-        } else {
-            Span::styled("○ standalone", Style::new().fg(DIM))
-        },
-        if app.phrase_playing {
-            Span::styled("  ▶ phrase", Style::new().fg(CARRIER))
-        } else if app.has_phrase {
-            Span::styled("  n: play phrase", Style::new().fg(DIM))
-        } else {
-            Span::raw("")
-        },
-    ]);
+    ];
+    spans.extend(phrase_spans(app));
+    spans.extend(link_spans(&app.link));
+    let line = Line::from(spans);
     let controls = Line::from(vec![
         global(0, format!(" ALG {} ", app.patch.algorithm + 1)),
         Span::styled(format!(" {} ", alg.diagram), Style::new().fg(DIM)),
@@ -154,7 +242,6 @@ fn level_meter(peak: f32) -> Span<'static> {
         FLOOR_DB
     };
     let fill = ((db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let lit = ((fill * WIDTH as f32).round() as usize).min(WIDTH);
     let color = if db > -1.0 {
         Color::Red
@@ -252,7 +339,6 @@ fn seconds(s: f32) -> String {
 fn envelope_sketch(p: &crate::synth::OperatorParams) -> String {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let bar = |v: f32| {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let i = (v.clamp(0.0, 1.0) * 7.0).round() as usize;
         BARS[i.min(7)]
     };
@@ -475,7 +561,11 @@ fn draw_help(frame: &mut Frame) {
         key("tab / shift-tab", "next / previous patch"),
         key("1-6", "jump to patch"),
         key("space", "all notes off"),
-        key("n", "loop the --phrase notation"),
+        key(
+            "n",
+            "play/stop the --phrase (asks the desk when plugged in)",
+        ),
+        key("[ ]", "phrase tempo -1/+1 BPM ({ } for 10)"),
         key("q / esc", "quit"),
         Line::raw(""),
         Line::styled(
@@ -506,4 +596,55 @@ fn draw_help(frame: &mut Frame) {
         ),
         popup,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn status() -> LinkStatus {
+        LinkStatus {
+            connected: false,
+            strip: None,
+            blocks_sent: 0,
+            blocks_dropped: 0,
+            messages_dropped: 0,
+            connections: 0,
+            last_refusal: None,
+        }
+    }
+
+    #[test]
+    fn connected_link_names_the_strip() {
+        let link = LinkStatus {
+            connected: true,
+            strip: Some(2),
+            ..status()
+        };
+        assert!(text(&link_spans(&link)).contains("→ kazoo-mix strip 3"));
+    }
+
+    #[test]
+    fn refusal_is_shown_while_standalone() {
+        let link = LinkStatus {
+            last_refusal: Some("desk is full".to_owned()),
+            ..status()
+        };
+        assert!(text(&link_spans(&link)).contains("standalone: desk is full"));
+        assert_eq!(text(&link_spans(&status())).trim(), "○ standalone");
+    }
+
+    #[test]
+    fn lost_blocks_are_reported() {
+        let link = LinkStatus {
+            connected: true,
+            blocks_dropped: 4,
+            ..status()
+        };
+        assert!(text(&link_spans(&link)).contains("lost 4 blocks"));
+    }
 }

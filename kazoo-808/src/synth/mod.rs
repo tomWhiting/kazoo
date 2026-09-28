@@ -313,21 +313,55 @@ impl DrumMachine {
     /// Generate the next mono output sample (sum of all voices).
     pub fn process(&mut self) -> f32 {
         let mut sum = 0.0_f32;
-        sum += self.kick.process() * self.levels[VoiceIndex::Kick as usize];
-        sum += self.snare.process() * self.levels[VoiceIndex::Snare as usize];
-        sum += self.closed_hihat.process() * self.levels[VoiceIndex::ClosedHiHat as usize];
-        sum += self.open_hihat.process() * self.levels[VoiceIndex::OpenHiHat as usize];
-        sum += self.clap.process() * self.levels[VoiceIndex::Clap as usize];
-        sum += self.tom_hi.process() * self.levels[VoiceIndex::TomHi as usize];
-        sum += self.tom_mid.process() * self.levels[VoiceIndex::TomMid as usize];
-        sum += self.tom_lo.process() * self.levels[VoiceIndex::TomLo as usize];
-        sum += self.cowbell.process() * self.levels[VoiceIndex::Cowbell as usize];
-        sum += self.cymbal.process() * self.levels[VoiceIndex::Cymbal as usize];
+        sum = self
+            .kick
+            .process()
+            .mul_add(self.levels[VoiceIndex::Kick as usize], sum);
+        sum = self
+            .snare
+            .process()
+            .mul_add(self.levels[VoiceIndex::Snare as usize], sum);
+        sum = self
+            .closed_hihat
+            .process()
+            .mul_add(self.levels[VoiceIndex::ClosedHiHat as usize], sum);
+        sum = self
+            .open_hihat
+            .process()
+            .mul_add(self.levels[VoiceIndex::OpenHiHat as usize], sum);
+        sum = self
+            .clap
+            .process()
+            .mul_add(self.levels[VoiceIndex::Clap as usize], sum);
+        sum = self
+            .tom_hi
+            .process()
+            .mul_add(self.levels[VoiceIndex::TomHi as usize], sum);
+        sum = self
+            .tom_mid
+            .process()
+            .mul_add(self.levels[VoiceIndex::TomMid as usize], sum);
+        sum = self
+            .tom_lo
+            .process()
+            .mul_add(self.levels[VoiceIndex::TomLo as usize], sum);
+        sum = self
+            .cowbell
+            .process()
+            .mul_add(self.levels[VoiceIndex::Cowbell as usize], sum);
+        sum = self
+            .cymbal
+            .process()
+            .mul_add(self.levels[VoiceIndex::Cymbal as usize], sum);
         kazoo_core::sanitize_sample(sum)
     }
 
     /// Set a parameter on a voice.
     pub fn set_voice_param(&mut self, voice: VoiceIndex, param: VoiceParam, value: f32) {
+        // NaN survives `clamp`; one NaN level would silence the whole kit.
+        if !value.is_finite() {
+            return;
+        }
         match (voice, param) {
             // Kick
             (VoiceIndex::Kick, VoiceParam::Tune) => self.kick.set_tune(value),
@@ -398,6 +432,23 @@ impl DrumMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_finite_param_values_are_ignored() {
+        let mut dm = DrumMachine::new(44100.0);
+        dm.set_voice_param(VoiceIndex::Kick, VoiceParam::Level, 0.5);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            dm.set_voice_param(VoiceIndex::Kick, VoiceParam::Level, bad);
+            dm.set_voice_param(VoiceIndex::Kick, VoiceParam::Tune, bad);
+        }
+        assert!((dm.levels[VoiceIndex::Kick as usize] - 0.5).abs() < f32::EPSILON);
+
+        dm.trigger(VoiceIndex::Kick, 1.0);
+        let peak = (0..2_000)
+            .map(|_| dm.process().abs())
+            .fold(0.0_f32, f32::max);
+        assert!(peak > 0.01, "kick must still sound, peak {peak}");
+    }
 
     #[test]
     fn drum_machine_produces_silence_when_idle() {

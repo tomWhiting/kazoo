@@ -6,14 +6,16 @@
 //! and frame rendering.
 
 use std::io;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use ratatui::widgets::ListState;
 
-use kazoo_core::engine::{DisplayState, EngineCommand, EngineHandle};
+use kazoo_core::engine::{DeskLink, DisplayState, EngineCommand, EngineHandle};
+use kazoo_core::ipc::link::LinkStatus;
 use kazoo_core::mixer::TrackId;
 use kazoo_core::synthesis::SynthesisMode;
 use kazoo_core::{Db, Pan};
@@ -23,6 +25,7 @@ pub use crate::state::{
     ActiveView, AudioIOViewState, InputMode, MixerViewState, ProjectViewState, SynthViewState,
     TrackingViewState,
 };
+use crate::status::{EngineHealth, StatusLine};
 
 /// Target frames per second for UI rendering.
 const TARGET_FPS: u64 = 60;
@@ -33,51 +36,16 @@ const TARGET_FPS: u64 = 60;
 
 /// Panels that can receive keyboard focus.
 ///
-/// `Tab` cycles forward, `BackTab` (Shift+Tab) cycles backward.
+/// `Tab` cycles forward, `BackTab` (Shift+Tab) cycles backward, within the
+/// set returned by [`panels_for_view`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FocusedPanel {
     Transport,
     Tracks,
     Timeline,
     Waveform,
-    Spectrum,
     Effects,
     Mixer,
-}
-
-impl FocusedPanel {
-    /// Cycle to the next panel in the full (all-views) tab order.
-    ///
-    /// Note: the TUI now uses [`panels_for_view`] for view-aware cycling.
-    /// These methods are retained for tests and potential programmatic use.
-    #[must_use]
-    #[allow(dead_code)]
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Transport => Self::Tracks,
-            Self::Tracks => Self::Timeline,
-            Self::Timeline => Self::Waveform,
-            Self::Waveform => Self::Spectrum,
-            Self::Spectrum => Self::Effects,
-            Self::Effects => Self::Mixer,
-            Self::Mixer => Self::Transport,
-        }
-    }
-
-    /// Cycle to the previous panel in the full (all-views) tab order.
-    #[must_use]
-    #[allow(dead_code)]
-    pub const fn prev(self) -> Self {
-        match self {
-            Self::Transport => Self::Mixer,
-            Self::Tracks => Self::Transport,
-            Self::Timeline => Self::Tracks,
-            Self::Waveform => Self::Timeline,
-            Self::Spectrum => Self::Waveform,
-            Self::Effects => Self::Spectrum,
-            Self::Mixer => Self::Effects,
-        }
-    }
 }
 
 /// Return the focusable panels that belong to a given view.
@@ -112,7 +80,7 @@ pub enum AppMode {
     /// File browser modal overlay for loading audio files.
     FileBrowser {
         /// Current directory being browsed.
-        directory: std::path::PathBuf,
+        directory: PathBuf,
         /// Entries in the current directory (directories first, then audio files).
         entries: Vec<FileBrowserEntry>,
         /// Index of the selected entry.
@@ -126,31 +94,108 @@ pub struct FileBrowserEntry {
     /// Display name.
     pub name: String,
     /// Full path.
-    pub path: std::path::PathBuf,
+    pub path: PathBuf,
     /// Whether this entry is a directory.
     pub is_dir: bool,
+}
+
+/// The result of scanning one directory for the file browser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryListing {
+    /// Visible entries: directories first (alphabetical), then audio files
+    /// (alphabetical).
+    pub entries: Vec<FileBrowserEntry>,
+    /// Number of entries whose metadata could not be read (permission
+    /// denied, broken symlink, entry vanished mid-scan). These are not
+    /// listed, and the count is reported to the user.
+    pub unreadable: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Audio devices
+// ---------------------------------------------------------------------------
+
+/// Audio devices discovered at startup.
+///
+/// Enumeration talks to the OS audio subsystem, so it is performed by the
+/// caller (see [`AudioDevices::enumerate`]) and injected into [`App::new`].
+/// Constructing an [`App`] therefore never touches audio hardware.
+#[derive(Debug)]
+pub struct AudioDevices {
+    /// Input (capture) device names, or the enumeration error.
+    pub inputs: kazoo_core::Result<Vec<String>>,
+    /// Output (playback) device names, or the enumeration error.
+    pub outputs: kazoo_core::Result<Vec<String>>,
+}
+
+impl AudioDevices {
+    /// Query the OS for the available input and output devices.
+    #[must_use]
+    pub fn enumerate() -> Self {
+        Self {
+            inputs: kazoo_core::io::enumerate_input_devices()
+                .map(|devices| devices.into_iter().map(|d| d.name).collect()),
+            outputs: kazoo_core::io::enumerate_output_devices()
+                .map(|devices| devices.into_iter().map(|d| d.name).collect()),
+        }
+    }
+
+    /// An empty device set (no devices, no errors).
+    #[cfg(test)]
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            inputs: Ok(Vec::new()),
+            outputs: Ok(Vec::new()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Track metadata
 // ---------------------------------------------------------------------------
 
-/// Metadata for a single synth layer within a track.
+/// Local metadata for one effect in a track's chain.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct LayerInfo {
-    /// Synthesis mode for this layer.
-    pub mode: SynthesisMode,
-    /// Human-readable label for this layer.
-    pub label: String,
-    /// Layer gain in dB.
-    pub gain: Db,
-    /// Whether this layer is enabled.
-    pub enabled: bool,
-    /// Parameter metadata for this layer's synth.
+pub struct EffectInfo {
+    /// Display name.
+    pub name: String,
+    /// Whether the effect is bypassed.
+    pub bypassed: bool,
+    /// Parameter metadata, captured from the processor when it was added.
     pub param_infos: Vec<kazoo_core::ParamInfo>,
     /// Current parameter values (parallel to `param_infos`).
     pub param_values: Vec<f32>,
+}
+
+impl EffectInfo {
+    /// Capture an effect's name and parameter metadata before the processor
+    /// is handed to the engine.
+    ///
+    /// A parameter whose current value the processor does not report is
+    /// shown at its declared default, which is what a freshly constructed
+    /// processor holds.
+    #[must_use]
+    pub fn from_processor(name: String, processor: &dyn kazoo_core::Processor) -> Self {
+        let param_infos: Vec<kazoo_core::ParamInfo> = (0..processor.param_count())
+            .map_while(|index| processor.param_info(index))
+            .collect();
+        let param_values = param_infos
+            .iter()
+            .enumerate()
+            .map(|(index, info)| {
+                processor
+                    .param_value(index)
+                    .map_or(info.default, |value| info.clamp(value))
+            })
+            .collect();
+        Self {
+            name,
+            bypassed: false,
+            param_infos,
+            param_values,
+        }
+    }
 }
 
 /// Local track metadata maintained by the TUI.
@@ -165,7 +210,7 @@ pub struct TrackInfo {
     pub id: TrackId,
     /// Human-readable track name.
     pub name: String,
-    /// Active synthesis mode (shortcut to layer 0).
+    /// Active synthesis mode of the track's primary synth.
     pub synthesis_mode: SynthesisMode,
     /// Whether this track is muted.
     pub muted: bool,
@@ -177,31 +222,50 @@ pub struct TrackInfo {
     pub volume: Db,
     /// Track stereo pan position.
     pub pan: Pan,
-    /// Names of effects in the chain, in order.
-    pub effect_names: Vec<String>,
-    /// Bypass state of each effect (parallel to `effect_names`).
-    pub effect_bypassed: Vec<bool>,
+    /// Effects in the chain, in order.
+    pub effects: Vec<EffectInfo>,
     /// Number of audio clips on this track.
     pub clip_count: usize,
-    /// Synth parameter metadata for the primary layer (layer 0 shortcut).
+    /// Parameter metadata for the primary synth.
     pub synth_param_infos: Vec<kazoo_core::ParamInfo>,
-    /// Current synth parameter values for the primary layer (layer 0 shortcut).
+    /// Current parameter values for the primary synth (parallel to
+    /// `synth_param_infos`).
     pub synth_param_values: Vec<f32>,
-    /// Synth layers on this track. Always has at least one entry.
-    pub layers: Vec<LayerInfo>,
-    /// Currently selected layer index.
-    #[allow(dead_code)]
-    pub selected_layer: usize,
 }
 
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 
+/// What the header shows about this synth's plug into the kazoo-mix desk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeskView {
+    /// The engine was not asked to plug into the desk.
+    Off,
+    /// The link is running: connected to a strip, or looking for the desk
+    /// (with the reason it was last refused, if it was).
+    Link(LinkStatus),
+    /// The link could not start, so the synth plays standalone.
+    Failed(String),
+}
+
+impl DeskView {
+    /// The current state of the engine's desk link.
+    #[must_use]
+    pub fn of(desk: &DeskLink) -> Self {
+        match desk {
+            DeskLink::Disabled => Self::Off,
+            DeskLink::Running(link) => Self::Link(link.status()),
+            DeskLink::Failed(reason) => Self::Failed(reason.clone()),
+        }
+    }
+}
+
 /// Central application state for the terminal UI.
 ///
 /// Owns the engine handle and all UI-specific state. The main event loop
 /// lives in [`App::run`].
+#[derive(Debug)]
 pub struct App {
     // -- Engine interface --------------------------------------------------
     /// Handle to the audio engine (commands + display polling).
@@ -215,10 +279,6 @@ pub struct App {
     /// the mixer's track list. Updated via helper methods that also send
     /// engine commands.
     pub tracks: Vec<TrackInfo>,
-
-    /// Counter for generating stable track IDs. Kept in sync with the
-    /// engine's mixer by starting at 0 and incrementing on each `add_track`.
-    next_track_id: usize,
 
     // -- UI state ----------------------------------------------------------
     /// Current application mode.
@@ -246,11 +306,20 @@ pub struct App {
     /// Text buffer for numeric input in `ParameterEdit` mode.
     pub param_edit_buffer: String,
 
+    /// Status line: errors and confirmations shown in the header.
+    pub status: StatusLine,
+
+    /// The engine's failure counters, shown in the header while non-zero.
+    pub engine_health: EngineHealth,
+
+    /// The desk link, refreshed every frame for the header.
+    pub desk: DeskView,
+
     // -- View state ------------------------------------------------------------
     /// Which view is currently displayed in the main content area.
     pub active_view: ActiveView,
 
-    /// Per-view state for the Synth/Effects view.
+    /// Selection state for the synth + effects sidebar.
     pub synth_state: SynthViewState,
 
     /// Per-view state for the Mixing Desk view.
@@ -280,73 +349,54 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new application with the given engine handle.
+    /// Create a new application with the given engine handle and the audio
+    /// devices discovered at startup.
+    ///
+    /// A default armed `PitchTracked` track is created so the voice-driven
+    /// synthesizer works immediately on launch — no manual setup needed.
     #[must_use]
-    pub fn new(engine: EngineHandle) -> Self {
-        let display = DisplayState::initial(engine.sample_rate());
-        let mut track_list_state = ListState::default();
-        track_list_state.select(Some(0));
-
-        let mut audio_io_state = AudioIOViewState::default();
-        let (input_devices, output_devices) = enumerate_devices();
-        audio_io_state.input_devices = input_devices;
-        audio_io_state.output_devices = output_devices;
-
-        let mut app = Self {
-            engine,
-            display,
-            tracks: Vec::new(),
-            next_track_id: 0,
-            mode: AppMode::Normal,
-            focused_panel: FocusedPanel::Tracks,
-            input_mode: InputMode::Normal,
-            selected_track: 0,
-            track_list_state,
-            frame_count: 0,
-            master_volume: Db::UNITY,
-            param_edit_buffer: String::new(),
-            active_view: ActiveView::Tracking,
-            synth_state: SynthViewState::default(),
-            mixer_view_state: MixerViewState::default(),
-            tracking_state: TrackingViewState::default(),
-            project_state: ProjectViewState::default(),
-            audio_io_state,
-            recording_workflow: kazoo_core::transport::RecordingWorkflow::CountIn {
-                count_in_bars: 1,
-                record_bars: 4,
-            },
-            count_in_bars: 1,
-            record_bars: 4,
-            should_quit: false,
-        };
-
-        // Create a default armed PitchTracked track so the voice-driven
-        // synthesizer works immediately on launch — no manual setup needed.
+    pub fn new(engine: EngineHandle, devices: AudioDevices) -> Self {
+        let mut app = Self::new_empty(engine, devices);
+        app.focused_panel = FocusedPanel::Tracks;
         // `add_track` auto-arms the first track.
         app.add_track("1".into(), SynthesisMode::PitchTracked);
-
         app
     }
 
-    /// Create an application with no default track. Used exclusively by tests
-    /// that need to control track state from scratch.
-    #[cfg(test)]
+    /// Create an application with no tracks.
+    ///
+    /// Device enumeration failures are shown in the Audio I/O view and
+    /// posted to the status line.
     #[must_use]
-    pub fn new_empty(engine: EngineHandle) -> Self {
+    pub fn new_empty(engine: EngineHandle, devices: AudioDevices) -> Self {
         let display = DisplayState::initial(engine.sample_rate());
         let mut track_list_state = ListState::default();
         track_list_state.select(Some(0));
 
+        let mut status = StatusLine::default();
         let mut audio_io_state = AudioIOViewState::default();
-        let (input_devices, output_devices) = enumerate_devices();
-        audio_io_state.input_devices = input_devices;
-        audio_io_state.output_devices = output_devices;
+        match devices.inputs {
+            Ok(names) => audio_io_state.input_devices = names,
+            Err(err) => {
+                let message = format!("Input device scan failed: {err}");
+                status.error(message.clone());
+                audio_io_state.input_device_error = Some(message);
+            }
+        }
+        match devices.outputs {
+            Ok(names) => audio_io_state.output_devices = names,
+            Err(err) => {
+                let message = format!("Output device scan failed: {err}");
+                status.error(message.clone());
+                audio_io_state.output_device_error = Some(message);
+            }
+        }
 
+        let desk = DeskView::of(engine.desk_link());
         Self {
             engine,
             display,
             tracks: Vec::new(),
-            next_track_id: 0,
             mode: AppMode::Normal,
             focused_panel: FocusedPanel::Transport,
             input_mode: InputMode::Normal,
@@ -355,6 +405,9 @@ impl App {
             frame_count: 0,
             master_volume: Db::UNITY,
             param_edit_buffer: String::new(),
+            status,
+            engine_health: EngineHealth::default(),
+            desk,
             active_view: ActiveView::Tracking,
             synth_state: SynthViewState::default(),
             mixer_view_state: MixerViewState::default(),
@@ -383,7 +436,9 @@ impl App {
     ///
     /// # Errors
     ///
-    /// Returns [`io::Error`] if terminal rendering fails.
+    /// Returns [`io::Error`] if terminal rendering fails, if reading a
+    /// terminal event fails, or if the terminal event stream closes (no
+    /// further input could ever arrive, so the user could not quit).
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         let tick_rate = Duration::from_millis(1000 / TARGET_FPS);
         let mut tick_interval = tokio::time::interval(tick_rate);
@@ -397,8 +452,13 @@ impl App {
                 maybe_event = event_stream.next() => {
                     match maybe_event {
                         Some(Ok(event)) => self.handle_event(&event),
-                        Some(Err(_)) => self.should_quit = true,
-                        None => {}
+                        Some(Err(err)) => return Err(err),
+                        None => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "terminal event stream closed",
+                            ));
+                        }
                     }
                 }
                 _ = tick_interval.tick() => {
@@ -415,6 +475,13 @@ impl App {
     fn tick(&mut self) {
         self.display = self.engine.poll_display().clone();
         self.frame_count = self.frame_count.wrapping_add(1);
+        self.desk = DeskView::of(self.engine.desk_link());
+        if let Some(message) = self
+            .engine_health
+            .observe(self.engine.stats(), Instant::now())
+        {
+            self.status.error(message);
+        }
 
         // Keep track selection within bounds if tracks were removed.
         if !self.tracks.is_empty() && self.selected_track >= self.tracks.len() {
@@ -445,73 +512,71 @@ impl App {
     // -----------------------------------------------------------------------
     // Track management
     //
-    // These methods update local metadata AND send the corresponding engine
-    // command, keeping the TUI's view in sync with the engine.
+    // These methods send the corresponding engine command and update local
+    // metadata only when the engine accepted it, keeping the TUI's view in
+    // sync with the engine. Failures are posted to the status line.
     // -----------------------------------------------------------------------
 
     /// Add a new track with the given name and synthesis mode.
-    pub fn add_track(&mut self, name: String, synthesis_mode: SynthesisMode) {
-        let id = TrackId(self.next_track_id);
-        self.next_track_id += 1;
+    ///
+    /// Returns `true` if the engine accepted the track.
+    pub fn add_track(&mut self, name: String, synthesis_mode: SynthesisMode) -> bool {
+        // The engine handle assigns the id, so the TUI and the engine
+        // always agree on it.
+        let id = match self.engine.add_track(name.clone(), synthesis_mode) {
+            Ok(id) => id,
+            Err(err) => {
+                // The engine never saw the track: do not show a track that
+                // does not exist.
+                self.status.report("Add track", Err(err));
+                return false;
+            }
+        };
 
         let sample_rate = self.engine.sample_rate() as f32;
-        let param_infos = synthesis_mode.param_infos(sample_rate);
-        let param_values = synthesis_mode.default_param_values(sample_rate);
-        let layer0 = LayerInfo {
-            mode: synthesis_mode,
-            label: synthesis_mode.display_name().into(),
-            gain: Db::UNITY,
-            enabled: true,
-            param_infos: param_infos.clone(),
-            param_values: param_values.clone(),
-        };
         // Auto-arm the first track so voice-driven synthesis works
         // immediately without manual setup.
         let auto_arm = self.tracks.is_empty();
-        let info = TrackInfo {
+        let armed = auto_arm
+            && self.status.report(
+                "Arm track",
+                self.engine
+                    .send_command(EngineCommand::SetTrackArm(id, true)),
+            );
+
+        self.tracks.push(TrackInfo {
             id,
-            name: name.clone(),
+            name,
             synthesis_mode,
             muted: false,
             soloed: false,
-            armed: auto_arm,
+            armed,
             volume: Db::UNITY,
             pan: Pan::CENTER,
-            effect_names: Vec::new(),
-            effect_bypassed: Vec::new(),
+            effects: Vec::new(),
             clip_count: 0,
-            synth_param_infos: param_infos,
-            synth_param_values: param_values,
-            layers: vec![layer0],
-            selected_layer: 0,
-        };
-        self.tracks.push(info);
+            synth_param_infos: synthesis_mode.param_infos(sample_rate),
+            synth_param_values: synthesis_mode.default_param_values(sample_rate),
+        });
 
         // Select the new track if it's the first one.
         if self.tracks.len() == 1 {
             self.selected_track = 0;
             self.track_list_state.select(Some(0));
         }
-
-        let _ = self.engine.add_track(name, synthesis_mode);
-
-        // Send the arm command to the engine so it matches TUI state.
-        if auto_arm {
-            let _ = self
-                .engine
-                .send_command(EngineCommand::SetTrackArm(id, true));
-        }
+        true
     }
 
     /// Remove the track at the given list index.
     pub fn remove_track(&mut self, index: usize) {
-        if index >= self.tracks.len() {
+        let Some(track) = self.tracks.get(index) else {
+            return;
+        };
+        let removed = self.engine.remove_track(track.id);
+        if !self.status.report("Remove track", removed) {
             return;
         }
-
-        let id = self.tracks[index].id;
         self.tracks.remove(index);
-        let _ = self.engine.send_command(EngineCommand::RemoveTrack(id));
 
         // Adjust selection (keep all selection state in sync).
         if self.tracks.is_empty() {
@@ -528,32 +593,42 @@ impl App {
     /// Toggle mute on the track at the given index.
     pub fn toggle_mute(&mut self, index: usize) {
         if let Some(track) = self.tracks.get_mut(index) {
-            track.muted = !track.muted;
-            let _ = self.engine.set_track_mute(track.id, track.muted);
+            let muted = !track.muted;
+            let result = self.engine.set_track_mute(track.id, muted);
+            if self.status.report("Mute", result) {
+                track.muted = muted;
+            }
         }
     }
 
     /// Toggle solo on the track at the given index.
     pub fn toggle_solo(&mut self, index: usize) {
         if let Some(track) = self.tracks.get_mut(index) {
-            track.soloed = !track.soloed;
-            let _ = self.engine.set_track_solo(track.id, track.soloed);
+            let soloed = !track.soloed;
+            let result = self.engine.set_track_solo(track.id, soloed);
+            if self.status.report("Solo", result) {
+                track.soloed = soloed;
+            }
         }
     }
 
     /// Toggle arm (record enable) on the track at the given index.
     pub fn toggle_arm(&mut self, index: usize) {
         if let Some(track) = self.tracks.get_mut(index) {
-            track.armed = !track.armed;
-            let _ = self
+            let armed = !track.armed;
+            let result = self
                 .engine
-                .send_command(EngineCommand::SetTrackArm(track.id, track.armed));
+                .send_command(EngineCommand::SetTrackArm(track.id, armed));
+            if self.status.report("Arm", result) {
+                track.armed = armed;
+            }
         }
     }
 
     /// Cycle the synthesis mode on the track at the given index.
     ///
-    /// Updates both the primary synth shortcut fields and layer 0.
+    /// Resets the synth parameter metadata and values to the new mode's
+    /// defaults.
     pub fn cycle_synth_mode(&mut self, index: usize) {
         if let Some(track) = self.tracks.get_mut(index) {
             let next = match track.synthesis_mode {
@@ -564,22 +639,14 @@ impl App {
                 SynthesisMode::Vocoder => SynthesisMode::PhaseVocoder,
                 SynthesisMode::PhaseVocoder => SynthesisMode::Passthrough,
             };
+            let result = self.engine.set_track_synthesis_mode(track.id, next);
+            if !self.status.report("Change synth mode", result) {
+                return;
+            }
             track.synthesis_mode = next;
             let sample_rate = self.engine.sample_rate() as f32;
-            let infos = next.param_infos(sample_rate);
-            let values = next.default_param_values(sample_rate);
-            track.synth_param_infos.clone_from(&infos);
-            track.synth_param_values.clone_from(&values);
-            // Update layer 0 to match.
-            if let Some(layer) = track.layers.first_mut() {
-                layer.mode = next;
-                layer.label = next.display_name().into();
-                layer.param_infos = infos;
-                layer.param_values = values;
-            }
-            let _ = self
-                .engine
-                .send_command(EngineCommand::SetTrackSynthesisMode(track.id, next));
+            track.synth_param_infos = next.param_infos(sample_rate);
+            track.synth_param_values = next.default_param_values(sample_rate);
         }
         self.synth_state.selected_synth_param = 0;
     }
@@ -587,16 +654,20 @@ impl App {
     /// Set the volume for the track at the given index.
     pub fn set_track_volume(&mut self, index: usize, db: Db) {
         if let Some(track) = self.tracks.get_mut(index) {
-            track.volume = db;
-            let _ = self.engine.set_track_volume(track.id, db);
+            let result = self.engine.set_track_volume(track.id, db);
+            if self.status.report("Set volume", result) {
+                track.volume = db;
+            }
         }
     }
 
     /// Set the pan for the track at the given index.
     pub fn set_track_pan(&mut self, index: usize, pan: Pan) {
         if let Some(track) = self.tracks.get_mut(index) {
-            track.pan = pan;
-            let _ = self.engine.set_track_pan(track.id, pan);
+            let result = self.engine.set_track_pan(track.id, pan);
+            if self.status.report("Set pan", result) {
+                track.pan = pan;
+            }
         }
     }
 
@@ -608,151 +679,58 @@ impl App {
         effect: Box<dyn kazoo_core::Processor>,
     ) {
         if let Some(track) = self.tracks.get_mut(track_index) {
-            track.effect_names.push(name);
-            track.effect_bypassed.push(false);
-            let _ = self.engine.add_effect(track.id, effect);
+            let info = EffectInfo::from_processor(name, effect.as_ref());
+            let result = self.engine.add_effect(track.id, effect);
+            if self.status.report("Add effect", result) {
+                track.effects.push(info);
+            }
         }
     }
 
     /// Toggle bypass on an effect in the selected track's chain.
     pub fn toggle_effect_bypass(&mut self, track_index: usize, effect_index: usize) {
         if let Some(track) = self.tracks.get_mut(track_index) {
-            if let Some(bypassed) = track.effect_bypassed.get_mut(effect_index) {
-                *bypassed = !*bypassed;
-                let _ = self.engine.send_command(EngineCommand::SetEffectBypass {
+            if let Some(effect) = track.effects.get_mut(effect_index) {
+                let new_bypassed = !effect.bypassed;
+                let result = self.engine.send_command(EngineCommand::SetEffectBypass {
                     track_id: track.id,
                     effect_index,
-                    bypassed: *bypassed,
+                    bypassed: new_bypassed,
                 });
+                if self.status.report("Bypass effect", result) {
+                    effect.bypassed = new_bypassed;
+                }
             }
         }
     }
 
     /// Remove an effect from a track's chain by index.
     pub fn remove_effect(&mut self, track_index: usize, effect_index: usize) {
-        if let Some(track) = self.tracks.get_mut(track_index) {
-            if effect_index < track.effect_names.len() {
-                track.effect_names.remove(effect_index);
-                track.effect_bypassed.remove(effect_index);
-                let _ = self.engine.send_command(EngineCommand::RemoveEffect {
-                    track_id: track.id,
-                    effect_index,
-                });
+        let Some(track) = self.tracks.get_mut(track_index) else {
+            return;
+        };
+        if effect_index >= track.effects.len() {
+            return;
+        }
+        let result = self.engine.send_command(EngineCommand::RemoveEffect {
+            track_id: track.id,
+            effect_index,
+        });
+        if !self.status.report("Remove effect", result) {
+            return;
+        }
+        track.effects.remove(effect_index);
 
-                // Adjust selection indices if the removed effect was on the
-                // currently selected track.
-                if track_index == self.selected_track {
-                    if track.effect_names.is_empty() {
-                        self.synth_state.selected_effect = 0;
-                    } else if self.synth_state.selected_effect >= track.effect_names.len() {
-                        self.synth_state.selected_effect = track.effect_names.len() - 1;
-                    }
-                    self.synth_state.selected_param = 0;
-                }
+        // Adjust selection indices if the removed effect was on the
+        // currently selected track.
+        if track_index == self.selected_track {
+            if track.effects.is_empty() {
+                self.synth_state.selected_effect = 0;
+            } else if self.synth_state.selected_effect >= track.effects.len() {
+                self.synth_state.selected_effect = track.effects.len() - 1;
             }
+            self.synth_state.selected_param = 0;
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Layer management
-    // -----------------------------------------------------------------------
-
-    /// Add a synth layer to the selected track.
-    ///
-    /// Returns `true` if the layer was added, `false` if the track doesn't
-    /// exist or the maximum number of layers has been reached.
-    #[allow(dead_code)]
-    pub fn add_synth_layer(&mut self, mode: SynthesisMode) -> bool {
-        let Some(track) = self.tracks.get_mut(self.selected_track) else {
-            return false;
-        };
-        if track.layers.len() >= kazoo_core::MAX_SYNTH_LAYERS {
-            return false;
-        }
-
-        let sample_rate = self.engine.sample_rate() as f32;
-        let label: String = mode.display_name().into();
-        let layer = LayerInfo {
-            mode,
-            label: label.clone(),
-            gain: Db::UNITY,
-            enabled: true,
-            param_infos: mode.param_infos(sample_rate),
-            param_values: mode.default_param_values(sample_rate),
-        };
-        track.layers.push(layer);
-
-        let _ = self.engine.send_command(EngineCommand::AddSynthLayer {
-            track_id: track.id,
-            synthesis_mode: mode,
-            label,
-        });
-        true
-    }
-
-    /// Remove a synth layer from the selected track by index.
-    ///
-    /// Layer 0 cannot be removed. Returns `true` if the layer was removed.
-    #[allow(dead_code)]
-    pub fn remove_synth_layer(&mut self, layer_index: usize) -> bool {
-        let Some(track) = self.tracks.get_mut(self.selected_track) else {
-            return false;
-        };
-        if layer_index == 0 || layer_index >= track.layers.len() {
-            return false;
-        }
-
-        let id = track.id;
-        track.layers.remove(layer_index);
-
-        // Adjust selected layer.
-        if track.selected_layer >= track.layers.len() {
-            track.selected_layer = track.layers.len().saturating_sub(1);
-        }
-
-        let _ = self.engine.send_command(EngineCommand::RemoveSynthLayer {
-            track_id: id,
-            layer_index,
-        });
-        true
-    }
-
-    /// Toggle the enabled state of a layer on the selected track.
-    #[allow(dead_code)]
-    pub fn toggle_layer_enabled(&mut self, layer_index: usize) {
-        let Some(track) = self.tracks.get_mut(self.selected_track) else {
-            return;
-        };
-        let Some(layer) = track.layers.get_mut(layer_index) else {
-            return;
-        };
-
-        layer.enabled = !layer.enabled;
-        let _ = self
-            .engine
-            .send_command(EngineCommand::SetSynthLayerEnabled {
-                track_id: track.id,
-                layer_index,
-                enabled: layer.enabled,
-            });
-    }
-
-    /// Set the gain of a layer on the selected track.
-    #[allow(dead_code)]
-    pub fn set_layer_gain(&mut self, layer_index: usize, gain: Db) {
-        let Some(track) = self.tracks.get_mut(self.selected_track) else {
-            return;
-        };
-        let Some(layer) = track.layers.get_mut(layer_index) else {
-            return;
-        };
-
-        layer.gain = gain;
-        let _ = self.engine.send_command(EngineCommand::SetSynthLayerGain {
-            track_id: track.id,
-            layer_index,
-            gain,
-        });
     }
 
     // -----------------------------------------------------------------------
@@ -788,41 +766,81 @@ impl App {
     /// Whether any track has clips (used to decide timeline vs waveform).
     #[must_use]
     pub fn has_clips(&self) -> bool {
-        !self.display.timeline.tracks.is_empty()
-            && self
-                .display
-                .timeline
-                .tracks
-                .iter()
-                .any(|t| !t.clips.is_empty() || t.is_recording_clip)
+        self.display
+            .timeline
+            .tracks
+            .iter()
+            .any(|t| !t.clips.is_empty() || t.recording.is_some())
     }
 
     /// Open the file browser starting in the current working directory.
+    ///
+    /// If the working directory cannot be determined, the browser opens at
+    /// the filesystem root and the reason is shown in the status line.
     pub fn open_file_browser(&mut self) {
-        let dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-        let entries = Self::scan_directory(&dir);
-        self.mode = AppMode::FileBrowser {
-            directory: dir,
-            entries,
-            selected: 0,
+        let dir = match std::env::current_dir() {
+            Ok(dir) => dir,
+            Err(err) => {
+                self.status.error(format!(
+                    "Cannot determine working directory ({err}); browsing /"
+                ));
+                PathBuf::from("/")
+            }
         };
+        self.browse_to(dir);
+    }
+
+    /// Navigate the file browser to `dir`.
+    ///
+    /// On success the browser shows `dir` (opening the browser if it was
+    /// closed) and returns `true`. If the directory cannot be read, the error
+    /// is shown in the status line, the current mode is left unchanged, and
+    /// `false` is returned.
+    pub fn browse_to(&mut self, dir: PathBuf) -> bool {
+        match Self::scan_directory(&dir) {
+            Ok(listing) => {
+                if listing.unreadable > 0 {
+                    self.status.error(format!(
+                        "{} entr{} in {} could not be read",
+                        listing.unreadable,
+                        if listing.unreadable == 1 { "y" } else { "ies" },
+                        dir.display()
+                    ));
+                }
+                self.mode = AppMode::FileBrowser {
+                    directory: dir,
+                    entries: listing.entries,
+                    selected: 0,
+                };
+                true
+            }
+            Err(err) => {
+                self.status
+                    .error(format!("Cannot open {}: {err}", dir.display()));
+                false
+            }
+        }
     }
 
     /// Scan a directory for subdirectories and audio files.
     ///
-    /// Returns entries sorted: directories first (alphabetical), then audio
-    /// files (alphabetical). Non-readable entries are silently skipped.
-    #[must_use]
-    pub fn scan_directory(dir: &std::path::Path) -> Vec<FileBrowserEntry> {
+    /// Hidden entries (leading `.`) are skipped. Entries whose metadata
+    /// cannot be read are not listed but are counted in
+    /// [`DirectoryListing::unreadable`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error if the directory itself cannot be read.
+    pub fn scan_directory(dir: &Path) -> io::Result<DirectoryListing> {
         let mut dirs = Vec::new();
         let mut files = Vec::new();
+        let mut unreadable = 0_usize;
 
-        let Ok(read_dir) = std::fs::read_dir(dir) else {
-            return Vec::new();
-        };
-
-        for entry in read_dir.flatten() {
-            let path = entry.path();
+        for entry in std::fs::read_dir(dir)? {
+            let Ok(entry) = entry else {
+                unreadable += 1;
+                continue;
+            };
             let name = entry.file_name().to_string_lossy().into_owned();
 
             // Skip hidden entries.
@@ -830,7 +848,16 @@ impl App {
                 continue;
             }
 
-            if path.is_dir() {
+            let path = entry.path();
+            // `fs::metadata` follows symlinks so linked directories are
+            // browsable; a broken link is reported as unreadable.
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                unreadable += 1;
+                continue;
+            };
+            let is_dir = metadata.is_dir();
+
+            if is_dir {
                 dirs.push(FileBrowserEntry {
                     name,
                     path,
@@ -845,49 +872,25 @@ impl App {
             }
         }
 
-        dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        dirs.sort_by_cached_key(|e| e.name.to_lowercase());
+        files.sort_by_cached_key(|e| e.name.to_lowercase());
         dirs.extend(files);
-        dirs
+        Ok(DirectoryListing {
+            entries: dirs,
+            unreadable,
+        })
     }
 
     /// Check whether a specific panel has focus.
     #[must_use]
-    pub const fn is_focused(&self, panel: FocusedPanel) -> bool {
-        matches!(
-            (&self.focused_panel, &panel),
-            (FocusedPanel::Transport, FocusedPanel::Transport)
-                | (FocusedPanel::Tracks, FocusedPanel::Tracks)
-                | (FocusedPanel::Timeline, FocusedPanel::Timeline)
-                | (FocusedPanel::Waveform, FocusedPanel::Waveform)
-                | (FocusedPanel::Spectrum, FocusedPanel::Spectrum)
-                | (FocusedPanel::Effects, FocusedPanel::Effects)
-                | (FocusedPanel::Mixer, FocusedPanel::Mixer)
-        )
+    pub fn is_focused(&self, panel: FocusedPanel) -> bool {
+        self.focused_panel == panel
     }
-}
-
-/// Enumerate available audio input and output devices.
-///
-/// Returns `(input_device_names, output_device_names)`. On error, returns
-/// empty vectors so the UI gracefully falls back to "no devices found".
-fn enumerate_devices() -> (Vec<String>, Vec<String>) {
-    let inputs = kazoo_core::io::enumerate_input_devices()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
-    let outputs = kazoo_core::io::enumerate_output_devices()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
-    (inputs, outputs)
 }
 
 /// Check whether a filename has a recognised audio extension.
 fn is_audio_file(name: &str) -> bool {
-    std::path::Path::new(name).extension().is_some_and(|ext| {
+    Path::new(name).extension().is_some_and(|ext| {
         ext.eq_ignore_ascii_case("wav")
             || ext.eq_ignore_ascii_case("mp3")
             || ext.eq_ignore_ascii_case("flac")
@@ -900,65 +903,19 @@ fn is_audio_file(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::status::StatusLevel;
+    use crate::test_support::TestApp;
 
     #[test]
-    fn focused_panel_next_cycles() {
-        let start = FocusedPanel::Transport;
-        let mut panel = start;
-        let panels = [
-            FocusedPanel::Tracks,
-            FocusedPanel::Timeline,
-            FocusedPanel::Waveform,
-            FocusedPanel::Spectrum,
-            FocusedPanel::Effects,
-            FocusedPanel::Mixer,
-            FocusedPanel::Transport,
-        ];
-        for expected in panels {
-            panel = panel.next();
-            assert_eq!(panel, expected);
-        }
-    }
-
-    #[test]
-    fn focused_panel_prev_cycles() {
-        let start = FocusedPanel::Transport;
-        let mut panel = start;
-        let panels = [
-            FocusedPanel::Mixer,
-            FocusedPanel::Effects,
-            FocusedPanel::Spectrum,
-            FocusedPanel::Waveform,
-            FocusedPanel::Timeline,
-            FocusedPanel::Tracks,
-            FocusedPanel::Transport,
-        ];
-        for expected in panels {
-            panel = panel.prev();
-            assert_eq!(panel, expected);
-        }
-    }
-
-    #[test]
-    fn focused_panel_next_prev_inverse() {
-        for panel in [
-            FocusedPanel::Transport,
-            FocusedPanel::Tracks,
-            FocusedPanel::Timeline,
-            FocusedPanel::Waveform,
-            FocusedPanel::Spectrum,
-            FocusedPanel::Effects,
-            FocusedPanel::Mixer,
-        ] {
-            assert_eq!(panel.next().prev(), panel);
-            assert_eq!(panel.prev().next(), panel);
+    fn panels_for_view_are_non_empty() {
+        for view in ActiveView::ALL {
+            assert!(!panels_for_view(view).is_empty());
         }
     }
 
     #[test]
     fn recording_blink_visible_alternates() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         // Frames 0-29: visible (frame_count/30 == 0, 0%2 == 0)
         app.frame_count = 0;
@@ -981,8 +938,7 @@ mod tests {
 
     #[test]
     fn is_focused_checks_correctly() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.focused_panel = FocusedPanel::Tracks;
         assert!(app.is_focused(FocusedPanel::Tracks));
@@ -992,28 +948,83 @@ mod tests {
 
     #[test]
     fn new_creates_default_armed_track() {
-        let app = App::new(test_engine_handle());
+        let app = TestApp::with_default_track();
         assert_eq!(app.tracks.len(), 1);
         assert_eq!(app.tracks[0].name, "1");
         assert!(app.tracks[0].armed, "default track must be armed");
         assert_eq!(app.tracks[0].synthesis_mode, SynthesisMode::PitchTracked);
+        assert_eq!(app.focused_panel, FocusedPanel::Tracks);
+    }
+
+    #[test]
+    fn new_sends_add_and_arm_commands() {
+        let app = TestApp::with_default_track();
+        let commands = app.take_commands();
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(
+            &commands[0],
+            EngineCommand::AddTrack { track, .. }
+                if track.get().is_some_and(|track| {
+                    track.name() == "1"
+                        && track.layer(0).map(kazoo_core::mixer::SynthLayer::mode)
+                            == Some(SynthesisMode::PitchTracked)
+                })
+        ));
+        assert!(matches!(
+            commands[1],
+            EngineCommand::SetTrackArm(TrackId(0), true)
+        ));
+    }
+
+    #[test]
+    fn device_lists_are_injected() {
+        let (engine, _commands) = crate::test_support::engine_handle();
+        let devices = AudioDevices {
+            inputs: Ok(vec!["Mic".into()]),
+            outputs: Ok(vec!["Speakers".into(), "Headphones".into()]),
+        };
+        let app = App::new_empty(engine, devices);
+        assert_eq!(app.audio_io_state.input_devices, vec!["Mic".to_owned()]);
+        assert_eq!(app.audio_io_state.output_devices.len(), 2);
+        assert!(app.audio_io_state.input_device_error.is_none());
+        assert!(app.audio_io_state.output_device_error.is_none());
+        assert!(app.status.visible(std::time::Instant::now()).is_none());
+    }
+
+    #[test]
+    fn device_enumeration_failure_is_surfaced() {
+        let (engine, _commands) = crate::test_support::engine_handle();
+        let devices = AudioDevices {
+            inputs: Err(kazoo_core::Error::AudioDevice("no host".into())),
+            outputs: Ok(vec!["Speakers".into()]),
+        };
+        let app = App::new_empty(engine, devices);
+        assert!(app.audio_io_state.input_devices.is_empty());
+        let error = app.audio_io_state.input_device_error.as_deref().unwrap();
+        assert!(error.contains("no host"), "{error}");
+        let msg = app.status.visible(std::time::Instant::now()).unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert!(msg.text.contains("Input device scan failed"));
+        assert_eq!(
+            app.audio_io_state.output_devices,
+            vec!["Speakers".to_owned()]
+        );
     }
 
     #[test]
     fn first_track_auto_arms() {
-        let mut app = App::new_empty(test_engine_handle());
-        app.add_track("A".into(), SynthesisMode::PitchTracked);
+        let mut app = TestApp::empty();
+        assert!(app.add_track("A".into(), SynthesisMode::PitchTracked));
         assert!(app.tracks[0].armed, "first track should auto-arm");
 
         // Second track should NOT auto-arm.
-        app.add_track("B".into(), SynthesisMode::Granular);
+        assert!(app.add_track("B".into(), SynthesisMode::Granular));
         assert!(!app.tracks[1].armed, "second track should not auto-arm");
     }
 
     #[test]
     fn add_track_increments_id() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("Lead".into(), SynthesisMode::PitchTracked);
         app.add_track("Bass".into(), SynthesisMode::Granular);
@@ -1026,9 +1037,47 @@ mod tests {
     }
 
     #[test]
+    fn add_track_with_engine_down_adds_nothing_and_reports() {
+        let mut app = TestApp::empty();
+        app.disconnect_engine();
+
+        assert!(!app.add_track("A".into(), SynthesisMode::PitchTracked));
+        assert!(app.tracks.is_empty());
+
+        let msg = app.status.visible(std::time::Instant::now()).unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert_eq!(msg.text, "Add track failed: Engine not running");
+    }
+
+    #[test]
+    fn track_ids_come_from_the_engine_handle() {
+        let mut app = TestApp::empty();
+        assert!(app.add_track("A".into(), SynthesisMode::PitchTracked));
+        assert!(app.add_track("B".into(), SynthesisMode::PitchTracked));
+        app.remove_track(0);
+        assert!(app.add_track("C".into(), SynthesisMode::PitchTracked));
+        let ids: Vec<TrackId> = app.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec![TrackId(1), TrackId(2)]);
+    }
+
+    #[test]
+    fn the_track_limit_is_reported_and_no_track_is_shown() {
+        let mut app = TestApp::empty();
+        for i in 0..kazoo_core::MAX_TRACKS {
+            assert!(app.add_track(format!("{i}"), SynthesisMode::PitchTracked));
+        }
+        assert!(!app.add_track("Extra".into(), SynthesisMode::PitchTracked));
+        assert_eq!(app.tracks.len(), kazoo_core::MAX_TRACKS);
+        let msg = app.status.visible(std::time::Instant::now()).unwrap();
+        assert_eq!(
+            msg.text,
+            "Add track failed: the engine already has the maximum of 16 tracks"
+        );
+    }
+
+    #[test]
     fn remove_track_adjusts_selection() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("A".into(), SynthesisMode::PitchTracked);
         app.add_track("B".into(), SynthesisMode::Granular);
@@ -1043,8 +1092,7 @@ mod tests {
 
     #[test]
     fn remove_all_tracks_clears_selection() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("Solo".into(), SynthesisMode::Wavetable);
         app.remove_track(0);
@@ -1055,9 +1103,18 @@ mod tests {
     }
 
     #[test]
+    fn remove_track_with_engine_down_keeps_track() {
+        let mut app = TestApp::with_tracks(1);
+        app.disconnect_engine();
+        app.remove_track(0);
+        assert_eq!(app.tracks.len(), 1);
+        let msg = app.status.visible(std::time::Instant::now()).unwrap();
+        assert_eq!(msg.text, "Remove track failed: Engine not running");
+    }
+
+    #[test]
     fn toggle_mute_flips_state() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("T".into(), SynthesisMode::PitchTracked);
         assert!(!app.tracks[0].muted);
@@ -1070,9 +1127,34 @@ mod tests {
     }
 
     #[test]
+    fn toggle_mute_sends_command() {
+        let mut app = TestApp::with_tracks(1);
+        app.take_commands();
+        app.toggle_mute(0);
+        let commands = app.take_commands();
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(
+            commands[0],
+            EngineCommand::SetTrackMute(TrackId(0), true)
+        ));
+    }
+
+    #[test]
+    fn toggle_mute_with_engine_down_keeps_state_and_reports() {
+        let mut app = TestApp::with_tracks(1);
+        app.disconnect_engine();
+        app.toggle_mute(0);
+        assert!(
+            !app.tracks[0].muted,
+            "UI must not show a mute the engine never got"
+        );
+        let msg = app.status.visible(std::time::Instant::now()).unwrap();
+        assert_eq!(msg.text, "Mute failed: Engine not running");
+    }
+
+    #[test]
     fn toggle_solo_flips_state() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("T".into(), SynthesisMode::PitchTracked);
         app.toggle_solo(0);
@@ -1081,8 +1163,7 @@ mod tests {
 
     #[test]
     fn toggle_arm_flips_state() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("T".into(), SynthesisMode::PitchTracked);
         // First track is auto-armed; toggling should disarm it.
@@ -1095,16 +1176,41 @@ mod tests {
     }
 
     #[test]
+    fn engine_down_leaves_every_track_setting_unchanged() {
+        let mut app = TestApp::with_tracks(1);
+        app.tracks[0].effects = crate::test_support::effects(&["FX"]);
+        app.disconnect_engine();
+
+        app.toggle_solo(0);
+        app.toggle_arm(0);
+        app.set_track_volume(0, Db::new(-6.0));
+        app.set_track_pan(0, Pan::new(0.5));
+        app.cycle_synth_mode(0);
+        app.toggle_effect_bypass(0, 0);
+        app.remove_effect(0, 0);
+
+        let track = &app.tracks[0];
+        assert!(!track.soloed);
+        assert!(track.armed);
+        assert!((track.volume.value() - Db::UNITY.value()).abs() < f32::EPSILON);
+        assert!((track.pan.value() - Pan::CENTER.value()).abs() < f32::EPSILON);
+        assert_eq!(track.synthesis_mode, SynthesisMode::PitchTracked);
+        assert_eq!(track.effects.len(), 1);
+        assert!(!track.effects[0].bypassed);
+        let msg = app.status.visible(std::time::Instant::now()).unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert_eq!(msg.text, "Remove effect failed: Engine not running");
+    }
+
+    #[test]
     fn selected_track_id_returns_none_when_empty() {
-        let engine_handle = test_engine_handle();
-        let app = App::new_empty(engine_handle);
+        let app = TestApp::empty();
         assert!(app.selected_track_id().is_none());
     }
 
     #[test]
     fn selected_track_id_returns_correct_id() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("T".into(), SynthesisMode::PitchTracked);
         app.selected_track = 0;
@@ -1113,19 +1219,17 @@ mod tests {
 
     #[test]
     fn toggle_effect_bypass_out_of_bounds_is_noop() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
         app.add_track("T".into(), SynthesisMode::PitchTracked);
 
         // No effects added — should not panic.
         app.toggle_effect_bypass(0, 0);
-        assert!(app.tracks[0].effect_bypassed.is_empty());
+        assert!(app.tracks[0].effects.is_empty());
     }
 
     #[test]
     fn set_track_volume_updates_local_state() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
         app.add_track("T".into(), SynthesisMode::PitchTracked);
 
         app.set_track_volume(0, Db::new(-6.0));
@@ -1134,8 +1238,7 @@ mod tests {
 
     #[test]
     fn set_track_pan_updates_local_state() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
         app.add_track("T".into(), SynthesisMode::PitchTracked);
 
         app.set_track_pan(0, Pan::new(0.5));
@@ -1146,14 +1249,12 @@ mod tests {
 
     #[test]
     fn remove_effect_clamps_selected_effect() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("T".into(), SynthesisMode::PitchTracked);
         // Manually add effect metadata (we can't add real Processor objects
         // in unit tests, but we can simulate the metadata).
-        app.tracks[0].effect_names = vec!["FX1".into(), "FX2".into(), "FX3".into()];
-        app.tracks[0].effect_bypassed = vec![false, false, false];
+        app.tracks[0].effects = crate::test_support::effects(&["FX1", "FX2", "FX3"]);
         app.selected_track = 0;
         app.synth_state.selected_effect = 2; // pointing at FX3
         app.synth_state.selected_param = 3;
@@ -1164,17 +1265,15 @@ mod tests {
         assert_eq!(app.synth_state.selected_effect, 1);
         // selected_param should reset to 0.
         assert_eq!(app.synth_state.selected_param, 0);
-        assert_eq!(app.tracks[0].effect_names.len(), 2);
+        assert_eq!(app.tracks[0].effects.len(), 2);
     }
 
     #[test]
     fn remove_all_effects_resets_selected_effect() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("T".into(), SynthesisMode::PitchTracked);
-        app.tracks[0].effect_names = vec!["FX1".into()];
-        app.tracks[0].effect_bypassed = vec![false];
+        app.tracks[0].effects = crate::test_support::effects(&["FX1"]);
         app.selected_track = 0;
         app.synth_state.selected_effect = 0;
 
@@ -1182,20 +1281,17 @@ mod tests {
 
         assert_eq!(app.synth_state.selected_effect, 0);
         assert_eq!(app.synth_state.selected_param, 0);
-        assert!(app.tracks[0].effect_names.is_empty());
+        assert!(app.tracks[0].effects.is_empty());
     }
 
     #[test]
     fn remove_effect_on_other_track_does_not_change_selection() {
-        let engine_handle = test_engine_handle();
-        let mut app = App::new_empty(engine_handle);
+        let mut app = TestApp::empty();
 
         app.add_track("T1".into(), SynthesisMode::PitchTracked);
         app.add_track("T2".into(), SynthesisMode::Granular);
-        app.tracks[0].effect_names = vec!["FX1".into(), "FX2".into()];
-        app.tracks[0].effect_bypassed = vec![false, false];
-        app.tracks[1].effect_names = vec!["FX3".into()];
-        app.tracks[1].effect_bypassed = vec![false];
+        app.tracks[0].effects = crate::test_support::effects(&["FX1", "FX2"]);
+        app.tracks[1].effects = crate::test_support::effects(&["FX3"]);
         app.selected_track = 0;
         app.synth_state.selected_effect = 1;
         app.synth_state.selected_param = 2;
@@ -1208,15 +1304,11 @@ mod tests {
         assert_eq!(app.synth_state.selected_param, 2);
     }
 
-    // -----------------------------------------------------------------------
-    // Test helpers
-    // -----------------------------------------------------------------------
-
     // -- Timeline state -------------------------------------------------------
 
     #[test]
     fn initial_timeline_state() {
-        let app = App::new_empty(test_engine_handle());
+        let app = TestApp::empty();
         assert!((app.tracking_state.timeline_zoom - 256.0).abs() < f64::EPSILON);
         assert!((app.tracking_state.timeline_scroll - 0.0).abs() < f64::EPSILON);
         assert!(app.tracking_state.selected_clip.is_none());
@@ -1224,17 +1316,19 @@ mod tests {
 
     #[test]
     fn has_clips_returns_false_with_no_clips() {
-        let app = App::new_empty(test_engine_handle());
+        let app = TestApp::empty();
         assert!(!app.has_clips());
     }
 
     #[test]
-    fn timeline_panel_in_focus_cycle() {
-        let mut app = App::new_empty(test_engine_handle());
-        app.focused_panel = FocusedPanel::Tracks;
-        assert_eq!(app.focused_panel.next(), FocusedPanel::Timeline);
-        assert_eq!(FocusedPanel::Timeline.next(), FocusedPanel::Waveform);
-        assert_eq!(FocusedPanel::Waveform.prev(), FocusedPanel::Timeline);
+    fn tracking_view_tab_order_includes_timeline_after_tracks() {
+        let panels = panels_for_view(ActiveView::Tracking);
+        let tracks = panels
+            .iter()
+            .position(|p| *p == FocusedPanel::Tracks)
+            .unwrap();
+        assert_eq!(panels[tracks + 1], FocusedPanel::Timeline);
+        assert_eq!(panels[tracks + 2], FocusedPanel::Waveform);
     }
 
     #[test]
@@ -1253,7 +1347,7 @@ mod tests {
 
     #[test]
     fn add_track_has_zero_clip_count() {
-        let mut app = App::new_empty(test_engine_handle());
+        let mut app = TestApp::empty();
         app.add_track("T".into(), SynthesisMode::PitchTracked);
         assert_eq!(app.tracks[0].clip_count, 0);
     }
@@ -1262,91 +1356,111 @@ mod tests {
     fn file_browser_entry_debug() {
         let entry = FileBrowserEntry {
             name: "test.wav".into(),
-            path: std::path::PathBuf::from("/tmp/test.wav"),
+            path: PathBuf::from("/tmp/test.wav"),
             is_dir: false,
         };
         let dbg = format!("{entry:?}");
         assert!(dbg.contains("test.wav"));
     }
 
-    // -- Layer management tests -----------------------------------------------
+    // -- Directory scanning ---------------------------------------------------
 
-    #[test]
-    fn add_track_creates_single_layer() {
-        let mut app = App::new_empty(test_engine_handle());
-        app.add_track("T".into(), SynthesisMode::PitchTracked);
+    /// A uniquely named scratch directory removed on drop.
+    struct ScratchDir(PathBuf);
 
-        assert_eq!(app.tracks[0].layers.len(), 1);
-        assert_eq!(app.tracks[0].layers[0].mode, SynthesisMode::PitchTracked);
-        assert!(app.tracks[0].layers[0].enabled);
-        assert_eq!(app.tracks[0].selected_layer, 0);
-    }
-
-    #[test]
-    fn add_synth_layer_adds_to_selected_track() {
-        let mut app = App::new_empty(test_engine_handle());
-        app.add_track("T".into(), SynthesisMode::PitchTracked);
-        app.selected_track = 0;
-
-        assert!(app.add_synth_layer(SynthesisMode::Wavetable));
-        assert_eq!(app.tracks[0].layers.len(), 2);
-        assert_eq!(app.tracks[0].layers[1].mode, SynthesisMode::Wavetable);
-    }
-
-    #[test]
-    fn add_synth_layer_respects_max() {
-        let mut app = App::new_empty(test_engine_handle());
-        app.add_track("T".into(), SynthesisMode::PitchTracked);
-        app.selected_track = 0;
-
-        for _ in 1..kazoo_core::MAX_SYNTH_LAYERS {
-            assert!(app.add_synth_layer(SynthesisMode::Wavetable));
+    impl ScratchDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "kazoo-tui-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).unwrap();
+            }
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
         }
-        assert!(!app.add_synth_layer(SynthesisMode::Granular));
-        assert_eq!(app.tracks[0].layers.len(), kazoo_core::MAX_SYNTH_LAYERS);
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            if let Err(err) = std::fs::remove_dir_all(&self.0) {
+                // Drop cannot fail; a leaked temp dir is reported, not hidden.
+                eprintln!("could not remove {}: {err}", self.0.display());
+            }
+        }
     }
 
     #[test]
-    fn remove_synth_layer_cannot_remove_zero() {
-        let mut app = App::new_empty(test_engine_handle());
-        app.add_track("T".into(), SynthesisMode::PitchTracked);
-        app.selected_track = 0;
+    fn scan_directory_sorts_dirs_first_and_filters_files() {
+        let scratch = ScratchDir::new("scan");
+        std::fs::create_dir(scratch.0.join("beta")).unwrap();
+        std::fs::create_dir(scratch.0.join("Alpha")).unwrap();
+        std::fs::create_dir(scratch.0.join(".hidden")).unwrap();
+        std::fs::write(scratch.0.join("zed.wav"), b"").unwrap();
+        std::fs::write(scratch.0.join("Bee.FLAC"), b"").unwrap();
+        std::fs::write(scratch.0.join("notes.txt"), b"").unwrap();
 
-        assert!(!app.remove_synth_layer(0));
-        assert_eq!(app.tracks[0].layers.len(), 1);
+        let listing = App::scan_directory(&scratch.0).unwrap();
+        let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "beta", "Bee.FLAC", "zed.wav"]);
+        assert!(listing.entries[0].is_dir && listing.entries[1].is_dir);
+        assert!(!listing.entries[2].is_dir);
+        assert_eq!(listing.unreadable, 0);
     }
 
     #[test]
-    fn remove_synth_layer_adjusts_selection() {
-        let mut app = App::new_empty(test_engine_handle());
-        app.add_track("T".into(), SynthesisMode::PitchTracked);
-        app.selected_track = 0;
-        app.add_synth_layer(SynthesisMode::Wavetable);
-        app.add_synth_layer(SynthesisMode::Granular);
-        app.tracks[0].selected_layer = 2;
+    fn scan_directory_missing_dir_is_an_error() {
+        let scratch = ScratchDir::new("missing");
+        let missing = scratch.0.join("does-not-exist");
+        assert!(App::scan_directory(&missing).is_err());
+    }
 
-        assert!(app.remove_synth_layer(2));
-        assert_eq!(app.tracks[0].layers.len(), 2);
-        assert_eq!(app.tracks[0].selected_layer, 1);
+    #[cfg(unix)]
+    #[test]
+    fn scan_directory_counts_broken_symlinks_as_unreadable() {
+        let scratch = ScratchDir::new("symlink");
+        std::os::unix::fs::symlink(scratch.0.join("nowhere"), scratch.0.join("dangling.wav"))
+            .unwrap();
+        let listing = App::scan_directory(&scratch.0).unwrap();
+        assert!(listing.entries.is_empty());
+        assert_eq!(listing.unreadable, 1);
     }
 
     #[test]
-    fn toggle_layer_enabled_flips() {
-        let mut app = App::new_empty(test_engine_handle());
-        app.add_track("T".into(), SynthesisMode::PitchTracked);
-        app.selected_track = 0;
-        assert!(app.tracks[0].layers[0].enabled);
-
-        app.toggle_layer_enabled(0);
-        assert!(!app.tracks[0].layers[0].enabled);
-
-        app.toggle_layer_enabled(0);
-        assert!(app.tracks[0].layers[0].enabled);
+    fn browse_to_unreadable_dir_reports_and_keeps_mode() {
+        let scratch = ScratchDir::new("browse");
+        let mut app = TestApp::empty();
+        assert!(!app.browse_to(scratch.0.join("absent")));
+        assert_eq!(app.mode, AppMode::Normal);
+        let msg = app.status.visible(std::time::Instant::now()).unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert!(msg.text.starts_with("Cannot open"), "{}", msg.text);
     }
 
     #[test]
-    fn cycle_synth_mode_resets_param_and_layer() {
-        let mut app = App::new_empty(test_engine_handle());
+    fn browse_to_readable_dir_opens_browser() {
+        let scratch = ScratchDir::new("browse-ok");
+        std::fs::write(scratch.0.join("a.wav"), b"").unwrap();
+        let mut app = TestApp::empty();
+        assert!(app.browse_to(scratch.0.clone()));
+        let AppMode::FileBrowser {
+            directory,
+            entries,
+            selected,
+        } = &app.mode
+        else {
+            panic!("file browser should be open");
+        };
+        assert_eq!(directory, &scratch.0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(*selected, 0);
+    }
+
+    #[test]
+    fn cycle_synth_mode_resets_param_selection_and_values() {
+        let mut app = TestApp::empty();
         app.add_track("T".into(), SynthesisMode::PitchTracked);
         app.synth_state.selected_synth_param = 3;
 
@@ -1354,22 +1468,10 @@ mod tests {
 
         assert_eq!(app.synth_state.selected_synth_param, 0);
         assert_eq!(app.tracks[0].synthesis_mode, SynthesisMode::Wavetable);
-        assert_eq!(app.tracks[0].layers[0].mode, SynthesisMode::Wavetable);
-    }
-
-    // -----------------------------------------------------------------------
-    // Test helpers
-    // -----------------------------------------------------------------------
-
-    /// Create an `EngineHandle` backed by real channels but no audio threads.
-    fn test_engine_handle() -> EngineHandle {
-        use crossbeam_channel::unbounded;
-        use ringbuf::HeapRb;
-        use ringbuf::traits::Split;
-
-        let (cmd_tx, _cmd_rx) = unbounded();
-        let rb = HeapRb::<DisplayState>::new(4);
-        let (_prod, cons) = rb.split();
-        EngineHandle::new(cmd_tx, cons, 44_100, 256)
+        let sample_rate = crate::test_support::TEST_SAMPLE_RATE as f32;
+        assert_eq!(
+            app.tracks[0].synth_param_values,
+            SynthesisMode::Wavetable.default_param_values(sample_rate)
+        );
     }
 }

@@ -44,7 +44,6 @@ struct GridLayout {
 /// Draw the step sequencer grid.
 ///
 /// Shows: recent notes (dim, scrolling left) | current note (hot) | upcoming (blue gradient)
-#[allow(clippy::too_many_lines)]
 pub fn draw_step_grid(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
@@ -286,13 +285,10 @@ fn step_color(pos: usize, total: usize) -> Color {
     let fraction = pos as f32 / (total - 1) as f32;
 
     // Blue channel: 255 -> 70
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let blue = (255.0 - fraction * 185.0) as u8;
     // Green channel: 140 -> 60
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let green = (140.0 - fraction * 80.0) as u8;
     // Red channel: 60 -> 50
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let red = (60.0 - fraction * 10.0) as u8;
 
     Color::Rgb(red, green, blue)

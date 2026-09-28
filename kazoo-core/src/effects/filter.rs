@@ -3,7 +3,7 @@
 //! Implements Direct Form II Transposed structure with coefficient computation
 //! from the Audio EQ Cookbook (Robert Bristow-Johnson).
 
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
 use std::f32::consts::{FRAC_1_SQRT_2, PI};
 
 /// Filter topology.
@@ -89,10 +89,43 @@ impl BiquadFilter {
         f
     }
 
+    /// Set the cutoff/centre frequency in Hz and recalculate coefficients.
+    ///
+    /// Clamped to 20 Hz – 20 kHz; a non-finite value selects 20 Hz. Unlike
+    /// the generic [`Processor::set_param`] this is infallible and never
+    /// allocates, so it is safe to call per sample from the audio callback.
+    pub fn set_frequency(&mut self, hz: f32) {
+        self.frequency = crate::clamp_finite(hz, Self::FREQ_MIN, Self::FREQ_MAX);
+        self.recalculate_coefficients();
+    }
+
+    /// Set the resonance (Q) and recalculate coefficients.
+    ///
+    /// Clamped to 0.1 – 30; a non-finite value selects 0.1. Infallible and
+    /// allocation-free.
+    pub fn set_q(&mut self, q: f32) {
+        self.q = crate::clamp_finite(q, Self::Q_MIN, Self::Q_MAX);
+        self.recalculate_coefficients();
+    }
+
+    /// Set the shelf/peak gain in dB and recalculate coefficients.
+    ///
+    /// Clamped to -24 – +24 dB; a non-finite value selects -24 dB.
+    /// Infallible and allocation-free.
+    pub fn set_gain_db(&mut self, gain_db: f32) {
+        self.gain_db = crate::clamp_finite(gain_db, Self::GAIN_DB_MIN, Self::GAIN_DB_MAX);
+        self.recalculate_coefficients();
+    }
+
+    /// Current cutoff/centre frequency in Hz.
+    #[must_use]
+    pub const fn frequency(&self) -> f32 {
+        self.frequency
+    }
+
     /// Recalculate filter coefficients from the current parameters.
     ///
     /// Uses the Audio EQ Cookbook formulas (Robert Bristow-Johnson).
-    #[allow(clippy::many_single_char_names)]
     fn recalculate_coefficients(&mut self) {
         let sr = self.sample_rate;
         let nyquist = sr * 0.5;
@@ -197,31 +230,30 @@ impl BiquadFilter {
         };
     }
 
-    fn param_infos() -> [ParamInfo; 3] {
-        [
-            ParamInfo {
-                name: "Frequency".into(),
-                min: Self::FREQ_MIN,
-                max: Self::FREQ_MAX,
-                default: Self::FREQ_DEFAULT,
-                unit: "Hz".into(),
-            },
-            ParamInfo {
-                name: "Q".into(),
-                min: Self::Q_MIN,
-                max: Self::Q_MAX,
-                default: Self::Q_DEFAULT,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Gain".into(),
-                min: Self::GAIN_DB_MIN,
-                max: Self::GAIN_DB_MAX,
-                default: Self::GAIN_DB_DEFAULT,
-                unit: "dB".into(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; 3] = [
+        ParamInfo {
+            name: "Frequency",
+            min: Self::FREQ_MIN,
+            max: Self::FREQ_MAX,
+            default: Self::FREQ_DEFAULT,
+            unit: "Hz",
+        },
+        ParamInfo {
+            name: "Q",
+            min: Self::Q_MIN,
+            max: Self::Q_MAX,
+            default: Self::Q_DEFAULT,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Gain",
+            min: Self::GAIN_DB_MIN,
+            max: Self::GAIN_DB_MAX,
+            default: Self::GAIN_DB_DEFAULT,
+            unit: "dB",
+        },
+    ];
 }
 
 impl Processor for BiquadFilter {
@@ -273,8 +305,7 @@ impl Processor for BiquadFilter {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        let infos = Self::param_infos();
-        infos.get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -286,21 +317,19 @@ impl Processor for BiquadFilter {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
-
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
         match index {
-            Self::PARAM_FREQUENCY => self.frequency = clamped,
-            Self::PARAM_Q => self.q = clamped,
-            Self::PARAM_GAIN_DB => self.gain_db = clamped,
-            _ => unreachable!(),
+            Self::PARAM_FREQUENCY => self.set_frequency(clamped),
+            Self::PARAM_Q => self.set_q(clamped),
+            Self::PARAM_GAIN_DB => self.set_gain_db(clamped),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
-
-        self.recalculate_coefficients();
         Ok(())
     }
 
@@ -332,7 +361,7 @@ mod tests {
                 rng_state ^= rng_state << 13;
                 rng_state ^= rng_state >> 17;
                 rng_state ^= rng_state << 5;
-                (rng_state as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng_state as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect();
 
@@ -486,7 +515,7 @@ mod tests {
                 rng ^= rng << 13;
                 rng ^= rng >> 17;
                 rng ^= rng << 5;
-                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect()
     }
@@ -691,7 +720,7 @@ mod tests {
             filter.process(&bad_input, &mut output);
 
             for (i, &s) in output.iter().enumerate() {
-                assert!(s.is_finite(), "{:?}: output[{i}] = {s} is not finite", ft);
+                assert!(s.is_finite(), "{ft:?}: output[{i}] = {s} is not finite");
             }
         }
     }

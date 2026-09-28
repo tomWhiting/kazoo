@@ -4,7 +4,7 @@
 //! domain, then resynthesises via inverse FFT. Uses a Hann window with 75%
 //! overlap-add for smooth output.
 
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -124,7 +124,11 @@ impl FormantShift {
 
         // Shift the spectrum: move each bin by `shift_bins`.
         let shift_bins = self.shift_hz * fft_size as f32 / self.sample_rate;
-        let shift_int = shift_bins.round() as i32;
+        // Magnitude and direction of the shift in whole bins. `as usize`
+        // saturates (and maps NaN to 0), so an absurd shift simply moves every
+        // bin out of range rather than wrapping.
+        let shift_mag = shift_bins.abs().round() as usize;
+        let shift_up = shift_bins >= 0.0;
 
         // Create a shifted copy using pre-allocated buffer (zero it first).
         let half = fft_size / 2 + 1;
@@ -133,14 +137,18 @@ impl FormantShift {
         }
 
         for k in 0..half {
-            #[allow(clippy::cast_possible_wrap)]
-            let dst = k as i32 + shift_int;
-            if dst >= 0 && (dst as usize) < half {
-                self.shifted_buffer[dst as usize] = self.fft_buffer[k];
-                // Mirror for negative frequencies.
-                if dst > 0 && (dst as usize) < half {
-                    self.shifted_buffer[fft_size - dst as usize] = self.fft_buffer[k].conj();
-                }
+            let dst = if shift_up {
+                k.checked_add(shift_mag)
+            } else {
+                k.checked_sub(shift_mag)
+            };
+            let Some(dst) = dst.filter(|&d| d < half) else {
+                continue;
+            };
+            self.shifted_buffer[dst] = self.fft_buffer[k];
+            // Mirror for negative frequencies.
+            if dst > 0 {
+                self.shifted_buffer[fft_size - dst] = self.fft_buffer[k].conj();
             }
         }
         // Ensure DC and Nyquist are real.
@@ -164,24 +172,23 @@ impl FormantShift {
         }
     }
 
-    fn param_infos() -> [ParamInfo; 2] {
-        [
-            ParamInfo {
-                name: "Shift".into(),
-                min: Self::SHIFT_MIN,
-                max: Self::SHIFT_MAX,
-                default: Self::SHIFT_DEFAULT,
-                unit: "Hz".into(),
-            },
-            ParamInfo {
-                name: "Mix".into(),
-                min: Self::MIX_MIN,
-                max: Self::MIX_MAX,
-                default: Self::MIX_DEFAULT,
-                unit: String::new(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; 2] = [
+        ParamInfo {
+            name: "Shift",
+            min: Self::SHIFT_MIN,
+            max: Self::SHIFT_MAX,
+            default: Self::SHIFT_DEFAULT,
+            unit: "Hz",
+        },
+        ParamInfo {
+            name: "Mix",
+            min: Self::MIX_MIN,
+            max: Self::MIX_MAX,
+            default: Self::MIX_DEFAULT,
+            unit: "",
+        },
+    ];
 }
 
 impl Processor for FormantShift {
@@ -250,8 +257,7 @@ impl Processor for FormantShift {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        let infos = Self::param_infos();
-        infos.get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -262,17 +268,18 @@ impl Processor for FormantShift {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
 
         match index {
             Self::PARAM_SHIFT_HZ => self.shift_hz = clamped,
             Self::PARAM_MIX => self.mix = clamped,
-            _ => unreachable!(),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
         Ok(())
     }

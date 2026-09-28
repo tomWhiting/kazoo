@@ -214,7 +214,7 @@ fn parse_note(note: &str) -> Result<u8, String> {
             chars.next();
             1
         }
-        Some('b') | Some('♭') => {
+        Some('b' | '♭') => {
             chars.next();
             -1
         }
@@ -255,10 +255,10 @@ mod tests {
 
         assert_eq!(events.len(), 4);
         assert_eq!(events[0].notes, vec![60]);
-        assert_eq!(events[1].start_beats, 1.0);
+        assert!((events[1].start_beats - 1.0).abs() < f64::EPSILON);
         assert!(events[2].is_rest());
         assert_eq!(events[3].notes, vec![64, 67, 71]);
-        assert_eq!(events[3].duration_beats, 2.0);
+        assert!((events[3].duration_beats - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -267,8 +267,8 @@ mod tests {
 
         assert_eq!(events[0].notes, vec![61]);
         assert_eq!(events[1].notes, vec![63]);
-        assert_eq!(events[0].duration_beats, 0.75);
-        assert_eq!(events[1].start_beats, 0.75);
+        assert!((events[0].duration_beats - 0.75).abs() < f64::EPSILON);
+        assert!((events[1].start_beats - 0.75).abs() < f64::EPSILON);
     }
 
     #[test]

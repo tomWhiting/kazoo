@@ -3,15 +3,20 @@
 //! Renders a 4-row bordered strip at the top of every view. The three content
 //! rows pack a dense overview of the engine state:
 //!
-//! - **Row 1:** "KAZOO -- mouth noises" branding + recording indicator.
+//! - **Row 1:** "KAZOO -- mouth noises" branding, the kazoo-mix desk link,
+//!   status messages and the recording indicator.
 //! - **Row 2:** Transport state, time, bar.beat.tick, BPM, loop, beat dots, view tabs.
-//! - **Row 3:** Detected pitch, input level, L/R master VU meters, CPU load.
+//! - **Row 3:** Detected pitch, input level, L/R master VU meters, engine
+//!   failure counters (while any is non-zero), CPU load.
 
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
-use crate::app::App;
+use std::time::Instant;
+
+use crate::app::{App, DeskView};
 use crate::state::ActiveView;
+use crate::status::StatusLevel;
 use crate::theme;
 use kazoo_core::transport::TransportState;
 
@@ -28,6 +33,9 @@ const METER_MAX_DB: f32 = 0.0;
 /// Number of block characters in a single horizontal meter bar.
 const METER_BAR_WIDTH: usize = 8;
 
+// Compile-time check: the meter must be readable yet fit in the header row.
+const _: () = assert!(METER_BAR_WIDTH >= 4 && METER_BAR_WIDTH <= 20);
+
 // ---------------------------------------------------------------------------
 // Public draw entry point
 // ---------------------------------------------------------------------------
@@ -36,7 +44,6 @@ const METER_BAR_WIDTH: usize = 8;
 ///
 /// The header is wrapped in a rounded border and contains three content lines:
 /// branding/recording, transport/tabs, and pitch/meters/CPU.
-#[allow(clippy::too_many_lines)]
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     // Outer border with rounded corners.
     let block = Block::default()
@@ -88,30 +95,8 @@ fn draw_row_branding(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(brand_tagline, theme::style_text_dimmed()),
     ];
 
-    // IPC instrument connection badges.
-    if !app.display.ipc_instruments.is_empty() {
-        left_spans.push(Span::styled("  ", theme::style_text_dimmed()));
-        for (i, inst) in app.display.ipc_instruments.iter().enumerate() {
-            if i > 0 {
-                left_spans.push(Span::styled(" ", theme::style_text_dimmed()));
-            }
-            if inst.connected {
-                // Connected: green dot + name.
-                left_spans.push(Span::styled(
-                    "\u{25cf}",
-                    Style::new().fg(theme::ACCENT_PLAY),
-                ));
-                left_spans.push(Span::styled(
-                    &*inst.name,
-                    theme::style_text_secondary().add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                // Disconnected: dim dot + name.
-                left_spans.push(Span::styled("\u{25cb}", theme::style_text_dimmed()));
-                left_spans.push(Span::styled(&*inst.name, theme::style_text_dimmed()));
-            }
-        }
-    }
+    // Where this synth's audio is going: the desk strip, or standalone.
+    left_spans.extend(desk_spans(&app.desk));
 
     // Right side: recording indicator (blinking).
     let rec_indicator = if app.display.is_recording {
@@ -139,10 +124,19 @@ fn draw_row_branding(frame: &mut Frame, app: &App, area: Rect) {
     let left_len: usize = left_spans.iter().map(Span::width).sum();
     let right_span = Span::styled(rec_indicator, rec_style);
     let right_len = right_span.width();
-    let padding = width.saturating_sub(left_len + right_len);
 
+    // Status message (errors / confirmations) sits just left of the
+    // recording indicator, truncated to the space that is left.
+    let status_budget = width.saturating_sub(left_len + right_len + 2);
+    let status_span = status_span(app, Instant::now(), status_budget);
+    let status_len = status_span.as_ref().map_or(0, Span::width);
+
+    let padding = width.saturating_sub(left_len + status_len + right_len);
     if padding > 0 {
         left_spans.push(Span::raw(" ".repeat(padding)));
+    }
+    if let Some(span) = status_span {
+        left_spans.push(span);
     }
     if !rec_indicator.is_empty() {
         left_spans.push(right_span);
@@ -158,41 +152,12 @@ fn draw_row_branding(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Render the transport status line with state icon, time, bar/beat, BPM,
 /// loop indicator, beat dots, and right-aligned view tabs.
-#[allow(clippy::too_many_lines)]
 fn draw_row_transport(frame: &mut Frame, app: &App, area: Rect) {
     let width = area.width as usize;
     let transport = &app.display.transport;
 
     // Transport state indicator.
-    let (state_icon, state_label, state_style) = if transport.count_in_active {
-        let label = format!(
-            "COUNT {}/{}",
-            transport.count_in_bar, transport.count_in_total
-        );
-        (
-            "",
-            label,
-            theme::style_recording(app.recording_blink_visible()),
-        )
-    } else {
-        match transport.state {
-            TransportState::Playing => ("\u{25b6}", " PLAY".to_owned(), theme::style_playing()),
-            TransportState::Stopped => ("\u{25a0}", " STOP".to_owned(), theme::style_stopped()),
-            TransportState::Paused => (
-                "\u{2759}\u{2759}",
-                " PAUSE".to_owned(),
-                theme::style_paused(),
-            ),
-            TransportState::Recording => {
-                let visible = app.recording_blink_visible();
-                (
-                    "\u{25cf}",
-                    " REC".to_owned(),
-                    theme::style_recording(visible),
-                )
-            }
-        }
-    };
+    let (state_icon, state_label, state_style) = transport_state_indicator(app);
 
     // Time position MM:SS.mmm.
     let time_str = transport.position.format_time();
@@ -206,15 +171,11 @@ fn draw_row_transport(frame: &mut Frame, app: &App, area: Rect) {
     let bpm_str = format!("\u{2669}{:.0}", transport.bpm);
 
     // Loop indicator.
-    let loop_str = if transport.loop_enabled {
+    let loop_str = if transport.is_looping() {
         "\u{27f3}LOOP"
     } else {
         ""
     };
-
-    // Beat dots: filled for beats that have passed, open for future beats.
-    let beats_per_bar = transport.beats_per_bar.max(1);
-    let current_beat = transport.current_beat;
 
     let sep = theme::style_text_dimmed();
 
@@ -254,7 +215,7 @@ fn draw_row_transport(frame: &mut Frame, app: &App, area: Rect) {
     left_spans.push(Span::styled("   ", sep));
 
     // Loop indicator.
-    if transport.loop_enabled {
+    if transport.is_looping() {
         left_spans.push(Span::styled(
             loop_str,
             Style::new()
@@ -265,26 +226,7 @@ fn draw_row_transport(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Beat dots.
-    for beat in 0..beats_per_bar {
-        let is_past_or_current = beat <= current_beat && transport.beat_active;
-        let is_current = beat == current_beat && transport.beat_active;
-        if is_current {
-            // Current beat: filled circle, accent color.
-            left_spans.push(Span::styled(
-                "\u{25cf}",
-                Style::new().fg(theme::ACCENT_RECORD),
-            ));
-        } else if is_past_or_current {
-            // Past beat: filled circle, dimmer.
-            left_spans.push(Span::styled(
-                "\u{25cf}",
-                Style::new().fg(theme::ACCENT_PLAY),
-            ));
-        } else {
-            // Future beat: open circle.
-            left_spans.push(Span::styled("\u{25cb}", theme::style_text_dimmed()));
-        }
-    }
+    push_beat_dots(&mut left_spans, transport);
 
     // Calculate the width of left content to determine padding for tabs.
     let left_content_width: usize = left_spans.iter().map(Span::width).sum();
@@ -302,6 +244,57 @@ fn draw_row_transport(frame: &mut Frame, app: &App, area: Rect) {
 
     let line = Line::from(left_spans);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// The transport state icon, label and style for the header.
+fn transport_state_indicator(app: &App) -> (&'static str, String, Style) {
+    let transport = &app.display.transport;
+    if let Some(count_in) = transport.count_in {
+        let label = format!("COUNT {}/{}", count_in.bar, count_in.total);
+        return (
+            "",
+            label,
+            theme::style_recording(app.recording_blink_visible()),
+        );
+    }
+    match transport.state {
+        TransportState::Playing => ("\u{25b6}", " PLAY".to_owned(), theme::style_playing()),
+        TransportState::Stopped => ("\u{25a0}", " STOP".to_owned(), theme::style_stopped()),
+        TransportState::Paused => (
+            "\u{2759}\u{2759}",
+            " PAUSE".to_owned(),
+            theme::style_paused(),
+        ),
+        TransportState::Recording => (
+            "\u{25cf}",
+            " REC".to_owned(),
+            theme::style_recording(app.recording_blink_visible()),
+        ),
+    }
+}
+
+/// Append one dot per beat in the bar: the current beat highlighted, past
+/// beats filled, future beats open.
+fn push_beat_dots(spans: &mut Vec<Span<'_>>, transport: &kazoo_core::transport::TransportSnapshot) {
+    let beats_per_bar = transport.beats_per_bar.max(1);
+    let indicator = transport.beat;
+    for beat in 0..beats_per_bar {
+        let is_current = beat == indicator.beat && indicator.flash;
+        let is_past = beat < indicator.beat && indicator.flash;
+        if is_current {
+            spans.push(Span::styled(
+                "\u{25cf}",
+                Style::new().fg(theme::ACCENT_RECORD),
+            ));
+        } else if is_past {
+            spans.push(Span::styled(
+                "\u{25cf}",
+                Style::new().fg(theme::ACCENT_PLAY),
+            ));
+        } else {
+            spans.push(Span::styled("\u{25cb}", theme::style_text_dimmed()));
+        }
+    }
 }
 
 /// Build the view tab spans: `[1:Synth] [2:Mixer] ...` with the active tab
@@ -404,9 +397,16 @@ fn draw_row_meters(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled("  ", sep));
     }
 
-    // CPU load (right-aligned).
+    // Engine failure counters, in the space left before the CPU load.
     let left_content_width: usize = spans.iter().map(Span::width).sum();
     let cpu_width = cpu_str.len();
+    let health_budget = width.saturating_sub(left_content_width + cpu_width + 2);
+    if let Some(span) = health_span(app, Instant::now(), health_budget) {
+        spans.push(span);
+    }
+
+    // CPU load (right-aligned).
+    let left_content_width: usize = spans.iter().map(Span::width).sum();
     let padding = width.saturating_sub(left_content_width + cpu_width);
     if padding > 0 {
         spans.push(Span::raw(" ".repeat(padding)));
@@ -420,6 +420,122 @@ fn draw_row_meters(frame: &mut Frame, app: &App, area: Rect) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Where this synth's audio is going, as header spans: the desk strip it is
+/// plugged into, or that it is standalone and why, plus anything the link
+/// has lost. Nothing when the engine was not asked to plug in.
+fn desk_spans(desk: &DeskView) -> Vec<Span<'static>> {
+    let mut spans = Vec::with_capacity(3);
+    match desk {
+        DeskView::Off => return spans,
+        DeskView::Failed(reason) => spans.push(Span::styled(
+            format!("  \u{25cb} standalone: {reason}"),
+            Style::new().fg(theme::METER_RED),
+        )),
+        DeskView::Link(link) if link.connected => spans.push(Span::styled(
+            link.strip.map_or_else(
+                || "  \u{25cf} \u{2192} kazoo-mix".to_owned(),
+                |strip| {
+                    format!(
+                        "  \u{25cf} \u{2192} kazoo-mix strip {}",
+                        u16::from(strip) + 1
+                    )
+                },
+            ),
+            Style::new()
+                .fg(theme::ACCENT_PLAY)
+                .add_modifier(Modifier::BOLD),
+        )),
+        DeskView::Link(link) => spans.push(link.last_refusal.as_ref().map_or_else(
+            || Span::styled("  \u{25cb} standalone", theme::style_text_dimmed()),
+            |refusal| {
+                Span::styled(
+                    format!("  \u{25cb} standalone: {refusal}"),
+                    Style::new().fg(theme::ACCENT_PAUSE),
+                )
+            },
+        )),
+    }
+    if let DeskView::Link(link) = desk {
+        if link.blocks_dropped > 0 || link.messages_dropped > 0 {
+            spans.push(Span::styled(
+                format!(
+                    "  link lost {} blocks, {} msgs",
+                    link.blocks_dropped, link.messages_dropped
+                ),
+                Style::new().fg(theme::ACCENT_PAUSE),
+            ));
+        }
+    }
+    spans
+}
+
+/// Every non-zero engine failure counter as one span (e.g.
+/// `"⚠ mic 28 · params 3"`), truncated to `max_width` columns: red while a
+/// counter has just risen, amber once it has been steady for a while.
+fn health_span(app: &App, now: Instant, max_width: usize) -> Option<Span<'static>> {
+    let counters: Vec<String> = app
+        .engine_health
+        .nonzero()
+        .map(|(name, total)| format!("{name} {total}"))
+        .collect();
+    if counters.is_empty() {
+        return None;
+    }
+    let text = format!("\u{26a0} {}", counters.join(" \u{b7} "));
+    let text = truncate_to_width(&text, max_width);
+    if text.is_empty() {
+        return None;
+    }
+    let style = if app.engine_health.is_fresh(now) {
+        Style::new()
+            .fg(theme::METER_RED)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(theme::ACCENT_PAUSE)
+    };
+    Some(Span::styled(text, style))
+}
+
+/// Build the status-line span for the message visible at `now`, truncated
+/// to at most `max_width` columns. Returns `None` when there is no live
+/// message or no room to show one.
+fn status_span(app: &App, now: Instant, max_width: usize) -> Option<Span<'static>> {
+    let message = app.status.visible(now)?;
+    let (icon, style) = match message.level {
+        StatusLevel::Error => (
+            "\u{26a0} ",
+            Style::new()
+                .fg(theme::METER_RED)
+                .add_modifier(Modifier::BOLD),
+        ),
+        StatusLevel::Info => ("\u{2713} ", theme::style_text_secondary()),
+    };
+    let text = if message.repeats > 1 {
+        format!("{icon}{} (\u{00d7}{})", message.text, message.repeats)
+    } else {
+        format!("{icon}{}", message.text)
+    };
+    let text = truncate_to_width(&text, max_width);
+    if text.is_empty() {
+        return None;
+    }
+    Some(Span::styled(text, style))
+}
+
+/// Truncate `text` to at most `max_width` characters, ending with an
+/// ellipsis when anything was cut.
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if text.chars().count() <= max_width {
+        return text.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut out: String = text.chars().take(max_width - 1).collect();
+    out.push('\u{2026}');
+    out
+}
 
 /// Build the pitch display string: "A4 440.0Hz" or "--" when unvoiced.
 fn build_pitch_string(app: &App) -> String {
@@ -452,11 +568,6 @@ fn db_to_ratio(db: f32) -> f32 {
 fn build_horizontal_meter(spans: &mut Vec<Span<'_>>, peak_db: f32) {
     let ratio = db_to_ratio(peak_db);
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss
-    )]
     let filled = (ratio * METER_BAR_WIDTH as f32).round() as usize;
     let empty = METER_BAR_WIDTH.saturating_sub(filled);
 
@@ -466,7 +577,6 @@ fn build_horizontal_meter(spans: &mut Vec<Span<'_>>, peak_db: f32) {
     // Filled cells: each cell colored by the dB level it represents.
     for i in 0..filled {
         // Determine the dB level at this cell position.
-        #[allow(clippy::cast_precision_loss)]
         let cell_ratio = (i as f32 + 0.5) / METER_BAR_WIDTH as f32;
         let cell_db = cell_ratio.mul_add(METER_MAX_DB - METER_MIN_DB, METER_MIN_DB);
         let color = theme::meter_color_db(cell_db);
@@ -503,7 +613,7 @@ mod tests {
 
     #[test]
     fn db_to_ratio_midpoint() {
-        let mid = (METER_MIN_DB + METER_MAX_DB) / 2.0;
+        let mid = f32::midpoint(METER_MIN_DB, METER_MAX_DB);
         assert!((db_to_ratio(mid) - 0.5).abs() < f32::EPSILON);
     }
 
@@ -563,11 +673,132 @@ mod tests {
         assert!(total_text.contains('\u{2591}')); // empty shade
     }
 
-    // -- METER_BAR_WIDTH constant -------------------------------------------
+    // -- status line --------------------------------------------------------
+
+    fn render_header(app: &App, width: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(frame, app, Rect::new(0, 0, width, 5)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..5 {
+            for x in 0..width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
 
     #[test]
-    fn meter_bar_width_is_reasonable() {
-        assert!(METER_BAR_WIDTH >= 4);
-        assert!(METER_BAR_WIDTH <= 20);
+    fn header_shows_status_error() {
+        let mut app = crate::test_support::TestApp::empty();
+        app.status.error("Mute failed: Engine not running");
+        let text = render_header(&app, 120);
+        assert!(text.contains("Mute failed: Engine not running"), "{text}");
+    }
+
+    #[test]
+    fn header_shows_repeat_count() {
+        let mut app = crate::test_support::TestApp::empty();
+        app.status.error("boom");
+        app.status.error("boom");
+        let text = render_header(&app, 120);
+        assert!(text.contains("boom (\u{00d7}2)"), "{text}");
+    }
+
+    #[test]
+    fn header_without_status_renders_branding() {
+        let app = crate::test_support::TestApp::empty();
+        let text = render_header(&app, 120);
+        assert!(text.contains("KAZOO"), "{text}");
+    }
+
+    fn link(connected: bool) -> kazoo_core::ipc::link::LinkStatus {
+        kazoo_core::ipc::link::LinkStatus {
+            connected,
+            strip: None,
+            blocks_sent: 0,
+            blocks_dropped: 0,
+            messages_dropped: 0,
+            connections: 0,
+            last_refusal: None,
+        }
+    }
+
+    #[test]
+    fn header_names_the_desk_strip() {
+        let mut app = crate::test_support::TestApp::empty();
+        app.desk = DeskView::Link(kazoo_core::ipc::link::LinkStatus {
+            strip: Some(2),
+            ..link(true)
+        });
+        let text = render_header(&app, 120);
+        assert!(text.contains("\u{2192} kazoo-mix strip 3"), "{text}");
+    }
+
+    #[test]
+    fn header_shows_standalone_and_why() {
+        let mut app = crate::test_support::TestApp::empty();
+        app.desk = DeskView::Link(link(false));
+        assert!(render_header(&app, 120).contains("\u{25cb} standalone"));
+
+        app.desk = DeskView::Link(kazoo_core::ipc::link::LinkStatus {
+            last_refusal: Some("desk is full".to_owned()),
+            ..link(false)
+        });
+        let text = render_header(&app, 120);
+        assert!(text.contains("standalone: desk is full"), "{text}");
+
+        app.desk = DeskView::Failed("could not start the desk link: boom".to_owned());
+        let text = render_header(&app, 120);
+        assert!(text.contains("standalone: could not start"), "{text}");
+    }
+
+    #[test]
+    fn header_shows_link_losses() {
+        let mut app = crate::test_support::TestApp::empty();
+        app.desk = DeskView::Link(kazoo_core::ipc::link::LinkStatus {
+            blocks_dropped: 4,
+            messages_dropped: 1,
+            ..link(true)
+        });
+        let text = render_header(&app, 140);
+        assert!(text.contains("link lost 4 blocks, 1 msgs"), "{text}");
+    }
+
+    #[test]
+    fn header_without_a_desk_link_says_nothing_about_it() {
+        let app = crate::test_support::TestApp::empty();
+        assert_eq!(app.desk, DeskView::Off);
+        let text = render_header(&app, 120);
+        assert!(!text.contains("standalone"), "{text}");
+        assert!(!text.contains("kazoo-mix"), "{text}");
+    }
+
+    #[test]
+    fn header_shows_engine_failure_counters() {
+        let mut app = crate::test_support::TestApp::empty();
+        let clean = render_header(&app, 160);
+        assert!(!clean.contains('\u{26a0}'), "{clean}");
+
+        let stats = kazoo_core::engine::EngineStatsSnapshot {
+            mic_samples_dropped: 28,
+            params_rejected: 3,
+            ..kazoo_core::engine::EngineStatsSnapshot::default()
+        };
+        let message = app.engine_health.observe(stats, Instant::now());
+        assert!(message.is_some());
+        let text = render_header(&app, 160);
+        assert!(text.contains("\u{26a0} params 3 \u{b7} mic 28"), "{text}");
+    }
+
+    #[test]
+    fn truncate_to_width_adds_ellipsis() {
+        assert_eq!(truncate_to_width("abcdef", 4), "abc\u{2026}");
+        assert_eq!(truncate_to_width("abc", 4), "abc");
+        assert_eq!(truncate_to_width("abc", 0), "");
     }
 }

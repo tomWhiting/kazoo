@@ -1,0 +1,9 @@
+id: no-discarded-result
+valid:
+  - "fn f() { let _guard = lock(); }"
+  - "fn f() { let value = compute(); }"
+  - "fn f() { if let Err(err) = run() { report(err); } }"
+invalid:
+  - "fn f() { let _ = run(); }"
+  - "fn f() { let _ = join.join(); }"
+  - "fn f() { let _: Result<(), E> = run(); }"

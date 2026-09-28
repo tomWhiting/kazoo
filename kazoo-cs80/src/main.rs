@@ -5,55 +5,42 @@
 //! See `studio/kazoo-cs80.md` for full specification.
 
 mod app;
+mod audio;
+mod command;
 mod input;
-pub mod ipc;
 pub mod modular;
+mod preset;
 pub mod synth;
+mod terminal;
 mod ui;
 
-use std::io;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use crossterm::ExecutableCommand;
-use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use crossbeam_channel::Receiver;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
 
 use crate::app::App;
-use crate::ipc::HubLink;
-use crate::synth::{Cs80Synth, NUM_VOICES, SynthParams, VoiceStatus};
-
-use crate::app::WAVEFORM_BUF_SIZE;
+use crate::audio::{AudioSetup, AudioStats, DisplaySnapshot, MAX_CALLBACK_FRAMES};
+use crate::command::CommandLink;
+use crate::terminal::Tui;
 
 /// Target frame rate for the TUI.
 const TARGET_FPS: u64 = 30;
 
-/// Maximum number of frames the audio callback will ever render.
-const MAX_CALLBACK_FRAMES: usize = 4096;
+/// Backend error messages queued for the UI before further ones are only
+/// counted.
+const STREAM_ERROR_BACKLOG: usize = 8;
 
-/// Display snapshot sent from the audio callback to the UI thread.
-///
-/// Sent via crossbeam channel (lock-free bounded SPSC) — no mutexes in
-/// the audio path.
-struct DisplaySnapshot {
-    voice_status: [VoiceStatus; NUM_VOICES],
-    waveform: [f32; WAVEFORM_BUF_SIZE],
-}
-
-/// Commands sent from the UI thread to the audio thread.
-#[derive(Debug)]
-enum AudioCommand {
-    NoteOn { note: u8, velocity: f32 },
-    NoteOff { note: u8 },
-    Aftertouch { note: u8, pressure: f32 },
-    UpdateParams(SynthParams),
+/// UI-side ends of the audio plumbing, polled once per frame.
+struct UiChannels<'a> {
+    commands: CommandLink,
+    display_rx: Receiver<DisplaySnapshot>,
+    stream_error_rx: Receiver<cpal::StreamError>,
+    stats: Arc<AudioStats>,
+    hub: &'a HubLink,
 }
 
 fn main() -> color_eyre::Result<()> {
@@ -69,241 +56,128 @@ fn main() -> color_eyre::Result<()> {
         .ok_or_else(|| color_eyre::eyre::eyre!("no audio output device found"))?;
     let supported_config = device.default_output_config()?;
     let sample_rate = supported_config.sample_rate() as f32;
-    let channels = supported_config.channels() as usize;
+    let channels = usize::from(supported_config.channels());
 
     // Command channel: UI -> Audio (lock-free bounded MPSC).
-    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<AudioCommand>(256);
+    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(256);
 
-    // Display channel: Audio -> UI (lock-free bounded SPSC).
-    // Capacity 2: audio writes latest snapshot, UI drains and keeps last.
+    // Display channel: Audio -> UI. The audio side evicts the oldest unread
+    // snapshot when full, so the UI always sees the newest.
     let (display_tx, display_rx) = crossbeam_channel::bounded::<DisplaySnapshot>(2);
 
-    // Attempt IPC hub connection.
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let hub_link = HubLink::new(2, sample_rate as u32, MAX_CALLBACK_FRAMES as u32);
-    if hub_link.is_connected() {
-        eprintln!("Connected to kazoo hub — audio will be routed to mixer");
-    }
+    // Backend errors: Audio -> UI, counted when the backlog is full.
+    let (stream_error_tx, stream_error_rx) = crossbeam_channel::bounded(STREAM_ERROR_BACKLOG);
+    let stats = Arc::new(AudioStats::default());
 
-    // Build and start the audio stream.
-    let stream = build_audio_stream(
+    // Plug into the kazoo-mix desk whenever it is running.
+    let (hub, hub_audio) = hub_link(LinkConfig::new(
+        "kazoo-cs80",
+        2,
+        supported_config.sample_rate(),
+        MAX_CALLBACK_FRAMES as u32,
+    ))?;
+
+    let stream = audio::build_audio_stream(
         &device,
         &supported_config.into(),
-        sample_rate,
-        channels,
-        cmd_rx,
-        display_tx,
-        hub_link,
+        AudioSetup {
+            sample_rate,
+            channels,
+            cmd_rx,
+            display_tx,
+            display_evict: display_rx.clone(),
+            stream_error_tx,
+            hub_audio,
+            stats: Arc::clone(&stats),
+        },
     )?;
     stream.play()?;
 
     // -----------------------------------------------------------------------
-    // Terminal setup
+    // Terminal + event loop
     // -----------------------------------------------------------------------
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-
-    // Enable keyboard enhancement (kitty protocol) so we receive
-    // KeyEventKind::Release events. Without this, note-off never fires
-    // and keys latch permanently.
-    let _ = stdout.execute(PushKeyboardEnhancementFlags(
-        KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
-    ));
-
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    // -----------------------------------------------------------------------
-    // App state + event loop
-    // -----------------------------------------------------------------------
+    let (mut tui, keyboard) = terminal::setup_terminal()?;
 
     let mut app = App::new(sample_rate);
+    app.key_releases = keyboard.clone();
+    let mut channels = UiChannels {
+        commands: CommandLink::new(cmd_tx),
+        display_rx,
+        stream_error_rx,
+        stats,
+        hub: &hub,
+    };
+    let result = run(&mut tui, &mut app, &mut channels);
+
+    // -----------------------------------------------------------------------
+    // Cleanup: always restore the terminal, even if the loop failed.
+    // -----------------------------------------------------------------------
+
+    drop(stream);
+    drop(channels);
+    drop(hub);
+    let restored = terminal::restore_terminal(&mut tui, &keyboard);
+    terminal::finish("kazoo-cs80", result, restored)
+}
+
+/// The UI event loop.
+fn run(tui: &mut Tui, app: &mut App, channels: &mut UiChannels<'_>) -> color_eyre::Result<()> {
     let frame_duration = Duration::from_millis(1000 / TARGET_FPS);
 
     loop {
         let frame_start = Instant::now();
 
-        // Drain display snapshots from audio thread, keep only the latest.
-        let mut latest_snapshot: Option<DisplaySnapshot> = None;
-        while let Ok(snap) = display_rx.try_recv() {
-            latest_snapshot = Some(snap);
-        }
-        if let Some(snap) = latest_snapshot {
-            app.voice_status = snap.voice_status;
-            app.waveform_buf.copy_from_slice(&snap.waveform);
-        }
+        poll_audio(app, channels);
         app.frame += 1;
 
-        // Draw.
-        terminal.draw(|f| ui::draw(f, &app))?;
+        tui.draw(|f| ui::draw(f, app))?;
 
-        // Handle input events.
         let timeout = frame_duration.saturating_sub(frame_start.elapsed());
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.shift_held = key.modifiers.contains(KeyModifiers::SHIFT);
-                    handle_key(&mut app, key.code, key.modifiers, &cmd_tx);
-                } else if key.kind == KeyEventKind::Release {
-                    handle_key_release(&mut app, key.code, &cmd_tx);
+                match key.kind {
+                    KeyEventKind::Press => {
+                        app.shift_held = key.modifiers.contains(KeyModifiers::SHIFT);
+                        handle_key(app, key.code, key.modifiers, &mut channels.commands);
+                    }
+                    KeyEventKind::Release => {
+                        handle_key_release(app, key.code, &mut channels.commands);
+                    }
+                    // Auto-repeat: a held key is already sounding.
+                    KeyEventKind::Repeat => {}
                 }
             }
         }
 
         if app.should_quit {
-            break;
+            return Ok(());
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Cleanup
-    // -----------------------------------------------------------------------
-
-    drop(stream);
-    let _ = io::stdout().execute(crossterm::event::PopKeyboardEnhancementFlags);
-    disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
-
-    Ok(())
 }
 
-/// Build the cpal output stream. All synthesis happens in the audio callback.
-///
-/// Display state is sent to the UI thread via a lock-free crossbeam channel
-/// instead of a Mutex, following the same pattern as kazoo-mini.
-fn build_audio_stream(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    sample_rate: f32,
-    channels: usize,
-    cmd_rx: crossbeam_channel::Receiver<AudioCommand>,
-    display_tx: crossbeam_channel::Sender<DisplaySnapshot>,
-    mut hub_link: HubLink,
-) -> color_eyre::Result<cpal::Stream> {
-    let mut synth = Cs80Synth::new(sample_rate);
+/// Pull everything the audio side has produced into the app state, and
+/// retry commands the audio callback could not take earlier.
+fn poll_audio(app: &mut App, channels: &mut UiChannels<'_>) {
+    // Keep only the latest display snapshot.
+    if let Some(snap) = channels.display_rx.try_iter().last() {
+        app.voice_status = snap.voice_status;
+        app.waveform_buf.copy_from_slice(&snap.waveform);
+    }
+    if let Some(err) = channels.stream_error_rx.try_iter().last() {
+        app.health.last_stream_error = Some(err.to_string());
+    }
 
-    // Pre-allocated scratch buffers for IPC audio send.
-    let mut mono_buf = vec![0.0_f32; MAX_CALLBACK_FRAMES];
-    let mut stereo_buf = vec![0.0_f32; MAX_CALLBACK_FRAMES * 2];
-
-    // Display update throttle: push at ~60Hz.
-    // At 44.1kHz with 256-sample buffers, that's ~172 callbacks/sec.
-    // Update every 3rd callback ≈ 57Hz.
-    let mut display_counter: u32 = 0;
-    let display_interval: u32 = 3;
-
-    let stream = device.build_output_stream(
-        config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            // Drain commands from the UI thread.
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                match cmd {
-                    AudioCommand::NoteOn { note, velocity } => {
-                        synth.note_on(note, velocity);
-                    }
-                    AudioCommand::NoteOff { note } => {
-                        synth.note_off(note);
-                    }
-                    AudioCommand::Aftertouch { note, pressure } => {
-                        synth.aftertouch(note, pressure);
-                    }
-                    AudioCommand::UpdateParams(params) => {
-                        synth.params = params;
-                        synth.apply_params();
-                    }
-                }
-            }
-
-            // Drain messages from the hub (transport sync, note events).
-            while let Some(msg) = hub_link.try_recv() {
-                match msg {
-                    kazoo_core::ipc::client::HubMessage::TransportSync(_sync) => {
-                        // CS-80 doesn't have tempo-synced modulation yet.
-                    }
-                    kazoo_core::ipc::client::HubMessage::NoteEvent(event) => {
-                        match event.event_type {
-                            kazoo_core::ipc::types::NOTE_ON => {
-                                let velocity = f32::from(event.velocity) / 127.0;
-                                synth.note_on(event.note, velocity);
-                            }
-                            kazoo_core::ipc::types::NOTE_OFF => {
-                                synth.note_off(event.note);
-                            }
-                            _ => {}
-                        }
-                    }
-                    kazoo_core::ipc::client::HubMessage::ParameterChange(_)
-                    | kazoo_core::ipc::client::HubMessage::Shutdown => {}
-                }
-            }
-
-            // Generate audio sample-by-sample.
-            let frames = data.len() / channels;
-            let mut frame_idx = 0;
-            let mut i = 0;
-            while i < data.len() {
-                let sample = synth.tick();
-                if frame_idx < mono_buf.len() {
-                    mono_buf[frame_idx] = sample;
-                }
-                for ch in 0..channels {
-                    if i + ch < data.len() {
-                        data[i + ch] = sample;
-                    }
-                }
-                frame_idx += 1;
-                i += channels;
-            }
-
-            // Send audio to the hub for mixing (if connected).
-            if hub_link.is_connected() {
-                let process_len = frames.min(mono_buf.len());
-                let stereo_len = process_len * 2;
-                for (idx, &sample) in mono_buf[..process_len].iter().enumerate() {
-                    stereo_buf[idx * 2] = sample;
-                    stereo_buf[idx * 2 + 1] = sample;
-                }
-                #[allow(clippy::cast_possible_truncation)]
-                hub_link.send_audio(process_len as u32, &stereo_buf[..stereo_len]);
-            }
-
-            // Push display snapshot to UI at throttled rate (~60Hz).
-            display_counter += 1;
-            if display_counter >= display_interval {
-                display_counter = 0;
-
-                let mut waveform = [0.0_f32; WAVEFORM_BUF_SIZE];
-                let history = synth.output_history_linearized();
-                let copy_len = history.len().min(WAVEFORM_BUF_SIZE);
-                waveform[..copy_len].copy_from_slice(&history[..copy_len]);
-
-                let snapshot = DisplaySnapshot {
-                    voice_status: synth.voice_status(),
-                    waveform,
-                };
-
-                // If the channel is full, just drop this snapshot.
-                let _ = display_tx.try_send(snapshot);
-            }
-        },
-        |err| {
-            eprintln!("audio stream error: {err}");
-        },
-        None,
-    )?;
-
-    Ok(stream)
+    channels.commands.flush(&app.synth.params);
+    app.health.queue = channels.commands.status();
+    app.health.display_dropped = channels.stats.display_dropped();
+    app.health.stream_errors = channels.stats.stream_errors();
+    app.health.stream_errors_unreported = channels.stats.stream_errors_unreported();
+    app.hub = Some(channels.hub.status());
 }
 
 /// Handle a key press event.
-fn handle_key(
-    app: &mut App,
-    code: KeyCode,
-    modifiers: KeyModifiers,
-    cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
-) {
+fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers, commands: &mut CommandLink) {
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     let shift = modifiers.contains(KeyModifiers::SHIFT);
 
@@ -311,12 +185,19 @@ fn handle_key(
         // Quit.
         KeyCode::Char('`') | KeyCode::Esc => app.should_quit = true,
 
+        // Panic: silence every voice, forget every held key.
+        KeyCode::Backspace => {
+            app.release_all_notes();
+            commands.all_notes_off();
+            app.set_status("All notes off", false);
+        }
+
         // Toggle modular view (F2).
         KeyCode::F(2) => app.toggle_view(),
 
         // Preset save/load (Ctrl+S / Ctrl+L).
         KeyCode::Char('s') if ctrl => save_preset(app),
-        KeyCode::Char('l') if ctrl => load_preset(app, cmd_tx),
+        KeyCode::Char('l') if ctrl => load_preset(app, commands),
 
         // Section navigation.
         KeyCode::Tab => app.next_section(),
@@ -325,11 +206,11 @@ fn handle_key(
         // Aftertouch (Shift+Up/Down).
         KeyCode::Up if shift => {
             let pressure = app.increase_aftertouch();
-            send_aftertouch_for_held_notes(app, pressure, cmd_tx);
+            send_aftertouch_for_held_notes(app, pressure, commands);
         }
         KeyCode::Down if shift => {
             let pressure = app.decrease_aftertouch();
-            send_aftertouch_for_held_notes(app, pressure, cmd_tx);
+            send_aftertouch_for_held_notes(app, pressure, commands);
         }
 
         // Parameter navigation (arrow keys only — j/k are musical keys).
@@ -339,11 +220,11 @@ fn handle_key(
         // Parameter adjustment (Shift+arrow = coarse via app.shift_held).
         KeyCode::Char('+' | '=') | KeyCode::Right => {
             app.increment_param();
-            let _ = cmd_tx.try_send(AudioCommand::UpdateParams(app.synth.params.clone()));
+            commands.params(&app.synth.params);
         }
         KeyCode::Char('-' | '_') | KeyCode::Left => {
             app.decrement_param();
-            let _ = cmd_tx.try_send(AudioCommand::UpdateParams(app.synth.params.clone()));
+            commands.params(&app.synth.params);
         }
 
         // Octave shift.
@@ -352,75 +233,62 @@ fn handle_key(
 
         // Musical keyboard — note on.
         KeyCode::Char(ch) => {
-            if let Some(note) = input::key_to_note(ch, app.octave) {
-                // Ignore key repeat — only trigger note_on on the initial press.
-                // Without this guard, held keys fire repeated note_on messages
-                // which causes the synth to "build up" or re-trigger.
-                let ascii = ch as u32;
-                if ascii < 128 && app.key_note_map[ascii as usize].is_some() {
-                    return;
-                }
-                if ascii < 128 {
-                    app.key_note_map[ascii as usize] = Some(note);
-                }
-                app.note_on(note, input::DEFAULT_VELOCITY);
-                let _ = cmd_tx.try_send(AudioCommand::NoteOn {
-                    note,
-                    velocity: input::DEFAULT_VELOCITY,
-                });
+            let Some(note) = input::key_to_note(ch, app.octave) else {
+                return;
+            };
+            let Some(slot) = key_slot(ch) else {
+                return;
+            };
+            // Ignore key repeat — only trigger note_on on the initial press.
+            // Without this guard, held keys fire repeated note_on messages
+            // which causes the synth to "build up" or re-trigger.
+            if app.key_note_map[slot].is_some() {
+                return;
             }
+            app.key_note_map[slot] = Some(note);
+            app.note_on(note, input::DEFAULT_VELOCITY);
+            commands.note_on(note, input::DEFAULT_VELOCITY);
         }
 
         _ => {}
     }
 }
 
+/// Index into `App::key_note_map` for an ASCII key, `None` otherwise.
+fn key_slot(ch: char) -> Option<usize> {
+    ch.is_ascii().then_some(ch as usize)
+}
+
 /// Send aftertouch for all currently held notes.
-fn send_aftertouch_for_held_notes(
-    app: &App,
-    pressure: f32,
-    cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
-) {
-    for (note, &held) in app.held_notes.iter().enumerate() {
+fn send_aftertouch_for_held_notes(app: &App, pressure: f32, commands: &mut CommandLink) {
+    for (note, &held) in (0..=u8::MAX).zip(app.held_notes.iter()) {
         if held {
-            #[allow(clippy::cast_possible_truncation)]
-            let _ = cmd_tx.try_send(AudioCommand::Aftertouch {
-                note: note as u8,
-                pressure,
-            });
+            commands.aftertouch(note, pressure);
         }
     }
 }
 
-/// Save current synth params to a preset file.
-fn save_preset(app: &App) {
-    let dir = preset_dir();
-    if let Ok(json) = serde_json::to_string_pretty(&app.synth.params) {
-        let path = dir.join("last_preset.json");
-        let _ = std::fs::write(path, json);
+/// Save current synth params to the quick-save preset, reporting the outcome.
+fn save_preset(app: &mut App) {
+    let saved = preset::preset_dir().and_then(|dir| preset::save_to(&dir, &app.synth.params));
+    match saved {
+        Ok(path) => app.set_status(format!("Preset saved to {}", path.display()), false),
+        Err(err) => app.set_status(format!("Preset not saved: {err}"), true),
     }
 }
 
-/// Load synth params from a preset file.
-fn load_preset(app: &mut App, cmd_tx: &crossbeam_channel::Sender<AudioCommand>) {
-    let dir = preset_dir();
-    let path = dir.join("last_preset.json");
-    if let Ok(data) = std::fs::read_to_string(path) {
-        if let Ok(params) = serde_json::from_str::<SynthParams>(&data) {
+/// Load the quick-save preset, reporting the outcome. A preset that fails
+/// validation is not applied.
+fn load_preset(app: &mut App, commands: &mut CommandLink) {
+    match preset::preset_dir().and_then(|dir| preset::load_from(&dir)) {
+        Ok(params) => {
             app.synth.params = params;
             app.synth.apply_params();
-            let _ = cmd_tx.try_send(AudioCommand::UpdateParams(app.synth.params.clone()));
+            commands.params(&app.synth.params);
+            app.set_status("Preset loaded", false);
         }
+        Err(err) => app.set_status(format!("Preset not loaded: {err}"), true),
     }
-}
-
-/// Get the preset directory, creating it if needed.
-fn preset_dir() -> std::path::PathBuf {
-    let base = std::env::var("HOME")
-        .map_or_else(|_| std::path::PathBuf::from("."), std::path::PathBuf::from);
-    let dir = base.join(".config").join("kazoo-cs80").join("presets");
-    let _ = std::fs::create_dir_all(&dir);
-    dir
 }
 
 /// Handle a key release event (for note-off).
@@ -429,18 +297,110 @@ fn preset_dir() -> std::path::PathBuf {
 /// when this key was originally pressed. This prevents stuck notes when the
 /// octave is changed while a key is held — the release sends note-off for
 /// the original note, not the one the key would map to at the new octave.
-fn handle_key_release(
-    app: &mut App,
-    code: KeyCode,
-    cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
-) {
+fn handle_key_release(app: &mut App, code: KeyCode, commands: &mut CommandLink) {
     if let KeyCode::Char(ch) = code {
-        let ascii = ch as u32;
-        if ascii < 128 {
-            if let Some(note) = app.key_note_map[ascii as usize].take() {
-                app.note_off(note);
-                let _ = cmd_tx.try_send(AudioCommand::NoteOff { note });
-            }
+        if let Some(note) = key_slot(ch).and_then(|slot| app.key_note_map[slot].take()) {
+            app.note_off(note);
+            commands.note_off(note);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::AudioCommand;
+
+    fn link() -> (CommandLink, Receiver<AudioCommand>) {
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        (CommandLink::new(tx), rx)
+    }
+
+    #[test]
+    fn key_press_and_release_send_note_on_and_off() {
+        let (mut commands, rx) = link();
+        let mut app = App::new(44100.0);
+        handle_key(
+            &mut app,
+            KeyCode::Char('z'),
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        handle_key_release(&mut app, KeyCode::Char('z'), &mut commands);
+        let got: Vec<AudioCommand> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2);
+        assert!(matches!(got[0], AudioCommand::NoteOn { .. }));
+        assert!(matches!(got[1], AudioCommand::NoteOff { .. }));
+    }
+
+    #[test]
+    fn repeated_press_does_not_retrigger() {
+        let (mut commands, rx) = link();
+        let mut app = App::new(44100.0);
+        handle_key(
+            &mut app,
+            KeyCode::Char('z'),
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        handle_key(
+            &mut app,
+            KeyCode::Char('z'),
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        assert_eq!(rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn backspace_releases_everything() {
+        let (mut commands, rx) = link();
+        let mut app = App::new(44100.0);
+        handle_key(
+            &mut app,
+            KeyCode::Char('z'),
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        handle_key(
+            &mut app,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        let got: Vec<AudioCommand> = rx.try_iter().collect();
+        assert!(matches!(got.last(), Some(AudioCommand::AllNotesOff)));
+        assert!(app.held_notes.iter().all(|&h| !h));
+        assert!(app.key_note_map.iter().all(Option::is_none));
+        // The key can be played again straight away.
+        handle_key(
+            &mut app,
+            KeyCode::Char('z'),
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        assert!(matches!(rx.try_recv(), Ok(AudioCommand::NoteOn { .. })));
+    }
+
+    #[test]
+    fn non_ascii_key_is_ignored() {
+        let (mut commands, rx) = link();
+        let mut app = App::new(44100.0);
+        handle_key(
+            &mut app,
+            KeyCode::Char('\u{e9}'),
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        handle_key_release(&mut app, KeyCode::Char('\u{e9}'), &mut commands);
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn param_change_is_sent() {
+        let (mut commands, rx) = link();
+        let mut app = App::new(44100.0);
+        handle_key(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut commands);
+        assert!(matches!(rx.try_recv(), Ok(AudioCommand::UpdateParams(_))));
     }
 }

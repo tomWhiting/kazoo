@@ -1,0 +1,28 @@
+[package]
+name = "kazoo-wall"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "The wall: a shared modular synth that never stops"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+cpal = "0.17.1"
+crossterm = "0.29.0"
+hound = "3.5.1"
+kazoo-core = { path = "../kazoo-core" }
+kazoo-fx = { path = "../kazoo-fx" }
+kazoo-perc = { path = "../kazoo-perc" }
+kazoo-speech = { path = "../kazoo-speech" }
+ratatui = "0.30.0"
+ringbuf = "0.4.8"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+signal-hook = "0.3.18"
+
+[dev-dependencies]
+assert_no_alloc = { version = "1.1.2", features = ["warn_debug"] }
+tempfile = "3"

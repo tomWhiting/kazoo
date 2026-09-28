@@ -1,0 +1,6 @@
+id: no-ignored-error-if-let
+valid:
+  - "fn f() { if let Ok(v) = r { use_it(v); } else { report(); } }"
+  - "fn f() { if let Some(v) = o { use_it(v); } }"
+invalid:
+  - "fn f() { if let Ok(v) = r { use_it(v); } }"

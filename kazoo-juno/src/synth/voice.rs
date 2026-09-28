@@ -124,7 +124,11 @@ impl JunoVoice {
         let env = self.envelope.process(&params.envelope);
         let lfo = (self.lfo_phase * TAU).sin();
         self.lfo_phase = (self.lfo_phase + params.dco.lfo_rate_hz / self.sample_rate).fract();
-        let pulse_width = params.dco.pwm_depth.mul_add(lfo, params.dco.pulse_width).clamp(0.08, 0.92);
+        let pulse_width = params
+            .dco
+            .pwm_depth
+            .mul_add(lfo, params.dco.pulse_width)
+            .clamp(0.08, 0.92);
 
         let saw = self.phase.mul_add(2.0, -1.0);
         let pulse = if self.phase < pulse_width { 1.0 } else { -1.0 };
@@ -133,7 +137,9 @@ impl JunoVoice {
 
         let mix = noise.mul_add(
             params.dco.noise_level,
-            saw * params.dco.saw_level + pulse * params.dco.pulse_level + sub * params.dco.sub_level,
+            saw * params.dco.saw_level
+                + pulse * params.dco.pulse_level
+                + sub * params.dco.sub_level,
         );
 
         self.advance_phases();

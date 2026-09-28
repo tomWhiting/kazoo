@@ -1,0 +1,8 @@
+id: no-result-ok
+valid:
+  - "fn f() { let x = r.unwrap_or(0); }"
+  - "fn f() -> io::Result<()> { run()?; Ok(()) }"
+invalid:
+  - "fn f() { spawn().ok(); }"
+  - "fn f() { let join = spawn().ok(); }"
+  - "fn f() -> Option<u8> { parse().ok() }"

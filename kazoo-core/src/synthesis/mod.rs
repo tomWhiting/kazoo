@@ -168,7 +168,7 @@ mod tests {
         let input = [0.1, 0.5, -0.3, 0.0];
         let mut output = [0.0; 4];
         synth.process(&input, &mut output);
-        assert_eq!(output, input);
+        assert_eq!(output.map(f32::to_bits), input.map(f32::to_bits));
     }
 
     #[test]
@@ -185,11 +185,10 @@ mod tests {
         let input = [0.5, -0.5];
         let mut output = [1.0; 5];
         synth.process(&input, &mut output);
-        assert_eq!(output[0], 0.5);
-        assert_eq!(output[1], -0.5);
-        assert_eq!(output[2], 0.0);
-        assert_eq!(output[3], 0.0);
-        assert_eq!(output[4], 0.0);
+        assert_eq!(
+            output.map(f32::to_bits),
+            [0.5_f32, -0.5, 0.0, 0.0, 0.0].map(f32::to_bits)
+        );
     }
 
     #[test]
@@ -198,7 +197,10 @@ mod tests {
         let input = [0.1, 0.2, 0.3, 0.4, 0.5];
         let mut output = [0.0; 3];
         synth.process(&input, &mut output);
-        assert_eq!(output, [0.1, 0.2, 0.3]);
+        assert_eq!(
+            output.map(f32::to_bits),
+            [0.1_f32, 0.2, 0.3].map(f32::to_bits)
+        );
     }
 
     #[test]
@@ -207,10 +209,10 @@ mod tests {
         let input = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5];
         let mut output = [1.0; 4];
         synth.process(&input, &mut output);
-        assert_eq!(output[0], 0.0);
-        assert_eq!(output[1], 0.0);
-        assert_eq!(output[2], 0.0);
-        assert_eq!(output[3], 0.5);
+        assert_eq!(
+            output.map(f32::to_bits),
+            [0.0_f32, 0.0, 0.0, 0.5].map(f32::to_bits)
+        );
     }
 
     #[test]

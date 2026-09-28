@@ -9,19 +9,11 @@ pub mod audio_io;
 pub mod effects;
 pub mod file_browser;
 pub mod header;
-#[allow(dead_code)]
-pub mod meters;
-#[allow(dead_code)]
-pub mod mixer;
 pub mod mixing_desk;
 pub mod project_view;
-#[allow(dead_code)]
-pub mod spectrum;
 pub mod timeline;
 pub mod tracking_view;
 pub mod tracks;
-#[allow(dead_code)]
-pub mod transport;
 pub mod waveform;
 
 use ratatui::prelude::*;

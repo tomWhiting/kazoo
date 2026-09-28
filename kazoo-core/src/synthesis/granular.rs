@@ -5,7 +5,7 @@
 //! source buffer at a (potentially jittered) position with a windowed
 //! envelope. The result is a cloud of overlapping micro-sounds.
 
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
 
 // ---------------------------------------------------------------------------
 // Grain envelope shapes
@@ -235,59 +235,58 @@ impl GranularSynth {
         };
     }
 
-    fn param_infos() -> [ParamInfo; Self::PARAM_COUNT] {
-        [
-            ParamInfo {
-                name: "Grain Size".into(),
-                min: 1.0,
-                max: 200.0,
-                default: 50.0,
-                unit: "ms".into(),
-            },
-            ParamInfo {
-                name: "Density".into(),
-                min: 1.0,
-                max: 200.0,
-                default: 10.0,
-                unit: "grains/s".into(),
-            },
-            ParamInfo {
-                name: "Position".into(),
-                min: 0.0,
-                max: 1.0,
-                default: 0.5,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Position Jitter".into(),
-                min: 0.0,
-                max: 0.5,
-                default: 0.1,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Pitch Shift".into(),
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-                unit: "st".into(),
-            },
-            ParamInfo {
-                name: "Pitch Jitter".into(),
-                min: 0.0,
-                max: 12.0,
-                default: 0.0,
-                unit: "st".into(),
-            },
-            ParamInfo {
-                name: "Envelope".into(),
-                min: 0.0,
-                max: 3.0,
-                default: GrainEnvelope::Hann.to_param(),
-                unit: String::new(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; Self::PARAM_COUNT] = [
+        ParamInfo {
+            name: "Grain Size",
+            min: 1.0,
+            max: 200.0,
+            default: 50.0,
+            unit: "ms",
+        },
+        ParamInfo {
+            name: "Density",
+            min: 1.0,
+            max: 200.0,
+            default: 10.0,
+            unit: "grains/s",
+        },
+        ParamInfo {
+            name: "Position",
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Position Jitter",
+            min: 0.0,
+            max: 0.5,
+            default: 0.1,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Pitch Shift",
+            min: -24.0,
+            max: 24.0,
+            default: 0.0,
+            unit: "st",
+        },
+        ParamInfo {
+            name: "Pitch Jitter",
+            min: 0.0,
+            max: 12.0,
+            default: 0.0,
+            unit: "st",
+        },
+        ParamInfo {
+            name: "Envelope",
+            min: 0.0,
+            max: 3.0,
+            default: GrainEnvelope::Hann.to_param(),
+            unit: "",
+        },
+    ];
 }
 
 impl Processor for GranularSynth {
@@ -326,7 +325,7 @@ impl Processor for GranularSynth {
                 let sample = read_source_at(&self.source_buffer, self.source_len, read_pos);
 
                 let env = envelope_shape.evaluate(grain.envelope_phase);
-                sum += sample * env * grain.gain;
+                sum = (sample * env).mul_add(grain.gain, sum);
 
                 grain.read_phase += grain.phase_increment;
                 grain.envelope_phase += grain.envelope_increment;
@@ -358,7 +357,7 @@ impl Processor for GranularSynth {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        Self::param_infos().get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -374,12 +373,8 @@ impl Processor for GranularSynth {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
 
         match index {
             Self::PARAM_GRAIN_SIZE => self.grain_size_ms = clamped,
@@ -389,7 +384,12 @@ impl Processor for GranularSynth {
             Self::PARAM_PITCH_SHIFT => self.pitch_shift_semitones = clamped,
             Self::PARAM_PITCH_JITTER => self.pitch_jitter_semitones = clamped,
             Self::PARAM_ENVELOPE_SHAPE => self.envelope_shape = GrainEnvelope::from_param(clamped),
-            _ => unreachable!(),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
         Ok(())
     }
@@ -577,7 +577,7 @@ mod tests {
         let mut rng = Xorshift64::new(42);
         let a = rng.next_f32();
         let b = rng.next_f32();
-        assert!(a != b);
+        assert_ne!(a.to_bits(), b.to_bits());
         assert!((0.0..1.0).contains(&a));
         assert!((0.0..1.0).contains(&b));
     }
@@ -697,7 +697,7 @@ mod tests {
     fn density_zero_produces_silence() {
         let sr = 44100.0;
         let mut synth = GranularSynth::new(sr);
-        let _ = synth.set_param(GranularSynth::PARAM_DENSITY, 0.5); // minimum density
+        synth.set_param(GranularSynth::PARAM_DENSITY, 0.5).unwrap(); // minimum density
 
         let input: Vec<f32> = (0..4096)
             .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / sr).sin())
@@ -722,7 +722,7 @@ mod tests {
                 rng ^= rng << 13;
                 rng ^= rng >> 17;
                 rng ^= rng << 5;
-                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect();
         let mut output = vec![0.0_f32; 4096];

@@ -10,7 +10,7 @@ This is not an MVP checklist. It is a construction order for the best-case archi
 - [x] Define IPC/control/audio transport model.
 - [x] Define crate split and future unified binary.
 - [ ] Decide whether tape DSP lives in `kazoo-core` or `kazoo-tape` library.
-- [ ] Decide whether `kazoo-mix` starts fresh or absorbs pieces of `kazoo-tui`.
+- [x] Decide whether `kazoo-mix` starts fresh or absorbs pieces of `kazoo-tui`. Decided 2026-09-25: `kazoo-mix` is the studio hub, built fresh; `kazoo-tui` is the voice-driven instrument.
 
 ## 1. Core Protocol Types
 
@@ -37,47 +37,47 @@ Note: these are currently domain types only. The existing `kazoo-core::ipc` hub 
 
 ## 3. Shared Audio Transport
 
-- [ ] Implement socket-only audio transport for correctness testing.
+- [x] Implement socket-only audio transport for correctness testing. Instruments stream over the hub socket; the hub stamps each block onto the studio clock into a frame-indexed ring per strip.
 - [ ] Implement shared memory abstraction.
 - [ ] Implement shared audio block ring buffer.
-- [ ] Add underrun detection.
-- [ ] Add frame-sequence validation.
-- [ ] Add reconnect cleanup.
+- [x] Add underrun detection. Per-strip underruns, slips and resyncs show on the desk.
+- [x] Add frame-sequence validation. Stale blocks are discarded, early ones leave a gap, and far-off streams re-anchor.
+- [x] Add reconnect cleanup. The hub unplugs a strip when its instrument leaves; `kazoo_core::ipc::link` reconnects instruments whenever the desk returns.
 - [ ] Add latency test tool.
 
 ## 4. kazoo-mix Engine
 
-- [ ] Create `kazoo-mix` crate.
-- [ ] Open and own `cpal` output stream.
-- [ ] Implement fixed-size channel storage.
-- [ ] Implement channel trim/fader/pan.
-- [ ] Implement mute/solo/arm.
-- [ ] Implement basic meter state.
-- [ ] Implement master bus.
-- [ ] Ensure callback has no allocation/locks/socket I/O.
+- [x] Create `kazoo-mix` crate.
+- [x] Open and own `cpal` output stream.
+- [x] Implement fixed-size channel storage.
+- [x] Implement channel trim/fader/pan (plus 3-band EQ and a post-fader aux send into a reverb return).
+- [ ] Implement mute/solo/arm. Mute and solo are done; arm waits on recording.
+- [x] Implement basic meter state (peak with hold, VU-style RMS, clip latches).
+- [x] Implement master bus.
+- [x] Ensure callback has no allocation/locks/socket I/O.
 - [ ] Add audio callback stress tests where practical.
 
 ## 5. kazoo-mix UI
 
-- [ ] Build terminal console layout.
-- [ ] Add channel bank paging.
-- [ ] Add transport bar.
-- [ ] Add channel faders.
-- [ ] Add meters.
-- [ ] Add channel health/underrun indicators.
-- [ ] Add keyboard control.
-- [ ] Add mouse click/drag control.
-- [ ] Ensure quit works: Esc, Ctrl-Q, Ctrl-C, Ctrl-D.
+- [x] Build terminal console layout.
+- [x] Add channel bank paging.
+- [x] Add transport bar. Play/stop button, tempo, tap tempo (`t`), tempo nudge (`[` `]`), with every instrument following.
+- [x] Add channel faders.
+- [x] Add meters.
+- [x] Add channel health/underrun indicators.
+- [x] Add keyboard control.
+- [x] Add mouse click/drag control.
+- [x] Ensure quit works: Esc, Ctrl-Q, Ctrl-C, Ctrl-D.
 
 ## 6. Mixer Server
 
-- [ ] Create session runtime directory.
-- [ ] Create Unix control socket.
-- [ ] Accept client registration.
-- [ ] Assign channels.
-- [ ] Broadcast transport snapshots.
-- [ ] Track client heartbeat/status.
-- [ ] Handle disconnect without audio panic.
+- [x] Create session runtime directory. Uses the kazoo-core discovery directory and PID file that instruments already know.
+- [x] Create Unix control socket.
+- [x] Accept client registration. Sample rate and channel count are checked; refusals are shown on the desk.
+- [x] Assign channels.
+- [x] Broadcast transport snapshots. Tempo and play state go out on change and on join; instruments can request changes.
+- [ ] Track client heartbeat/status. Disconnects and stalled readers are detected; a hung instrument that keeps its socket open but stops sending is not yet flagged.
+- [x] Handle disconnect without audio panic. Rings leave the callback through the patchbay and are freed on the hub thread.
 
 ## 7. Juno Studio Client
 
@@ -94,8 +94,14 @@ Note: these are currently domain types only. The existing `kazoo-core::ipc` hub 
 
 - [ ] Add studio client mode to `kazoo-303`.
 - [ ] Make 303 sequencer follow mixer BPM/frame.
-- [ ] Add studio client mode to `kazoo-808`.
-- [ ] Make 808 pattern clock follow mixer BPM/frame.
+- [x] Add studio client mode to `kazoo-808` (shared `kazoo_core::ipc::link`; local output goes quiet while the desk plays it). Also `kazoo-mini`, `kazoo-cs80`, `kazoo-dx` and `kazoo-arp`.
+- [x] Make 808 pattern clock follow mixer BPM/frame. Sample-accurate:
+  - The desk schedules each transport change ahead (`kazoo-mix/src/song.rs`).
+  - The hub tells each instrument the frame of its own stream the change lands on, and the song position there.
+  - The 808 applies it on that frame with `TransportFollower` and `SequencerClock::seek`.
+  - Proven end to end by `hub::tests::an_instrument_starts_on_the_very_frame_the_desk_does`.
+  - Also fixed two 808 clock bugs: the downbeat fired a sixteenth late, and swing was inverted.
+  - The same work is in progress for the 303, arp and DX phrase.
 - [ ] Add controller mode to `kazoo-arp`.
 - [ ] Send timestamped note events via mixer.
 - [ ] Add swing/groove support.

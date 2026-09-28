@@ -22,12 +22,7 @@ use crate::state::{ActiveView, MixerControl};
 // ---------------------------------------------------------------------------
 
 /// A semantic action produced by resolving a key event in context.
-///
-/// Some variants (e.g. `Pause`, `SetMasterVolume`) are part of the action
-/// vocabulary but do not yet have dedicated keybindings — they are still
-/// handled in [`apply_action`] so they can be triggered programmatically.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyAction {
     Quit,
     ToggleHelp,
@@ -42,14 +37,12 @@ enum KeyAction {
     // Transport
     Play,
     Stop,
-    Pause,
     Record,
     RecordWithCountIn,
     ToggleLoop,
     ToggleMetronome,
 
     // Track selection
-    SelectTrack(usize),
     NextTrack,
     PrevTrack,
 
@@ -89,7 +82,6 @@ enum KeyAction {
     ScrollRight,
 
     // Volume / pan
-    SetMasterVolume(f32),
     IncreaseVolume,
     DecreaseVolume,
     PanLeft,
@@ -385,14 +377,14 @@ const fn resolve_mixer_view_action(app: &App, key: KeyEvent) -> Option<KeyAction
 }
 
 /// Resolve keys that depend on which panel is currently focused.
-fn resolve_panel_action(app: &App, key: KeyEvent) -> Option<KeyAction> {
+const fn resolve_panel_action(app: &App, key: KeyEvent) -> Option<KeyAction> {
     match app.focused_panel {
         FocusedPanel::Effects => resolve_effects_action(key),
         FocusedPanel::Waveform => resolve_waveform_action(key),
         FocusedPanel::Mixer => resolve_mixer_action(key),
         FocusedPanel::Timeline => resolve_timeline_action(key),
         FocusedPanel::Transport => resolve_transport_action(key),
-        FocusedPanel::Tracks | FocusedPanel::Spectrum => resolve_default_panel_action(key),
+        FocusedPanel::Tracks => resolve_default_panel_action(key),
     }
 }
 
@@ -442,8 +434,7 @@ const fn resolve_mixer_action(key: KeyEvent) -> Option<KeyAction> {
 }
 
 /// Panel-specific keys for the timeline panel.
-#[allow(clippy::missing_const_for_fn)] // `KeyModifiers::contains` is not const
-fn resolve_timeline_action(key: KeyEvent) -> Option<KeyAction> {
+const fn resolve_timeline_action(key: KeyEvent) -> Option<KeyAction> {
     match key.code {
         KeyCode::Char('h') | KeyCode::Left => Some(KeyAction::TimelineScrollLeft),
         KeyCode::Char('l') | KeyCode::Right => Some(KeyAction::TimelineScrollRight),
@@ -511,693 +502,256 @@ const fn resolve_default_panel_action(key: KeyEvent) -> Option<KeyAction> {
 
 /// Apply a resolved action to the application state, mutating `app` and
 /// sending engine commands as needed.
-#[allow(clippy::too_many_lines)]
+///
+/// Every engine command's outcome is reported through [`App::status`]; local
+/// state only changes when the engine accepted the command.
 fn apply_action(app: &mut App, action: KeyAction) {
     match action {
-        // -- Application lifecycle -------------------------------------------
-        KeyAction::Quit => {
-            app.should_quit = true;
-        }
-        KeyAction::ToggleHelp => {
-            app.mode = match app.mode {
-                AppMode::Normal => AppMode::Help,
-                AppMode::Help | AppMode::FileBrowser { .. } => AppMode::Normal,
-            };
-        }
-
-        // -- View switching ----------------------------------------------------
-        KeyAction::SwitchView(view) => {
-            app.active_view = view;
-            // Reset focus to the first panel of the new view.
-            let panels = crate::app::panels_for_view(view);
-            app.focused_panel = panels[0];
-            // Sync mixer channel selection with the current track.
-            if view == ActiveView::Mixer {
-                app.mixer_view_state.selected_channel = app.selected_track;
-            }
-        }
-
-        // -- Focus -----------------------------------------------------------
-        KeyAction::FocusEffects => {
-            app.focused_panel = FocusedPanel::Effects;
-        }
-        KeyAction::FocusNext => {
-            let panels = crate::app::panels_for_view(app.active_view);
-            if let Some(pos) = panels.iter().position(|p| *p == app.focused_panel) {
-                app.focused_panel = panels[(pos + 1) % panels.len()];
-            } else {
-                app.focused_panel = panels[0];
-            }
-        }
-        KeyAction::FocusPrev => {
-            let panels = crate::app::panels_for_view(app.active_view);
-            if let Some(pos) = panels.iter().position(|p| *p == app.focused_panel) {
-                app.focused_panel = if pos == 0 {
-                    panels[panels.len() - 1]
-                } else {
-                    panels[pos - 1]
-                };
-            } else {
-                app.focused_panel = panels[0];
-            }
-        }
+        // -- Application lifecycle / views / focus ---------------------------
+        KeyAction::Quit => app.should_quit = true,
+        KeyAction::ToggleHelp => toggle_help(app),
+        KeyAction::SwitchView(view) => switch_view(app, view),
+        KeyAction::FocusEffects => app.focused_panel = FocusedPanel::Effects,
+        KeyAction::FocusNext => cycle_focus(app, true),
+        KeyAction::FocusPrev => cycle_focus(app, false),
 
         // -- Transport -------------------------------------------------------
-        KeyAction::Play => {
-            if app.display.transport.state == TransportState::Playing {
-                let _ = app.engine.pause();
-            } else {
-                let _ = app.engine.play();
-            }
-        }
-        KeyAction::Stop => {
-            let _ = app.engine.stop();
-        }
-        KeyAction::Pause => {
-            let _ = app.engine.pause();
-        }
-        KeyAction::Record => {
-            let _ = app.engine.record();
-        }
-        KeyAction::RecordWithCountIn => {
-            // Build the workflow from TUI state and send it before the command.
-            let workflow = build_recording_workflow(app);
-            let _ = app.engine.send_command(EngineCommand::Transport(
-                TransportCommand::SetRecordingWorkflow(workflow),
-            ));
-            let _ = app.engine.send_command(EngineCommand::Transport(
-                TransportCommand::RecordWithCountIn,
-            ));
-        }
-        KeyAction::ToggleLoop => {
-            // Toggle loop on/off. The transport API uses SetLoop(Some/None)
-            // rather than a simple toggle, so we check the current state.
-            if app.display.transport.loop_enabled {
-                let _ = app
-                    .engine
-                    .send_command(EngineCommand::Transport(TransportCommand::SetLoop(None)));
-            } else {
-                // Enable a default loop region (entire range).
-                let _ =
-                    app.engine
-                        .send_command(EngineCommand::Transport(TransportCommand::SetLoop(Some((
-                            0,
-                            u64::MAX / 2,
-                        )))));
-            }
-        }
-        KeyAction::ToggleMetronome => {
-            let _ = app
-                .engine
-                .send_command(EngineCommand::Transport(TransportCommand::ToggleMetronome));
-        }
-        KeyAction::IncreaseBPM => {
-            let new_bpm = app.display.transport.bpm + 1.0;
-            let _ = app
-                .engine
-                .send_command(EngineCommand::Transport(TransportCommand::SetTempo(
-                    new_bpm,
-                )));
-        }
-        KeyAction::DecreaseBPM => {
-            let new_bpm = app.display.transport.bpm - 1.0;
-            let _ = app
-                .engine
-                .send_command(EngineCommand::Transport(TransportCommand::SetTempo(
-                    new_bpm,
-                )));
-        }
-        KeyAction::IncreaseBPMLarge => {
-            let new_bpm = app.display.transport.bpm + 10.0;
-            let _ = app
-                .engine
-                .send_command(EngineCommand::Transport(TransportCommand::SetTempo(
-                    new_bpm,
-                )));
-        }
-        KeyAction::DecreaseBPMLarge => {
-            let new_bpm = app.display.transport.bpm - 10.0;
-            let _ = app
-                .engine
-                .send_command(EngineCommand::Transport(TransportCommand::SetTempo(
-                    new_bpm,
-                )));
-        }
+        KeyAction::Play => toggle_play(app),
+        KeyAction::Stop => send_transport(app, "Stop", TransportCommand::Stop),
+        KeyAction::Record => send_transport(app, "Record", TransportCommand::Record),
+        KeyAction::RecordWithCountIn => record_with_count_in(app),
+        KeyAction::ToggleLoop => toggle_loop(app),
+        KeyAction::ToggleMetronome => toggle_metronome(app),
+        KeyAction::IncreaseBPM => nudge_tempo(app, 1.0),
+        KeyAction::DecreaseBPM => nudge_tempo(app, -1.0),
+        KeyAction::IncreaseBPMLarge => nudge_tempo(app, 10.0),
+        KeyAction::DecreaseBPMLarge => nudge_tempo(app, -10.0),
+        KeyAction::CycleRecordingWorkflow => cycle_recording_workflow(app),
+        KeyAction::IncreaseRecordBars => adjust_record_bars(app, 1),
+        KeyAction::DecreaseRecordBars => adjust_record_bars(app, -1),
 
-        // -- Recording workflow (Transport panel) ----------------------------
-        KeyAction::CycleRecordingWorkflow => {
-            use kazoo_core::transport::RecordingWorkflow;
-            app.recording_workflow = match app.recording_workflow {
-                RecordingWorkflow::FreeRecord | RecordingWorkflow::CountIn { .. } => {
-                    RecordingWorkflow::FixedLength {
-                        bars: app.record_bars.max(1),
-                    }
-                }
-                RecordingWorkflow::FixedLength { .. } => RecordingWorkflow::CountIn {
-                    count_in_bars: app.count_in_bars.max(1),
-                    record_bars: app.record_bars,
-                },
-            };
-        }
-        KeyAction::IncreaseRecordBars => {
-            app.record_bars = app.record_bars.saturating_add(1).min(64);
-        }
-        KeyAction::DecreaseRecordBars => {
-            if app.record_bars > 0 {
-                app.record_bars -= 1;
-            }
-        }
+        // -- Tracks ----------------------------------------------------------
+        KeyAction::NextTrack => select_adjacent_track(app, true),
+        KeyAction::PrevTrack => select_adjacent_track(app, false),
+        KeyAction::ToggleMute => app.toggle_mute(app.selected_track),
+        KeyAction::ToggleSolo => app.toggle_solo(app.selected_track),
+        KeyAction::ToggleArm => app.toggle_arm(app.selected_track),
+        KeyAction::AddTrack => add_numbered_track(app),
+        KeyAction::RemoveTrack => app.remove_track(app.selected_track),
+        KeyAction::CycleSynthMode => app.cycle_synth_mode(app.selected_track),
 
-        // -- Track selection -------------------------------------------------
-        KeyAction::SelectTrack(index) => {
-            if index < app.tracks.len() {
-                app.selected_track = index;
-                app.track_list_state.select(Some(index));
-                app.synth_state.selected_effect = 0;
-                app.synth_state.selected_param = 0;
-            }
-        }
-        KeyAction::NextTrack => {
-            if !app.tracks.is_empty() {
-                let next = if app.selected_track + 1 >= app.tracks.len() {
-                    0
-                } else {
-                    app.selected_track + 1
-                };
-                app.selected_track = next;
-                app.track_list_state.select(Some(next));
-                app.synth_state.selected_effect = 0;
-                app.synth_state.selected_param = 0;
-            }
-        }
-        KeyAction::PrevTrack => {
-            if !app.tracks.is_empty() {
-                let prev = if app.selected_track == 0 {
-                    app.tracks.len() - 1
-                } else {
-                    app.selected_track - 1
-                };
-                app.selected_track = prev;
-                app.track_list_state.select(Some(prev));
-                app.synth_state.selected_effect = 0;
-                app.synth_state.selected_param = 0;
-            }
-        }
-
-        // -- Track state -----------------------------------------------------
-        KeyAction::ToggleMute => {
-            let idx = app.selected_track;
-            app.toggle_mute(idx);
-        }
-        KeyAction::ToggleSolo => {
-            let idx = app.selected_track;
-            app.toggle_solo(idx);
-        }
-        KeyAction::ToggleArm => {
-            let idx = app.selected_track;
-            app.toggle_arm(idx);
-        }
-
-        // -- Track management ------------------------------------------------
-        KeyAction::AddTrack => {
-            let name = format!("{}", app.track_count() + 1);
-            app.add_track(name, SynthesisMode::PitchTracked);
-        }
-        KeyAction::RemoveTrack => {
-            let idx = app.selected_track;
-            app.remove_track(idx);
-        }
-        KeyAction::CycleSynthMode => {
-            let idx = app.selected_track;
-            app.cycle_synth_mode(idx);
-        }
-
-        // -- Effect navigation (unified: synth + effects) ----------------------
-        KeyAction::NextEffect => {
-            if app.synth_state.synth_selected {
-                // Move from synth to first effect (if any).
-                if let Some(track) = app.selected_track_info() {
-                    if !track.effect_names.is_empty() {
-                        app.synth_state.synth_selected = false;
-                        app.synth_state.selected_effect = 0;
-                        app.synth_state.selected_param = 0;
-                    }
-                }
-            } else if let Some(track) = app.selected_track_info() {
-                if !track.effect_names.is_empty()
-                    && app.synth_state.selected_effect + 1 < track.effect_names.len()
-                {
-                    app.synth_state.selected_effect += 1;
-                    app.synth_state.selected_param = 0;
-                }
-            }
-        }
-        KeyAction::PrevEffect => {
-            if app.synth_state.synth_selected {
-                // Already at top, no-op.
-            } else if app.synth_state.selected_effect == 0 {
-                // Move from first effect back to synth.
-                app.synth_state.synth_selected = true;
-                app.synth_state.selected_synth_param = 0;
-            } else {
-                app.synth_state.selected_effect -= 1;
-                app.synth_state.selected_param = 0;
-            }
-        }
-
-        // -- Effect management ------------------------------------------------
-        KeyAction::AddEffect => {
-            let sample_rate = app.engine.sample_rate() as f32;
-            let effect = kazoo_core::effects::BiquadFilter::new(
-                kazoo_core::effects::FilterType::LowPass,
-                sample_rate,
-            );
-            let idx = app.selected_track;
-            app.add_effect_to_track(idx, "LowPass".into(), Box::new(effect));
-        }
+        // -- Effects ---------------------------------------------------------
+        KeyAction::NextEffect => select_next_effect(app),
+        KeyAction::PrevEffect => select_prev_effect(app),
+        KeyAction::AddEffect => add_lowpass_effect(app),
         KeyAction::RemoveEffect => {
-            let track_idx = app.selected_track;
-            let effect_idx = app.synth_state.selected_effect;
-            app.remove_effect(track_idx, effect_idx);
+            app.remove_effect(app.selected_track, app.synth_state.selected_effect);
         }
         KeyAction::ToggleEffectBypass => {
-            let track_idx = app.selected_track;
-            let effect_idx = app.synth_state.selected_effect;
-            app.toggle_effect_bypass(track_idx, effect_idx);
+            app.toggle_effect_bypass(app.selected_track, app.synth_state.selected_effect);
         }
 
         // -- Parameter navigation / editing ----------------------------------
-        KeyAction::NextParam => {
-            if app.synth_state.synth_selected {
-                let param_count = app
-                    .selected_track_info()
-                    .map_or(0, |t| t.synth_param_infos.len());
-                if param_count > 0 {
-                    app.synth_state.selected_synth_param =
-                        (app.synth_state.selected_synth_param + 1) % param_count;
-                }
-            } else {
-                app.synth_state.selected_param =
-                    app.synth_state.selected_param.saturating_add(1).min(31);
-            }
-        }
-        KeyAction::PrevParam => {
-            if app.synth_state.synth_selected {
-                let param_count = app
-                    .selected_track_info()
-                    .map_or(0, |t| t.synth_param_infos.len());
-                if param_count > 0 {
-                    let idx = &mut app.synth_state.selected_synth_param;
-                    *idx = if *idx == 0 { param_count - 1 } else { *idx - 1 };
-                }
-            } else {
-                app.synth_state.selected_param = app.synth_state.selected_param.saturating_sub(1);
-            }
-        }
-        KeyAction::IncreaseParam => {
-            if app.synth_state.synth_selected {
-                adjust_synth_param(app, 1.0);
-            } else if let Some(track_id) = app.selected_track_id() {
-                let _ = app.engine.send_command(EngineCommand::SetEffectParameter {
-                    track_id,
-                    effect_index: app.synth_state.selected_effect,
-                    param_index: app.synth_state.selected_param,
-                    value: 1.0,
-                });
-            }
-        }
-        KeyAction::DecreaseParam => {
-            if app.synth_state.synth_selected {
-                adjust_synth_param(app, -1.0);
-            } else if let Some(track_id) = app.selected_track_id() {
-                let _ = app.engine.send_command(EngineCommand::SetEffectParameter {
-                    track_id,
-                    effect_index: app.synth_state.selected_effect,
-                    param_index: app.synth_state.selected_param,
-                    value: -1.0,
-                });
-            }
-        }
-        KeyAction::EnterParamEdit => {
-            app.input_mode = InputMode::ParameterEdit;
-            app.param_edit_buffer.clear();
-        }
-        KeyAction::ConfirmParamEdit => {
-            if let Ok(value) = app.param_edit_buffer.parse::<f32>() {
-                if value.is_finite() {
-                    if app.synth_state.synth_selected {
-                        confirm_synth_param_edit(app, value);
-                    } else if let Some(track_id) = app.selected_track_id() {
-                        let _ = app.engine.send_command(EngineCommand::SetEffectParameter {
-                            track_id,
-                            effect_index: app.synth_state.selected_effect,
-                            param_index: app.synth_state.selected_param,
-                            value,
-                        });
-                    }
-                }
-            }
-            app.input_mode = InputMode::Normal;
-            app.param_edit_buffer.clear();
-        }
-        KeyAction::CancelParamEdit => {
-            app.input_mode = InputMode::Normal;
-            app.param_edit_buffer.clear();
-        }
-        KeyAction::ParamEditChar(c) => {
-            if app.param_edit_buffer.len() < 16 {
-                app.param_edit_buffer.push(c);
-            }
-        }
-        KeyAction::ParamEditBackspace => {
-            app.param_edit_buffer.pop();
-        }
+        KeyAction::NextParam => select_adjacent_param(app, true),
+        KeyAction::PrevParam => select_adjacent_param(app, false),
+        KeyAction::IncreaseParam => step_selected_param(app, 1.0),
+        KeyAction::DecreaseParam => step_selected_param(app, -1.0),
+        KeyAction::EnterParamEdit => enter_param_edit(app),
+        KeyAction::ConfirmParamEdit => confirm_param_edit(app),
+        KeyAction::CancelParamEdit => leave_param_edit(app),
+        KeyAction::ParamEditChar(c) => push_param_edit_char(app, c),
+        KeyAction::ParamEditBackspace => pop_param_edit_char(app),
 
         // -- Waveform view ---------------------------------------------------
-        KeyAction::ZoomIn => {
-            app.tracking_state.waveform_zoom = (app.tracking_state.waveform_zoom * 2.0).min(64.0);
-        }
-        KeyAction::ZoomOut => {
-            app.tracking_state.waveform_zoom = (app.tracking_state.waveform_zoom / 2.0).max(1.0);
-        }
-        KeyAction::ScrollLeft => {
-            app.tracking_state.waveform_scroll =
-                (app.tracking_state.waveform_scroll - 0.1).max(0.0);
-        }
-        KeyAction::ScrollRight => {
-            app.tracking_state.waveform_scroll =
-                (app.tracking_state.waveform_scroll + 0.1).min(1.0);
-        }
+        KeyAction::ZoomIn => zoom_waveform(app, 2.0),
+        KeyAction::ZoomOut => zoom_waveform(app, 0.5),
+        KeyAction::ScrollLeft => scroll_waveform(app, -0.1),
+        KeyAction::ScrollRight => scroll_waveform(app, 0.1),
 
         // -- Volume / pan ----------------------------------------------------
-        KeyAction::SetMasterVolume(delta) => {
-            let new_db = Db::new(app.master_volume.value() + delta);
-            app.master_volume = new_db;
-            let _ = app.engine.set_master_volume(new_db);
-        }
-        KeyAction::IncreaseVolume => {
-            if let Some(track) = app.selected_track_info() {
-                let new_db = Db::new((track.volume.value() + 1.0).min(24.0));
-                let idx = app.selected_track;
-                app.set_track_volume(idx, new_db);
-            }
-        }
-        KeyAction::DecreaseVolume => {
-            if let Some(track) = app.selected_track_info() {
-                let new_db = Db::new((track.volume.value() - 1.0).max(-100.0));
-                let idx = app.selected_track;
-                app.set_track_volume(idx, new_db);
-            }
-        }
-        KeyAction::PanLeft => {
-            if let Some(track) = app.selected_track_info() {
-                let new_pan = Pan::new(track.pan.value() - 0.1);
-                let idx = app.selected_track;
-                app.set_track_pan(idx, new_pan);
-            }
-        }
-        KeyAction::PanRight => {
-            if let Some(track) = app.selected_track_info() {
-                let new_pan = Pan::new(track.pan.value() + 0.1);
-                let idx = app.selected_track;
-                app.set_track_pan(idx, new_pan);
-            }
-        }
+        KeyAction::IncreaseVolume => nudge_volume(app, 1.0),
+        KeyAction::DecreaseVolume => nudge_volume(app, -1.0),
+        KeyAction::PanLeft => nudge_pan(app, -0.1),
+        KeyAction::PanRight => nudge_pan(app, 0.1),
 
-        // -- Mixer view navigation -------------------------------------------
-        KeyAction::MixerNextChannel => {
-            let track_count = app.tracks.len();
-            if track_count > 0 {
-                let current = app.mixer_view_state.selected_channel;
-                let next = (current + 1) % track_count;
-                app.mixer_view_state.selected_channel = next;
-                app.selected_track = next;
-                app.track_list_state.select(Some(next));
-                app.synth_state.selected_effect = 0;
-                app.synth_state.selected_param = 0;
-            }
-        }
-        KeyAction::MixerPrevChannel => {
-            let track_count = app.tracks.len();
-            if track_count > 0 {
-                let current = app.mixer_view_state.selected_channel;
-                let prev = if current == 0 {
-                    track_count - 1
-                } else {
-                    current - 1
-                };
-                app.mixer_view_state.selected_channel = prev;
-                app.selected_track = prev;
-                app.track_list_state.select(Some(prev));
-                app.synth_state.selected_effect = 0;
-                app.synth_state.selected_param = 0;
-            }
-        }
-        KeyAction::MixerNextControl => {
-            app.mixer_view_state.selected_control = app.mixer_view_state.selected_control.next();
-        }
-        KeyAction::MixerPrevControl => {
-            app.mixer_view_state.selected_control = app.mixer_view_state.selected_control.prev();
-        }
+        // -- Mixer view ------------------------------------------------------
+        KeyAction::MixerNextChannel => select_adjacent_mixer_channel(app, true),
+        KeyAction::MixerPrevChannel => select_adjacent_mixer_channel(app, false),
+        KeyAction::MixerNextControl => cycle_mixer_control(app, true),
+        KeyAction::MixerPrevControl => cycle_mixer_control(app, false),
 
-        // -- Project view navigation -----------------------------------------
-        KeyAction::ProjectNextCard => {
-            app.project_state.selected_card = (app.project_state.selected_card + 1) % 6;
-            app.project_state.selected_field = 0;
-        }
-        KeyAction::ProjectPrevCard => {
-            app.project_state.selected_card = if app.project_state.selected_card == 0 {
-                5
-            } else {
-                app.project_state.selected_card - 1
-            };
-            app.project_state.selected_field = 0;
-        }
-        KeyAction::ProjectNextField => {
-            let max_fields = project_card_field_count(app.project_state.selected_card);
-            if max_fields > 0 {
-                app.project_state.selected_field =
-                    (app.project_state.selected_field + 1) % max_fields;
-            }
-        }
-        KeyAction::ProjectPrevField => {
-            let max_fields = project_card_field_count(app.project_state.selected_card);
-            if max_fields > 0 {
-                app.project_state.selected_field = if app.project_state.selected_field == 0 {
-                    max_fields - 1
-                } else {
-                    app.project_state.selected_field - 1
-                };
-            }
-        }
-        KeyAction::ProjectAdjustUp => {
-            apply_project_adjust(app, 1);
-        }
-        KeyAction::ProjectAdjustDown => {
-            apply_project_adjust(app, -1);
-        }
-        KeyAction::ProjectToggle => {
-            apply_project_toggle(app);
-        }
+        // -- Project view ----------------------------------------------------
+        KeyAction::ProjectNextCard => cycle_project_card(app, true),
+        KeyAction::ProjectPrevCard => cycle_project_card(app, false),
+        KeyAction::ProjectNextField => cycle_project_field(app, true),
+        KeyAction::ProjectPrevField => cycle_project_field(app, false),
+        KeyAction::ProjectAdjustUp => apply_project_adjust(app, 1),
+        KeyAction::ProjectAdjustDown => apply_project_adjust(app, -1),
+        KeyAction::ProjectToggle => apply_project_toggle(app),
 
-        // -- Audio I/O view navigation ---------------------------------------
-        KeyAction::AudioIONextSection => {
-            use crate::state::DeviceListFocus;
-            app.audio_io_state.focus = match app.audio_io_state.focus {
-                DeviceListFocus::Input => DeviceListFocus::Output,
-                DeviceListFocus::Output => DeviceListFocus::Settings,
-                DeviceListFocus::Settings => DeviceListFocus::Input,
-            };
-        }
-        KeyAction::AudioIOPrevSection => {
-            use crate::state::DeviceListFocus;
-            app.audio_io_state.focus = match app.audio_io_state.focus {
-                DeviceListFocus::Input => DeviceListFocus::Settings,
-                DeviceListFocus::Output => DeviceListFocus::Input,
-                DeviceListFocus::Settings => DeviceListFocus::Output,
-            };
-        }
-        KeyAction::AudioIONextDevice => {
-            use crate::state::DeviceListFocus;
-            match app.audio_io_state.focus {
-                DeviceListFocus::Input => {
-                    let count = app.audio_io_state.input_devices.len();
-                    if count > 0 {
-                        app.audio_io_state.selected_input_device =
-                            (app.audio_io_state.selected_input_device + 1) % count;
-                    }
-                }
-                DeviceListFocus::Output => {
-                    let count = app.audio_io_state.output_devices.len();
-                    if count > 0 {
-                        app.audio_io_state.selected_output_device =
-                            (app.audio_io_state.selected_output_device + 1) % count;
-                    }
-                }
-                DeviceListFocus::Settings => {}
-            }
-        }
-        KeyAction::AudioIOPrevDevice => {
-            use crate::state::DeviceListFocus;
-            match app.audio_io_state.focus {
-                DeviceListFocus::Input => {
-                    let count = app.audio_io_state.input_devices.len();
-                    if count > 0 {
-                        app.audio_io_state.selected_input_device =
-                            if app.audio_io_state.selected_input_device == 0 {
-                                count - 1
-                            } else {
-                                app.audio_io_state.selected_input_device - 1
-                            };
-                    }
-                }
-                DeviceListFocus::Output => {
-                    let count = app.audio_io_state.output_devices.len();
-                    if count > 0 {
-                        app.audio_io_state.selected_output_device =
-                            if app.audio_io_state.selected_output_device == 0 {
-                                count - 1
-                            } else {
-                                app.audio_io_state.selected_output_device - 1
-                            };
-                    }
-                }
-                DeviceListFocus::Settings => {}
-            }
-        }
-
-        // -- File browser ----------------------------------------------------
-        KeyAction::OpenFileBrowser => {
-            app.open_file_browser();
-        }
+        // -- Audio I/O view --------------------------------------------------
+        KeyAction::AudioIONextSection => cycle_audio_io_section(app, true),
+        KeyAction::AudioIOPrevSection => cycle_audio_io_section(app, false),
+        KeyAction::AudioIONextDevice => select_adjacent_device(app, true),
+        KeyAction::AudioIOPrevDevice => select_adjacent_device(app, false),
 
         // -- Timeline / clip operations --------------------------------------
-        KeyAction::TimelineZoomIn => {
-            app.tracking_state.timeline_zoom = (app.tracking_state.timeline_zoom / 2.0).max(1.0);
-        }
-        KeyAction::TimelineZoomOut => {
-            app.tracking_state.timeline_zoom =
-                (app.tracking_state.timeline_zoom * 2.0).min(1_048_576.0);
-        }
-        KeyAction::TimelineScrollLeft => {
-            let step = app.tracking_state.timeline_zoom * 10.0;
-            app.tracking_state.timeline_scroll =
-                (app.tracking_state.timeline_scroll - step).max(0.0);
-        }
-        KeyAction::TimelineScrollRight => {
-            let step = app.tracking_state.timeline_zoom * 10.0;
-            app.tracking_state.timeline_scroll += step;
-        }
-        KeyAction::SelectNextClip => {
-            select_adjacent_clip(app, true);
-        }
-        KeyAction::SelectPrevClip => {
-            select_adjacent_clip(app, false);
-        }
-        KeyAction::MoveClipLeft => {
-            if let (Some(track_id), Some(clip_id)) =
-                (app.selected_track_id(), app.tracking_state.selected_clip)
-            {
-                let sample_rate = app.engine.sample_rate();
-                // Move by 1 beat (based on current BPM).
-                let beat_samples = beat_samples(app.display.transport.bpm, sample_rate);
-                // Find current position from timeline snapshot.
-                if let Some(clip) = find_clip_in_timeline(&app.display.timeline, clip_id) {
-                    let new_pos = clip.position.saturating_sub(beat_samples);
-                    let _ = app.engine.move_clip(track_id, clip_id, new_pos);
-                }
-            }
-        }
-        KeyAction::MoveClipRight => {
-            if let (Some(track_id), Some(clip_id)) =
-                (app.selected_track_id(), app.tracking_state.selected_clip)
-            {
-                let sample_rate = app.engine.sample_rate();
-                let beat_samples = beat_samples(app.display.transport.bpm, sample_rate);
-                if let Some(clip) = find_clip_in_timeline(&app.display.timeline, clip_id) {
-                    let new_pos = clip.position.saturating_add(beat_samples);
-                    let _ = app.engine.move_clip(track_id, clip_id, new_pos);
-                }
-            }
-        }
-        KeyAction::DeleteClip => {
-            if let (Some(track_id), Some(clip_id)) =
-                (app.selected_track_id(), app.tracking_state.selected_clip)
-            {
-                let _ = app.engine.remove_clip(track_id, clip_id);
-                app.tracking_state.selected_clip = None;
-            }
-        }
-        KeyAction::SplitClip => {
-            if let (Some(track_id), Some(clip_id)) =
-                (app.selected_track_id(), app.tracking_state.selected_clip)
-            {
-                let pos = app.display.transport.position.samples;
-                let _ = app.engine.split_clip(track_id, clip_id, pos);
-            }
-        }
-        KeyAction::DuplicateClip => {
-            if let (Some(track_id), Some(clip_id)) =
-                (app.selected_track_id(), app.tracking_state.selected_clip)
-            {
-                // Place duplicate right after the original clip.
-                if let Some(clip) = find_clip_in_timeline(&app.display.timeline, clip_id) {
-                    let new_pos = clip.position + clip.length;
-                    let _ = app.engine.duplicate_clip(track_id, clip_id, new_pos);
-                }
-            }
-        }
+        KeyAction::TimelineZoomIn => zoom_timeline(app, 0.5),
+        KeyAction::TimelineZoomOut => zoom_timeline(app, 2.0),
+        KeyAction::TimelineScrollLeft => scroll_timeline(app, false),
+        KeyAction::TimelineScrollRight => scroll_timeline(app, true),
+        KeyAction::SelectNextClip => select_adjacent_clip(app, true),
+        KeyAction::SelectPrevClip => select_adjacent_clip(app, false),
+        KeyAction::MoveClipLeft => move_selected_clip(app, false),
+        KeyAction::MoveClipRight => move_selected_clip(app, true),
+        KeyAction::DeleteClip => delete_selected_clip(app),
+        KeyAction::SplitClip => split_selected_clip(app),
+        KeyAction::DuplicateClip => duplicate_selected_clip(app),
 
-        // -- File browser navigation -----------------------------------------
-        KeyAction::FileBrowserDown => {
-            if let AppMode::FileBrowser {
-                ref entries,
-                ref mut selected,
-                ..
-            } = app.mode
-            {
-                if !entries.is_empty() {
-                    *selected = (*selected + 1) % entries.len();
-                }
-            }
-        }
-        KeyAction::FileBrowserUp => {
-            if let AppMode::FileBrowser {
-                ref entries,
-                ref mut selected,
-                ..
-            } = app.mode
-            {
-                if !entries.is_empty() {
-                    *selected = if *selected == 0 {
-                        entries.len() - 1
-                    } else {
-                        *selected - 1
-                    };
-                }
-            }
-        }
-        KeyAction::FileBrowserEnter => {
-            apply_file_browser_enter(app);
-        }
-        KeyAction::FileBrowserBack => {
-            if let AppMode::FileBrowser {
-                ref mut directory,
-                ref mut entries,
-                ref mut selected,
-            } = app.mode
-            {
-                if let Some(parent) = directory.parent().map(std::path::Path::to_path_buf) {
-                    *entries = App::scan_directory(&parent);
-                    *selected = 0;
-                    directory.clone_from(&parent);
-                }
-            }
-        }
-        KeyAction::FileBrowserClose => {
-            app.mode = AppMode::Normal;
-        }
+        // -- File browser ----------------------------------------------------
+        KeyAction::OpenFileBrowser => app.open_file_browser(),
+        KeyAction::FileBrowserDown => move_file_browser_selection(app, true),
+        KeyAction::FileBrowserUp => move_file_browser_selection(app, false),
+        KeyAction::FileBrowserEnter => apply_file_browser_enter(app),
+        KeyAction::FileBrowserBack => apply_file_browser_back(app),
+        KeyAction::FileBrowserClose => app.mode = AppMode::Normal,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Engine command helpers
+// ---------------------------------------------------------------------------
+
+/// Send a command to the engine, reporting failure in the status line.
+///
+/// Returns `true` if the engine accepted the command.
+fn send(app: &mut App, action: &str, command: EngineCommand) -> bool {
+    let result = app.engine.send_command(command);
+    app.status.report(action, result)
+}
+
+/// Send a transport command, reporting failure in the status line.
+fn send_transport(app: &mut App, action: &str, command: TransportCommand) {
+    send(app, action, EngineCommand::Transport(command));
+}
+
+/// Report an operation that could not even be attempted.
+fn refuse(app: &mut App, reason: &str) {
+    app.status.error(reason);
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle, views and focus
+// ---------------------------------------------------------------------------
+
+fn toggle_help(app: &mut App) {
+    app.mode = match app.mode {
+        AppMode::Normal => AppMode::Help,
+        AppMode::Help | AppMode::FileBrowser { .. } => AppMode::Normal,
+    };
+}
+
+fn switch_view(app: &mut App, view: ActiveView) {
+    app.active_view = view;
+    // Reset focus to the first panel of the new view.
+    app.focused_panel = crate::app::panels_for_view(view)[0];
+    // Sync mixer channel selection with the current track.
+    if view == ActiveView::Mixer {
+        app.mixer_view_state.selected_channel = app.selected_track;
+    }
+}
+
+fn cycle_focus(app: &mut App, forward: bool) {
+    let panels = crate::app::panels_for_view(app.active_view);
+    app.focused_panel = panels
+        .iter()
+        .position(|p| *p == app.focused_panel)
+        .map_or(panels[0], |pos| {
+            panels[wrap_index(pos, panels.len(), forward)]
+        });
+}
+
+/// Step `index` one position forward or backward within `0..len`, wrapping
+/// at both ends. `len` must be non-zero.
+const fn wrap_index(index: usize, len: usize, forward: bool) -> usize {
+    if forward {
+        (index + 1) % len
+    } else if index == 0 {
+        len - 1
+    } else {
+        index - 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transport
+// ---------------------------------------------------------------------------
+
+fn toggle_play(app: &mut App) {
+    if app.display.transport.state == TransportState::Playing {
+        send_transport(app, "Pause", TransportCommand::Pause);
+    } else {
+        send_transport(app, "Play", TransportCommand::Play);
+    }
+}
+
+fn record_with_count_in(app: &mut App) {
+    // Build the workflow from TUI state and send it before the command. If
+    // the workflow cannot be set, do not start a recording with the wrong one.
+    let workflow = build_recording_workflow(app);
+    if send(
+        app,
+        "Set recording workflow",
+        EngineCommand::Transport(TransportCommand::SetRecordingWorkflow(workflow)),
+    ) {
+        send_transport(app, "Record", TransportCommand::RecordWithCountIn);
+    }
+}
+
+fn toggle_loop(app: &mut App) {
+    // The transport API uses SetLoop(Some/None) rather than a simple toggle,
+    // so check the current state. Enabling uses a default loop region
+    // covering the whole range.
+    let region = if app.display.transport.is_looping() {
+        None
+    } else {
+        Some((0, u64::MAX / 2))
+    };
+    send_transport(app, "Toggle loop", TransportCommand::SetLoop(region));
+}
+
+fn toggle_metronome(app: &mut App) {
+    send_transport(app, "Toggle metronome", TransportCommand::ToggleMetronome);
+}
+
+fn nudge_tempo(app: &mut App, delta: f64) {
+    let new_bpm = app.display.transport.bpm + delta;
+    send_transport(app, "Set tempo", TransportCommand::SetTempo(new_bpm));
+}
+
+/// Switch between the count-in and fixed-length recording workflows.
+fn cycle_recording_workflow(app: &mut App) {
+    use kazoo_core::transport::RecordingWorkflow;
+    app.recording_workflow = match app.recording_workflow {
+        RecordingWorkflow::FreeRecord | RecordingWorkflow::CountIn { .. } => {
+            RecordingWorkflow::FixedLength {
+                bars: app.record_bars.max(1),
+            }
+        }
+        RecordingWorkflow::FixedLength { .. } => RecordingWorkflow::CountIn {
+            count_in_bars: app.count_in_bars.max(1),
+            record_bars: app.record_bars,
+        },
+    };
+}
+
+/// Adjust the number of bars to record, within `0..=64`.
+fn adjust_record_bars(app: &mut App, direction: i8) {
+    app.record_bars = if direction > 0 {
+        app.record_bars.saturating_add(1).min(64)
+    } else {
+        app.record_bars.saturating_sub(1)
+    };
 }
 
 /// Build a [`RecordingWorkflow`] from the current TUI state.
@@ -1210,6 +764,8 @@ fn apply_action(app: &mut App, action: KeyAction) {
 /// - `FreeRecord`: treated as `CountIn` with default parameters so that
 ///   Shift+R always provides a count-in (otherwise it would be identical
 ///   to the plain `r` key).
+///
+/// [`RecordingWorkflow`]: kazoo_core::transport::RecordingWorkflow
 fn build_recording_workflow(app: &App) -> kazoo_core::transport::RecordingWorkflow {
     use kazoo_core::transport::RecordingWorkflow;
     match app.recording_workflow {
@@ -1222,6 +778,555 @@ fn build_recording_workflow(app: &App) -> kazoo_core::transport::RecordingWorkfl
         RecordingWorkflow::FixedLength { .. } => RecordingWorkflow::FixedLength {
             bars: app.record_bars.max(1),
         },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tracks, volume and pan
+// ---------------------------------------------------------------------------
+
+fn select_adjacent_track(app: &mut App, forward: bool) {
+    if app.tracks.is_empty() {
+        return;
+    }
+    let index = wrap_index(app.selected_track, app.tracks.len(), forward);
+    app.selected_track = index;
+    app.track_list_state.select(Some(index));
+    app.synth_state.selected_effect = 0;
+    app.synth_state.selected_param = 0;
+}
+
+fn add_numbered_track(app: &mut App) {
+    let name = format!("{}", app.track_count() + 1);
+    // Failure is reported in the status line by `add_track`.
+    if app.add_track(name, SynthesisMode::PitchTracked) {
+        let last = app.tracks.len() - 1;
+        app.status
+            .info(format!("Added track {}", app.tracks[last].name));
+    }
+}
+
+fn nudge_volume(app: &mut App, delta_db: f32) {
+    if let Some(track) = app.selected_track_info() {
+        let new_db = Db::new((track.volume.value() + delta_db).clamp(-100.0, 24.0));
+        app.set_track_volume(app.selected_track, new_db);
+    }
+}
+
+fn nudge_pan(app: &mut App, delta: f32) {
+    if let Some(track) = app.selected_track_info() {
+        let new_pan = Pan::new(track.pan.value() + delta);
+        app.set_track_pan(app.selected_track, new_pan);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Effects
+// ---------------------------------------------------------------------------
+
+fn select_next_effect(app: &mut App) {
+    let effect_count = app.selected_track_info().map_or(0, |t| t.effects.len());
+    if effect_count == 0 {
+        return;
+    }
+    if app.synth_state.synth_selected {
+        // Move from synth to first effect.
+        app.synth_state.synth_selected = false;
+        app.synth_state.selected_effect = 0;
+        app.synth_state.selected_param = 0;
+    } else if app.synth_state.selected_effect + 1 < effect_count {
+        app.synth_state.selected_effect += 1;
+        app.synth_state.selected_param = 0;
+    }
+}
+
+const fn select_prev_effect(app: &mut App) {
+    if app.synth_state.synth_selected {
+        // Already at the top of the list.
+        return;
+    }
+    if app.synth_state.selected_effect == 0 {
+        // Move from first effect back to synth.
+        app.synth_state.synth_selected = true;
+        app.synth_state.selected_synth_param = 0;
+    } else {
+        app.synth_state.selected_effect -= 1;
+        app.synth_state.selected_param = 0;
+    }
+}
+
+fn add_lowpass_effect(app: &mut App) {
+    if app.selected_track_info().is_none() {
+        refuse(app, "No track selected \u{2014} add a track (n) first");
+        return;
+    }
+    let sample_rate = app.engine.sample_rate() as f32;
+    let effect = kazoo_core::effects::BiquadFilter::new(
+        kazoo_core::effects::FilterType::LowPass,
+        sample_rate,
+    );
+    app.add_effect_to_track(app.selected_track, "LowPass".into(), Box::new(effect));
+}
+
+// ---------------------------------------------------------------------------
+// Parameter navigation and editing
+// ---------------------------------------------------------------------------
+
+/// The parameter currently targeted by the synth/effects sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParamTarget {
+    /// A parameter of the selected track's synth.
+    Synth { track: usize, param: usize },
+    /// A parameter of one effect in the selected track's chain.
+    Effect {
+        track: usize,
+        effect: usize,
+        param: usize,
+    },
+}
+
+impl ParamTarget {
+    /// Resolve the selection in `app` to a target, without checking that the
+    /// indices exist.
+    const fn selected(app: &App) -> Self {
+        if app.synth_state.synth_selected {
+            Self::Synth {
+                track: app.selected_track,
+                param: app.synth_state.selected_synth_param,
+            }
+        } else {
+            Self::Effect {
+                track: app.selected_track,
+                effect: app.synth_state.selected_effect,
+                param: app.synth_state.selected_param,
+            }
+        }
+    }
+
+    /// The parameter's metadata and current value, if the target exists.
+    fn lookup(self, app: &App) -> Option<(&kazoo_core::ParamInfo, f32)> {
+        match self {
+            Self::Synth { track, param } => {
+                let track = app.tracks.get(track)?;
+                Some((
+                    track.synth_param_infos.get(param)?,
+                    *track.synth_param_values.get(param)?,
+                ))
+            }
+            Self::Effect {
+                track,
+                effect,
+                param,
+            } => {
+                let effect = app.tracks.get(track)?.effects.get(effect)?;
+                Some((
+                    effect.param_infos.get(param)?,
+                    *effect.param_values.get(param)?,
+                ))
+            }
+        }
+    }
+
+    /// Number of parameters on the targeted synth or effect.
+    fn param_count(self, app: &App) -> usize {
+        match self {
+            Self::Synth { track, .. } => app
+                .tracks
+                .get(track)
+                .map_or(0, |t| t.synth_param_infos.len()),
+            Self::Effect { track, effect, .. } => app
+                .tracks
+                .get(track)
+                .and_then(|t| t.effects.get(effect))
+                .map_or(0, |e| e.param_infos.len()),
+        }
+    }
+}
+
+/// Move the parameter selection within the selected synth or effect,
+/// wrapping at both ends.
+fn select_adjacent_param(app: &mut App, forward: bool) {
+    let count = ParamTarget::selected(app).param_count(app);
+    if count == 0 {
+        return;
+    }
+    let index = if app.synth_state.synth_selected {
+        &mut app.synth_state.selected_synth_param
+    } else {
+        &mut app.synth_state.selected_param
+    };
+    // The selection can be stale (e.g. after switching to an effect with
+    // fewer parameters); bring it into range before stepping.
+    *index = wrap_index((*index).min(count - 1), count, forward);
+}
+
+/// Compute the next value when stepping a parameter one notch.
+///
+/// Enum-style parameters (`min == 0`, integral `max <= 3`) step by 1 and
+/// snap to integers; all others step by 5% of their range. The result is
+/// clamped to the parameter's range.
+fn stepped_param_value(info: &kazoo_core::ParamInfo, current: f32, direction: f32) -> f32 {
+    let is_enum =
+        info.min == 0.0 && info.max <= 3.0 && (info.max - info.max.floor()).abs() < f32::EPSILON;
+    let step = if is_enum {
+        1.0
+    } else {
+        (info.max - info.min) / 20.0
+    };
+    let new_value = info.clamp(direction.mul_add(step, current));
+    if is_enum {
+        new_value.round()
+    } else {
+        new_value
+    }
+}
+
+/// Step the selected synth or effect parameter by one notch in `direction`.
+fn step_selected_param(app: &mut App, direction: f32) {
+    let target = ParamTarget::selected(app);
+    let Some((info, current)) = target.lookup(app) else {
+        refuse(app, "No parameter selected");
+        return;
+    };
+    let new_value = stepped_param_value(info, current, direction);
+    set_param(app, target, new_value);
+}
+
+/// Send `value` for `target` to the engine and, if accepted, store it
+/// locally. `value` must already be clamped to the parameter's range.
+fn set_param(app: &mut App, target: ParamTarget, value: f32) {
+    let accepted = match target {
+        ParamTarget::Synth { track, param } => {
+            let Some(track_id) = app.tracks.get(track).map(|t| t.id) else {
+                return;
+            };
+            send(
+                app,
+                "Set synth parameter",
+                EngineCommand::SetSynthLayerParameter {
+                    track_id,
+                    layer_index: 0,
+                    param_index: param,
+                    value,
+                },
+            )
+        }
+        ParamTarget::Effect {
+            track,
+            effect,
+            param,
+        } => {
+            let Some(track_id) = app.tracks.get(track).map(|t| t.id) else {
+                return;
+            };
+            send(
+                app,
+                "Set effect parameter",
+                EngineCommand::SetEffectParameter {
+                    track_id,
+                    effect_index: effect,
+                    param_index: param,
+                    value,
+                },
+            )
+        }
+    };
+    if !accepted {
+        return;
+    }
+    let slot = match target {
+        ParamTarget::Synth { track, param } => app
+            .tracks
+            .get_mut(track)
+            .and_then(|t| t.synth_param_values.get_mut(param)),
+        ParamTarget::Effect {
+            track,
+            effect,
+            param,
+        } => app
+            .tracks
+            .get_mut(track)
+            .and_then(|t| t.effects.get_mut(effect))
+            .and_then(|e| e.param_values.get_mut(param)),
+    };
+    if let Some(slot) = slot {
+        *slot = value;
+    }
+}
+
+fn enter_param_edit(app: &mut App) {
+    if ParamTarget::selected(app).lookup(app).is_none() {
+        refuse(app, "No parameter selected to edit");
+        return;
+    }
+    app.input_mode = InputMode::ParameterEdit;
+    app.param_edit_buffer.clear();
+}
+
+fn leave_param_edit(app: &mut App) {
+    app.input_mode = InputMode::Normal;
+    app.param_edit_buffer.clear();
+}
+
+/// Apply the typed value to the selected parameter.
+///
+/// Invalid input (not a number, NaN/infinite) is rejected with a status
+/// message and nothing is sent. Valid values are clamped to the parameter's
+/// range; clamping is reported so the user knows the value was changed.
+fn confirm_param_edit(app: &mut App) {
+    let target = ParamTarget::selected(app);
+    let raw = app.param_edit_buffer.trim().to_owned();
+    leave_param_edit(app);
+
+    let value = match raw.parse::<f32>() {
+        Ok(value) if value.is_finite() => value,
+        Ok(_) => {
+            refuse(app, &format!("'{raw}' is not a finite number"));
+            return;
+        }
+        Err(err) => {
+            refuse(app, &format!("'{raw}' is not a number: {err}"));
+            return;
+        }
+    };
+    let Some((info, _)) = target.lookup(app) else {
+        refuse(app, "The parameter being edited no longer exists");
+        return;
+    };
+    let clamped = info.clamp(value);
+    let range_note = ((clamped - value).abs() > f32::EPSILON)
+        .then(|| format!("{value} clamped to {clamped} ({}..={})", info.min, info.max));
+    set_param(app, target, clamped);
+    if let Some(note) = range_note {
+        app.status.info(note);
+    }
+}
+
+/// Maximum number of characters accepted in the numeric edit buffer.
+const PARAM_EDIT_MAX_LEN: usize = 16;
+
+fn push_param_edit_char(app: &mut App, c: char) {
+    if app.param_edit_buffer.len() < PARAM_EDIT_MAX_LEN {
+        app.param_edit_buffer.push(c);
+    }
+}
+
+fn pop_param_edit_char(app: &mut App) {
+    // Backspace on an empty buffer is a no-op, as in any text field.
+    app.param_edit_buffer.pop();
+}
+
+// ---------------------------------------------------------------------------
+// Waveform and timeline navigation
+// ---------------------------------------------------------------------------
+
+fn zoom_waveform(app: &mut App, factor: f32) {
+    app.tracking_state.waveform_zoom = (app.tracking_state.waveform_zoom * factor).clamp(1.0, 64.0);
+}
+
+fn scroll_waveform(app: &mut App, delta: f32) {
+    app.tracking_state.waveform_scroll =
+        (app.tracking_state.waveform_scroll + delta).clamp(0.0, 1.0);
+}
+
+fn zoom_timeline(app: &mut App, factor: f64) {
+    app.tracking_state.timeline_zoom =
+        (app.tracking_state.timeline_zoom * factor).clamp(1.0, 1_048_576.0);
+}
+
+fn scroll_timeline(app: &mut App, forward: bool) {
+    let step = app.tracking_state.timeline_zoom * 10.0;
+    let scroll = &mut app.tracking_state.timeline_scroll;
+    *scroll = if forward {
+        *scroll + step
+    } else {
+        (*scroll - step).max(0.0)
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Mixer, project and audio I/O views
+// ---------------------------------------------------------------------------
+
+fn select_adjacent_mixer_channel(app: &mut App, forward: bool) {
+    let track_count = app.tracks.len();
+    if track_count == 0 {
+        return;
+    }
+    let index = wrap_index(
+        app.mixer_view_state.selected_channel.min(track_count - 1),
+        track_count,
+        forward,
+    );
+    app.mixer_view_state.selected_channel = index;
+    app.selected_track = index;
+    app.track_list_state.select(Some(index));
+    app.synth_state.selected_effect = 0;
+    app.synth_state.selected_param = 0;
+}
+
+const fn cycle_mixer_control(app: &mut App, forward: bool) {
+    let control = app.mixer_view_state.selected_control;
+    app.mixer_view_state.selected_control = if forward {
+        control.next()
+    } else {
+        control.prev()
+    };
+}
+
+/// Number of settings cards in the Project view.
+const PROJECT_CARD_COUNT: usize = 6;
+
+const fn cycle_project_card(app: &mut App, forward: bool) {
+    app.project_state.selected_card =
+        wrap_index(app.project_state.selected_card, PROJECT_CARD_COUNT, forward);
+    app.project_state.selected_field = 0;
+}
+
+const fn cycle_project_field(app: &mut App, forward: bool) {
+    let field_count = project_card_field_count(app.project_state.selected_card);
+    if field_count > 0 {
+        app.project_state.selected_field =
+            wrap_index(app.project_state.selected_field, field_count, forward);
+    }
+}
+
+const fn cycle_audio_io_section(app: &mut App, forward: bool) {
+    use crate::state::DeviceListFocus;
+    app.audio_io_state.focus = match (app.audio_io_state.focus, forward) {
+        (DeviceListFocus::Input, true) | (DeviceListFocus::Settings, false) => {
+            DeviceListFocus::Output
+        }
+        (DeviceListFocus::Output, true) | (DeviceListFocus::Input, false) => {
+            DeviceListFocus::Settings
+        }
+        (DeviceListFocus::Settings, true) | (DeviceListFocus::Output, false) => {
+            DeviceListFocus::Input
+        }
+    };
+}
+
+fn select_adjacent_device(app: &mut App, forward: bool) {
+    use crate::state::DeviceListFocus;
+    let state = &mut app.audio_io_state;
+    let (count, selected) = match state.focus {
+        DeviceListFocus::Input => (state.input_devices.len(), &mut state.selected_input_device),
+        DeviceListFocus::Output => (
+            state.output_devices.len(),
+            &mut state.selected_output_device,
+        ),
+        // The settings section has no selectable devices.
+        DeviceListFocus::Settings => return,
+    };
+    if count > 0 {
+        *selected = wrap_index((*selected).min(count - 1), count, forward);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clip operations
+// ---------------------------------------------------------------------------
+
+/// The selected track and clip, if both exist. Reports why not otherwise.
+fn selected_clip_target(app: &mut App) -> Option<(kazoo_core::mixer::TrackId, ClipId)> {
+    let Some(track_id) = app.selected_track_id() else {
+        refuse(app, "No track selected");
+        return None;
+    };
+    let Some(clip_id) = app.tracking_state.selected_clip else {
+        refuse(app, "No clip selected \u{2014} use , and . to select one");
+        return None;
+    };
+    Some((track_id, clip_id))
+}
+
+/// Look up the selected clip's `(position, length)` in the latest timeline
+/// snapshot. If it no longer exists the stale selection is cleared and the
+/// user is told.
+fn selected_clip_extent(app: &mut App, clip_id: ClipId) -> Option<(u64, u64)> {
+    if let Some(clip) = find_clip_in_timeline(&app.display.timeline, clip_id) {
+        return Some((clip.position, clip.length));
+    }
+    app.tracking_state.selected_clip = None;
+    refuse(app, "The selected clip no longer exists");
+    None
+}
+
+fn move_selected_clip(app: &mut App, forward: bool) {
+    let Some((track_id, clip_id)) = selected_clip_target(app) else {
+        return;
+    };
+    let Some((position, _)) = selected_clip_extent(app, clip_id) else {
+        return;
+    };
+    // Move by 1 beat (based on current BPM).
+    let beat = beat_samples(app.display.transport.bpm, app.engine.sample_rate());
+    let new_pos = if forward {
+        position.saturating_add(beat)
+    } else {
+        position.saturating_sub(beat)
+    };
+    let result = app.engine.move_clip(track_id, clip_id, new_pos);
+    app.status.report("Move clip", result);
+}
+
+fn delete_selected_clip(app: &mut App) {
+    let Some((track_id, clip_id)) = selected_clip_target(app) else {
+        return;
+    };
+    let result = app.engine.remove_clip(track_id, clip_id);
+    if app.status.report("Delete clip", result) {
+        app.tracking_state.selected_clip = None;
+    }
+}
+
+fn split_selected_clip(app: &mut App) {
+    let Some((track_id, clip_id)) = selected_clip_target(app) else {
+        return;
+    };
+    let pos = app.display.transport.position.samples;
+    let result = app.engine.split_clip(track_id, clip_id, pos);
+    app.status.report("Split clip", result);
+}
+
+fn duplicate_selected_clip(app: &mut App) {
+    let Some((track_id, clip_id)) = selected_clip_target(app) else {
+        return;
+    };
+    let Some((position, length)) = selected_clip_extent(app, clip_id) else {
+        return;
+    };
+    // Place the duplicate right after the original clip.
+    let new_pos = position.saturating_add(length);
+    let result = app.engine.duplicate_clip(track_id, clip_id, new_pos);
+    app.status.report("Duplicate clip", result);
+}
+
+// ---------------------------------------------------------------------------
+// File browser
+// ---------------------------------------------------------------------------
+
+fn move_file_browser_selection(app: &mut App, forward: bool) {
+    if let AppMode::FileBrowser {
+        ref entries,
+        ref mut selected,
+        ..
+    } = app.mode
+    {
+        if !entries.is_empty() {
+            *selected = wrap_index((*selected).min(entries.len() - 1), entries.len(), forward);
+        }
+    }
+}
+
+fn apply_file_browser_back(app: &mut App) {
+    let AppMode::FileBrowser { ref directory, .. } = app.mode else {
+        return;
+    };
+    // At the filesystem root there is no parent; staying put is the
+    // expected behaviour of "go up".
+    if let Some(parent) = directory.parent().map(std::path::Path::to_path_buf) {
+        app.browse_to(parent);
     }
 }
 
@@ -1244,22 +1349,31 @@ fn apply_file_browser_enter(app: &mut App) {
     };
 
     if is_dir {
-        // Navigate into directory.
-        let new_entries = App::scan_directory(&path);
-        app.mode = AppMode::FileBrowser {
-            directory: path,
-            entries: new_entries,
-            selected: 0,
-        };
-    } else {
-        // Load audio file onto current track at playhead position.
-        if let Some(track_id) = app.selected_track_id() {
-            let position = app.display.transport.position.samples;
-            let _ = app.engine.load_clip(track_id, &path, position);
-        }
-        app.mode = AppMode::Normal;
+        // Navigate into directory; failures are reported by `browse_to`.
+        app.browse_to(path);
+        return;
+    }
+
+    // Load audio file onto current track at playhead position.
+    app.mode = AppMode::Normal;
+    let Some(track_id) = app.selected_track_id() else {
+        refuse(app, "No track selected \u{2014} cannot load clip");
+        return;
+    };
+    let position = app.display.transport.position.samples;
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    match app.engine.load_clip(track_id, &path, position) {
+        Ok(()) => app.status.info(format!("Loaded {name}")),
+        Err(err) => app.status.error(format!("Load {name} failed: {err}")),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Clip selection helpers
+// ---------------------------------------------------------------------------
 
 /// Select the next or previous clip in the timeline.
 fn select_adjacent_clip(app: &mut App, forward: bool) {
@@ -1276,10 +1390,8 @@ fn select_adjacent_clip(app: &mut App, forward: bool) {
 
     let Some(track) = timeline.tracks.iter().find(|t| t.track_id == track_id) else {
         // No track in the timeline snapshot matches; try first available.
-        if let Some(first_track) = timeline.tracks.first() {
-            if let Some(first_clip) = first_track.clips.first() {
-                app.tracking_state.selected_clip = Some(ClipId(first_clip.id));
-            }
+        if let Some(first_clip) = timeline.tracks.first().and_then(|t| t.clips.first()) {
+            app.tracking_state.selected_clip = Some(ClipId(first_clip.id));
         }
         return;
     };
@@ -1289,36 +1401,20 @@ fn select_adjacent_clip(app: &mut App, forward: bool) {
         return;
     }
 
-    match app.tracking_state.selected_clip {
-        None => {
-            // Nothing selected: select first or last.
-            let clip = if forward {
-                &track.clips[0]
-            } else {
-                &track.clips[track.clips.len() - 1]
-            };
-            app.tracking_state.selected_clip = Some(ClipId(clip.id));
-        }
-        Some(current) => {
-            let idx = track.clips.iter().position(|c| c.id == current.0);
-            match idx {
-                Some(i) => {
-                    let next = if forward {
-                        (i + 1) % track.clips.len()
-                    } else if i == 0 {
-                        track.clips.len() - 1
-                    } else {
-                        i - 1
-                    };
-                    app.tracking_state.selected_clip = Some(ClipId(track.clips[next].id));
-                }
-                None => {
-                    // Current selection not found; reset.
-                    app.tracking_state.selected_clip = Some(ClipId(track.clips[0].id));
-                }
-            }
-        }
-    }
+    let clip_count = track.clips.len();
+    let next = app.tracking_state.selected_clip.map_or(
+        // Nothing selected: select first or last.
+        if forward { 0 } else { clip_count - 1 },
+        // Selected: step from it; if it vanished, reset to the first clip.
+        |current| {
+            track
+                .clips
+                .iter()
+                .position(|c| c.id == current.0)
+                .map_or(0, |i| wrap_index(i, clip_count, forward))
+        },
+    );
+    app.tracking_state.selected_clip = Some(ClipId(track.clips[next].id));
 }
 
 /// Find a clip in the timeline snapshot by its ID.
@@ -1326,144 +1422,21 @@ fn find_clip_in_timeline(
     timeline: &kazoo_core::engine::TimelineSnapshot,
     clip_id: ClipId,
 ) -> Option<&kazoo_core::engine::ClipSnapshot> {
-    for track in &timeline.tracks {
-        for clip in &track.clips {
-            if clip.id == clip_id.0 {
-                return Some(clip);
-            }
-        }
-    }
-    None
+    timeline
+        .tracks
+        .iter()
+        .flat_map(|track| track.clips.iter())
+        .find(|clip| clip.id == clip_id.0)
 }
 
 /// Compute samples per beat at the given BPM and sample rate.
+///
+/// Returns 0 for non-positive or non-finite BPM, or a zero sample rate.
 fn beat_samples(bpm: f64, sample_rate: u32) -> u64 {
-    if bpm <= 0.0 || sample_rate == 0 {
+    if !bpm.is_finite() || bpm <= 0.0 || sample_rate == 0 {
         return 0;
     }
     (f64::from(sample_rate) * 60.0 / bpm) as u64
-}
-
-// ---------------------------------------------------------------------------
-// Synth parameter adjustment
-// ---------------------------------------------------------------------------
-
-/// Adjust the currently selected synth parameter by a direction (+1.0 or -1.0).
-///
-/// Uses 5% of the parameter range per step, or 1.0 for enum-style params
-/// (where max <= 3.0 and min == 0.0). Updates the local value and sends
-/// the absolute value to the engine. Always operates on layer 0.
-fn adjust_synth_param(app: &mut App, direction: f32) {
-    let idx = app.synth_state.selected_synth_param;
-    let track_idx = app.selected_track;
-
-    let Some(track) = app.tracks.get_mut(track_idx) else {
-        return;
-    };
-
-    // Read param info from layer 0 (clone to release borrow).
-    let info = track
-        .layers
-        .first()
-        .and_then(|l| l.param_infos.get(idx).cloned())
-        .or_else(|| track.synth_param_infos.get(idx).cloned());
-    let Some(info) = info else {
-        return;
-    };
-
-    // Read current value from layer 0.
-    let current = track
-        .layers
-        .first()
-        .and_then(|l| l.param_values.get(idx).copied())
-        .or_else(|| track.synth_param_values.get(idx).copied());
-    let Some(current) = current else {
-        return;
-    };
-
-    // Determine step size: enum params step by 1, others by 5% of range.
-    let is_enum =
-        info.min == 0.0 && info.max <= 3.0 && (info.max - info.max.floor()).abs() < f32::EPSILON;
-    let step = if is_enum {
-        1.0
-    } else {
-        (info.max - info.min) / 20.0
-    };
-
-    let new_value = direction.mul_add(step, current).clamp(info.min, info.max);
-
-    // For enum params, snap to nearest integer.
-    let new_value = if is_enum {
-        new_value.round()
-    } else {
-        new_value
-    };
-
-    // Update layer 0's local param value.
-    if let Some(layer) = track.layers.first_mut() {
-        if let Some(v) = layer.param_values.get_mut(idx) {
-            *v = new_value;
-        }
-    }
-
-    // Keep shortcut fields in sync.
-    if let Some(v) = track.synth_param_values.get_mut(idx) {
-        *v = new_value;
-    }
-
-    let track_id = track.id;
-    let _ = app
-        .engine
-        .send_command(EngineCommand::SetSynthLayerParameter {
-            track_id,
-            layer_index: 0,
-            param_index: idx,
-            value: new_value,
-        });
-}
-
-/// Confirm a direct numeric edit for a synth parameter.
-///
-/// Looks up layer 0's `ParamInfo` to clamp the value, updates local
-/// state, and sends `SetSynthLayerParameter` to the engine.
-fn confirm_synth_param_edit(app: &mut App, raw_value: f32) {
-    let Some(track) = app.tracks.get_mut(app.selected_track) else {
-        return;
-    };
-
-    let param_index = app.synth_state.selected_synth_param;
-
-    // Read param info to clamp the value.
-    let (min, max) = track
-        .layers
-        .first()
-        .and_then(|l| l.param_infos.get(param_index))
-        .or_else(|| track.synth_param_infos.get(param_index))
-        .map_or((f32::MIN, f32::MAX), |info| (info.min, info.max));
-
-    let value = raw_value.clamp(min, max);
-
-    // Update layer 0's local state.
-    if let Some(layer) = track.layers.first_mut() {
-        if let Some(v) = layer.param_values.get_mut(param_index) {
-            *v = value;
-        }
-    }
-
-    // Keep shortcut fields in sync.
-    if let Some(v) = track.synth_param_values.get_mut(param_index) {
-        *v = value;
-    }
-
-    let track_id = track.id;
-    let _ = app
-        .engine
-        .send_command(EngineCommand::SetSynthLayerParameter {
-            track_id,
-            layer_index: 0,
-            param_index,
-            value,
-        });
 }
 
 // ---------------------------------------------------------------------------
@@ -1480,90 +1453,44 @@ const fn project_card_field_count(card: usize) -> usize {
 }
 
 /// Apply a +1/-1 adjustment to the selected project card field.
-fn apply_project_adjust(app: &mut App, direction: i32) {
-    let card = app.project_state.selected_card;
-    let field = app.project_state.selected_field;
-
-    match (card, field) {
+///
+/// Fields without an adjustable value (time signature, toggles) ignore
+/// +/-; toggles respond to Enter instead.
+fn apply_project_adjust(app: &mut App, direction: i8) {
+    match (
+        app.project_state.selected_card,
+        app.project_state.selected_field,
+    ) {
         // Card 0 (Tempo), field 0: adjust BPM.
-        (0, 0) => {
-            let new_bpm = app.display.transport.bpm + f64::from(direction);
-            let _ = app
-                .engine
-                .send_command(EngineCommand::Transport(TransportCommand::SetTempo(
-                    new_bpm,
-                )));
-        }
+        (0, 0) => nudge_tempo(app, f64::from(direction)),
         // Card 2 (Count-In), field 1: adjust count-in bars.
         (2, 1) => {
-            if direction > 0 {
-                app.count_in_bars = app.count_in_bars.saturating_add(1).min(16);
-            } else if app.count_in_bars > 0 {
-                app.count_in_bars -= 1;
-            }
-        }
-        // Card 5 (Recording), field 0: cycle workflow.
-        (5, 0) => {
-            use kazoo_core::transport::RecordingWorkflow;
-            app.recording_workflow = match app.recording_workflow {
-                RecordingWorkflow::FreeRecord | RecordingWorkflow::CountIn { .. } => {
-                    RecordingWorkflow::FixedLength {
-                        bars: app.record_bars.max(1),
-                    }
-                }
-                RecordingWorkflow::FixedLength { .. } => RecordingWorkflow::CountIn {
-                    count_in_bars: app.count_in_bars.max(1),
-                    record_bars: app.record_bars,
-                },
+            app.count_in_bars = if direction > 0 {
+                app.count_in_bars.saturating_add(1).min(16)
+            } else {
+                app.count_in_bars.saturating_sub(1)
             };
         }
+        // Card 5 (Recording), field 0: cycle workflow.
+        (5, 0) => cycle_recording_workflow(app),
         // Card 5 (Recording), field 1: adjust record bars.
-        (5, 1) => {
-            if direction > 0 {
-                app.record_bars = app.record_bars.saturating_add(1).min(64);
-            } else if app.record_bars > 0 {
-                app.record_bars -= 1;
-            }
-        }
+        (5, 1) => adjust_record_bars(app, direction),
         _ => {}
     }
 }
 
 /// Toggle boolean fields in the project view.
 fn apply_project_toggle(app: &mut App) {
-    let card = app.project_state.selected_card;
-    let field = app.project_state.selected_field;
-
-    match (card, field) {
+    match (
+        app.project_state.selected_card,
+        app.project_state.selected_field,
+    ) {
         // Card 2 (Count-In), field 0: toggle count-in enabled.
-        (2, 0) => {
-            if app.count_in_bars > 0 {
-                app.count_in_bars = 0;
-            } else {
-                app.count_in_bars = 1;
-            }
-        }
+        (2, 0) => app.count_in_bars = u8::from(app.count_in_bars == 0),
         // Card 3 (Metronome), field 0: toggle metronome.
-        (3, 0) => {
-            let _ = app
-                .engine
-                .send_command(EngineCommand::Transport(TransportCommand::ToggleMetronome));
-        }
+        (3, 0) => toggle_metronome(app),
         // Card 4 (Loop), field 0: toggle loop.
-        (4, 0) => {
-            if app.display.transport.loop_enabled {
-                let _ = app
-                    .engine
-                    .send_command(EngineCommand::Transport(TransportCommand::SetLoop(None)));
-            } else {
-                let _ =
-                    app.engine
-                        .send_command(EngineCommand::Transport(TransportCommand::SetLoop(Some((
-                            0,
-                            u64::MAX / 2,
-                        )))));
-            }
-        }
+        (4, 0) => toggle_loop(app),
         _ => {}
     }
 }
@@ -1576,32 +1503,18 @@ fn apply_project_toggle(app: &mut App) {
 mod tests {
     use super::*;
 
-    use crossbeam_channel::unbounded;
     use crossterm::event::KeyModifiers;
-    use kazoo_core::engine::{DisplayState, EngineHandle};
-    use ringbuf::HeapRb;
-    use ringbuf::traits::Split;
 
-    /// Create an [`EngineHandle`] backed by real channels but no audio threads.
-    fn test_engine_handle() -> EngineHandle {
-        let (cmd_tx, _cmd_rx) = unbounded();
-        let rb = HeapRb::<DisplayState>::new(4);
-        let (_prod, cons) = rb.split();
-        EngineHandle::new(cmd_tx, cons, 44_100, 256)
+    use crate::test_support::TestApp;
+
+    /// Create a test app with no tracks.
+    fn test_app() -> TestApp {
+        TestApp::empty()
     }
 
-    /// Create a test [`App`] instance with no tracks.
-    fn test_app() -> App {
-        App::new_empty(test_engine_handle())
-    }
-
-    /// Create a test [`App`] with some tracks pre-populated.
-    fn test_app_with_tracks(count: usize) -> App {
-        let mut app = test_app();
-        for i in 0..count {
-            app.add_track(format!("{}", i + 1), SynthesisMode::PitchTracked);
-        }
-        app
+    /// Create a test app with some tracks pre-populated.
+    fn test_app_with_tracks(count: usize) -> TestApp {
+        TestApp::with_tracks(count)
     }
 
     /// Build a [`KeyEvent`] for a given character (no modifiers).
@@ -2435,7 +2348,8 @@ mod tests {
         app.focused_panel = FocusedPanel::Timeline;
         let initial_zoom = app.tracking_state.timeline_zoom;
         handle_key_event(&mut app, char_key('-'));
-        assert!((app.tracking_state.timeline_zoom - initial_zoom * 2.0).abs() < f64::EPSILON);
+        let expected = initial_zoom * 2.0;
+        assert!((app.tracking_state.timeline_zoom - expected).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -2862,12 +2776,7 @@ mod tests {
                 track_id: 0,
                 track_name: "1".into(),
                 clips: vec![snapshot],
-                armed: false,
-                muted: false,
-                soloed: false,
-                is_recording_clip: false,
-                recording_start: 0,
-                recording_length: 0,
+                recording: None,
             }],
             total_length: 45100,
         };
@@ -2905,12 +2814,7 @@ mod tests {
                 track_id: app.tracks[0].id.0,
                 track_name: "1".into(),
                 clips: vec![clip_a, clip_b],
-                armed: false,
-                muted: false,
-                soloed: false,
-                is_recording_clip: false,
-                recording_start: 0,
-                recording_length: 0,
+                recording: None,
             }],
             total_length: 3000,
         };
@@ -2954,12 +2858,7 @@ mod tests {
                 track_id: app.tracks[0].id.0,
                 track_name: "1".into(),
                 clips: vec![clip_a, clip_b],
-                armed: false,
-                muted: false,
-                soloed: false,
-                is_recording_clip: false,
-                recording_start: 0,
-                recording_length: 0,
+                recording: None,
             }],
             total_length: 1500,
         };
@@ -3185,8 +3084,12 @@ mod tests {
     fn add_effect_dispatches_without_panic() {
         let mut app = test_app_with_tracks(1);
         apply_action(&mut app, KeyAction::AddEffect);
-        assert_eq!(app.tracks[0].effect_names.len(), 1);
-        assert!(!app.tracks[0].effect_bypassed.is_empty());
+        assert_eq!(app.tracks[0].effects.len(), 1);
+        assert!(!app.tracks[0].effects[0].bypassed);
+        assert!(
+            !app.tracks[0].effects[0].param_infos.is_empty(),
+            "effect parameters must be captured for display and editing"
+        );
     }
 
     #[test]
@@ -3195,8 +3098,7 @@ mod tests {
         apply_action(&mut app, KeyAction::AddEffect);
         apply_action(&mut app, KeyAction::AddEffect);
         apply_action(&mut app, KeyAction::AddEffect);
-        assert_eq!(app.tracks[0].effect_names.len(), 3);
-        assert_eq!(app.tracks[0].effect_bypassed.len(), 3);
+        assert_eq!(app.tracks[0].effects.len(), 3);
     }
 
     #[test]
@@ -3209,19 +3111,21 @@ mod tests {
         app.synth_state.selected_effect = 2;
 
         // Remove it — selection should clamp.
-        app.remove_effect(app.selected_track, 2);
-        assert_eq!(app.tracks[0].effect_names.len(), 2);
+        let track = app.selected_track;
+        app.remove_effect(track, 2);
+        assert_eq!(app.tracks[0].effects.len(), 2);
         assert!(app.synth_state.selected_effect <= 1);
     }
 
     #[test]
     fn remove_effect_on_empty_chain_is_noop() {
         let mut app = test_app_with_tracks(1);
-        assert!(app.tracks[0].effect_names.is_empty());
+        assert!(app.tracks[0].effects.is_empty());
 
         // Should not panic.
-        app.remove_effect(app.selected_track, 0);
-        assert!(app.tracks[0].effect_names.is_empty());
+        let track = app.selected_track;
+        app.remove_effect(track, 0);
+        assert!(app.tracks[0].effects.is_empty());
     }
 
     #[test]
@@ -3252,15 +3156,13 @@ mod tests {
     fn add_remove_add_effect_maintains_consistency() {
         let mut app = test_app_with_tracks(1);
         apply_action(&mut app, KeyAction::AddEffect);
-        assert_eq!(app.tracks[0].effect_names.len(), 1);
+        assert_eq!(app.tracks[0].effects.len(), 1);
 
         app.remove_effect(0, 0);
-        assert!(app.tracks[0].effect_names.is_empty());
-        assert!(app.tracks[0].effect_bypassed.is_empty());
+        assert!(app.tracks[0].effects.is_empty());
 
         apply_action(&mut app, KeyAction::AddEffect);
-        assert_eq!(app.tracks[0].effect_names.len(), 1);
-        assert_eq!(app.tracks[0].effect_bypassed.len(), 1);
+        assert_eq!(app.tracks[0].effects.len(), 1);
     }
 
     #[test]
@@ -3270,9 +3172,9 @@ mod tests {
         apply_action(&mut app, KeyAction::AddEffect);
 
         // Only track 0 should have an effect.
-        assert_eq!(app.tracks[0].effect_names.len(), 1);
-        assert!(app.tracks[1].effect_names.is_empty());
-        assert!(app.tracks[2].effect_names.is_empty());
+        assert_eq!(app.tracks[0].effects.len(), 1);
+        assert!(app.tracks[1].effects.is_empty());
+        assert!(app.tracks[2].effects.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -3840,7 +3742,8 @@ mod tests {
         let initial = app.tracking_state.timeline_zoom;
 
         apply_action(&mut app, KeyAction::TimelineZoomOut);
-        assert!((app.tracking_state.timeline_zoom - initial * 2.0).abs() < f64::EPSILON);
+        let expected = initial * 2.0;
+        assert!((app.tracking_state.timeline_zoom - expected).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -3915,12 +3818,298 @@ mod tests {
         assert_eq!(app.synth_state.selected_param, 0);
     }
 
-    #[test]
-    fn select_track_by_index_out_of_bounds_is_noop() {
-        let mut app = test_app_with_tracks(2);
-        app.selected_track = 0;
+    // -----------------------------------------------------------------------
+    // Error reporting and engine command outcomes
+    // -----------------------------------------------------------------------
 
-        apply_action(&mut app, KeyAction::SelectTrack(99));
-        assert_eq!(app.selected_track, 0); // Unchanged.
+    use crate::status::StatusLevel;
+
+    fn visible_status(app: &App) -> Option<(StatusLevel, String)> {
+        app.status
+            .visible(std::time::Instant::now())
+            .map(|m| (m.level, m.text.clone()))
+    }
+
+    #[test]
+    fn play_with_engine_down_reports_error() {
+        let mut app = test_app();
+        app.disconnect_engine();
+        apply_action(&mut app, KeyAction::Play);
+        assert_eq!(
+            visible_status(&app),
+            Some((StatusLevel::Error, "Play failed: Engine not running".into()))
+        );
+    }
+
+    #[test]
+    fn stop_sends_stop_command() {
+        let mut app = test_app();
+        apply_action(&mut app, KeyAction::Stop);
+        let commands = app.take_commands();
+        assert!(matches!(
+            commands.as_slice(),
+            [EngineCommand::Transport(TransportCommand::Stop)]
+        ));
+        assert!(visible_status(&app).is_none());
+    }
+
+    #[test]
+    fn record_with_count_in_sends_workflow_then_record() {
+        let mut app = test_app();
+        apply_action(&mut app, KeyAction::RecordWithCountIn);
+        let commands = app.take_commands();
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(
+            commands[0],
+            EngineCommand::Transport(TransportCommand::SetRecordingWorkflow(_))
+        ));
+        assert!(matches!(
+            commands[1],
+            EngineCommand::Transport(TransportCommand::RecordWithCountIn)
+        ));
+    }
+
+    #[test]
+    fn toggle_metronome_with_engine_down_reports_error() {
+        let mut app = test_app();
+        app.disconnect_engine();
+        apply_action(&mut app, KeyAction::ToggleMetronome);
+        let (level, text) = visible_status(&app).unwrap();
+        assert_eq!(level, StatusLevel::Error);
+        assert!(text.starts_with("Toggle metronome failed"), "{text}");
+    }
+
+    #[test]
+    fn add_effect_without_track_reports_why() {
+        let mut app = test_app();
+        apply_action(&mut app, KeyAction::AddEffect);
+        let (level, text) = visible_status(&app).unwrap();
+        assert_eq!(level, StatusLevel::Error);
+        assert!(text.contains("No track selected"), "{text}");
+    }
+
+    /// An app with one track carrying one low-pass filter, with the filter
+    /// selected in the sidebar.
+    fn app_with_selected_filter() -> TestApp {
+        let mut app = test_app_with_tracks(1);
+        apply_action(&mut app, KeyAction::AddEffect);
+        app.synth_state.synth_selected = false;
+        app.synth_state.selected_effect = 0;
+        app.synth_state.selected_param = 0;
+        app.take_commands();
+        app
+    }
+
+    #[test]
+    fn increase_effect_param_steps_from_current_value() {
+        let mut app = app_with_selected_filter();
+        let info = app.tracks[0].effects[0].param_infos[0];
+        let before = app.tracks[0].effects[0].param_values[0];
+
+        apply_action(&mut app, KeyAction::IncreaseParam);
+
+        let expected = stepped_param_value(&info, before, 1.0);
+        assert!(expected > before);
+        let commands = app.take_commands();
+        match commands.as_slice() {
+            [
+                EngineCommand::SetEffectParameter {
+                    effect_index: 0,
+                    param_index: 0,
+                    value,
+                    ..
+                },
+            ] => assert!((value - expected).abs() < f32::EPSILON),
+            other => panic!("unexpected commands: {other:?}"),
+        }
+        assert!((app.tracks[0].effects[0].param_values[0] - expected).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn effect_param_step_with_engine_down_keeps_value() {
+        let mut app = app_with_selected_filter();
+        let before = app.tracks[0].effects[0].param_values[0];
+        app.disconnect_engine();
+        apply_action(&mut app, KeyAction::DecreaseParam);
+        assert!((app.tracks[0].effects[0].param_values[0] - before).abs() < f32::EPSILON);
+        assert_eq!(visible_status(&app).unwrap().0, StatusLevel::Error);
+    }
+
+    #[test]
+    fn effect_param_navigation_wraps_within_effect() {
+        let mut app = app_with_selected_filter();
+        let count = app.tracks[0].effects[0].param_infos.len();
+        for _ in 0..count {
+            apply_action(&mut app, KeyAction::NextParam);
+        }
+        assert_eq!(app.synth_state.selected_param, 0);
+        apply_action(&mut app, KeyAction::PrevParam);
+        assert_eq!(app.synth_state.selected_param, count - 1);
+    }
+
+    #[test]
+    fn confirm_effect_param_edit_clamps_and_reports() {
+        let mut app = app_with_selected_filter();
+        let max = app.tracks[0].effects[0].param_infos[0].max;
+        app.input_mode = InputMode::ParameterEdit;
+        app.param_edit_buffer = "99999999".into();
+
+        apply_action(&mut app, KeyAction::ConfirmParamEdit);
+
+        assert!((app.tracks[0].effects[0].param_values[0] - max).abs() < f32::EPSILON);
+        let (level, text) = visible_status(&app).unwrap();
+        assert_eq!(level, StatusLevel::Info);
+        assert!(text.contains("clamped"), "{text}");
+    }
+
+    #[test]
+    fn confirm_invalid_number_reports_and_sends_nothing() {
+        let mut app = test_app_with_tracks(1);
+        app.take_commands();
+        app.input_mode = InputMode::ParameterEdit;
+        app.param_edit_buffer = "1.2.3".into();
+
+        apply_action(&mut app, KeyAction::ConfirmParamEdit);
+
+        assert!(app.take_commands().is_empty());
+        let (level, text) = visible_status(&app).unwrap();
+        assert_eq!(level, StatusLevel::Error);
+        assert!(text.contains("is not a number"), "{text}");
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn confirm_synth_param_edit_sends_clamped_value() {
+        let mut app = test_app_with_tracks(1);
+        app.take_commands();
+        app.synth_state.synth_selected = true;
+        app.synth_state.selected_synth_param = 0;
+        let info = app.tracks[0].synth_param_infos[0];
+        app.input_mode = InputMode::ParameterEdit;
+        app.param_edit_buffer = format!("{}", info.max + 1000.0);
+
+        apply_action(&mut app, KeyAction::ConfirmParamEdit);
+
+        match app.take_commands().as_slice() {
+            [
+                EngineCommand::SetSynthLayerParameter {
+                    layer_index: 0,
+                    param_index: 0,
+                    value,
+                    ..
+                },
+            ] => assert!((value - info.max).abs() < f32::EPSILON),
+            other => panic!("unexpected commands: {other:?}"),
+        }
+        assert!((app.tracks[0].synth_param_values[0] - info.max).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn enter_param_edit_without_parameter_is_refused() {
+        let mut app = test_app();
+        apply_action(&mut app, KeyAction::EnterParamEdit);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(visible_status(&app).unwrap().0, StatusLevel::Error);
+    }
+
+    #[test]
+    fn stepped_param_value_snaps_enum_params() {
+        let info = kazoo_core::ParamInfo {
+            name: "Wave",
+            min: 0.0,
+            max: 3.0,
+            default: 0.0,
+            unit: "",
+        };
+        assert!((stepped_param_value(&info, 1.0, 1.0) - 2.0).abs() < f32::EPSILON);
+        assert!((stepped_param_value(&info, 3.0, 1.0) - 3.0).abs() < f32::EPSILON);
+        assert!((stepped_param_value(&info, 0.0, -1.0) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn stepped_param_value_rejects_nan_current() {
+        let info = kazoo_core::ParamInfo {
+            name: "Cutoff",
+            min: 20.0,
+            max: 20_000.0,
+            default: 1_000.0,
+            unit: "Hz",
+        };
+        let value = stepped_param_value(&info, f32::NAN, 1.0);
+        assert!(value.is_finite());
+        assert!((20.0..=20_000.0).contains(&value));
+    }
+
+    #[test]
+    fn stale_clip_selection_is_cleared_and_reported() {
+        let mut app = test_app_with_tracks(1);
+        app.take_commands();
+        app.tracking_state.selected_clip = Some(ClipId(42));
+
+        apply_action(&mut app, KeyAction::MoveClipRight);
+
+        assert!(app.tracking_state.selected_clip.is_none());
+        assert!(app.take_commands().is_empty());
+        let (_, text) = visible_status(&app).unwrap();
+        assert!(text.contains("no longer exists"), "{text}");
+    }
+
+    #[test]
+    fn clip_action_without_selection_reports_why() {
+        let mut app = test_app_with_tracks(1);
+        apply_action(&mut app, KeyAction::SplitClip);
+        let (_, text) = visible_status(&app).unwrap();
+        assert!(text.contains("No clip selected"), "{text}");
+    }
+
+    #[test]
+    fn delete_clip_with_engine_down_keeps_selection() {
+        let mut app = test_app_with_tracks(1);
+        app.tracking_state.selected_clip = Some(ClipId(7));
+        app.disconnect_engine();
+        apply_action(&mut app, KeyAction::DeleteClip);
+        assert_eq!(app.tracking_state.selected_clip, Some(ClipId(7)));
+        assert_eq!(visible_status(&app).unwrap().0, StatusLevel::Error);
+    }
+
+    #[test]
+    fn loading_missing_file_reports_error() {
+        let mut app = test_app_with_tracks(1);
+        let missing = std::env::temp_dir().join(format!(
+            "kazoo-tui-missing-{}-{:?}.wav",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        app.mode = AppMode::FileBrowser {
+            directory: std::env::temp_dir(),
+            entries: vec![crate::app::FileBrowserEntry {
+                name: "missing.wav".into(),
+                path: missing,
+                is_dir: false,
+            }],
+            selected: 0,
+        };
+
+        apply_action(&mut app, KeyAction::FileBrowserEnter);
+
+        assert_eq!(app.mode, AppMode::Normal);
+        let (level, text) = visible_status(&app).unwrap();
+        assert_eq!(level, StatusLevel::Error);
+        assert!(text.starts_with("Load kazoo-tui-missing-"), "{text}");
+    }
+
+    #[test]
+    fn beat_samples_rejects_non_finite_bpm() {
+        assert_eq!(beat_samples(f64::NAN, 44_100), 0);
+        assert_eq!(beat_samples(f64::INFINITY, 44_100), 0);
+        assert_eq!(beat_samples(120.0, 44_100), 22_050);
+    }
+
+    #[test]
+    fn wrap_index_wraps_both_ways() {
+        assert_eq!(wrap_index(0, 3, true), 1);
+        assert_eq!(wrap_index(2, 3, true), 0);
+        assert_eq!(wrap_index(0, 3, false), 2);
+        assert_eq!(wrap_index(1, 3, false), 0);
     }
 }

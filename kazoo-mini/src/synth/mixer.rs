@@ -113,7 +113,7 @@ mod tests {
         for _ in 0..10000 {
             let s = ng.tick();
             assert!(
-                s.is_finite() && s >= -1.1 && s <= 1.1,
+                s.is_finite() && (-1.1..=1.1).contains(&s),
                 "noise out of range: {s}"
             );
         }

@@ -1,12 +1,20 @@
-//! Hub discovery: socket path resolution and PID file management.
+//! Hub discovery: where the hub's socket is, and claiming it safely.
 //!
-//! The hub writes a PID file containing the socket path and process ID.
-//! Instruments read this file to discover the hub. If the hub is not
-//! running, instruments fall back to standalone mode.
+//! The hub writes a PID file naming its socket and process. Instruments read
+//! it to find the socket, then simply connect: a hub that is not running
+//! refuses the connection, so connecting is the liveness check. No process
+//! is spawned and nothing is deleted on the instrument side.
+//!
+//! A starting hub claims the socket with [`claim_socket`]: it binds, and only
+//! if the path is taken does it probe it. A socket something is listening on
+//! belongs to a running hub and is left alone; a socket nobody answers is
+//! left over from a hub that died, and is replaced.
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Default socket filename.
 const SOCKET_NAME: &str = "hub.sock";
@@ -16,6 +24,10 @@ const PID_NAME: &str = "hub.pid";
 
 /// Subdirectory under the runtime directory.
 const KAZOO_DIR: &str = "kazoo";
+
+/// Numbers each PID file write's temporary file, so two hubs starting in
+/// one process cannot rename each other's file away.
+static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Path resolution
@@ -45,80 +57,155 @@ pub fn pid_file_path() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// PID file management
+// PID file
 // ---------------------------------------------------------------------------
 
-/// Write a PID file containing the socket path and current process ID.
+/// What a hub's PID file says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HubRecord {
+    /// The hub's socket.
+    pub socket: PathBuf,
+    /// The hub's process id.
+    pub pid: u32,
+}
+
+/// Write the PID file for a hub serving on `socket_path`, as this process.
 ///
-/// Creates the runtime directory if it does not exist.
-pub fn write_pid_file(socket_path: &std::path::Path) -> io::Result<()> {
+/// The file is written to a temporary name and renamed into place, so a
+/// reader never sees a half-written file.
+///
+/// # Errors
+///
+/// Fails if the runtime directory or file cannot be written.
+pub fn write_pid_file(socket_path: &Path) -> io::Result<()> {
     let dir = runtime_dir();
     fs::create_dir_all(&dir)?;
-
-    let pid = std::process::id();
-    let contents = format!("{}\n{pid}\n", socket_path.display());
-    fs::write(pid_file_path(), contents)
+    let contents = format!("{}\n{}\n", socket_path.display(), std::process::id());
+    let temporary = dir.join(format!(
+        "{PID_NAME}.{}.{}",
+        std::process::id(),
+        NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&temporary, contents)?;
+    fs::rename(&temporary, pid_file_path())
 }
 
-/// Read the PID file and return `(socket_path, pid)`.
+/// Read the hub's PID file: `Ok(None)` if there is none.
 ///
-/// Returns `None` if the file does not exist or is malformed.
-#[must_use]
-pub fn read_pid_file() -> Option<(PathBuf, u32)> {
-    let contents = fs::read_to_string(pid_file_path()).ok()?;
-    let mut lines = contents.lines();
-    let socket_path = PathBuf::from(lines.next()?);
-    let pid: u32 = lines.next()?.parse().ok()?;
-    Some((socket_path, pid))
-}
-
-/// Remove the PID file. Best-effort; ignores errors.
-pub fn remove_pid_file() {
-    let _ = fs::remove_file(pid_file_path());
-}
-
-/// Remove the socket file. Best-effort; ignores errors.
-pub fn remove_socket(path: &std::path::Path) {
-    let _ = fs::remove_file(path);
-}
-
-/// Check whether the hub appears to be running.
+/// # Errors
 ///
-/// Reads the PID file and checks whether a process with that PID exists.
-/// This is a heuristic — the PID could have been reused by an unrelated
-/// process — but it is good enough for local discovery.
-#[must_use]
-pub fn hub_is_running() -> bool {
-    let Some((_, pid)) = read_pid_file() else {
-        return false;
+/// Fails if the file exists but cannot be read, or is malformed.
+pub fn read_pid_file() -> io::Result<Option<HubRecord>> {
+    let contents = match fs::read_to_string(pid_file_path()) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
     };
-    // On Unix, sending signal 0 checks process existence without
-    // actually delivering a signal. We use std::process::Command
-    // with `kill -0` to avoid unsafe.
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    parse_pid_file(&contents).map(Some)
 }
 
-/// Return the socket path from the PID file if the hub is running.
-#[must_use]
-pub fn discover_hub() -> Option<PathBuf> {
-    let (socket_path, pid) = read_pid_file()?;
-    let running = std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if running {
-        Some(socket_path)
-    } else {
-        // Stale PID file — clean it up.
-        remove_pid_file();
-        None
+fn parse_pid_file(contents: &str) -> io::Result<HubRecord> {
+    let malformed = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("malformed hub PID file {}", pid_file_path().display()),
+        )
+    };
+    let mut lines = contents.lines();
+    let socket = lines
+        .next()
+        .filter(|line| !line.is_empty())
+        .ok_or_else(malformed)?;
+    let pid = lines
+        .next()
+        .ok_or_else(malformed)?
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| malformed())?;
+    Ok(HubRecord {
+        socket: PathBuf::from(socket),
+        pid,
+    })
+}
+
+/// Remove the PID file if it still names this process; another hub's file
+/// is left alone. Returns whether a file was removed.
+///
+/// # Errors
+///
+/// Fails if the file cannot be read or removed.
+pub fn remove_own_pid_file() -> io::Result<bool> {
+    match read_pid_file()? {
+        Some(record) if record.pid == std::process::id() => {
+            fs::remove_file(pid_file_path())?;
+            Ok(true)
+        }
+        Some(_) | None => Ok(false),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Finding and claiming the hub socket
+// ---------------------------------------------------------------------------
+
+/// The socket an instrument should connect to: the one the hub advertises in
+/// its PID file, or the default path when there is no PID file.
+///
+/// # Errors
+///
+/// Fails if the PID file exists but cannot be read or is malformed.
+pub fn hub_socket() -> io::Result<PathBuf> {
+    Ok(read_pid_file()?.map_or_else(default_socket_path, |record| record.socket))
+}
+
+/// Whether something is accepting connections on `socket`.
+///
+/// # Errors
+///
+/// Fails for errors other than the socket being absent or refusing, such as
+/// a permissions problem.
+pub fn hub_listening(socket: &Path) -> io::Result<bool> {
+    match UnixStream::connect(socket) {
+        Ok(_) => Ok(true),
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Bind `socket` for a new hub.
+///
+/// A socket that a running hub is listening on is never taken: that fails
+/// with [`io::ErrorKind::AddrInUse`]. A leftover socket file that nothing
+/// answers is removed and bound afresh.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::AddrInUse`] if a hub is already serving there, or the
+/// error from creating the directory, probing, removing or binding.
+pub fn claim_socket(socket: &Path) -> io::Result<UnixListener> {
+    if let Some(parent) = socket.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match UnixListener::bind(socket) {
+        Ok(listener) => Ok(listener),
+        Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
+            if hub_listening(socket)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!("a kazoo hub is already serving on {}", socket.display()),
+                ));
+            }
+            fs::remove_file(socket)?;
+            UnixListener::bind(socket)
+        }
+        Err(err) => Err(err),
     }
 }
 
@@ -130,18 +217,16 @@ pub fn discover_hub() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    fn temp_socket(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("kzd-{name}-{}.sock", std::process::id()))
+    }
+
     #[test]
     fn default_socket_path_contains_kazoo() {
         let path = default_socket_path();
         let path_str = path.to_string_lossy();
-        assert!(
-            path_str.contains("kazoo"),
-            "socket path should contain 'kazoo': {path_str}"
-        );
-        assert!(
-            path_str.ends_with("hub.sock"),
-            "socket path should end with hub.sock: {path_str}"
-        );
+        assert!(path_str.contains("kazoo"), "{path_str}");
+        assert!(path_str.ends_with("hub.sock"), "{path_str}");
     }
 
     #[test]
@@ -154,7 +239,46 @@ mod tests {
 
     #[test]
     fn runtime_dir_is_absolute() {
-        let dir = runtime_dir();
-        assert!(dir.is_absolute());
+        assert!(runtime_dir().is_absolute());
+    }
+
+    #[test]
+    fn pid_files_parse_and_malformed_ones_are_errors() {
+        assert_eq!(
+            parse_pid_file("/tmp/kazoo/hub.sock\n4242\n").unwrap(),
+            HubRecord {
+                socket: PathBuf::from("/tmp/kazoo/hub.sock"),
+                pid: 4242
+            }
+        );
+        assert!(parse_pid_file("").is_err());
+        assert!(parse_pid_file("/tmp/kazoo/hub.sock\nnot-a-pid\n").is_err());
+        assert!(parse_pid_file("/tmp/kazoo/hub.sock\n").is_err());
+    }
+
+    #[test]
+    fn a_live_socket_is_never_claimed_but_a_stale_one_is() {
+        let path = temp_socket("claim");
+        if path.exists() {
+            fs::remove_file(&path).unwrap();
+        }
+        let first = claim_socket(&path).unwrap();
+        assert!(hub_listening(&path).unwrap());
+        let refused = claim_socket(&path).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::AddrInUse);
+
+        // The first hub dies without cleaning up: its file stays behind.
+        drop(first);
+        assert!(path.exists());
+        assert!(!hub_listening(&path).unwrap());
+        let second = claim_socket(&path).unwrap();
+        assert!(hub_listening(&path).unwrap());
+        drop(second);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn nothing_listens_where_there_is_no_socket() {
+        assert!(!hub_listening(&temp_socket("absent")).unwrap());
     }
 }

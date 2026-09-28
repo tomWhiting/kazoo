@@ -4,7 +4,9 @@
 //! waveforms aligned to zero crossings. [`WavetableOscillator`] plays them
 //! back with phase-accurate interpolation and frame morphing.
 
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{
+    Error, ParamError, ParamInfo, ParamResult, Processor, Result, checked_param, sanitize_sample,
+};
 
 // ---------------------------------------------------------------------------
 // Wavetable
@@ -284,31 +286,30 @@ impl WavetableOscillator {
         }
     }
 
-    fn param_infos() -> [ParamInfo; Self::PARAM_COUNT] {
-        [
-            ParamInfo {
-                name: "Frequency".into(),
-                min: 20.0,
-                max: 20_000.0,
-                default: Self::DEFAULT_FREQUENCY,
-                unit: "Hz".into(),
-            },
-            ParamInfo {
-                name: "Frame Position".into(),
-                min: 0.0,
-                max: 1.0,
-                default: 0.0,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Frame Scan Rate".into(),
-                min: 0.0,
-                max: 10.0,
-                default: 0.0,
-                unit: "Hz".into(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; Self::PARAM_COUNT] = [
+        ParamInfo {
+            name: "Frequency",
+            min: 20.0,
+            max: 20_000.0,
+            default: Self::DEFAULT_FREQUENCY,
+            unit: "Hz",
+        },
+        ParamInfo {
+            name: "Frame Position",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Frame Scan Rate",
+            min: 0.0,
+            max: 10.0,
+            default: 0.0,
+            unit: "Hz",
+        },
+    ];
 }
 
 impl Processor for WavetableOscillator {
@@ -317,13 +318,11 @@ impl Processor for WavetableOscillator {
             return;
         }
 
-        // Check if we have a valid wavetable.
-        let has_wt = self.wavetable.as_ref().is_some_and(|wt| !wt.is_empty());
-
-        if !has_wt {
+        // Without a (non-empty) wavetable there is nothing to play.
+        let Some(wt) = self.wavetable.as_ref().filter(|wt| !wt.is_empty()) else {
             output.fill(0.0);
             return;
-        }
+        };
 
         let dt = self.frequency / self.sample_rate;
         let frame_dt = self.frame_scan_rate / self.sample_rate;
@@ -344,7 +343,6 @@ impl Processor for WavetableOscillator {
             }
 
             // Determine current frame indices for crossfade.
-            let wt = self.wavetable.as_ref().expect("checked above");
             let num_frames = wt.num_frames;
             let frame_pos_scaled = self.frame_position * (num_frames as f32 - 1.0).max(0.0);
             let frame_idx0 = (frame_pos_scaled.floor() as usize).min(num_frames.saturating_sub(1));
@@ -386,8 +384,7 @@ impl Processor for WavetableOscillator {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        let infos = Self::param_infos();
-        infos.get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -399,18 +396,19 @@ impl Processor for WavetableOscillator {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
 
         match index {
             Self::PARAM_FREQUENCY => self.frequency = clamped,
             Self::PARAM_FRAME_POSITION => self.frame_position = clamped,
             Self::PARAM_FRAME_SCAN_RATE => self.frame_scan_rate = clamped,
-            _ => unreachable!(),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
         Ok(())
     }
@@ -778,7 +776,7 @@ mod tests {
                 rng ^= rng << 13;
                 rng ^= rng >> 17;
                 rng ^= rng << 5;
-                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect();
         let mut output = vec![0.0_f32; 4096];

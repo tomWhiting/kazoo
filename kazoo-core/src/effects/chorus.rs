@@ -4,7 +4,7 @@
 //! buffer. Linear interpolation is used for fractional delay positions.
 //! Feedback allows self-oscillation for flanging effects.
 
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
 use std::f32::consts::PI;
 
 /// Chorus / flanger processor.
@@ -82,38 +82,37 @@ impl Chorus {
         (1.0 - frac).mul_add(s0, frac * s1)
     }
 
-    fn param_infos() -> [ParamInfo; 4] {
-        [
-            ParamInfo {
-                name: "Rate".into(),
-                min: Self::RATE_MIN,
-                max: Self::RATE_MAX,
-                default: Self::RATE_DEFAULT,
-                unit: "Hz".into(),
-            },
-            ParamInfo {
-                name: "Depth".into(),
-                min: Self::DEPTH_MIN,
-                max: Self::DEPTH_MAX,
-                default: Self::DEPTH_DEFAULT,
-                unit: "ms".into(),
-            },
-            ParamInfo {
-                name: "Mix".into(),
-                min: Self::MIX_MIN,
-                max: Self::MIX_MAX,
-                default: Self::MIX_DEFAULT,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Feedback".into(),
-                min: Self::FEEDBACK_MIN,
-                max: Self::FEEDBACK_MAX,
-                default: Self::FEEDBACK_DEFAULT,
-                unit: String::new(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; 4] = [
+        ParamInfo {
+            name: "Rate",
+            min: Self::RATE_MIN,
+            max: Self::RATE_MAX,
+            default: Self::RATE_DEFAULT,
+            unit: "Hz",
+        },
+        ParamInfo {
+            name: "Depth",
+            min: Self::DEPTH_MIN,
+            max: Self::DEPTH_MAX,
+            default: Self::DEPTH_DEFAULT,
+            unit: "ms",
+        },
+        ParamInfo {
+            name: "Mix",
+            min: Self::MIX_MIN,
+            max: Self::MIX_MAX,
+            default: Self::MIX_DEFAULT,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Feedback",
+            min: Self::FEEDBACK_MIN,
+            max: Self::FEEDBACK_MAX,
+            default: Self::FEEDBACK_DEFAULT,
+            unit: "",
+        },
+    ];
 }
 
 impl Processor for Chorus {
@@ -139,7 +138,7 @@ impl Processor for Chorus {
             let lfo = (self.lfo_phase.sin() + 1.0) * 0.5;
             self.lfo_phase += phase_inc;
             if self.lfo_phase >= 2.0 * PI {
-                self.lfo_phase -= 2.0 * PI;
+                self.lfo_phase = 2.0f32.mul_add(-PI, self.lfo_phase);
             }
 
             // Read modulated delay.
@@ -174,8 +173,7 @@ impl Processor for Chorus {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        let infos = Self::param_infos();
-        infos.get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -188,19 +186,20 @@ impl Processor for Chorus {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
 
         match index {
             Self::PARAM_RATE => self.rate_hz = clamped,
             Self::PARAM_DEPTH => self.depth_ms = clamped,
             Self::PARAM_MIX => self.mix = clamped,
             Self::PARAM_FEEDBACK => self.feedback = clamped,
-            _ => unreachable!(),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
         Ok(())
     }
@@ -441,7 +440,7 @@ mod tests {
                 rng ^= rng << 13;
                 rng ^= rng >> 17;
                 rng ^= rng << 5;
-                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect();
         let mut output = vec![0.0_f32; 4096];

@@ -201,7 +201,6 @@ fn draw_channels(frame: &mut Frame, app: &mut App, area: Rect) {
 ///   Row N-3:    dB readout
 ///   Row N-2:    [S] [M] buttons
 ///   Row N-1:    [R] arm button
-#[allow(clippy::too_many_lines)]
 fn draw_channel_strip(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     let Some(track) = app.tracks.get(index) else {
         return;
@@ -282,6 +281,15 @@ fn draw_channel_strip(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         draw_vertical_meter(frame, meter_area, peak_db, rms_db);
     }
 
+    draw_strip_bottom_rows(frame, app, index, area);
+}
+
+/// Draw the bottom rows of a channel strip: dB readout, [S] [M] buttons and
+/// the [R] arm button.
+fn draw_strip_bottom_rows(frame: &mut Frame, app: &App, index: usize, area: Rect) {
+    let Some(track) = app.tracks.get(index) else {
+        return;
+    };
     // --- Bottom rows (from the bottom up) ---
     let bottom = area.y + area.height;
 
@@ -358,7 +366,6 @@ fn draw_channel_strip(frame: &mut Frame, app: &App, index: usize, area: Rect) {
 ///
 /// Includes a separator column, "MASTER" title, stereo L/R VU meters,
 /// dB readout, and clipping indicator.
-#[allow(clippy::too_many_lines)]
 fn draw_master_section(frame: &mut Frame, app: &App, area: Rect) {
     if area.width < 4 || area.height < 6 {
         return;
@@ -424,6 +431,12 @@ fn draw_master_section(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 
+    draw_master_meters(frame, app, content);
+    draw_master_readouts(frame, app, content);
+}
+
+/// Draw the stereo L/R master meters with their labels.
+fn draw_master_meters(frame: &mut Frame, app: &App, content: Rect) {
     // Meters: stereo L/R vertical bars.
     // Reserve top 3 rows (title + vol + spacer) and bottom 4 rows (readout + clip).
     let meter_top_offset = 3u16;
@@ -491,7 +504,11 @@ fn draw_master_section(frame: &mut Frame, app: &App, area: Rect) {
             );
         }
     }
+}
 
+/// Draw the master dB readouts (bottom rows) and the clipping indicator.
+/// Row N-4 is left blank as a spacer above the readouts.
+fn draw_master_readouts(frame: &mut Frame, app: &App, content: Rect) {
     // Bottom rows: dB readouts and clip indicator.
     let bottom = content.y + content.height;
 
@@ -554,8 +571,6 @@ fn draw_master_section(frame: &mut Frame, app: &App, area: Rect) {
             l_area,
         );
     }
-
-    // Row N-4: blank spacer (no rendering needed).
 }
 
 // ---------------------------------------------------------------------------
@@ -577,9 +592,7 @@ fn draw_vertical_meter(frame: &mut Frame, area: Rect, peak_db: f32, rms_db: f32)
     let peak_ratio = db_to_ratio(peak_db);
     let rms_ratio = db_to_ratio(rms_db);
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let peak_rows = (peak_ratio * height as f32).ceil() as usize;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let rms_rows = (rms_ratio * height as f32).ceil() as usize;
 
     for row in 0..height {
@@ -593,7 +606,6 @@ fn draw_vertical_meter(frame: &mut Frame, area: Rect, peak_db: f32, rms_db: f32)
         };
 
         // Determine what dB this row represents for coloring.
-        #[allow(clippy::cast_precision_loss)]
         let row_db = (MAX_DB - MIN_DB).mul_add(row_from_bottom as f32 / height as f32, MIN_DB);
 
         if row_from_bottom < rms_rows {
@@ -657,12 +669,7 @@ fn format_pan(pan: f32, width: u16) -> String {
     let display_width = (width as usize).saturating_sub(2).max(5);
     // Map pan from [-1, 1] to [0, display_width-1].
     let positions = display_width.saturating_sub(1);
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::manual_midpoint
-    )]
-    let knob_pos = (((pan + 1.0) / 2.0) * positions as f32)
+    let knob_pos = (f32::midpoint(pan, 1.0) * positions as f32)
         .round()
         .clamp(0.0, positions as f32) as usize;
 
@@ -749,7 +756,7 @@ mod tests {
 
     #[test]
     fn db_to_ratio_midpoint() {
-        let mid = (MIN_DB + MAX_DB) / 2.0;
+        let mid = f32::midpoint(MIN_DB, MAX_DB);
         assert!((db_to_ratio(mid) - 0.5).abs() < f32::EPSILON);
     }
 

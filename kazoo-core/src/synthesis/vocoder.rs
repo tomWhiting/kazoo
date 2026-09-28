@@ -7,7 +7,7 @@
 
 use crate::analysis::EnvelopeFollower;
 use crate::effects::{BiquadFilter, FilterType};
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
 
 // ---------------------------------------------------------------------------
 // Carrier mode
@@ -80,6 +80,10 @@ impl NoiseGen {
 /// Default number of filter bands.
 const DEFAULT_NUM_BANDS: usize = 16;
 
+/// Resonance of every analysis/synthesis band-pass filter: a moderate width
+/// suited to vocal formant bands.
+const BAND_Q: f32 = 4.0;
+
 /// Voice spectral envelope applied to a carrier signal.
 ///
 /// Parameters:
@@ -142,14 +146,14 @@ impl Vocoder {
 
         for &freq in &band_freqs {
             let mut mf = BiquadFilter::new(FilterType::BandPass, sr);
-            let _ = mf.set_param(0, freq);
+            mf.set_frequency(freq);
             // Q for vocal bands: moderate width.
-            let _ = mf.set_param(1, 4.0);
+            mf.set_q(BAND_Q);
             mod_filters.push(mf);
 
             let mut cf = BiquadFilter::new(FilterType::BandPass, sr);
-            let _ = cf.set_param(0, freq);
-            let _ = cf.set_param(1, 4.0);
+            cf.set_frequency(freq);
+            cf.set_q(BAND_Q);
             carrier_filters.push(cf);
 
             envelopes.push(EnvelopeFollower::new(
@@ -210,49 +214,46 @@ impl Vocoder {
     }
 
     /// Rebuild envelope followers when attack/release changes.
+    /// Apply the current attack/release times and sample rate to every band's
+    /// envelope follower in place. Never allocates, so it is safe from
+    /// `set_param` on the audio thread.
     fn rebuild_envelopes(&mut self) {
-        self.envelopes.clear();
-        for _ in 0..self.num_bands {
-            self.envelopes.push(EnvelopeFollower::new(
-                self.attack_ms,
-                self.release_ms,
-                self.sample_rate,
-            ));
+        for envelope in &mut self.envelopes {
+            envelope.set_times(self.attack_ms, self.release_ms, self.sample_rate);
         }
     }
 
-    fn param_infos() -> [ParamInfo; Self::PARAM_COUNT] {
-        [
-            ParamInfo {
-                name: "Carrier Mode".into(),
-                min: 0.0,
-                max: 3.0,
-                default: VocoderCarrierMode::InternalSaw.to_param(),
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Carrier Frequency".into(),
-                min: 20.0,
-                max: 20_000.0,
-                default: Self::DEFAULT_CARRIER_FREQ,
-                unit: "Hz".into(),
-            },
-            ParamInfo {
-                name: "Attack".into(),
-                min: 0.1,
-                max: 100.0,
-                default: Self::DEFAULT_ATTACK_MS,
-                unit: "ms".into(),
-            },
-            ParamInfo {
-                name: "Release".into(),
-                min: 1.0,
-                max: 500.0,
-                default: Self::DEFAULT_RELEASE_MS,
-                unit: "ms".into(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; Self::PARAM_COUNT] = [
+        ParamInfo {
+            name: "Carrier Mode",
+            min: 0.0,
+            max: 3.0,
+            default: VocoderCarrierMode::InternalSaw.to_param(),
+            unit: "",
+        },
+        ParamInfo {
+            name: "Carrier Frequency",
+            min: 20.0,
+            max: 20_000.0,
+            default: Self::DEFAULT_CARRIER_FREQ,
+            unit: "Hz",
+        },
+        ParamInfo {
+            name: "Attack",
+            min: 0.1,
+            max: 100.0,
+            default: Self::DEFAULT_ATTACK_MS,
+            unit: "ms",
+        },
+        ParamInfo {
+            name: "Release",
+            min: 1.0,
+            max: 500.0,
+            default: Self::DEFAULT_RELEASE_MS,
+            unit: "ms",
+        },
+    ];
 }
 
 /// Fill `dest` with sanitized samples from `src`, zero-padding if `src` is
@@ -287,22 +288,19 @@ fn compute_band_frequencies(num_bands: usize, sample_rate: f32) -> Vec<f32> {
         .collect()
 }
 
-impl Processor for Vocoder {
-    fn process(&mut self, input: &[f32], output: &mut [f32]) {
-        if output.is_empty() {
-            return;
-        }
+impl Vocoder {
+    /// Largest piece the scratch buffers (sized by `prepare`) can render.
+    fn piece_len(&self) -> usize {
+        self.mod_band_buf
+            .len()
+            .min(self.carrier_band_buf.len())
+            .min(self.carrier_block.len())
+            .max(1)
+    }
 
-        let len = output.len();
-
-        // Safety: buffers are pre-sized via prepare(). Debug-assert so tests
-        // catch mis-use without a release-mode cost.
-        debug_assert!(
-            self.mod_band_buf.len() >= len
-                && self.carrier_band_buf.len() >= len
-                && self.carrier_block.len() >= len,
-            "Vocoder::prepare() must be called with a block size >= {len}"
-        );
+    /// Render one piece no longer than [`Vocoder::piece_len`].
+    fn render_piece(&mut self, input: &[f32], output: &mut [f32]) {
+        let len = output.len().min(self.piece_len());
 
         // Generate the carrier signal for the entire block.
         if self.carrier_mode == VocoderCarrierMode::ExternalInput {
@@ -356,7 +354,7 @@ impl Processor for Vocoder {
                 .zip(&self.mod_band_buf[..len])
                 .zip(&self.carrier_band_buf[..len])
             {
-                *out += carrier * env;
+                *out = carrier.mul_add(env, *out);
             }
 
             // 5. Re-fill modulator input for the next band.
@@ -368,6 +366,24 @@ impl Processor for Vocoder {
         // Final sanitization.
         for sample in &mut output[..len] {
             *sample = sanitize_sample(*sample);
+        }
+    }
+}
+
+impl Processor for Vocoder {
+    /// Never allocates or panics: a block longer than the buffers sized by
+    /// `prepare` is rendered in pieces.
+    fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        if output.is_empty() {
+            return;
+        }
+        let piece = self.piece_len();
+        let mut start = 0;
+        while start < output.len() {
+            let end = (start + piece).min(output.len());
+            let input_piece = &input[start.min(input.len())..end.min(input.len())];
+            self.render_piece(input_piece, &mut output[start..end]);
+            start = end;
         }
     }
 
@@ -394,8 +410,7 @@ impl Processor for Vocoder {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        let infos = Self::param_infos();
-        infos.get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -408,12 +423,8 @@ impl Processor for Vocoder {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
 
         match index {
             Self::PARAM_CARRIER_MODE => {
@@ -430,7 +441,12 @@ impl Processor for Vocoder {
                 self.release_ms = clamped;
                 self.rebuild_envelopes();
             }
-            _ => unreachable!(),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
         Ok(())
     }
@@ -446,11 +462,11 @@ impl Processor for Vocoder {
         let band_freqs = compute_band_frequencies(self.num_bands, sr);
         for (i, &freq) in band_freqs.iter().enumerate() {
             self.mod_filters[i].set_sample_rate(sr);
-            let _ = self.mod_filters[i].set_param(0, freq);
-            let _ = self.mod_filters[i].set_param(1, 4.0);
+            self.mod_filters[i].set_frequency(freq);
+            self.mod_filters[i].set_q(BAND_Q);
             self.carrier_filters[i].set_sample_rate(sr);
-            let _ = self.carrier_filters[i].set_param(0, freq);
-            let _ = self.carrier_filters[i].set_param(1, 4.0);
+            self.carrier_filters[i].set_frequency(freq);
+            self.carrier_filters[i].set_q(BAND_Q);
         }
         self.rebuild_envelopes();
         self.reset();
@@ -781,7 +797,7 @@ mod tests {
                 rng ^= rng << 13;
                 rng ^= rng >> 17;
                 rng ^= rng << 5;
-                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect();
         let mut output = vec![0.0_f32; 4096];
@@ -818,5 +834,39 @@ mod tests {
                 assert!(s.is_finite() && s.abs() < 100.0);
             }
         }
+    }
+
+    #[test]
+    fn blocks_longer_than_prepared_are_rendered_in_pieces() {
+        let mut long = Vocoder::new(44_100.0);
+        long.prepare(64);
+        let buffers = (long.mod_band_buf.as_ptr(), long.mod_band_buf.len());
+        let input: Vec<f32> = (0..1000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        let mut output = vec![0.0_f32; input.len()];
+        long.process(&input, &mut output);
+        assert_eq!(
+            (long.mod_band_buf.as_ptr(), long.mod_band_buf.len()),
+            buffers,
+            "process() reallocated"
+        );
+
+        // The same audio rendered with buffers big enough for one piece.
+        let mut whole = Vocoder::new(44_100.0);
+        whole.prepare(1000);
+        let mut expected = vec![0.0_f32; input.len()];
+        whole.process(&input, &mut expected);
+        for (i, (&a, &b)) in output.iter().zip(&expected).enumerate() {
+            assert!((a - b).abs() < 1e-4, "[{i}] {a} != {b}");
+        }
+    }
+
+    #[test]
+    fn a_short_input_is_padded_with_silence_across_pieces() {
+        let mut vocoder = Vocoder::new(44_100.0);
+        vocoder.prepare(64);
+        let input = vec![0.5_f32; 100];
+        let mut output = vec![1.0_f32; 300];
+        vocoder.process(&input, &mut output);
+        assert!(output.iter().all(|s| s.is_finite()));
     }
 }

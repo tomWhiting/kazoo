@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
 use crate::app::{App, Focus};
-use crate::synth::VoiceParam;
+use kazoo_808::synth::VoiceParam;
 
 /// Voice parameter panel widget.
 pub struct ParamsWidget<'a> {
@@ -88,7 +88,6 @@ impl Widget for ParamsWidget<'_> {
 
             if bar_width > 0 && bar_start < area.x + area.width {
                 let normalized = self.app.param_normalized(self.app.selected_voice, idx);
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let filled = (normalized * f32::from(bar_width)).round() as u16;
 
                 let bar_fg = if is_selected {
@@ -112,7 +111,6 @@ impl Widget for ParamsWidget<'_> {
                 }
 
                 // Percentage value.
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let pct = (normalized * 100.0).round() as u32;
                 let pct_str = format!("{pct:>3}%");
                 let pct_style = if is_selected {

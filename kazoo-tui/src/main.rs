@@ -8,12 +8,18 @@
 mod app;
 mod input;
 mod state;
+mod status;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod ui;
 
 use color_eyre::Result;
 
 use kazoo_core::engine::EngineConfig;
+
+/// The name this synth plugs into the kazoo-mix desk under.
+const DESK_NAME: &str = "kazoo-tui";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,38 +37,25 @@ async fn main() -> Result<()> {
 
     // Start the audio engine *before* entering the alternate screen so that
     // initialisation errors (missing audio device, etc.) are printed in the
-    // user's normal terminal.
-    let mut engine = kazoo_core::engine::start(EngineConfig::default())?;
+    // user's normal terminal. The engine plugs into the kazoo-mix desk (the
+    // studio's hub) whenever one is running, and plays standalone otherwise.
+    let engine = kazoo_core::engine::start(EngineConfig {
+        desk_instrument_name: Some(DESK_NAME.to_owned()),
+        ..EngineConfig::default()
+    })?;
 
-    // Start the IPC hub server so instruments can connect. This must happen
-    // after engine start (which creates the IPC handles) but before the event
-    // loop. The server runs a background polling thread that accepts instrument
-    // connections and pipes their audio into the output callback's mixer.
-    let _ipc_server = if let Some(handles) = engine.take_ipc_handles() {
-        match kazoo_core::ipc::HubIpcServer::start(
-            engine.sample_rate(),
-            engine.buffer_size(),
-            handles.instrument_tx,
-            handles.transport_cons,
-        ) {
-            Ok(server) => {
-                eprintln!("IPC hub server started — instruments can connect");
-                Some(server)
-            }
-            Err(err) => {
-                eprintln!("IPC hub server failed to start: {err} — running without IPC");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    // Enumerate audio devices for the Audio I/O view. Done here, not inside
+    // `App`, so constructing an `App` never touches audio hardware.
+    let devices = app::AudioDevices::enumerate();
+
+    // The header shows the desk link's state, including why it could not
+    // start if so; stderr would be hidden by the alternate screen.
+    let mut app = app::App::new(engine, devices);
 
     // Enter the alternate screen and enable raw mode.
     let mut terminal = ratatui::init();
 
     // Run the application event loop.
-    let mut app = app::App::new(engine);
     let result = app.run(&mut terminal).await;
 
     // Always restore the terminal, even if the event loop errored.

@@ -1,0 +1,14 @@
+[package]
+name = "kazoo-fx"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Kazoo's effects, written from scratch: drive, time and space"
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+assert_no_alloc = "1.1.2"

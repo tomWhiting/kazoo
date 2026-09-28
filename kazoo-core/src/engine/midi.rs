@@ -7,10 +7,13 @@
 //! Received MIDI messages are parsed and converted to [`EngineCommand`]
 //! variants, then sent to the engine via the command channel.
 
+use std::sync::Arc;
+
 use crossbeam_channel::Sender;
 use midir::{MidiInput, MidiInputConnection};
 
 use super::command::EngineCommand;
+use super::stats::EngineStats;
 
 /// Name used for the midir client.
 const CLIENT_NAME: &str = "kazoo-midi";
@@ -47,12 +50,17 @@ impl std::fmt::Debug for MidiHandle {
 ///
 /// Returns `Some(MidiHandle)` if a port was found and connected, or `None`
 /// if no MIDI devices are available. MIDI messages received on the port
-/// are parsed and sent as [`EngineCommand`] variants through `command_tx`.
+/// are parsed and sent as [`EngineCommand`] variants through `command_tx`;
+/// messages that do not fit in the (bounded) command channel are counted in
+/// `stats`.
 ///
 /// This function is non-blocking — the midir callback runs on a dedicated
 /// OS thread managed by the midir/Core MIDI runtime.
 #[must_use]
-pub fn connect_first_port(command_tx: Sender<EngineCommand>) -> Option<MidiHandle> {
+pub fn connect_first_port(
+    command_tx: Sender<EngineCommand>,
+    stats: Arc<EngineStats>,
+) -> Option<MidiHandle> {
     let midi_in = match MidiInput::new(CLIENT_NAME) {
         Ok(m) => m,
         Err(e) => {
@@ -81,8 +89,14 @@ pub fn connect_first_port(command_tx: Sender<EngineCommand>) -> Option<MidiHandl
         port,
         "kazoo-midi-in",
         move |_timestamp_us, message, _data| {
-            if let Some(cmd) = parse_midi_message(message) {
-                let _ = command_tx.try_send(cmd);
+            // A disconnected channel means the engine is shutting down and
+            // this connection is about to be dropped; a full one loses the
+            // event, which is counted.
+            let Some(cmd) = parse_midi_message(message) else {
+                return;
+            };
+            if let Err(crossbeam_channel::TrySendError::Full(_)) = command_tx.try_send(cmd) {
+                stats.command_dropped();
             }
         },
         (),
@@ -103,15 +117,23 @@ pub fn connect_first_port(command_tx: Sender<EngineCommand>) -> Option<MidiHandl
 /// List all available MIDI input port names.
 ///
 /// Useful for UI display and device selection.
-#[must_use]
-pub fn list_input_ports() -> Vec<String> {
-    let Ok(midi_in) = MidiInput::new(CLIENT_NAME) else {
-        return Vec::new();
-    };
+///
+/// # Errors
+///
+/// Returns [`crate::Error::AudioDevice`] if the MIDI client cannot be
+/// created or a port's name cannot be read (e.g. the device was unplugged
+/// while enumerating).
+pub fn list_input_ports() -> crate::Result<Vec<String>> {
+    let midi_in = MidiInput::new(CLIENT_NAME)
+        .map_err(|e| crate::Error::AudioDevice(format!("MIDI client: {e}")))?;
     midi_in
         .ports()
         .iter()
-        .filter_map(|p| midi_in.port_name(p).ok())
+        .map(|p| {
+            midi_in
+                .port_name(p)
+                .map_err(|e| crate::Error::AudioDevice(format!("MIDI port name: {e}")))
+        })
         .collect()
 }
 
@@ -323,8 +345,11 @@ mod tests {
 
     #[test]
     fn list_input_ports_returns_vec() {
-        // Just verify it doesn't panic — actual ports depend on hardware.
-        let ports = list_input_ports();
-        assert!(ports.len() < 1000); // sanity check
+        // Actual ports depend on hardware (CI may have no MIDI subsystem);
+        // either outcome must be well-formed.
+        match list_input_ports() {
+            Ok(ports) => assert!(ports.len() < 1000), // sanity check
+            Err(e) => assert!(matches!(e, crate::Error::AudioDevice(_)), "{e}"),
+        }
     }
 }

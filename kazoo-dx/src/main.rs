@@ -5,14 +5,14 @@
 //! `--phrase "<notation>"`. All sound is sine-wave phase modulation computed in
 //! the cpal output callback. Nothing is sampled.
 
-mod ipc;
+mod audio;
 mod phrase;
 mod synth;
 mod ui;
 
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -25,49 +25,18 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use ipc::HubLink;
-use phrase::Phrase;
-use synth::{ALGORITHMS, FmSynth, OPERATORS, OperatorField, PATCHES, Patch, SCOPE_LEN, VOICES};
+use audio::{
+    AudioCommand, AudioEngine, AudioStats, DEFAULT_BPM, DisplaySnapshot, MAX_BLOCK_FRAMES,
+};
+use kazoo_core::ipc::link::{HubLink, LinkConfig, LinkStatus, hub_link};
+use phrase::{MAX_BPM, MIN_BPM, Phrase};
+use synth::{ALGORITHMS, OPERATORS, OperatorField, PATCHES, Patch};
 
-/// Largest block rendered in one pass. Device buffers larger than this are
-/// rendered in several passes, so every frame is always written.
-const MAX_BLOCK_FRAMES: usize = 1_024;
-/// Display snapshots per second pushed from the audio thread.
-const DISPLAY_HZ: f32 = 60.0;
 /// Without key-release reporting, a key auto-repeating is released this long
 /// after its last repeat.
 const REPEAT_HOLD: Duration = Duration::from_millis(140);
 /// Fallback OS key-repeat delay when the system setting can't be read.
 const DEFAULT_REPEAT_DELAY: Duration = Duration::from_millis(250);
-/// Default phrase tempo.
-const PHRASE_BPM: f64 = 112.0;
-
-/// UI to audio-thread messages. Every variant is `Copy`, so sending never allocates.
-#[derive(Debug, Clone, Copy)]
-enum AudioCommand {
-    NoteOn { note: u8, velocity: u8 },
-    NoteOff { note: u8 },
-    AllNotesOff,
-    SetPatch(Patch),
-    SetMaster(f32),
-    PhrasePlaying(bool),
-}
-
-/// Audio-thread to UI snapshot.
-#[derive(Debug, Clone, Copy)]
-pub struct DisplaySnapshot {
-    pub scope: [f32; SCOPE_LEN],
-    pub voices: [Option<(u8, bool)>; VOICES],
-    pub peak: f32,
-}
-
-impl DisplaySnapshot {
-    const EMPTY: Self = Self {
-        scope: [0.0; SCOPE_LEN],
-        voices: [None; VOICES],
-        peak: 0.0,
-    };
-}
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -89,7 +58,7 @@ fn main() -> color_eyre::Result<()> {
 
     // The phrase is parsed and allocated here, before the audio thread starts.
     let phrase = match &phrase_text {
-        Some(text) => Some(Phrase::parse(text, PHRASE_BPM, sample_rate).map_err(|e| {
+        Some(text) => Some(Phrase::parse(text, DEFAULT_BPM, sample_rate).map_err(|e| {
             color_eyre::eyre::eyre!(
                 "could not parse phrase at token {}: {}",
                 e.token_index + 1,
@@ -103,51 +72,131 @@ fn main() -> color_eyre::Result<()> {
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<AudioCommand>(256);
     let (display_tx, display_rx) = crossbeam_channel::bounded::<DisplaySnapshot>(2);
 
-    #[allow(clippy::cast_possible_truncation)]
-    let hub_link = HubLink::new(2, sample_rate, MAX_BLOCK_FRAMES as u32);
-    let hub_connected = hub_link.connection_flag();
-    let phrase_flag = Arc::new(AtomicBool::new(false));
+    // Plug into the kazoo-mix desk whenever it is running.
+    let (hub, hub_audio) = hub_link(LinkConfig::new(
+        "kazoo-dx",
+        2,
+        sample_rate,
+        MAX_BLOCK_FRAMES as u32,
+    ))?;
+    let stats = Arc::new(AudioStats::default());
 
-    let stream = build_audio_stream(
-        &device,
+    let mut engine = AudioEngine::new(
+        sample_rate,
+        channels,
+        cmd_rx,
+        display_tx,
+        hub_audio,
+        phrase,
+        Arc::clone(&stats),
+    );
+    let error_stats = Arc::clone(&stats);
+    let stream = device.build_output_stream(
         &config.into(),
-        AudioSetup {
-            sample_rate: sample_rate as f32,
-            channels,
-            cmd_rx,
-            display_tx,
-            hub_link,
-            phrase,
-            phrase_flag: Arc::clone(&phrase_flag),
-        },
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| engine.render(data),
+        move |err| error_stats.record_stream_error(&err),
+        None,
     )?;
     stream.play()?;
 
-    terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let release_events = terminal::supports_keyboard_enhancement().unwrap_or(false)
-        && execute!(
-            stdout,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
-        )
-        .is_ok();
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let (mut terminal, keyboard) = setup_terminal()?;
+    let release_events = matches!(keyboard, KeyReleases::Reported);
 
-    let mut app = App::new(release_events, has_phrase, hub_connected);
-    let result = run_event_loop(&mut terminal, &mut app, &cmd_tx, &display_rx, &phrase_flag);
+    let mut app = App::new(&keyboard, has_phrase, hub.status(), Arc::clone(&stats));
+    let result = run_event_loop(&mut terminal, &mut app, &hub, &cmd_tx, &display_rx);
 
     // Always restore the terminal, even if the loop failed.
-    if release_events {
-        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    }
-    let _ = terminal::disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let _ = terminal.show_cursor();
+    let restored = restore_terminal(&mut terminal, release_events);
     drop(stream);
+    drop(hub);
 
-    result
+    match (result, restored) {
+        (Ok(()), restored) => restored.map_err(Into::into),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(restore_error)) => {
+            // The loop error is the one that matters; the terminal state is
+            // still reported so the user knows why their shell looks wrong.
+            eprintln!("kazoo-dx: could not fully restore the terminal: {restore_error}");
+            Err(error)
+        }
+    }
+}
+
+/// Whether the terminal reports key releases, or why it does not.
+#[derive(Debug)]
+enum KeyReleases {
+    Reported,
+    /// The terminal has no keyboard enhancement protocol.
+    Unsupported,
+    /// Support could not be detected or enabled; the reason is shown to the user.
+    Failed(String),
+}
+
+/// Enter raw mode and the alternate screen and ask for key-release events.
+/// On failure, whatever was already changed is undone before returning.
+fn setup_terminal() -> color_eyre::Result<(Terminal<CrosstermBackend<io::Stdout>>, KeyReleases)> {
+    terminal::enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+        return Err(undo_setup(error, false, false));
+    }
+    let keyboard = match terminal::supports_keyboard_enhancement() {
+        Ok(true) => match execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+        ) {
+            Ok(()) => KeyReleases::Reported,
+            Err(error) => KeyReleases::Failed(format!("could not enable key releases: {error}")),
+        },
+        Ok(false) => KeyReleases::Unsupported,
+        Err(error) => KeyReleases::Failed(format!("could not query the keyboard: {error}")),
+    };
+    let pushed = matches!(keyboard, KeyReleases::Reported);
+    match Terminal::new(CrosstermBackend::new(stdout)) {
+        Ok(terminal) => Ok((terminal, keyboard)),
+        Err(error) => Err(undo_setup(error, true, pushed)),
+    }
+}
+
+/// Undo a partial [`setup_terminal`], attaching any cleanup failure to `error`.
+fn undo_setup(error: io::Error, alternate: bool, pushed: bool) -> color_eyre::Report {
+    let mut stdout = io::stdout();
+    let pop = if pushed {
+        execute!(stdout, PopKeyboardEnhancementFlags)
+    } else {
+        Ok(())
+    };
+    let leave = if alternate {
+        execute!(stdout, LeaveAlternateScreen)
+    } else {
+        Ok(())
+    };
+    let raw = terminal::disable_raw_mode();
+    let cleanup = pop.and(leave).and(raw);
+    let report = color_eyre::Report::new(error).wrap_err("could not set up the terminal");
+    match cleanup {
+        Ok(()) => report,
+        Err(cleanup_error) => report.wrap_err(format!(
+            "and could not restore it afterwards: {cleanup_error}"
+        )),
+    }
+}
+
+/// Undo every terminal change. Every step is attempted even if an earlier one
+/// fails; the first failure is returned.
+fn restore_terminal(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    release_events: bool,
+) -> io::Result<()> {
+    let pop = if release_events {
+        execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)
+    } else {
+        Ok(())
+    };
+    let raw = terminal::disable_raw_mode();
+    let leave = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let cursor = terminal.show_cursor();
+    pop.and(raw).and(leave).and(cursor)
 }
 
 /// Accept `--phrase "<notation>"` or `--phrase=<notation>`.
@@ -177,158 +226,6 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> color_eyre::Result<Opti
     Ok(phrase)
 }
 
-/// Everything the audio callback takes ownership of.
-struct AudioSetup {
-    sample_rate: f32,
-    channels: usize,
-    cmd_rx: crossbeam_channel::Receiver<AudioCommand>,
-    display_tx: crossbeam_channel::Sender<DisplaySnapshot>,
-    hub_link: HubLink,
-    phrase: Option<Phrase>,
-    /// Whether the phrase is looping; the hub transport can change it too.
-    phrase_flag: Arc<AtomicBool>,
-}
-
-fn build_audio_stream(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    setup: AudioSetup,
-) -> color_eyre::Result<cpal::Stream> {
-    let AudioSetup {
-        sample_rate,
-        channels,
-        cmd_rx,
-        display_tx,
-        mut hub_link,
-        mut phrase,
-        phrase_flag,
-    } = setup;
-
-    let mut synth = FmSynth::new(sample_rate);
-    let mut mono = vec![0.0_f32; MAX_BLOCK_FRAMES];
-    let mut stereo = vec![0.0_f32; MAX_BLOCK_FRAMES * 2];
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let display_interval = (sample_rate / DISPLAY_HZ).max(1.0) as usize;
-    let mut since_display = 0_usize;
-    let mut peak = 0.0_f32;
-    let mut phrase_playing = false;
-
-    let stream = device.build_output_stream(
-        config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                match cmd {
-                    AudioCommand::NoteOn { note, velocity } => synth.note_on(note, velocity),
-                    AudioCommand::NoteOff { note } => synth.note_off(note),
-                    AudioCommand::AllNotesOff => synth.all_notes_off(),
-                    AudioCommand::SetPatch(patch) => synth.set_patch(patch),
-                    AudioCommand::SetMaster(value) => synth.set_master(value),
-                    AudioCommand::PhrasePlaying(on) => {
-                        phrase_playing = on && phrase.is_some();
-                        phrase_flag.store(phrase_playing, Ordering::Release);
-                        if let Some(p) = phrase.as_mut() {
-                            p.rewind();
-                        }
-                        synth.all_notes_off();
-                    }
-                }
-            }
-
-            while let Some(msg) = hub_link.try_recv() {
-                phrase_playing =
-                    handle_hub_message(&msg, &mut synth, phrase.as_mut(), phrase_playing);
-                phrase_flag.store(phrase_playing, Ordering::Release);
-            }
-
-            for chunk in data.chunks_mut(MAX_BLOCK_FRAMES * channels) {
-                let frames = chunk.len() / channels;
-                for sample in &mut mono[..frames] {
-                    if phrase_playing {
-                        if let Some(p) = phrase.as_mut() {
-                            p.advance(&mut synth);
-                        }
-                    }
-                    *sample = synth.process();
-                    peak = peak.max(sample.abs());
-                }
-
-                if hub_link.is_connected() {
-                    for (i, &s) in mono[..frames].iter().enumerate() {
-                        stereo[i * 2] = s;
-                        stereo[i * 2 + 1] = s;
-                    }
-                    #[allow(clippy::cast_possible_truncation)]
-                    hub_link.send_audio(frames as u32, &stereo[..frames * 2]);
-                }
-
-                for (frame, &s) in chunk.chunks_mut(channels).zip(mono[..frames].iter()) {
-                    frame.fill(s);
-                }
-                // A trailing partial frame (never expected) is silenced.
-                let written = frames * channels;
-                chunk[written..].fill(0.0);
-
-                since_display += frames;
-                if since_display >= display_interval {
-                    since_display = 0;
-                    let (ring, pos) = synth.scope();
-                    let mut scope = [0.0_f32; SCOPE_LEN];
-                    let (older, newer) = ring.split_at(pos);
-                    scope[..newer.len()].copy_from_slice(newer);
-                    scope[newer.len()..].copy_from_slice(older);
-                    let _ = display_tx.try_send(DisplaySnapshot {
-                        scope,
-                        voices: synth.voice_states(),
-                        peak,
-                    });
-                    peak = 0.0;
-                }
-            }
-        },
-        |err| eprintln!("audio stream error: {err}"),
-        None,
-    )?;
-
-    Ok(stream)
-}
-
-/// Apply one hub message in the audio callback. Returns whether the phrase
-/// should be looping afterwards. Never allocates.
-fn handle_hub_message(
-    msg: &kazoo_core::ipc::client::HubMessage,
-    synth: &mut FmSynth,
-    phrase: Option<&mut Phrase>,
-    phrase_playing: bool,
-) -> bool {
-    use kazoo_core::ipc::client::HubMessage;
-    use kazoo_core::ipc::types::{NOTE_OFF, NOTE_ON, TRANSPORT_PLAYING, TRANSPORT_RECORDING};
-
-    match msg {
-        HubMessage::NoteEvent(event) => {
-            match event.event_type {
-                NOTE_ON => synth.note_on(event.note, event.velocity),
-                NOTE_OFF => synth.note_off(event.note),
-                _ => {}
-            }
-            phrase_playing
-        }
-        // The phrase follows the hub: its tempo, and its play/stop.
-        HubMessage::TransportSync(sync) => {
-            let Some(p) = phrase else {
-                return false;
-            };
-            p.set_bpm(f64::from(sync.bpm));
-            let rolling = matches!(sync.state, TRANSPORT_PLAYING | TRANSPORT_RECORDING);
-            if rolling != phrase_playing {
-                p.rewind();
-                synth.all_notes_off();
-            }
-            rolling
-        }
-        HubMessage::ParameterChange(_) | HubMessage::Shutdown => phrase_playing,
-    }
-}
-
 /// Which part of the screen the arrow keys edit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -352,8 +249,15 @@ struct HeldKey {
     sounding: bool,
 }
 
-/// UI-thread state. The flags are independent display toggles, not a state machine.
-#[allow(clippy::struct_excessive_bools)]
+/// Whether a `--phrase` was given, and whether it is looping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhraseState {
+    Absent,
+    Stopped,
+    Looping,
+}
+
+/// UI-thread state.
 #[derive(Debug)]
 pub struct App {
     pub patch: Patch,
@@ -364,11 +268,17 @@ pub struct App {
     pub velocity: u8,
     pub show_help: bool,
     pub release_events: bool,
-    pub has_phrase: bool,
-    pub phrase_playing: bool,
+    pub phrase: PhraseState,
+    /// Phrase tempo, followed from the engine (the desk can change it).
+    pub bpm: f64,
     pub display: DisplaySnapshot,
-    pub hub_connected: Arc<AtomicBool>,
+    /// The desk link, refreshed every UI frame.
+    pub link: LinkStatus,
     pub status: String,
+    /// Shared with the audio thread.
+    pub stats: Arc<AudioStats>,
+    /// UI commands dropped because the audio thread's queue was full or gone.
+    pub commands_dropped: u64,
     held: Vec<HeldKey>,
     /// The OS delay before a held key starts repeating. Used to tell a held
     /// key from a quick second tap when the terminal can't report releases.
@@ -376,11 +286,38 @@ pub struct App {
 }
 
 impl App {
-    fn new(release_events: bool, has_phrase: bool, hub_connected: Arc<AtomicBool>) -> Self {
-        let status = if release_events {
-            "Keyboard reports key release: notes hold while you hold the key.".to_owned()
+    fn new(
+        keyboard: &KeyReleases,
+        has_phrase: bool,
+        link: LinkStatus,
+        stats: Arc<AudioStats>,
+    ) -> Self {
+        let release_events = matches!(keyboard, KeyReleases::Reported);
+        // The OS repeat delay only matters when releases must be inferred.
+        let (repeat_delay, delay_note) = if release_events {
+            (DEFAULT_REPEAT_DELAY, String::new())
         } else {
-            "Terminal can't report key release: notes release automatically.".to_owned()
+            match system_repeat_delay() {
+                Ok(delay) => (delay, String::new()),
+                Err(why) => (
+                    DEFAULT_REPEAT_DELAY,
+                    format!(
+                        " Key-repeat delay unknown ({why}); assuming {} ms.",
+                        DEFAULT_REPEAT_DELAY.as_millis()
+                    ),
+                ),
+            }
+        };
+        let status_line = match keyboard {
+            KeyReleases::Reported => {
+                "Keyboard reports key release: notes hold while you hold the key.".to_owned()
+            }
+            KeyReleases::Unsupported => format!(
+                "Terminal can't report key release: notes release automatically.{delay_note}"
+            ),
+            KeyReleases::Failed(why) => {
+                format!("Key release unavailable ({why}): notes release automatically.{delay_note}")
+            }
         };
         Self {
             patch: PATCHES[0],
@@ -391,13 +328,19 @@ impl App {
             velocity: 100,
             show_help: false,
             release_events,
-            has_phrase,
-            phrase_playing: false,
+            phrase: if has_phrase {
+                PhraseState::Stopped
+            } else {
+                PhraseState::Absent
+            },
+            bpm: DEFAULT_BPM,
             display: DisplaySnapshot::EMPTY,
-            hub_connected,
-            status,
+            link,
+            status: status_line,
+            stats,
+            commands_dropped: 0,
             held: Vec::with_capacity(32),
-            repeat_delay: system_repeat_delay(),
+            repeat_delay,
         }
     }
 
@@ -410,17 +353,15 @@ impl App {
             .collect()
     }
 
-    fn send(tx: &crossbeam_channel::Sender<AudioCommand>, cmd: AudioCommand) {
-        // A full queue means the audio thread is stalled. Dropping one UI
-        // command is safer than blocking the UI; state is resent on the next edit.
-        let _ = tx.try_send(cmd);
-    }
-
     fn load_patch(&mut self, index: usize, tx: &crossbeam_channel::Sender<AudioCommand>) {
         self.patch_index = index % PATCHES.len();
         self.patch = PATCHES[self.patch_index];
         self.status = format!("Loaded patch {}: {}", self.patch_index + 1, self.patch.name);
-        Self::send(tx, AudioCommand::SetPatch(self.patch));
+        send_command(
+            &mut self.commands_dropped,
+            tx,
+            AudioCommand::SetPatch(self.patch),
+        );
     }
 
     fn adjust(&mut self, steps: f32, tx: &crossbeam_channel::Sender<AudioCommand>) {
@@ -428,10 +369,7 @@ impl App {
             Focus::Global(0) => {
                 let count = ALGORITHMS.len() as f32;
                 let next = (self.patch.algorithm as f32 + steps.signum()).rem_euclid(count);
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                {
-                    self.patch.algorithm = next as usize;
-                }
+                self.patch.algorithm = (next as usize).min(ALGORITHMS.len() - 1);
             }
             Focus::Global(1) => {
                 self.patch.feedback = steps.mul_add(0.02, self.patch.feedback).clamp(0.0, 1.0);
@@ -444,7 +382,11 @@ impl App {
             }
             Focus::Global(_) => {
                 self.master = steps.mul_add(0.02, self.master).clamp(0.0, 1.0);
-                Self::send(tx, AudioCommand::SetMaster(self.master));
+                send_command(
+                    &mut self.commands_dropped,
+                    tx,
+                    AudioCommand::SetMaster(self.master),
+                );
                 return;
             }
             Focus::Operator(op, field) => {
@@ -454,7 +396,11 @@ impl App {
                 params.set(field, value);
             }
         }
-        Self::send(tx, AudioCommand::SetPatch(self.patch));
+        send_command(
+            &mut self.commands_dropped,
+            tx,
+            AudioCommand::SetPatch(self.patch),
+        );
     }
 
     /// Move the edit cursor. The global row sits above operator rows 1 to 4.
@@ -481,7 +427,12 @@ impl App {
     fn note_for(&self, key: char) -> Option<u8> {
         let offset = piano_offset(key)?;
         let note = i16::from(self.octave + 1) * 12 + i16::from(offset);
-        u8::try_from(note).ok().filter(|n| *n <= 127)
+        // Outside the MIDI range the key simply plays nothing.
+        if (0..=127).contains(&note) {
+            Some(note as u8)
+        } else {
+            None
+        }
     }
 
     /// A key-down. With release reporting, every press is a new note. Without
@@ -507,12 +458,17 @@ impl App {
                 return;
             }
             if held.sounding {
-                Self::send(tx, AudioCommand::NoteOff { note: held.note });
+                send_command(
+                    &mut self.commands_dropped,
+                    tx,
+                    AudioCommand::NoteOff { note: held.note },
+                );
             }
             held.last = now;
             held.repeating = false;
             held.sounding = true;
-            Self::send(
+            send_command(
+                &mut self.commands_dropped,
                 tx,
                 AudioCommand::NoteOn {
                     note: held.note,
@@ -531,7 +487,11 @@ impl App {
             repeating: false,
             sounding: true,
         });
-        Self::send(tx, AudioCommand::NoteOn { note, velocity });
+        send_command(
+            &mut self.commands_dropped,
+            tx,
+            AudioCommand::NoteOn { note, velocity },
+        );
     }
 
     /// A terminal-reported auto-repeat: the key is still down.
@@ -546,7 +506,11 @@ impl App {
         if let Some(i) = self.held.iter().position(|h| h.code == key) {
             let held = self.held.swap_remove(i);
             if held.sounding {
-                Self::send(tx, AudioCommand::NoteOff { note: held.note });
+                send_command(
+                    &mut self.commands_dropped,
+                    tx,
+                    AudioCommand::NoteOff { note: held.note },
+                );
             }
         }
     }
@@ -557,11 +521,12 @@ impl App {
         }
         let now = Instant::now();
         let first_hold = self.repeat_delay * 2;
+        let dropped = &mut self.commands_dropped;
         self.held.retain_mut(|h| {
             let idle = now.duration_since(h.last);
             let limit = if h.repeating { REPEAT_HOLD } else { first_hold };
             if h.sounding && idle >= limit {
-                let _ = tx.try_send(AudioCommand::NoteOff { note: h.note });
+                send_command(dropped, tx, AudioCommand::NoteOff { note: h.note });
                 h.sounding = false;
             }
             // Forget a silent key once no repeat could still be on its way.
@@ -569,26 +534,92 @@ impl App {
         });
     }
 
+    /// Ask for the phrase to start or stop. The engine decides: plugged
+    /// into the desk it asks the desk (which starts every instrument on the
+    /// same frame), standalone it plays at once. The screen follows what the
+    /// engine then reports.
+    fn toggle_phrase(&mut self, tx: &crossbeam_channel::Sender<AudioCommand>) {
+        let (start, status) = match (self.phrase, self.link.connected) {
+            (PhraseState::Absent, _) => {
+                self.set_status("No phrase loaded. Start with --phrase \"c4/8 e4/8 g4/4\".");
+                return;
+            }
+            (PhraseState::Stopped, true) => (true, "Asking the desk to play."),
+            (PhraseState::Stopped, false) => (true, "Phrase looping."),
+            (PhraseState::Looping, true) => (false, "Asking the desk to stop."),
+            (PhraseState::Looping, false) => (false, "Phrase stopped."),
+        };
+        send_command(
+            &mut self.commands_dropped,
+            tx,
+            AudioCommand::PlayPhrase(start),
+        );
+        self.set_status(status);
+    }
+
+    /// Ask for the phrase tempo to move by `delta` BPM: the studio's tempo
+    /// when plugged into the desk, the phrase's own when not.
+    fn nudge_bpm(&mut self, delta: f64, tx: &crossbeam_channel::Sender<AudioCommand>) {
+        if self.phrase == PhraseState::Absent {
+            self.set_status("No phrase loaded: tempo keys set the phrase tempo.");
+            return;
+        }
+        let bpm = (self.bpm + delta).round().clamp(MIN_BPM, MAX_BPM);
+        send_command(&mut self.commands_dropped, tx, AudioCommand::SetBpm(bpm));
+        self.status = if self.link.connected {
+            format!("Asking the desk for {bpm:.0} BPM.")
+        } else {
+            format!("Phrase tempo {bpm:.0} BPM.")
+        };
+    }
+
     fn release_all(&mut self, tx: &crossbeam_channel::Sender<AudioCommand>) {
         self.held.clear();
-        Self::send(tx, AudioCommand::AllNotesOff);
+        send_command(&mut self.commands_dropped, tx, AudioCommand::AllNotesOff);
     }
 }
 
-/// The OS key-repeat delay. On macOS this is the `InitialKeyRepeat` setting
-/// (units of 15 ms); elsewhere, or if unset, a typical default.
-fn system_repeat_delay() -> Duration {
-    let from_macos = std::process::Command::new("defaults")
+/// Queue a command for the audio thread without ever blocking the UI. A full
+/// queue means the audio thread is stalled (a disconnected one that it has
+/// stopped); the command is dropped and counted so the footer can tell the
+/// user, who can clear any stuck note with Space once audio recovers.
+fn send_command(
+    dropped: &mut u64,
+    tx: &crossbeam_channel::Sender<AudioCommand>,
+    cmd: AudioCommand,
+) {
+    if tx.try_send(cmd).is_err() {
+        *dropped = dropped.saturating_add(1);
+    }
+}
+
+/// The OS key-repeat delay: the macOS `InitialKeyRepeat` setting. The error
+/// says why it could not be read, for the status line.
+fn system_repeat_delay() -> Result<Duration, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("not readable on this OS".to_owned());
+    }
+    let out = std::process::Command::new("defaults")
         .args(["read", "-g", "InitialKeyRepeat"])
         .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .and_then(|out| String::from_utf8(out.stdout).ok())
-        .and_then(|text| text.trim().parse::<u64>().ok())
-        .map(|ticks| Duration::from_millis(ticks.saturating_mul(15)));
-    from_macos
-        .unwrap_or(DEFAULT_REPEAT_DELAY)
-        .clamp(Duration::from_millis(100), Duration::from_secs(2))
+        .map_err(|e| format!("could not run `defaults`: {e}"))?;
+    if !out.status.success() {
+        // An unset key is the normal case on a fresh system.
+        return Err("InitialKeyRepeat is not set".to_owned());
+    }
+    let text = String::from_utf8(out.stdout)
+        .map_err(|_| "InitialKeyRepeat is not valid text".to_owned())?;
+    parse_initial_key_repeat(&text)
+}
+
+/// Parse `InitialKeyRepeat` (units of 15 ms), clamped to a sane range.
+fn parse_initial_key_repeat(text: &str) -> Result<Duration, String> {
+    let ticks = text
+        .trim()
+        .parse::<u64>()
+        .map_err(|e| format!("InitialKeyRepeat {:?} is not a number: {e}", text.trim()))?;
+    Ok(Duration::from_millis(ticks.saturating_mul(15))
+        .clamp(Duration::from_millis(100), Duration::from_secs(2)))
 }
 
 /// Tracker-style piano: the home row is white keys, the row above is black keys.
@@ -619,15 +650,23 @@ pub const fn piano_offset(key: char) -> Option<u8> {
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
+    hub: &HubLink,
     cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
     display_rx: &crossbeam_channel::Receiver<DisplaySnapshot>,
-    phrase_flag: &AtomicBool,
 ) -> color_eyre::Result<()> {
     loop {
         while let Ok(snapshot) = display_rx.try_recv() {
             app.display = snapshot;
         }
-        app.phrase_playing = phrase_flag.load(Ordering::Acquire);
+        app.bpm = app.stats.bpm();
+        if app.phrase != PhraseState::Absent {
+            app.phrase = if app.stats.phrase_playing.load(Ordering::Acquire) {
+                PhraseState::Looping
+            } else {
+                PhraseState::Stopped
+            };
+        }
+        app.link = hub.status();
         app.expire_held(cmd_tx);
         terminal.draw(|frame| ui::draw(frame, app))?;
 
@@ -712,19 +751,11 @@ fn handle_key(app: &mut App, key: KeyEvent, tx: &crossbeam_channel::Sender<Audio
             app.release_all(tx);
             app.set_status("All notes off.");
         }
-        KeyCode::Char('n' | 'N') => {
-            if app.has_phrase {
-                app.phrase_playing = !app.phrase_playing;
-                App::send(tx, AudioCommand::PhrasePlaying(app.phrase_playing));
-                app.set_status(if app.phrase_playing {
-                    "Phrase looping."
-                } else {
-                    "Phrase stopped."
-                });
-            } else {
-                app.set_status("No phrase loaded. Start with --phrase \"c4/8 e4/8 g4/4\".");
-            }
-        }
+        KeyCode::Char('n' | 'N') => app.toggle_phrase(tx),
+        KeyCode::Char('[') => app.nudge_bpm(-1.0, tx),
+        KeyCode::Char(']') => app.nudge_bpm(1.0, tx),
+        KeyCode::Char('{') => app.nudge_bpm(-10.0, tx),
+        KeyCode::Char('}') => app.nudge_bpm(10.0, tx),
         _ => {}
     }
     false
@@ -734,8 +765,25 @@ fn handle_key(app: &mut App, key: KeyEvent, tx: &crossbeam_channel::Sender<Audio
 mod tests {
     use super::*;
 
+    fn standalone() -> LinkStatus {
+        LinkStatus {
+            connected: false,
+            strip: None,
+            blocks_sent: 0,
+            blocks_dropped: 0,
+            messages_dropped: 0,
+            connections: 0,
+            last_refusal: None,
+        }
+    }
+
     fn app() -> App {
-        App::new(true, false, Arc::new(AtomicBool::new(false)))
+        App::new(
+            &KeyReleases::Reported,
+            false,
+            standalone(),
+            Arc::new(AudioStats::default()),
+        )
     }
 
     #[test]
@@ -764,7 +812,12 @@ mod tests {
     #[test]
     fn auto_release_without_key_up_events() {
         let (tx, rx) = crossbeam_channel::bounded(16);
-        let mut app = App::new(false, false, Arc::new(AtomicBool::new(false)));
+        let mut app = App::new(
+            &KeyReleases::Unsupported,
+            false,
+            standalone(),
+            Arc::new(AudioStats::default()),
+        );
         app.press_note('a', &tx);
         app.held[0].last -= app.repeat_delay * 3;
         app.expire_held(&tx);
@@ -799,84 +852,6 @@ mod tests {
         assert_eq!(app.patch.algorithm, ALGORITHMS.len() - 1);
     }
 
-    fn note_msg(event_type: u8, note: u8, velocity: u8) -> kazoo_core::ipc::client::HubMessage {
-        kazoo_core::ipc::client::HubMessage::NoteEvent(kazoo_core::ipc::types::NoteEventMsg {
-            source: [0; 16],
-            target: [0; 16],
-            event_type,
-            channel: 0,
-            note,
-            velocity,
-        })
-    }
-
-    fn transport_msg(state: u8, bpm: f32) -> kazoo_core::ipc::client::HubMessage {
-        kazoo_core::ipc::client::HubMessage::TransportSync(
-            kazoo_core::ipc::types::TransportSyncMsg {
-                state,
-                bpm,
-                position: 0,
-                timestamp: 0,
-            },
-        )
-    }
-
-    #[test]
-    fn hub_notes_play_the_synth() {
-        use kazoo_core::ipc::types::{NOTE_OFF, NOTE_ON};
-        let mut synth = FmSynth::new(48_000.0);
-        handle_hub_message(&note_msg(NOTE_ON, 64, 100), &mut synth, None, false);
-        assert!(
-            synth
-                .voice_states()
-                .iter()
-                .flatten()
-                .any(|&(n, held)| n == 64 && held)
-        );
-        handle_hub_message(&note_msg(NOTE_OFF, 64, 0), &mut synth, None, false);
-        assert!(
-            synth
-                .voice_states()
-                .iter()
-                .flatten()
-                .all(|&(_, held)| !held)
-        );
-    }
-
-    #[test]
-    fn hub_transport_starts_and_stops_phrase() {
-        use kazoo_core::ipc::types::{TRANSPORT_PAUSED, TRANSPORT_PLAYING, TRANSPORT_STOPPED};
-        let mut synth = FmSynth::new(48_000.0);
-        let mut phrase = Phrase::parse("c4/4 e4/4", 120.0, 48_000).expect("valid");
-        let playing = handle_hub_message(
-            &transport_msg(TRANSPORT_PLAYING, 140.0),
-            &mut synth,
-            Some(&mut phrase),
-            false,
-        );
-        assert!(playing);
-        let playing = handle_hub_message(
-            &transport_msg(TRANSPORT_PAUSED, 140.0),
-            &mut synth,
-            Some(&mut phrase),
-            playing,
-        );
-        assert!(!playing);
-        // Without a phrase, transport never turns looping on.
-        assert!(!handle_hub_message(
-            &transport_msg(TRANSPORT_PLAYING, 140.0),
-            &mut synth,
-            None,
-            false
-        ));
-        assert!(!handle_hub_message(
-            &transport_msg(TRANSPORT_STOPPED, 140.0),
-            &mut synth,
-            Some(&mut phrase),
-            false
-        ));
-    }
-
     #[test]
     fn editing_marks_patch_modified_and_reload_restores() {
         let (tx, _rx) = crossbeam_channel::bounded(16);
@@ -889,7 +864,12 @@ mod tests {
     }
 
     fn no_release_app() -> App {
-        let mut app = App::new(false, false, Arc::new(AtomicBool::new(false)));
+        let mut app = App::new(
+            &KeyReleases::Unsupported,
+            false,
+            standalone(),
+            Arc::new(AudioStats::default()),
+        );
         app.repeat_delay = Duration::from_millis(300);
         app
     }
@@ -935,6 +915,93 @@ mod tests {
             rx.try_iter()
                 .any(|c| matches!(c, AudioCommand::NoteOff { note: 60 }))
         );
+    }
+
+    #[test]
+    fn full_command_queue_is_counted_not_hidden() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let mut app = app();
+        app.press_note('a', &tx);
+        app.press_note('s', &tx);
+        app.release_all(&tx);
+        assert_eq!(rx.try_iter().count(), 1);
+        assert_eq!(app.commands_dropped, 2);
+    }
+
+    #[test]
+    fn disconnected_audio_thread_is_counted() {
+        let (tx, rx) = crossbeam_channel::bounded(4);
+        drop(rx);
+        let mut app = app();
+        app.load_patch(1, &tx);
+        assert_eq!(app.commands_dropped, 1);
+    }
+
+    #[test]
+    fn phrase_toggle_follows_state() {
+        let (tx, rx) = crossbeam_channel::bounded(4);
+        let mut app = app();
+        let n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(!handle_key(&mut app, n, &tx));
+        assert_eq!(app.phrase, PhraseState::Absent);
+        assert!(rx.try_recv().is_err());
+        app.phrase = PhraseState::Stopped;
+        assert!(!handle_key(&mut app, n, &tx));
+        // Asking is not playing: the engine reports what happened.
+        assert_eq!(app.phrase, PhraseState::Stopped);
+        assert_eq!(rx.try_recv(), Ok(AudioCommand::PlayPhrase(true)));
+        assert_eq!(app.status, "Phrase looping.");
+        app.phrase = PhraseState::Looping;
+        app.link.connected = true;
+        assert!(!handle_key(&mut app, n, &tx));
+        assert_eq!(rx.try_recv(), Ok(AudioCommand::PlayPhrase(false)));
+        assert_eq!(app.status, "Asking the desk to stop.");
+    }
+
+    #[test]
+    fn tempo_keys_ask_for_whole_tempos_in_range() {
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        let mut app = app();
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        assert!(!handle_key(&mut app, key(']'), &tx));
+        assert!(rx.try_recv().is_err(), "no phrase, no tempo");
+        app.phrase = PhraseState::Stopped;
+        app.bpm = 112.4;
+        assert!(!handle_key(&mut app, key(']'), &tx));
+        assert_eq!(rx.try_recv(), Ok(AudioCommand::SetBpm(113.0)));
+        app.bpm = 295.0;
+        assert!(!handle_key(&mut app, key('}'), &tx));
+        assert_eq!(rx.try_recv(), Ok(AudioCommand::SetBpm(MAX_BPM)));
+        app.bpm = MIN_BPM;
+        assert!(!handle_key(&mut app, key('{'), &tx));
+        assert_eq!(rx.try_recv(), Ok(AudioCommand::SetBpm(MIN_BPM)));
+    }
+
+    #[test]
+    fn key_repeat_setting_parses() {
+        assert_eq!(
+            parse_initial_key_repeat("15\n"),
+            Ok(Duration::from_millis(225))
+        );
+        // Clamped to a sane range.
+        assert_eq!(
+            parse_initial_key_repeat("1"),
+            Ok(Duration::from_millis(100))
+        );
+        assert_eq!(
+            parse_initial_key_repeat("100000"),
+            Ok(Duration::from_secs(2))
+        );
+        assert!(parse_initial_key_repeat("fast").is_err());
+    }
+
+    #[test]
+    fn out_of_range_notes_play_nothing() {
+        let mut app = app();
+        app.octave = 8;
+        assert_eq!(app.note_for(';'), Some(124));
+        app.octave = 9;
+        assert_eq!(app.note_for(';'), None);
     }
 
     #[test]

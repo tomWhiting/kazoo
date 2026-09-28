@@ -1,12 +1,15 @@
 //! Clip data model for timeline-based audio playback.
 //!
 //! [`AudioClip`] represents a segment of audio placed at a specific position
-//! on a track's timeline. Audio data is stored in [`ClipData`], which uses
-//! `Arc<Vec<f32>>` for zero-copy sharing when the same file is placed on
-//! multiple tracks.
+//! on a track's timeline. Audio data is stored in [`ClipData`], a single
+//! shared allocation, so cloning it (to duplicate or split a clip, or to show
+//! it on the timeline) is a reference-count bump and never copies samples.
 //!
-//! The critical hot-path method is [`AudioClip::read_into`], which sums clip
-//! samples into an output buffer without allocating.
+//! Everything the output callback does with a clip — create it from
+//! [`ClipData`], move, trim, split, duplicate and play it through
+//! [`AudioClip::read_into`] — is allocation-free. The waveform overview the
+//! timeline draws is computed off the audio thread by
+//! [`AudioClip::waveform_overview`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,12 +41,22 @@ impl std::fmt::Display for ClipId {
 /// at load time. This means the output callback never needs to resample on
 /// the fly — clip playback is a simple indexed read with gain.
 ///
-/// Uses [`Arc`] so the same audio can be placed on multiple tracks or
-/// duplicated without copying the sample data.
+/// Everything — samples, name and path — lives in one [`Arc`], so a clone
+/// is a single reference-count bump: the same audio can be placed on several
+/// tracks, duplicated or split without copying or allocating anything.
+///
+/// Dropping the last clone frees the samples, so the output callback never
+/// drops one: clips it removes are handed to the engine's reclaim thread.
 #[derive(Debug, Clone)]
 pub struct ClipData {
+    inner: Arc<ClipDataInner>,
+}
+
+/// The shared contents of a [`ClipData`].
+#[derive(Debug)]
+struct ClipDataInner {
     /// Mono samples at the engine's sample rate.
-    samples: Arc<Vec<f32>>,
+    samples: Vec<f32>,
     /// Original file path (for display/reload), if loaded from file.
     source_path: Option<PathBuf>,
     /// Original sample rate before resampling (for metadata display).
@@ -62,47 +75,62 @@ impl ClipData {
         original_sample_rate: u32,
     ) -> Self {
         Self {
-            samples: Arc::new(samples),
-            source_path,
-            original_sample_rate,
-            name,
+            inner: Arc::new(ClipDataInner {
+                samples,
+                source_path,
+                original_sample_rate,
+                name,
+            }),
         }
     }
 
     /// Number of samples (at engine sample rate).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.samples.len()
+        self.inner.samples.len()
     }
 
     /// Whether the clip data is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.samples.is_empty()
+        self.inner.samples.is_empty()
     }
 
     /// Access the underlying sample data.
     #[must_use]
     pub fn samples(&self) -> &[f32] {
-        &self.samples
+        &self.inner.samples
     }
 
     /// Human-readable name for UI display.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.name
+        &self.inner.name
     }
 
     /// Original file path, if this clip was loaded from disk.
     #[must_use]
     pub fn source_path(&self) -> Option<&Path> {
-        self.source_path.as_deref()
+        self.inner.source_path.as_deref()
     }
 
     /// The sample rate of the original file before resampling.
     #[must_use]
-    pub const fn original_sample_rate(&self) -> u32 {
-        self.original_sample_rate
+    pub fn original_sample_rate(&self) -> u32 {
+        self.inner.original_sample_rate
+    }
+
+    /// Whether `self` and `other` are clones of the same audio.
+    #[must_use]
+    pub fn shares_audio_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// How many clones of this audio exist (tests use it to see where the
+    /// last one is dropped).
+    #[cfg(test)]
+    pub(crate) fn holders(&self) -> usize {
+        Arc::strong_count(&self.inner)
     }
 }
 
@@ -120,6 +148,10 @@ impl ClipData {
 /// - **Muted**: whether the clip is skipped during playback.
 ///
 /// Overlapping clips on the same track are summed together.
+///
+/// Creating, cloning, trimming and splitting a clip never allocates (the
+/// audio is shared through [`ClipData`]), so the output callback can do all
+/// of them.
 #[derive(Debug, Clone)]
 pub struct AudioClip {
     id: ClipId,
@@ -134,25 +166,22 @@ pub struct AudioClip {
     gain: Db,
     /// Whether this clip is muted (skipped during playback).
     muted: bool,
-    /// Cached waveform overview: `(min, max)` pairs for UI rendering.
-    /// Computed once on creation, updated on trim.
-    waveform_overview: Vec<(f32, f32)>,
 }
 
 /// Maximum number of clips per track.
 pub const MAX_CLIPS_PER_TRACK: usize = 256;
 
-/// Number of min/max pairs in the waveform overview.
-const WAVEFORM_OVERVIEW_WIDTH: usize = 128;
+/// Maximum number of min/max pairs in a waveform overview.
+pub const WAVEFORM_OVERVIEW_WIDTH: usize = 128;
 
 impl AudioClip {
     /// Create a new clip at the given timeline position.
     ///
     /// The clip spans the full source data with unity gain and unmuted.
+    /// Never allocates.
     #[must_use]
     pub fn new(id: ClipId, data: ClipData, position: u64) -> Self {
         let source_end = data.len();
-        let overview = compute_waveform_overview(data.samples(), 0, source_end);
         Self {
             id,
             data,
@@ -161,7 +190,6 @@ impl AudioClip {
             source_end,
             gain: Db::UNITY,
             muted: false,
-            waveform_overview: overview,
         }
     }
 
@@ -240,10 +268,14 @@ impl AudioClip {
         self.position.saturating_add(self.effective_length() as u64)
     }
 
-    /// Cached waveform overview for UI timeline rendering.
+    /// Waveform overview of the clip's active range for UI timeline
+    /// rendering: up to [`WAVEFORM_OVERVIEW_WIDTH`] `(min, max)` pairs.
+    ///
+    /// Scans the clip's samples and allocates the result, so it is for the
+    /// UI side only, never the output callback.
     #[must_use]
-    pub fn waveform_overview(&self) -> &[(f32, f32)] {
-        &self.waveform_overview
+    pub fn waveform_overview(&self) -> Vec<(f32, f32)> {
+        waveform_overview(self.data.samples(), self.source_start, self.source_end)
     }
 
     /// Trim the start of the clip (move `source_start` forward by `samples`).
@@ -256,7 +288,6 @@ impl AudioClip {
             .source_start
             .saturating_add(samples)
             .min(self.source_end);
-        self.recompute_overview();
     }
 
     /// Trim the end of the clip (move `source_end` backward by `samples`).
@@ -267,7 +298,6 @@ impl AudioClip {
             .source_end
             .saturating_sub(samples)
             .max(self.source_start);
-        self.recompute_overview();
     }
 
     /// Split this clip at the given timeline position.
@@ -277,7 +307,7 @@ impl AudioClip {
     /// outside the clip's active range.
     ///
     /// The right half receives `new_id` as its identifier. Both halves share
-    /// the same underlying [`ClipData`] via `Arc`.
+    /// the same underlying [`ClipData`]. Never allocates.
     #[must_use]
     pub fn split_at(&mut self, split_pos: u64, new_id: ClipId) -> Option<Self> {
         if split_pos <= self.position || split_pos >= self.end_position() {
@@ -287,9 +317,6 @@ impl AudioClip {
         let offset_in_clip = (split_pos - self.position) as usize;
         let absolute_split = self.source_start + offset_in_clip;
 
-        // Build the right half.
-        let right_overview =
-            compute_waveform_overview(self.data.samples(), absolute_split, self.source_end);
         let right = Self {
             id: new_id,
             data: self.data.clone(),
@@ -298,12 +325,10 @@ impl AudioClip {
             source_end: self.source_end,
             gain: self.gain,
             muted: self.muted,
-            waveform_overview: right_overview,
         };
 
         // Trim the left half (self).
         self.source_end = absolute_split;
-        self.recompute_overview();
 
         Some(right)
     }
@@ -312,8 +337,8 @@ impl AudioClip {
     /// into `output`.
     ///
     /// This is the critical hot-path method called every audio block on the
-    /// output callback. It reads directly from the `Arc<Vec<f32>>` backing
-    /// store with no allocation.
+    /// output callback. It reads directly from the shared backing store with
+    /// no allocation.
     ///
     /// Returns the number of samples contributed.
     pub fn read_into(&self, timeline_start: u64, output: &mut [f32]) -> usize {
@@ -346,24 +371,11 @@ impl AudioClip {
             // Bounds checks are optimized away when the compiler can prove
             // the indices are in range, but we guard defensively for safety.
             if src_idx < samples.len() && dst_idx < output.len() {
-                output[dst_idx] += sanitize_sample(samples[src_idx]) * gain;
+                output[dst_idx] = sanitize_sample(samples[src_idx]).mul_add(gain, output[dst_idx]);
             }
         }
 
         count
-    }
-
-    /// Recompute the cached waveform overview after a trim or split.
-    ///
-    /// Reuses the existing `Vec` capacity to avoid allocation when the number
-    /// of overview bins has not increased.
-    fn recompute_overview(&mut self) {
-        compute_waveform_overview_into(
-            self.data.samples(),
-            self.source_start,
-            self.source_end,
-            &mut self.waveform_overview,
-        );
     }
 }
 
@@ -371,36 +383,32 @@ impl AudioClip {
 // Waveform overview
 // ---------------------------------------------------------------------------
 
-/// Compute a downsampled waveform overview as `(min, max)` pairs, writing
-/// into the provided `Vec` to reuse existing capacity.
+/// Compute a downsampled waveform overview of `samples[start..end]` as up to
+/// [`WAVEFORM_OVERVIEW_WIDTH`] `(min, max)` pairs, clamped to `[-1, 1]`.
 ///
 /// The overview is used by the TUI timeline widget to draw a mini waveform
-/// inside each clip rectangle. Pre-computed to avoid per-frame work.
-fn compute_waveform_overview_into(
-    samples: &[f32],
-    start: usize,
-    end: usize,
-    out: &mut Vec<(f32, f32)>,
-) {
-    out.clear();
+/// inside each clip rectangle. It allocates, so it is computed off the audio
+/// thread (see [`AudioClip::waveform_overview`]).
+#[must_use]
+pub fn waveform_overview(samples: &[f32], start: usize, end: usize) -> Vec<(f32, f32)> {
+    let mut out = Vec::new();
 
     let len = end.saturating_sub(start);
     if len == 0 || start >= samples.len() {
-        return;
+        return out;
     }
     let effective_end = end.min(samples.len());
     let effective_len = effective_end.saturating_sub(start);
     if effective_len == 0 {
-        return;
+        return out;
     }
 
     let num_bins = WAVEFORM_OVERVIEW_WIDTH.min(effective_len);
+    out.reserve_exact(num_bins);
     let step = effective_len as f64 / num_bins as f64;
 
     for i in 0..num_bins {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let bin_start = start + (i as f64 * step) as usize;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let bin_end = (start + ((i + 1) as f64 * step) as usize).min(effective_end);
 
         if bin_start >= effective_end {
@@ -422,17 +430,6 @@ fn compute_waveform_overview_into(
 
         out.push((min_val.clamp(-1.0, 1.0), max_val.clamp(-1.0, 1.0)));
     }
-}
-
-/// Compute a downsampled waveform overview as `(min, max)` pairs, returning
-/// a new `Vec`.
-///
-/// Convenience wrapper around [`compute_waveform_overview_into`] for use in
-/// constructors where no existing `Vec` is available.
-#[must_use]
-fn compute_waveform_overview(samples: &[f32], start: usize, end: usize) -> Vec<(f32, f32)> {
-    let mut out = Vec::new();
-    compute_waveform_overview_into(samples, start, end, &mut out);
     out
 }
 
@@ -926,7 +923,7 @@ mod tests {
         assert!(!overview.is_empty());
         assert!(overview.len() <= WAVEFORM_OVERVIEW_WIDTH);
 
-        for &(min, max) in overview {
+        for &(min, max) in &overview {
             assert!((min - 0.5).abs() < f32::EPSILON);
             assert!((max - 0.5).abs() < f32::EPSILON);
         }

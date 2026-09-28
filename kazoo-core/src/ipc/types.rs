@@ -15,18 +15,33 @@ use std::time::SystemTime;
 pub const MSG_REGISTER: u8 = 0x01;
 /// Hub -> Instrument. Registration confirmed (assigned strip index).
 pub const MSG_REGISTERED: u8 = 0x02;
+/// Hub -> Instrument. Registration refused; the payload is the reason as
+/// UTF-8 text. The hub closes the connection after sending it.
+pub const MSG_REFUSED: u8 = 0x03;
 /// Instrument -> Hub. Audio block (hot path, every buffer cycle).
 pub const MSG_AUDIO: u8 = 0x10;
 /// Hub -> Instrument. Transport state broadcast.
 pub const MSG_TRANSPORT_SYNC: u8 = 0x20;
 /// Instrument -> Hub. Transport change request.
 pub const MSG_TRANSPORT_REQUEST: u8 = 0x21;
+/// Hub -> Instrument. Where the desk is playing the instrument's stream,
+/// sent only to an instrument that renders on a timer and asked for it at
+/// registration (see [`RegisterMsg::pace_lead_frames`]).
+pub const MSG_DESK_PACE: u8 = 0x22;
 /// Routed through Hub. MIDI-style note events between instruments.
 pub const MSG_NOTE_EVENT: u8 = 0x30;
 /// Either direction. Mixer parameter update.
 pub const MSG_PARAMETER_CHANGE: u8 = 0x40;
 /// Either direction. Clean disconnect.
 pub const MSG_SHUTDOWN: u8 = 0xFF;
+
+/// Version of this protocol, sent with every registration. A hub refuses an
+/// instrument speaking another version, and says which it speaks, rather
+/// than misreading its messages.
+///
+/// Version 2: audio blocks carry their stream frame, and transport syncs
+/// carry a stream frame and song position.
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Fixed-size instrument name field in the Register message.
 pub const REGISTER_NAME_LEN: usize = 32;
@@ -43,6 +58,9 @@ pub const TRANSPORT_PLAYING: u8 = 1;
 pub const TRANSPORT_RECORDING: u8 = 2;
 /// Transport paused (position preserved).
 pub const TRANSPORT_PAUSED: u8 = 3;
+/// In a transport request: leave the play state as it is (a tempo-only
+/// request).
+pub const TRANSPORT_UNCHANGED: u8 = 0xFF;
 
 // ---------------------------------------------------------------------------
 // Note event type constants
@@ -117,11 +135,31 @@ pub struct RegisterMsg {
     pub sample_rate: u32,
     /// Instrument's buffer size in samples.
     pub buffer_size: u32,
+    /// Protocol version the instrument speaks ([`PROTOCOL_VERSION`]).
+    pub protocol: u16,
+    /// 0 for an instrument clocked by its own audio device. An instrument
+    /// that renders on a timer instead sets how many frames of lead, beyond
+    /// the usual, the desk should give its stream to cover the timer's
+    /// jitter; the desk then tells it where it is playing its stream
+    /// ([`MSG_DESK_PACE`]), so it can render in step with the desk's clock.
+    ///
+    /// It rides after the version 2 fields, so a hub that does not know it
+    /// reads the rest as before, and a registration without it reads as 0.
+    pub pace_lead_frames: u32,
 }
 
 impl RegisterMsg {
-    /// Wire size: 16 + 32 + 1 + 4 + 4 = 57 bytes.
-    pub const WIRE_SIZE: usize = 16 + REGISTER_NAME_LEN + 1 + 4 + 4;
+    /// The fewest bytes a registration has: 16 + 32 + 1 + 4 + 4 + 2 = 59,
+    /// without [`Self::pace_lead_frames`].
+    pub const WIRE_SIZE: usize = 16 + REGISTER_NAME_LEN + 1 + 4 + 4 + 2;
+
+    /// Bytes a registration has with [`Self::pace_lead_frames`]: 63. This
+    /// is what [`Self::encode`] writes.
+    pub const PACED_WIRE_SIZE: usize = Self::WIRE_SIZE + 4;
+
+    /// Bytes a version 1 registration had (no protocol field), so a hub can
+    /// tell an old instrument from a malformed one.
+    pub const V1_WIRE_SIZE: usize = 16 + REGISTER_NAME_LEN + 1 + 4 + 4;
 
     /// Create a new register message with a generated instrument ID.
     #[must_use]
@@ -137,6 +175,8 @@ impl RegisterMsg {
             channel_count,
             sample_rate,
             buffer_size,
+            protocol: PROTOCOL_VERSION,
+            pace_lead_frames: 0,
         }
     }
 
@@ -159,10 +199,14 @@ impl RegisterMsg {
         buf[off] = self.channel_count;
         buf[off + 1..off + 5].copy_from_slice(&self.sample_rate.to_le_bytes());
         buf[off + 5..off + 9].copy_from_slice(&self.buffer_size.to_le_bytes());
-        Self::WIRE_SIZE
+        buf[off + 9..off + 11].copy_from_slice(&self.protocol.to_le_bytes());
+        buf[off + 11..off + 15].copy_from_slice(&self.pace_lead_frames.to_le_bytes());
+        Self::PACED_WIRE_SIZE
     }
 
-    /// Decode from a byte buffer.
+    /// Decode from exactly the registration's payload: at least
+    /// [`Self::WIRE_SIZE`] bytes, with [`Self::pace_lead_frames`] read when
+    /// the payload carries it.
     #[must_use]
     pub fn decode(buf: &[u8]) -> Self {
         let mut instrument_id = [0u8; 16];
@@ -186,6 +230,56 @@ impl RegisterMsg {
                 buf[off + 7],
                 buf[off + 8],
             ]),
+            protocol: u16::from_le_bytes([buf[off + 9], buf[off + 10]]),
+            pace_lead_frames: match buf.get(off + 11..off + 15) {
+                Some(&[a, b, c, d]) => u32::from_le_bytes([a, b, c, d]),
+                // A registration from before the pace: device-clocked.
+                _ => 0,
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0x22: DeskPace
+// ---------------------------------------------------------------------------
+
+/// Where the desk is playing a timer-paced instrument's stream.
+///
+/// The instrument keeps its stream rendered to `playing_stream +
+/// lead_frames`, advancing `playing_stream` by its own clock since the
+/// message arrived: its blocks then reach the desk as far ahead as the desk
+/// places them, however its timer drifts from the desk's device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeskPaceMsg {
+    /// The frame of the instrument's stream the desk is playing now.
+    pub playing_stream: u64,
+    /// How far ahead of the frame playing the desk places the stream's
+    /// audio, in frames.
+    pub lead_frames: u32,
+}
+
+impl DeskPaceMsg {
+    /// Wire size: 8 + 4 = 12 bytes.
+    pub const WIRE_SIZE: usize = 8 + 4;
+
+    /// Encode into a byte buffer. Returns the number of bytes written.
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        buf[0..8].copy_from_slice(&self.playing_stream.to_le_bytes());
+        buf[8..12].copy_from_slice(&self.lead_frames.to_le_bytes());
+        Self::WIRE_SIZE
+    }
+
+    /// Decode from a byte buffer of at least [`Self::WIRE_SIZE`] bytes.
+    #[must_use]
+    pub fn decode(buf: &[u8]) -> Self {
+        let mut stream = [0_u8; 8];
+        stream.copy_from_slice(&buf[0..8]);
+        let mut lead = [0_u8; 4];
+        lead.copy_from_slice(&buf[8..12]);
+        Self {
+            playing_stream: u64::from_le_bytes(stream),
+            lead_frames: u32::from_le_bytes(lead),
         }
     }
 }
@@ -246,17 +340,24 @@ impl RegisteredMsg {
 // 0x20: Transport Sync
 // ---------------------------------------------------------------------------
 
-/// Transport state broadcast from hub to instruments.
-#[derive(Debug, Clone, Copy)]
+/// [`TransportSyncMsg::at_frame`] meaning "as soon as it arrives".
+pub const SYNC_NOW: u64 = u64::MAX;
+
+/// A transport change from the hub, scheduled on the instrument's own
+/// stream (see [`super::follow`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TransportSyncMsg {
-    /// Transport state (see `TRANSPORT_*` constants).
+    /// Transport state from `at_frame` on (see `TRANSPORT_*` constants).
     pub state: u8,
-    /// Current tempo in BPM.
+    /// Tempo in BPM from `at_frame` on.
     pub bpm: f32,
-    /// Current position in samples.
-    pub position: u64,
-    /// Monotonic timestamp in nanoseconds for drift correction.
-    pub timestamp: u64,
+    /// The frame of the instrument's own audio stream (the frames it has
+    /// handed its link, counted from 0) on which the change lands, or
+    /// [`SYNC_NOW`].
+    pub at_frame: u64,
+    /// Song position at `at_frame`, in beats; NaN when the hub has not yet
+    /// placed the instrument's stream on the studio timeline.
+    pub beat: f64,
 }
 
 impl TransportSyncMsg {
@@ -267,8 +368,8 @@ impl TransportSyncMsg {
     pub fn encode(&self, buf: &mut [u8]) -> usize {
         buf[0] = self.state;
         buf[1..5].copy_from_slice(&self.bpm.to_le_bytes());
-        buf[5..13].copy_from_slice(&self.position.to_le_bytes());
-        buf[13..21].copy_from_slice(&self.timestamp.to_le_bytes());
+        buf[5..13].copy_from_slice(&self.at_frame.to_le_bytes());
+        buf[13..21].copy_from_slice(&self.beat.to_le_bytes());
         Self::WIRE_SIZE
     }
 
@@ -278,10 +379,10 @@ impl TransportSyncMsg {
         Self {
             state: buf[0],
             bpm: f32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]),
-            position: u64::from_le_bytes([
+            at_frame: u64::from_le_bytes([
                 buf[5], buf[6], buf[7], buf[8], buf[9], buf[10], buf[11], buf[12],
             ]),
-            timestamp: u64::from_le_bytes([
+            beat: f64::from_le_bytes([
                 buf[13], buf[14], buf[15], buf[16], buf[17], buf[18], buf[19], buf[20],
             ]),
         }
@@ -348,6 +449,18 @@ pub struct NoteEventMsg {
 }
 
 impl NoteEventMsg {
+    /// Whether this is a note event the studio understands: a known event
+    /// type, and channel, note and velocity within MIDI range.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        matches!(
+            self.event_type,
+            NOTE_ON | NOTE_OFF | NOTE_CC | NOTE_PITCH_BEND
+        ) && self.channel <= 15
+            && self.note <= 127
+            && self.velocity <= 127
+    }
+
     /// Wire size: 16 + 16 + 1 + 1 + 1 + 1 = 36 bytes.
     pub const WIRE_SIZE: usize = 16 + 16 + 1 + 1 + 1 + 1;
 
@@ -419,28 +532,6 @@ impl ParameterChangeMsg {
 }
 
 // ---------------------------------------------------------------------------
-// Internal transport sync notification
-// ---------------------------------------------------------------------------
-
-/// Transport state notification from the output callback to the IPC thread.
-///
-/// This is NOT a wire type — it is the internal representation the hub uses
-/// to pass transport state from the real-time audio callback to the IPC
-/// server thread, which then converts it to [`TransportSyncMsg`] for the
-/// wire.
-#[derive(Debug, Clone, Copy)]
-pub struct IpcTransportNotify {
-    /// Transport state (see `TRANSPORT_*` constants).
-    pub state: u8,
-    /// Tempo in BPM.
-    pub bpm: f32,
-    /// Position in samples.
-    pub position_samples: u64,
-    /// Monotonic timestamp in nanoseconds (from engine start).
-    pub timestamp_nanos: u64,
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -450,17 +541,43 @@ mod tests {
 
     #[test]
     fn register_msg_roundtrip() {
-        let msg = RegisterMsg::new("kazoo-808", 2, 44_100, 128);
-        let mut buf = vec![0u8; RegisterMsg::WIRE_SIZE];
+        let mut msg = RegisterMsg::new("kazoo-808", 2, 44_100, 128);
+        msg.pace_lead_frames = 1_920;
+        let mut buf = vec![0u8; RegisterMsg::PACED_WIRE_SIZE];
         let len = msg.encode(&mut buf);
-        assert_eq!(len, RegisterMsg::WIRE_SIZE);
+        assert_eq!(len, RegisterMsg::PACED_WIRE_SIZE);
 
         let decoded = RegisterMsg::decode(&buf);
+        assert_eq!(decoded.pace_lead_frames, 1_920);
         assert_eq!(decoded.instrument_id, msg.instrument_id);
         assert_eq!(decoded.name_str(), "kazoo-808");
         assert_eq!(decoded.channel_count, 2);
         assert_eq!(decoded.sample_rate, 44_100);
         assert_eq!(decoded.buffer_size, 128);
+    }
+
+    #[test]
+    fn a_registration_without_a_pace_reads_as_device_clocked() {
+        let mut msg = RegisterMsg::new("kazoo-808", 2, 48_000, 128);
+        msg.pace_lead_frames = 1_920;
+        let mut buf = vec![0u8; RegisterMsg::PACED_WIRE_SIZE];
+        msg.encode(&mut buf);
+        // As an instrument from before the pace sends it.
+        let decoded = RegisterMsg::decode(&buf[..RegisterMsg::WIRE_SIZE]);
+        assert_eq!(decoded.pace_lead_frames, 0);
+        assert_eq!(decoded.protocol, PROTOCOL_VERSION);
+        assert_eq!(decoded.buffer_size, 128);
+    }
+
+    #[test]
+    fn desk_pace_msg_roundtrip() {
+        let msg = DeskPaceMsg {
+            playing_stream: 0x0123_4567_89AB_CDEF,
+            lead_frames: 2_832,
+        };
+        let mut buf = [0_u8; DeskPaceMsg::WIRE_SIZE];
+        assert_eq!(msg.encode(&mut buf), DeskPaceMsg::WIRE_SIZE);
+        assert_eq!(DeskPaceMsg::decode(&buf), msg);
     }
 
     #[test]
@@ -498,18 +615,23 @@ mod tests {
         let msg = TransportSyncMsg {
             state: TRANSPORT_RECORDING,
             bpm: 120.5,
-            position: 1_000_000,
-            timestamp: 5_000_000_000,
+            at_frame: 1_000_000,
+            beat: 17.25,
         };
         let mut buf = vec![0u8; TransportSyncMsg::WIRE_SIZE];
         let len = msg.encode(&mut buf);
         assert_eq!(len, TransportSyncMsg::WIRE_SIZE);
+        assert_eq!(TransportSyncMsg::decode(&buf), msg);
 
+        let unplaced = TransportSyncMsg {
+            at_frame: SYNC_NOW,
+            beat: f64::NAN,
+            ..msg
+        };
+        unplaced.encode(&mut buf);
         let decoded = TransportSyncMsg::decode(&buf);
-        assert_eq!(decoded.state, TRANSPORT_RECORDING);
-        assert!((decoded.bpm - 120.5).abs() < f32::EPSILON);
-        assert_eq!(decoded.position, 1_000_000);
-        assert_eq!(decoded.timestamp, 5_000_000_000);
+        assert_eq!(decoded.at_frame, SYNC_NOW);
+        assert!(decoded.beat.is_nan());
     }
 
     #[test]

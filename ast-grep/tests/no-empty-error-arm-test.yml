@@ -1,0 +1,7 @@
+id: no-empty-error-arm
+valid:
+  - "fn f() { match r { Ok(v) => use_it(v), Err(e) => report(e) } }"
+  - "fn f() { match r { Ok(()) => {} Err(e) => count(e) } }"
+invalid:
+  - "fn f() { match r { Ok(v) => use_it(v), Err(_) => {} } }"
+  - "fn f() { match r { Ok(v) => use_it(v), Err(e) => () } }"

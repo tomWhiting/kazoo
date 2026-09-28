@@ -3,7 +3,7 @@
 //! All modes share parameters for drive, mix, and tone. A one-pole low-pass
 //! filter after the distortion stage provides the tone control.
 
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
 
 /// Distortion algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,31 +106,30 @@ impl Distortion {
         dt / (rc + dt)
     }
 
-    fn param_infos() -> [ParamInfo; 3] {
-        [
-            ParamInfo {
-                name: "Drive".into(),
-                min: Self::DRIVE_MIN,
-                max: Self::DRIVE_MAX,
-                default: Self::DRIVE_DEFAULT,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Mix".into(),
-                min: Self::MIX_MIN,
-                max: Self::MIX_MAX,
-                default: Self::MIX_DEFAULT,
-                unit: String::new(),
-            },
-            ParamInfo {
-                name: "Tone".into(),
-                min: Self::TONE_MIN,
-                max: Self::TONE_MAX,
-                default: Self::TONE_DEFAULT,
-                unit: String::new(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; 3] = [
+        ParamInfo {
+            name: "Drive",
+            min: Self::DRIVE_MIN,
+            max: Self::DRIVE_MAX,
+            default: Self::DRIVE_DEFAULT,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Mix",
+            min: Self::MIX_MIN,
+            max: Self::MIX_MAX,
+            default: Self::MIX_DEFAULT,
+            unit: "",
+        },
+        ParamInfo {
+            name: "Tone",
+            min: Self::TONE_MIN,
+            max: Self::TONE_MAX,
+            default: Self::TONE_DEFAULT,
+            unit: "",
+        },
+    ];
 }
 
 impl Processor for Distortion {
@@ -144,7 +143,7 @@ impl Processor for Distortion {
             let distorted = self.distort(x);
 
             // One-pole low-pass tone filter.
-            self.tone_state += alpha * (distorted - self.tone_state);
+            self.tone_state = alpha.mul_add(distorted - self.tone_state, self.tone_state);
             if self.tone_state.abs() < 1e-30 {
                 self.tone_state = 0.0;
             }
@@ -172,8 +171,7 @@ impl Processor for Distortion {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        let infos = Self::param_infos();
-        infos.get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -185,18 +183,19 @@ impl Processor for Distortion {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
 
         match index {
             Self::PARAM_DRIVE => self.drive = clamped,
             Self::PARAM_MIX => self.mix = clamped,
             Self::PARAM_TONE => self.tone = clamped,
-            _ => unreachable!(),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
         Ok(())
     }
@@ -428,7 +427,9 @@ mod tests {
             .map(|i| {
                 let t = i as f32 / sr;
                 // 200 Hz + 8 kHz mixed.
-                (2.0 * PI * 200.0 * t).sin() * 0.5 + (2.0 * PI * 8000.0 * t).sin() * 0.5
+                (2.0 * PI * 8000.0 * t)
+                    .sin()
+                    .mul_add(0.5, (2.0 * PI * 200.0 * t).sin() * 0.5)
             })
             .collect();
 
@@ -500,7 +501,7 @@ mod tests {
                 rng ^= rng << 13;
                 rng ^= rng >> 17;
                 rng ^= rng << 5;
-                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect();
 

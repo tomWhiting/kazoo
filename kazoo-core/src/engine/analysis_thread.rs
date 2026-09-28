@@ -4,19 +4,22 @@
 //! Reads raw mic samples from a ring buffer, runs the analysis pipeline, and
 //! pushes results back into ring buffers consumed by the output callback.
 
-use ringbuf::traits::{Consumer, Producer};
+use std::sync::Arc;
+
+use ringbuf::traits::{Consumer, Observer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
+use super::stats::EngineStats;
 use crate::analysis::{
-    FormantData, FormantExtractor, OnsetDetector, PitchDetector, PitchDetectorConfig,
-    PitchEstimate, SpectrumAnalyzer,
+    FormantData, FormantExtractor, OnsetDetector, PitchDetector, PitchEstimate, SpectrumAnalyzer,
 };
 
 /// Configuration for the analysis pipeline.
+///
+/// The pitch detector is constructed (and its configuration validated) by
+/// the caller and handed to [`run`] directly.
 #[derive(Debug, Clone)]
 pub struct AnalysisConfig {
-    /// Pitch detector configuration.
-    pub pitch: PitchDetectorConfig,
     /// FFT size for spectrum analysis (must be >= 2, typically 2048).
     pub spectrum_fft_size: usize,
     /// EMA smoothing factor for spectrum display (0.0 = no smoothing, 1.0 = max).
@@ -31,37 +34,42 @@ pub struct AnalysisConfig {
     pub buffer_size: usize,
 }
 
+/// Ring-buffer endpoints and counters owned by the analysis thread.
+pub struct AnalysisIo {
+    /// Raw mic (or clip) samples from the output callback.
+    pub input_cons: HeapCons<f32>,
+    /// Pitch estimates back to the output callback.
+    pub pitch_prod: HeapProd<PitchEstimate>,
+    /// Spectrum magnitudes (dB) back to the output callback.
+    pub spectrum_prod: HeapProd<Vec<f32>>,
+    /// Formant results back to the output callback.
+    pub formant_prod: HeapProd<Option<FormantData>>,
+    /// Shared counters; results that do not fit are counted here.
+    pub stats: Arc<EngineStats>,
+}
+
+// Ring buffer endpoints are not `Debug`; implement manually.
+impl std::fmt::Debug for AnalysisIo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnalysisIo").finish_non_exhaustive()
+    }
+}
+
 /// Entry point for the analysis thread.
 ///
-/// Reads raw mic audio from `input_cons`, runs pitch detection, spectrum
+/// Reads raw mic audio from `io.input_cons`, runs pitch detection, spectrum
 /// analysis, onset detection, and formant extraction, then pushes results
-/// into the respective ring buffer producers.
+/// into the respective ring buffer producers. Results that do not fit
+/// because the output callback has not drained the previous ones are
+/// counted in [`EngineStats`] (the callback always uses the latest value, so
+/// nothing else needs to happen).
 ///
-/// The thread exits when `input_cons` is empty and the producer side has
-/// been dropped (indicating engine shutdown), or when it detects that all
-/// result producers have been dropped.
-///
-/// # Arguments
-///
-/// * `input_cons` -- ring buffer consumer for raw mic samples (f32)
-/// * `pitch_prod` -- ring buffer producer for `PitchEstimate` results
-/// * `spectrum_prod` -- ring buffer producer for spectrum magnitude `Vec<f32>`
-/// * `formant_prod` -- ring buffer producer for `Option<FormantData>` results
-/// * `config` -- analysis pipeline configuration
-pub fn run(
-    mut input_cons: HeapCons<f32>,
-    mut pitch_prod: HeapProd<PitchEstimate>,
-    mut spectrum_prod: HeapProd<Vec<f32>>,
-    mut formant_prod: HeapProd<Option<FormantData>>,
-    config: AnalysisConfig,
-) {
-    let sr = config.sample_rate;
-    #[allow(clippy::cast_precision_loss)]
-    let sr_f32 = sr as f32;
-
-    // Initialise analysis components. Pitch detector can fail if the config
-    // is invalid, so we handle that gracefully.
-    let mut pitch_detector = PitchDetector::new(config.pitch).ok();
+/// The thread exits once the input ring is drained and its producer (owned
+/// by the output callback) has been dropped at engine shutdown. A temporarily
+/// silent input — e.g. a stalled or disconnected microphone — does not stop
+/// analysis.
+pub fn run(mut io: AnalysisIo, mut pitch_detector: PitchDetector, config: &AnalysisConfig) {
+    let sr_f32 = config.sample_rate as f32;
 
     let mut spectrum_analyzer = SpectrumAnalyzer::new(
         config.spectrum_fft_size.max(2),
@@ -84,49 +92,43 @@ pub fn run(
     let read_buf_size = config.buffer_size.max(256);
     let mut read_buf = vec![0.0_f32; read_buf_size];
 
-    // Track consecutive empty reads to detect shutdown via ring buffer exhaustion.
-    let mut consecutive_empty = 0_u32;
-    let max_consecutive_empty: u32 = 500; // ~500ms at 1ms sleep
-
     loop {
-        let num_read = input_cons.pop_slice(&mut read_buf);
+        let num_read = io.input_cons.pop_slice(&mut read_buf);
 
         if num_read == 0 {
-            consecutive_empty += 1;
-            if consecutive_empty >= max_consecutive_empty {
-                // The producer side has likely been dropped; exit gracefully.
+            if !io.input_cons.write_is_held() {
+                // Drained and the producer is gone: the engine shut down.
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
             continue;
         }
-        consecutive_empty = 0;
 
         let samples = &read_buf[..num_read];
 
-        // Pitch detection.
-        if let Some(ref mut detector) = pitch_detector {
-            if let Some(estimate) = detector.push_samples(samples) {
-                // Best-effort push: if the ring buffer is full, the consumer
-                // has not drained it yet. We discard the result silently;
-                // the UI always uses the latest available estimate.
-                let _ = pitch_prod.try_push(estimate);
+        if let Some(estimate) = pitch_detector.push_samples(samples) {
+            if io.pitch_prod.try_push(estimate).is_err() {
+                io.stats.analysis_result_dropped();
             }
         }
 
-        // Spectrum analysis.
         if let Some(spectrum_data) = spectrum_analyzer.push_samples(samples) {
-            let _ = spectrum_prod.try_push(spectrum_data.magnitudes_db);
+            if io
+                .spectrum_prod
+                .try_push(spectrum_data.magnitudes_db)
+                .is_err()
+            {
+                io.stats.analysis_result_dropped();
+            }
         }
 
         // Onset detection (results currently not displayed but computed for
         // future use; kept to validate the pipeline end-to-end).
         let _onsets = onset_detector.push_samples(samples);
 
-        // Formant extraction.
         let formant_result = formant_extractor.push_samples(samples);
-        if formant_result.is_some() {
-            let _ = formant_prod.try_push(formant_result);
+        if formant_result.is_some() && io.formant_prod.try_push(formant_result).is_err() {
+            io.stats.analysis_result_dropped();
         }
     }
 }
@@ -134,11 +136,55 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::PitchDetectorConfig;
+    use ringbuf::HeapRb;
+    use ringbuf::traits::Split;
+
+    #[test]
+    fn run_drains_input_and_exits_when_producer_dropped() {
+        let (mut in_prod, input_cons) = HeapRb::<f32>::new(8192).split();
+        // Result rings of capacity 1: later results cannot fit and must be
+        // counted rather than silently discarded.
+        let (pitch_prod, _pitch_cons) = HeapRb::<PitchEstimate>::new(1).split();
+        let (spectrum_prod, mut spectrum_cons) = HeapRb::<Vec<f32>>::new(1).split();
+        let (formant_prod, _formant_cons) = HeapRb::<Option<FormantData>>::new(1).split();
+        let stats = Arc::new(EngineStats::new());
+
+        let sine: Vec<f32> = (0..8192)
+            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 44_100.0).sin() * 0.5)
+            .collect();
+        assert_eq!(in_prod.push_slice(&sine), sine.len());
+        drop(in_prod);
+
+        let config = AnalysisConfig {
+            spectrum_fft_size: 1024,
+            spectrum_smoothing: 0.0,
+            onset_fft_size: 1024,
+            onset_threshold: 0.3,
+            sample_rate: 44_100,
+            buffer_size: 256,
+        };
+        let detector = PitchDetector::new(PitchDetectorConfig::default()).unwrap();
+        run(
+            AnalysisIo {
+                input_cons,
+                pitch_prod,
+                spectrum_prod,
+                formant_prod,
+                stats: Arc::clone(&stats),
+            },
+            detector,
+            &config,
+        );
+
+        // 8192 samples at FFT size 1024 yield several spectra; only one fits.
+        assert!(spectrum_cons.try_pop().is_some());
+        assert!(stats.snapshot().analysis_results_dropped > 0);
+    }
 
     #[test]
     fn analysis_config_construction() {
         let config = AnalysisConfig {
-            pitch: PitchDetectorConfig::default(),
             spectrum_fft_size: 2048,
             spectrum_smoothing: 0.8,
             onset_fft_size: 1024,
@@ -158,7 +204,6 @@ mod tests {
     #[test]
     fn analysis_config_debug_format() {
         let config = AnalysisConfig {
-            pitch: PitchDetectorConfig::default(),
             spectrum_fft_size: 2048,
             spectrum_smoothing: 0.8,
             onset_fft_size: 1024,
@@ -174,7 +219,6 @@ mod tests {
     #[test]
     fn analysis_config_clone() {
         let config = AnalysisConfig {
-            pitch: PitchDetectorConfig::default(),
             spectrum_fft_size: 4096,
             spectrum_smoothing: 0.5,
             onset_fft_size: 2048,
@@ -183,7 +227,7 @@ mod tests {
             buffer_size: 512,
         };
 
-        let cloned = config.clone();
+        let cloned = config;
         assert_eq!(cloned.spectrum_fft_size, 4096);
         assert_eq!(cloned.sample_rate, 48_000);
     }

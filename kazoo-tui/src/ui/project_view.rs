@@ -216,7 +216,7 @@ fn draw_loop_card(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
         return;
     }
 
-    let enabled = app.display.transport.loop_enabled;
+    let enabled = app.display.transport.is_looping();
     let lines = vec![
         Line::from(vec![
             Span::styled(" Enabled: ", theme::style_text_secondary()),

@@ -372,9 +372,12 @@ mod tests {
 
         let mut samples = vec![f32::NAN; 2048];
         samples.extend_from_slice(&[f32::INFINITY; 2048]);
-        // Should not panic.
+        // Should not panic, and any estimate must be finite.
         for chunk in samples.chunks(512) {
-            let _ = detector.push_samples(chunk);
+            if let Some(estimate) = detector.push_samples(chunk) {
+                assert!(estimate.voiced_probability.is_finite());
+                assert!(estimate.frequency.is_none_or(f32::is_finite));
+            }
         }
     }
 }

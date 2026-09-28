@@ -348,14 +348,14 @@ impl AdsrEnvelope {
         match self.stage {
             EnvelopeStage::Idle => {}
             EnvelopeStage::Attack => {
-                self.value += self.attack_rate * inv_scale;
+                self.value = self.attack_rate.mul_add(inv_scale, self.value);
                 if self.value >= 1.0 {
                     self.value = 1.0;
                     self.stage = EnvelopeStage::Decay;
                 }
             }
             EnvelopeStage::Decay => {
-                self.value -= self.decay_rate * inv_scale;
+                self.value = (-self.decay_rate).mul_add(inv_scale, self.value);
                 if self.value <= self.sustain_level {
                     self.value = self.sustain_level;
                     self.stage = EnvelopeStage::Sustain;
@@ -365,7 +365,7 @@ impl AdsrEnvelope {
                 self.value = self.sustain_level;
             }
             EnvelopeStage::Release => {
-                self.value -= self.release_rate * inv_scale;
+                self.value = (-self.release_rate).mul_add(inv_scale, self.value);
                 if self.value <= 0.0 {
                     self.value = 0.0;
                     self.stage = EnvelopeStage::Idle;

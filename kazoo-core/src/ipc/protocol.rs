@@ -270,6 +270,14 @@ impl FrameBuffer {
         }
     }
 
+    /// Whether part of a frame has been read and the rest is still to
+    /// come. A connection that closes while nothing is in progress closed
+    /// between frames.
+    #[must_use]
+    pub const fn read_in_progress(&self) -> bool {
+        !matches!(self.read_state, ReadState::Header { filled: 0 })
+    }
+
     /// Reset the read state machine.
     ///
     /// Call this after a connection error to discard any partial frame
@@ -289,17 +297,26 @@ impl Default for FrameBuffer {
 // Audio payload helpers
 // ---------------------------------------------------------------------------
 
-/// Size of the audio payload header (`frame_count` field).
-pub const AUDIO_PAYLOAD_HEADER: usize = 4;
+/// Size of the audio payload header: the block's `stream_frame` (u64) and
+/// `frame_count` (u32).
+pub const AUDIO_PAYLOAD_HEADER: usize = 12;
 
 /// Encode audio samples into a buffer's payload area.
 ///
-/// Writes a 4-byte `frame_count` followed by each sample as a
-/// little-endian f32. NaN/Inf samples are replaced with `0.0`.
+/// Writes the 8-byte `stream_frame` (the block's first frame in the
+/// instrument's own stream, counted from 0) and the 4-byte `frame_count`,
+/// followed by each sample as a little-endian f32. NaN/Inf samples are
+/// replaced with `0.0`.
 ///
 /// Returns the total payload size in bytes.
-pub fn encode_audio_payload(frame_count: u32, samples: &[f32], buf: &mut [u8]) -> usize {
-    buf[0..4].copy_from_slice(&frame_count.to_le_bytes());
+pub fn encode_audio_payload(
+    stream_frame: u64,
+    frame_count: u32,
+    samples: &[f32],
+    buf: &mut [u8],
+) -> usize {
+    buf[0..8].copy_from_slice(&stream_frame.to_le_bytes());
+    buf[8..12].copy_from_slice(&frame_count.to_le_bytes());
     let mut offset = AUDIO_PAYLOAD_HEADER;
     for &sample in samples {
         let s = if sample.is_finite() { sample } else { 0.0 };
@@ -309,15 +326,23 @@ pub fn encode_audio_payload(frame_count: u32, samples: &[f32], buf: &mut [u8]) -
     offset
 }
 
+/// Decode the block's first frame in the instrument's stream.
+#[must_use]
+pub fn decode_audio_stream_frame(buf: &[u8]) -> u64 {
+    u64::from_le_bytes([
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+    ])
+}
+
 /// Decode the frame count from an audio payload.
 #[must_use]
 pub fn decode_audio_frame_count(buf: &[u8]) -> u32 {
-    u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
+    u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]])
 }
 
 /// Decode audio samples from a payload buffer into a pre-allocated slice.
 ///
-/// Reads `count` f32 values starting after the 4-byte `frame_count` header.
+/// Reads `count` f32 values starting after the audio payload header.
 /// NaN/Inf values are sanitized to `0.0`.
 pub fn decode_audio_samples(buf: &[u8], samples: &mut [f32], count: usize) {
     let mut offset = AUDIO_PAYLOAD_HEADER;
@@ -422,9 +447,10 @@ mod tests {
     fn audio_payload_roundtrip() {
         let samples = [0.5_f32, -0.25, 1.0, 0.0, f32::NAN, f32::INFINITY];
         let mut buf = vec![0u8; AUDIO_PAYLOAD_HEADER + samples.len() * 4];
-        let len = encode_audio_payload(3, &samples, &mut buf);
+        let len = encode_audio_payload(0x0102_0304_0506_0708, 3, &samples, &mut buf);
         assert_eq!(len, AUDIO_PAYLOAD_HEADER + samples.len() * 4);
 
+        assert_eq!(decode_audio_stream_frame(&buf), 0x0102_0304_0506_0708);
         let frame_count = decode_audio_frame_count(&buf);
         assert_eq!(frame_count, 3);
 

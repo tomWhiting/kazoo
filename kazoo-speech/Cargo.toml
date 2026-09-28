@@ -1,0 +1,17 @@
+[package]
+name = "kazoo-speech"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Kazoo's studio vocoder, text-to-speech renderer and phrase player"
+
+[lints]
+workspace = true
+
+[dependencies]
+kazoo-fx = { path = "../kazoo-fx" }
+hound = "3.5"
+ringbuf = "0.4.8"
+
+[dev-dependencies]
+assert_no_alloc = "1.1.2"

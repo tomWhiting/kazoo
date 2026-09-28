@@ -104,9 +104,13 @@ impl VoiceDrift {
     #[inline]
     pub fn tick(&mut self) {
         // Smooth interpolation toward target
-        self.detune_cents +=
-            self.smooth_coeff * (self.fixed_offset_cents + self.detune_target - self.detune_cents);
-        self.timing_jitter += self.smooth_coeff * (self.timing_target - self.timing_jitter);
+        self.detune_cents = self.smooth_coeff.mul_add(
+            self.fixed_offset_cents + self.detune_target - self.detune_cents,
+            self.detune_cents,
+        );
+        self.timing_jitter = self
+            .smooth_coeff
+            .mul_add(self.timing_target - self.timing_jitter, self.timing_jitter);
 
         // NaN/Inf defense
         if !self.detune_cents.is_finite() {

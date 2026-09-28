@@ -192,7 +192,7 @@ mod tests {
             let (filtered, sine) = osc.tick();
             assert!(filtered.is_finite(), "saw sample not finite: {filtered}");
             assert!(
-                filtered >= -2.0 && filtered <= 2.0,
+                (-2.0..=2.0).contains(&filtered),
                 "saw sample out of range: {filtered}"
             );
             assert!(
@@ -212,7 +212,7 @@ mod tests {
             let (filtered, sine) = osc.tick();
             assert!(filtered.is_finite(), "pulse sample not finite: {filtered}");
             assert!(
-                filtered >= -2.0 && filtered <= 2.0,
+                (-2.0..=2.0).contains(&filtered),
                 "pulse sample out of range: {filtered}"
             );
             assert!((sine - 0.0).abs() < f32::EPSILON);
@@ -231,7 +231,7 @@ mod tests {
                 "sine waveform should have no filtered output"
             );
             assert!(sine.is_finite());
-            assert!(sine >= -1.01 && sine <= 1.01);
+            assert!((-1.01..=1.01).contains(&sine));
         }
     }
 

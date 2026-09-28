@@ -12,6 +12,12 @@ members = [
     "kazoo-juno",
     "kazoo-play",
     "kazoo-dx",
+    "kazoo-fx",
+    "kazoo-wall",
+    "kazoo-perc",
+    "kazoo-sampler",
+    "kazoo-speech",
+    "kazoo-mcp",
 ]
 resolver = "2"
 

@@ -1,66 +1,31 @@
 //! kazoo-808 — TR-808 drum machine.
 //!
-//! All sounds synthesized, no samples. Connects to kazoo-tui hub via IPC.
+//! All sounds synthesized, no samples. Plugs into the kazoo-mix desk when
+//! it is running, following its tempo and play/stop.
 //! See `studio/kazoo-808.md` for full specification.
 
-// Under active development — many synth voices and sequencer features
-// are implemented but not yet wired to the UI or audio callback.
-#![allow(dead_code)]
-
 mod app;
-pub mod ipc;
-mod sequencer;
-mod synth;
+mod audio;
 mod ui;
 
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use app::App;
-use ipc::HubLink;
-use sequencer::Sequencer;
-use synth::{DrumMachine, VoiceIndex, VoiceParam};
+use app::{App, StreamHealth};
+use audio::{AudioEngine, COMMAND_CAPACITY, CommandSender, EngineShared, MAX_CALLBACK_FRAMES};
+use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
 
-/// Maximum number of frames the audio callback will ever render.
-/// Pre-allocated scratch buffers use this size.
-const MAX_CALLBACK_FRAMES: usize = 4096;
-
-/// Commands sent from the UI thread to the audio thread.
-#[derive(Debug)]
-enum AudioCommand {
-    Play,
-    Stop,
-    SetBpm(f64),
-    SetSwing(f64),
-    ToggleStep {
-        voice: usize,
-        step: usize,
-    },
-    ToggleAccent {
-        voice: usize,
-        step: usize,
-    },
-    TriggerVoice {
-        voice: usize,
-        velocity: f32,
-    },
-    SetVoiceParam {
-        voice: VoiceIndex,
-        param: VoiceParam,
-        value: f32,
-    },
-    SelectPattern(usize),
-    AddPattern,
-}
+/// How long the UI waits for input before redrawing.
+const FRAME_POLL: Duration = Duration::from_millis(16);
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -72,376 +37,136 @@ fn main() -> color_eyre::Result<()> {
         .ok_or_else(|| color_eyre::eyre::eyre!("no audio output device found"))?;
     let config = device.default_output_config()?;
     let sample_rate = config.sample_rate() as f32;
-    let channels = config.channels() as usize;
-
-    // Shared state between audio and UI threads.
-    let playback_step = Arc::new(AtomicUsize::new(0));
-    let playing = Arc::new(AtomicBool::new(false));
-
-    // Command channel: UI -> Audio.
-    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<AudioCommand>(256);
-
-    // Attempt IPC hub connection.
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let hub_link = HubLink::new(2, sample_rate as u32, MAX_CALLBACK_FRAMES as u32);
-    if hub_link.is_connected() {
-        eprintln!("Connected to kazoo hub — audio will be routed to mixer");
+    let channels = usize::from(config.channels());
+    if channels == 0 {
+        return Err(color_eyre::eyre::eyre!(
+            "audio output device reports zero channels"
+        ));
     }
 
-    // Build and start the audio stream.
-    let playback_step_audio = Arc::clone(&playback_step);
-    let playing_audio = Arc::clone(&playing);
+    let shared = Arc::new(EngineShared::default());
+    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(COMMAND_CAPACITY);
 
-    let stream = build_audio_stream(
-        &device,
-        &config.into(),
+    // Plug into the kazoo-mix desk whenever it is running.
+    let (hub, hub_audio) = hub_link(LinkConfig::new(
+        "kazoo-808",
+        2,
+        config.sample_rate(),
+        MAX_CALLBACK_FRAMES as u32,
+    ))?;
+
+    // Build and start the audio stream.
+    let mut engine = AudioEngine::new(
         sample_rate,
         channels,
         cmd_rx,
-        playback_step_audio,
-        playing_audio,
-        hub_link,
+        hub_audio,
+        Arc::clone(&shared),
+    );
+    let error_shared = Arc::clone(&shared);
+    let stream = device.build_output_stream(
+        &config.into(),
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| engine.render(data),
+        move |err| error_shared.record_stream_error(&err),
+        None,
     )?;
     stream.play()?;
 
-    // Set up terminal.
-    terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = setup_terminal()?;
 
     // Run the TUI event loop.
-    let mut app = App::new(sample_rate);
-    let result = run_event_loop(&mut terminal, &mut app, &cmd_tx, &playback_step, &playing);
+    let mut app = App::new(sample_rate, CommandSender::new(cmd_tx));
+    let result = run_event_loop(&mut terminal, &mut app, &shared, &hub);
+    let restored = restore_terminal(&mut terminal);
 
-    // Restore terminal.
-    terminal::disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    // Stop audio.
+    // Stop audio, then leave the desk.
     drop(stream);
+    drop(hub);
 
-    result
+    match (result, restored) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(()), Err(restore_err)) => Err(restore_err.into()),
+        (Err(err), Err(restore_err)) => {
+            Err(err.wrap_err(format!("restoring the terminal also failed: {restore_err}")))
+        }
+    }
 }
 
-/// Build the cpal output stream. All synthesis and sequencing happens here.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn build_audio_stream(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    sample_rate: f32,
-    channels: usize,
-    cmd_rx: crossbeam_channel::Receiver<AudioCommand>,
-    playback_step: Arc<AtomicUsize>,
-    playing_flag: Arc<AtomicBool>,
-    mut hub_link: HubLink,
-) -> color_eyre::Result<cpal::Stream> {
-    let mut drum_machine = DrumMachine::new(sample_rate);
-    let mut sequencer = Sequencer::new(sample_rate);
+type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
-    // Pre-allocated scratch buffers for IPC audio send.
-    let mut mono_buf = vec![0.0_f32; MAX_CALLBACK_FRAMES];
-    let mut stereo_buf = vec![0.0_f32; MAX_CALLBACK_FRAMES * 2];
-
-    let stream = device.build_output_stream(
-        config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            // Drain commands from the UI thread.
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                match cmd {
-                    AudioCommand::Play => {
-                        sequencer.play();
-                        playing_flag.store(true, Ordering::Release);
-                    }
-                    AudioCommand::Stop => {
-                        sequencer.stop();
-                        playing_flag.store(false, Ordering::Release);
-                    }
-                    AudioCommand::SetBpm(bpm) => sequencer.clock.set_bpm(bpm),
-                    AudioCommand::SetSwing(swing) => sequencer.clock.set_swing(swing),
-                    AudioCommand::ToggleStep { voice, step } => {
-                        sequencer.toggle_step(voice, step);
-                    }
-                    AudioCommand::ToggleAccent { voice, step } => {
-                        sequencer.toggle_accent(voice, step);
-                    }
-                    AudioCommand::TriggerVoice { voice, velocity } => {
-                        if let Some(vi) = VoiceIndex::from_index(voice) {
-                            drum_machine.trigger(vi, velocity);
-                        }
-                    }
-                    AudioCommand::SetVoiceParam {
-                        voice,
-                        param,
-                        value,
-                    } => {
-                        drum_machine.set_voice_param(voice, param, value);
-                    }
-                    AudioCommand::SelectPattern(idx) => {
-                        sequencer.select_pattern(idx);
-                    }
-                    AudioCommand::AddPattern => {
-                        sequencer.add_pattern();
-                    }
-                }
-            }
-
-            // Drain messages from the hub (transport sync, note events).
-            while let Some(msg) = hub_link.try_recv() {
-                match msg {
-                    kazoo_core::ipc::client::HubMessage::TransportSync(sync) => {
-                        sequencer.clock.set_bpm(f64::from(sync.bpm));
-                        match sync.state {
-                            kazoo_core::ipc::types::TRANSPORT_PLAYING
-                            | kazoo_core::ipc::types::TRANSPORT_RECORDING => {
-                                if !playing_flag.load(Ordering::Acquire) {
-                                    sequencer.play();
-                                    playing_flag.store(true, Ordering::Release);
-                                }
-                            }
-                            kazoo_core::ipc::types::TRANSPORT_STOPPED
-                            | kazoo_core::ipc::types::TRANSPORT_PAUSED => {
-                                if playing_flag.load(Ordering::Acquire) {
-                                    sequencer.stop();
-                                    playing_flag.store(false, Ordering::Release);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    kazoo_core::ipc::client::HubMessage::NoteEvent(event) => {
-                        if event.event_type == kazoo_core::ipc::types::NOTE_ON {
-                            let velocity = f32::from(event.velocity) / 127.0;
-                            if let Some(vi) = VoiceIndex::from_index(event.note as usize) {
-                                drum_machine.trigger(vi, velocity);
-                            }
-                        }
-                    }
-                    kazoo_core::ipc::client::HubMessage::ParameterChange(_)
-                    | kazoo_core::ipc::client::HubMessage::Shutdown => {}
-                }
-            }
-
-            // Generate audio sample-by-sample.
-            let frames = data.len() / channels;
-            let mut frame_idx = 0;
-            let mut i = 0;
-            while i < data.len() {
-                // Advance sequencer (fires triggers into drum machine).
-                if let Some(step) = sequencer.tick(&mut drum_machine) {
-                    playback_step.store(step, Ordering::Release);
-                }
-
-                // Generate one mono sample and duplicate to all channels.
-                let sample = kazoo_core::soft_limit(drum_machine.process());
-                if frame_idx < mono_buf.len() {
-                    mono_buf[frame_idx] = sample;
-                }
-                for ch in 0..channels {
-                    if i + ch < data.len() {
-                        data[i + ch] = sample;
-                    }
-                }
-                frame_idx += 1;
-                i += channels;
-            }
-
-            // Send audio to the hub for mixing (if connected).
-            if hub_link.is_connected() {
-                let process_len = frames.min(mono_buf.len());
-                let stereo_len = process_len * 2;
-                for (idx, &sample) in mono_buf[..process_len].iter().enumerate() {
-                    stereo_buf[idx * 2] = sample;
-                    stereo_buf[idx * 2 + 1] = sample;
-                }
-                #[allow(clippy::cast_possible_truncation)]
-                hub_link.send_audio(process_len as u32, &stereo_buf[..stereo_len]);
-            }
+/// Put the terminal into raw mode on the alternate screen. On failure the
+/// terminal is put back as it was.
+fn setup_terminal() -> io::Result<Tui> {
+    terminal::enable_raw_mode()?;
+    match enter_screen() {
+        Ok(terminal) => Ok(terminal),
+        Err(err) => match terminal::disable_raw_mode() {
+            Ok(()) => Err(err),
+            Err(raw_err) => Err(io::Error::other(format!(
+                "{err}; leaving raw mode also failed: {raw_err}"
+            ))),
         },
-        |err| {
-            eprintln!("audio stream error: {err}");
-        },
-        None,
-    )?;
+    }
+}
 
-    Ok(stream)
+fn enter_screen() -> io::Result<Tui> {
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    match Terminal::new(CrosstermBackend::new(stdout)) {
+        Ok(terminal) => Ok(terminal),
+        Err(err) => match execute!(io::stdout(), LeaveAlternateScreen) {
+            Ok(()) => Err(err),
+            Err(undo_err) => Err(io::Error::other(format!(
+                "{err}; leaving the alternate screen also failed: {undo_err}"
+            ))),
+        },
+    }
+}
+
+/// Undo the terminal setup. Every step runs even if an earlier one fails;
+/// the first failure is returned.
+fn restore_terminal(terminal: &mut Tui) -> io::Result<()> {
+    let raw = terminal::disable_raw_mode();
+    let screen = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let cursor = terminal.show_cursor();
+    raw.and(screen).and(cursor)
 }
 
 /// Main TUI event loop.
 fn run_event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Tui,
     app: &mut App,
-    cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
-    playback_step: &Arc<AtomicUsize>,
-    playing: &Arc<AtomicBool>,
+    shared: &EngineShared,
+    hub: &HubLink,
 ) -> color_eyre::Result<()> {
-    loop {
-        // Update display state from audio thread.
-        app.playback_step = playback_step.load(Ordering::Acquire);
-        app.sequencer.playing = playing.load(Ordering::Acquire);
+    while !app.should_quit {
+        // Update display state from the audio thread and the desk link.
+        app.playback_step = shared.playback_step.load(Ordering::Acquire);
+        app.sequencer.playing = shared.playing.load(Ordering::Acquire);
+        // The desk can change the tempo too.
+        app.sequencer
+            .clock
+            .set_bpm(f64::from_bits(shared.bpm.load(Ordering::Acquire)));
+        app.desk_lost = shared.desk_lost.load(Ordering::Relaxed);
+        app.stream = StreamHealth {
+            errors: shared.stream_errors.load(Ordering::Relaxed),
+            lost: shared.stream_lost.load(Ordering::Acquire),
+        };
+        app.hub = Some(hub.status());
 
-        // Draw.
-        terminal.draw(|frame| {
-            ui::draw(frame, app);
-        })?;
+        terminal.draw(|frame| ui::draw(frame, app))?;
 
         // Poll for events with a timeout for smooth playback animation.
-        if event::poll(Duration::from_millis(16))? {
+        if event::poll(FRAME_POLL)? {
             if let Event::Key(key) = event::read()? {
-                if handle_key_event(app, key, cmd_tx) {
-                    break;
+                // Terminals with key-release reporting would otherwise run
+                // every action twice.
+                if key.kind != KeyEventKind::Release {
+                    app.handle_key(key);
                 }
             }
         }
-
-        if app.should_quit {
-            break;
-        }
     }
     Ok(())
-}
-
-/// Handle a key event. Returns `true` if the app should quit.
-#[allow(clippy::too_many_lines)]
-fn handle_key_event(
-    app: &mut App,
-    key: KeyEvent,
-    cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
-) -> bool {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return true;
-    }
-
-    // Help overlay: any key dismisses it.
-    if app.show_help {
-        app.show_help = false;
-        return false;
-    }
-
-    // Pattern select mode: next key selects pattern or cancels.
-    if app.pattern_select_mode {
-        app.pattern_select_mode = false;
-        if let KeyCode::Char(c @ '0'..='9') = key.code {
-            let idx = if c == '0' {
-                9
-            } else {
-                (c as usize) - ('1' as usize)
-            };
-            if idx < app.sequencer.patterns.len() {
-                app.sequencer.select_pattern(idx);
-                let _ = cmd_tx.try_send(AudioCommand::SelectPattern(idx));
-            }
-        }
-        return false;
-    }
-
-    match key.code {
-        KeyCode::Char('q') => {
-            app.should_quit = true;
-            return true;
-        }
-
-        // Help overlay.
-        KeyCode::Char('?') => {
-            app.show_help = true;
-        }
-
-        // Pattern select mode.
-        KeyCode::Char('p') => {
-            app.pattern_select_mode = true;
-        }
-
-        // New pattern.
-        KeyCode::Char('n') => {
-            let idx = app.sequencer.add_pattern();
-            let _ = cmd_tx.try_send(AudioCommand::AddPattern);
-            app.sequencer.select_pattern(idx);
-            let _ = cmd_tx.try_send(AudioCommand::SelectPattern(idx));
-        }
-
-        // Navigation — Left/Right adjust params in Params focus.
-        KeyCode::Left => {
-            if let Some((voice, param, value)) = app.cursor_left() {
-                let _ = cmd_tx.try_send(AudioCommand::SetVoiceParam {
-                    voice,
-                    param,
-                    value,
-                });
-            }
-        }
-        KeyCode::Right => {
-            if let Some((voice, param, value)) = app.cursor_right() {
-                let _ = cmd_tx.try_send(AudioCommand::SetVoiceParam {
-                    voice,
-                    param,
-                    value,
-                });
-            }
-        }
-        KeyCode::Up => app.cursor_up(),
-        KeyCode::Down => app.cursor_down(),
-
-        // Toggle step.
-        KeyCode::Char(' ') => {
-            app.toggle_current_step();
-            let _ = cmd_tx.try_send(AudioCommand::ToggleStep {
-                voice: app.selected_voice,
-                step: app.cursor_step,
-            });
-        }
-
-        // Toggle accent.
-        KeyCode::Char('a') => {
-            app.toggle_current_accent();
-            let _ = cmd_tx.try_send(AudioCommand::ToggleAccent {
-                voice: app.selected_voice,
-                step: app.cursor_step,
-            });
-        }
-
-        // Play/Stop.
-        KeyCode::Enter => {
-            if app.sequencer.playing {
-                app.sequencer.playing = false;
-                let _ = cmd_tx.try_send(AudioCommand::Stop);
-            } else {
-                app.sequencer.playing = true;
-                let _ = cmd_tx.try_send(AudioCommand::Play);
-            }
-        }
-
-        // Tab cycles focus.
-        KeyCode::Tab => app.cycle_focus(),
-
-        // Number keys select voice.
-        KeyCode::Char(c @ '0'..='9') => {
-            app.select_voice_by_key(c);
-        }
-
-        // BPM adjust with +/-.
-        KeyCode::Char('+' | '=') => {
-            let new_bpm = app.sequencer.clock.bpm() + 1.0;
-            app.sequencer.clock.set_bpm(new_bpm);
-            let _ = cmd_tx.try_send(AudioCommand::SetBpm(app.sequencer.clock.bpm()));
-        }
-        KeyCode::Char('-') => {
-            let new_bpm = app.sequencer.clock.bpm() - 1.0;
-            app.sequencer.clock.set_bpm(new_bpm);
-            let _ = cmd_tx.try_send(AudioCommand::SetBpm(app.sequencer.clock.bpm()));
-        }
-
-        // Trigger selected voice manually (auditioning).
-        KeyCode::Char('t') => {
-            let _ = cmd_tx.try_send(AudioCommand::TriggerVoice {
-                voice: app.selected_voice,
-                velocity: 0.8,
-            });
-        }
-
-        _ => {}
-    }
-
-    false
 }

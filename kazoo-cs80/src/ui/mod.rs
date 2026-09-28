@@ -50,9 +50,10 @@ const BORDER_DIM: Color = Color::Rgb(60, 50, 40);
 const BORDER_ACTIVE: Color = Color::Rgb(200, 140, 40);
 /// Hint text color for parameter descriptions.
 const HINT: Color = Color::Rgb(120, 120, 90);
+/// Warnings and errors the player must notice.
+const WARN: Color = Color::Rgb(255, 90, 60);
 
 /// Draw the full CS-80 TUI.
-#[allow(clippy::too_many_lines)]
 pub fn draw(f: &mut Frame, app: &App) {
     match app.view_mode {
         ViewMode::Synth => draw_synth_view(f, app),
@@ -72,7 +73,7 @@ fn draw_synth_view(f: &mut Frame, app: &App) {
             Constraint::Min(14),   // Main editor (layers + shared)
             Constraint::Length(3), // Voice monitor
             Constraint::Length(4), // Waveform + spectrum
-            Constraint::Length(3), // Keyboard help + status
+            Constraint::Length(4), // Keyboard help + status line
         ])
         .split(size);
 
@@ -234,6 +235,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
 
+    // Desk link: where the audio is going, or why it could not plug in.
+    if let Some((text, warn)) = app.hub_badge() {
+        let color = if warn { WARN } else { GOLD };
+        spans.push(Span::styled(format!("  |  {text}"), Style::new().fg(color)));
+    }
+
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line).block(block);
     f.render_widget(paragraph, area);
@@ -305,7 +312,6 @@ fn draw_main_editor(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Draw a single layer panel with grouped sub-sections.
-#[allow(clippy::too_many_lines)]
 fn draw_layer_panel(f: &mut Frame, area: Rect, app: &App, layer_num: u8) {
     let section = if layer_num == 1 {
         Section::Layer1
@@ -710,7 +716,7 @@ fn draw_spectrum(f: &mut Frame, area: Rect, app: &App) {
 // Footer — keyboard help + controls (issue 12: show sharps)
 // ---------------------------------------------------------------------------
 
-fn draw_footer(f: &mut Frame, area: Rect, _app: &App) {
+fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let lines = vec![
         Line::from(vec![
             Span::styled(" Piano: ", Style::new().fg(GOLD)),
@@ -741,11 +747,34 @@ fn draw_footer(f: &mut Frame, area: Rect, _app: &App) {
             Span::styled(":save preset  ", Style::new().fg(DIM)),
             Span::styled("Ctrl+L", Style::new().fg(ACCENT)),
             Span::styled(":load preset  ", Style::new().fg(DIM)),
+            Span::styled("Bksp", Style::new().fg(ACCENT)),
+            Span::styled(":all notes off  ", Style::new().fg(DIM)),
             Span::styled("Esc", Style::new().fg(ACCENT)),
             Span::styled(":quit", Style::new().fg(DIM)),
         ]),
+        status_line(app),
     ];
 
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, area);
+}
+
+/// The status line: engine problems first (they affect what you hear), then
+/// the latest message.
+fn status_line(app: &App) -> Line<'static> {
+    let mut spans = Vec::new();
+    for warning in app.warnings() {
+        spans.push(Span::styled(
+            format!(" \u{26a0} {warning} "),
+            Style::new().fg(WARN).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(status) = &app.status {
+        let color = if status.is_error { WARN } else { GOLD };
+        spans.push(Span::styled(
+            format!(" {} ", status.text),
+            Style::new().fg(color),
+        ));
+    }
+    Line::from(spans)
 }

@@ -14,5 +14,7 @@
 pub mod clock;
 pub mod engine;
 
-pub use clock::{ArpClock, ClockDivision, TickEvents};
-pub use engine::{ArpMode, Arpeggiator, HeldNote, NoteEvent};
+pub use clock::{
+    ArpClock, ClockDivision, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING, TickEvents, step_beat,
+};
+pub use engine::{ArpCursor, ArpMode, Arpeggiator, HeldNote, MAX_HELD_NOTES, NoteEvent};

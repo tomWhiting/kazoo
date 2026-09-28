@@ -2,6 +2,7 @@
 name = "kazoo-core"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 
 [lints]
 workspace = true
@@ -23,4 +24,5 @@ symphonia = "0.5.5"
 thiserror = "2.0.18"
 
 [dev-dependencies]
+assert_no_alloc = { version = "1.1.2", features = ["warn_debug"] }
 tempfile = "3"

@@ -16,6 +16,13 @@ pub mod protocol;
 pub mod synthesis;
 pub mod transport;
 
+/// In tests, every allocation and free goes through an allocator that can be
+/// told a region must not allocate (`assert_no_alloc`): the engine's tests
+/// run the audio callback under it and fail on any allocation or free.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
 use std::f32::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -42,7 +49,67 @@ pub enum Error {
 
     #[error("Engine not running")]
     EngineNotRunning,
+
+    /// The engine's command queue was full, so the command was dropped and
+    /// did not take effect. The engine is running but behind; retrying later
+    /// may succeed.
+    #[error("engine busy: command queue full, command dropped")]
+    CommandQueueFull,
+
+    /// The engine already has [`MAX_TRACKS`] tracks.
+    #[error("the engine already has the maximum of {MAX_TRACKS} tracks")]
+    TrackLimit,
+
+    #[error(transparent)]
+    Param(#[from] ParamError),
 }
+
+/// Why a parameter change was refused.
+///
+/// `Copy` and free of heap data, so it can be created and returned on the
+/// real-time audio thread without allocating. Finite values outside a
+/// parameter's range are not an error: they are clamped to the range (see
+/// [`ParamInfo::clamp`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ParamError {
+    /// The processor has no parameter at this index.
+    #[error("no parameter {index} (this processor has {count})")]
+    UnknownIndex {
+        /// The requested index.
+        index: usize,
+        /// How many parameters the processor has.
+        count: usize,
+    },
+    /// The value was NaN or infinite, so the parameter was left unchanged.
+    #[error("parameter {index} was given a non-finite value")]
+    NotFinite {
+        /// The parameter's index.
+        index: usize,
+    },
+}
+
+/// Validate a parameter change against a processor's static parameter table.
+///
+/// Returns the value to apply, clamped to the parameter's range. Never
+/// allocates, so it is safe on the audio thread.
+///
+/// # Errors
+///
+/// [`ParamError::UnknownIndex`] if `index` is not in `params`;
+/// [`ParamError::NotFinite`] if `value` is NaN or infinite.
+pub fn checked_param(params: &[ParamInfo], index: usize, value: f32) -> ParamResult<f32> {
+    let info = params.get(index).ok_or(ParamError::UnknownIndex {
+        index,
+        count: params.len(),
+    })?;
+    if !value.is_finite() {
+        return Err(ParamError::NotFinite { index });
+    }
+    Ok(info.clamp(value))
+}
+
+/// Result of a parameter change.
+pub type ParamResult<T> = std::result::Result<T, ParamError>;
 
 /// Convenience alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -89,6 +156,7 @@ pub trait Processor: Send {
     }
 
     /// Metadata for the parameter at `index`. Returns `None` if out of range.
+    /// `ParamInfo` is `Copy` with static strings, so this never allocates.
     fn param_info(&self, _index: usize) -> Option<ParamInfo> {
         None
     }
@@ -100,10 +168,17 @@ pub trait Processor: Send {
 
     /// Set the parameter at `index` to `value`.
     ///
-    /// Implementations must clamp or reject out-of-range values via
-    /// [`Error::Config`].
-    fn set_param(&mut self, _index: usize, _value: f32) -> Result<()> {
-        Err(Error::Config("no parameters".into()))
+    /// Called from the audio thread, so implementations must not allocate:
+    /// validate against static parameter data (see [`checked_param`]).
+    /// Finite values outside the range are clamped to it.
+    ///
+    /// # Errors
+    ///
+    /// [`ParamError::UnknownIndex`] for an index the processor does not have;
+    /// [`ParamError::NotFinite`] for NaN or infinite values, which leave the
+    /// parameter unchanged.
+    fn set_param(&mut self, index: usize, _value: f32) -> ParamResult<()> {
+        Err(ParamError::UnknownIndex { index, count: 0 })
     }
 
     /// Called when the host sample rate changes. Implementations must
@@ -315,10 +390,12 @@ impl Default for TimePosition {
 // ---------------------------------------------------------------------------
 
 /// Describes one user-controllable parameter on a [`Processor`].
-#[derive(Debug, Clone)]
+///
+/// Processors keep these in `const` tables, so reading one never allocates.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParamInfo {
     /// Display name (e.g. "Cutoff Frequency").
-    pub name: String,
+    pub name: &'static str,
     /// Minimum allowed value.
     pub min: f32,
     /// Maximum allowed value.
@@ -326,7 +403,7 @@ pub struct ParamInfo {
     /// Default value (used on reset).
     pub default: f32,
     /// Unit label for display (e.g. "Hz", "dB", "ms", "%", "").
-    pub unit: String,
+    pub unit: &'static str,
 }
 
 impl ParamInfo {
@@ -389,7 +466,7 @@ pub const MAX_SYNTH_LAYERS: usize = 4;
 /// Clamp `value` to `[min, max]`, treating NaN/Inf as `min`.
 #[inline]
 #[must_use]
-const fn clamp_finite(value: f32, min: f32, max: f32) -> f32 {
+pub(crate) const fn clamp_finite(value: f32, min: f32, max: f32) -> f32 {
     if value.is_finite() {
         value.clamp(min, max)
     } else {
@@ -648,9 +725,9 @@ mod tests {
     fn pan_equal_power_sum() {
         // For any pan position, l² + r² should ≈ 1.0 (equal power)
         for i in 0..=20 {
-            let p = Pan::new(-1.0 + (i as f32) * 0.1);
+            let p = Pan::new((i as f32).mul_add(0.1, -1.0));
             let (l, r) = p.gains();
-            let power = l * l + r * r;
+            let power = r.mul_add(r, l * l);
             assert!(
                 (power - 1.0).abs() < 1e-5,
                 "equal-power sum at pan={}: l²+r² = {power}",
@@ -738,16 +815,160 @@ mod tests {
         assert!(tp.seconds().is_finite());
     }
 
+    // -- Parameter-setting contract, every processor --
+
+    /// Every processor the engine can build, synths and effects.
+    fn every_processor() -> Vec<Box<dyn Processor>> {
+        use crate::effects::{
+            BiquadFilter, Chorus, Delay, Distortion, DistortionType, FilterType, FormantShift,
+            Reverb,
+        };
+        use crate::synthesis::SynthesisMode;
+        let sr = 48_000.0;
+        let mut all: Vec<Box<dyn Processor>> = [
+            SynthesisMode::Passthrough,
+            SynthesisMode::PitchTracked,
+            SynthesisMode::Wavetable,
+            SynthesisMode::Granular,
+            SynthesisMode::Vocoder,
+            SynthesisMode::PhaseVocoder,
+        ]
+        .into_iter()
+        .map(|mode| crate::engine::create_synth(mode, sr))
+        .collect();
+        all.push(Box::new(BiquadFilter::new(FilterType::Peak, sr)));
+        all.push(Box::new(Chorus::new(sr)));
+        all.push(Box::new(Delay::new(sr)));
+        all.push(Box::new(Distortion::new(DistortionType::SoftClip, sr)));
+        all.push(Box::new(FormantShift::new(sr)));
+        all.push(Box::new(Reverb::new(sr)));
+        all
+    }
+
+    #[test]
+    fn every_processor_applies_valid_params() {
+        for mut processor in every_processor() {
+            let name = processor.name().to_owned();
+            for index in 0..processor.param_count() {
+                let info = processor.param_info(index).unwrap();
+                for value in [info.min, info.max, info.default] {
+                    processor.set_param(index, value).unwrap();
+                    let applied = processor.param_value(index).unwrap();
+                    assert!(
+                        (applied - value).abs() <= 1e-3 * value.abs().max(1.0),
+                        "{name} param {index} ({}): set {value}, reads {applied}",
+                        info.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_processor_clamps_out_of_range_params() {
+        for mut processor in every_processor() {
+            let name = processor.name().to_owned();
+            for index in 0..processor.param_count() {
+                let info = processor.param_info(index).unwrap();
+                let span = (info.max - info.min).max(1.0);
+                processor.set_param(index, info.max + span).unwrap();
+                let high = processor.param_value(index).unwrap();
+                assert!(
+                    (high - info.max).abs() <= 1e-3 * info.max.abs().max(1.0),
+                    "{name} param {index}: above range should clamp to {}, reads {high}",
+                    info.max
+                );
+                processor.set_param(index, info.min - span).unwrap();
+                let low = processor.param_value(index).unwrap();
+                assert!(
+                    (low - info.min).abs() <= 1e-3 * info.min.abs().max(1.0),
+                    "{name} param {index}: below range should clamp to {}, reads {low}",
+                    info.min
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_processor_rejects_non_finite_params_unchanged() {
+        for mut processor in every_processor() {
+            let name = processor.name().to_owned();
+            for index in 0..processor.param_count() {
+                let before = processor.param_value(index).unwrap();
+                for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                    assert_eq!(
+                        processor.set_param(index, bad),
+                        Err(ParamError::NotFinite { index }),
+                        "{name} param {index} accepted {bad}"
+                    );
+                    let after = processor.param_value(index).unwrap();
+                    assert!(
+                        (after - before).abs() < f32::EPSILON,
+                        "{name} param {index} changed from {before} to {after} on {bad}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_processor_rejects_unknown_params() {
+        for mut processor in every_processor() {
+            let name = processor.name().to_owned();
+            let count = processor.param_count();
+            for index in [count, count + 1, usize::MAX] {
+                assert_eq!(
+                    processor.set_param(index, 0.0),
+                    Err(ParamError::UnknownIndex { index, count }),
+                    "{name} accepted parameter {index}"
+                );
+                assert!(processor.param_info(index).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn checked_param_validates_against_table() {
+        const TABLE: [ParamInfo; 1] = [ParamInfo {
+            name: "Level",
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            unit: "",
+        }];
+        assert_eq!(checked_param(&TABLE, 0, 0.25), Ok(0.25));
+        assert_eq!(checked_param(&TABLE, 0, 7.0), Ok(1.0));
+        assert_eq!(checked_param(&TABLE, 0, -7.0), Ok(0.0));
+        assert_eq!(
+            checked_param(&TABLE, 0, f32::NAN),
+            Err(ParamError::NotFinite { index: 0 })
+        );
+        assert_eq!(
+            checked_param(&TABLE, 1, 0.5),
+            Err(ParamError::UnknownIndex { index: 1, count: 1 })
+        );
+    }
+
+    #[test]
+    fn param_error_converts_and_displays() {
+        let err: Error = ParamError::UnknownIndex { index: 4, count: 3 }.into();
+        assert_eq!(err.to_string(), "no parameter 4 (this processor has 3)");
+        assert_eq!(
+            Error::CommandQueueFull.to_string(),
+            "engine busy: command queue full, command dropped"
+        );
+    }
+
     // -- ParamInfo tests --
 
     #[test]
     fn param_info_clamp() {
         let info = ParamInfo {
-            name: "test".into(),
+            name: "test",
             min: 0.0,
             max: 100.0,
             default: 50.0,
-            unit: "%".into(),
+            unit: "%",
         };
         assert!((info.clamp(-10.0) - 0.0).abs() < f32::EPSILON);
         assert!((info.clamp(200.0) - 100.0).abs() < f32::EPSILON);
@@ -757,11 +978,11 @@ mod tests {
     #[test]
     fn param_info_in_range() {
         let info = ParamInfo {
-            name: "test".into(),
+            name: "test",
             min: 20.0,
             max: 20_000.0,
             default: 1000.0,
-            unit: "Hz".into(),
+            unit: "Hz",
         };
         assert!(info.in_range(440.0));
         assert!(!info.in_range(10.0));
@@ -771,11 +992,11 @@ mod tests {
     #[test]
     fn param_info_normalize_denormalize_roundtrip() {
         let info = ParamInfo {
-            name: "freq".into(),
+            name: "freq",
             min: 20.0,
             max: 20_000.0,
             default: 1000.0,
-            unit: "Hz".into(),
+            unit: "Hz",
         };
         let value = 5000.0;
         let normalized = info.normalize(value);
@@ -789,11 +1010,11 @@ mod tests {
     #[test]
     fn param_info_normalize_boundaries() {
         let info = ParamInfo {
-            name: "test".into(),
+            name: "test",
             min: 0.0,
             max: 1.0,
             default: 0.5,
-            unit: "".into(),
+            unit: "",
         };
         assert!((info.normalize(0.0) - 0.0).abs() < f32::EPSILON);
         assert!((info.normalize(1.0) - 1.0).abs() < f32::EPSILON);
@@ -966,11 +1187,11 @@ mod tests {
             let pos = soft_limit(val);
             let neg = soft_limit(-val);
             assert!(
-                pos <= 1.0 && pos >= 0.0,
+                (0.0..=1.0).contains(&pos),
                 "positive {val} -> {pos} should be in [0, 1]"
             );
             assert!(
-                neg >= -1.0 && neg <= 0.0,
+                (-1.0..=0.0).contains(&neg),
                 "negative {val} -> {neg} should be in [-1, 0]"
             );
         }
@@ -1016,7 +1237,7 @@ mod tests {
         soft_limit_buffer(&mut buf);
         for (i, &s) in buf.iter().enumerate() {
             assert!(
-                s.is_finite() && s >= -1.0 && s <= 1.0,
+                s.is_finite() && (-1.0..=1.0).contains(&s),
                 "sample {i} = {s} should be in [-1, 1]"
             );
         }

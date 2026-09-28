@@ -57,7 +57,6 @@ const EFFECTS_SIDEBAR_WIDTH: u16 = 28;
 /// Minimum terminal inner width to show any right sidebar.
 const MIN_WIDTH_FOR_SIDEBAR: u16 = 60;
 
-#[allow(clippy::too_many_lines)]
 fn draw_arrangement(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -174,13 +173,24 @@ fn draw_waveform_fallback(frame: &mut Frame, app: &App, area: Rect) {
 /// screen — extra space is left empty at the bottom.
 const LANE_HEIGHT: u16 = 3;
 
+// Compile-time layout invariants. A violation fails the build instead of
+// producing a broken layout at runtime.
+const _: () = {
+    // The effects sidebar carries more text than the fader sidebar.
+    assert!(EFFECTS_SIDEBAR_WIDTH > FADER_SIDEBAR_WIDTH);
+    // Track list (22 cols) + minimum timeline (20 cols) must fit in the
+    // width at which a sidebar is shown.
+    assert!(22 + 20 <= MIN_WIDTH_FOR_SIDEBAR);
+    // Every lane needs at least one visible row.
+    assert!(LANE_HEIGHT > 0);
+};
+
 /// Draw one horizontal lane per track. Armed tracks show the live waveform;
 /// others show an empty lane with just the track colour bar.
 fn draw_track_lanes(frame: &mut Frame, app: &App, area: Rect) {
     let row_height = LANE_HEIGHT;
 
     for (i, track) in app.tracks.iter().enumerate() {
-        #[allow(clippy::cast_possible_truncation)]
         let y = area.y + (i as u16) * row_height;
         if y >= area.y + area.height {
             break;
@@ -359,11 +369,8 @@ fn draw_simple_ruler(frame: &mut Frame, app: &App, area: Rect) {
     // Show the current time position centered, with tick marks.
     let pos_samples = app.display.transport.position.samples;
     let total_secs = pos_samples as f64 / f64::from(sample_rate);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let mins = (total_secs / 60.0) as u64;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let secs = (total_secs % 60.0) as u64;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let millis = ((total_secs * 1000.0) % 1000.0) as u64;
 
     let time_str = format!("\u{25b6} {mins}:{secs:02}.{millis:03}");
@@ -610,19 +617,21 @@ fn draw_compact_synth(frame: &mut Frame, app: &App, area: Rect) {
 
     // Rows 2..N: up to 3 key synth parameters.
     let max_params = 3usize;
-    for (i, info) in track.synth_param_infos.iter().take(max_params).enumerate() {
+    let params = track
+        .synth_param_infos
+        .iter()
+        .zip(&track.synth_param_values)
+        .take(max_params)
+        .enumerate();
+    for (i, (info, &value)) in params {
         if row >= area.height {
             break;
         }
-        let value = track.synth_param_values.get(i).copied().unwrap_or(0.0);
         let formatted = track.synthesis_mode.format_param_value(i, value);
 
-        // Truncate param name to fit.
-        let name = if info.name.len() > 6 {
-            &info.name[..6]
-        } else {
-            &info.name
-        };
+        // Truncate param name to fit, by characters (never split a
+        // multi-byte character).
+        let name: String = info.name.chars().take(6).collect();
 
         let param_row = Rect::new(area.x, area.y + row, area.width, 1);
         frame.render_widget(
@@ -678,7 +687,6 @@ fn draw_fader_strip(frame: &mut Frame, app: &App, index: usize, area: Rect) {
 
         let ratio = db_to_ratio(peak_db);
         let meter_width = 4usize.min(width.saturating_sub(8));
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let filled = (ratio * meter_width as f32).round() as usize;
         let empty = meter_width.saturating_sub(filled);
 
@@ -831,7 +839,6 @@ fn draw_master_meter_line(
     area: Rect,
 ) {
     let ratio = db_to_ratio(peak_db);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let filled = (ratio * meter_width as f32).round() as usize;
     let empty = meter_width.saturating_sub(filled);
 
@@ -896,12 +903,7 @@ fn format_compact_pan(pan: f32, width: usize) -> String {
         return String::new();
     }
     let positions = width.saturating_sub(1);
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::manual_midpoint
-    )]
-    let knob_pos = (((pan + 1.0) / 2.0) * positions as f32)
+    let knob_pos = (f32::midpoint(pan, 1.0) * positions as f32)
         .round()
         .clamp(0.0, positions as f32) as usize;
 
@@ -942,7 +944,7 @@ mod tests {
 
     #[test]
     fn db_to_ratio_midpoint() {
-        let mid = (METER_MIN_DB + METER_MAX_DB) / 2.0;
+        let mid = f32::midpoint(METER_MIN_DB, METER_MAX_DB);
         assert!((db_to_ratio(mid) - 0.5).abs() < f32::EPSILON);
     }
 
@@ -1030,33 +1032,5 @@ mod tests {
                 "{mode:?} has empty label"
             );
         }
-    }
-
-    // -- sidebar constants ---------------------------------------------------
-
-    #[test]
-    fn effects_sidebar_wider_than_fader_sidebar() {
-        assert!(EFFECTS_SIDEBAR_WIDTH > FADER_SIDEBAR_WIDTH);
-    }
-
-    #[test]
-    fn sidebar_widths_leave_room_for_track_list_and_timeline() {
-        // Track list is 22 cols, timeline needs at least 20.
-        // The sidebar must fit within MIN_WIDTH_FOR_SIDEBAR total.
-        assert!(
-            22 + 20 + EFFECTS_SIDEBAR_WIDTH <= MIN_WIDTH_FOR_SIDEBAR + EFFECTS_SIDEBAR_WIDTH,
-            "effects sidebar must be usable at minimum width"
-        );
-        assert!(
-            22 + 20 + FADER_SIDEBAR_WIDTH <= MIN_WIDTH_FOR_SIDEBAR + FADER_SIDEBAR_WIDTH,
-            "fader sidebar must be usable at minimum width"
-        );
-    }
-
-    // -- LANE_HEIGHT constant -----------------------------------------------
-
-    #[test]
-    fn lane_height_is_positive() {
-        assert!(LANE_HEIGHT > 0);
     }
 }

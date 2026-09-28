@@ -298,8 +298,8 @@ mod tests {
         let silence = vec![0.0_f32; fft_size];
 
         // First frame: sine.
-        let _ = no_smooth.push_samples(&sine);
-        let _ = with_smooth.push_samples(&sine);
+        assert!(no_smooth.push_samples(&sine).is_some());
+        assert!(with_smooth.push_samples(&sine).is_some());
 
         // Second frame: silence. The smoothed version should still retain
         // some energy from the sine.
@@ -330,7 +330,7 @@ mod tests {
         let mut analyzer = SpectrumAnalyzer::new(fft_size, 44100.0, 0.5);
 
         let samples = generate_sine(440.0, 44100.0, fft_size);
-        let _ = analyzer.push_samples(&samples);
+        assert!(analyzer.push_samples(&samples).is_some());
 
         analyzer.reset();
         assert_eq!(analyzer.buffer_pos, 0);
@@ -393,6 +393,7 @@ mod tests {
         assert!(b.sample_rate() > 0.0);
 
         // NaN smoothing should default to 0.
-        let _ = SpectrumAnalyzer::new(512, 44100.0, f32::NAN);
+        let c = SpectrumAnalyzer::new(512, 44100.0, f32::NAN);
+        assert!(c.smoothing.abs() < f32::EPSILON);
     }
 }

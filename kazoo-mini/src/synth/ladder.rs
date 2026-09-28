@@ -32,7 +32,6 @@ use kazoo_core::sanitize_sample;
 /// for large inputs (exactly like real tanh). This avoids the cost of
 /// `f32::tanh()` in the inner loop where we call it 8+ times per sample.
 #[inline]
-#[allow(clippy::suboptimal_flops)]
 fn fast_tanh(x: f32) -> f32 {
     if !x.is_finite() {
         return 0.0;
@@ -46,7 +45,7 @@ fn fast_tanh(x: f32) -> f32 {
     }
     // Padé approximant: tanh(x) ≈ x(27 + x²) / (27 + 9x²)
     let x2 = x * x;
-    x * (27.0 + x2) / (27.0 + 9.0 * x2)
+    x * (27.0 + x2) / 9.0f32.mul_add(x2, 27.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -131,12 +130,6 @@ impl MoogLadder {
         self.update_coefficients();
     }
 
-    /// Get current cutoff.
-    #[must_use]
-    pub const fn cutoff(&self) -> f32 {
-        self.cutoff
-    }
-
     /// Set resonance (0.0 to 1.0).
     pub fn set_resonance(&mut self, r: f32) {
         self.resonance = r.clamp(0.0, 1.0);
@@ -160,31 +153,6 @@ impl MoogLadder {
         self.drive
     }
 
-    /// Update the effective cutoff with keyboard tracking.
-    ///
-    /// `note_freq` is the current note frequency in Hz. Keyboard tracking
-    /// maps the note frequency to a cutoff offset (1V/oct behavior).
-    pub fn update_key_tracking(&mut self, note_freq: f32) {
-        if self.key_track <= 0.0 || note_freq <= 0.0 {
-            self.cutoff = self.base_cutoff;
-        } else {
-            // 1V/oct: cutoff scales proportionally to note frequency
-            // relative to middle C (261.63 Hz)
-            let ratio = note_freq / 261.63;
-            let tracking_offset = ratio.log2() * 12.0 * self.key_track;
-            // Convert semitone offset to frequency multiplier on cutoff
-            let multiplier = (tracking_offset / 12.0).exp2();
-            self.cutoff = (self.base_cutoff * multiplier).clamp(Self::MIN_CUTOFF, Self::MAX_CUTOFF);
-        }
-        self.update_coefficients();
-    }
-
-    /// Set sample rate and reset state.
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate.max(1.0);
-        self.update_coefficients();
-    }
-
     /// Update pre-computed coefficients from cutoff and resonance.
     ///
     /// Called whenever cutoff, resonance, or sample rate changes.
@@ -193,7 +161,6 @@ impl MoogLadder {
     /// threshold above the analog k=4. We compute the exact discrete-time
     /// threshold from z-plane analysis so that `resonance=1.0` always
     /// self-oscillates regardless of cutoff frequency.
-    #[allow(clippy::suboptimal_flops)] // mul_add changes rounding, breaks self-oscillation threshold
     fn update_coefficients(&mut self) {
         // 2x oversampling: effective sample rate is doubled
         let fs2 = self.sample_rate * 2.0;
@@ -218,7 +185,10 @@ impl MoogLadder {
         // to sample rate) and increases as cutoff approaches Nyquist.
         let g = self.tune;
         let k_threshold = if g > 0.001 {
-            let discriminant = (1.0 - 4.0 * g + 2.0 * g * g).max(0.0).sqrt();
+            let discriminant = (2.0 * g)
+                .mul_add(g, 4.0f32.mul_add(-g, 1.0))
+                .max(0.0)
+                .sqrt();
             let u = (1.0 - discriminant) * 0.5;
             let ratio = u * std::f32::consts::SQRT_2 / g;
             ratio * ratio * ratio * ratio
@@ -235,7 +205,6 @@ impl MoogLadder {
     ///
     /// Returns the filtered output. Runs at 2x internal oversampling.
     #[inline]
-    #[allow(clippy::suboptimal_flops)] // mul_add changes rounding, breaks self-oscillation threshold
     pub fn process_sample(&mut self, input: f32) -> f32 {
         let input = sanitize_sample(input);
 
@@ -245,7 +214,7 @@ impl MoogLadder {
             // at the oversampled rate — the 2x oversampling makes this
             // delay negligible, which is the Huovilainen insight).
             let feedback = self.delay;
-            let x = input - self.k * feedback;
+            let x = (-self.k).mul_add(feedback, input);
 
             // Input saturation (transistor input stage)
             let x_sat = fast_tanh(x * self.drive);
@@ -278,13 +247,6 @@ impl MoogLadder {
 
         // Output is the 4th stage (after 2x oversampled processing)
         sanitize_sample(self.stage[3])
-    }
-
-    /// Process a block of samples in-place.
-    pub fn process_block(&mut self, buffer: &mut [f32]) {
-        for sample in buffer.iter_mut() {
-            *sample = self.process_sample(*sample);
-        }
     }
 
     /// Reset all filter state to zero.
@@ -386,7 +348,8 @@ mod tests {
         filter.set_resonance(1.0); // Max resonance
 
         // Kick-start with a tiny impulse
-        let _ = filter.process_sample(0.001);
+        let kick = filter.process_sample(0.001);
+        assert!(kick.is_finite(), "kick-start output must be finite");
 
         // Let it ring with zero input
         let mut samples = Vec::with_capacity(44100);
@@ -505,7 +468,8 @@ mod tests {
         filter.set_cutoff(440.0);
         filter.set_resonance(1.0);
 
-        let _ = filter.process_sample(0.001); // kick-start
+        let kick = filter.process_sample(0.001);
+        assert!(kick.is_finite(), "kick-start output must be finite");
 
         // Collect samples after settling
         let mut samples = Vec::with_capacity(4410);
@@ -519,16 +483,18 @@ mod tests {
         // Check smoothness: max sample-to-sample difference should be small
         // relative to the signal amplitude
         let max_abs = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
-        if max_abs > 0.001 {
-            let max_diff = samples
-                .windows(2)
-                .map(|w| (w[1] - w[0]).abs())
-                .fold(0.0_f32, f32::max);
-            let smoothness = max_diff / max_abs;
-            assert!(
-                smoothness < 0.3,
-                "self-oscillation should be smooth (sine-like), got smoothness={smoothness}"
-            );
-        }
+        assert!(
+            max_abs > 0.001,
+            "filter must self-oscillate for the purity check, got max_abs={max_abs}"
+        );
+        let max_diff = samples
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0_f32, f32::max);
+        let smoothness = max_diff / max_abs;
+        assert!(
+            smoothness < 0.3,
+            "self-oscillation should be smooth (sine-like), got smoothness={smoothness}"
+        );
     }
 }

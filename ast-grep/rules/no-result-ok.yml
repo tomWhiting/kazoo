@@ -1,0 +1,7 @@
+id: no-result-ok
+language: rust
+severity: error
+message: "`.ok()` turns an error into `None` and loses it. Handle or propagate the error."
+rule:
+  kind: call_expression
+  pattern: $E.ok()

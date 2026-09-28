@@ -40,7 +40,6 @@ impl Cowbell {
         let bp_coeff_lo = (-std::f32::consts::TAU * 700.0 / sample_rate).exp();
         let bp_coeff_hi = (-std::f32::consts::TAU * 1100.0 / sample_rate).exp();
         let decay_time = 0.5;
-        #[allow(clippy::cast_sign_loss)]
         let transient_end = (sample_rate * Self::TRANSIENT_SECS) as u32;
         let sustain_decay = Self::compute_sustain_decay(sample_rate, decay_time);
         Self {
@@ -83,15 +82,6 @@ impl Cowbell {
         self.freq_1 = 800.0 * r;
         self.freq_2 = 540.0 * r;
     }
-
-    /// Two-stage envelope: full level during transient, then exponential decay.
-    /// Both phases return 1.0 because the actual decay is handled by the
-    /// amplitude field in the process loop. Kept as a method for future
-    /// envelope shaping.
-    #[allow(clippy::unused_self)]
-    const fn envelope(&self) -> f32 {
-        1.0
-    }
 }
 
 impl Voice for Cowbell {
@@ -124,18 +114,19 @@ impl Voice for Cowbell {
 
         // Bandpass.
         let hp = mixed - self.bp_state_lo;
-        self.bp_state_lo += (1.0 - self.bp_coeff_lo) * (mixed - self.bp_state_lo);
-        self.bp_state_hi += (1.0 - self.bp_coeff_hi) * (hp - self.bp_state_hi);
+        self.bp_state_lo =
+            (1.0 - self.bp_coeff_lo).mul_add(mixed - self.bp_state_lo, self.bp_state_lo);
+        self.bp_state_hi =
+            (1.0 - self.bp_coeff_hi).mul_add(hp - self.bp_state_hi, self.bp_state_hi);
 
         // Two-stage envelope: hold during transient, then exponential decay.
-        let env = self.envelope();
         if self.env_pos >= self.transient_end {
             // Sustain decay phase.
             self.amplitude *= self.sustain_decay;
         }
         self.env_pos = self.env_pos.saturating_add(1);
 
-        let output = self.bp_state_hi * self.amplitude * env;
+        let output = self.bp_state_hi * self.amplitude;
 
         if self.amplitude < 1e-6 {
             self.active = false;

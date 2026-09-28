@@ -1,0 +1,15 @@
+[package]
+name = "kazoo-perc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Kazoo's percussion, written from scratch: drum voices and rhythm generators"
+
+[lints]
+workspace = true
+
+[dependencies]
+kazoo-fx = { path = "../kazoo-fx" }
+
+[dev-dependencies]
+assert_no_alloc = "1.1.2"

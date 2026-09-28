@@ -98,8 +98,8 @@ impl StateVariableFilter {
 
         // Chamberlin SVF: two-integrator structure
         let hp = self.q_coeff.mul_add(-self.bp, input - self.lp);
-        self.bp += self.f_coeff * hp;
-        self.lp += self.f_coeff * self.bp;
+        self.bp = self.f_coeff.mul_add(hp, self.bp);
+        self.lp = self.f_coeff.mul_add(self.bp, self.lp);
 
         // NaN/Inf defense on state variables
         if !self.bp.is_finite() {

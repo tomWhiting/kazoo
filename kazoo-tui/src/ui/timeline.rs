@@ -8,7 +8,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
-use kazoo_core::engine::{ClipSnapshot, TimelineSnapshot, TrackClipSnapshot};
+use kazoo_core::engine::{ClipSnapshot, RecordingSpan, TimelineSnapshot, TrackClipSnapshot};
 use kazoo_core::transport::TransportState;
 
 use crate::app::{App, FocusedPanel};
@@ -19,6 +19,17 @@ const MIN_WIDTH: u16 = 10;
 
 /// Height of the time ruler at the bottom of the timeline.
 const RULER_HEIGHT: u16 = 1;
+
+/// The visible horizontal window of the timeline, in samples.
+#[derive(Debug, Clone, Copy)]
+struct TimelineWindow {
+    /// First visible sample (left edge).
+    start: f64,
+    /// One past the last visible sample (right edge).
+    end: f64,
+    /// Samples represented by one terminal column.
+    samples_per_col: f64,
+}
 
 /// Draw the timeline panel into the given area.
 ///
@@ -46,25 +57,20 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     // Calculate visible range in samples.
     let samples_per_col = app.tracking_state.timeline_zoom;
     let view_start = app.tracking_state.timeline_scroll;
-    let view_end = view_start + (f64::from(track_area.width) * samples_per_col);
+    let window = TimelineWindow {
+        start: view_start,
+        end: view_start + (f64::from(track_area.width) * samples_per_col),
+        samples_per_col,
+    };
 
     let has_content = timeline
         .tracks
         .iter()
-        .any(|t| !t.clips.is_empty() || t.is_recording_clip);
+        .any(|t| !t.clips.is_empty() || t.recording.is_some());
 
     if has_content {
         // Draw track rows with clips.
-        draw_track_rows(
-            frame,
-            app,
-            timeline,
-            track_area,
-            view_start,
-            view_end,
-            samples_per_col,
-            sample_rate,
-        );
+        draw_track_rows(frame, app, timeline, track_area, window);
     } else {
         // No clips — show placeholder in the track area only.
         let empty = Paragraph::new("  No clips — record or load audio (o)")
@@ -78,16 +84,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Draw one row per track with clip rectangles.
-#[allow(clippy::too_many_arguments)]
 fn draw_track_rows(
     frame: &mut Frame,
     app: &App,
     timeline: &TimelineSnapshot,
     area: Rect,
-    view_start: f64,
-    view_end: f64,
-    samples_per_col: f64,
-    sample_rate: u32,
+    window: TimelineWindow,
 ) {
     let num_tracks = timeline.tracks.len().max(1);
     let row_height = (area.height as usize / num_tracks).max(1) as u16;
@@ -100,32 +102,18 @@ fn draw_track_rows(
         let h = row_height.min(area.y + area.height - y);
         let row_area = Rect::new(area.x, y, area.width, h);
 
-        draw_track_row(
-            frame,
-            app,
-            track,
-            i,
-            row_area,
-            view_start,
-            view_end,
-            samples_per_col,
-            sample_rate,
-        );
+        draw_track_row(frame, app, track, i, row_area, window);
     }
 }
 
 /// Draw a single track row with lane background, colored edge bar, and label.
-#[allow(clippy::too_many_arguments)]
 fn draw_track_row(
     frame: &mut Frame,
     app: &App,
     track: &TrackClipSnapshot,
     track_index: usize,
     area: Rect,
-    view_start: f64,
-    view_end: f64,
-    samples_per_col: f64,
-    _sample_rate: u32,
+    window: TimelineWindow,
 ) {
     let track_col = theme::track_color(track_index);
     let lane_bg = theme::lane_bg(track_index);
@@ -177,47 +165,36 @@ fn draw_track_row(
 
     // Draw clips.
     for clip in &track.clips {
-        draw_clip(
-            frame,
-            app,
-            clip,
-            clip_area,
-            view_start,
-            view_end,
-            samples_per_col,
-            track_col,
-        );
+        draw_clip(frame, app, clip, clip_area, window, track_col);
     }
 
     // Draw active recording.
-    if track.is_recording_clip {
-        draw_recording(frame, app, track, clip_area, view_start, samples_per_col);
+    if let Some(span) = track.recording {
+        draw_recording(frame, app, span, clip_area, window);
     }
 }
 
 /// Draw a single clip as a colored rectangle with mini waveform.
-#[allow(clippy::too_many_arguments)]
 fn draw_clip(
     frame: &mut Frame,
     app: &App,
     clip: &ClipSnapshot,
     area: Rect,
-    view_start: f64,
-    view_end: f64,
-    samples_per_col: f64,
+    window: TimelineWindow,
     track_color: Color,
 ) {
     let clip_start = clip.position as f64;
     let clip_end = clip_start + clip.length as f64;
 
     // Skip clips entirely outside the visible range.
-    if clip_end <= view_start || clip_start >= view_end {
+    if clip_end <= window.start || clip_start >= window.end {
         return;
     }
 
     // Calculate column range.
-    let col_start = ((clip_start - view_start) / samples_per_col).max(0.0) as u16;
-    let col_end = ((clip_end - view_start) / samples_per_col).min(f64::from(area.width)) as u16;
+    let col_start = ((clip_start - window.start) / window.samples_per_col).max(0.0) as u16;
+    let col_end =
+        ((clip_end - window.start) / window.samples_per_col).min(f64::from(area.width)) as u16;
 
     if col_start >= col_end || col_start >= area.width {
         return;
@@ -353,16 +330,16 @@ fn draw_mini_waveform(
 fn draw_recording(
     frame: &mut Frame,
     app: &App,
-    track: &TrackClipSnapshot,
+    span: RecordingSpan,
     area: Rect,
-    view_start: f64,
-    samples_per_col: f64,
+    window: TimelineWindow,
 ) {
-    let rec_start = track.recording_start as f64;
-    let rec_end = rec_start + track.recording_length as f64;
+    let rec_start = span.start as f64;
+    let rec_end = span.end() as f64;
 
-    let col_start = ((rec_start - view_start) / samples_per_col).max(0.0) as u16;
-    let col_end = ((rec_end - view_start) / samples_per_col).min(f64::from(area.width)) as u16;
+    let col_start = ((rec_start - window.start) / window.samples_per_col).max(0.0) as u16;
+    let col_end =
+        ((rec_end - window.start) / window.samples_per_col).min(f64::from(area.width)) as u16;
 
     if col_start >= col_end || col_start >= area.width {
         return;
@@ -462,7 +439,6 @@ fn draw_ruler(
             ruler_text[col] = '\u{2502}';
 
             // Write time label after tick.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let total_secs = tick_secs.max(0.0) as u64;
             let mins = total_secs / 60;
             let secs = total_secs % 60;
@@ -603,12 +579,51 @@ mod tests {
     // -- mini waveform overview rendering -----------------------------------
 
     #[test]
-    fn draw_mini_waveform_with_empty_overview_does_not_panic() {
-        // We can't call draw_mini_waveform directly since it needs a Frame,
-        // but we can verify the early return logic by checking the function
-        // signature. Instead, test the overview data contract.
-        let overview: Vec<(f32, f32)> = vec![];
-        assert!(overview.is_empty());
+    fn draw_mini_waveform_with_empty_overview_fills_background() {
+        let backend = ratatui::backend::TestBackend::new(8, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_mini_waveform(
+                    frame,
+                    &[],
+                    Rect::new(0, 0, 8, 3),
+                    theme::FG_PRIMARY,
+                    theme::BG_SURFACE,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        for y in 0..3 {
+            for x in 0..8 {
+                let cell = &buffer[(x, y)];
+                assert_eq!(cell.symbol(), " ");
+                assert_eq!(cell.bg, theme::BG_SURFACE);
+            }
+        }
+    }
+
+    #[test]
+    fn draw_mini_waveform_full_scale_fills_every_row() {
+        let backend = ratatui::backend::TestBackend::new(4, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_mini_waveform(
+                    frame,
+                    &[(-1.0, 1.0); 4],
+                    Rect::new(0, 0, 4, 2),
+                    theme::FG_PRIMARY,
+                    theme::BG_SURFACE,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        for y in 0..2 {
+            for x in 0..4 {
+                assert_eq!(buffer[(x, y)].symbol(), "\u{2588}");
+            }
+        }
     }
 
     #[test]
@@ -616,8 +631,8 @@ mod tests {
         // Valid overview data should have min/max in [-1, 1].
         let overview = vec![(-0.5, 0.8), (-1.0, 1.0), (0.0, 0.0)];
         for &(min, max) in &overview {
-            assert!(min >= -1.0 && min <= 1.0);
-            assert!(max >= -1.0 && max <= 1.0);
+            assert!((-1.0..=1.0).contains(&min));
+            assert!((-1.0..=1.0).contains(&max));
         }
     }
 }

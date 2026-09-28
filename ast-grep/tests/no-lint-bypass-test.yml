@@ -1,0 +1,11 @@
+id: no-lint-bypass
+valid:
+  - "#[derive(Debug)] struct A;"
+  - "#[cfg(test)] mod tests {}"
+  - "#[must_use] fn f() -> u8 { 1 }"
+invalid:
+  - "#[allow(clippy::float_cmp)] mod tests {}"
+  - "#[allow(dead_code)] fn f() {}"
+  - "#[expect(clippy::too_many_arguments)] fn f() {}"
+  - "#![allow(clippy::pedantic)]"
+  - "#[cfg_attr(test, allow(clippy::unwrap_used))] fn f() {}"

@@ -1,24 +1,22 @@
 //! Inter-process communication for the Kazoo hub-instrument architecture.
 //!
-//! This module provides the full IPC layer that connects instrument crates
-//! (kazoo-808, kazoo-mini, kazoo-cs80, kazoo-arp) to the kazoo-tui hub.
+//! kazoo-mix is the studio's hub: it runs the desk server (in kazoo-mix
+//! itself), and every instrument — the kazoo-tui voice synth included —
+//! plugs into it through this module. kazoo-core provides the instrument
+//! side of the connection, the wire protocol both sides speak, and the
+//! socket discovery the hub uses to claim its address.
 //!
 //! # Architecture
 //!
 //! ```text
-//! Instrument Process          Hub Process (kazoo-tui)
-//! ┌──────────────┐           ┌─────────────────────────────────┐
-//! │  HubIpcClient │──UDS────│  HubIpcServer                   │
-//! │  send_audio() │         │  ├── per-instrument ring buffer  │
-//! │  try_recv()   │         │  └── transport sync producer     │
-//! └──────────────┘           └──────────┬──────────────────────┘
-//!                                        │ crossbeam channel
-//!                                        ▼
-//!                            ┌─────────────────────────────────┐
-//!                            │  Output Callback                │
-//!                            │  mix_ipc_instruments()          │
-//!                            │  → master bus                   │
-//!                            └─────────────────────────────────┘
+//! Instrument process                              Hub process (kazoo-mix)
+//! ┌──────────────────────────────┐                ┌──────────────────────┐
+//! │ audio callback               │                │ desk server          │
+//! │  HubLinkAudio ── rings ──┐   │                │ (kazoo-mix/src/hub)  │
+//! │                          ▼   │                │                      │
+//! │ link thread: HubIpcClient ───┼──── UDS ───────┤                      │
+//! │ UI: HubLink (status, notes)  │                │                      │
+//! └──────────────────────────────┘                └──────────────────────┘
 //! ```
 //!
 //! # Wire Protocol
@@ -31,17 +29,22 @@
 //!
 //! - [`protocol`] — Frame encoding/decoding, non-blocking read state machine.
 //! - [`types`] — Message type definitions (Register, Audio, `TransportSync`, etc.).
-//! - [`discovery`] — Socket path resolution, PID file management.
+//! - [`discovery`] — Socket path resolution, claiming the hub socket, PID file
+//!   management.
 //! - [`client`] — Instrument-side connection to the hub.
-//! - [`server`] — Hub-side listener managing all instrument connections.
+//! - [`link`] — The real-time-safe split of an instrument's connection: a
+//!   link thread that owns the client, and the audio callback's lock-free
+//!   half.
+//! - [`outbox`] — The lock-free audio queue between the two halves of a link.
+//! - [`follow`] — Following the desk's transport to the exact frame.
 
 pub mod client;
 pub mod discovery;
+pub mod follow;
+pub mod link;
+pub mod outbox;
 pub mod protocol;
-pub mod server;
 pub mod types;
 
 // Re-export the primary public types for convenience.
 pub use client::HubIpcClient;
-pub use server::{HubIpcServer, IpcInstrumentConsumer, MAX_INSTRUMENTS};
-pub use types::IpcTransportNotify;

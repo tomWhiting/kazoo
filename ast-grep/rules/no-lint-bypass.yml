@@ -1,0 +1,17 @@
+id: no-lint-bypass
+language: rust
+severity: error
+message: Lint bypass. Fix the code instead of silencing the lint.
+note: |
+  `allow`, `expect` and `cfg_attr(.., allow(..))` hide findings from clippy
+  and rustc. Workspace lint levels live in Cargo.toml; code must pass them.
+rule:
+  any:
+    - kind: attribute_item
+      regex: '^#\[\s*(allow|expect)\s*\('
+    - kind: inner_attribute_item
+      regex: '^#!\[\s*(allow|expect)\s*\('
+    - kind: attribute_item
+      regex: '^#\[\s*cfg_attr\s*\(.*\b(allow|expect)\s*\('
+    - kind: inner_attribute_item
+      regex: '^#!\[\s*cfg_attr\s*\(.*\b(allow|expect)\s*\('

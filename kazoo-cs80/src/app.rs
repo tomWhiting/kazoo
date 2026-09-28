@@ -1,7 +1,33 @@
 //! Application state for the CS-80 pad synth.
 
+use kazoo_core::ipc::link::LinkStatus;
+
+use crate::command::QueueStatus;
 use crate::modular::graph::NodeGraph;
 use crate::synth::{Cs80Synth, NUM_VOICES, SynthParams, VoiceStatus};
+use crate::terminal::KeyReleases;
+
+/// A one-line message for the user (preset saved, load failed, ...).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusLine {
+    pub text: String,
+    pub is_error: bool,
+}
+
+/// Everything the audio side could not deliver, for display.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EngineHealth {
+    /// UI → audio command queue state.
+    pub queue: QueueStatus,
+    /// Display snapshots the audio thread could not hand over.
+    pub display_dropped: u64,
+    /// Errors reported by the audio backend.
+    pub stream_errors: u64,
+    /// Backend errors whose message was lost (still counted above).
+    pub stream_errors_unreported: u64,
+    /// Text of the most recent backend error received.
+    pub last_stream_error: Option<String>,
+}
 
 /// Top-level view mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +134,14 @@ pub struct App {
     pub view_mode: ViewMode,
     /// Modular node graph for the modular view.
     pub modular_graph: NodeGraph,
+    /// Latest message for the status line.
+    pub status: Option<StatusLine>,
+    /// Delivery problems between the UI and the audio callback.
+    pub health: EngineHealth,
+    /// Whether the terminal reports key releases.
+    pub key_releases: KeyReleases,
+    /// State of the link to the kazoo-mix desk (None until first polled).
+    pub hub: Option<LinkStatus>,
 }
 
 impl App {
@@ -131,7 +165,96 @@ impl App {
             shift_held: false,
             view_mode: ViewMode::Synth,
             modular_graph: NodeGraph::new(sample_rate, 128),
+            status: None,
+            health: EngineHealth::default(),
+            key_releases: KeyReleases::Reported,
+            hub: None,
         }
+    }
+
+    /// Show a message on the status line.
+    pub fn set_status(&mut self, text: impl Into<String>, is_error: bool) {
+        self.status = Some(StatusLine {
+            text: text.into(),
+            is_error,
+        });
+    }
+
+    /// Forget every held key and note on the UI side (panic / all notes off).
+    pub fn release_all_notes(&mut self) {
+        self.held_notes = [false; 128];
+        self.key_note_map = [None; 128];
+        self.synth.reset();
+    }
+
+    /// Problems the player needs to know about, most serious first.
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let h = &self.health;
+        if h.queue.disconnected {
+            out.push("AUDIO ENGINE STOPPED: restart kazoo-cs80".to_string());
+        }
+        if h.stream_errors > 0 {
+            let last = h
+                .last_stream_error
+                .as_ref()
+                .map_or_else(String::new, |last| format!(", last: {last}"));
+            let unreported = if h.stream_errors_unreported > 0 {
+                format!(" ({} without detail)", h.stream_errors_unreported)
+            } else {
+                String::new()
+            };
+            out.push(format!(
+                "{} audio stream error(s){last}{unreported}",
+                h.stream_errors
+            ));
+        }
+        if h.queue.dropped > 0 {
+            out.push(format!("{} note(s) dropped: audio busy", h.queue.dropped));
+        }
+        if h.queue.pending > 0 {
+            out.push(format!("{} change(s) waiting for audio", h.queue.pending));
+        }
+        if h.display_dropped > 0 {
+            out.push(format!("{} display frame(s) dropped", h.display_dropped));
+        }
+        match &self.key_releases {
+            KeyReleases::Reported => {}
+            KeyReleases::Unsupported => out.push(
+                "terminal can't report key release: notes latch, Backspace = all notes off"
+                    .to_string(),
+            ),
+            KeyReleases::Failed(why) => out.push(format!(
+                "key release unavailable ({why}): notes latch, Backspace = all notes off"
+            )),
+        }
+        out
+    }
+
+    /// Desk link badge: the text and whether it is a warning. `None` when
+    /// there is nothing worth showing (standalone, no failed attempt).
+    #[must_use]
+    pub fn hub_badge(&self) -> Option<(String, bool)> {
+        let hub = self.hub.as_ref()?;
+        if !hub.connected {
+            return hub
+                .last_refusal
+                .as_ref()
+                .map(|why| (format!("desk: {why}"), true));
+        }
+        let strip = hub.strip.map_or_else(String::new, |strip| {
+            format!(" strip {}", u16::from(strip) + 1)
+        });
+        let dropped = if hub.blocks_dropped > 0 {
+            format!(" ({} blocks dropped)", hub.blocks_dropped)
+        } else {
+            String::new()
+        };
+        Some((
+            format!("\u{2192} kazoo-mix{strip}{dropped}"),
+            hub.blocks_dropped > 0,
+        ))
     }
 
     /// Move to next section.

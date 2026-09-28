@@ -21,7 +21,7 @@
 //! ```
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::state::DeviceListFocus;
@@ -70,9 +70,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Tab", theme::style_help_key()),
             Span::styled(" switch list  ", theme::style_help_desc()),
             Span::styled("j/k", theme::style_help_key()),
-            Span::styled(" select device  ", theme::style_help_desc()),
-            Span::styled("Enter", theme::style_help_key()),
-            Span::styled(" apply", theme::style_help_desc()),
+            Span::styled(" select device", theme::style_help_desc()),
         ]));
         frame.render_widget(hint, v_chunks[4]);
     }
@@ -82,68 +80,55 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 // Device lists
 // ---------------------------------------------------------------------------
 
+/// Everything needed to render one device list.
+struct DeviceList<'a> {
+    title: &'static str,
+    kind: &'static str,
+    devices: &'a [String],
+    error: Option<&'a str>,
+    selected: usize,
+    focused: bool,
+}
+
 fn draw_input_devices(frame: &mut Frame, app: &App, area: Rect) {
-    let focused = app.audio_io_state.focus == DeviceListFocus::Input;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme::style_panel_border(focused))
-        .title(" Input Devices ")
-        .title_style(theme::style_panel_title(focused));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height == 0 || inner.width < 10 {
-        return;
-    }
-
-    let devices = &app.audio_io_state.input_devices;
-    if devices.is_empty() {
-        let lines = vec![Line::from(Span::styled(
-            " No input devices found",
-            theme::style_text_dimmed(),
-        ))];
-        frame.render_widget(Paragraph::new(lines), inner);
-        return;
-    }
-
-    let selected = app.audio_io_state.selected_input_device;
-    let max_visible = inner.height as usize;
-    let mut lines = Vec::with_capacity(max_visible);
-    for (i, name) in devices.iter().enumerate().take(max_visible) {
-        let is_selected = i == selected;
-        let prefix = if is_selected { " > " } else { "   " };
-        let style = if is_selected && focused {
-            theme::style_selected()
-        } else if is_selected {
-            theme::style_text()
-        } else {
-            theme::style_text_secondary()
-        };
-        let max_name_len = (inner.width as usize).saturating_sub(4);
-        let display_name: String = if name.chars().count() > max_name_len {
-            let mut s: String = name.chars().take(max_name_len.saturating_sub(1)).collect();
-            s.push('\u{2026}');
-            s
-        } else {
-            name.clone()
-        };
-        lines.push(Line::from(Span::styled(
-            format!("{prefix}{display_name}"),
-            style,
-        )));
-    }
-    frame.render_widget(Paragraph::new(lines), inner);
+    let state = &app.audio_io_state;
+    draw_device_list(
+        frame,
+        area,
+        &DeviceList {
+            title: " Input Devices ",
+            kind: "input",
+            devices: &state.input_devices,
+            error: state.input_device_error.as_deref(),
+            selected: state.selected_input_device,
+            focused: state.focus == DeviceListFocus::Input,
+        },
+    );
 }
 
 fn draw_output_devices(frame: &mut Frame, app: &App, area: Rect) {
-    let focused = app.audio_io_state.focus == DeviceListFocus::Output;
+    let state = &app.audio_io_state;
+    draw_device_list(
+        frame,
+        area,
+        &DeviceList {
+            title: " Output Devices ",
+            kind: "output",
+            devices: &state.output_devices,
+            error: state.output_device_error.as_deref(),
+            selected: state.selected_output_device,
+            focused: state.focus == DeviceListFocus::Output,
+        },
+    );
+}
+
+fn draw_device_list(frame: &mut Frame, area: Rect, list: &DeviceList<'_>) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(theme::style_panel_border(focused))
-        .title(" Output Devices ")
-        .title_style(theme::style_panel_title(focused));
+        .border_style(theme::style_panel_border(list.focused))
+        .title(list.title)
+        .title_style(theme::style_panel_title(list.focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -151,30 +136,39 @@ fn draw_output_devices(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let devices = &app.audio_io_state.output_devices;
-    if devices.is_empty() {
+    // Enumeration failure: say so, rather than pretending there are no devices.
+    if let Some(error) = list.error {
+        let paragraph = Paragraph::new(Line::from(Span::styled(
+            format!(" {error}"),
+            Style::new().fg(theme::METER_RED),
+        )))
+        .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, inner);
+        return;
+    }
+
+    if list.devices.is_empty() {
         let lines = vec![Line::from(Span::styled(
-            " No output devices found",
+            format!(" No {} devices found", list.kind),
             theme::style_text_dimmed(),
         ))];
         frame.render_widget(Paragraph::new(lines), inner);
         return;
     }
 
-    let selected = app.audio_io_state.selected_output_device;
     let max_visible = inner.height as usize;
+    let max_name_len = (inner.width as usize).saturating_sub(4);
     let mut lines = Vec::with_capacity(max_visible);
-    for (i, name) in devices.iter().enumerate().take(max_visible) {
-        let is_selected = i == selected;
+    for (i, name) in list.devices.iter().enumerate().take(max_visible) {
+        let is_selected = i == list.selected;
         let prefix = if is_selected { " > " } else { "   " };
-        let style = if is_selected && focused {
+        let style = if is_selected && list.focused {
             theme::style_selected()
         } else if is_selected {
             theme::style_text()
         } else {
             theme::style_text_secondary()
         };
-        let max_name_len = (inner.width as usize).saturating_sub(4);
         let display_name: String = if name.chars().count() > max_name_len {
             let mut s: String = name.chars().take(max_name_len.saturating_sub(1)).collect();
             s.push('\u{2026}');
@@ -229,4 +223,44 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     ])];
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render(app: &App) -> String {
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(frame, app, Rect::new(0, 0, 100, 20)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..20 {
+            for x in 0..100 {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn enumeration_error_is_shown_instead_of_empty_list() {
+        let mut app = crate::test_support::TestApp::empty();
+        app.audio_io_state.input_device_error = Some("Input device scan failed: no host".into());
+        let text = render(&app);
+        assert!(text.contains("Input device scan failed"), "{text}");
+        assert!(!text.contains("No input devices found"), "{text}");
+        assert!(text.contains("No output devices found"), "{text}");
+    }
+
+    #[test]
+    fn device_names_are_listed() {
+        let mut app = crate::test_support::TestApp::empty();
+        app.audio_io_state.input_devices = vec!["Built-in Mic".into()];
+        let text = render(&app);
+        assert!(text.contains("Built-in Mic"), "{text}");
+    }
 }

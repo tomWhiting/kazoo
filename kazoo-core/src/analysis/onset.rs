@@ -313,7 +313,7 @@ fn compute_spectral_centroid(magnitudes: &[f32], sample_rate: f32, fft_size: usi
         } else {
             0.0
         };
-        weighted_sum += freq * safe_mag;
+        weighted_sum = freq.mul_add(safe_mag, weighted_sum);
         total_magnitude += safe_mag;
     }
 
@@ -344,9 +344,7 @@ mod tests {
         signal.resize(click_pos, 0.0);
         signal.push(1.0);
         // A few more high-energy samples to make it clearly transient.
-        for _ in 0..32 {
-            signal.push(0.8);
-        }
+        signal.extend(std::iter::repeat_n(0.8, 32));
         signal.resize(signal.len() + fft_size * 2, 0.0);
 
         let events = detector.push_samples(&signal);
@@ -423,7 +421,9 @@ mod tests {
 
         // Push some audio.
         let samples = vec![1.0_f32; 512];
-        let _ = detector.push_samples(&samples);
+        // First analysed frame has no predecessor, so no onset can fire.
+        assert!(detector.push_samples(&samples).is_empty());
+        assert!(detector.has_prev);
 
         detector.reset();
         assert_eq!(detector.buffer_pos, 0);

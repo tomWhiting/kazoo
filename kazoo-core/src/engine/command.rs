@@ -2,25 +2,35 @@
 
 use std::path::PathBuf;
 
-use crate::mixer::TrackId;
+use super::reclaim::Parcel;
 use crate::mixer::clip::{ClipData, ClipId};
+use crate::mixer::{Prepared, SynthLayer, Track, TrackId};
 use crate::synthesis::SynthesisMode;
 use crate::transport::TransportCommand;
-use crate::{Db, Pan, Processor};
+use crate::{Db, Pan};
 
 /// Commands that can be sent to the engine's output callback.
 ///
 /// All variants are designed to be constructed on the UI thread and sent via
 /// a `crossbeam_channel::Sender<EngineCommand>`. The output callback drains
 /// the receiver each audio block and applies commands atomically.
+///
+/// The output callback never allocates, so everything a command adds —
+/// tracks, synths, layers, effects, clip audio — is built complete and
+/// prepared by the sender (see the [`super::EngineHandle`] helpers, which do
+/// this); anything prepared for another sample rate or a smaller block
+/// size is refused. Whatever the callback replaces, removes or refuses is
+/// freed on the engine's reclaim thread, never on the audio thread.
 pub enum EngineCommand {
     /// Forward a transport control command (play, stop, pause, record, seek, etc.).
     Transport(TransportCommand),
 
-    /// Create a new mixer track with the given name and synthesis mode.
+    /// Add a track built with [`Track::new`] at the engine's sample rate
+    /// and buffer size (see [`super::EngineHandle::add_track`]).
     AddTrack {
-        name: String,
-        synthesis_mode: SynthesisMode,
+        /// The track, carried in a parcel that the engine keeps to send the
+        /// track out again when it is removed.
+        track: Parcel<Track>,
     },
 
     /// Remove a mixer track by its identifier.
@@ -41,17 +51,21 @@ pub enum EngineCommand {
     /// Arm or disarm a specific track for recording.
     SetTrackArm(TrackId, bool),
 
-    /// Change the synthesis mode of a specific track.
-    ///
-    /// This replaces the track's synth processor with a new instance of the
-    /// requested mode, initialised at the current sample rate.
-    SetTrackSynthesisMode(TrackId, SynthesisMode),
-
-    /// Append an effect processor to a track's effect chain.
-    AddEffect {
+    /// Change the synthesis mode of a specific track, replacing its primary
+    /// synth with `synth` — built for `mode`, set to the engine's sample
+    /// rate and prepared for its buffer size (see
+    /// [`super::prepared_synth`] and
+    /// [`super::EngineHandle::set_track_synthesis_mode`]).
+    SetTrackSynthesisMode {
         track_id: TrackId,
-        effect: Box<dyn Processor>,
+        synth: Prepared,
+        mode: SynthesisMode,
     },
+
+    /// Append an effect processor, prepared at the engine's sample rate and
+    /// buffer size, to a track's effect chain (see
+    /// [`super::EngineHandle::add_effect`]).
+    AddEffect { track_id: TrackId, effect: Prepared },
 
     /// Remove an effect from a track's chain by index.
     RemoveEffect {
@@ -81,11 +95,12 @@ pub enum EngineCommand {
         value: f32,
     },
 
-    /// Add a new synth layer to a track.
+    /// Add a synth layer, its synth built and prepared at the engine's
+    /// sample rate and buffer size (see
+    /// [`super::EngineHandle::add_synth_layer`]).
     AddSynthLayer {
         track_id: TrackId,
-        synthesis_mode: SynthesisMode,
-        label: String,
+        layer: SynthLayer,
     },
 
     /// Remove a synth layer from a track by index (layer 0 cannot be removed).
@@ -203,250 +218,94 @@ pub enum EngineCommand {
     Shutdown,
 }
 
-// `EngineCommand` cannot derive `Debug` because `Box<dyn Processor>` is not
-// Debug-compatible in every variant. Provide a manual implementation.
-impl std::fmt::Debug for EngineCommand {
-    #[allow(clippy::too_many_lines)]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Transport(cmd) => f.debug_tuple("Transport").field(cmd).finish(),
-            Self::AddTrack {
-                name,
-                synthesis_mode,
-            } => f
-                .debug_struct("AddTrack")
-                .field("name", name)
-                .field("synthesis_mode", synthesis_mode)
-                .finish(),
-            Self::RemoveTrack(id) => f.debug_tuple("RemoveTrack").field(id).finish(),
-            Self::SetTrackVolume(id, db) => {
-                f.debug_tuple("SetTrackVolume").field(id).field(db).finish()
-            }
-            Self::SetTrackPan(id, pan) => {
-                f.debug_tuple("SetTrackPan").field(id).field(pan).finish()
-            }
-            Self::SetTrackMute(id, m) => f.debug_tuple("SetTrackMute").field(id).field(m).finish(),
-            Self::SetTrackSolo(id, s) => f.debug_tuple("SetTrackSolo").field(id).field(s).finish(),
-            Self::SetTrackArm(id, a) => f.debug_tuple("SetTrackArm").field(id).field(a).finish(),
-            Self::SetTrackSynthesisMode(id, mode) => f
-                .debug_tuple("SetTrackSynthesisMode")
-                .field(id)
-                .field(mode)
-                .finish(),
-            Self::AddEffect { track_id, effect } => f
-                .debug_struct("AddEffect")
-                .field("track_id", track_id)
-                .field("effect", &effect.name())
-                .finish(),
-            Self::RemoveEffect {
-                track_id,
-                effect_index,
-            } => f
-                .debug_struct("RemoveEffect")
-                .field("track_id", track_id)
-                .field("effect_index", effect_index)
-                .finish(),
-            Self::SetEffectBypass {
-                track_id,
-                effect_index,
-                bypassed,
-            } => f
-                .debug_struct("SetEffectBypass")
-                .field("track_id", track_id)
-                .field("effect_index", effect_index)
-                .field("bypassed", bypassed)
-                .finish(),
-            Self::SetEffectParameter {
-                track_id,
-                effect_index,
-                param_index,
-                value,
-            } => f
-                .debug_struct("SetEffectParameter")
-                .field("track_id", track_id)
-                .field("effect_index", effect_index)
-                .field("param_index", param_index)
-                .field("value", value)
-                .finish(),
-            Self::SetSynthParameter {
-                track_id,
-                param_index,
-                value,
-            } => f
-                .debug_struct("SetSynthParameter")
-                .field("track_id", track_id)
-                .field("param_index", param_index)
-                .field("value", value)
-                .finish(),
-            Self::AddSynthLayer {
-                track_id,
-                synthesis_mode,
-                label,
-            } => f
-                .debug_struct("AddSynthLayer")
-                .field("track_id", track_id)
-                .field("synthesis_mode", synthesis_mode)
-                .field("label", label)
-                .finish(),
-            Self::RemoveSynthLayer {
-                track_id,
-                layer_index,
-            } => f
-                .debug_struct("RemoveSynthLayer")
-                .field("track_id", track_id)
-                .field("layer_index", layer_index)
-                .finish(),
-            Self::SetSynthLayerGain {
-                track_id,
-                layer_index,
-                gain,
-            } => f
-                .debug_struct("SetSynthLayerGain")
-                .field("track_id", track_id)
-                .field("layer_index", layer_index)
-                .field("gain", gain)
-                .finish(),
-            Self::SetSynthLayerEnabled {
-                track_id,
-                layer_index,
-                enabled,
-            } => f
-                .debug_struct("SetSynthLayerEnabled")
-                .field("track_id", track_id)
-                .field("layer_index", layer_index)
-                .field("enabled", enabled)
-                .finish(),
-            Self::SetSynthLayerParameter {
-                track_id,
-                layer_index,
-                param_index,
-                value,
-            } => f
-                .debug_struct("SetSynthLayerParameter")
-                .field("track_id", track_id)
-                .field("layer_index", layer_index)
-                .field("param_index", param_index)
-                .field("value", value)
-                .finish(),
-            Self::SetMasterVolume(db) => f.debug_tuple("SetMasterVolume").field(db).finish(),
-            Self::StartRecording { path } => f
-                .debug_struct("StartRecording")
-                .field("path", path)
-                .finish(),
-            Self::StopRecording => write!(f, "StopRecording"),
-            Self::AddClip {
-                track_id,
-                clip_data,
-                position,
-            } => f
-                .debug_struct("AddClip")
-                .field("track_id", track_id)
-                .field("clip_data", &clip_data.name())
-                .field("position", position)
-                .finish(),
-            Self::RemoveClip { track_id, clip_id } => f
-                .debug_struct("RemoveClip")
-                .field("track_id", track_id)
-                .field("clip_id", clip_id)
-                .finish(),
-            Self::MoveClip {
-                track_id,
-                clip_id,
-                new_position,
-            } => f
-                .debug_struct("MoveClip")
-                .field("track_id", track_id)
-                .field("clip_id", clip_id)
-                .field("new_position", new_position)
-                .finish(),
-            Self::TrimClipStart {
-                track_id,
-                clip_id,
-                samples,
-            } => f
-                .debug_struct("TrimClipStart")
-                .field("track_id", track_id)
-                .field("clip_id", clip_id)
-                .field("samples", samples)
-                .finish(),
-            Self::TrimClipEnd {
-                track_id,
-                clip_id,
-                samples,
-            } => f
-                .debug_struct("TrimClipEnd")
-                .field("track_id", track_id)
-                .field("clip_id", clip_id)
-                .field("samples", samples)
-                .finish(),
-            Self::SplitClip {
-                track_id,
-                clip_id,
-                split_position,
-            } => f
-                .debug_struct("SplitClip")
-                .field("track_id", track_id)
-                .field("clip_id", clip_id)
-                .field("split_position", split_position)
-                .finish(),
-            Self::SetClipGain {
-                track_id,
-                clip_id,
-                gain,
-            } => f
-                .debug_struct("SetClipGain")
-                .field("track_id", track_id)
-                .field("clip_id", clip_id)
-                .field("gain", gain)
-                .finish(),
-            Self::SetClipMute {
-                track_id,
-                clip_id,
-                muted,
-            } => f
-                .debug_struct("SetClipMute")
-                .field("track_id", track_id)
-                .field("clip_id", clip_id)
-                .field("muted", muted)
-                .finish(),
-            Self::DuplicateClip {
-                track_id,
-                clip_id,
-                new_position,
-            } => f
-                .debug_struct("DuplicateClip")
-                .field("track_id", track_id)
-                .field("clip_id", clip_id)
-                .field("new_position", new_position)
-                .finish(),
-            Self::MidiNoteOn {
-                note,
-                velocity,
-                channel,
-            } => f
-                .debug_struct("MidiNoteOn")
-                .field("note", note)
-                .field("velocity", velocity)
-                .field("channel", channel)
-                .finish(),
-            Self::MidiNoteOff { note, channel } => f
-                .debug_struct("MidiNoteOff")
-                .field("note", note)
-                .field("channel", channel)
-                .finish(),
-            Self::MidiCC { cc, value, channel } => f
-                .debug_struct("MidiCC")
-                .field("cc", cc)
-                .field("value", value)
-                .field("channel", channel)
-                .finish(),
-            Self::MidiPitchBend { value, channel } => f
-                .debug_struct("MidiPitchBend")
-                .field("value", value)
-                .field("channel", channel)
-                .finish(),
-            Self::Shutdown => write!(f, "Shutdown"),
+/// Generate an exhaustive `Debug` match: struct-like variants print every
+/// field under its own name, tuple-like variants print their fields in
+/// order, unit variants print their name, and `custom` arms are passed
+/// through verbatim. The compiler still checks the match for exhaustiveness.
+macro_rules! debug_match {
+    (
+        $self:expr, $f:expr;
+        structs { $( $sv:ident { $($sf:ident),* } ),* $(,)? }
+        tuples { $( $tv:ident ( $($tf:ident),* ) ),* $(,)? }
+        units { $( $uv:ident ),* $(,)? }
+        custom { $( $pat:pat => $body:expr ),* $(,)? }
+    ) => {
+        match $self {
+            $( Self::$sv { $($sf),* } => {
+                $f.debug_struct(stringify!($sv))$(.field(stringify!($sf), $sf))*.finish()
+            } )*
+            $( Self::$tv ( $($tf),* ) => $f.debug_tuple(stringify!($tv))$(.field($tf))*.finish(), )*
+            $( Self::$uv => $f.write_str(stringify!($uv)), )*
+            $( $pat => $body, )*
         }
+    };
+}
+
+// `EngineCommand` cannot derive `Debug`: `Box<dyn Processor>` is not `Debug`,
+// and printing a clip's samples would be useless. Tracks, synths, effects
+// and clips are shown by name.
+impl std::fmt::Debug for EngineCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_match!(self, f;
+            structs {
+                AddSynthLayer { track_id, layer },
+                RemoveEffect { track_id, effect_index },
+                SetEffectBypass { track_id, effect_index, bypassed },
+                SetEffectParameter { track_id, effect_index, param_index, value },
+                SetSynthParameter { track_id, param_index, value },
+                RemoveSynthLayer { track_id, layer_index },
+                SetSynthLayerGain { track_id, layer_index, gain },
+                SetSynthLayerEnabled { track_id, layer_index, enabled },
+                SetSynthLayerParameter { track_id, layer_index, param_index, value },
+                StartRecording { path },
+                RemoveClip { track_id, clip_id },
+                MoveClip { track_id, clip_id, new_position },
+                TrimClipStart { track_id, clip_id, samples },
+                TrimClipEnd { track_id, clip_id, samples },
+                SplitClip { track_id, clip_id, split_position },
+                SetClipGain { track_id, clip_id, gain },
+                SetClipMute { track_id, clip_id, muted },
+                DuplicateClip { track_id, clip_id, new_position },
+                MidiNoteOn { note, velocity, channel },
+                MidiNoteOff { note, channel },
+                MidiCC { cc, value, channel },
+                MidiPitchBend { value, channel },
+            }
+            tuples {
+                Transport(cmd),
+                RemoveTrack(id),
+                SetTrackVolume(id, db),
+                SetTrackPan(id, pan),
+                SetTrackMute(id, muted),
+                SetTrackSolo(id, soloed),
+                SetTrackArm(id, armed),
+                SetMasterVolume(db),
+            }
+            units { StopRecording, Shutdown }
+            custom {
+                Self::AddTrack { track } => f
+                    .debug_struct("AddTrack")
+                    .field("track", &track.get().map(|t| (t.id(), t.name())))
+                    .finish(),
+                Self::SetTrackSynthesisMode { track_id, synth, mode } => f
+                    .debug_struct("SetTrackSynthesisMode")
+                    .field("track_id", track_id)
+                    .field("synth", &synth.processor().name())
+                    .field("mode", mode)
+                    .finish(),
+                Self::AddEffect { track_id, effect } => f
+                    .debug_struct("AddEffect")
+                    .field("track_id", track_id)
+                    .field("effect", &effect.processor().name())
+                    .finish(),
+                Self::AddClip { track_id, clip_data, position } => f
+                    .debug_struct("AddClip")
+                    .field("track_id", track_id)
+                    .field("clip_data", &clip_data.name())
+                    .field("position", position)
+                    .finish(),
+            }
+        )
     }
 }
 
@@ -465,13 +324,22 @@ mod tests {
 
     #[test]
     fn add_track_command_debug() {
+        let synth = crate::engine::create_synth(SynthesisMode::PitchTracked, 44_100.0);
+        let track = Track::new(
+            TrackId(4),
+            "Lead",
+            synth,
+            SynthesisMode::PitchTracked,
+            44_100.0,
+            64,
+        );
         let cmd = EngineCommand::AddTrack {
-            name: "Lead".into(),
-            synthesis_mode: SynthesisMode::PitchTracked,
+            track: Parcel::new(track),
         };
         let dbg = format!("{cmd:?}");
+        assert!(dbg.contains("AddTrack"));
         assert!(dbg.contains("Lead"));
-        assert!(dbg.contains("PitchTracked"));
+        assert!(dbg.contains('4'));
     }
 
     #[test]
@@ -542,10 +410,15 @@ mod tests {
 
     #[test]
     fn set_track_synthesis_mode_debug() {
-        let cmd = EngineCommand::SetTrackSynthesisMode(TrackId(0), SynthesisMode::Granular);
+        let cmd = EngineCommand::SetTrackSynthesisMode {
+            track_id: TrackId(0),
+            synth: crate::engine::prepared_synth(SynthesisMode::Granular, 44_100.0, 64),
+            mode: SynthesisMode::Granular,
+        };
         let dbg = format!("{cmd:?}");
         assert!(dbg.contains("SetTrackSynthesisMode"));
         assert!(dbg.contains("Granular"));
+        assert!(dbg.contains("Granular Synth"));
     }
 
     #[test]
@@ -625,7 +498,7 @@ mod tests {
         };
         let dbg = format!("{cmd:?}");
         assert!(dbg.contains("RemoveClip"));
-        assert!(dbg.contains("5"));
+        assert!(dbg.contains('5'));
     }
 
     #[test]
@@ -637,7 +510,7 @@ mod tests {
         };
         let dbg = format!("{cmd:?}");
         assert!(dbg.contains("MoveClip"));
-        assert!(dbg.contains("3"));
+        assert!(dbg.contains('3'));
         assert!(dbg.contains("2000"));
     }
 
@@ -716,8 +589,11 @@ mod tests {
     fn add_synth_layer_debug() {
         let cmd = EngineCommand::AddSynthLayer {
             track_id: TrackId(0),
-            synthesis_mode: SynthesisMode::Wavetable,
-            label: "Pad".into(),
+            layer: SynthLayer::new(
+                crate::engine::prepared_synth(SynthesisMode::Wavetable, 44_100.0, 64),
+                SynthesisMode::Wavetable,
+                "Pad".into(),
+            ),
         };
         let dbg = format!("{cmd:?}");
         assert!(dbg.contains("AddSynthLayer"));
@@ -733,7 +609,7 @@ mod tests {
         };
         let dbg = format!("{cmd:?}");
         assert!(dbg.contains("RemoveSynthLayer"));
-        assert!(dbg.contains("2"));
+        assert!(dbg.contains('2'));
     }
 
     #[test]

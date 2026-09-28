@@ -1,7 +1,53 @@
 //! Application state for the 808 drum machine.
 
-use crate::sequencer::{STEPS_PER_PATTERN, Sequencer};
-use crate::synth::{MAX_PARAMS_PER_VOICE, VOICE_COUNT, VoiceIndex, VoiceParam};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::audio::{AudioCommand, CommandSender};
+use kazoo_808::sequencer::{MAX_PATTERNS, STEPS_PER_PATTERN, Sequencer};
+use kazoo_808::synth::{MAX_PARAMS_PER_VOICE, VOICE_COUNT, VoiceIndex, VoiceParam};
+use kazoo_core::ipc::link::LinkStatus;
+
+/// BPM change per `+`/`-` press.
+const BPM_STEP: f64 = 1.0;
+/// Swing change per `[`/`]` press, in percent.
+const SWING_STEP: f64 = 1.0;
+/// Velocity of a manual audition trigger.
+const AUDITION_VELOCITY: f32 = 0.8;
+
+/// Keys that pick a pattern in pattern-select mode, in bank order.
+const PATTERN_KEYS: [char; MAX_PATTERNS] = [
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'a', 'b', 'c', 'd', 'e', 'f',
+];
+
+/// A one-line notice for the status bar about something the user asked
+/// for that did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notice {
+    /// `n` pressed with every pattern slot in use.
+    PatternBankFull,
+    /// Pattern-select mode got a key for a pattern that does not exist.
+    NoSuchPattern,
+}
+
+impl Notice {
+    /// Text shown in the status bar.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::PatternBankFull => "pattern bank full",
+            Self::NoSuchPattern => "no such pattern",
+        }
+    }
+}
+
+/// Audio stream health, read from the engine each frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamHealth {
+    /// Errors cpal reported for the output stream.
+    pub errors: u64,
+    /// The output device is gone: no more audio until restart.
+    pub lost: bool,
+}
 
 /// Which section of the UI has focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +66,16 @@ pub enum Focus {
 /// commands).
 #[derive(Debug)]
 pub struct App {
+    /// Commands to the audio thread, with failed deliveries counted.
+    pub commands: CommandSender,
+    /// Last request that could not be carried out, until the next key.
+    pub notice: Option<Notice>,
+    /// Output stream health, mirrored from the audio side.
+    pub stream: StreamHealth,
+    /// Desk link state; `None` until the first poll.
+    pub hub: Option<LinkStatus>,
+    /// Transport messages lost between the 808 and the desk.
+    pub desk_lost: u64,
     /// Whether the app should exit.
     pub should_quit: bool,
     /// Currently selected voice row.
@@ -45,8 +101,13 @@ pub struct App {
 
 impl App {
     #[must_use]
-    pub fn new(sample_rate: f32) -> Self {
+    pub fn new(sample_rate: f32, commands: CommandSender) -> Self {
         Self {
+            commands,
+            notice: None,
+            stream: StreamHealth::default(),
+            hub: None,
+            desk_lost: 0,
             should_quit: false,
             selected_voice: 0,
             cursor_step: 0,
@@ -212,5 +273,260 @@ impl App {
             }
         }
         0.5
+    }
+
+    /// Handle a key press. Every change that the audio thread must mirror
+    /// is sent first and applied to the UI only once it was queued, so the
+    /// screen never shows a state the engine does not have.
+    pub fn handle_key(&mut self, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+        self.notice = None;
+
+        // Help overlay: any key dismisses it.
+        if self.show_help {
+            self.show_help = false;
+            return;
+        }
+
+        // Pattern select mode: the next key picks a pattern or cancels.
+        if self.pattern_select_mode {
+            self.pattern_select_mode = false;
+            if let KeyCode::Char(c) = key.code {
+                self.select_pattern_by_key(c);
+            }
+            return;
+        }
+
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('p') => self.pattern_select_mode = true,
+            KeyCode::Char('n') => self.add_pattern(),
+            KeyCode::Left => {
+                if let Some(change) = self.cursor_left() {
+                    self.send_param(change);
+                }
+            }
+            KeyCode::Right => {
+                if let Some(change) = self.cursor_right() {
+                    self.send_param(change);
+                }
+            }
+            KeyCode::Up => self.cursor_up(),
+            KeyCode::Down => self.cursor_down(),
+            KeyCode::Char(' ') => self.toggle_step_at_cursor(),
+            KeyCode::Char('a') => self.toggle_accent_at_cursor(),
+            KeyCode::Enter => self.toggle_playback(),
+            KeyCode::Tab => self.cycle_focus(),
+            KeyCode::Char(c @ '0'..='9') => self.select_voice_by_key(c),
+            KeyCode::Char('+' | '=') => self.nudge_bpm(BPM_STEP),
+            KeyCode::Char('-') => self.nudge_bpm(-BPM_STEP),
+            KeyCode::Char(']') => self.nudge_swing(SWING_STEP),
+            KeyCode::Char('[') => self.nudge_swing(-SWING_STEP),
+            KeyCode::Char('t') => {
+                // An audition has no UI state to keep in step; a failed
+                // send is counted by the sender and shown.
+                self.commands.post(AudioCommand::TriggerVoice {
+                    voice: self.selected_voice,
+                    velocity: AUDITION_VELOCITY,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn select_pattern_by_key(&mut self, key: char) {
+        let Some(idx) = PATTERN_KEYS.iter().position(|&k| k == key) else {
+            // Any other key cancels pattern select.
+            return;
+        };
+        if idx >= self.sequencer.patterns.len() {
+            self.notice = Some(Notice::NoSuchPattern);
+        } else if self.commands.send(AudioCommand::SelectPattern(idx)) {
+            self.sequencer.select_pattern(idx);
+        }
+    }
+
+    fn add_pattern(&mut self) {
+        if !self.sequencer.can_add_pattern() {
+            self.notice = Some(Notice::PatternBankFull);
+        } else if self.commands.send(AudioCommand::AddPattern) {
+            if let Some(idx) = self.sequencer.add_pattern() {
+                self.sequencer.select_pattern(idx);
+            }
+        }
+    }
+
+    fn send_param(&mut self, (voice, param, value): (VoiceIndex, VoiceParam, f32)) {
+        // The UI mirror was already updated by `adjust_param`; a failed send
+        // is shown, and the next adjustment re-sends the absolute value.
+        self.commands.post(AudioCommand::SetVoiceParam {
+            voice,
+            param,
+            value,
+        });
+    }
+
+    fn toggle_step_at_cursor(&mut self) {
+        let cmd = AudioCommand::ToggleStep {
+            voice: self.selected_voice,
+            step: self.cursor_step,
+        };
+        if self.commands.send(cmd) {
+            self.toggle_current_step();
+        }
+    }
+
+    fn toggle_accent_at_cursor(&mut self) {
+        let cmd = AudioCommand::ToggleAccent {
+            voice: self.selected_voice,
+            step: self.cursor_step,
+        };
+        if self.commands.send(cmd) {
+            self.toggle_current_accent();
+        }
+    }
+
+    fn toggle_playback(&mut self) {
+        let play = !self.sequencer.playing;
+        let cmd = if play {
+            AudioCommand::Play
+        } else {
+            AudioCommand::Stop
+        };
+        if self.commands.send(cmd) {
+            self.sequencer.playing = play;
+        }
+    }
+
+    fn nudge_bpm(&mut self, delta: f64) {
+        let bpm = self.sequencer.clock.bpm() + delta;
+        if self.commands.send(AudioCommand::SetBpm(bpm)) {
+            self.sequencer.clock.set_bpm(bpm);
+        }
+    }
+
+    fn nudge_swing(&mut self, delta: f64) {
+        let swing = self.sequencer.clock.swing() + delta;
+        if self.commands.send(AudioCommand::SetSwing(swing)) {
+            self.sequencer.clock.set_swing(swing);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::SendFailure;
+    use crossbeam_channel::Receiver;
+
+    fn app_with_capacity(capacity: usize) -> (App, Receiver<AudioCommand>) {
+        let (tx, rx) = crossbeam_channel::bounded(capacity);
+        (App::new(48_000.0, CommandSender::new(tx)), rx)
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn step_toggle_is_sent_then_shown() {
+        let (mut app, rx) = app_with_capacity(8);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.sequencer.current_pattern_ref().steps[0][0].active);
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AudioCommand::ToggleStep { voice: 0, step: 0 }
+        );
+    }
+
+    #[test]
+    fn undelivered_edits_do_not_change_the_screen() {
+        let (mut app, _rx) = app_with_capacity(1);
+        press(&mut app, KeyCode::Enter); // fills the queue
+        assert!(app.sequencer.playing);
+
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('+'));
+        press(&mut app, KeyCode::Char('n'));
+        assert!(!app.sequencer.current_pattern_ref().steps[0][0].active);
+        assert!((app.sequencer.clock.bpm() - 120.0).abs() < f64::EPSILON);
+        assert_eq!(app.sequencer.patterns.len(), 1);
+        assert_eq!(app.commands.failed(), 3);
+        assert_eq!(app.commands.last_failure(), Some(SendFailure::QueueFull));
+    }
+
+    #[test]
+    fn swing_keys_adjust_swing() {
+        let (mut app, rx) = app_with_capacity(8);
+        press(&mut app, KeyCode::Char(']'));
+        assert!((app.sequencer.clock.swing() - 51.0).abs() < f64::EPSILON);
+        assert_eq!(rx.try_recv().unwrap(), AudioCommand::SetSwing(51.0));
+        press(&mut app, KeyCode::Char('['));
+        press(&mut app, KeyCode::Char('['));
+        // Clamped at straight time.
+        assert!((app.sequencer.clock.swing() - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn new_pattern_is_added_and_selected() {
+        let (mut app, rx) = app_with_capacity(8);
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.sequencer.patterns.len(), 2);
+        assert_eq!(app.sequencer.current_pattern, 1);
+        assert_eq!(rx.try_recv().unwrap(), AudioCommand::AddPattern);
+    }
+
+    #[test]
+    fn full_pattern_bank_is_reported() {
+        let (mut app, rx) = app_with_capacity(MAX_PATTERNS * 2);
+        for _ in 1..MAX_PATTERNS {
+            press(&mut app, KeyCode::Char('n'));
+        }
+        assert_eq!(app.sequencer.patterns.len(), MAX_PATTERNS);
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.notice, Some(Notice::PatternBankFull));
+        assert_eq!(rx.len(), MAX_PATTERNS - 1, "no command for a full bank");
+    }
+
+    #[test]
+    fn every_pattern_is_selectable() {
+        let (mut app, _rx) = app_with_capacity(MAX_PATTERNS * 4);
+        for _ in 1..MAX_PATTERNS {
+            press(&mut app, KeyCode::Char('n'));
+        }
+        for (idx, key) in PATTERN_KEYS.iter().enumerate() {
+            press(&mut app, KeyCode::Char('p'));
+            press(&mut app, KeyCode::Char(*key));
+            assert_eq!(app.sequencer.current_pattern, idx);
+        }
+    }
+
+    #[test]
+    fn selecting_a_missing_pattern_is_reported() {
+        let (mut app, rx) = app_with_capacity(8);
+        press(&mut app, KeyCode::Char('p'));
+        press(&mut app, KeyCode::Char('5'));
+        assert_eq!(app.notice, Some(Notice::NoSuchPattern));
+        assert_eq!(app.sequencer.current_pattern, 0);
+        assert!(rx.is_empty());
+
+        // The next key clears the notice.
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.notice, None);
+    }
+
+    #[test]
+    fn quit_keys_quit() {
+        let (mut app, _rx) = app_with_capacity(1);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit);
+
+        let (mut app, _rx) = app_with_capacity(1);
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
     }
 }

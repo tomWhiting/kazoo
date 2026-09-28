@@ -1,0 +1,15 @@
+id: no-ignored-error-if-let
+language: rust
+severity: error
+message: "`if let Ok(..)` with no `else`: the error path is silently ignored."
+rule:
+  kind: if_expression
+  not:
+    has:
+      kind: else_clause
+  has:
+    field: condition
+    kind: let_condition
+    has:
+      field: pattern
+      regex: '^Ok\s*\('

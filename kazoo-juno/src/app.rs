@@ -1,5 +1,6 @@
 //! Application state for the Juno TUI.
 
+use kazoo_core::ipc::link::LinkStatus;
 use kazoo_juno::{NUM_VOICES, SynthParams, VoiceStatus};
 
 pub const WAVEFORM_BUF_SIZE: usize = 1024;
@@ -63,6 +64,15 @@ impl Section {
     }
 }
 
+/// Audio stream health, read from the engine each frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamHealth {
+    /// Errors cpal reported for the output stream.
+    pub errors: u64,
+    /// The output device is gone: no more audio until restart.
+    pub lost: bool,
+}
+
 #[derive(Debug)]
 pub struct App {
     pub should_quit: bool,
@@ -73,7 +83,21 @@ pub struct App {
     pub voice_status: [VoiceStatus; NUM_VOICES],
     pub waveform_buf: [f32; WAVEFORM_BUF_SIZE],
     pub held_notes: [Option<u8>; 16],
+    /// Commands the audio thread refused (queue full or engine stopped).
+    pub commands_dropped: u64,
+    /// Why the most recent command was refused, until one gets through.
+    pub delivery_warning: Option<&'static str>,
+    /// Edited parameters not yet accepted by the audio thread.
+    pub params_pending: bool,
+    /// Display snapshots the UI was too far behind to receive.
+    pub display_dropped: u64,
+    /// Set when notes cannot follow key releases, explaining why.
+    pub key_release_note: Option<String>,
     pub key_note_map: [Option<u8>; 128],
+    /// Output stream health, mirrored from the audio side.
+    pub stream: StreamHealth,
+    /// State of the link to the kazoo-mix desk (None until first polled).
+    pub hub: Option<LinkStatus>,
 }
 
 impl App {
@@ -94,8 +118,40 @@ impl App {
             }; NUM_VOICES],
             waveform_buf: [0.0; WAVEFORM_BUF_SIZE],
             held_notes: [None; 16],
+            commands_dropped: 0,
+            delivery_warning: None,
+            params_pending: false,
+            display_dropped: 0,
+            key_release_note: None,
             key_note_map: [None; 128],
+            stream: StreamHealth::default(),
+            hub: None,
         }
+    }
+
+    /// Desk link badge: the text and whether it is a warning. `None` until
+    /// the link has been polled.
+    #[must_use]
+    pub fn hub_badge(&self) -> Option<(String, bool)> {
+        let hub = self.hub.as_ref()?;
+        if !hub.connected {
+            return Some(hub.last_refusal.as_ref().map_or_else(
+                || ("local output (desk not running)".to_owned(), false),
+                |why| (format!("desk: {why}"), true),
+            ));
+        }
+        let strip = hub.strip.map_or_else(String::new, |strip| {
+            format!(" strip {}", u16::from(strip) + 1)
+        });
+        let dropped = if hub.blocks_dropped > 0 {
+            format!(" ({} blocks dropped)", hub.blocks_dropped)
+        } else {
+            String::new()
+        };
+        Some((
+            format!("\u{2192} kazoo-mix{strip}{dropped}"),
+            hub.blocks_dropped > 0,
+        ))
     }
 
     pub fn next_section(&mut self) {
@@ -184,8 +240,13 @@ impl App {
             0 => self.params.dco.saw_level = clamp01(self.params.dco.saw_level + small),
             1 => self.params.dco.pulse_level = clamp01(self.params.dco.pulse_level + small),
             2 => self.params.dco.sub_level = clamp01(self.params.dco.sub_level + small),
-            3 => self.params.dco.noise_level = (self.params.dco.noise_level + small).clamp(0.0, 0.5),
-            4 => self.params.dco.pulse_width = (self.params.dco.pulse_width + small).clamp(0.08, 0.92),
+            3 => {
+                self.params.dco.noise_level = (self.params.dco.noise_level + small).clamp(0.0, 0.5);
+            }
+            4 => {
+                self.params.dco.pulse_width =
+                    (self.params.dco.pulse_width + small).clamp(0.08, 0.92);
+            }
             5 => self.params.dco.pwm_depth = (self.params.dco.pwm_depth + small).clamp(0.0, 0.45),
             6 => {
                 self.params.dco.lfo_rate_hz = delta
@@ -198,14 +259,23 @@ impl App {
 
     fn adjust_filter(&mut self, delta: f32) {
         match self.param_index {
-            0 => self.params.filter.hpf_amount = clamp01(delta.mul_add(0.03, self.params.filter.hpf_amount)),
+            0 => {
+                self.params.filter.hpf_amount =
+                    clamp01(delta.mul_add(0.03, self.params.filter.hpf_amount));
+            }
             1 => {
                 self.params.filter.cutoff_hz =
                     (self.params.filter.cutoff_hz * (delta * 0.05).exp2()).clamp(40.0, 18_000.0);
             }
             2 => self.params.filter.resonance = delta.mul_add(0.025, self.params.filter.resonance),
-            3 => self.params.filter.envelope_amount = clamp01(delta.mul_add(0.025, self.params.filter.envelope_amount)),
-            4 => self.params.filter.key_track = clamp01(delta.mul_add(0.025, self.params.filter.key_track)),
+            3 => {
+                self.params.filter.envelope_amount =
+                    clamp01(delta.mul_add(0.025, self.params.filter.envelope_amount));
+            }
+            4 => {
+                self.params.filter.key_track =
+                    clamp01(delta.mul_add(0.025, self.params.filter.key_track));
+            }
             _ => {}
         }
         self.params.filter.resonance = self.params.filter.resonance.clamp(0.0, 0.96);
@@ -215,7 +285,10 @@ impl App {
         match self.param_index {
             0 => self.params.envelope.attack = scale_time(self.params.envelope.attack, delta),
             1 => self.params.envelope.decay = scale_time(self.params.envelope.decay, delta),
-            2 => self.params.envelope.sustain = clamp01(delta.mul_add(0.03, self.params.envelope.sustain)),
+            2 => {
+                self.params.envelope.sustain =
+                    clamp01(delta.mul_add(0.03, self.params.envelope.sustain));
+            }
             3 => self.params.envelope.release = scale_time(self.params.envelope.release, delta),
             _ => {}
         }
@@ -225,15 +298,27 @@ impl App {
         match self.param_index {
             0 if delta.abs() > 0.0 => self.params.chorus.mode = self.params.chorus.mode.next(),
             1 => self.params.chorus.mix = clamp01(delta.mul_add(0.03, self.params.chorus.mix)),
-            2 => self.params.chorus.noise = delta.mul_add(0.003, self.params.chorus.noise).clamp(0.0, 0.08),
+            2 => {
+                self.params.chorus.noise = delta
+                    .mul_add(0.003, self.params.chorus.noise)
+                    .clamp(0.0, 0.08);
+            }
             _ => {}
         }
     }
 
     fn adjust_performance(&mut self, delta: f32) {
         match self.param_index {
-            0 => self.params.voice_drift_cents = delta.mul_add(0.2, self.params.voice_drift_cents).clamp(0.0, 8.0),
-            1 => self.params.master_level = delta.mul_add(0.02, self.params.master_level).clamp(0.0, 0.8),
+            0 => {
+                self.params.voice_drift_cents = delta
+                    .mul_add(0.2, self.params.voice_drift_cents)
+                    .clamp(0.0, 8.0);
+            }
+            1 => {
+                self.params.master_level = delta
+                    .mul_add(0.02, self.params.master_level)
+                    .clamp(0.0, 0.8);
+            }
             _ => {}
         }
     }
@@ -245,4 +330,60 @@ const fn clamp01(value: f32) -> f32 {
 
 fn scale_time(value: f32, delta: f32) -> f32 {
     (value * (delta * 0.08).exp2()).clamp(0.001, 10.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(connected: bool) -> LinkStatus {
+        LinkStatus {
+            connected,
+            strip: connected.then_some(3),
+            blocks_sent: 0,
+            blocks_dropped: 0,
+            messages_dropped: 0,
+            connections: u64::from(connected),
+            last_refusal: None,
+        }
+    }
+
+    #[test]
+    fn hub_badge_names_the_strip_or_the_reason() {
+        let mut app = App::new(48_000);
+        assert_eq!(app.hub_badge(), None);
+
+        app.hub = Some(status(false));
+        assert_eq!(
+            app.hub_badge(),
+            Some(("local output (desk not running)".to_owned(), false))
+        );
+
+        app.hub = Some(LinkStatus {
+            last_refusal: Some("every strip is taken".to_owned()),
+            ..status(false)
+        });
+        assert_eq!(
+            app.hub_badge(),
+            Some(("desk: every strip is taken".to_owned(), true))
+        );
+
+        app.hub = Some(status(true));
+        assert_eq!(
+            app.hub_badge(),
+            Some(("\u{2192} kazoo-mix strip 4".to_owned(), false))
+        );
+
+        app.hub = Some(LinkStatus {
+            blocks_dropped: 7,
+            ..status(true)
+        });
+        assert_eq!(
+            app.hub_badge(),
+            Some((
+                "\u{2192} kazoo-mix strip 4 (7 blocks dropped)".to_owned(),
+                true
+            ))
+        );
+    }
 }

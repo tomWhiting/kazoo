@@ -9,3 +9,4 @@ workspace = true
 [dependencies]
 cpal = "0.17.1"
 kazoo-core = { path = "../kazoo-core" }
+ringbuf = "0.4.8"

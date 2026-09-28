@@ -52,6 +52,9 @@ const SEL_BG: Color = Color::Rgb(120, 30, 25);
 pub const WAVE_RED: Color = Color::Rgb(200, 60, 40);
 /// Slider fill color.
 const SLIDER_FILL: Color = Color::Rgb(160, 50, 35);
+/// Warnings and errors the player must notice (amber, distinct from the
+/// Moog red used for selection).
+const WARN: Color = Color::Rgb(255, 170, 40);
 
 // ---------------------------------------------------------------------------
 // Main draw function
@@ -72,7 +75,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Length(3), // header
             Constraint::Min(10),   // body
             Constraint::Length(4), // waveform monitor
-            Constraint::Length(2), // status bar + keyboard help
+            Constraint::Length(3), // keyboard help + status line
         ])
         .split(area);
 
@@ -125,6 +128,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!(" {}Hz ", app.sample_rate), Style::new().fg(DIM)),
     ]);
 
+    // Desk link: where the audio is going, or why it could not plug in.
+    let mut title = title;
+    if let Some((text, warn)) = app.hub_badge() {
+        title
+            .spans
+            .push(Span::styled(" | ", Style::new().fg(BORDER_INACTIVE)));
+        let color = if warn { WARN } else { CREAM };
+        title
+            .spans
+            .push(Span::styled(format!(" {text} "), Style::new().fg(color)));
+    }
+
     let header = Paragraph::new(title).block(block);
     f.render_widget(header, area);
 }
@@ -167,10 +182,12 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
                 Style::new().fg(MOOG_RED).add_modifier(Modifier::BOLD),
             ),
             Span::styled(" Piano: ", Style::new().fg(DIM)),
-            Span::styled("z-/ ", Style::new().fg(CREAM)),
-            Span::styled("(lower)  ", Style::new().fg(DIM)),
-            Span::styled("q-p ", Style::new().fg(CREAM)),
-            Span::styled("(upper)", Style::new().fg(DIM)),
+            Span::styled("a s d f g h j k l ; ", Style::new().fg(CREAM)),
+            Span::styled("(C3-E4)  ", Style::new().fg(DIM)),
+            Span::styled("w e t y u o p ", Style::new().fg(CREAM)),
+            Span::styled("(sharps)  ", Style::new().fg(DIM)),
+            Span::styled("z x c v b n m ", Style::new().fg(CREAM)),
+            Span::styled("(C4-B4)", Style::new().fg(DIM)),
         ]),
         Line::from(vec![
             Span::styled(" Tab", Style::new().fg(MOOG_RED)),
@@ -179,13 +196,36 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(":param  ", Style::new().fg(DIM)),
             Span::styled("+/-", Style::new().fg(MOOG_RED)),
             Span::styled(":adjust  ", Style::new().fg(DIM)),
+            Span::styled("Bksp", Style::new().fg(MOOG_RED)),
+            Span::styled(":all notes off  ", Style::new().fg(DIM)),
             Span::styled("Esc", Style::new().fg(MOOG_RED)),
             Span::styled(":quit", Style::new().fg(DIM)),
         ]),
+        status_line(app),
     ];
 
     let bar = Paragraph::new(lines).style(Style::new().bg(WALNUT));
     f.render_widget(bar, area);
+}
+
+/// The status line: engine problems first (they affect what you hear), then
+/// the latest message.
+fn status_line(app: &App) -> Line<'static> {
+    let mut spans = Vec::new();
+    for warning in app.warnings() {
+        spans.push(Span::styled(
+            format!(" \u{26a0} {warning} "),
+            Style::new().fg(WARN).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(status) = &app.status {
+        let color = if status.is_error { WARN } else { CREAM };
+        spans.push(Span::styled(
+            format!(" {} ", status.text),
+            Style::new().fg(color),
+        ));
+    }
+    Line::from(spans)
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +268,6 @@ pub fn vertical_slider_line(name: &str, value: f32, selected: bool) -> Line<'sta
 
     let pct = (value * 100.0) as u32;
     let bar_width = 8;
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     let filled = ((value * bar_width as f32) as usize).min(bar_width);
     let empty = bar_width - filled;
 

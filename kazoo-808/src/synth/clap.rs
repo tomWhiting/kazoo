@@ -114,8 +114,10 @@ impl Voice for Clap {
 
         // Bandpass: HP then LP.
         let hp = noise - self.bp_state_lo;
-        self.bp_state_lo += (1.0 - self.bp_coeff_lo) * (noise - self.bp_state_lo);
-        self.bp_state_hi += (1.0 - self.bp_coeff_hi) * (hp - self.bp_state_hi);
+        self.bp_state_lo =
+            (1.0 - self.bp_coeff_lo).mul_add(noise - self.bp_state_lo, self.bp_state_lo);
+        self.bp_state_hi =
+            (1.0 - self.bp_coeff_hi).mul_add(hp - self.bp_state_hi, self.bp_state_hi);
 
         let output = self.bp_state_hi * env * self.amplitude;
         kazoo_core::sanitize_sample(output)

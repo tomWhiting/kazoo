@@ -210,6 +210,37 @@ fn output_caps(device: &cpal::Device) -> (u16, Vec<u32>) {
 // Stream construction
 // ---------------------------------------------------------------------------
 
+/// The sample rate [`build_streams`] runs `config` at: the requested rate,
+/// or else the output device's native rate (falling back to
+/// [`DEFAULT_SAMPLE_RATE`] if the device does not report one).
+///
+/// Callers that size or tune anything by sample rate before the streams
+/// exist (the engine's processing state, an instrument's hub link) must use
+/// this, then pass the result back as `config.sample_rate`, so everything
+/// agrees with the rate the device actually runs at.
+///
+/// # Errors
+///
+/// Returns [`Error::AudioDevice`] if no rate was requested and the output
+/// device cannot be found.
+pub fn resolve_sample_rate(config: &StreamConfig) -> Result<u32> {
+    if let Some(rate) = config.sample_rate {
+        return Ok(rate);
+    }
+    let host = cpal::default_host();
+    let output_device = resolve_output_device(&host, config.output_device.as_deref())?;
+    Ok(native_output_rate(&output_device))
+}
+
+/// The output device's native sample rate. Running at it avoids Core Audio
+/// inserting an internal resampler (which adds 11-23 ms of latency) when the
+/// device runs at e.g. 48000 Hz but 44100 Hz is requested.
+fn native_output_rate(device: &cpal::Device) -> u32 {
+    device
+        .default_output_config()
+        .map_or(DEFAULT_SAMPLE_RATE, |c| c.sample_rate())
+}
+
 /// Build an input + output stream pair from the given configuration.
 ///
 /// Both streams are started (playing) before being returned.  The caller
@@ -239,11 +270,9 @@ pub fn build_streams(
     // This avoids Core Audio inserting an internal resampler (which adds
     // 11-23 ms of latency) when the device runs at e.g. 48000 Hz but we
     // request 44100 Hz.
-    let native_rate = output_device
-        .default_output_config()
-        .map(|c| c.sample_rate())
-        .unwrap_or(DEFAULT_SAMPLE_RATE);
-    let sample_rate = config.sample_rate.unwrap_or(native_rate);
+    let sample_rate = config
+        .sample_rate
+        .unwrap_or_else(|| native_output_rate(&output_device));
 
     // -- determine buffer size --------------------------------------------
     let buffer_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
@@ -420,13 +449,20 @@ mod tests {
 
     #[test]
     fn enumerate_input_does_not_panic() {
-        // On CI there may be zero devices; that is fine -- just ensure no panic.
-        let _ = enumerate_input_devices();
+        // On CI there may be zero devices (or no audio host at all); either
+        // outcome must be well-formed.
+        match enumerate_input_devices() {
+            Ok(devices) => assert!(devices.iter().all(|d| !d.name.is_empty())),
+            Err(e) => assert!(matches!(e, crate::Error::AudioDevice(_)), "{e}"),
+        }
     }
 
     #[test]
     fn enumerate_output_does_not_panic() {
-        let _ = enumerate_output_devices();
+        match enumerate_output_devices() {
+            Ok(devices) => assert!(devices.iter().all(|d| !d.name.is_empty())),
+            Err(e) => assert!(matches!(e, crate::Error::AudioDevice(_)), "{e}"),
+        }
     }
 
     #[test]

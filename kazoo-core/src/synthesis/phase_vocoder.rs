@@ -10,7 +10,7 @@ use std::sync::Arc;
 use num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 
-use crate::{Error, ParamInfo, Processor, Result, sanitize_sample};
+use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
 
 /// Default FFT size for the phase vocoder.
 const FFT_SIZE: usize = 2048;
@@ -205,7 +205,7 @@ impl PhaseVocoder {
             };
 
             // Accumulate phase with time-stretch scaling.
-            self.sum_phase[k] += freq_dev * time_scale;
+            self.sum_phase[k] = freq_dev.mul_add(time_scale, self.sum_phase[k]);
             // Wrap phase to (-pi, pi] to prevent unbounded growth and
             // resulting f32 precision loss in cos/sin after long playback.
             self.sum_phase[k] = wrap_phase(self.sum_phase[k]);
@@ -234,24 +234,23 @@ impl PhaseVocoder {
         hop.max(1)
     }
 
-    fn param_infos() -> [ParamInfo; Self::PARAM_COUNT] {
-        [
-            ParamInfo {
-                name: "Time Stretch".into(),
-                min: 0.25,
-                max: 4.0,
-                default: 1.0,
-                unit: "x".into(),
-            },
-            ParamInfo {
-                name: "Pitch Shift".into(),
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-                unit: "st".into(),
-            },
-        ]
-    }
+    /// Parameter metadata, indexed by the `PARAM_*` constants.
+    pub const PARAMS: [ParamInfo; Self::PARAM_COUNT] = [
+        ParamInfo {
+            name: "Time Stretch",
+            min: 0.25,
+            max: 4.0,
+            default: 1.0,
+            unit: "x",
+        },
+        ParamInfo {
+            name: "Pitch Shift",
+            min: -24.0,
+            max: 24.0,
+            default: 0.0,
+            unit: "st",
+        },
+    ];
 }
 
 /// Wrap a phase angle to `(-pi, pi]`.
@@ -364,8 +363,7 @@ impl Processor for PhaseVocoder {
     }
 
     fn param_info(&self, index: usize) -> Option<ParamInfo> {
-        let infos = Self::param_infos();
-        infos.get(index).cloned()
+        Self::PARAMS.get(index).copied()
     }
 
     fn param_value(&self, index: usize) -> Option<f32> {
@@ -376,12 +374,8 @@ impl Processor for PhaseVocoder {
         }
     }
 
-    fn set_param(&mut self, index: usize, value: f32) -> Result<()> {
-        let infos = Self::param_infos();
-        let info = infos
-            .get(index)
-            .ok_or_else(|| Error::Config(format!("invalid param index {index}")))?;
-        let clamped = info.clamp(value);
+    fn set_param(&mut self, index: usize, value: f32) -> ParamResult<()> {
+        let clamped = checked_param(&Self::PARAMS, index, value)?;
 
         match index {
             Self::PARAM_TIME_STRETCH => self.time_stretch = clamped,
@@ -392,7 +386,12 @@ impl Processor for PhaseVocoder {
                 self.sum_phase.fill(0.0);
                 self.last_phase.fill(0.0);
             }
-            _ => unreachable!(),
+            _ => {
+                return Err(ParamError::UnknownIndex {
+                    index,
+                    count: Self::PARAMS.len(),
+                });
+            }
         }
         Ok(())
     }
@@ -695,7 +694,7 @@ mod tests {
                 rng ^= rng << 13;
                 rng ^= rng >> 17;
                 rng ^= rng << 5;
-                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+                (rng as f32 / u32::MAX as f32).mul_add(2.0, -1.0)
             })
             .collect();
         let mut output = vec![0.0_f32; 8192];

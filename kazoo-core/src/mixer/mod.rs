@@ -3,6 +3,20 @@
 //! The [`Mixer`] manages a set of [`Track`]s, each with a synthesis slot,
 //! effect chain, volume/pan controls, and per-channel metering. All internal
 //! buffers are pre-allocated — [`Mixer::process`] never allocates.
+//!
+//! # Real-time use
+//!
+//! The engine's output callback owns a `Mixer`, so every mutation it makes
+//! must neither allocate nor free. Tracks and synth layers are therefore
+//! built complete off the audio thread ([`Track::new`], [`SynthLayer::new`])
+//! and moved in ([`Mixer::insert_track`], [`Track::add_layer`]); everything
+//! taken out ([`Mixer::remove_track`], [`Track::remove_layer`],
+//! [`Track::remove_clip`], [`Track::replace_synth`]) or refused is handed
+//! back to the caller, which sends it off the audio thread to be dropped.
+//! Every collection is created with its maximum capacity
+//! ([`crate::MAX_TRACKS`], [`crate::MAX_SYNTH_LAYERS`],
+//! [`crate::MAX_EFFECTS_PER_TRACK`], [`clip::MAX_CLIPS_PER_TRACK`]), so
+//! adding up to the limit never reallocates.
 
 pub mod clip;
 
@@ -11,6 +25,7 @@ use crate::synthesis::SynthesisMode;
 use crate::{DEFAULT_BUFFER_SIZE, Db, Pan, Processor, sanitize_buffer, sanitize_sample};
 
 use std::fmt;
+use std::sync::Arc;
 
 use clip::{AudioClip, ClipId};
 
@@ -29,6 +44,66 @@ impl fmt::Display for TrackId {
 }
 
 // ---------------------------------------------------------------------------
+// Prepared
+// ---------------------------------------------------------------------------
+
+/// A processor set to a sample rate and prepared for a largest block size,
+/// so it can be moved onto the audio thread and run without allocating.
+///
+/// The only way to build one is [`Prepared::new`], which does the
+/// preparing, so a `Prepared` always matches the rate and block size it
+/// records. Tracks refuse one that does not fit them.
+pub struct Prepared {
+    processor: Box<dyn Processor>,
+    sample_rate: f32,
+    block_size: usize,
+}
+
+impl Prepared {
+    /// Set `processor` to `sample_rate` and prepare it for blocks of up to
+    /// `block_size` samples. Allocates: not for the audio thread.
+    #[must_use]
+    pub fn new(mut processor: Box<dyn Processor>, sample_rate: f32, block_size: usize) -> Self {
+        processor.set_sample_rate(sample_rate);
+        processor.prepare(block_size);
+        Self {
+            processor,
+            sample_rate,
+            block_size,
+        }
+    }
+
+    /// Whether the processor can run at `sample_rate` on blocks of up to
+    /// `block_size` samples.
+    #[must_use]
+    pub const fn fits(&self, sample_rate: f32, block_size: usize) -> bool {
+        self.sample_rate.to_bits() == sample_rate.to_bits() && self.block_size >= block_size
+    }
+
+    /// The prepared processor.
+    #[must_use]
+    pub fn processor(&self) -> &dyn Processor {
+        &*self.processor
+    }
+
+    /// Unwrap the processor.
+    #[must_use]
+    pub fn into_processor(self) -> Box<dyn Processor> {
+        self.processor
+    }
+}
+
+impl fmt::Debug for Prepared {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Prepared")
+            .field("processor", &self.processor.name())
+            .field("sample_rate", &self.sample_rate)
+            .field("block_size", &self.block_size)
+            .finish()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SynthLayer
 // ---------------------------------------------------------------------------
 
@@ -39,6 +114,8 @@ impl fmt::Display for TrackId {
 /// with their individual gains applied.
 pub struct SynthLayer {
     synth: Box<dyn Processor>,
+    /// Sample rate and largest block the synth was prepared for.
+    prepared_for: (f32, usize),
     mode: SynthesisMode,
     gain: Db,
     enabled: bool,
@@ -49,6 +126,7 @@ impl fmt::Debug for SynthLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SynthLayer")
             .field("synth", &self.synth.name())
+            .field("prepared_for", &self.prepared_for)
             .field("mode", &self.mode)
             .field("gain", &self.gain)
             .field("enabled", &self.enabled)
@@ -58,6 +136,21 @@ impl fmt::Debug for SynthLayer {
 }
 
 impl SynthLayer {
+    /// Build a layer at unity gain, enabled, around a prepared synth. A
+    /// track only accepts it if the synth was prepared for the track's
+    /// sample rate and block size.
+    #[must_use]
+    pub fn new(synth: Prepared, mode: SynthesisMode, label: String) -> Self {
+        Self {
+            prepared_for: (synth.sample_rate, synth.block_size),
+            synth: synth.processor,
+            mode,
+            gain: Db::UNITY,
+            enabled: true,
+            label,
+        }
+    }
+
     /// Immutable access to the synth processor.
     #[must_use]
     pub fn synth(&self) -> &dyn Processor {
@@ -69,10 +162,11 @@ impl SynthLayer {
         &mut *self.synth
     }
 
-    /// Replace the synth processor in this layer.
-    pub fn replace_synth(&mut self, synth: Box<dyn Processor>, mode: SynthesisMode) {
-        self.synth = synth;
-        self.mode = mode;
+    /// Whether the layer's synth can run at `sample_rate` on blocks of up
+    /// to `block_size` samples.
+    #[must_use]
+    pub const fn fits(&self, sample_rate: f32, block_size: usize) -> bool {
+        self.prepared_for.0.to_bits() == sample_rate.to_bits() && self.prepared_for.1 >= block_size
     }
 
     /// Synthesis mode of this layer.
@@ -125,7 +219,10 @@ impl SynthLayer {
 /// Audio flows: synth layers (summed) → effects → volume → pan → master bus.
 pub struct Track {
     id: TrackId,
-    name: String,
+    /// Sample rate the track's processors run at.
+    sample_rate: f32,
+    /// Shared so snapshots of the track can name it without allocating.
+    name: Arc<str>,
     layers: Vec<SynthLayer>,
     effects: EffectChain,
     volume: Db,
@@ -178,6 +275,53 @@ impl fmt::Debug for Track {
 }
 
 impl Track {
+    /// Build a complete track with id `id`, ready to be moved into a
+    /// [`Mixer`] with [`Mixer::insert_track`]: `synth` becomes layer 0, and
+    /// every buffer and collection is allocated here, sized for
+    /// `buffer_size` samples and the per-track limits, so nothing on the
+    /// track allocates again.
+    ///
+    /// The synth is set to `sample_rate` and prepared for `buffer_size`.
+    ///
+    /// This allocates: build tracks off the audio thread.
+    #[must_use]
+    pub fn new(
+        id: TrackId,
+        name: impl Into<Arc<str>>,
+        synth: Box<dyn Processor>,
+        mode: SynthesisMode,
+        sample_rate: f32,
+        buffer_size: usize,
+    ) -> Self {
+        let synth = Prepared::new(synth, sample_rate, buffer_size);
+        let mut layers = Vec::with_capacity(crate::MAX_SYNTH_LAYERS);
+        layers.push(SynthLayer::new(synth, mode, "Layer 1".to_owned()));
+
+        Self {
+            id,
+            sample_rate,
+            name: name.into(),
+            layers,
+            effects: EffectChain::new_with_capacity(buffer_size),
+            volume: Db::UNITY,
+            pan: Pan::CENTER,
+            muted: false,
+            soloed: false,
+            armed: false,
+            synth_buffer: vec![0.0; buffer_size],
+            effect_buffer: vec![0.0; buffer_size],
+            clip_buffer: vec![0.0; buffer_size],
+            layer_buffers: (0..crate::MAX_SYNTH_LAYERS)
+                .map(|_| vec![0.0; buffer_size])
+                .collect(),
+            processed_samples: 0,
+            peak_meter: [0.0; 2],
+            rms_accumulator: [0.0; 2],
+            rms_sample_count: 0,
+            clips: Vec::with_capacity(clip::MAX_CLIPS_PER_TRACK),
+        }
+    }
+
     /// Track identifier, unique within its parent [`Mixer`].
     #[must_use]
     pub const fn id(&self) -> TrackId {
@@ -190,9 +334,41 @@ impl Track {
         &self.name
     }
 
-    /// Set the track name.
+    /// The track name as a shared string: cloning it never allocates.
+    #[must_use]
+    pub const fn shared_name(&self) -> &Arc<str> {
+        &self.name
+    }
+
+    /// Set the track name. Allocates: not for the audio thread.
     pub fn set_name(&mut self, name: String) {
-        self.name = name;
+        self.name = name.into();
+    }
+
+    /// Largest block, in samples, this track's buffers can process.
+    #[must_use]
+    pub fn buffer_size(&self) -> usize {
+        self.synth_buffer.len()
+    }
+
+    /// Sample rate the track's processors run at.
+    #[must_use]
+    pub const fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+
+    /// Append a prepared effect to the track's chain. Never allocates.
+    ///
+    /// # Errors
+    ///
+    /// Hands the effect back if it was prepared for another sample rate or
+    /// a smaller block size, or the chain already holds
+    /// [`crate::MAX_EFFECTS_PER_TRACK`] effects.
+    pub fn add_effect(&mut self, effect: Prepared) -> Result<(), Box<dyn Processor>> {
+        if !effect.fits(self.sample_rate, self.buffer_size()) {
+            return Err(effect.into_processor());
+        }
+        self.effects.push(effect.into_processor())
     }
 
     /// Current volume level.
@@ -274,13 +450,26 @@ impl Track {
 
     /// Replace the primary synth processor (layer 0) in-place without
     /// changing the track ID, name, effects chain, volume, pan, or any
-    /// other track state.
+    /// other track state. Never allocates or frees.
     ///
-    /// The new synth's [`Processor::set_sample_rate`] is NOT called here;
-    /// the caller is responsible for ensuring the synth is already configured
-    /// at the correct sample rate.
-    pub fn replace_synth(&mut self, synth: Box<dyn Processor>, mode: SynthesisMode) {
-        self.layers[0].replace_synth(synth, mode);
+    /// # Errors
+    ///
+    /// Hands the new synth back, leaving the track unchanged, if it was
+    /// prepared for another sample rate or a smaller block size.
+    ///
+    /// On success returns the replaced synth, for the caller to dispose of.
+    pub fn replace_synth(
+        &mut self,
+        synth: Prepared,
+        mode: SynthesisMode,
+    ) -> Result<Box<dyn Processor>, Prepared> {
+        if !synth.fits(self.sample_rate, self.buffer_size()) {
+            return Err(synth);
+        }
+        let layer = &mut self.layers[0];
+        layer.prepared_for = (synth.sample_rate, synth.block_size);
+        layer.mode = mode;
+        Ok(std::mem::replace(&mut layer.synth, synth.processor))
     }
 
     // -- Layer management ---------------------------------------------------
@@ -313,36 +502,32 @@ impl Track {
         &mut self.layers
     }
 
-    /// Add a new synth layer. Returns `false` if [`MAX_SYNTH_LAYERS`] reached.
+    /// Add a synth layer. Never allocates.
     ///
-    /// [`MAX_SYNTH_LAYERS`]: crate::MAX_SYNTH_LAYERS
-    pub fn add_layer(
-        &mut self,
-        synth: Box<dyn Processor>,
-        mode: SynthesisMode,
-        label: String,
-    ) -> bool {
-        if self.layers.len() >= crate::MAX_SYNTH_LAYERS {
-            return false;
+    /// # Errors
+    ///
+    /// Hands the layer back if the track already has
+    /// [`MAX_SYNTH_LAYERS`](crate::MAX_SYNTH_LAYERS) layers, or the layer's
+    /// synth was prepared for another sample rate or a smaller block size.
+    pub fn add_layer(&mut self, layer: SynthLayer) -> Result<(), SynthLayer> {
+        if self.layers.len() >= crate::MAX_SYNTH_LAYERS
+            || !layer.fits(self.sample_rate, self.buffer_size())
+        {
+            return Err(layer);
         }
-        self.layers.push(SynthLayer {
-            synth,
-            mode,
-            gain: Db::UNITY,
-            enabled: true,
-            label,
-        });
-        true
+        self.layers.push(layer);
+        Ok(())
     }
 
-    /// Remove a synth layer by index. Layer 0 cannot be removed.
-    /// Returns `true` if the layer was found and removed.
-    pub fn remove_layer(&mut self, index: usize) -> bool {
+    /// Remove and return the synth layer at `index`. Layer 0 cannot be
+    /// removed. Returns `None` for layer 0 or an index out of range. Never
+    /// frees: the caller disposes of the layer.
+    #[must_use = "the removed layer must be disposed of by the caller"]
+    pub fn remove_layer(&mut self, index: usize) -> Option<SynthLayer> {
         if index == 0 || index >= self.layers.len() {
-            return false;
+            return None;
         }
-        self.layers.remove(index);
-        true
+        Some(self.layers.remove(index))
     }
 
     /// All clips on this track, in insertion order.
@@ -351,24 +536,26 @@ impl Track {
         &self.clips
     }
 
-    /// Add a clip to this track. Respects [`clip::MAX_CLIPS_PER_TRACK`].
-    /// Returns `true` if the clip was added, `false` if the limit was reached.
-    pub fn add_clip(&mut self, clip: AudioClip) -> bool {
+    /// Add a clip to this track. Never allocates.
+    ///
+    /// # Errors
+    ///
+    /// Hands the clip back if the track already holds
+    /// [`clip::MAX_CLIPS_PER_TRACK`] clips.
+    pub fn add_clip(&mut self, clip: AudioClip) -> Result<(), AudioClip> {
         if self.clips.len() >= clip::MAX_CLIPS_PER_TRACK {
-            return false;
+            return Err(clip);
         }
         self.clips.push(clip);
-        true
+        Ok(())
     }
 
-    /// Remove a clip by its [`ClipId`]. Returns `true` if found and removed.
-    pub fn remove_clip(&mut self, clip_id: ClipId) -> bool {
-        if let Some(pos) = self.clips.iter().position(|c| c.id() == clip_id) {
-            self.clips.remove(pos);
-            true
-        } else {
-            false
-        }
+    /// Remove and return the clip with the given [`ClipId`], if the track
+    /// has it. Never frees: the caller disposes of the clip.
+    #[must_use = "the removed clip must be disposed of by the caller"]
+    pub fn remove_clip(&mut self, clip_id: ClipId) -> Option<AudioClip> {
+        let pos = self.clips.iter().position(|c| c.id() == clip_id)?;
+        Some(self.clips.remove(pos))
     }
 
     /// Find a clip by its [`ClipId`].
@@ -521,6 +708,7 @@ impl Mixer {
 
         // Update every track.
         for track in &mut self.tracks {
+            track.sample_rate = sample_rate;
             track.synth_buffer.resize(buffer_size, 0.0);
             track.effect_buffer.resize(buffer_size, 0.0);
             track.clip_buffer.resize(buffer_size, 0.0);
@@ -530,6 +718,7 @@ impl Mixer {
             for layer in &mut track.layers {
                 layer.synth.set_sample_rate(sample_rate);
                 layer.synth.prepare(buffer_size);
+                layer.prepared_for = (sample_rate, buffer_size);
             }
 
             // Ensure layer buffers are sized correctly.
@@ -543,68 +732,63 @@ impl Mixer {
         }
     }
 
-    /// Add a track with the given name, synth engine, and synthesis mode.
-    /// Returns the new track's unique identifier.
+    /// Build a track with the given name, synth engine, and synthesis mode
+    /// at the mixer's sample rate and block size, and add it. Returns the new
+    /// track's unique identifier.
     ///
-    /// The synth's [`Processor::set_sample_rate`] is called immediately with
-    /// the mixer's current sample rate. The synth becomes layer 0 of the
-    /// new track's layer stack.
+    /// The synth becomes layer 0 of the new track's layer stack.
+    ///
+    /// This allocates the track (see [`Track::new`]) and is not bounded by
+    /// [`crate::MAX_TRACKS`]: it is for building a mixer off the audio
+    /// thread. The output callback uses [`Mixer::insert_track`].
     pub fn add_track(
         &mut self,
         name: String,
-        mut synth: Box<dyn Processor>,
+        synth: Box<dyn Processor>,
         mode: SynthesisMode,
     ) -> TrackId {
         let id = TrackId(self.next_track_id);
-        self.next_track_id += 1;
+        let track = Track::new(id, name, synth, mode, self.sample_rate, self.buffer_size);
+        self.place(track)
+    }
 
-        synth.set_sample_rate(self.sample_rate);
-        synth.prepare(self.buffer_size);
+    /// Move a complete track (see [`Track::new`]) out of `slot` and into the
+    /// mixer, returning its id. Never allocates.
+    ///
+    /// A track the mixer refuses is left in `slot` (and `None` returned):
+    /// when it already holds [`crate::MAX_TRACKS`] tracks, holds a track
+    /// with the same id, or the track was built for another sample rate or
+    /// a smaller block size than the mixer's (it could not process a full
+    /// block). An empty slot inserts nothing.
+    pub fn insert_track(&mut self, slot: &mut Option<Track>) -> Option<TrackId> {
+        if !slot.as_ref().is_some_and(|track| self.accepts(track)) {
+            return None;
+        }
+        slot.take().map(|track| self.place(track))
+    }
 
-        let primary_layer = SynthLayer {
-            synth,
-            mode,
-            gain: Db::UNITY,
-            enabled: true,
-            label: "Layer 1".into(),
-        };
+    /// Whether [`Mixer::insert_track`] would accept `track`.
+    fn accepts(&self, track: &Track) -> bool {
+        self.tracks.len() < crate::MAX_TRACKS
+            && track.buffer_size() >= self.buffer_size
+            && track.sample_rate.to_bits() == self.sample_rate.to_bits()
+            && self.track(track.id).is_none()
+    }
 
-        let track = Track {
-            id,
-            name,
-            layers: vec![primary_layer],
-            effects: EffectChain::new_with_capacity(self.buffer_size),
-            volume: Db::UNITY,
-            pan: Pan::CENTER,
-            muted: false,
-            soloed: false,
-            armed: false,
-            synth_buffer: vec![0.0; self.buffer_size],
-            effect_buffer: vec![0.0; self.buffer_size],
-            clip_buffer: vec![0.0; self.buffer_size],
-            layer_buffers: (0..crate::MAX_SYNTH_LAYERS)
-                .map(|_| vec![0.0; self.buffer_size])
-                .collect(),
-            processed_samples: 0,
-            peak_meter: [0.0; 2],
-            rms_accumulator: [0.0; 2],
-            rms_sample_count: 0,
-            clips: Vec::with_capacity(32),
-        };
-
+    /// Add `track`, keeping [`Mixer::add_track`]'s next id past it.
+    fn place(&mut self, track: Track) -> TrackId {
+        let id = track.id;
+        self.next_track_id = self.next_track_id.max(id.0.saturating_add(1));
         self.tracks.push(track);
         id
     }
 
-    /// Remove the track with the given ID. Returns `true` if it was found
-    /// and removed, `false` if no such track exists.
-    pub fn remove_track(&mut self, id: TrackId) -> bool {
-        if let Some(pos) = self.tracks.iter().position(|t| t.id == id) {
-            self.tracks.remove(pos);
-            true
-        } else {
-            false
-        }
+    /// Remove and return the track with the given ID, or `None` if no such
+    /// track exists. Never frees: the caller disposes of the track.
+    #[must_use = "the removed track must be disposed of by the caller"]
+    pub fn remove_track(&mut self, id: TrackId) -> Option<Track> {
+        let pos = self.tracks.iter().position(|t| t.id == id)?;
+        Some(self.tracks.remove(pos))
     }
 
     /// Look up a track by ID.
@@ -697,7 +881,6 @@ impl Mixer {
     ///
     /// After this call, [`Mixer::master_buffer`] contains interleaved stereo
     /// output of length `2 * num_samples`.
-    #[allow(clippy::too_many_lines)]
     pub fn process(
         &mut self,
         input: &[f32],
@@ -724,6 +907,13 @@ impl Mixer {
         let any_soloed = self.tracks.iter().any(|t| t.soloed);
 
         // 3. Process each track.
+        let ctx = BlockContext {
+            input,
+            num_samples,
+            position_samples,
+            is_playing,
+            is_recording,
+        };
         for track in &mut self.tracks {
             // Muted tracks are always silent.
             if track.muted {
@@ -733,116 +923,7 @@ impl Mixer {
             if any_soloed && !track.soloed {
                 continue;
             }
-
-            // 3a. Zero buffers for this block.
-            for s in &mut track.synth_buffer[..num_samples] {
-                *s = 0.0;
-            }
-            for s in &mut track.clip_buffer[..num_samples] {
-                *s = 0.0;
-            }
-
-            // 3b. Read clip audio into the clip buffer (if playing).
-            let has_clips = is_playing && !track.clips.is_empty();
-            if has_clips {
-                for clip in &track.clips {
-                    clip.read_into(position_samples, &mut track.clip_buffer[..num_samples]);
-                }
-                // Accumulate raw clip audio for analysis-thread pitch detection.
-                for i in 0..num_samples {
-                    self.clip_mix_buffer[i] += track.clip_buffer[i];
-                }
-            }
-
-            // 3c. Route audio through synth layers.
-            //
-            // Determine input source based on playback/recording mode:
-            //  - Playback: clip audio → synth layers → synth_buffer
-            //  - Recording: mic → synth layers → synth_buffer, plus raw clips for backing
-            //  - Monitoring (stopped/paused): mic → synth layers → synth_buffer
-            //
-            // Each enabled layer processes the same input independently, then
-            // its output is gain-scaled and summed into synth_buffer.
-            let has_synth_input = if has_clips && !is_recording {
-                // Playback: clip audio through synth layers.
-                true
-            } else if track.armed && (is_recording || !is_playing) {
-                // Recording or monitoring: mic through synth layers.
-                true
-            } else {
-                false
-            };
-            let use_clip_input = has_clips && !is_recording;
-            let add_clip_backing = has_clips && track.armed && is_recording;
-
-            if has_synth_input {
-                for layer_idx in 0..track.layers.len() {
-                    if !track.layers[layer_idx].enabled {
-                        continue;
-                    }
-                    let layer_buf = &mut track.layer_buffers[layer_idx][..num_samples];
-                    for s in layer_buf.iter_mut() {
-                        *s = 0.0;
-                    }
-                    if use_clip_input {
-                        track.layers[layer_idx]
-                            .synth
-                            .process(&track.clip_buffer[..num_samples], layer_buf);
-                    } else {
-                        track.layers[layer_idx].synth.process(input, layer_buf);
-                    }
-                    let gain = track.layers[layer_idx].gain.to_linear();
-                    for (sb, &lb) in track.synth_buffer[..num_samples]
-                        .iter_mut()
-                        .zip(layer_buf.iter())
-                    {
-                        *sb += sanitize_sample(lb) * gain;
-                    }
-                }
-            }
-
-            // Sum raw clip audio for backing (hear existing clips while recording).
-            if add_clip_backing {
-                for i in 0..num_samples {
-                    track.synth_buffer[i] += track.clip_buffer[i];
-                }
-            }
-
-            // 3d. Effects: mono → mono through the chain.
-            track.effects.process(
-                &track.synth_buffer[..num_samples],
-                &mut track.effect_buffer[..num_samples],
-            );
-            track.processed_samples = num_samples;
-
-            // 3e. Apply volume, pan, sum into master, and update meters.
-            let volume_gain = track.volume.to_linear();
-            let (pan_l, pan_r) = track.pan.gains();
-
-            for i in 0..num_samples {
-                let dry = sanitize_sample(track.effect_buffer[i]);
-                let gained = dry * volume_gain;
-                let left = gained * pan_l;
-                let right = gained * pan_r;
-
-                self.master_buffer[i * 2] += left;
-                self.master_buffer[i * 2 + 1] += right;
-
-                // Peak hold: keep the maximum seen since last reset.
-                let abs_l = left.abs();
-                let abs_r = right.abs();
-                if abs_l > track.peak_meter[0] {
-                    track.peak_meter[0] = abs_l;
-                }
-                if abs_r > track.peak_meter[1] {
-                    track.peak_meter[1] = abs_r;
-                }
-
-                // RMS accumulation (f64 for precision).
-                track.rms_accumulator[0] += f64::from(left) * f64::from(left);
-                track.rms_accumulator[1] += f64::from(right) * f64::from(right);
-            }
-            track.rms_sample_count += num_samples;
+            track.process_block(&ctx, &mut self.master_buffer, &mut self.clip_mix_buffer);
         }
 
         // 4. Apply master volume.
@@ -852,9 +933,17 @@ impl Mixer {
         }
 
         // 5. Update master meters.
-        for i in 0..num_samples {
-            let left = self.master_buffer[i * 2];
-            let right = self.master_buffer[i * 2 + 1];
+        self.update_master_meters(num_samples);
+
+        // 6. Final sanitization of the master output.
+        sanitize_buffer(&mut self.master_buffer[..stereo_len]);
+    }
+
+    /// Accumulate master peak and RMS meters over the first `num_samples`
+    /// stereo frames of the master buffer.
+    fn update_master_meters(&mut self, num_samples: usize) {
+        for frame in self.master_buffer[..num_samples * 2].chunks_exact(2) {
+            let (left, right) = (frame[0], frame[1]);
 
             let abs_l = left.abs();
             let abs_r = right.abs();
@@ -865,31 +954,34 @@ impl Mixer {
                 self.master_peak[1] = abs_r;
             }
 
-            self.master_rms_accumulator[0] += f64::from(left) * f64::from(left);
-            self.master_rms_accumulator[1] += f64::from(right) * f64::from(right);
+            self.master_rms_accumulator[0] =
+                f64::from(left).mul_add(f64::from(left), self.master_rms_accumulator[0]);
+            self.master_rms_accumulator[1] =
+                f64::from(right).mul_add(f64::from(right), self.master_rms_accumulator[1]);
         }
         self.master_rms_count += num_samples;
-
-        // 6. Final sanitization of the master output.
-        sanitize_buffer(&mut self.master_buffer[..stereo_len]);
     }
 
     /// Build a snapshot of all meter readings for UI display.
     #[must_use]
     pub fn snapshot(&self) -> MixerSnapshot {
-        let mut snap = MixerSnapshot::default();
+        let mut snap = MixerSnapshot {
+            track_meters: Vec::with_capacity(self.tracks.len()),
+            ..MixerSnapshot::default()
+        };
         self.write_snapshot(&mut snap);
         snap
     }
 
-    /// Write meter readings into an existing snapshot, reusing its allocated
-    /// `Vec` to avoid per-frame heap allocation in the output callback.
+    /// Write meter readings into an existing snapshot, within the capacity
+    /// of its `track_meters` (never allocating, so the output callback can
+    /// use it): tracks beyond that capacity are left out.
     pub fn write_snapshot(&self, snapshot: &mut MixerSnapshot) {
         snapshot.track_meters.clear();
-        snapshot.track_meters.reserve(self.tracks.len());
+        let room = snapshot.track_meters.capacity();
         snapshot
             .track_meters
-            .extend(self.tracks.iter().map(Track::meter_snapshot));
+            .extend(self.tracks.iter().take(room).map(Track::meter_snapshot));
 
         let master_rms_l = rms_linear(self.master_rms_accumulator[0], self.master_rms_count);
         let master_rms_r = rms_linear(self.master_rms_accumulator[1], self.master_rms_count);
@@ -916,6 +1008,146 @@ impl Mixer {
     }
 }
 
+/// Per-block transport context shared by every track in [`Mixer::process`].
+#[derive(Debug, Clone, Copy)]
+struct BlockContext<'a> {
+    /// Mono microphone/voice input for armed tracks.
+    input: &'a [f32],
+    /// Frames to process (already capped to the mixer's buffer size).
+    num_samples: usize,
+    /// Transport timeline position at the start of the block.
+    position_samples: u64,
+    /// Whether the transport is Playing or Recording.
+    is_playing: bool,
+    /// Whether the transport is Recording.
+    is_recording: bool,
+}
+
+impl Track {
+    /// Render one block for this (audible) track and sum it into `master`
+    /// (interleaved stereo) and `clip_mix` (mono raw clip audio).
+    fn process_block(&mut self, ctx: &BlockContext<'_>, master: &mut [f32], clip_mix: &mut [f32]) {
+        let num_samples = ctx.num_samples;
+
+        // 3a. Zero buffers for this block.
+        self.synth_buffer[..num_samples].fill(0.0);
+        self.clip_buffer[..num_samples].fill(0.0);
+
+        // 3b. Read clip audio into the clip buffer (if playing).
+        let has_clips = ctx.is_playing && !self.clips.is_empty();
+        if has_clips {
+            for clip in &self.clips {
+                clip.read_into(ctx.position_samples, &mut self.clip_buffer[..num_samples]);
+            }
+            // Accumulate raw clip audio for analysis-thread pitch detection.
+            for (mix, &clip) in clip_mix[..num_samples]
+                .iter_mut()
+                .zip(&self.clip_buffer[..num_samples])
+            {
+                *mix += clip;
+            }
+        }
+
+        // 3c. Route audio through synth layers.
+        //
+        // Determine input source based on playback/recording mode:
+        //  - Playback: clip audio → synth layers → synth_buffer
+        //  - Recording: mic → synth layers → synth_buffer, plus raw clips for backing
+        //  - Monitoring (stopped/paused): mic → synth layers → synth_buffer
+        let use_clip_input = has_clips && !ctx.is_recording;
+        let has_synth_input =
+            use_clip_input || (self.armed && (ctx.is_recording || !ctx.is_playing));
+        if has_synth_input {
+            self.run_synth_layers(ctx.input, use_clip_input, num_samples);
+        }
+
+        // Sum raw clip audio for backing (hear existing clips while recording).
+        if has_clips && self.armed && ctx.is_recording {
+            for (synth, &clip) in self.synth_buffer[..num_samples]
+                .iter_mut()
+                .zip(&self.clip_buffer[..num_samples])
+            {
+                *synth += clip;
+            }
+        }
+
+        // 3d. Effects: mono → mono through the chain.
+        self.effects.process(
+            &self.synth_buffer[..num_samples],
+            &mut self.effect_buffer[..num_samples],
+        );
+        self.processed_samples = num_samples;
+
+        // 3e. Apply volume, pan, sum into master, and update meters.
+        self.sum_into_master(master, num_samples);
+    }
+
+    /// Run every enabled synth layer over the block's input (clip audio
+    /// during playback, otherwise the mic) and sum the gain-scaled results
+    /// into `synth_buffer`.
+    ///
+    /// Each enabled layer processes the same input independently.
+    fn run_synth_layers(&mut self, mic_input: &[f32], use_clip_input: bool, num_samples: usize) {
+        for (layer, layer_buffer) in self.layers.iter_mut().zip(&mut self.layer_buffers) {
+            if !layer.enabled {
+                continue;
+            }
+            let layer_buf = &mut layer_buffer[..num_samples];
+            layer_buf.fill(0.0);
+            if use_clip_input {
+                layer
+                    .synth
+                    .process(&self.clip_buffer[..num_samples], layer_buf);
+            } else {
+                layer.synth.process(mic_input, layer_buf);
+            }
+            let gain = layer.gain.to_linear();
+            for (sb, &lb) in self.synth_buffer[..num_samples]
+                .iter_mut()
+                .zip(layer_buf.iter())
+            {
+                *sb = sanitize_sample(lb).mul_add(gain, *sb);
+            }
+        }
+    }
+
+    /// Apply volume and pan to the effect output, sum it into the
+    /// interleaved stereo `master` buffer, and update this track's meters.
+    fn sum_into_master(&mut self, master: &mut [f32], num_samples: usize) {
+        let volume_gain = self.volume.to_linear();
+        let (pan_l, pan_r) = self.pan.gains();
+
+        for (frame, &wet) in master[..num_samples * 2]
+            .chunks_exact_mut(2)
+            .zip(&self.effect_buffer[..num_samples])
+        {
+            let gained = sanitize_sample(wet) * volume_gain;
+            let left = gained * pan_l;
+            let right = gained * pan_r;
+
+            frame[0] += left;
+            frame[1] += right;
+
+            // Peak hold: keep the maximum seen since last reset.
+            let abs_l = left.abs();
+            let abs_r = right.abs();
+            if abs_l > self.peak_meter[0] {
+                self.peak_meter[0] = abs_l;
+            }
+            if abs_r > self.peak_meter[1] {
+                self.peak_meter[1] = abs_r;
+            }
+
+            // RMS accumulation (f64 for precision).
+            self.rms_accumulator[0] =
+                f64::from(left).mul_add(f64::from(left), self.rms_accumulator[0]);
+            self.rms_accumulator[1] =
+                f64::from(right).mul_add(f64::from(right), self.rms_accumulator[1]);
+        }
+        self.rms_sample_count += num_samples;
+    }
+}
+
 impl Default for Mixer {
     fn default() -> Self {
         Self::new()
@@ -932,12 +1164,9 @@ fn rms_linear(sum_of_squares: f64, count: usize) -> f32 {
     if count == 0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
     let n = count as f64;
     let mean = sum_of_squares / n;
-    #[allow(clippy::cast_possible_truncation)]
-    let result = mean.sqrt() as f32;
-    result
+    mean.sqrt() as f32
 }
 
 // ---------------------------------------------------------------------------
@@ -984,7 +1213,7 @@ mod tests {
 
         fn reset(&mut self) {}
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "TestSynth"
         }
 
@@ -1030,16 +1259,16 @@ mod tests {
         assert_eq!(mixer.track(id2).unwrap().name(), "Track 2");
 
         // Remove first track.
-        assert!(mixer.remove_track(id1));
+        assert!(mixer.remove_track(id1).is_some());
         assert_eq!(mixer.track_count(), 1);
         assert!(mixer.track(id1).is_none());
         assert!(mixer.track(id2).is_some());
 
         // Removing nonexistent track returns false.
-        assert!(!mixer.remove_track(id1));
+        assert!(mixer.remove_track(id1).is_none());
 
         // Remove second track.
-        assert!(mixer.remove_track(id2));
+        assert!(mixer.remove_track(id2).is_some());
         assert_eq!(mixer.track_count(), 0);
     }
 
@@ -1056,7 +1285,7 @@ mod tests {
             Box::new(TestSynth::new(1.0)),
             SynthesisMode::PitchTracked,
         );
-        mixer.remove_track(id1);
+        assert!(mixer.remove_track(id1).is_some());
         let id3 = mixer.add_track(
             "C".into(),
             Box::new(TestSynth::new(1.0)),
@@ -1810,7 +2039,12 @@ mod tests {
         assert!(track.effects().is_empty());
 
         // We can add effects.
-        track.effects_mut().push(Box::new(TestSynth::new(0.5)));
+        assert!(
+            track
+                .effects_mut()
+                .push(Box::new(TestSynth::new(0.5)))
+                .is_ok()
+        );
         assert_eq!(track.effects().len(), 1);
     }
 
@@ -1827,11 +2061,15 @@ mod tests {
         mixer.track_mut(id).unwrap().set_armed(true);
 
         // Add a second layer with the same gain.
-        mixer.track_mut(id).unwrap().add_layer(
-            Box::new(TestSynth::new(0.5)),
-            SynthesisMode::Wavetable,
-            "Layer 2".into(),
-        );
+        mixer
+            .track_mut(id)
+            .unwrap()
+            .add_layer(SynthLayer::new(
+                prepared(TestSynth::new(0.5)),
+                SynthesisMode::Wavetable,
+                "Layer 2".into(),
+            ))
+            .unwrap();
         assert_eq!(mixer.track_mut(id).unwrap().layer_count(), 2);
 
         mixer.prepare(44_100.0, 64);
@@ -1865,11 +2103,15 @@ mod tests {
         mixer.track_mut(id).unwrap().set_armed(true);
 
         // Add a second layer with gain 100 — would dominate output if enabled.
-        mixer.track_mut(id).unwrap().add_layer(
-            Box::new(TestSynth::new(100.0)),
-            SynthesisMode::Wavetable,
-            "Loud".into(),
-        );
+        mixer
+            .track_mut(id)
+            .unwrap()
+            .add_layer(SynthLayer::new(
+                prepared(TestSynth::new(100.0)),
+                SynthesisMode::Wavetable,
+                "Loud".into(),
+            ))
+            .unwrap();
 
         // Disable the loud layer.
         let track = mixer.track_mut(id).unwrap();
@@ -1901,11 +2143,15 @@ mod tests {
         mixer.track_mut(id).unwrap().set_armed(true);
 
         // Add a second layer at -6 dB (approx 0.5 linear).
-        mixer.track_mut(id).unwrap().add_layer(
-            Box::new(TestSynth::new(1.0)),
-            SynthesisMode::Wavetable,
-            "Quiet".into(),
-        );
+        mixer
+            .track_mut(id)
+            .unwrap()
+            .add_layer(SynthLayer::new(
+                prepared(TestSynth::new(1.0)),
+                SynthesisMode::Wavetable,
+                "Quiet".into(),
+            ))
+            .unwrap();
         let track = mixer.track_mut(id).unwrap();
         track.layers_mut()[1].set_gain(Db::new(-6.0));
 
@@ -1931,7 +2177,7 @@ mod tests {
     fn remove_layer_zero_rejected() {
         let (mut mixer, id) = mixer_with_unity_track();
         let track = mixer.track_mut(id).unwrap();
-        assert!(!track.remove_layer(0));
+        assert!(track.remove_layer(0).is_none());
         assert_eq!(track.layer_count(), 1);
     }
 
@@ -1939,7 +2185,7 @@ mod tests {
     fn remove_layer_out_of_bounds_rejected() {
         let (mut mixer, id) = mixer_with_unity_track();
         let track = mixer.track_mut(id).unwrap();
-        assert!(!track.remove_layer(10));
+        assert!(track.remove_layer(10).is_none());
     }
 
     #[test]
@@ -1948,22 +2194,171 @@ mod tests {
         let track = mixer.track_mut(id).unwrap();
         for i in 1..crate::MAX_SYNTH_LAYERS {
             assert!(
-                track.add_layer(
-                    Box::new(TestSynth::new(1.0)),
-                    SynthesisMode::PitchTracked,
-                    format!("Layer {}", i + 1),
-                ),
+                track
+                    .add_layer(SynthLayer::new(
+                        prepared(TestSynth::new(1.0)),
+                        SynthesisMode::PitchTracked,
+                        format!("Layer {}", i + 1),
+                    ))
+                    .is_ok(),
                 "should be able to add layer {i}"
             );
         }
         assert_eq!(track.layer_count(), crate::MAX_SYNTH_LAYERS);
         assert!(
-            !track.add_layer(
-                Box::new(TestSynth::new(1.0)),
-                SynthesisMode::PitchTracked,
-                "Too Many".into(),
-            ),
+            track
+                .add_layer(SynthLayer::new(
+                    prepared(TestSynth::new(1.0)),
+                    SynthesisMode::PitchTracked,
+                    "Too Many".into(),
+                ))
+                .is_err(),
             "should reject beyond MAX_SYNTH_LAYERS"
         );
+    }
+
+    // -- Real-time ownership -------------------------------------------------
+
+    fn prepared(synth: TestSynth) -> Prepared {
+        Prepared::new(Box::new(synth), 44_100.0, DEFAULT_BUFFER_SIZE)
+    }
+
+    fn built_track(id: usize, buffer_size: usize) -> Track {
+        Track::new(
+            TrackId(id),
+            format!("{id}"),
+            Box::new(TestSynth::new(1.0)),
+            SynthesisMode::PitchTracked,
+            44_100.0,
+            buffer_size,
+        )
+    }
+
+    #[test]
+    fn insert_track_keeps_the_given_id_and_empties_the_slot() {
+        let mut mixer = Mixer::new();
+        let mut slot = Some(built_track(7, DEFAULT_BUFFER_SIZE));
+        assert_eq!(mixer.insert_track(&mut slot), Some(TrackId(7)));
+        assert!(slot.is_none());
+        assert_eq!(mixer.track(TrackId(7)).unwrap().name(), "7");
+        assert_eq!(mixer.insert_track(&mut None), None);
+        // Tracks added off the audio thread are numbered past it.
+        let next = mixer.add_track(
+            "Next".into(),
+            Box::new(TestSynth::new(1.0)),
+            SynthesisMode::PitchTracked,
+        );
+        assert_eq!(next, TrackId(8));
+    }
+
+    #[test]
+    fn insert_track_leaves_refused_tracks_in_the_slot() {
+        let mut mixer = Mixer::new();
+        let mut small = Some(built_track(0, DEFAULT_BUFFER_SIZE / 2));
+        assert_eq!(mixer.insert_track(&mut small), None);
+        assert!(small.is_some());
+
+        let mut other_rate = Some(Track::new(
+            TrackId(0),
+            "Rate",
+            Box::new(TestSynth::new(1.0)),
+            SynthesisMode::PitchTracked,
+            48_000.0,
+            DEFAULT_BUFFER_SIZE,
+        ));
+        assert_eq!(mixer.insert_track(&mut other_rate), None);
+        assert!(other_rate.is_some());
+
+        for i in 0..crate::MAX_TRACKS {
+            let mut slot = Some(built_track(i, DEFAULT_BUFFER_SIZE));
+            assert!(mixer.insert_track(&mut slot).is_some());
+        }
+        let mut duplicate = Some(built_track(0, DEFAULT_BUFFER_SIZE));
+        assert_eq!(mixer.insert_track(&mut duplicate), None);
+        let mut extra = Some(built_track(99, DEFAULT_BUFFER_SIZE));
+        assert_eq!(mixer.insert_track(&mut extra), None);
+        assert!(extra.is_some());
+        assert_eq!(mixer.track_count(), crate::MAX_TRACKS);
+    }
+
+    #[test]
+    fn inserting_up_to_the_limit_never_reallocates() {
+        let mut mixer = Mixer::new();
+        let mut slot = Some(built_track(0, DEFAULT_BUFFER_SIZE));
+        assert!(mixer.insert_track(&mut slot).is_some());
+        let tracks = mixer.tracks().as_ptr();
+        for i in 1..crate::MAX_TRACKS {
+            let mut slot = Some(built_track(i, DEFAULT_BUFFER_SIZE));
+            assert!(mixer.insert_track(&mut slot).is_some());
+        }
+        assert_eq!(mixer.tracks().as_ptr(), tracks);
+    }
+
+    #[test]
+    fn track_new_reserves_every_collection() {
+        let mut track = built_track(0, 64);
+        assert_eq!(track.buffer_size(), 64);
+        let layers = track.layers().as_ptr();
+        for i in 1..crate::MAX_SYNTH_LAYERS {
+            let synth = Prepared::new(Box::new(TestSynth::new(1.0)), 44_100.0, 64);
+            let layer = SynthLayer::new(synth, SynthesisMode::Wavetable, format!("{i}"));
+            assert!(track.add_layer(layer).is_ok());
+        }
+        assert_eq!(track.layers().as_ptr(), layers, "layers reallocated");
+        assert!(track.clips.capacity() >= clip::MAX_CLIPS_PER_TRACK);
+    }
+
+    #[test]
+    fn processors_prepared_for_another_rate_or_smaller_blocks_are_refused() {
+        let mut track = built_track(0, 128);
+        let small = Prepared::new(Box::new(TestSynth::new(1.0)), 44_100.0, 64);
+        let refused = track.replace_synth(small, SynthesisMode::Vocoder);
+        assert!(refused.is_err());
+        assert_eq!(track.layer(0).unwrap().mode(), SynthesisMode::PitchTracked);
+
+        let other_rate = Prepared::new(Box::new(TestSynth::new(1.0)), 48_000.0, 128);
+        let layer = SynthLayer::new(other_rate, SynthesisMode::Granular, "L".into());
+        assert!(track.add_layer(layer).is_err());
+
+        let effect = Prepared::new(Box::new(TestSynth::new(1.0)), 44_100.0, 32);
+        assert!(track.add_effect(effect).is_err());
+        let effect = Prepared::new(Box::new(TestSynth::new(1.0)), 44_100.0, 256);
+        assert!(track.add_effect(effect).is_ok(), "larger blocks fit");
+        assert_eq!(track.effects().len(), 1);
+    }
+
+    #[test]
+    fn removals_hand_the_objects_back() {
+        let (mut mixer, id) = mixer_with_unity_track();
+        let track = mixer.track_mut(id).unwrap();
+        let layer = SynthLayer::new(
+            prepared(TestSynth::new(0.5)),
+            SynthesisMode::Granular,
+            "Extra".into(),
+        );
+        assert!(track.add_layer(layer).is_ok());
+        assert_eq!(track.remove_layer(1).unwrap().label(), "Extra");
+
+        let old = track
+            .replace_synth(prepared(TestSynth::new(2.0)), SynthesisMode::Vocoder)
+            .unwrap();
+        assert_eq!(old.name(), "TestSynth");
+        assert_eq!(track.layer(0).unwrap().mode(), SynthesisMode::Vocoder);
+
+        let data = clip::ClipData::new(vec![0.5; 10], "C".into(), None, 44_100);
+        assert!(track.add_clip(AudioClip::new(ClipId(4), data, 0)).is_ok());
+        assert_eq!(track.remove_clip(ClipId(4)).unwrap().id(), ClipId(4));
+        assert!(track.remove_clip(ClipId(4)).is_none());
+
+        assert_eq!(mixer.remove_track(id).unwrap().id(), id);
+    }
+
+    #[test]
+    fn write_snapshot_stays_within_the_meter_capacity() {
+        let (mixer, _) = mixer_with_unity_track();
+        let mut snapshot = MixerSnapshot::default();
+        mixer.write_snapshot(&mut snapshot);
+        assert!(snapshot.track_meters.is_empty(), "grew a zero-capacity Vec");
+        assert_eq!(mixer.snapshot().track_meters.len(), 1);
     }
 }

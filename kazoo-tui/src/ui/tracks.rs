@@ -89,7 +89,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                 // Map dB to ratio: -60 dB = empty, 0 dB = full.
                 let ratio = ((peak + 60.0) / 60.0).clamp(0.0, 1.0);
                 let bar_width: usize = 4;
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let filled = (ratio * bar_width as f32) as usize;
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(

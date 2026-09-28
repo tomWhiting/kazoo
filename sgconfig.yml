@@ -1,0 +1,5 @@
+# ast-grep project configuration: `ast-grep scan` runs every rule below.
+ruleDirs:
+  - ast-grep/rules
+testConfigs:
+  - testDir: ast-grep/tests

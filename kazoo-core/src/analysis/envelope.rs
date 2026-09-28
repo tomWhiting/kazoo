@@ -37,6 +37,14 @@ impl EnvelopeFollower {
         }
     }
 
+    /// Change the attack and release times (and sample rate) in place,
+    /// keeping the current envelope level so the output does not jump.
+    /// Inputs are treated as in [`Self::new`]. Never allocates.
+    pub fn set_times(&mut self, attack_ms: f32, release_ms: f32, sample_rate: f32) {
+        self.attack_coeff = compute_coefficient(attack_ms, sample_rate);
+        self.release_coeff = compute_coefficient(release_ms, sample_rate);
+    }
+
     /// Process a single sample and return the updated envelope value.
     ///
     /// If the absolute value of the input exceeds the current envelope, the
@@ -115,6 +123,28 @@ fn compute_coefficient(time_ms: f32, sample_rate: f32) -> f32 {
 mod tests {
     use super::*;
     use std::f32::consts::PI;
+
+    #[test]
+    fn set_times_keeps_level_and_changes_speed() {
+        let mut env = EnvelopeFollower::new(1.0, 1_000.0, 44_100.0);
+        for _ in 0..2_000 {
+            env.process_sample(1.0);
+        }
+        let level = env.current();
+        assert!(level > 0.95, "should be near 1.0, got {level}");
+
+        // Much faster release: the level is kept, then falls quickly.
+        env.set_times(1.0, 1.0, 44_100.0);
+        assert!((env.current() - level).abs() < f32::EPSILON);
+        for _ in 0..441 {
+            env.process_sample(0.0);
+        }
+        assert!(
+            env.current() < 0.01,
+            "fast release should decay within 10 ms, got {}",
+            env.current()
+        );
+    }
 
     #[test]
     fn step_response_rises() {

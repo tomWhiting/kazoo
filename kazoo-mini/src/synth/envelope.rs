@@ -53,8 +53,6 @@ pub struct AdsrEnvelope {
     decay_coeff: f32,
     /// Coefficient for exponential release curve.
     release_coeff: f32,
-    /// Level at which release began (for smooth release from any level).
-    release_level: f32,
 }
 
 /// Overshoot target for attack phase — exponential towards ~1.37 means
@@ -85,16 +83,9 @@ impl AdsrEnvelope {
             attack_coeff: 0.0,
             decay_coeff: 0.0,
             release_coeff: 0.0,
-            release_level: 0.0,
         };
         env.recompute_coefficients();
         env
-    }
-
-    /// Update sample rate and recompute coefficients.
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate.max(1.0);
-        self.recompute_coefficients();
     }
 
     /// Recompute exponential coefficients from current time parameters.
@@ -121,34 +112,8 @@ impl AdsrEnvelope {
     /// Release the envelope (note off).
     pub fn gate_off(&mut self) {
         if self.stage != Stage::Idle {
-            self.release_level = self.value;
             self.stage = Stage::Release;
         }
-    }
-
-    /// Force the envelope to idle (used on voice steal).
-    pub const fn force_off(&mut self) {
-        self.stage = Stage::Idle;
-        self.value = 0.0;
-        self.release_level = 0.0;
-    }
-
-    /// Current stage.
-    #[must_use]
-    pub const fn stage(&self) -> Stage {
-        self.stage
-    }
-
-    /// Whether the envelope is active (not idle).
-    #[must_use]
-    pub fn is_active(&self) -> bool {
-        self.stage != Stage::Idle
-    }
-
-    /// Current raw envelope value (0.0 to 1.0).
-    #[must_use]
-    pub const fn value(&self) -> f32 {
-        self.value
     }
 
     /// Generate the next envelope sample.
@@ -202,7 +167,6 @@ impl AdsrEnvelope {
     pub const fn reset(&mut self) {
         self.stage = Stage::Idle;
         self.value = 0.0;
-        self.release_level = 0.0;
     }
 }
 
@@ -280,10 +244,10 @@ mod tests {
         }
 
         assert!(
-            env.value() < 0.001,
+            env.value < 0.001,
             "envelope should reach near-zero after release"
         );
-        assert_eq!(env.stage(), Stage::Idle);
+        assert_eq!(env.stage, Stage::Idle);
     }
 
     #[test]
@@ -300,9 +264,9 @@ mod tests {
         }
 
         // Now in sustain — legato gate_on should NOT retrigger
-        let stage_before = env.stage();
+        let stage_before = env.stage;
         env.gate_on(false); // legato
-        assert_eq!(env.stage(), stage_before);
+        assert_eq!(env.stage, stage_before);
     }
 
     #[test]
@@ -312,7 +276,7 @@ mod tests {
         for _ in 0..88200 {
             let v = env.tick();
             assert!(v.is_finite(), "envelope produced non-finite value");
-            assert!(v >= 0.0 && v <= 1.0, "envelope out of range: {v}");
+            assert!((0.0..=1.0).contains(&v), "envelope out of range: {v}");
         }
     }
 }

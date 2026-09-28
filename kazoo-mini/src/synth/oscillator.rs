@@ -229,12 +229,6 @@ impl Oscillator {
         }
     }
 
-    /// Update sample rate and reset state.
-    pub const fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate.max(1.0);
-        self.reset();
-    }
-
     /// Reset phase and internal state.
     pub const fn reset(&mut self) {
         self.phase = 0.0;
@@ -358,7 +352,10 @@ mod tests {
         for _ in 0..44100 {
             let s = osc.tick(440.0);
             assert!(s.is_finite(), "NaN/Inf in oscillator output");
-            assert!(s >= -2.0 && s <= 2.0, "oscillator output out of range: {s}");
+            assert!(
+                (-2.0..=2.0).contains(&s),
+                "oscillator output out of range: {s}"
+            );
         }
     }
 

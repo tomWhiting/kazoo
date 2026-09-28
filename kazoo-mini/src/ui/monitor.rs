@@ -96,9 +96,7 @@ pub fn draw_waveform(f: &mut Frame, area: Rect, app: &App) {
             // Map sample [-1.0, 1.0] to dot row [0, total_dots_y-1].
             // +1.0 -> top (row 0), 0.0 -> center, -1.0 -> bottom.
             let clamped = sample.clamp(-1.0, 1.0);
-            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
             let dot_y_f = ((-clamped + 1.0) * 0.5) * (total_dots_y.saturating_sub(1)) as f32;
-            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
             let dot_y = (dot_y_f as usize).min(total_dots_y.saturating_sub(1));
 
             // Which grid row and which dot within that row?
