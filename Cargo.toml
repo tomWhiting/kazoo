@@ -12,6 +12,7 @@ members = [
     "kazoo-juno",
     "kazoo-play",
     "kazoo-dx",
+    "kazoo-string",
     "kazoo-fx",
     "kazoo-wall",
     "kazoo-perc",

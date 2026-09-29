@@ -1435,6 +1435,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kazoo-string"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "cpal",
+ "crossbeam-channel",
+ "crossterm",
+ "kazoo-core",
+ "ratatui",
+]
+
+[[package]]
 name = "kazoo-tui"
 version = "0.1.0"
 dependencies = [
