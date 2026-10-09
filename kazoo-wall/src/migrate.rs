@@ -64,14 +64,21 @@ pub fn read(bytes: &[u8]) -> Result<(PatchFile, Vec<String>), String> {
     let next_ids = entries(
         take(&mut fields, "next_ids", &mut notes),
         "id counter",
+        Said::Why,
         &mut notes,
     );
     let modules = list(
         take(&mut fields, "modules", &mut notes),
         "module",
+        Said::Why,
         &mut notes,
     );
-    let cables = list(take(&mut fields, "cables", &mut notes), "cable", &mut notes);
+    let cables = list(
+        take(&mut fields, "cables", &mut notes),
+        "cable",
+        Said::Why,
+        &mut notes,
+    );
     let dye = match fields.remove("dye") {
         None | Some(serde_json::Value::Null) => BTreeMap::new(),
         Some(other) => match serde_json::from_value(other) {
@@ -86,23 +93,30 @@ pub fn read(bytes: &[u8]) -> Result<(PatchFile, Vec<String>), String> {
     };
     let speech = match fields.remove("speech") {
         None | Some(serde_json::Value::Null) => BTreeMap::new(),
-        Some(other) => entries(other, "speaker's words", &mut notes),
+        Some(other) => entries(other, "speaker's words", Said::Nothing, &mut notes),
     };
     let retired_speech = match fields.remove("retired_speech") {
         None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(other) => list(other, "removed speaker's words", &mut notes),
+        Some(other) => list(other, "removed speaker's words", Said::Nothing, &mut notes),
     };
     // The rack's rows are where modules hang: unreadable ones are laid out
     // afresh as the patch loads.
     let rack = match fields.remove("rack") {
         None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(other) => list(other, "rack row", &mut notes),
+        Some(other) => list(other, "rack row", Said::Why, &mut notes),
     };
+    // Which wall the patch is: absent from patches saved before saves were
+    // loaded, and from any wall never replaced (0).
+    let wall = fields
+        .remove("wall")
+        .and_then(|wall| wall.as_u64())
+        .unwrap_or(0);
     Ok((
         PatchFile {
             version,
             tempo,
             last_seq,
+            wall,
             next_ids,
             next_cable,
             modules,
@@ -130,10 +144,33 @@ fn take(
     value
 }
 
+/// Why an entry could not be read, for a note: serde's own words, which
+/// quote what they could not read, so only for `Said::Why`. A speaker's
+/// words are private (they reach no seat but the one that gave them), and
+/// a note reaches every seat through the log: theirs are `Said::Nothing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Said {
+    /// Say why, in serde's words.
+    Why,
+    /// Say only that it could not be read.
+    Nothing,
+}
+
+impl Said {
+    /// ` (why)` for [`Said::Why`], nothing for [`Said::Nothing`].
+    fn why(self, err: &serde_json::Error) -> String {
+        match self {
+            Self::Why => format!(" ({err})"),
+            Self::Nothing => String::new(),
+        }
+    }
+}
+
 /// The entries of a JSON array that read as `T`, noting the others.
 fn list<T: serde::de::DeserializeOwned>(
     value: serde_json::Value,
     what: &str,
+    said: Said,
     notes: &mut Vec<String>,
 ) -> Vec<T> {
     let serde_json::Value::Array(items) = value else {
@@ -147,8 +184,9 @@ fn list<T: serde::de::DeserializeOwned>(
         match serde_json::from_value(item) {
             Ok(entry) => out.push(entry),
             Err(err) => notes.push(format!(
-                "{what} entry {} could not be read ({err}); left out",
-                index + 1
+                "{what} entry {} could not be read{}; left out",
+                index + 1,
+                said.why(&err)
             )),
         }
     }
@@ -159,6 +197,7 @@ fn list<T: serde::de::DeserializeOwned>(
 fn entries<T: serde::de::DeserializeOwned>(
     value: serde_json::Value,
     what: &str,
+    said: Said,
     notes: &mut Vec<String>,
 ) -> BTreeMap<String, T> {
     let serde_json::Value::Object(items) = value else {
@@ -171,8 +210,9 @@ fn entries<T: serde::de::DeserializeOwned>(
                 out.insert(key, entry);
             }
             Err(err) => notes.push(format!(
-                "{what} '{}' could not be read ({err}); left out",
-                printable(&key)
+                "{what} '{}' could not be read{}; left out",
+                printable(&key),
+                said.why(&err)
             )),
         }
     }

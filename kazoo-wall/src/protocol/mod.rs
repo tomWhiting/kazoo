@@ -13,8 +13,8 @@
 //! cap, and [`client`] is a blocking client for consoles and tests.
 //!
 //! Every name that reaches another seat (seat names, module display names)
-//! passes [`valid_name`]; change summaries are built only from sanitised
-//! ids, names, numbers and units.
+//! passes [`valid_name`], and every save's name [`valid_save_name`]; change
+//! summaries are built only from sanitised ids, names, numbers and units.
 
 pub mod client;
 pub mod codec;
@@ -55,6 +55,50 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'_' | b'.' | b'-'))
 }
 
+/// Longest save name: long enough for a label and a date, as in
+/// `jam-2026-09-27-before-fresh-start`.
+pub const MAX_SAVE_NAME: usize = 64;
+
+/// How the saves the wall makes itself begin.
+///
+/// Before it replaces the wall it saves it as `before-load-<time>`,
+/// `before-new-<time>` or `before-undo-<time>`. No seat may save under a
+/// name like that, so an automatic save is never mistaken for one made by
+/// hand, nor replaced.
+pub const AUTO_SAVE_PREFIX: &str = "before-";
+
+/// Whether `name` is a valid save name.
+///
+/// That is 1 to 64 characters from `A-Z a-z 0-9 space _ . -`, starting
+/// with a letter or a digit, and not ending in a space or a `.`. A save is
+/// the file `saves/<name>.json`, so the rule keeps every save a plain,
+/// visible file in that directory: no path separators, no hidden files,
+/// nothing a shell or Finder trims. Names are compared ignoring case
+/// (macOS's disks do), so `Jam` and `jam` are the same save.
+#[must_use]
+pub fn valid_save_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    match (bytes.first(), bytes.last()) {
+        (Some(first), Some(last)) => {
+            bytes.len() <= MAX_SAVE_NAME
+                && first.is_ascii_alphanumeric()
+                && !matches!(last, b' ' | b'.')
+                && bytes
+                    .iter()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'_' | b'.' | b'-'))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `name` is one of the wall's own saves (see
+/// [`AUTO_SAVE_PREFIX`]), ignoring case.
+#[must_use]
+pub fn is_auto_save(name: &str) -> bool {
+    name.get(..AUTO_SAVE_PREFIX.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(AUTO_SAVE_PREFIX))
+}
+
 /// A knob value or cable amount (held as `f32`) as the number people
 /// meant: the shortest decimal that reads back as the same `f32`, so 0.35
 /// travels as `0.35` rather than `0.3499999940395355`.
@@ -79,6 +123,13 @@ pub fn widen(value: f32) -> f64 {
 pub struct RequestLine {
     /// Chosen by the client; echoed in the response.
     pub id: u64,
+    /// The wall the client last looked at ([`Snapshot::wall`]). A request
+    /// that names modules or cables (see [`Request::acts_on_modules`]) is
+    /// refused with `wall_replaced` when another wall has been put up
+    /// since, so a turn aimed at the old wall's `vcf1` never lands on the
+    /// new wall's. Left out, nothing is checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall: Option<u64>,
     /// What is asked.
     #[serde(flatten)]
     pub request: Request,
@@ -222,6 +273,40 @@ pub enum Request {
         /// Start when true, stop when false.
         on: bool,
     },
+    /// Save the wall as it is now under a name: a [`SaveResult`]. The
+    /// sound does not change and nothing is logged; every subscriber is
+    /// told ([`Event::Saved`]). Any seat but a watcher; only a console may
+    /// replace a save that exists.
+    Save {
+        /// The save's name (see [`valid_save_name`]); not one starting
+        /// with [`AUTO_SAVE_PREFIX`].
+        name: String,
+        /// Replace a save of that name. Console only.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        overwrite: bool,
+    },
+    /// Every save: a [`SavesResult`].
+    Saves,
+    /// Replace the wall with a save while it plays on: a [`LoadResult`].
+    /// The wall as it was is saved first (as `before-load-<time>`); the
+    /// load is one change in the log, and undoing it brings that wall back
+    /// exactly. Every subscriber is told ([`Event::Loaded`]). Any seat but
+    /// a watcher.
+    Load {
+        /// The save's name (any case).
+        name: String,
+    },
+    /// Replace the wall with an empty one, as [`Request::Load`] does (the
+    /// wall as it was is saved first, as `before-new-<time>`): a
+    /// [`LoadResult`]. Any seat but a watcher.
+    New,
+    /// Delete a save for good: a [`DeleteSaveResult`]. Console only: a
+    /// deletion is the one thing the wall cannot undo, and the saves are
+    /// Tom's safety net.
+    DeleteSave {
+        /// The save's name (any case).
+        name: String,
+    },
     /// Stop the daemon. Console only.
     Shutdown,
 }
@@ -248,12 +333,35 @@ impl Request {
             Self::Subscribe => "subscribe",
             Self::Monitor { .. } => "monitor",
             Self::Record { .. } => "record",
+            Self::Save { .. } => "save",
+            Self::Saves => "saves",
+            Self::Load { .. } => "load",
+            Self::New => "new",
+            Self::DeleteSave { .. } => "delete_save",
             Self::Shutdown => "shutdown",
         }
     }
 
-    /// Whether the request changes the wall (and so counts against the
-    /// seat's flood guard).
+    /// Whether the request names the wall's modules or cables, and so is
+    /// checked against [`RequestLine::wall`]: a turn, a cable plugged or
+    /// unplugged, a module added (its place names modules), removed or
+    /// moved, or words given to a speaker.
+    #[must_use]
+    pub const fn acts_on_modules(&self) -> bool {
+        matches!(
+            self,
+            Self::Turn { .. }
+                | Self::Patch { .. }
+                | Self::Unpatch { .. }
+                | Self::Add { .. }
+                | Self::Remove { .. }
+                | Self::Arrange { .. }
+                | Self::Speak { .. }
+        )
+    }
+
+    /// Whether the request changes the wall or its saves (and so counts
+    /// against the seat's flood guard, and is refused to a watcher).
     #[must_use]
     pub const fn is_change(&self) -> bool {
         matches!(
@@ -268,6 +376,10 @@ impl Request {
                 | Self::Tempo { .. }
                 | Self::Speak { .. }
                 | Self::Record { .. }
+                | Self::Save { .. }
+                | Self::Load { .. }
+                | Self::New
+                | Self::DeleteSave { .. }
         )
     }
 }
@@ -380,6 +492,17 @@ pub enum ErrorCode {
     UnknownChange,
     /// A cap was reached: modules, cables or connections.
     Full,
+    /// No save with that name.
+    UnknownSave,
+    /// A save with that name exists already, and replacing it was not
+    /// asked for.
+    SaveExists,
+    /// The save's file cannot be read as a wall: not JSON, not a patch, or
+    /// a version this wall never wrote. The file is left as it is.
+    BrokenSave,
+    /// The request named modules of a wall that has since been replaced (a
+    /// save was loaded): look again.
+    WallReplaced,
     /// The seat has made too many changes too quickly.
     SlowDown,
     /// Not allowed: a seat asking for shutdown, a watcher asking for a
@@ -391,7 +514,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every code.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 17] = [
         Self::BadRequest,
         Self::NotHello,
         Self::BadName,
@@ -402,6 +525,10 @@ impl ErrorCode {
         Self::UnknownCable,
         Self::UnknownChange,
         Self::Full,
+        Self::UnknownSave,
+        Self::SaveExists,
+        Self::BrokenSave,
+        Self::WallReplaced,
         Self::SlowDown,
         Self::NotAllowed,
         Self::Internal,
@@ -549,7 +676,11 @@ pub enum What {
         /// What changed, one sentence each.
         notes: Vec<String>,
     },
-    /// The tempo set, or asked of the desk.
+    /// The tempo set, or asked of the desk. A change asked of the desk
+    /// records the asking, not the answer: the request was handed to the
+    /// link, and the desk sets the tempo for everyone when it takes it
+    /// (the wall follows, and saves, whatever the desk then plays). A desk
+    /// that went away before sending it never changes tempo for it.
     Tempo {
         /// Beats per minute before.
         from: f64,
@@ -579,6 +710,78 @@ pub enum What {
         /// Why the wall itself started or stopped it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+    },
+    /// The whole wall replaced while it played: by a save (`save`), by an
+    /// empty wall (`new`: no `save` and no `undoes`), or by the wall a load
+    /// replaced (undoing that load). The wall as it was is kept in the save
+    /// `backup`: written first, or, when the wall had not changed since it
+    /// was last saved and the save's file is untouched, that save. Undoing
+    /// this reads `backup`'s file and checks its raw bytes still hash to
+    /// `fingerprint`, so the wall comes back exactly, module ids and cable
+    /// numbers included, even after a restart and from a build that reads
+    /// the file differently; changes made to an earlier wall cannot be
+    /// undone while another is up.
+    Load {
+        /// The save loaded; none for an empty wall or an undone load.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        save: Option<String>,
+        /// The save holding the wall as it was.
+        backup: String,
+        /// [`crate::patch::hash_bytes`] of `backup`'s file as it was
+        /// written: its raw bytes, before any migration.
+        fingerprint: String,
+        /// Modules on the wall now.
+        modules: u32,
+        /// Cables on the wall now.
+        cables: u32,
+        /// The tempo playing now, in beats per minute: the wall's own, or
+        /// the desk's while the wall follows it.
+        tempo: f64,
+        /// Made by a console: its backup is the last of the wall's own
+        /// saves to be let go.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_console: bool,
+    },
+    /// A change that may have reached the log although it did not happen
+    /// (writing or syncing its line failed): the daemon says so as the
+    /// seat `kazoo-wall`, as soon as the log can take it and before any
+    /// other change, so the change is never taken for one that happened.
+    /// When it is a load, the wall it would have replaced stays up. It
+    /// cannot be undone, nor can the change.
+    Abandoned {
+        /// The change that did not happen.
+        change: u64,
+    },
+    /// The daemon found `patch.json` could not be used as it started (not
+    /// JSON, not a wall, or not readable), moved it aside to `moved_to` in
+    /// its state directory (never deleted: it is listed among the broken
+    /// saves), and started from the seed, as the seat `kazoo-wall`. It
+    /// cannot be undone.
+    SetAside {
+        /// Why `patch.json` could not be used.
+        reason: String,
+        /// The file it was moved to, in the state directory.
+        moved_to: String,
+    },
+    /// The daemon started on a `patch.json` that is not the wall the log
+    /// ends on (it stopped before saving, or the file was restored or
+    /// seeded afresh), and says so as the seat `kazoo-wall`. The wall up
+    /// from here is a wall of its own, numbered by this change: when
+    /// `from` is the wall `patch.json` was (a wall the log knows), it is
+    /// that wall as it stood after change `through`, so the changes made
+    /// to it until then can still be undone; with no `from` (seeded, or a
+    /// wall the log does not know) no earlier change can. The loads in
+    /// `left_out` never reached `patch.json` and cannot be undone. It
+    /// cannot be undone itself.
+    Resumed {
+        /// The wall `patch.json` held, when the log knows it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<u64>,
+        /// The latest change `patch.json` had.
+        through: u64,
+        /// Loads in the log that never reached `patch.json`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        left_out: Vec<u64>,
     },
     /// A change this build does not know, made by a newer wall: it reads,
     /// with its summary, but cannot be undone here.
@@ -666,6 +869,44 @@ pub enum Event {
         /// The rows, top to bottom, each its module ids left to right.
         rows: Vec<Vec<String>>,
     },
+    /// The whole wall was replaced (a save loaded, a new wall, or a load
+    /// undone): sent to every subscriber, the loader included, right after
+    /// the change. Everything held about the wall is stale: look again.
+    Loaded {
+        /// The change that replaced it.
+        seq: u64,
+        /// Who did it.
+        seat: String,
+        /// The save loaded; none for an empty wall or an undone load.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        save: Option<String>,
+        /// The save the wall as it was went to first.
+        backup: String,
+    },
+    /// A seat saved the wall: sent to every subscriber, the saver
+    /// included. Saving is not a change: nothing is logged.
+    Saved {
+        /// Who saved it.
+        seat: String,
+        /// The save.
+        name: String,
+        /// Whether it replaced a save of that name.
+        replaced: bool,
+    },
+    /// A console deleted a save: sent to every subscriber.
+    SaveDeleted {
+        /// Who deleted it.
+        seat: String,
+        /// The save, as it was named.
+        name: String,
+    },
+    /// The change log stopped taking changes, or took them again, or what
+    /// it owes moved: sent to every subscriber.
+    Log {
+        /// How it is now: all well when nothing is owed and no failure is
+        /// said.
+        log: LogHealth,
+    },
     /// An event this build does not know, from a newer wall: nothing to do.
     #[serde(other)]
     Unknown,
@@ -738,6 +979,12 @@ const fn heard_by_default() -> bool {
 pub struct Snapshot {
     /// The latest change's sequence number.
     pub revision: u64,
+    /// Which wall is up: the number of the change that put it up (a load,
+    /// a new wall, or an undone load), 0 for the wall the daemon has had
+    /// since before any. Send it back as [`RequestLine::wall`] so a change
+    /// meant for this wall never lands on another.
+    #[serde(default)]
+    pub wall: u64,
     /// Beats per minute.
     pub tempo: f64,
     /// Song position, in beats.
@@ -778,6 +1025,83 @@ pub struct Snapshot {
     /// rack's rows (a console then lays the rack out itself).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rack: Option<Vec<Vec<String>>>,
+    /// The save the wall was last saved as or loaded from since the daemon
+    /// started, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save: Option<SaveMark>,
+    /// Whether the change log is taking changes: left out while it is.
+    #[serde(default, skip_serializing_if = "LogHealth::is_ok")]
+    pub log: LogHealth,
+}
+
+/// Whether the change log is taking changes.
+///
+/// While it is not, no change is made (each is refused with `internal`)
+/// and `patch.json` is not written, so nothing is lost that was said to be
+/// made; the wall plays on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogHealth {
+    /// The wall's own changes waiting to be written (a recording stopped
+    /// or carried on, a change said not to have happened): not numbered or
+    /// told until they are.
+    #[serde(default)]
+    pub owed: u32,
+    /// Why the log last failed, until it takes a line again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl LogHealth {
+    /// Whether the log is taking changes: nothing owed, no failure.
+    #[must_use]
+    pub const fn is_ok(&self) -> bool {
+        self.owed == 0 && self.error.is_none()
+    }
+
+    /// What is wrong and what it means, in a sentence, or `None` when all
+    /// is well. While the wall owes the log changes, every change is
+    /// refused; when it owes none but the log last failed (a sync), changes
+    /// still go to it and only `patch.json` waits.
+    #[must_use]
+    pub fn trouble(&self) -> Option<String> {
+        let why = self
+            .error
+            .as_deref()
+            .map_or_else(String::new, |error| format!(" ({error})"));
+        match self.owed {
+            0 if self.error.is_none() => None,
+            0 => Some(format!(
+                "the change log failed{why} and has not been synced since: changes still go \
+                 to it, but patch.json is not saved until it syncs"
+            )),
+            owed => {
+                let them = if owed == 1 {
+                    "1 of its own changes".to_string()
+                } else {
+                    format!("{owed} of its own changes")
+                };
+                Some(format!(
+                    "the change log is not taking changes{why} and the wall owes it {them}: \
+                     every change is refused, and patch.json is not saved, until it takes them"
+                ))
+            }
+        }
+    }
+}
+
+/// The save the wall last went to or came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveMark {
+    /// The save's name.
+    pub name: String,
+    /// The revision when it was saved or loaded (a later one need not mean
+    /// a change: the daemon's own notes move it, and a move on the rack
+    /// does not; `changed` says).
+    pub revision: u64,
+    /// Whether the wall differs from what went to or came from the save:
+    /// any knob, cable, module, word, row, tempo or touch.
+    #[serde(default)]
+    pub changed: bool,
 }
 
 /// A recording under way.
@@ -1032,7 +1356,8 @@ pub struct TempoResult {
     /// The tempo asked for, held to 20-300 BPM.
     pub bpm: f64,
     /// Whether it was asked of the desk (which answers by changing tempo
-    /// for everyone) rather than set on the wall's own clock.
+    /// for everyone, when it takes the request) rather than set on the
+    /// wall's own clock. `look` says the tempo playing.
     pub desk: bool,
     /// The change, as logged.
     pub change: Change,
@@ -1078,6 +1403,90 @@ pub struct RecordResult {
     /// while recording, or to stop while not).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<Change>,
+}
+
+/// One save, as `saves` lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SaveInfo {
+    /// Its name.
+    pub name: String,
+    /// When it was saved, in UTC (`2026-09-26T12:00:01Z`).
+    pub saved_at: String,
+    /// The wall's own tempo in it, in beats per minute.
+    pub tempo: f64,
+    /// Modules in it.
+    pub modules: u32,
+    /// Cables in it.
+    pub cables: u32,
+    /// Whether the wall made it itself, before replacing the wall (see
+    /// [`AUTO_SAVE_PREFIX`]).
+    pub auto: bool,
+    /// The file's format version: an older one is brought up to date as
+    /// it loads (the file itself is left as it is).
+    pub version: u32,
+}
+
+/// A file among the saves that cannot be loaded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrokenSave {
+    /// Its name, made safe to show.
+    pub name: String,
+    /// When it was written, in UTC.
+    pub saved_at: String,
+    /// Why it cannot be loaded.
+    pub problem: String,
+}
+
+/// The result of `save`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SaveResult {
+    /// The save, as written.
+    pub save: SaveInfo,
+    /// Whether it replaced a save of that name.
+    pub replaced: bool,
+    /// What else to know: the save is in place, but its directory could
+    /// not be flushed after, so a crash may yet take it back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// The result of `saves`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavesResult {
+    /// Every save that can be loaded, newest first.
+    pub saves: Vec<SaveInfo>,
+    /// Files among them that cannot, newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub broken: Vec<BrokenSave>,
+    /// Saves not read yet (one listing reads only so many, newest first,
+    /// and the wall reads the rest a few at a time): ask again in a moment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<String>,
+}
+
+/// The result of `load` and `new`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoadResult {
+    /// The change, as logged (undo it to bring the wall back).
+    pub change: Change,
+    /// The save the wall as it was went to first.
+    pub backup: String,
+    /// What else there is to know, one sentence each: parts of an old or
+    /// damaged save that were brought up to date or left out, and the
+    /// tempo when the desk keeps its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// The result of `delete_save`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteSaveResult {
+    /// The save deleted, as it was named.
+    pub name: String,
+    /// What else to know: the save is gone, but its directory could not
+    /// be flushed after, so a crash may yet bring it back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// The result of `shutdown`.

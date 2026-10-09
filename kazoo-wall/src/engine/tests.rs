@@ -724,3 +724,206 @@ fn recording_never_allocates_on_the_audio_thread() {
     assert!(control.shared().record_dropped() > 0);
     assert_eq!(engine.shared.leaked(), 0);
 }
+
+/// The frames a swap's fade takes at [`RATE`].
+const SWAP_FADE_FRAMES: usize = 2_880;
+
+#[test]
+fn a_hushed_swap_fades_out_swaps_in_silence_and_fades_back_in() {
+    let (mut engine, mut control) = tone(true);
+    let mut record = control.take_record().unwrap();
+    control.shared().set_recording(true);
+    // The wall in slots 0 and 1 goes; another goes in at 2 and 3, all
+    // between a hush and an unhush, sent at once.
+    control.send(Command::Hush);
+    control.send(Command::Remove { slot: 0 });
+    control.send(Command::Remove { slot: 1 });
+    let mut model = Model {
+        next_tag: 100,
+        ..Model::default()
+    };
+    model.add(&mut control, 2, Kind::VCO);
+    model.add(&mut control, 3, Kind::OUT);
+    model.plug(&mut control, (2, 0, 3, 0, 1.0));
+    control.send(Command::Unhush);
+
+    // While it fades out, the old wall plays on and nothing after the
+    // hush is heard: the swap waits for silence.
+    let mut buffer = Vec::new();
+    render(&mut engine, 480, &mut buffer);
+    let mut heard = left(&buffer);
+    assert!(engine.slots[0].is_some() && engine.slots[2].is_none());
+    assert_eq!(control.shared().unhushed(), 0, "not swapped yet");
+    assert!(peak(&heard) > 0.1, "it fades rather than cuts");
+    // The rest of the fade out, the swap, and the fade in.
+    render(&mut engine, SWAP_FADE_FRAMES * 3, &mut buffer);
+    heard.extend(left(&buffer));
+    assert!(engine.slots[0].is_none() && engine.slots[1].is_none());
+    assert!(engine.slots[2].is_some() && engine.slots[3].is_some());
+    assert_eq!(control.shared().unhushed(), 1, "the swap is in");
+
+    // Never louder than the fade allows on the way out (the limiter holds
+    // the master under its ceiling).
+    for (frame, sample) in heard.iter().take(SWAP_FADE_FRAMES).enumerate() {
+        let gain = (1.0 - (frame + 1) as f32 / SWAP_FADE_FRAMES as f32).max(0.0);
+        assert!(
+            sample.abs() <= gain.mul_add(CEILING, 1e-3),
+            "{frame}: {sample} over a gain of {gain}"
+        );
+    }
+    // Silent where the walls change over, and no louder than the fade
+    // allows on the way back in.
+    let quietest = heard[SWAP_FADE_FRAMES - 16..SWAP_FADE_FRAMES + 48]
+        .iter()
+        .fold(f32::MAX, |least, sample| least.min(sample.abs()));
+    assert!(quietest < 1e-4, "silent at the change: {quietest}");
+    let back = SWAP_FADE_FRAMES + SUB_BLOCK;
+    for (offset, sample) in heard[back..back + SWAP_FADE_FRAMES].iter().enumerate() {
+        let gain = ((offset + SUB_BLOCK + 1) as f32 / SWAP_FADE_FRAMES as f32).min(1.0);
+        assert!(
+            sample.abs() <= gain.mul_add(CEILING, 1e-3),
+            "{}: {sample} over a gain of {gain}",
+            back + offset
+        );
+    }
+    // The new wall is heard in full after it.
+    assert!(peak(&heard[SWAP_FADE_FRAMES * 3..]) > 0.3);
+    // A recording hears the fade too: it is what the wall played.
+    let mut recorded = vec![0.0; (480 + SWAP_FADE_FRAMES * 3) * 2];
+    assert_eq!(record.pop_slice(&mut recorded), recorded.len());
+    for (frame, (got, want)) in recorded.chunks(2).zip(&heard).enumerate() {
+        assert_eq!(got[0].to_bits(), want.to_bits(), "frame {frame}");
+    }
+    // The old wall comes back to be freed off the audio thread.
+    control.pump();
+    assert_eq!(engine.shared.leaked(), 0);
+    assert_eq!(engine.shared.ignored(), 0);
+}
+
+#[test]
+fn a_hush_on_a_silent_master_holds_nothing_back() {
+    let (mut engine, mut control) = tone(true);
+    let mut model = Model {
+        next_tag: 100,
+        ..Model::default()
+    };
+    let mut buffer = Vec::new();
+    // Two swaps sent back to back (two loads in a row).
+    control.send(Command::Hush);
+    model.add(&mut control, 2, Kind::VCO);
+    control.send(Command::Unhush);
+    control.send(Command::Hush);
+    control.send(Command::Remove { slot: 2 });
+    model.add(&mut control, 3, Kind::VCO);
+    control.send(Command::Unhush);
+    // The first waits for its fade out: nothing of either is in yet.
+    render(&mut engine, SUB_BLOCK, &mut buffer);
+    assert!(engine.slots[2].is_none() && engine.slots[3].is_none());
+    assert_eq!(control.shared().unhushed(), 0);
+    // Once it is silent the first goes in; the second hush finds the
+    // master silent still and holds nothing, so the second goes in with
+    // it, in the same sub-block, with no fade of its own.
+    render(&mut engine, SWAP_FADE_FRAMES + SUB_BLOCK * 2, &mut buffer);
+    assert_eq!(control.shared().unhushed(), 2, "straight through");
+    assert!(engine.slots[2].is_none() && engine.slots[3].is_some());
+    assert!(!engine.hushed);
+    assert!(
+        engine.hush_gain > 0.0 && engine.hush_gain < 0.1,
+        "fading in"
+    );
+    // Unhushed, every later command goes at once again.
+    render(&mut engine, SWAP_FADE_FRAMES, &mut buffer);
+    control.send(Command::Remove { slot: 3 });
+    render(&mut engine, SUB_BLOCK, &mut buffer);
+    assert!(engine.slots[3].is_none());
+    assert!(!engine.hushed);
+    assert!((engine.hush_gain - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn a_change_sent_during_the_hold_lands_after_the_swap_in_order() {
+    let (mut engine, mut control) = tone(true);
+    let mut model = Model {
+        next_tag: 100,
+        ..Model::default()
+    };
+    let mut buffer = Vec::new();
+    control.send(Command::Hush);
+    control.send(Command::Remove { slot: 0 });
+    model.add(&mut control, 2, Kind::VCO);
+    model.send_tables(&mut control);
+    control.send(Command::Unhush);
+    let tune = Kind::VCO.spec().knob_index("tune").unwrap();
+    // Another seat turns a knob of the new wall while the old one fades
+    // out: it waits in the ring behind the swap.
+    render(&mut engine, SUB_BLOCK * 4, &mut buffer);
+    control.send(Command::Knob {
+        slot: 2,
+        knob: tune,
+        target: 5.0,
+        glide_frames: 0,
+    });
+    // A turn aimed at the old wall's module, sent after the swap, finds
+    // its slot empty by the time it is taken in: nothing of the old wall
+    // comes back, and nothing is refused.
+    control.send(Command::Knob {
+        slot: 0,
+        knob: tune,
+        target: 3.0,
+        glide_frames: 0,
+    });
+    render(&mut engine, SUB_BLOCK * 4, &mut buffer);
+    assert!(engine.slots[2].is_none(), "still held");
+    assert!(engine.slots[0].is_some(), "the old wall plays on meanwhile");
+    render(&mut engine, SWAP_FADE_FRAMES + SUB_BLOCK * 2, &mut buffer);
+    assert!(engine.slots[0].is_none());
+    assert!(engine.slots[2].is_some());
+    // The turn landed on the new module, after it went in.
+    let landed = control.shared().knob(2, tune).unwrap();
+    assert!((landed - 5.0).abs() < 1e-3, "{landed}");
+    assert_eq!(engine.shared.ignored(), 0);
+}
+
+#[test]
+fn a_swap_too_big_for_the_ring_waits_in_order_unhush_and_all() {
+    let (mut engine, mut control) = tone(true);
+    let mut buffer = Vec::new();
+    let tune = Kind::VCO.spec().knob_index("tune").unwrap();
+    control.send(Command::Hush);
+    // More than the ring holds: the rest, the unhush last, wait on the
+    // control side.
+    for step in 0..COMMAND_BACKLOG + 100 {
+        control.send(Command::Knob {
+            slot: 0,
+            knob: tune,
+            target: f32::from(u16::try_from(step % 12).unwrap()),
+            glide_frames: 0,
+        });
+    }
+    control.send(Command::Knob {
+        slot: 0,
+        knob: tune,
+        target: 7.0,
+        glide_frames: 0,
+    });
+    control.send(Command::Unhush);
+    assert!(control.backlog() > 100, "{}", control.backlog());
+    // Render, pumping the backlog into the ring as the daemon's
+    // housekeeping does, until every command is in.
+    for _ in 0..40 {
+        render(&mut engine, 480, &mut buffer);
+        control.pump();
+    }
+    assert_eq!(control.backlog(), 0);
+    assert_eq!(control.shared().unhushed(), 1);
+    assert!(!engine.hushed);
+    assert!(
+        (engine.hush_gain - 1.0).abs() < f32::EPSILON,
+        "faded back in"
+    );
+    // Every turn went in, in order: the last one sent is where it ends.
+    let tuned = control.shared().knob(0, tune).unwrap();
+    assert!((tuned - 7.0).abs() < 1e-3, "{tuned}");
+    assert!(peak(&left(&buffer)) > 0.1, "heard again");
+    assert_eq!(engine.shared.leaked(), 0);
+}

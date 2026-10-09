@@ -360,6 +360,58 @@ fn the_header_shows_a_recording_under_way() {
     assert!(screen.contains(" ● REC 3:20 · 128 lost "), "{screen}");
 }
 
+#[test]
+fn the_header_says_when_the_change_log_takes_no_changes() {
+    let mut app = connected();
+    let screen = text(&render(&mut app, 160, 30));
+    assert!(!screen.contains("LOG STOPPED"), "{screen}");
+    let now = Instant::now();
+    let trouble = kazoo_wall::protocol::LogHealth {
+        owed: 1,
+        error: Some("No space left on device".to_string()),
+    };
+    app.on_reply(
+        Reply::Event(kazoo_wall::protocol::Event::Log {
+            log: trouble.clone(),
+        }),
+        now,
+    );
+    let screen = text(&render(&mut app, 160, 30));
+    assert!(screen.contains(" LOG STOPPED · 1 owed "), "{screen}");
+    assert!(
+        screen.contains("the change log is not taking changes"),
+        "{screen}"
+    );
+    // A look says it too; and when it takes changes again, it goes.
+    let mut stopped = snapshot();
+    stopped.log = trouble;
+    app.on_reply(Reply::Snapshot(Box::new(stopped)), now);
+    assert!(text(&render(&mut app, 160, 30)).contains("LOG STOPPED"));
+    app.on_reply(
+        Reply::Event(kazoo_wall::protocol::Event::Log {
+            log: kazoo_wall::protocol::LogHealth::default(),
+        }),
+        now,
+    );
+    let screen = text(&render(&mut app, 160, 30));
+    assert!(!screen.contains("LOG STOPPED"), "{screen}");
+    assert!(screen.contains("the change log is well again"), "{screen}");
+    // Owing nothing but not synced: changes still go, and it says so.
+    app.on_reply(
+        Reply::Event(kazoo_wall::protocol::Event::Log {
+            log: kazoo_wall::protocol::LogHealth {
+                owed: 0,
+                error: Some("I/O error".to_string()),
+            },
+        }),
+        now,
+    );
+    let screen = text(&render(&mut app, 160, 30));
+    assert!(screen.contains(" LOG NOT SYNCED "), "{screen}");
+    assert!(!screen.contains("LOG STOPPED"), "{screen}");
+    assert!(screen.contains("changes still go to it"), "{screen}");
+}
+
 /// A full wall: every module the wall holds, of every sort, and every
 /// cable, each into its own knob.
 fn full_wall() -> kazoo_wall::protocol::Snapshot {

@@ -10,7 +10,8 @@ use kazoo_wall::catalogue::{Curve, JackLaw, Signal};
 use kazoo_wall::fingerprints::Shares;
 use kazoo_wall::protocol::{
     CatalogueResult, Change, ChangeResult, ClockSource, KindInfo, KnobView, Listen, ListenResult,
-    LogPage, ModuleView, RecordResult, Recording, Snapshot, TempoResult, Timings,
+    LoadResult, LogHealth, LogPage, ModuleView, RecordResult, Recording, SaveResult, SavesResult,
+    Snapshot, TempoResult, Timings,
 };
 
 /// Beats in a bar, for the position line.
@@ -46,7 +47,9 @@ pub fn look(snapshot: &Snapshot) -> String {
         &mut out,
         format_args!("Seats here: {}.", list_or(&snapshot.seats, "none")),
     );
+    log_health_line(&mut out, &snapshot.log);
     recording_line(&mut out, snapshot.recording.as_ref());
+    save_line(&mut out, snapshot);
     line(
         &mut out,
         format_args!(
@@ -115,6 +118,37 @@ pub fn look(snapshot: &Snapshot) -> String {
          Turn with wall_turn, plug with wall_patch.",
     );
     out
+}
+
+/// The save the wall last went to or came from, if the wall says, for the
+/// listing.
+fn save_line(out: &mut String, snapshot: &Snapshot) {
+    let Some(mark) = &snapshot.save else {
+        return;
+    };
+    let since = if mark.changed {
+        "; it has changed since"
+    } else {
+        "; it has not changed since"
+    };
+    line(
+        out,
+        format_args!(
+            "Save: last saved as or loaded from \"{}\" at revision {}{since}.",
+            mark.name, mark.revision
+        ),
+    );
+}
+
+/// A warning when the change log is not taking changes; nothing while it
+/// is.
+fn log_health_line(out: &mut String, log: &LogHealth) {
+    if let Some(trouble) = log.trouble() {
+        line(
+            out,
+            format_args!("Warning: {trouble}. Nothing said to be made is lost; the wall plays on."),
+        );
+    }
 }
 
 /// Whether a recording is under way, for the listing.
@@ -414,7 +448,8 @@ pub fn changed(result: &ChangeResult) -> String {
 #[must_use]
 pub fn tempo(result: &TempoResult) -> String {
     let how = if result.desk {
-        "asked of the kazoo-mix desk, which sets it for everyone"
+        "asked of the kazoo-mix desk, which sets it for everyone when it takes it (the \
+         change records the asking; wall_look shows the tempo playing)"
     } else {
         "set on the wall's own clock"
     };
@@ -453,6 +488,104 @@ pub fn recorded(result: &RecordResult) -> String {
         ),
         (None, false) => "Nothing was recording; nothing changed.".to_string(),
     }
+}
+
+/// A save this seat made.
+#[must_use]
+pub fn saved(result: &SaveResult) -> String {
+    let save = &result.save;
+    let notes = if result.notes.is_empty() {
+        String::new()
+    } else {
+        format!(" Note: {}.", result.notes.join("; "))
+    };
+    format!(
+        "Saved the wall as \"{}\": {} BPM, {} modules, {} cables, saved {}. Nothing about the \
+         sound changed. wall_load with this name brings the wall back to this; only Tom's \
+         console can replace or delete a save.{notes}",
+        save.name, save.tempo, save.modules, save.cables, save.saved_at
+    )
+}
+
+/// The saves.
+#[must_use]
+pub fn saves(result: &SavesResult) -> String {
+    if result.saves.is_empty() && result.broken.is_empty() && result.pending.is_empty() {
+        return "No saves yet: wall_save saves the wall as it is.".to_string();
+    }
+    let mut out = String::new();
+    // Saves made by hand first; the wall's own (one before every load)
+    // after, so they never bury the others.
+    let (own, made): (Vec<_>, Vec<_>) = result.saves.iter().partition(|save| save.auto);
+    for (saves, heading) in [
+        (made, "Saves, newest first:\n"),
+        (
+            own,
+            "The wall's own saves (the wall as it was before each load), newest first:\n",
+        ),
+    ] {
+        if !saves.is_empty() {
+            out.push_str(heading);
+        }
+        for save in saves {
+            let older = if save.version < kazoo_wall::patch::FILE_VERSION {
+                " (made by an older wall: brought up to date as it loads)"
+            } else {
+                ""
+            };
+            line(
+                &mut out,
+                format_args!(
+                    "- \"{}\" saved {}: {} BPM, {} modules, {} cables{older}",
+                    save.name, save.saved_at, save.tempo, save.modules, save.cables
+                ),
+            );
+        }
+    }
+    if !result.broken.is_empty() {
+        out.push_str("Cannot be loaded:\n");
+    }
+    for broken in &result.broken {
+        line(
+            &mut out,
+            format_args!(
+                "- \"{}\" (written {}): {}",
+                broken.name, broken.saved_at, broken.problem
+            ),
+        );
+    }
+    if !result.pending.is_empty() {
+        line(
+            &mut out,
+            format_args!(
+                "Not read yet (the wall reads them a few at a time; call wall_saves again in a \
+                 moment): {}",
+                result.pending.join(", ")
+            ),
+        );
+    }
+    out.push_str(
+        "wall_load with a name replaces the whole wall with that save while it plays; the wall \
+         as it is is saved first, and wall_undo of the load brings it back.",
+    );
+    out
+}
+
+/// A load this seat made.
+#[must_use]
+pub fn loaded(result: &LoadResult) -> String {
+    let mut out = format!(
+        "Change #{}: {}. The whole wall is new: call wall_look before changing anything. \
+         wall_undo with change {} brings back the wall as it was (it is also kept as the save \
+         \"{}\").",
+        result.change.seq, result.change.summary, result.change.seq, result.backup
+    );
+    if !result.notes.is_empty() {
+        out.push_str(" Notes: ");
+        out.push_str(&result.notes.join("; "));
+        out.push('.');
+    }
+    out
 }
 
 /// A page of the change log.
@@ -582,6 +715,7 @@ mod tests {
     fn snapshot() -> Snapshot {
         Snapshot {
             revision: 58,
+            wall: 0,
             tempo: 96.0,
             beat: 13.5,
             clock: ClockSource::Own,
@@ -639,6 +773,8 @@ mod tests {
             timing: kazoo_wall::protocol::Timings::default(),
             recording: None,
             rack: None,
+            save: None,
+            log: kazoo_wall::protocol::LogHealth::default(),
         }
     }
 
@@ -678,6 +814,39 @@ mod tests {
             "{recording}"
         );
         assert!(text.contains("Sounds like: not heard yet.\n"));
+        assert!(!text.contains("change log"), "{text}");
+        let stopped = look(&Snapshot {
+            log: kazoo_wall::protocol::LogHealth {
+                owed: 2,
+                error: Some("No space left on device".to_string()),
+            },
+            ..snapshot()
+        });
+        assert!(
+            stopped.contains(
+                "Warning: the change log is not taking changes (No space left on device) and \
+                 the wall owes it 2 of its own changes: every change is refused, and \
+                 patch.json is not saved, until it takes them. Nothing said to be made is \
+                 lost; the wall plays on.\n"
+            ),
+            "{stopped}"
+        );
+        // Owing nothing, only not synced: changes are not refused.
+        let unsynced = look(&Snapshot {
+            log: kazoo_wall::protocol::LogHealth {
+                owed: 0,
+                error: Some("I/O error".to_string()),
+            },
+            ..snapshot()
+        });
+        assert!(
+            unsynced.contains(
+                "Warning: the change log failed (I/O error) and has not been synced since: \
+                 changes still go to it, but patch.json is not saved until it syncs."
+            ),
+            "{unsynced}"
+        );
+        assert!(!unsynced.contains("refused"), "{unsynced}");
         assert!(text.contains(
             "vcf1 (vcf) \"filter\" (hands: Tom 62%, Waffles 30%, Cassio 8%, Vesper <1%)\n"
         ));
@@ -915,5 +1084,132 @@ mod tests {
              0.05, 1.5 onsets per second, pitch A2 (110 Hz)."
         );
         assert!(listen(&ListenResult { listen: None }).contains("not been heard yet"));
+    }
+
+    fn save_info(name: &str, auto: bool, version: u32) -> kazoo_wall::protocol::SaveInfo {
+        kazoo_wall::protocol::SaveInfo {
+            name: name.to_string(),
+            saved_at: "2026-09-29T02:00:00Z".to_string(),
+            tempo: 96.0,
+            modules: 12,
+            cables: 30,
+            auto,
+            version,
+        }
+    }
+
+    #[test]
+    fn saves_read_as_a_list_with_what_to_do() {
+        let saved = SaveResult {
+            save: save_info("tom fiddle", false, 2),
+            replaced: false,
+            notes: Vec::new(),
+        };
+        assert_eq!(
+            super::saved(&saved),
+            "Saved the wall as \"tom fiddle\": 96 BPM, 12 modules, 30 cables, saved \
+             2026-09-29T02:00:00Z. Nothing about the sound changed. wall_load with this name \
+             brings the wall back to this; only Tom's console can replace or delete a save."
+        );
+        let listed = SavesResult {
+            saves: vec![
+                save_info("tom fiddle", false, 2),
+                save_info("before-load-20260929-120000", true, 2),
+                save_info("airports", false, 1),
+            ],
+            broken: vec![kazoo_wall::protocol::BrokenSave {
+                name: "torn".to_string(),
+                saved_at: "2026-09-26T12:00:00Z".to_string(),
+                problem: "it is not JSON".to_string(),
+            }],
+            pending: Vec::new(),
+        };
+        assert_eq!(
+            saves(&listed),
+            "Saves, newest first:\n\
+             - \"tom fiddle\" saved 2026-09-29T02:00:00Z: 96 BPM, 12 modules, 30 cables\n\
+             - \"airports\" saved 2026-09-29T02:00:00Z: 96 BPM, 12 modules, 30 cables (made by \
+             an older wall: brought up to date as it loads)\n\
+             The wall's own saves (the wall as it was before each load), newest first:\n\
+             - \"before-load-20260929-120000\" saved 2026-09-29T02:00:00Z: 96 BPM, 12 modules, \
+             30 cables\n\
+             Cannot be loaded:\n\
+             - \"torn\" (written 2026-09-26T12:00:00Z): it is not JSON\n\
+             wall_load with a name replaces the whole wall with that save while it plays; the \
+             wall as it is is saved first, and wall_undo of the load brings it back."
+        );
+        assert_eq!(
+            saves(&SavesResult {
+                saves: Vec::new(),
+                broken: Vec::new(),
+                pending: Vec::new(),
+            }),
+            "No saves yet: wall_save saves the wall as it is."
+        );
+        // Saves the wall has not read yet are named, to ask again.
+        let reading = saves(&SavesResult {
+            saves: Vec::new(),
+            broken: Vec::new(),
+            pending: vec!["late jam".to_string()],
+        });
+        assert!(
+            reading.contains(
+                "Not read yet (the wall reads them a few at a time; call wall_saves again in a \
+                 moment): late jam\n"
+            ),
+            "{reading}"
+        );
+    }
+
+    #[test]
+    fn a_load_says_the_wall_is_new_and_how_to_undo_it() {
+        let result = LoadResult {
+            change: Change {
+                seq: 80,
+                at: "2026-09-29T02:00:00Z".to_string(),
+                seat: "Waffles".to_string(),
+                what: kazoo_wall::protocol::What::Load {
+                    save: Some("tom fiddle".to_string()),
+                    backup: "before-load-20260929-120000".to_string(),
+                    modules: 12,
+                    cables: 30,
+                    tempo: 96.0,
+                    fingerprint: "0123456789abcdef-2048".to_string(),
+                    by_console: false,
+                },
+                summary: "Waffles loaded the save \"tom fiddle\" (12 modules, 30 cables, 96 BPM); \
+                          the wall as it was is saved as \"before-load-20260929-120000\""
+                    .to_string(),
+                undoes: None,
+            },
+            backup: "before-load-20260929-120000".to_string(),
+            notes: vec!["the desk keeps the tempo at 120 BPM".to_string()],
+        };
+        let text = loaded(&result);
+        assert!(text.starts_with("Change #80: Waffles loaded the save \"tom fiddle\""));
+        assert!(text.contains("call wall_look before changing anything"));
+        assert!(text.contains("wall_undo with change 80 brings back the wall as it was"));
+        assert!(text.ends_with(" Notes: the desk keeps the tempo at 120 BPM."));
+        // The listing says which save the wall came from.
+        let mut marked = snapshot();
+        marked.save = Some(kazoo_wall::protocol::SaveMark {
+            name: "tom fiddle".to_string(),
+            revision: 57,
+            changed: true,
+        });
+        assert!(look(&marked).contains(
+            "Save: last saved as or loaded from \"tom fiddle\" at revision 57; it has changed \
+             since.\n"
+        ));
+        // Said by the wall, not worked out from the revision.
+        marked.save = Some(kazoo_wall::protocol::SaveMark {
+            name: "tom fiddle".to_string(),
+            revision: 1,
+            changed: false,
+        });
+        assert!(look(&marked).contains(
+            "Save: last saved as or loaded from \"tom fiddle\" at revision 1; it has not \
+             changed since.\n"
+        ));
     }
 }

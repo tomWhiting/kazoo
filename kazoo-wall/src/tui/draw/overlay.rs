@@ -1,5 +1,5 @@
-//! Popups over the wall: the key list, the module picker and the two
-//! questions asked before something goes.
+//! Popups over the wall: the key list, the module picker, the saves list,
+//! and the questions asked before something goes or is replaced.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -9,7 +9,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wra
 
 use kazoo_wall::protocol::Place;
 
-use super::super::app::{App, GROUPS};
+use super::super::app::{App, GROUPS, SavesList};
+use super::super::log::{age, unix_seconds};
 use super::super::theme::{
     AMBER, BRASS, INK, PANEL, PANEL_FOCUS, RED, TEXT, TEXT_DIM, bold, plain,
 };
@@ -102,6 +103,15 @@ const HELP: &[(&str, &str)] = &[
         "move between the wall, the cable list and the log",
     ),
     ("s", "start the wall, when it is not playing"),
+    (
+        "w",
+        "save the wall as it is under a name (it plays on; asks before saving over a save)",
+    ),
+    (
+        "o",
+        "the saves: load one (⏎ then y; the wall as it is is kept first, and z undoes the \
+         load), delete one (d then y), start an empty wall (n then y); a shows the wall's own",
+    ),
     (
         "m",
         "hear the wall, or silence it again (it plays on, silent, by default)",
@@ -291,6 +301,286 @@ pub fn picker(
     Paragraph::new(lines)
         .block(frame(&title, BRASS))
         .render(rect, buf);
+}
+
+/// When a save was made, as Tom reads it: the local day and time, and how
+/// long ago when the time now is known.
+fn saved_when(at: &str, now: Option<i64>) -> String {
+    let Some(seconds) = unix_seconds(at) else {
+        return at.to_string();
+    };
+    let Some(local) = chrono::DateTime::from_timestamp(seconds, 0).map(|utc| {
+        utc.with_timezone(&chrono::Local)
+            .format("%a %-d %b %H:%M")
+            .to_string()
+    }) else {
+        return at.to_string();
+    };
+    match now.map(|now| age(seconds, now)) {
+        Some(ago) if ago == "now" => format!("{local} (just now)"),
+        Some(ago) => format!("{local} ({ago} ago)"),
+        None => local,
+    }
+}
+
+/// The saves list: every save that can be loaded, newest first, the one
+/// at `index` chosen, then the files that cannot be; with what the keys
+/// do. `now` (Unix seconds) says how long ago each was saved.
+pub fn saves(buf: &mut Buffer, area: Rect, app: &App, index: usize, now: Option<i64>) {
+    let list = app.saves();
+    let inner_width = usize::from(area.width.saturating_sub(8).min(92));
+    let rows = save_rows(list, index, now, inner_width);
+    let status = match (&list.problem, list.fetching) {
+        (Some(problem), _) => format!(" the saves could not be read: {problem}"),
+        (None, true) => " reading the saves…".to_string(),
+        (None, false) => {
+            " the wall plays on while a save loads: it fades out and back in".to_string()
+        }
+    };
+    let wanted = u16::try_from(rows.len()).unwrap_or(u16::MAX - 6) + 5;
+    let rect = popup(buf, area, 96, wanted);
+    let visible = usize::from(rect.height.saturating_sub(5)).max(1);
+    let chosen_row = rows
+        .iter()
+        .position(|(position, _)| *position == Some(index))
+        .unwrap_or(0);
+    // Keep the chosen save in view, with the heading when that fits.
+    let first = (chosen_row + 2)
+        .saturating_sub(visible)
+        .min(chosen_row.saturating_sub(1));
+    let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
+        status,
+        plain(
+            if list.problem.is_some() {
+                RED
+            } else {
+                TEXT_DIM
+            },
+            PANEL,
+        ),
+    ))];
+    lines.extend(
+        rows.into_iter()
+            .skip(first)
+            .take(visible)
+            .map(|(_, line)| line),
+    );
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " ↑↓ choose · ⏎ then y loads it · d then y deletes it · n empty wall · w saves · \
+         a the wall's own · r reads again · Esc closes",
+        plain(TEXT_DIM, PANEL),
+    )));
+    let count = list
+        .result
+        .as_ref()
+        .map_or(0, |result| result.saves.len())
+        .saturating_sub(list.own_count());
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(frame(&format!("the saves · {count}"), BRASS))
+        .render(rect, buf);
+}
+
+/// One save's row in the list: its name, when it was saved, its tempo,
+/// modules and cables; `chosen` under the cursor.
+fn save_row(
+    save: &kazoo_wall::protocol::SaveInfo,
+    chosen: bool,
+    now: Option<i64>,
+    inner_width: usize,
+) -> Line<'static> {
+    let background = if chosen { PANEL_FOCUS } else { PANEL };
+    let lead = if chosen { " ▸ " } else { "   " };
+    let colour = if save.auto { TEXT_DIM } else { TEXT };
+    let name = format!("{lead}{:<30}", truncate(&save.name, 30));
+    let detail = format!(
+        " {:<26} {:>8}  {} · {}",
+        truncate(&saved_when(&save.saved_at, now), 26),
+        kazoo_wall::format::bpm(save.tempo),
+        save.modules,
+        save.cables
+    );
+    Line::from(vec![
+        Span::styled(
+            name,
+            if chosen {
+                bold(INK, BRASS)
+            } else {
+                bold(colour, background)
+            },
+        ),
+        Span::styled(
+            truncate(&detail, inner_width.saturating_sub(33)),
+            plain(colour, background),
+        ),
+    ])
+}
+
+/// The saves list's rows: a heading and a row for each save (with its
+/// place among them), then the files that cannot be loaded.
+fn save_rows(
+    list: &SavesList,
+    index: usize,
+    now: Option<i64>,
+    inner_width: usize,
+) -> Vec<(Option<usize>, Line<'static>)> {
+    let mut rows: Vec<(Option<usize>, Line<'static>)> = Vec::new();
+    match &list.result {
+        None => {}
+        Some(result) if result.saves.is_empty() => rows.push((
+            None,
+            Line::from(Span::styled(
+                " no saves yet: w saves the wall as it is",
+                plain(TEXT_DIM, PANEL),
+            )),
+        )),
+        Some(_) => {
+            rows.push((
+                None,
+                Line::from(Span::styled(
+                    format!(
+                        "   {:<30} {:<26} {:>8}  {}",
+                        "SAVE", "SAVED", "TEMPO", "MODULES · CABLES"
+                    ),
+                    bold(BRASS, PANEL),
+                )),
+            ));
+            let shown = list.shown();
+            if shown.is_empty() {
+                rows.push((
+                    None,
+                    Line::from(Span::styled(
+                        " none made by hand yet: w saves the wall as it is",
+                        plain(TEXT_DIM, PANEL),
+                    )),
+                ));
+            }
+            let mut own_heading = false;
+            for (position, save) in shown.into_iter().enumerate() {
+                if save.auto && !own_heading {
+                    own_heading = true;
+                    rows.push((
+                        None,
+                        Line::from(Span::styled(
+                            " THE WALL'S OWN: THE WALL AS IT WAS BEFORE EACH LOAD (a hides them)",
+                            bold(BRASS, PANEL),
+                        )),
+                    ));
+                }
+                rows.push((
+                    Some(position),
+                    save_row(save, position == index, now, inner_width),
+                ));
+            }
+            let own = list.own_count();
+            if own > 0 && !list.show_auto {
+                rows.push((
+                    None,
+                    Line::from(Span::styled(
+                        format!(
+                            " and {own} of the wall's own (the wall as it was before each load) \
+                             · a shows them"
+                        ),
+                        plain(TEXT_DIM, PANEL),
+                    )),
+                ));
+            }
+        }
+    }
+    if let Some(result) = &list.result {
+        if !result.broken.is_empty() {
+            rows.push((
+                None,
+                Line::from(Span::styled(" CANNOT BE LOADED", bold(RED, PANEL))),
+            ));
+            for broken in &result.broken {
+                rows.push((
+                    None,
+                    Line::from(Span::styled(
+                        truncate(
+                            &format!("   {} — {}", broken.name, broken.problem),
+                            inner_width,
+                        ),
+                        plain(RED, PANEL),
+                    )),
+                ));
+            }
+        }
+        if !result.pending.is_empty() {
+            rows.push((
+                None,
+                Line::from(Span::styled(
+                    format!(
+                        " and {} more the wall is still reading · shown in a moment",
+                        result.pending.len()
+                    ),
+                    plain(TEXT_DIM, PANEL),
+                )),
+            ));
+        }
+    }
+    rows
+}
+
+/// Asking before a save replaces the wall.
+pub fn confirm_load(buf: &mut Buffer, area: Rect, name: &str) {
+    question(
+        buf,
+        area,
+        "load a save",
+        &[
+            format!("Load \"{name}\" onto the wall?"),
+            "The wall plays on: it fades out and back in.".to_string(),
+            "The wall as it is now is saved first (before-load-…),".to_string(),
+            "and z undoes the load.".to_string(),
+        ],
+        "y loads it · any other key goes back to the list",
+    );
+}
+
+/// Asking before a save is deleted.
+pub fn confirm_delete(buf: &mut Buffer, area: Rect, name: &str) {
+    question(
+        buf,
+        area,
+        "delete a save",
+        &[
+            format!("Delete the save \"{name}\" for good?"),
+            "This cannot be undone; the wall itself is untouched.".to_string(),
+        ],
+        "y deletes it · any other key keeps it",
+    );
+}
+
+/// Asking before the wall is cleared for an empty one.
+pub fn confirm_clear(buf: &mut Buffer, area: Rect) {
+    question(
+        buf,
+        area,
+        "an empty wall",
+        &[
+            "Take everything off the wall for an empty one?".to_string(),
+            "The wall as it is now is saved first (before-new-…),".to_string(),
+            "and z undoes it.".to_string(),
+        ],
+        "y clears it · any other key goes back to the list",
+    );
+}
+
+/// Asking before a save of that name is replaced.
+pub fn confirm_overwrite(buf: &mut Buffer, area: Rect, name: &str) {
+    question(
+        buf,
+        area,
+        "save over a save",
+        &[
+            format!("A save named \"{name}\" is there already."),
+            "Replace it with the wall as it is now?".to_string(),
+            "The save as it was is gone for good.".to_string(),
+        ],
+        "y replaces it · any other key goes back to the name",
+    );
 }
 
 /// Asking before a module goes.

@@ -150,26 +150,26 @@ impl Daemon {
     /// cannot be set aside, another daemon is serving on the socket, or a
     /// thread cannot start.
     pub fn start(config: DaemonConfig) -> Result<Self, DaemonError> {
-        let store = Store::open(&config.state_dir).map_err(|err| {
-            DaemonError::new(format!(
-                "the state directory {} cannot be used: {err}",
-                config.state_dir.display()
-            ))
-        })?;
-        let (patch, load_notes) = load_patch(&store)?;
-        let history = store
-            .load_log()
-            .map_err(|err| DaemonError::new(format!("the change log cannot be read: {err}")))?;
-        if history.skipped > 0 {
-            eprintln!(
-                "kazoo-wall: {} unreadable lines in the change log were skipped",
-                history.skipped
-            );
-        }
+        // The socket first, so a daemon already serving it is found before
+        // any state is touched. (One wall per state directory is the
+        // store's lock: see `Store::open`.)
         let listener = claim(&config.socket)?;
         let socket_inode = fs::metadata(&config.socket)
             .map_err(|err| DaemonError::new(format!("the socket vanished: {err}")))?
             .ino();
+        // Whatever fails from here lets the socket go again, as the daemon
+        // never served it.
+        let mut claimed = Claimed {
+            socket: &config.socket,
+            inode: socket_inode,
+            kept: false,
+        };
+        let Prepared {
+            store,
+            patch,
+            changes,
+            too_large,
+        } = prepare(&config)?;
         let stop = Arc::new(AtomicBool::new(false));
         let (inbox_tx, inbox) = std::sync::mpsc::channel();
         let accept = server::spawn_accept(listener, inbox_tx, Arc::clone(&stop))
@@ -180,7 +180,6 @@ impl Daemon {
             patch.cables().len(),
             config.socket.display()
         );
-        let changes = history.changes;
         let recordings = config.recordings;
         let setup = control::Setup {
             audio: config.audio,
@@ -192,9 +191,8 @@ impl Daemon {
             build: Box::new(move |engine, link| {
                 let mut wall = Wall::new(patch, engine, link, changes, Some(store));
                 wall.set_recordings_dir(recordings);
-                if let Some((from_version, notes)) = load_notes {
-                    let change = wall.record_load(from_version, notes);
-                    eprintln!("kazoo-wall: {}", change.summary);
+                if let Some(why) = &too_large {
+                    wall.starts_too_large(why);
                 }
                 wall
             }),
@@ -202,15 +200,145 @@ impl Daemon {
         let control = thread::Builder::new()
             .name("kazoo-wall-control".to_string())
             .spawn(move || control::run(setup))
-            .map_err(|err| DaemonError::new(format!("the control thread cannot start: {err}")))?;
+            .map_err(|err| {
+                // The accept thread stops with the daemon that never was.
+                stop.store(true, Ordering::Release);
+                DaemonError::new(format!("the control thread cannot start: {err}"))
+            })?;
+        // Served: the daemon lets it go when it stops.
+        claimed.kept = true;
         Ok(Self {
-            socket: config.socket,
+            socket: config.socket.clone(),
             socket_inode,
             stop,
             control: Some(control),
         })
     }
+}
 
+/// A socket claimed by a daemon starting: removed again (if it is still
+/// the one it bound) unless the daemon started and keeps it.
+struct Claimed<'a> {
+    socket: &'a Path,
+    inode: u64,
+    kept: bool,
+}
+
+impl Drop for Claimed<'_> {
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        if fs::metadata(self.socket).is_ok_and(|meta| meta.ino() == self.inode) {
+            if let Err(gone) = fs::remove_file(self.socket) {
+                eprintln!("kazoo-wall: the socket could not be removed: {gone}");
+            }
+        }
+    }
+}
+
+/// How long a starting daemon waits for a wall that is stopping to let go
+/// of the state directory.
+const STATE_WAIT: Duration = Duration::from_secs(5);
+
+/// Open the state directory `dir` (see [`Store::open`]), waiting up to
+/// [`STATE_WAIT`] while another wall holds it: one asked to stop a moment
+/// ago is still saving, and lets go when it has.
+fn open_state(dir: &Path) -> Result<Store, DaemonError> {
+    let deadline = Instant::now() + STATE_WAIT;
+    loop {
+        match Store::open(dir) {
+            Ok(store) => return Ok(store),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => {
+                return Err(DaemonError::new(format!(
+                    "the state directory {} cannot be used: {err}",
+                    dir.display()
+                )));
+            }
+        }
+    }
+}
+
+/// Open the state, bring in the hand-made copies, load the patch and the
+/// log, and say in the log what the wall starts on (see
+/// [`wall::resume`]): the store, the patch and the changes to start with.
+fn prepare(config: &DaemonConfig) -> Result<Prepared, DaemonError> {
+    let mut store = open_state(&config.state_dir)?;
+    // The hand-made copies of the patch become saves, once. A failure
+    // here costs nothing that was there: the copies are left as they
+    // are, and tried again on the next start.
+    match store.import_copies() {
+        Ok(said) => {
+            for line in said {
+                eprintln!("kazoo-wall: saves: {line}");
+            }
+        }
+        Err(err) => eprintln!(
+            "kazoo-wall: the hand-made copies of the patch could not all be brought in as \
+                 saves ({err}); they are left as they are, and tried again next time"
+        ),
+    }
+    let Found {
+        mut patch,
+        migrated,
+        seeded,
+        set_aside,
+    } = load_patch(&store)?;
+    let history = store
+        .load_log()
+        .map_err(|err| DaemonError::new(format!("the change log cannot be read: {err}")))?;
+    if history.skipped > 0 {
+        eprintln!(
+            "kazoo-wall: {} unreadable lines in the change log were skipped",
+            history.skipped
+        );
+    }
+    if history.repeated > 0 {
+        eprintln!(
+            "kazoo-wall: {} lines in the change log repeated a change before them and were \
+                 skipped",
+            history.repeated
+        );
+    }
+    let mut changes = history.changes;
+    // Whatever the wall starts on that the log does not account for is
+    // said in the log before anything plays.
+    let too_large = wall::resume(
+        &mut store,
+        &mut patch,
+        &mut changes,
+        seeded,
+        set_aside,
+        migrated,
+    )
+    .map_err(|err| {
+        DaemonError::new(format!(
+            "the wall cannot say in its change log what it starts on ({err}), so it does not \
+                 start: free some space in {} or make it writable, and start again",
+            store.dir().display()
+        ))
+    })?;
+    Ok(Prepared {
+        store,
+        patch,
+        changes,
+        too_large,
+    })
+}
+
+/// What a start has ready for the wall (see [`prepare`]).
+struct Prepared {
+    store: Store,
+    patch: Patch,
+    changes: Vec<crate::protocol::Change>,
+    /// Why the wall is too large for its file, when it is.
+    too_large: Option<String>,
+}
+
+impl Daemon {
     /// The control socket.
     #[must_use]
     pub fn socket(&self) -> &Path {
@@ -281,10 +409,23 @@ impl Drop for Daemon {
 /// had to be brought up to date or had parts left out.
 type LoadNotes = Option<(u32, Vec<String>)>;
 
-/// Load the patch, seeding one where there is none or it was set aside. A
-/// patch that had to change is saved in its new form at once (its original
-/// is kept beside it).
-fn load_patch(store: &Store) -> Result<(Patch, LoadNotes), DaemonError> {
+/// The patch a start found, and what became of `patch.json` on the way.
+struct Found {
+    patch: Patch,
+    /// The file's version and notes, when it was brought up to date.
+    migrated: LoadNotes,
+    /// Whether the patch is the seed.
+    seeded: bool,
+    /// Why `patch.json` could not be used, and the file it was moved to,
+    /// when it was set aside.
+    set_aside: Option<(String, String)>,
+}
+
+/// Load the patch, seeding one where there is none or it was set aside.
+/// Nothing is written here: a patch that had to change (its original
+/// kept beside it) or was seeded is written by [`wall::resume`], after
+/// the notes saying so.
+fn load_patch(store: &Store) -> Result<Found, DaemonError> {
     let loaded = store.load_patch().map_err(|err| {
         DaemonError::new(format!(
             "the patch in {} cannot be read and cannot be set aside ({err}); \
@@ -292,7 +433,7 @@ fn load_patch(store: &Store) -> Result<(Patch, LoadNotes), DaemonError> {
             store.dir().display()
         ))
     })?;
-    let patch = match loaded {
+    let set_aside = match loaded {
         Loaded::Patch {
             patch,
             from_version,
@@ -300,7 +441,12 @@ fn load_patch(store: &Store) -> Result<(Patch, LoadNotes), DaemonError> {
             backup,
         } => {
             if notes.is_empty() {
-                return Ok((*patch, None));
+                return Ok(Found {
+                    patch: *patch,
+                    migrated: None,
+                    seeded: false,
+                    set_aside: None,
+                });
             }
             for note in &notes {
                 eprintln!("kazoo-wall: loading the patch: {note}");
@@ -311,28 +457,36 @@ fn load_patch(store: &Store) -> Result<(Patch, LoadNotes), DaemonError> {
                     backup.display()
                 );
             }
-            store.save_patch(&patch).map_err(|err| {
-                DaemonError::new(format!("the updated patch cannot be saved: {err}"))
-            })?;
-            return Ok((*patch, Some((from_version, notes))));
+            // Written by `wall::resume`, after the note saying so.
+            return Ok(Found {
+                patch: *patch,
+                migrated: Some((from_version, notes)),
+                seeded: false,
+                set_aside: None,
+            });
         }
         Loaded::Missing => {
             eprintln!("kazoo-wall: no patch yet; starting from the seed");
-            seed()
+            None
         }
+        // Said in the log as the wall's own change (by `wall::resume`),
+        // where the console and every seat see it.
         Loaded::SetAside { reason, moved_to } => {
-            eprintln!(
-                "kazoo-wall: the patch could not be used ({reason}); it is now {} and the wall starts from the seed",
-                moved_to.display()
+            let file = moved_to.file_name().map_or_else(
+                || moved_to.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
             );
-            seed()
+            Some((reason, file))
         }
     };
-    let patch = patch.map_err(|err| DaemonError::new(format!("the seed patch failed: {err}")))?;
-    store
-        .save_patch(&patch)
-        .map_err(|err| DaemonError::new(format!("the seed patch cannot be saved: {err}")))?;
-    Ok((patch, None))
+    let patch = seed().map_err(|err| DaemonError::new(format!("the seed patch failed: {err}")))?;
+    // Written by `wall::resume`, after any note saying so.
+    Ok(Found {
+        patch,
+        migrated: None,
+        seeded: true,
+        set_aside,
+    })
 }
 
 /// Make sure `dir` is a private directory of ours.
@@ -428,26 +582,36 @@ pub fn serve(config: DaemonConfig) -> Result<(), DaemonError> {
 }
 
 /// Ask the daemon on `socket` to stop, as a console, and wait up to
-/// `timeout` for its socket to go quiet.
+/// `timeout` for it to have stopped.
+///
+/// Stopped is its socket file gone, which the daemon removes only once it
+/// has saved and let go of its state, so a wall started right after finds
+/// the state free.
 ///
 /// # Errors
 ///
-/// Fails if no daemon answers, it refuses, or it is still answering after
-/// `timeout`.
+/// Fails if no daemon answers, it refuses, or its socket is still there
+/// after `timeout`.
 pub fn stop_daemon(socket: &Path, timeout: Duration) -> Result<(), ClientError> {
     let mut wall = WallClient::connect(socket, "Tom", "kazoo-wall stop", true)?;
     wall.shutdown()?;
     drop(wall);
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if !is_running(socket) {
-            return Ok(());
+        match fs::symlink_metadata(socket) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(ClientError::Io(err)),
+            Ok(_) => thread::sleep(Duration::from_millis(50)),
         }
-        thread::sleep(Duration::from_millis(50));
     }
     Err(ClientError::Io(io::Error::new(
         io::ErrorKind::TimedOut,
-        "the wall is still answering after being asked to stop",
+        format!(
+            "the wall was asked to stop, but after {} s it has not finished (its socket {} is \
+             still there): it may still be saving; try again in a moment",
+            timeout.as_secs(),
+            socket.display()
+        ),
     )))
 }
 
@@ -511,6 +675,109 @@ pub fn launch_detached(exe: &Path, socket: &Path, log: &Path, timeout: Duration)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::What;
+    use crate::store::{FailAt, fail_on_open};
+
+    /// The changes in the log in `state`.
+    fn logged(state: &Path) -> Vec<crate::protocol::Change> {
+        Store::open(state).unwrap().load_log().unwrap().changes
+    }
+
+    /// Start a daemon on `state` with the step `at` failing once, as a
+    /// full disk would make it fail; returns why it would not start.
+    fn failed_start(runtime: &Path, state: &Path, at: FailAt) -> String {
+        fail_on_open(at);
+        let Err(err) = Daemon::start(DaemonConfig::headless(runtime, state)) else {
+            panic!("it started with {at:?} failing");
+        };
+        err.to_string()
+    }
+
+    #[test]
+    fn a_start_that_cannot_log_what_it_did_to_the_patch_does_it_again_next_time() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        fs::create_dir_all(&state).unwrap();
+        // A patch with a part that cannot load: starting brings it up to
+        // date, and says so in the log.
+        let mut file = serde_json::to_value(Patch::empty(100.0).to_file()).unwrap();
+        file["modules"] = serde_json::json!([
+            {"id": "vco1", "kind": "vco", "knobs": {"tune": 3.0}},
+            {"id": "gone1", "kind": "gone", "knobs": {}}
+        ]);
+        let original = serde_json::to_vec(&file).unwrap();
+        fs::write(state.join("patch.json"), &original).unwrap();
+        for at in [FailAt::AppendLog, FailAt::SyncLog, FailAt::WritePatch] {
+            let why = failed_start(root.path(), &state, at);
+            assert!(
+                why.contains("cannot say in its change log"),
+                "{at:?}: {why}"
+            );
+            // patch.json as it was: the next start reads it the same way.
+            assert_eq!(
+                fs::read(state.join("patch.json")).unwrap(),
+                original,
+                "{at:?}"
+            );
+        }
+        let daemon = Daemon::start(DaemonConfig::headless(root.path(), &state)).unwrap();
+        daemon.stop();
+        daemon.wait().unwrap();
+        // Said in the log (each start that got that far said it too), and
+        // patch.json brought up to date after it.
+        let migrated = logged(&state)
+            .into_iter()
+            .filter(|change| matches!(change.what, What::Migrate { .. }))
+            .count();
+        assert!(migrated >= 1);
+        let Loaded::Patch { patch, notes, .. } = Store::open(&state).unwrap().load_patch().unwrap()
+        else {
+            panic!("no patch.json");
+        };
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(patch.modules().len(), 1);
+    }
+
+    #[test]
+    fn a_seeded_start_that_cannot_log_it_leaves_no_patch_behind() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        // A log from a wall whose patch.json is gone.
+        let mut store = Store::open(&state).unwrap();
+        store
+            .append(&crate::protocol::Change {
+                seq: 1,
+                at: "2026-10-09T00:00:00Z".to_string(),
+                seat: "Tom".to_string(),
+                summary: "Tom turned vcf1".to_string(),
+                what: What::Tempo {
+                    from: 120.0,
+                    to: 100.0,
+                    desk: false,
+                },
+                undoes: None,
+            })
+            .unwrap();
+        store.sync_log().unwrap();
+        drop(store);
+        failed_start(root.path(), &state, FailAt::AppendLog);
+        assert!(
+            !state.join("patch.json").exists(),
+            "a seed is never on disk without the note saying it was seeded"
+        );
+        let daemon = Daemon::start(DaemonConfig::headless(root.path(), &state)).unwrap();
+        daemon.stop();
+        daemon.wait().unwrap();
+        // Started on a wall the log does not know: nothing before holds.
+        let notes: Vec<What> = logged(&state)
+            .into_iter()
+            .map(|change| change.what)
+            .filter(|what| matches!(what, What::Resumed { .. }))
+            .collect();
+        assert_eq!(notes.len(), 1);
+        assert!(matches!(notes[0], What::Resumed { from: None, .. }));
+        assert!(state.join("patch.json").exists());
+    }
 
     #[test]
     fn the_standard_config_honours_the_overrides() {

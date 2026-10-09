@@ -119,6 +119,11 @@ pub struct PatchFile {
     pub tempo: f64,
     /// The latest change's sequence number.
     pub last_seq: u64,
+    /// Which wall this is: the number of the change that put it up (see
+    /// [`crate::protocol::Snapshot::wall`]); 0 for a wall never replaced,
+    /// and in patches saved before walls were replaced.
+    #[serde(default)]
+    pub wall: u64,
     /// The next number for each kind's ids.
     pub next_ids: BTreeMap<String, u32>,
     /// The next cable number.
@@ -181,6 +186,8 @@ pub struct Patch {
     pub tempo: f64,
     /// The latest change's sequence number, as saved.
     pub last_seq: u64,
+    /// Which wall this is (see [`PatchFile::wall`]).
+    pub wall: u64,
     /// Who has touched which module, as saved.
     pub dye: Dye,
     /// What each `speak` module says, by module id.
@@ -195,8 +202,134 @@ fn error(code: ErrorCode, message: impl Into<String>) -> WallError {
     WallError::new(code, message)
 }
 
+/// Why `what` can never be undone, whatever wall is up, if it cannot.
+///
+/// That is a note the daemon made, a recording, words, or a change by a
+/// newer wall. Checked before anything about walls, so the reason given
+/// is the true one.
+#[must_use]
+pub fn never_undone(what: &What) -> Option<WallError> {
+    let refused = |message: String| Some(error(ErrorCode::NotAllowed, message));
+    match what {
+        What::Abandoned { change } => refused(format!(
+            "this says change {change} did not happen; there is nothing to undo"
+        )),
+        What::Resumed { .. } => {
+            refused("the wall starting again from patch.json cannot be undone".to_string())
+        }
+        What::SetAside { moved_to, .. } => refused(format!(
+            "setting patch.json aside cannot be undone; the file is still there as {moved_to}"
+        )),
+        What::Migrate { .. } => {
+            refused("bringing the patch up to date cannot be undone".to_string())
+        }
+        What::Record { on: true, .. } => {
+            refused("a recording cannot be undone; stop it with record".to_string())
+        }
+        What::Record { on: false, .. } => {
+            refused("a recording cannot be undone; start a new one with record".to_string())
+        }
+        What::Speak { module, .. } => refused(format!(
+            "words cannot be taken back; give {module} new ones"
+        )),
+        What::Unknown => refused(
+            "that change was made by a newer wall and cannot be undone by this one".to_string(),
+        ),
+        What::Turn { .. }
+        | What::Patch { .. }
+        | What::Unpatch { .. }
+        | What::Add { .. }
+        | What::Remove { .. }
+        | What::Restore { .. }
+        | What::Tempo { .. }
+        | What::Load { .. } => None,
+    }
+}
+
 /// Longest module id.
 const MAX_ID: usize = 40;
+
+/// The numbering of a file (`saved`) this wall keeps, within the bound its
+/// file is held to (see `store::MAX_KINDS`): every kind this build has,
+/// then kinds it does not have (a kind since renamed or taken out, whose
+/// numbering is kept so its ids are never given again should it come
+/// back) while they number fewer than `store::MAX_KINDS` in all and look
+/// like a kind's name (lower-case letters, digits, `-` and `_`, at most
+/// `store::MAX_CATALOGUE_NAME` bytes). The rest is dropped and said in
+/// `notes`: nothing but a file made by hand holds it.
+fn numbering_in(saved: &BTreeMap<String, u32>, notes: &mut Vec<String>) -> BTreeMap<String, u32> {
+    let mut kept: BTreeMap<String, u32> = saved
+        .iter()
+        .filter(|(name, _)| Kind::from_name(name).is_some())
+        .map(|(name, next)| (name.clone(), (*next).max(1)))
+        .collect();
+    for (name, next) in saved {
+        if kept.contains_key(name) {
+            continue;
+        }
+        let looks = !name.is_empty()
+            && name.len() <= crate::store::MAX_CATALOGUE_NAME
+            && name.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_".contains(&byte)
+            });
+        if looks && kept.len() < crate::store::MAX_KINDS {
+            kept.insert(name.clone(), (*next).max(1));
+        } else {
+            notes.push(format!(
+                "the numbering of '{}', which no kind could have, dropped",
+                printable(name)
+            ));
+        }
+    }
+    kept
+}
+
+/// The most notes [`Patch::load`] gives about one file.
+///
+/// Each note is short (names go through [`printable`]), so however much junk a file
+/// holds, what is said about it fits in one answer with room to spare.
+pub const MAX_LOAD_NOTES: usize = 32;
+
+/// Keep the first [`MAX_LOAD_NOTES`] `notes`, the last of them counting
+/// those left unsaid.
+fn cap_notes(notes: &mut Vec<String>) {
+    if notes.len() > MAX_LOAD_NOTES {
+        let unsaid = notes.len() - (MAX_LOAD_NOTES - 1);
+        notes.truncate(MAX_LOAD_NOTES - 1);
+        notes.push(format!("and {unsaid} more like these"));
+    }
+}
+
+/// Whether `words` are within what a speaker may be given: its text and
+/// voice no longer than `speak` takes (so no file, whatever it holds,
+/// brings in more than the wall could have been given).
+fn words_fit(words: &Words) -> bool {
+    words.text.chars().count() <= kazoo_speech::tts::MAX_TEXT_CHARS
+        && words
+            .voice
+            .as_ref()
+            .is_none_or(|voice| voice.chars().count() <= kazoo_speech::tts::MAX_VOICE_CHARS)
+}
+
+/// `bytes` as a short string that changes whenever they do.
+///
+/// That is their 64-bit FNV-1a hash and their length, e.g.
+/// `5f3c0e2a91b4d7e8-48213`: enough to tell, beyond any accidental doubt,
+/// that a file still holds the very bytes it held (the saves live in Tom's
+/// own private directory, so nobody is forging one). Empty bytes give the
+/// empty string, which no file is ever said to match.
+#[must_use]
+pub fn hash_bytes(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}-{}", bytes.len())
+}
 
 /// The id for number `number` of kind `kind`: the kind's name and the
 /// number (`vco12`), with `_` between when the name ends in a digit
@@ -274,6 +407,7 @@ impl Patch {
             next_cable: 1,
             tempo,
             last_seq: 0,
+            wall: 0,
             dye: Dye::new(),
             speech: BTreeMap::new(),
             retired_speech: VecDeque::new(),
@@ -303,6 +437,18 @@ impl Patch {
     #[must_use]
     pub fn module(&self, id: &str) -> Option<&Module> {
         self.modules.iter().find(|module| module.id == id)
+    }
+
+    /// Put module `id`'s knob targets back to `knobs`, exactly as they
+    /// were (taken from [`Module::knobs`] before a turn that was then not
+    /// made). Nothing happens if the module has gone or the knobs do not
+    /// fit it.
+    pub fn put_knobs_back(&mut self, id: &str, knobs: &[f32]) {
+        if let Some(module) = self.modules.iter_mut().find(|module| module.id == id) {
+            if module.knobs.len() == knobs.len() {
+                module.knobs.copy_from_slice(knobs);
+            }
+        }
     }
 
     /// The module with id `id`, or an `unknown_module` error listing the
@@ -804,8 +950,9 @@ impl Patch {
         }
     }
 
-    /// Apply the inverse of `what` as a new change. Tempo changes are the
-    /// daemon's to undo (they involve the clock), and refused here.
+    /// Apply the inverse of `what` as a new change. Tempo changes and loads
+    /// are the daemon's to undo (they involve the clock, or the whole
+    /// wall), and refused here.
     ///
     /// # Errors
     ///
@@ -844,26 +991,15 @@ impl Patch {
                 ErrorCode::Internal,
                 "tempo changes are undone by the daemon",
             )),
-            What::Migrate { .. } => Err(error(
-                ErrorCode::NotAllowed,
-                "bringing the patch up to date cannot be undone",
-            )),
-            What::Record { on, .. } => Err(error(
-                ErrorCode::NotAllowed,
-                if *on {
-                    "a recording cannot be undone; stop it with record"
-                } else {
-                    "a recording cannot be undone; start a new one with record"
-                },
-            )),
-            What::Speak { module, .. } => Err(error(
-                ErrorCode::NotAllowed,
-                format!("words cannot be taken back; give {module} new ones"),
-            )),
-            What::Unknown => Err(error(
-                ErrorCode::NotAllowed,
-                "that change was made by a newer wall and cannot be undone by this one",
-            )),
+            What::Load { .. } => Err(error(ErrorCode::Internal, "loads are undone by the daemon")),
+            What::Abandoned { .. }
+            | What::Resumed { .. }
+            | What::SetAside { .. }
+            | What::Migrate { .. }
+            | What::Record { .. }
+            | What::Speak { .. }
+            | What::Unknown => Err(never_undone(what)
+                .unwrap_or_else(|| error(ErrorCode::Internal, "that change cannot be undone"))),
         }
     }
 
@@ -945,6 +1081,7 @@ impl Patch {
             version: FILE_VERSION,
             tempo: self.tempo,
             last_seq: self.last_seq,
+            wall: self.wall,
             next_ids: self.next_ids.clone(),
             next_cable: self.next_cable,
             modules: self.modules.iter().map(Module::record).collect(),
@@ -954,6 +1091,46 @@ impl Patch {
             retired_speech: self.retired_speech.iter().cloned().collect(),
             rack: self.rows.clone(),
         }
+    }
+
+    /// What the wall holds, as a short string that changes whenever any of
+    /// it does: every module and knob target, every cable, the numbering,
+    /// the tempo, the rows, the dye and the words; but not the latest
+    /// change's number nor which wall it is, which move with every change
+    /// and every load without the wall itself changing.
+    ///
+    /// It is [`hash_bytes`] of the patch's file as this build writes it
+    /// (compact JSON, deterministic: every map in it is ordered). It is for
+    /// telling, within one running daemon, whether the wall has changed
+    /// since it was saved; it is never kept anywhere, since another build
+    /// (a new format version, a new migration) may write the same wall
+    /// differently. What is kept, to recognise a save later, is
+    /// [`hash_bytes`] of the save's file as it is on disk.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        let file = PatchFile {
+            last_seq: 0,
+            wall: 0,
+            ..self.to_file()
+        };
+        // A PatchFile is plain data: encoding it cannot fail. Were it ever
+        // to, the empty fingerprint matches no wall, so nothing is skipped
+        // on its strength.
+        serde_json::to_vec(&file).map_or_else(|_| String::new(), |bytes| hash_bytes(&bytes))
+    }
+
+    /// [`Self::fingerprint`] of everything but the tempo: what the wall is
+    /// while the desk keeps the tempo (and the wall's saved tempo follows
+    /// the desk's, which is no change of the wall's own).
+    #[must_use]
+    pub fn fingerprint_but_tempo(&self) -> String {
+        let file = PatchFile {
+            last_seq: 0,
+            wall: 0,
+            tempo: 0.0,
+            ..self.to_file()
+        };
+        serde_json::to_vec(&file).map_or_else(|_| String::new(), |bytes| hash_bytes(&bytes))
     }
 
     /// Make sure the numbering never gives out `id` again.
@@ -1006,10 +1183,9 @@ impl Patch {
         };
         let mut patch = Self::empty(crate::engine::clamp_bpm(tempo));
         patch.last_seq = file.last_seq;
+        patch.wall = file.wall;
         patch.next_cable = file.next_cable.max(1);
-        for (name, next) in &file.next_ids {
-            patch.next_ids.insert(name.clone(), (*next).max(1));
-        }
+        patch.next_ids = numbering_in(&file.next_ids, &mut notes);
         for record in &file.modules {
             if let Err(why) = patch.load_module(record, &mut notes) {
                 notes.push(format!(
@@ -1028,31 +1204,7 @@ impl Patch {
                 ));
             }
         }
-        let mut dye = file.dye.clone();
-        dye.retain(|module, _| {
-            let there = patch.module(module).is_some();
-            if !there {
-                notes.push(format!(
-                    "dye on '{}', which is not on the wall, dropped",
-                    printable(module)
-                ));
-            }
-            there
-        });
-        for (on, seats) in &mut dye {
-            seats.retain(|who, amount| {
-                let positive = amount.is_finite() && *amount > 0.0;
-                if !positive {
-                    notes.push(format!(
-                        "{}'s dye on {on} was not a positive number, dropped",
-                        printable(who)
-                    ));
-                }
-                positive
-            });
-        }
-        dye.retain(|_, seats| !seats.is_empty());
-        patch.dye = Dye::from_deposits(dye)?;
+        patch.dye = Dye::from_deposits(patch.dye_in(&file.dye, &mut notes))?;
         for (module, words) in &file.speech {
             let speaks = patch.module(module).is_some_and(|m| {
                 matches!(
@@ -1060,7 +1212,13 @@ impl Patch {
                     crate::catalogue::Builder::Adapted(crate::adapters::Adapter::Speak)
                 )
             });
-            if speaks {
+            if speaks && !words_fit(words) {
+                // Said without the words themselves: they are private.
+                notes.push(format!(
+                    "words for '{}' longer than a speaker may be given, dropped",
+                    printable(module)
+                ));
+            } else if speaks {
                 patch.speech.insert(module.clone(), words.clone());
             } else {
                 notes.push(format!(
@@ -1071,7 +1229,13 @@ impl Patch {
         }
         for retired in &file.retired_speech {
             let away = patch.module(&retired.module).is_none();
-            if away {
+            let fits = retired.module.len() <= MAX_ID && words_fit(&retired.words);
+            if away && !fits {
+                notes.push(format!(
+                    "kept words for '{}' longer than a speaker may be given, dropped",
+                    printable(&retired.module)
+                ));
+            } else if away {
                 patch.retired_speech.push_back(retired.clone());
             } else {
                 notes.push(format!(
@@ -1086,7 +1250,58 @@ impl Patch {
         // The rows are where modules hang, not the patch's sound: they are
         // mended without a note.
         patch.hang_rows(&file.rack);
+        cap_notes(&mut notes);
         Ok((patch, notes))
+    }
+
+    /// The dye of a file (`saved`) this wall keeps: on its modules, from
+    /// seats with a seat's name, in positive amounts, and the strongest
+    /// [`crate::fingerprints::MAX_DYE_SEATS`] seats on each; what is left
+    /// out is said in `notes`.
+    fn dye_in(
+        &self,
+        saved: &BTreeMap<String, BTreeMap<String, f64>>,
+        notes: &mut Vec<String>,
+    ) -> BTreeMap<String, BTreeMap<String, f64>> {
+        let mut dye = saved.clone();
+        dye.retain(|module, _| {
+            let there = self.module(module).is_some();
+            if !there {
+                notes.push(format!(
+                    "dye on '{}', which is not on the wall, dropped",
+                    printable(module)
+                ));
+            }
+            there
+        });
+        for (on, seats) in &mut dye {
+            seats.retain(|who, amount| {
+                let positive = amount.is_finite() && *amount > 0.0;
+                let named = who.chars().count() <= crate::protocol::MAX_NAME;
+                if !positive {
+                    notes.push(format!(
+                        "{}'s dye on {on} was not a positive number, dropped",
+                        printable(who)
+                    ));
+                } else if !named {
+                    notes.push(format!(
+                        "dye on {on} from a seat whose name is longer than a seat's may be, \
+                         dropped"
+                    ));
+                }
+                positive && named
+            });
+            let faintest = crate::fingerprints::trim_seats(seats);
+            if faintest > 0 {
+                notes.push(format!(
+                    "the faintest dye of {faintest} seats on {on} dropped (a module keeps the \
+                     {} strongest)",
+                    crate::fingerprints::MAX_DYE_SEATS
+                ));
+            }
+        }
+        dye.retain(|_, seats| !seats.is_empty());
+        dye
     }
 
     fn load_module(

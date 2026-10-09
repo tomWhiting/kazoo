@@ -6,7 +6,11 @@ use serde_json::json;
 use super::*;
 
 fn round_trip_request(request: Request) {
-    let line = RequestLine { id: 7, request };
+    let line = RequestLine {
+        id: 7,
+        wall: None,
+        request,
+    };
     let text = serde_json::to_string(&line).unwrap();
     let back: RequestLine = serde_json::from_str(&text).unwrap();
     assert_eq!(back, line, "{text}");
@@ -232,6 +236,10 @@ fn every_error_code_has_its_wire_name() {
             "unknown_cable",
             "unknown_change",
             "full",
+            "unknown_save",
+            "save_exists",
+            "broken_save",
+            "wall_replaced",
             "slow_down",
             "not_allowed",
             "internal"
@@ -347,6 +355,7 @@ fn change_ops_are_the_flood_guarded_ones() {
     assert_eq!(
         serde_json::to_value(RequestLine {
             id: 4,
+            wall: None,
             request: Request::Monitor { on: true }
         })
         .unwrap(),
@@ -431,6 +440,7 @@ fn recording_has_its_shape_and_old_snapshots_have_none() {
     assert_eq!(
         serde_json::to_value(RequestLine {
             id: 7,
+            wall: None,
             request: Request::Record { on: true }
         })
         .unwrap(),
@@ -495,6 +505,7 @@ fn the_rack_has_its_shape_and_older_walls_and_consoles_still_read() {
     assert_eq!(
         serde_json::to_value(RequestLine {
             id: 9,
+            wall: None,
             request: arrange,
         })
         .unwrap(),
@@ -523,6 +534,7 @@ fn the_rack_has_its_shape_and_older_walls_and_consoles_still_read() {
     assert_eq!(
         serde_json::to_value(RequestLine {
             id: 7,
+            wall: None,
             request: with
         })
         .unwrap(),
@@ -586,4 +598,317 @@ fn the_rack_has_its_shape_and_older_walls_and_consoles_still_read() {
             own: true
         }
     );
+}
+
+#[test]
+fn save_names_are_plain_visible_files() {
+    let longest = "a".repeat(MAX_SAVE_NAME);
+    for good in [
+        "jam",
+        "Tom fiddle 2026-09-29",
+        "jam-2026-09-27-before-fresh-start",
+        "detroit_blade.runner",
+        "7",
+        longest.as_str(),
+    ] {
+        assert!(valid_save_name(good), "{good}");
+    }
+    let too_long = "a".repeat(MAX_SAVE_NAME + 1);
+    for bad in [
+        "",
+        " jam",
+        "jam ",
+        "jam.",
+        ".jam",
+        "..",
+        "-jam",
+        "_jam",
+        "a/b",
+        "../patch",
+        "jam\n",
+        "jäm",
+        "jam!",
+        too_long.as_str(),
+    ] {
+        assert!(!valid_save_name(bad), "{bad:?}");
+    }
+    assert!(is_auto_save("before-load-20261009-143005"));
+    assert!(is_auto_save("Before-new-20261009-143005-2"));
+    assert!(!is_auto_save("before"));
+    assert!(!is_auto_save("jam-before-fresh-start"));
+}
+
+#[test]
+fn saving_and_loading_have_their_shapes() {
+    for (request, wire) in [
+        (
+            Request::Save {
+                name: "jam".to_string(),
+                overwrite: false,
+            },
+            json!({"id":7,"op":"save","name":"jam"}),
+        ),
+        (
+            Request::Save {
+                name: "jam".to_string(),
+                overwrite: true,
+            },
+            json!({"id":7,"op":"save","name":"jam","overwrite":true}),
+        ),
+        (Request::Saves, json!({"id":7,"op":"saves"})),
+        (
+            Request::Load {
+                name: "jam".to_string(),
+            },
+            json!({"id":7,"op":"load","name":"jam"}),
+        ),
+        (Request::New, json!({"id":7,"op":"new"})),
+        (
+            Request::DeleteSave {
+                name: "jam".to_string(),
+            },
+            json!({"id":7,"op":"delete_save","name":"jam"}),
+        ),
+    ] {
+        assert_eq!(wire["op"], request.op());
+        // Saving, loading and deleting change the wall or its saves (a
+        // watcher may do none of them); listing does not.
+        assert_eq!(request.is_change(), request != Request::Saves);
+        round_trip_request(request.clone());
+        let line = RequestLine {
+            id: 7,
+            wall: None,
+            request,
+        };
+        assert_eq!(serde_json::to_value(&line).unwrap(), wire);
+    }
+}
+
+#[test]
+fn the_saves_events_and_results_have_their_shapes() {
+    for (event, wire) in [
+        (
+            Event::Loaded {
+                seq: 12,
+                seat: "Tom".to_string(),
+                save: Some("jam".to_string()),
+                backup: "before-load-20261009-143005".to_string(),
+            },
+            json!({"event":"loaded","seq":12,"seat":"Tom","save":"jam",
+                   "backup":"before-load-20261009-143005"}),
+        ),
+        (
+            Event::Loaded {
+                seq: 13,
+                seat: "Tom".to_string(),
+                save: None,
+                backup: "before-new-20261009-143005".to_string(),
+            },
+            json!({"event":"loaded","seq":13,"seat":"Tom",
+                   "backup":"before-new-20261009-143005"}),
+        ),
+        (
+            Event::Saved {
+                seat: "Waffles".to_string(),
+                name: "jam".to_string(),
+                replaced: false,
+            },
+            json!({"event":"saved","seat":"Waffles","name":"jam","replaced":false}),
+        ),
+        (
+            Event::SaveDeleted {
+                seat: "Tom".to_string(),
+                name: "jam".to_string(),
+            },
+            json!({"event":"save_deleted","seat":"Tom","name":"jam"}),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(&event).unwrap(), wire);
+        let text = serde_json::to_string(&event).unwrap();
+        assert_eq!(ServerLine::parse(&text).unwrap(), ServerLine::Event(event));
+    }
+
+    // The results.
+    let info = SaveInfo {
+        name: "jam".to_string(),
+        saved_at: "2026-10-09T03:30:05Z".to_string(),
+        tempo: 96.0,
+        modules: 12,
+        cables: 30,
+        auto: false,
+        version: 2,
+    };
+    let saves = SavesResult {
+        saves: vec![info.clone()],
+        broken: vec![BrokenSave {
+            name: "torn".to_string(),
+            saved_at: "2026-10-09T03:30:05Z".to_string(),
+            problem: "it is not JSON".to_string(),
+        }],
+        pending: vec!["late".to_string()],
+    };
+    let back: SavesResult = serde_json::from_value(serde_json::to_value(&saves).unwrap()).unwrap();
+    assert_eq!(back, saves);
+    let none: SavesResult = serde_json::from_value(json!({"saves":[]})).unwrap();
+    assert!(none.broken.is_empty());
+    let answer = SaveResult {
+        save: info,
+        replaced: true,
+        notes: vec!["the save is in place, but its directory could not be flushed".to_string()],
+    };
+    let back: SaveResult = serde_json::from_value(serde_json::to_value(&answer).unwrap()).unwrap();
+    assert_eq!(back, answer);
+    let deleted = DeleteSaveResult {
+        name: "jam".to_string(),
+        notes: Vec::new(),
+    };
+    assert_eq!(
+        serde_json::to_value(&deleted).unwrap(),
+        json!({"name":"jam"})
+    );
+    let mark = SaveMark {
+        name: "jam".to_string(),
+        revision: 40,
+        changed: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&mark).unwrap(),
+        json!({"name":"jam","revision":40,"changed":true})
+    );
+    // From an older wall, a mark without it reads as unchanged.
+    let old: SaveMark = serde_json::from_value(json!({"name":"jam","revision":40})).unwrap();
+    assert!(!old.changed);
+}
+
+#[test]
+fn a_load_names_the_save_its_wall_is_kept_in_and_nothing_more() {
+    let mut wall = crate::patch::Patch::empty(96.0);
+    wall.add("speak", None, None).unwrap();
+    wall.speech.insert(
+        "speak1".to_string(),
+        crate::patch::Words {
+            text: "private words".to_string(),
+            voice: None,
+        },
+    );
+    let load = Change {
+        seq: 12,
+        at: "2026-10-09T03:30:05Z".to_string(),
+        seat: "Tom".to_string(),
+        what: What::Load {
+            save: Some("jam".to_string()),
+            backup: "before-load-20261009-143005".to_string(),
+            fingerprint: wall.fingerprint(),
+            modules: 3,
+            cables: 2,
+            tempo: 120.0,
+            by_console: true,
+        },
+        summary: "Tom loaded the save \"jam\"".to_string(),
+        undoes: None,
+    };
+    // The log line is small whatever the wall, and the words in the wall
+    // it replaced are never in it: they stay in the save, privately.
+    let line = serde_json::to_string(&load).unwrap();
+    assert!(line.len() < 400, "{line}");
+    assert!(!line.contains("private words"));
+    let back: Change = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, load);
+    assert_eq!(
+        serde_json::to_value(&load).unwrap()["what"],
+        json!({"op":"load","save":"jam","backup":"before-load-20261009-143005",
+               "fingerprint":wall.fingerprint(),"modules":3,"cables":2,"tempo":120.0,
+               "by_console":true})
+    );
+    // A seat's load leaves the flag out, and an older line without it
+    // reads as a seat's.
+    let mut seat = load.what;
+    if let What::Load { by_console, .. } = &mut seat {
+        *by_console = false;
+    }
+    let value = serde_json::to_value(&seat).unwrap();
+    assert!(value.get("by_console").is_none(), "{value}");
+    assert_eq!(serde_json::from_value::<What>(value).unwrap(), seat);
+}
+
+#[test]
+fn a_request_says_which_wall_it_is_for() {
+    let line = RequestLine {
+        id: 3,
+        wall: Some(41),
+        request: Request::Turn {
+            module: "vcf1".to_string(),
+            knob: "cutoff".to_string(),
+            value: 800.0,
+            glide_beats: None,
+        },
+    };
+    let wire = serde_json::to_value(&line).unwrap();
+    assert_eq!(
+        wire,
+        json!({"id":3,"wall":41,"op":"turn","module":"vcf1","knob":"cutoff","value":800.0})
+    );
+    assert_eq!(serde_json::from_value::<RequestLine>(wire).unwrap(), line);
+    // Left out, it is none: older clients are not checked.
+    let old: RequestLine = serde_json::from_value(json!({"id":3,"op":"look"})).unwrap();
+    assert_eq!(old.wall, None);
+    // Only requests naming modules or cables are checked.
+    let names = [
+        Request::Turn {
+            module: "vcf1".to_string(),
+            knob: "cutoff".to_string(),
+            value: 1.0,
+            glide_beats: None,
+        },
+        Request::Patch {
+            from: "a1.out".to_string(),
+            to: "b1.in".to_string(),
+            amount: None,
+        },
+        Request::Unpatch {
+            cable: Some(1),
+            to: None,
+        },
+        Request::Add {
+            kind: "lfo".to_string(),
+            name: None,
+            place: None,
+        },
+        Request::Remove {
+            module: "lfo1".to_string(),
+        },
+        Request::Arrange {
+            module: "lfo1".to_string(),
+            row: 0,
+            before: None,
+            own: false,
+        },
+        Request::Speak {
+            module: "speak1".to_string(),
+            text: "hi".to_string(),
+            voice: None,
+        },
+    ];
+    assert!(names.iter().all(Request::acts_on_modules));
+    for other in [
+        Request::Look,
+        Request::Undo { change: 3 },
+        Request::Tempo { bpm: 90.0 },
+        Request::Record { on: true },
+        Request::Load {
+            name: "jam".to_string(),
+        },
+        Request::New,
+        Request::Saves,
+    ] {
+        assert!(!other.acts_on_modules(), "{other:?}");
+    }
+    // A snapshot from before walls were replaced is wall 0.
+    let snapshot: Snapshot = serde_json::from_value(json!({
+        "revision":1,"tempo":90.0,"beat":0.0,"clock":"own","on_desk":false,"seats":[],
+        "modules":[],"cables":[],"levels":{"peak_l":-120.0,"peak_r":-120.0},"listen":null,
+        "faults":{"count":0,"recent":[]}
+    }))
+    .unwrap();
+    assert_eq!(snapshot.wall, 0);
 }

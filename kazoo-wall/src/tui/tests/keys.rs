@@ -23,6 +23,7 @@ fn calls(app: &mut App) -> Vec<Request> {
         .map(|job| match job {
             Job::Call(request) => request,
             Job::Launch => panic!("a key started the wall unasked"),
+            Job::Wall(wall) => panic!("a key told the worker of wall {wall}"),
         })
         .collect()
 }
@@ -628,6 +629,32 @@ fn other_seats_changes_arrive_as_events() {
     assert_eq!(lines[0], "Vesper joined the wall");
     assert_eq!(lines[1], "Vesper turned vcf1 drive");
     assert_eq!(app.log().latest_seq(), Some(60));
+}
+
+#[test]
+fn a_patch_set_aside_at_the_start_shows_in_the_log() {
+    let mut app = connected();
+    let what = kazoo_wall::protocol::What::SetAside {
+        reason: "it is not JSON".to_string(),
+        moved_to: "patch.broken-1760000000.json".to_string(),
+    };
+    let summary = kazoo_wall::change::summarise("kazoo-wall", &what, None);
+    let mut set_aside = change(1, "kazoo-wall", &summary, None);
+    set_aside.what = what;
+    app.on_reply(
+        Reply::Event(kazoo_wall::protocol::Event::Change {
+            change: Box::new(set_aside),
+        }),
+        Instant::now(),
+    );
+    let lines: Vec<&str> = app.log().lines().map(|line| line.text.as_str()).collect();
+    assert!(
+        lines.iter().any(|line| line.contains(
+            "found patch.json could not be used (it is not JSON), so moved it to \
+             patch.broken-1760000000.json"
+        )),
+        "{lines:?}"
+    );
 }
 
 #[test]

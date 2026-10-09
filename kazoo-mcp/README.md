@@ -47,6 +47,9 @@ Ports are named `module.port`, for example `lfo1.out` or `vcf1.in`. Every knob i
 | `wall_listen` | none | Says what the wall sounds like now, in plain words and in numbers: RMS and peak dBFS, centroid, low/mid/high balance, onsets per second, and pitch. |
 | `wall_speak` | `module`, `text`, `voice?` | Gives a `speak` module words to say, rendered with macOS `say`; answers when they are ready (a few seconds). The module plays them on its `gate`. The words stay private: other seats hear only that the module was given words. |
 | `wall_tempo` | `bpm` | Sets the tempo, from 20 to 300 BPM. While the wall follows the kazoo-mix desk, the desk is asked instead, and it changes the tempo for everyone. |
+| `wall_save` | `name` | Saves the wall as it is under a name (1 to 64 of `A-Z a-z 0-9 space _ . -`). The sound does not change and nothing is logged. A name already saved (in any case), and names starting with `before-` (the wall's own), are refused: only Tom's console replaces or deletes a save. |
+| `wall_saves` | none | Lists the saves, newest first: name, when (UTC), tempo, modules and cables, which are the wall's own, and any file that cannot be loaded, with why. |
+| `wall_load` | `name` | Replaces the whole wall with a save while it plays (the master fades out and back in). The wall as it is is kept first (as `before-load-<time>`, or in the save that already holds it), and the load is one change: `wall_undo` with its number brings the wall back exactly. After any load, changes are refused (`wall_replaced`) until the seat calls `wall_look` again, so nothing meant for the old wall lands on the new one. A seat may replace the wall (a load, or undoing one) three times a minute (`slow_down` beyond). |
 
 A change answers with its number and the wall's own summary, for example `Change #58: Waffles turned vcf1 cutoff 900 Hz → 800 Hz over 4 beats.`
 
@@ -58,8 +61,9 @@ If the connection drops after a change was sent, the change is never sent twice.
 
 Other seats' changes, and seats arriving and leaving, are gathered up. They are sent together at most once per `--notify-every` window, which starts when the first of them arrives:
 - A notification carries up to 10 lines, then `and N more`.
-- A fault goes out at once.
-- A seat's own changes never notify it.
+- A fault goes out at once, and so does another seat loading a save (or clearing the wall): the whole wall is new, so everything the seat knew of it is stale.
+- Another seat saving the wall, or Tom deleting a save, is told in the window.
+- A seat's own changes, saves and loads never notify it.
 - A notification also says when the line to the wall drops, and when it comes back.
 
 A real notification, from the test suite, where Vesper arrived and made twelve changes inside one window:

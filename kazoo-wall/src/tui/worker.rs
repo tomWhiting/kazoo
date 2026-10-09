@@ -60,6 +60,10 @@ pub enum Job {
     Call(Request),
     /// Start the daemon, detached, and report how it went.
     Launch,
+    /// The console now shows wall `n` (see
+    /// [`kazoo_wall::protocol::Snapshot::wall`]): every request after this
+    /// carries it, so one meant for an older wall is refused.
+    Wall(u64),
 }
 
 /// Why a request got no result.
@@ -222,6 +226,9 @@ fn run_worker(config: &Config, jobs: &Receiver<Job>, replies: &Sender<Reply>, st
     let mut link = Reconnect::new(Instant::now());
     let mut client: Option<WallClient> = None;
     let mut next_look = Instant::now();
+    // The wall the console shows, for every request (and every new
+    // connection) from when it is told.
+    let mut wall: Option<u64> = None;
     if replies.send(Reply::Link(link.state().clone())).is_err() {
         return;
     }
@@ -229,7 +236,8 @@ fn run_worker(config: &Config, jobs: &Receiver<Job>, replies: &Sender<Reply>, st
         let now = Instant::now();
         if client.is_none() && link.due(now) {
             match connect(config) {
-                Ok(connected) => {
+                Ok(mut connected) => {
+                    connected.set_wall(wall);
                     link.connected(connected.hello().daemon.clone());
                     client = Some(connected);
                     next_look = now;
@@ -248,6 +256,13 @@ fn run_worker(config: &Config, jobs: &Receiver<Job>, replies: &Sender<Reply>, st
         let reply = match jobs.recv_timeout(wait) {
             Ok(Job::Call(request)) => call(&mut client, &mut link, request),
             Ok(Job::Launch) => launch(config, &mut link),
+            Ok(Job::Wall(shown)) => {
+                wall = Some(shown);
+                if let Some(connected) = client.as_mut() {
+                    connected.set_wall(wall);
+                }
+                Vec::new()
+            }
             Err(RecvTimeoutError::Timeout) => {
                 next_look = Instant::now() + config.poll;
                 look(&mut client, &mut link)

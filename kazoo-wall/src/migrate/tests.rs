@@ -286,3 +286,37 @@ fn reading_keeps_the_rack_s_rows() {
     assert!(notes.is_empty(), "{notes:?}");
     assert!(file.rack.is_empty());
 }
+
+#[test]
+fn words_that_cannot_be_read_are_never_quoted() {
+    // A speaker's words as a bare string, and a removed speaker's words
+    // as one: serde would quote them in its error; the notes must not.
+    let file = serde_json::json!({
+        "version": 2, "tempo": 90.0, "last_seq": 3, "next_ids": {}, "next_cable": 1,
+        "modules": [], "cables": [],
+        "speech": {"speak1": "meet me at the station at nine"},
+        "retired_speech": ["the password is swordfish"],
+        // A module's own entry is not private: its error is told.
+        "rack": [7]
+    });
+    let (read_back, notes) = read(file.to_string().as_bytes()).unwrap();
+    assert!(read_back.speech.is_empty() && read_back.retired_speech.is_empty());
+    assert_eq!(notes.len(), 3, "{notes:?}");
+    let all = notes.join(" | ");
+    assert!(!all.contains("station"), "{all}");
+    assert!(!all.contains("swordfish"), "{all}");
+    assert!(
+        notes.contains(&"speaker's words 'speak1' could not be read; left out".to_string()),
+        "{notes:?}"
+    );
+    assert!(
+        notes.contains(&"removed speaker's words entry 1 could not be read; left out".to_string()),
+        "{notes:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.starts_with("rack row entry 1 could not be read (")),
+        "{notes:?}"
+    );
+}

@@ -420,6 +420,14 @@ impl Control {
         let seat = state.seat.clone();
         let console = state.console;
         let watcher = state.watcher;
+        if seat.is_some() {
+            let refused = refusal(&line.request, console, watcher)
+                .map_or_else(|| self.wall.check_wall(line.wall, &line.request), Err);
+            if let Err(refused) = refused {
+                self.send(conn, &Response::failure(id, refused));
+                return;
+            }
+        }
         let response = match (&line.request, seat) {
             (
                 Request::Hello {
@@ -485,32 +493,41 @@ impl Control {
                     )
                 }
             }
-            (request, Some(_)) if watcher && request.is_change() => Response::failure(
-                id,
-                WallError::new(
-                    ErrorCode::NotAllowed,
-                    format!("a watcher cannot {}; it only watches", request.op()),
-                ),
-            ),
-            (request, Some(seat)) => match self.wall.request(&seat, request, Instant::now()) {
-                Ok(outcome) => {
-                    if let Some(ticket) = outcome.pending {
-                        // Answered when it is ready (see `housekeeping`).
-                        self.awaiting.insert(ticket, (conn, id));
-                        return;
-                    }
-                    self.announce(&seat, outcome.change, outcome.event);
-                    Response {
-                        id,
-                        ok: true,
-                        result: Some(outcome.result),
-                        error: None,
-                    }
-                }
-                Err(err) => Response::failure(id, err),
+            (request, Some(seat)) => match self.ask_wall(conn, id, (&seat, console), request) {
+                Some(response) => response,
+                // Answered when it is ready (see `housekeeping`).
+                None => return,
             },
         };
         self.send(conn, &response);
+    }
+
+    /// Ask the wall `request` (line `id` on `conn`) for `seat`, a console
+    /// or not, and tell everyone what it changed. The response; none for
+    /// a request answered later (its ticket is kept).
+    fn ask_wall(
+        &mut self,
+        conn: u64,
+        id: u64,
+        (seat, console): (&str, bool),
+        request: &Request,
+    ) -> Option<Response> {
+        match self.wall.request_as(seat, console, request, Instant::now()) {
+            Ok(outcome) => {
+                if let Some(ticket) = outcome.pending {
+                    self.awaiting.insert(ticket, (conn, id));
+                    return None;
+                }
+                self.announce(seat, outcome.change, outcome.event);
+                Some(Response {
+                    id,
+                    ok: true,
+                    result: Some(outcome.result),
+                    error: None,
+                })
+            }
+            Err(err) => Some(Response::failure(id, err)),
+        }
     }
 
     /// Tell everyone about a request's outcome: its change to every other
@@ -770,7 +787,11 @@ impl Control {
         if let Some(event) = self.wall.end_recording() {
             self.broadcast(&event, None);
         }
-        self.wall.save(now);
+        // What the log is owed is tried once more; what it still cannot
+        // take is said lost (never numbered or told, so never reused).
+        for event in self.wall.close(now) {
+            self.broadcast(&event, None);
+        }
         let conns: Vec<u64> = self.conns.keys().copied().collect();
         let mut writers = Vec::new();
         for conn in conns {
@@ -788,6 +809,25 @@ impl Control {
         self.backend = None;
         eprintln!("kazoo-wall: stopped; the patch is saved");
     }
+}
+
+/// Why a connection that has said hello may not make `request`, if it may
+/// not: a watcher changes nothing; and the saves are Tom's safety net, so
+/// only a console may destroy one, by deleting it or saving over it.
+fn refusal(request: &Request, console: bool, watcher: bool) -> Option<WallError> {
+    let why = match request {
+        _ if watcher && request.is_change() => {
+            format!("a watcher cannot {}; it only watches", request.op())
+        }
+        Request::DeleteSave { .. } if !console => {
+            "only a console can delete a save; seats cannot".to_string()
+        }
+        Request::Save {
+            overwrite: true, ..
+        } if !console => "only a console can replace a save; save under a new name".to_string(),
+        _ => return None,
+    };
+    Some(WallError::new(ErrorCode::NotAllowed, why))
 }
 
 fn respond(id: u64, result: &impl serde::Serialize) -> Response {

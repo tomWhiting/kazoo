@@ -25,6 +25,41 @@ use crate::protocol::What;
 /// The share of dye each hop passes on, before the cable's |amount|.
 pub const HOP: f64 = 0.5;
 
+/// The most seats whose dye a module keeps: the strongest, the faintest
+/// dropped as more seats touch it.
+///
+/// Six is more hands than a module shows at a glance ("Tom 62%, Waffles
+/// 30%, Cassio 8%, Vesper <1%"): past the sixth, a seat's share of a
+/// module is a sliver of a sliver. And it keeps the dye, which otherwise
+/// grows with every seat that ever touches the wall, inside the wall's
+/// file (see `store::MAX_WALL_FILE`).
+pub const MAX_DYE_SEATS: usize = 6;
+
+/// Drop the faintest of `seats` (dye amounts by seat) beyond
+/// [`MAX_DYE_SEATS`], ties going to the later name. Returns how many were
+/// dropped.
+pub fn trim_seats(seats: &mut BTreeMap<String, f64>) -> usize {
+    trim_seats_but(seats, None)
+}
+
+/// As [`trim_seats`], never dropping `keep` (the seat dyeing it now).
+fn trim_seats_but(seats: &mut BTreeMap<String, f64>, keep: Option<&str>) -> usize {
+    let mut dropped = 0;
+    while seats.len() > MAX_DYE_SEATS {
+        let faintest = seats
+            .iter()
+            .filter(|(who, _)| Some(who.as_str()) != keep)
+            .min_by(|a, b| a.1.total_cmp(b.1).then_with(|| b.0.cmp(a.0)))
+            .map(|(who, _)| who.clone());
+        let Some(faintest) = faintest else {
+            break;
+        };
+        seats.remove(&faintest);
+        dropped += 1;
+    }
+    dropped
+}
+
 /// Shares are rounded to this, so the same wall always shows the same
 /// numbers.
 const PRECISION: f64 = 1.0e6;
@@ -122,18 +157,16 @@ impl Dye {
         Ok(Self { deposits })
     }
 
-    /// Put `amount` of `seat`'s dye into `module`. Nothing for amounts that
-    /// are not positive.
+    /// Put `amount` of `seat`'s dye into `module`, keeping the
+    /// [`MAX_DYE_SEATS`] strongest seats there (never `seat` itself among
+    /// those dropped). Nothing for amounts that are not positive.
     pub fn deposit(&mut self, module: &str, seat: &str, amount: f64) {
         if !(amount.is_finite() && amount > 0.0) {
             return;
         }
-        *self
-            .deposits
-            .entry(module.to_string())
-            .or_default()
-            .entry(seat.to_string())
-            .or_insert(0.0) += amount;
+        let seats = self.deposits.entry(module.to_string()).or_default();
+        *seats.entry(seat.to_string()).or_insert(0.0) += amount;
+        trim_seats_but(seats, Some(seat));
     }
 
     /// Forget all dye in `module` (it was taken away).
@@ -177,10 +210,15 @@ impl Dye {
             // Unplugging re-routes the dye but leaves none; the tempo and
             // a recording are no module's.
             // A change this build does not know leaves nothing it can see.
+            // A load brings its wall's own dye with it, untouched.
             What::Unpatch { .. }
             | What::Tempo { .. }
             | What::Record { .. }
             | What::Migrate { .. }
+            | What::Load { .. }
+            | What::Abandoned { .. }
+            | What::Resumed { .. }
+            | What::SetAside { .. }
             | What::Unknown => {}
         }
     }

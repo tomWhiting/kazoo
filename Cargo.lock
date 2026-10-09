@@ -1474,6 +1474,7 @@ dependencies = [
  "kazoo-speech",
  "ratatui",
  "ringbuf",
+ "rustix",
  "serde",
  "serde_json",
  "signal-hook",

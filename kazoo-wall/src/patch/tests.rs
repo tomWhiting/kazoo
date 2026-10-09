@@ -715,3 +715,92 @@ fn any_arrangement_one_move_away_has_a_place_that_makes_it() {
     }
     assert_eq!(place_for(&starts[0], &starts[1], "z9"), None);
 }
+
+#[test]
+fn a_file_brings_in_nothing_past_todays_limits() {
+    let mut patch = Patch::empty(120.0);
+    patch.add("speak", None, None).unwrap();
+    patch.add("vcf", None, None).unwrap();
+    let mut file = patch.to_file();
+    // Words longer than a speaker may be given, here and retired.
+    file.speech.insert(
+        "speak1".to_string(),
+        Words {
+            text: "a".repeat(kazoo_speech::tts::MAX_TEXT_CHARS + 1),
+            voice: None,
+        },
+    );
+    file.retired_speech.push(RetiredWords {
+        module: "speak9".to_string(),
+        words: Words {
+            text: "fine".to_string(),
+            voice: Some("v".repeat(kazoo_speech::tts::MAX_VOICE_CHARS + 1)),
+        },
+    });
+    // Numbering for a kind this build has not (kept: it may come back),
+    // and for a name no kind could have (dropped).
+    file.next_ids.insert("gone".to_string(), 4);
+    file.next_ids.insert("Not A Kind!".repeat(10), 4);
+    // Dye from more seats than a module keeps, and from a seat whose name
+    // is longer than a seat's may be.
+    let mut seats = std::collections::BTreeMap::new();
+    for n in 0..crate::fingerprints::MAX_DYE_SEATS + 2 {
+        seats.insert(
+            format!("seat{n}"),
+            1.0 + f64::from(u8::try_from(n).unwrap()),
+        );
+    }
+    seats.insert("x".repeat(crate::protocol::MAX_NAME + 1), 5.0);
+    file.dye.insert("vcf1".to_string(), seats);
+    let (loaded, notes) = Patch::load(&file).unwrap();
+    assert!(loaded.speech.is_empty());
+    assert!(loaded.retired_speech.is_empty());
+    assert_eq!(loaded.next_ids.get("gone"), Some(&4));
+    assert_eq!(loaded.next_ids.len(), file.next_ids.len() - 1);
+    let dyed = &loaded.dye.deposits()["vcf1"];
+    assert_eq!(dyed.len(), crate::fingerprints::MAX_DYE_SEATS);
+    assert!(!dyed.contains_key("seat0") && !dyed.contains_key("seat1"));
+    // Each said, the words without quoting them.
+    for said in [
+        "words for 'speak1' longer than a speaker may be given, dropped",
+        "kept words for 'speak9' longer than a speaker may be given, dropped",
+        "which no kind could have, dropped",
+        "from a seat whose name is longer than a seat's may be, dropped",
+        "the faintest dye of 2 seats on vcf1 dropped",
+    ] {
+        assert!(
+            notes.iter().any(|note| note.contains(said)),
+            "{said}: {notes:?}"
+        );
+    }
+    assert!(!notes.iter().any(|note| note.contains("aaaa")), "{notes:?}");
+}
+
+#[test]
+fn however_much_junk_a_file_holds_its_notes_fit_one_answer() {
+    let mut file = Patch::empty(120.0).to_file();
+    // Names that print as long as a name can: 40 characters, each written
+    // out as an escape.
+    let junk = |n: usize| format!("{n}{}", "\u{10ffff}".repeat(60));
+    for n in 0..1_500 {
+        file.next_ids.insert(junk(n), 1);
+        let mut seats = std::collections::BTreeMap::new();
+        seats.insert(junk(n), 1.0);
+        file.dye.insert(junk(n), seats);
+        file.speech.insert(junk(n), words("lost"));
+    }
+    let bytes = serde_json::to_vec(&file).unwrap();
+    assert!(
+        bytes.len() as u64 <= crate::store::MAX_WALL_FILE,
+        "{}",
+        bytes.len()
+    );
+    let (_, notes) = Patch::load(&file).unwrap();
+    assert_eq!(notes.len(), MAX_LOAD_NOTES);
+    assert_eq!(
+        notes.last().unwrap(),
+        &format!("and {} more like these", 4_500 - 31)
+    );
+    let said: usize = notes.iter().map(String::len).sum();
+    assert!(said < crate::protocol::MAX_SERVER_LINE / 64, "{said}");
+}

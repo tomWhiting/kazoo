@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier};
 
 use kazoo_wall::MAX_CABLES;
 use kazoo_wall::format;
-use kazoo_wall::protocol::{CableRecord, ClockSource, Recording, Snapshot};
+use kazoo_wall::protocol::{CableRecord, ClockSource, LogHealth, Recording, Snapshot};
 
 use super::super::app::{App, Focus, Mode, Patching, Tone, View, glide_words};
 use super::super::knob::{Travel, show};
@@ -94,6 +94,18 @@ pub fn header(buf: &mut Buffer, area: Rect, app: &App) {
         x = separator(buf, top, x, y);
         x = put(buf, top, x, y, &rec_badge(recording), bold(INK, RED));
     }
+    if !snapshot.log.is_ok() {
+        x = separator(buf, top, x, y);
+        x = put(buf, top, x, y, &log_badge(&snapshot.log), bold(INK, RED));
+    }
+    if let Some(mark) = &snapshot.save {
+        x = separator(buf, top, x, y);
+        x = put(buf, top, x, y, "save: ", plain(TEXT_DIM, PANEL));
+        x = put(buf, top, x, y, &truncate(&mark.name, 24), bold(TEXT, PANEL));
+        if mark.changed {
+            x = put(buf, top, x, y, " · changed since", plain(AMBER, PANEL));
+        }
+    }
     x = separator(buf, top, x, y);
     x = put(
         buf,
@@ -114,6 +126,19 @@ pub fn header(buf: &mut Buffer, area: Rect, app: &App) {
     put(buf, top, x, y, &truncate(&seats, room), bold(AMBER, PANEL));
 
     meters_and_listen(buf, area, area.y + 1, snapshot);
+}
+
+/// ` LOG STOPPED · n owed ` while the wall owes the change log its own
+/// changes (no change can be made until it takes them), or
+/// ` LOG NOT SYNCED ` when it owes none but last failed to sync (changes
+/// still go to it; `patch.json` waits).
+fn log_badge(log: &LogHealth) -> String {
+    if log.owed > 0 {
+        format!(" LOG STOPPED · {} owed ", log.owed)
+    } else {
+        // Changes still go to it; only patch.json waits for a sync.
+        " LOG NOT SYNCED ".to_string()
+    }
 }
 
 /// ` ● REC 3:20 `, and the samples lost when there are any.
@@ -532,7 +557,8 @@ pub fn status(buf: &mut Buffer, area: Rect, app: &App, now: Instant) {
         }
         (Focus::Wall, View::List) => {
             "←→ module  ↑↓ knob  = - turn  + _ fine  PgUp/PgDn coarse  [ ] glide  ⏎ type  \
-             p patch  u unplug  a add  x remove  z undo  t tempo  Tab panes  ? help  q quit"
+             p patch  u unplug  a add  x remove  z undo  t tempo  w save  o saves  Tab panes  \
+             ? help  q quit"
         }
         (Focus::Cables, _) => "↑↓ cable  u unplug it  z undo  Tab panes  ? help  q quit",
         (Focus::Log, _) => "↑↓ change  z undo it  Tab panes  ? help  q quit",
@@ -627,9 +653,23 @@ fn prompt(app: &App) -> Option<(String, String)> {
             ))
         }
         Mode::Jump { text } => Some(jump_prompt(app, text)),
-        Mode::Normal | Mode::Help { .. } | Mode::Add { .. } | Mode::Remove { .. } | Mode::Stop => {
-            None
-        }
+        Mode::Save { text } => Some((
+            format!("save the wall as: {text}█"),
+            format!(
+                "   1 to {} of A-Z a-z 0-9 space _ . - · ⏎ saves it (it plays on) · Esc cancels",
+                kazoo_wall::protocol::MAX_SAVE_NAME
+            ),
+        )),
+        Mode::Normal
+        | Mode::Help { .. }
+        | Mode::Add { .. }
+        | Mode::Remove { .. }
+        | Mode::Stop
+        | Mode::Overwrite { .. }
+        | Mode::Saves { .. }
+        | Mode::LoadSave { .. }
+        | Mode::DeleteSave { .. }
+        | Mode::Clear { .. } => None,
     }
 }
 

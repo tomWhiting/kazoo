@@ -87,12 +87,18 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, now: Instant, unix_now: Option
         } => overlay::picker(buf, area, app, (*index, filter, place.as_ref())),
         Mode::Remove { module, cables } => overlay::confirm_remove(buf, area, module, *cables),
         Mode::Stop => overlay::confirm_stop(buf, area),
+        Mode::Saves { index } => overlay::saves(buf, area, app, *index, unix_now),
+        Mode::LoadSave { name, .. } => overlay::confirm_load(buf, area, name),
+        Mode::DeleteSave { name, .. } => overlay::confirm_delete(buf, area, name),
+        Mode::Clear { .. } => overlay::confirm_clear(buf, area),
+        Mode::Overwrite { name } => overlay::confirm_overwrite(buf, area, name),
         Mode::Normal
         | Mode::Name { .. }
         | Mode::Patch(_)
         | Mode::Tempo { .. }
         | Mode::Value { .. }
-        | Mode::Jump { .. } => {}
+        | Mode::Jump { .. }
+        | Mode::Save { .. } => {}
     }
 }
 

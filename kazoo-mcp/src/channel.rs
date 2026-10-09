@@ -15,7 +15,7 @@
 
 use std::time::Duration;
 
-use kazoo_wall::protocol::{Event, valid_name};
+use kazoo_wall::protocol::{Event, LogHealth, valid_name};
 use rmcp::model::{CustomNotification, ServerNotification};
 use rmcp::{Peer, RoleServer};
 use serde_json::json;
@@ -139,26 +139,69 @@ impl News {
                     self.seats.retain(|here| *here != seat);
                 }
                 if seat != self.seat {
-                    let who = if valid_name(&seat) {
-                        seat
-                    } else {
-                        "a seat whose name cannot be shown".to_string()
-                    };
                     let what = if joined {
                         "came to the wall"
                     } else {
                         "left the wall"
                     };
-                    self.push(format!("{who} {what}"), now);
+                    self.push(format!("{} {what}", who(seat)), now);
                 }
             }
             Feed::Event(Event::Fault { summary, .. }) => {
                 self.push(format!("fault: {}", clean(&summary)), now);
                 self.urgent = true;
             }
+            Feed::Event(Event::Log { log }) => self.log_said(&log, now),
+            // The whole wall replaced: its change is told as any other
+            // (above); this says at once that everything known of the wall
+            // is stale. A seat's own load is not news to it.
+            Feed::Event(Event::Loaded { seq, seat, .. }) => {
+                self.seq = self.seq.max(seq);
+                if seat != self.seat {
+                    self.push(
+                        "the whole wall was replaced: what this seat knew of it is stale"
+                            .to_string(),
+                        now,
+                    );
+                    self.urgent = true;
+                }
+            }
+            Feed::Event(Event::Saved {
+                seat,
+                name,
+                replaced,
+            }) => {
+                if seat != self.seat {
+                    let did = if replaced {
+                        "saved over"
+                    } else {
+                        "saved the wall as"
+                    };
+                    self.push(format!("{} {did} \"{}\"", who(seat), clean(&name)), now);
+                }
+            }
+            Feed::Event(Event::SaveDeleted { seat, name }) => {
+                if seat != self.seat {
+                    self.push(
+                        format!("{} deleted the save \"{}\"", who(seat), clean(&name)),
+                        now,
+                    );
+                }
+            }
             // From a newer wall: nothing this build can tell. Where modules
             // hang on the rack is the consoles' business, not news.
             Feed::Event(Event::Unknown | Event::Rack { .. }) => {}
+        }
+    }
+
+    /// Every change is refused while the change log takes none: said at
+    /// once, and again when it takes them again.
+    fn log_said(&mut self, log: &LogHealth, now: Instant) {
+        if let Some(trouble) = log.trouble() {
+            self.push(clean(&trouble), now);
+            self.urgent = true;
+        } else {
+            self.push("the change log is well again".to_string(), now);
         }
     }
 
@@ -237,6 +280,16 @@ impl News {
     /// a window later.
     pub const fn failed(&mut self, now: Instant) {
         self.last_failed = Some(now);
+    }
+}
+
+/// A seat's name as the session may see it: the name when it is a valid
+/// one, else words saying it cannot be shown.
+fn who(seat: String) -> String {
+    if valid_name(&seat) {
+        seat
+    } else {
+        "a seat whose name cannot be shown".to_string()
     }
 }
 
@@ -423,6 +476,82 @@ mod tests {
         );
         assert_eq!(news.due(WINDOW), None);
         assert_eq!(news.params()["meta"]["seq"], "47");
+    }
+
+    #[test]
+    fn another_seats_load_goes_at_once_and_saves_are_told() {
+        let t0 = Instant::now();
+        let mut news = News::new("Waffles".to_string());
+        news.take(up(&["Waffles", "Tom"]), t0);
+        // Saving and deleting are news, in the window.
+        news.take(
+            Feed::Event(Event::Saved {
+                seat: "Tom".to_string(),
+                name: "tom fiddle".to_string(),
+                replaced: false,
+            }),
+            t0,
+        );
+        news.take(
+            Feed::Event(Event::SaveDeleted {
+                seat: "Tom".to_string(),
+                name: "old jam".to_string(),
+            }),
+            t0,
+        );
+        assert_eq!(news.due(WINDOW), Some(t0 + WINDOW));
+        // A load replaces everything a seat knew: told at once.
+        news.take(
+            change(
+                45,
+                "Tom",
+                "Tom loaded the save \"tom fiddle\" (12 modules, 30 cables, 96 BPM)",
+            ),
+            t0,
+        );
+        news.take(
+            Feed::Event(Event::Loaded {
+                seq: 45,
+                seat: "Tom".to_string(),
+                save: Some("tom fiddle".to_string()),
+                backup: "before-load-20261009-143005".to_string(),
+            }),
+            t0,
+        );
+        assert_eq!(news.due(WINDOW), Some(t0));
+        assert_eq!(
+            content(&news),
+            format!(
+                "News from the wall:\n- Tom saved the wall as \"tom fiddle\"\n- Tom deleted the \
+                 save \"old jam\"\n- Tom loaded the save \"tom fiddle\" (12 modules, 30 cables, \
+                 96 BPM)\n- the whole wall was replaced: what this seat knew of it is stale\n\
+                 {HINT}"
+            )
+        );
+        assert_eq!(news.params()["meta"]["seq"], "45");
+        // This seat's own saves and loads are not news to it.
+        news.sent(t0);
+        for own in [
+            Event::Saved {
+                seat: "Waffles".to_string(),
+                name: "mine".to_string(),
+                replaced: true,
+            },
+            Event::SaveDeleted {
+                seat: "Waffles".to_string(),
+                name: "mine".to_string(),
+            },
+            Event::Loaded {
+                seq: 46,
+                seat: "Waffles".to_string(),
+                save: None,
+                backup: "before-new-20261009-143005".to_string(),
+            },
+        ] {
+            news.take(Feed::Event(own), t0);
+        }
+        assert_eq!(news.due(WINDOW), None);
+        assert_eq!(news.params()["meta"]["seq"], "46");
     }
 
     #[test]

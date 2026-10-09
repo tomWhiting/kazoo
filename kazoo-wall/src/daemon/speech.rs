@@ -72,6 +72,9 @@ struct Pending {
     words: Words,
     /// Who asked, or nobody when the daemon is putting saved words back.
     seat: Option<String>,
+    /// Asked for on a wall that has since been replaced: when it finishes
+    /// it goes nowhere.
+    orphaned: bool,
 }
 
 /// Saved words waiting for room in the render queue.
@@ -95,6 +98,11 @@ pub struct Spoken {
     pub seat: Option<String>,
     /// How long the phrase lasts, in seconds, or why there is none.
     pub result: Result<f64, WallError>,
+    /// A seat's phrase, not yet given to its module's player: the wall
+    /// gives it ([`Speech::hand_over`]) only once the change is logged, so
+    /// a player never says words the wall does not have. Saved words put
+    /// back are given at once (they are the wall's already).
+    pub phrase: Option<Phrase>,
 }
 
 /// Starts a renderer, with the cache directory to keep renders in.
@@ -198,6 +206,21 @@ impl Speech {
         self.backlog.retain(|waiting| waiting.module != module);
     }
 
+    /// The whole wall was replaced (a save loaded): every speaker goes, as
+    /// [`Self::forget`] does, and renders in flight are for a wall that is
+    /// no longer up. When they finish they go to nobody (a speaker on the
+    /// new wall may have the same id), and a seat waiting for one is told
+    /// why.
+    pub fn replace_wall(&mut self) {
+        self.feeds.clear();
+        self.phrases.clear();
+        self.backlog.clear();
+        self.latest.clear();
+        for pending in self.pending.values_mut() {
+            pending.orphaned = true;
+        }
+    }
+
     /// Queue a render of `words` for `module` at `sample_rate`, for `seat`.
     /// Returns the ticket its [`Spoken`] will carry.
     ///
@@ -213,7 +236,10 @@ impl Speech {
         sample_rate: u32,
         seat: Option<String>,
     ) -> Result<u64, WallError> {
-        clean_text(&words.text).map_err(|err| speech_error(&err))?;
+        // Keep the text `say` will speak, so what is saved reloads as it
+        // was heard and stays within the length a wall file allows.
+        let text = clean_text(&words.text).map_err(|err| speech_error(&err))?;
+        let words = Words { text, ..words };
         if let Some(voice) = &words.voice {
             check_voice(voice).map_err(|err| speech_error(&err))?;
         }
@@ -264,6 +290,7 @@ impl Speech {
                 module: module.to_string(),
                 words,
                 seat,
+                orphaned: false,
             },
         );
         Ok(ticket)
@@ -277,7 +304,7 @@ impl Speech {
         if self
             .pending
             .values()
-            .any(|pending| pending.module == module)
+            .any(|pending| pending.module == module && !pending.orphaned)
         {
             return;
         }
@@ -291,9 +318,11 @@ impl Speech {
     }
 
     /// Move the next waiting put-back into the render queue, if nothing is
-    /// rendering (a seat's words never wait behind more than one render).
+    /// rendering for the wall that is up (a seat's words never wait behind
+    /// more than one render; renders for a wall since replaced hold up
+    /// nothing).
     fn feed_backlog(&mut self) {
-        while self.pending.is_empty() {
+        while self.pending.values().all(|pending| pending.orphaned) {
             let Some(waiting) = self.backlog.pop_front() else {
                 return;
             };
@@ -332,6 +361,7 @@ impl Speech {
                 words: pending.words,
                 seat: pending.seat,
                 result: Err(why.clone()),
+                phrase: None,
             });
         }
     }
@@ -360,7 +390,16 @@ impl Speech {
                 continue;
             };
             let superseded = self.latest.get(&pending.module) != Some(&pending.ticket);
+            let mut phrase = None;
             let result = match next.result {
+                Ok(_) if pending.orphaned => Err(WallError::new(
+                    ErrorCode::NotAllowed,
+                    format!(
+                        "the wall was replaced (a save was loaded) before {}'s words were ready; \
+                         give them again",
+                        pending.module
+                    ),
+                )),
                 // Words (saved words put back, or a seat's) never replace
                 // words asked for after them.
                 Ok(_) if superseded => Err(WallError::new(
@@ -374,7 +413,15 @@ impl Speech {
                     if let Some(warning) = render.cache_warning {
                         self.warn(&warning);
                     }
-                    self.hand_over(&pending.module, render.phrase)
+                    if pending.seat.is_none() {
+                        self.hand_over(&pending.module, render.phrase)
+                    } else if self.feeds.contains_key(&pending.module) {
+                        let seconds = render.phrase.seconds();
+                        phrase = Some(render.phrase);
+                        Ok(seconds)
+                    } else {
+                        Err(taken_away(&pending.module))
+                    }
                 }
                 Err(err) => Err(speech_error(&err)),
             };
@@ -387,6 +434,7 @@ impl Speech {
                 words: pending.words,
                 seat: pending.seat,
                 result,
+                phrase,
             });
         }
         self.feed_backlog();
@@ -403,12 +451,14 @@ impl Speech {
     }
 
     /// Give `phrase` to `module`'s player; returns its length in seconds.
-    fn hand_over(&mut self, module: &str, phrase: Phrase) -> Result<f64, WallError> {
+    ///
+    /// # Errors
+    ///
+    /// `unknown_module` when the module has gone; `slow_down` when its
+    /// player is not taking new words yet.
+    pub fn hand_over(&mut self, module: &str, phrase: Phrase) -> Result<f64, WallError> {
         let Some(feed) = self.feeds.get_mut(module) else {
-            return Err(WallError::new(
-                ErrorCode::UnknownModule,
-                format!("{module} was taken away before its words were ready"),
-            ));
+            return Err(taken_away(module));
         };
         let seconds = phrase.seconds();
         if feed.load(phrase.clone(), false).is_err() {
@@ -438,6 +488,14 @@ impl Speech {
     pub fn phrase(&self, module: &str) -> Option<&Phrase> {
         self.phrases.get(module)
     }
+}
+
+/// Words for `module`, which was taken away before they were ready.
+fn taken_away(module: &str) -> WallError {
+    WallError::new(
+        ErrorCode::UnknownModule,
+        format!("{module} was taken away before its words were ready"),
+    )
 }
 
 /// A speech error as the protocol says it.

@@ -7,6 +7,7 @@ mod live;
 mod mouse;
 mod rack;
 mod render;
+mod saves;
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -84,6 +85,7 @@ pub fn snapshot() -> Snapshot {
     cutoff.target_display = "800 Hz".to_string();
     Snapshot {
         revision: 58,
+        wall: 0,
         tempo: 96.0,
         beat: 45.5,
         clock: ClockSource::Own,
@@ -132,6 +134,8 @@ pub fn snapshot() -> Snapshot {
         timing: kazoo_wall::protocol::Timings::default(),
         recording: None,
         rack: None,
+        save: None,
+        log: kazoo_wall::protocol::LogHealth::default(),
     }
 }
 
@@ -207,7 +211,11 @@ pub fn connected() -> App {
         },
     );
     app.on_reply(Reply::Snapshot(Box::new(snapshot())), now);
-    assert!(app.take_jobs().is_empty(), "the log is up to date");
+    assert_eq!(
+        app.take_jobs(),
+        vec![Job::Wall(0)],
+        "the log is up to date; the worker is told which wall is shown"
+    );
     app
 }
 

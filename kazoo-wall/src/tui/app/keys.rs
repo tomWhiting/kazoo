@@ -64,6 +64,12 @@ impl App {
             Mode::Tempo { text } => self.tempo_key(key, text, now),
             Mode::Value { module, knob, text } => self.value_key(key, module, knob, text, now),
             Mode::Jump { text } => self.jump_key(key, text, now),
+            Mode::Save { text } => self.save_key(key, text, now),
+            Mode::Overwrite { name } => self.confirm_overwrite(key, name, now),
+            Mode::Saves { index } => self.saves_key(key, index, now),
+            Mode::LoadSave { name, index } => self.confirm_load(key, (name, index), now),
+            Mode::DeleteSave { name, index } => self.confirm_delete(key, (name, index), now),
+            Mode::Clear { index } => self.confirm_clear(key, index, now),
         };
     }
 
@@ -109,6 +115,8 @@ impl App {
             KeyCode::Char('s') => self.start_wall(now),
             KeyCode::Char('m') => self.toggle_monitor(now),
             KeyCode::Char('r') => self.toggle_recording(now),
+            KeyCode::Char('w') => self.open_save(now),
+            KeyCode::Char('o') => self.open_saves(now),
             KeyCode::Enter => self.open_value(now),
             KeyCode::Left | KeyCode::Char('h') => self.move_across(false),
             KeyCode::Right | KeyCode::Char('l') => self.move_across(true),

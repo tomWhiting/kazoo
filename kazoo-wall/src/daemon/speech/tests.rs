@@ -132,6 +132,43 @@ fn player() -> (SpeechPlayer, PhraseFeed) {
     SpeechPlayer::new(48_000.0)
 }
 
+/// The renders that finished, each seat's phrase given to its player as
+/// the wall gives it, once the change is logged.
+fn settle(speech: &mut Speech) -> Vec<Spoken> {
+    let mut spoken = speech.finished();
+    for done in &mut spoken {
+        if let Some(phrase) = done.phrase.take() {
+            done.result = speech.hand_over(&done.module, phrase);
+        }
+    }
+    spoken
+}
+
+#[test]
+fn a_seats_words_reach_the_player_only_when_the_wall_gives_them() {
+    let (mut speech, script) = scripted(16);
+    let (_player, feed) = player();
+    speech.attach("speak1", feed);
+    speech
+        .submit("speak1", words("hello"), 48_000, Some("Tom".into()))
+        .unwrap();
+    script.lock().unwrap().finish_all();
+    let mut spoken = speech.finished();
+    assert_eq!(spoken.len(), 1);
+    assert!(spoken[0].result.is_ok());
+    // Rendered, not yet said: the wall logs it first.
+    assert_eq!(said(&speech, "speak1"), None);
+    let phrase = spoken[0].phrase.take().expect("the phrase, held back");
+    speech.hand_over("speak1", phrase).unwrap();
+    assert_eq!(said(&speech, "speak1"), Some("hello".len()));
+    // Saved words put back go to the player at once.
+    speech.put_back("speak1", words("saved"), 48_000);
+    script.lock().unwrap().finish_all();
+    let spoken = speech.finished();
+    assert!(spoken[0].phrase.is_none());
+    assert_eq!(said(&speech, "speak1"), Some("saved".len()));
+}
+
 fn said(speech: &Speech, module: &str) -> Option<usize> {
     speech
         .phrase(module)
@@ -158,7 +195,7 @@ fn bad_words_and_voices_are_refused_before_any_render() {
     let refused = speech.submit("speak1", evil, 48_000, None).unwrap_err();
     assert_eq!(refused.code, ErrorCode::BadRequest);
     assert_eq!(speech.in_flight(), 0);
-    assert!(speech.finished().is_empty());
+    assert!(settle(&mut speech).is_empty());
 }
 
 #[test]
@@ -187,7 +224,7 @@ fn saved_words_put_back_never_replace_newer_words() {
     speech.put_back("speak1", words("old"), 48_000);
     assert_eq!(script.lock().unwrap().texts(), ["newer words"]);
     script.lock().unwrap().finish_all();
-    let spoken = speech.finished();
+    let spoken = settle(&mut speech);
     assert_eq!(spoken.len(), 1);
     assert_eq!(said(&speech, "speak1"), Some("newer words".len()));
 
@@ -199,7 +236,7 @@ fn saved_words_put_back_never_replace_newer_words() {
         .unwrap();
     script.lock().unwrap().finish("newest", None);
     script.lock().unwrap().finish("old", None);
-    let spoken = speech.finished();
+    let spoken = settle(&mut speech);
     assert_eq!(spoken.len(), 2);
     assert!(spoken[0].result.is_ok());
     assert!(spoken[1].result.is_err(), "{:?}", spoken[1].result);
@@ -214,7 +251,7 @@ fn saved_words_put_back_never_replace_newer_words() {
         .unwrap();
     script.lock().unwrap().finish("second one", None);
     script.lock().unwrap().finish("first", None);
-    let spoken = speech.finished();
+    let spoken = settle(&mut speech);
     assert!(spoken[0].result.is_ok());
     assert_eq!(
         spoken[1].result.as_ref().unwrap_err().code,
@@ -232,7 +269,7 @@ fn a_speaker_keeps_its_phrase_through_a_rate_change() {
         .submit("speak1", words("hello"), 48_000, Some("Tom".into()))
         .unwrap();
     script.lock().unwrap().finish_all();
-    speech.finished();
+    settle(&mut speech);
     // The engine is rebuilt at 44.1 kHz: the 48 kHz phrase goes straight
     // back (the player resamples), and nothing needs rendering.
     let (_player, feed) = SpeechPlayer::new(44_100.0);
@@ -259,7 +296,7 @@ fn saved_words_go_back_one_at_a_time_and_all_arrive() {
     assert_eq!(speech.waiting(), 19);
     for _ in 0..20 {
         script.lock().unwrap().finish_all();
-        speech.finished();
+        settle(&mut speech);
     }
     assert_eq!(speech.in_flight(), 0);
     assert_eq!(speech.waiting(), 0);
@@ -301,7 +338,7 @@ fn saved_words_waiting_when_the_renderer_is_busy_go_later() {
     speech.put_back("speak1", words("saved"), 48_000);
     assert_eq!(speech.waiting(), 1);
     script.lock().unwrap().room = 16;
-    speech.finished();
+    settle(&mut speech);
     assert_eq!(script.lock().unwrap().texts(), ["saved"]);
 }
 
@@ -318,7 +355,7 @@ fn a_waiting_put_back_for_a_removed_speaker_is_dropped() {
     speech.forget("speak2");
     assert_eq!(speech.waiting(), 0);
     script.lock().unwrap().finish_all();
-    speech.finished();
+    settle(&mut speech);
     assert!(script.lock().unwrap().queued.is_empty());
 }
 
@@ -354,7 +391,7 @@ fn each_cache_warning_is_told_once() {
         speech.submit("speak1", words(text), 48_000, None).unwrap();
         script.lock().unwrap().finish(text, Some(full()));
     }
-    speech.finished();
+    settle(&mut speech);
     assert_eq!(speech.warned.len(), 1);
     speech
         .submit("speak1", words("three"), 48_000, None)
@@ -363,7 +400,7 @@ fn each_cache_warning_is_told_once() {
         .lock()
         .unwrap()
         .finish("three", Some(SpeechError::NoHome));
-    speech.finished();
+    settle(&mut speech);
     assert_eq!(speech.warned.len(), 2);
 }
 
@@ -381,7 +418,7 @@ fn renders_lost_with_the_renderer_fail_and_tickets_stay_unique() {
         .unwrap_err();
     assert_eq!(refused.code, ErrorCode::Internal);
     // The render that was in flight is answered, as a failure.
-    let spoken = speech.finished();
+    let spoken = settle(&mut speech);
     assert_eq!(spoken.len(), 1);
     assert_eq!(spoken[0].ticket, first);
     assert!(spoken[0].result.is_err());
@@ -394,7 +431,7 @@ fn renders_lost_with_the_renderer_fail_and_tickets_stay_unique() {
     assert_ne!(second, first);
     assert_eq!(script.lock().unwrap().starts, 2);
     script.lock().unwrap().finish_all();
-    let spoken = speech.finished();
+    let spoken = settle(&mut speech);
     assert_eq!(spoken.len(), 1);
     assert_eq!(spoken[0].ticket, second);
     assert!(spoken[0].result.is_ok());
@@ -410,8 +447,63 @@ fn a_renderer_that_stops_while_rendering_fails_everything_in_flight() {
         .submit("speak1", words("two"), 48_000, Some("Tom".into()))
         .unwrap();
     script.lock().unwrap().gone = true;
-    let spoken = speech.finished();
+    let spoken = settle(&mut speech);
     let tickets: Vec<u64> = spoken.iter().map(|spoken| spoken.ticket).collect();
     assert_eq!(tickets, [one, two]);
     assert!(spoken.iter().all(|spoken| spoken.result.is_err()));
+}
+
+#[test]
+fn words_for_a_wall_that_was_replaced_go_nowhere() {
+    let (mut speech, script) = scripted(16);
+    let (_old_player, old_feed) = player();
+    speech.attach("speak1", old_feed);
+    let asked = speech
+        .submit(
+            "speak1",
+            words("for the old wall"),
+            48_000,
+            Some("Ava".into()),
+        )
+        .unwrap();
+    // A save is loaded whose own speak1 has saved words of its own.
+    speech.replace_wall();
+    assert!(speech.phrase("speak1").is_none());
+    let (_new_player, new_feed) = player();
+    assert!(speech.attach("speak1", new_feed), "it needs its words");
+    speech.put_back("speak1", words("the new wall's"), 48_000);
+    assert_eq!(
+        script.lock().unwrap().texts(),
+        ["for the old wall", "the new wall's"],
+        "the old render does not hold the new wall's words back"
+    );
+    script.lock().unwrap().finish_all();
+    let spoken = settle(&mut speech);
+    assert_eq!(spoken.len(), 2);
+    let old = spoken.iter().find(|spoken| spoken.ticket == asked).unwrap();
+    let refused = old.result.as_ref().unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotAllowed);
+    assert!(refused.message.contains("replaced"), "{}", refused.message);
+    assert_eq!(said(&speech, "speak1"), Some("the new wall's".len()));
+}
+
+#[test]
+fn words_are_kept_as_spoken_so_padded_words_fit_a_wall_file() {
+    let (mut speech, script) = scripted(16);
+    let longest = "a".repeat(kazoo_speech::tts::MAX_TEXT_CHARS);
+    // Padding is not counted against the limit, and is not kept either:
+    // kept, these words would be one character too long to load again.
+    let padded = format!("  {longest}\n");
+    speech
+        .submit("speak1", words(&padded), 48_000, Some("Tom".into()))
+        .unwrap();
+    speech
+        .submit("speak2", words("\thello\r\n"), 48_000, None)
+        .unwrap();
+    assert_eq!(script.lock().unwrap().texts(), [longest.as_str(), "hello"]);
+    script.lock().unwrap().finish_all();
+    let mut spoken = settle(&mut speech);
+    spoken.sort_by_key(|done| done.ticket);
+    assert_eq!(spoken[0].words.text, longest);
+    assert_eq!(spoken[1].words.text, "hello");
 }

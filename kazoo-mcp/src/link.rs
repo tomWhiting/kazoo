@@ -14,6 +14,7 @@
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use kazoo_wall::protocol::codec::{LineRead, encode_line};
@@ -99,6 +100,10 @@ pub const fn code_name(code: kazoo_wall::protocol::ErrorCode) -> &'static str {
         ErrorCode::UnknownCable => "unknown_cable",
         ErrorCode::UnknownChange => "unknown_change",
         ErrorCode::Full => "full",
+        ErrorCode::UnknownSave => "unknown_save",
+        ErrorCode::SaveExists => "save_exists",
+        ErrorCode::BrokenSave => "broken_save",
+        ErrorCode::WallReplaced => "wall_replaced",
         ErrorCode::SlowDown => "slow_down",
         ErrorCode::NotAllowed => "not_allowed",
         ErrorCode::Internal => "internal",
@@ -163,7 +168,7 @@ impl Connection {
             console: false,
             watcher: false,
         };
-        let line = line_for(&mut connection.next_id, hello)?;
+        let line = line_for(&mut connection.next_id, hello, None)?;
         let answered = tokio::time::timeout(ANSWER_WITHIN, connection.exchange(&line)).await;
         let value = match answered {
             Ok(Ok(Ok(value))) => value,
@@ -249,11 +254,12 @@ struct Outgoing {
     bytes: Vec<u8>,
 }
 
-/// Number `request` with the next id and encode it.
-fn line_for(next_id: &mut u64, request: Request) -> Result<Outgoing, LinkError> {
+/// Number `request` with the next id and encode it, for `wall` (see
+/// [`RequestLine::wall`]).
+fn line_for(next_id: &mut u64, request: Request, wall: Option<u64>) -> Result<Outgoing, LinkError> {
     let id = *next_id;
     *next_id += 1;
-    let bytes = encode_line(&RequestLine { id, request })
+    let bytes = encode_line(&RequestLine { id, wall, request })
         .map_err(|err| LinkError::Unsendable(err.to_string()))?;
     Ok(Outgoing { id, bytes })
 }
@@ -319,7 +325,15 @@ pub struct Wall {
     /// A connection of its own for `speak`, whose answer waits for the
     /// words to render: nothing else waits behind it.
     speaking: Mutex<Option<Connection>>,
+    /// The wall this seat last looked at ([`NOT_LOOKED`] before its first
+    /// look): sent with every request, so a change meant for a wall that
+    /// has since been replaced is refused rather than landing on the new
+    /// wall's modules.
+    seen: AtomicU64,
 }
+
+/// [`Wall::seen`] before the seat has looked.
+const NOT_LOOKED: u64 = u64::MAX;
 
 /// A result, and whether it could be read as the type asked for.
 #[derive(Debug)]
@@ -341,7 +355,20 @@ impl Wall {
             seat,
             connection: Mutex::const_new(None),
             speaking: Mutex::const_new(None),
+            seen: AtomicU64::new(NOT_LOOKED),
         }
+    }
+
+    /// This seat has looked at wall `wall` (from `wall_look`): its changes
+    /// from now on are for that wall.
+    pub fn saw(&self, wall: u64) {
+        self.seen.store(wall, Ordering::Release);
+    }
+
+    /// The wall this seat last looked at, if it has looked.
+    fn seen(&self) -> Option<u64> {
+        let wall = self.seen.load(Ordering::Acquire);
+        (wall != NOT_LOOKED).then_some(wall)
     }
 
     /// Ask the wall, and read the result as `T`.
@@ -395,7 +422,7 @@ impl Wall {
                     (slot.insert(connection), false)
                 }
             };
-            let line = line_for(&mut connection.next_id, request.clone())?;
+            let line = line_for(&mut connection.next_id, request.clone(), self.seen())?;
             let within = if matches!(request, Request::Speak { .. }) {
                 SPEECH_WITHIN
             } else {
@@ -493,7 +520,7 @@ async fn subscribe(
     seat: &str,
 ) -> Result<(Connection, HelloResult, SubscribeResult), LinkError> {
     let (mut connection, hello) = Connection::open(socket, seat).await?;
-    let line = line_for(&mut connection.next_id, Request::Subscribe)?;
+    let line = line_for(&mut connection.next_id, Request::Subscribe, None)?;
     let answered = tokio::time::timeout(ANSWER_WITHIN, connection.exchange(&line)).await;
     let value = match answered {
         Ok(Ok(Ok(value))) => value,
@@ -613,10 +640,10 @@ mod tests {
             place: None,
         };
         assert!(matches!(
-            line_for(&mut next, huge),
+            line_for(&mut next, huge, None),
             Err(LinkError::Unsendable(_))
         ));
-        let line = line_for(&mut next, Request::Look).unwrap();
+        let line = line_for(&mut next, Request::Look, None).unwrap();
         assert_eq!(line.id, 8);
         assert_eq!(line.bytes, b"{\"id\":8,\"op\":\"look\"}\n");
     }

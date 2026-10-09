@@ -14,14 +14,16 @@
 //! flood guard.
 //!
 //! What each key does is in [`keys`]; what the mouse does, in the rack
-//! view, is in [`mouse`]. Every change the console sends counts against
-//! its copy of the wall's flood guard ([`flood`]); turns wait for it.
+//! view, is in [`mouse`]; saving the wall and the saves list, in
+//! [`saves`]. Every change the console sends counts against its copy of
+//! the wall's flood guard ([`flood`]); turns wait for it.
 
 mod flood;
 mod keys;
 mod mouse;
 mod moves;
 mod rack;
+mod saves;
 
 #[cfg(test)]
 pub use mouse::dragged_value;
@@ -39,9 +41,9 @@ use kazoo_wall::catalogue::Signal;
 use kazoo_wall::fingerprints::Shares;
 use kazoo_wall::format;
 use kazoo_wall::protocol::{
-    ArrangeResult, CableRecord, CatalogueResult, ChangeResult, ErrorCode, Event, KindInfo,
-    KnobInfo, LogPage, ModuleView, MonitorResult, Place, RecordResult, Request, Snapshot,
-    TempoResult,
+    ArrangeResult, CableRecord, CatalogueResult, ChangeResult, DeleteSaveResult, ErrorCode, Event,
+    KindInfo, KnobInfo, LoadResult, LogPage, ModuleView, MonitorResult, Place, RecordResult,
+    Request, SaveResult, SavesResult, Snapshot, TempoResult,
 };
 
 use super::knob::Travel;
@@ -239,7 +241,86 @@ pub enum Mode {
         /// The text so far.
         text: String,
     },
+    /// Naming a save of the wall as it is now.
+    Save {
+        /// The name so far.
+        text: String,
+    },
+    /// Asking before a save of that name is replaced.
+    Overwrite {
+        /// The save.
+        name: String,
+    },
+    /// The saves list.
+    Saves {
+        /// The save under the cursor, among those that can be loaded.
+        index: usize,
+    },
+    /// Asking before a save replaces the wall.
+    LoadSave {
+        /// The save.
+        name: String,
+        /// Where the list's cursor was, to go back to.
+        index: usize,
+    },
+    /// Asking before a save is deleted.
+    DeleteSave {
+        /// The save.
+        name: String,
+        /// Where the list's cursor was, to go back to.
+        index: usize,
+    },
+    /// Asking before the wall is cleared for an empty one.
+    Clear {
+        /// Where the list's cursor was, to go back to.
+        index: usize,
+    },
 }
+
+/// The saves, as the saves list knows them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SavesList {
+    /// The latest list from the wall, if one has come.
+    pub result: Option<SavesResult>,
+    /// Whether a fresh list has been asked for and not come yet.
+    pub fetching: bool,
+    /// Why the latest asking failed, if it did.
+    pub problem: Option<String>,
+    /// Whether the saves changed since the list was last asked for.
+    pub stale: bool,
+    /// When the list was last asked for.
+    pub asked: Option<Instant>,
+    /// Whether the wall's own saves (`before-…`) are shown, after Tom's.
+    pub show_auto: bool,
+}
+
+impl SavesList {
+    /// The saves the list shows, in its order: those made by hand, newest
+    /// first, then (when shown) the wall's own, newest first. The wall's
+    /// own are many, one before every load, and would bury the others.
+    #[must_use]
+    pub fn shown(&self) -> Vec<&kazoo_wall::protocol::SaveInfo> {
+        let saves = self
+            .result
+            .as_ref()
+            .map_or(&[][..], |result| result.saves.as_slice());
+        let made = saves.iter().filter(|save| !save.auto);
+        let own = saves.iter().filter(|save| save.auto && self.show_auto);
+        made.chain(own).collect()
+    }
+
+    /// How many of the wall's own saves there are.
+    #[must_use]
+    pub fn own_count(&self) -> usize {
+        self.result.as_ref().map_or(0, |result| {
+            result.saves.iter().filter(|save| save.auto).count()
+        })
+    }
+}
+
+/// The saves list is asked for again at most this often while saves keep
+/// changing.
+pub const SAVES_REFRESH: Duration = Duration::from_secs(1);
 
 /// A jack on the wall, for drawing the patch cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,11 +392,14 @@ pub struct App {
     launching: bool,
     status: Option<Status>,
     jobs: Vec<Job>,
+    /// The wall shown (see [`Snapshot::wall`]), as last told to the worker.
+    wall_seen: Option<u64>,
     exit: Option<Exit>,
     view: View,
     log_hidden: bool,
     flood: flood::Flood,
     drag_sends: Vec<(String, String, Instant)>,
+    saves: SavesList,
     /// The rack view's layout, pan and drag, as last drawn.
     pub rack: RackState,
     /// Panels across, as last drawn: up and down move by this many.
@@ -353,11 +437,13 @@ impl App {
             launching: false,
             status: None,
             jobs: Vec::new(),
+            wall_seen: None,
             exit: None,
             view: View::List,
             log_hidden: false,
             flood: flood::Flood::new(),
             drag_sends: Vec::new(),
+            saves: SavesList::default(),
             rack: RackState::default(),
             columns: 1,
             scroll: 0,
@@ -798,10 +884,51 @@ impl App {
                 }
                 self.rows_seen();
             }
+            Event::Loaded {
+                seat, save, backup, ..
+            } => self.on_loaded(&seat, save.as_deref(), &backup, now),
+            Event::Saved {
+                seat,
+                name,
+                replaced,
+            } => {
+                let did = if replaced {
+                    "saved over"
+                } else {
+                    "saved the wall as"
+                };
+                self.on_saves_changed(&seat, &name, did);
+            }
+            Event::SaveDeleted { seat, name } => {
+                self.on_saves_changed(&seat, &name, "deleted the save");
+            }
+            Event::Log { log } => {
+                let text = log
+                    .trouble()
+                    .unwrap_or_else(|| "the change log is well again".to_string());
+                let (tone, log_tone) = if log.is_ok() {
+                    (Tone::Done, LogTone::Note)
+                } else {
+                    (Tone::Trouble, LogTone::Fault)
+                };
+                self.say(tone, text.clone(), now);
+                self.note(text, log_tone);
+                // The next look brings it too; this shows it at once.
+                if let Some(snapshot) = self.snapshot.as_mut() {
+                    snapshot.log = log;
+                }
+            }
         }
     }
 
     fn on_snapshot(&mut self, snapshot: Snapshot, now: Instant) {
+        // What the console sends from now on is for the wall it shows: a
+        // change asked of an older wall is refused, never lands on this
+        // one's modules.
+        if self.wall_seen != Some(snapshot.wall) {
+            self.wall_seen = Some(snapshot.wall);
+            self.jobs.push(Job::Wall(snapshot.wall));
+        }
         if let Some(id) = self.select_after_add.take() {
             if snapshot.modules.iter().any(|module| module.id == id) {
                 self.selected = Some(id);
@@ -954,6 +1081,27 @@ impl App {
                     self.recorded(&result, now);
                 }
             }
+            Request::Save { .. } => {
+                if let Some(result) = self.parse::<SaveResult>(request, value, now) {
+                    self.saved(&result, now);
+                }
+            }
+            Request::Saves => {
+                self.saves.fetching = false;
+                if let Some(result) = self.parse::<SavesResult>(request, value, now) {
+                    self.listed(result);
+                }
+            }
+            Request::Load { .. } | Request::New => {
+                if let Some(result) = self.parse::<LoadResult>(request, value, now) {
+                    self.loaded(&result, now);
+                }
+            }
+            Request::DeleteSave { .. } => {
+                if let Some(result) = self.parse::<DeleteSaveResult>(request, value, now) {
+                    self.deleted(&result, now);
+                }
+            }
             Request::Shutdown => self.exit = Some(Exit::Stopped),
             // The console asks nothing else; an answer to anything else
             // has nothing to show.
@@ -1034,6 +1182,21 @@ impl App {
                 self.rack.sent = None;
                 self.rack.last_move = None;
             }
+            Request::Saves => {
+                self.saves.fetching = false;
+                self.saves.problem = Some(failure.message.clone());
+                // Refused (asked too often, say) or lost: asked again, a
+                // moment later, while the list is open.
+                self.saves.stale = true;
+            }
+            // A save by that name is there: ask before replacing it.
+            Request::Save {
+                name,
+                overwrite: false,
+            } if failure.code == Some(ErrorCode::SaveExists) && self.mode == Mode::Normal => {
+                self.mode = Mode::Overwrite { name: name.clone() };
+                return;
+            }
             // Nothing else is held while waiting for an answer.
             _ => {}
         }
@@ -1073,6 +1236,7 @@ impl App {
             self.carry_plate(false);
         }
         self.tick_moves(now);
+        self.tick_saves(now);
         let chosen = self.glide_beats();
         let mut index = 0;
         while index < self.pending.len() {
@@ -1267,6 +1431,18 @@ pub fn describe(request: &Request) -> String {
         Request::Monitor { on: false } => "silence the wall".to_string(),
         Request::Record { on: true } => "record the wall".to_string(),
         Request::Record { on: false } => "stop recording".to_string(),
+        Request::Save {
+            name,
+            overwrite: false,
+        } => format!("save the wall as \"{name}\""),
+        Request::Save {
+            name,
+            overwrite: true,
+        } => format!("save over \"{name}\""),
+        Request::Saves => "list the saves".to_string(),
+        Request::Load { name } => format!("load \"{name}\""),
+        Request::New => "clear the wall".to_string(),
+        Request::DeleteSave { name } => format!("delete the save \"{name}\""),
         Request::Shutdown => "stop the wall".to_string(),
         other => other.op().to_string(),
     }

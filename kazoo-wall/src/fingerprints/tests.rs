@@ -187,3 +187,34 @@ fn fingerprints_survive_the_patch_file() {
         .insert("ghost1".to_string(), shares(&[("Tom", 1.0)]));
     assert!(Patch::from_file(&file).unwrap_err().contains("ghost1"));
 }
+
+#[test]
+fn a_module_keeps_the_dye_of_its_strongest_seats_only() {
+    let mut dye = Dye::new();
+    for n in 0..MAX_DYE_SEATS {
+        dye.deposit(
+            "vcf1",
+            &format!("seat{n}"),
+            1.0 + f64::from(u8::try_from(n).unwrap()),
+        );
+    }
+    // One more seat touching it lightly: kept (it is touching it now), and
+    // the faintest before it let go.
+    dye.deposit("vcf1", "late", 0.01);
+    let seats = &dye.deposits()["vcf1"];
+    assert_eq!(seats.len(), MAX_DYE_SEATS);
+    assert!(seats.contains_key("late"));
+    assert!(!seats.contains_key("seat0"), "{seats:?}");
+    // Trimming a saved set keeps the strongest.
+    let mut saved: BTreeMap<String, f64> =
+        shares(&[("a", 0.5), ("b", 3.0), ("c", 2.0), ("d", 0.1)])
+            .into_iter()
+            .collect();
+    for n in 0..MAX_DYE_SEATS {
+        saved.insert(format!("more{n}"), 1.0);
+    }
+    assert_eq!(trim_seats(&mut saved), 4);
+    assert_eq!(saved.len(), MAX_DYE_SEATS);
+    assert!(saved.contains_key("b") && saved.contains_key("c"));
+    assert!(!saved.contains_key("d") && !saved.contains_key("a"));
+}

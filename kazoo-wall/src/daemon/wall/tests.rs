@@ -8,8 +8,10 @@ use super::*;
 use crate::SUB_BLOCK;
 use crate::dsp::{Io, Module as DspModule, Tick};
 use crate::engine::{Engine, EngineConfig, engine};
+use crate::patch::PatchFile;
 use crate::protocol::{ChangeResult, Snapshot};
 use crate::seed::seed;
+use crate::store::{FailAt, Loaded};
 
 fn wall() -> (Wall, Engine) {
     let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
@@ -307,6 +309,9 @@ fn changes_are_numbered_summarised_and_undone() {
 #[test]
 fn tempo_changes_the_own_clock_and_undoes() {
     let (mut wall, mut engine) = wall();
+    // The wall's own tempo, as the daemon starts its clock on it (this
+    // engine was started at 120).
+    let initial = wall.patch().tempo;
     let set: TempoResult =
         serde_json::from_value(ask(&mut wall, &Request::Tempo { bpm: 1_000.0 }).unwrap()).unwrap();
     assert!((set.bpm - 300.0).abs() < f64::EPSILON);
@@ -323,9 +328,9 @@ fn tempo_changes_the_own_clock_and_undoes() {
         )
         .unwrap(),
     );
-    assert!(matches!(undone.change.what, What::Tempo { to, .. } if (to - 120.0).abs() < 1e-9));
+    assert!(matches!(undone.change.what, What::Tempo { to, .. } if (to - initial).abs() < 1e-9));
     engine.render(&mut buffer, 2);
-    assert!((wall.snapshot().tempo - 120.0).abs() < f64::EPSILON);
+    assert!((wall.snapshot().tempo - initial).abs() < f64::EPSILON);
     assert_eq!(
         code(ask(&mut wall, &Request::Tempo { bpm: f64::NAN })),
         ErrorCode::BadRequest
@@ -442,14 +447,14 @@ fn faults_are_counted_and_reported_at_most_every_five_seconds() {
 #[test]
 fn the_patch_is_saved_when_due_and_the_log_keeps_every_change() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
+    let store = Store::peek(dir.path()).unwrap();
     let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
     let mut wall = Wall::new(seed().unwrap(), control, None, Vec::new(), Some(store));
     let now = Instant::now();
     wall.request("Tom", &turn("vcf1", "cutoff", 333.0), now)
         .unwrap();
     wall.tick(now);
-    let saved = Store::open(dir.path()).unwrap();
+    let saved = Store::peek(dir.path()).unwrap();
     let crate::store::Loaded::Patch { patch, .. } = saved.load_patch().unwrap() else {
         panic!("not saved");
     };
@@ -479,13 +484,13 @@ fn the_patch_is_saved_when_due_and_the_log_keeps_every_change() {
 #[test]
 fn a_tempo_is_saved_before_the_engine_hears_it() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
+    let store = Store::peek(dir.path()).unwrap();
     let (_engine, control) = engine(EngineConfig::new(48_000, 92.0, 0.0), None);
     let mut wall = Wall::new(seed().unwrap(), control, None, Vec::new(), Some(store));
     // The engine never renders here: the tempo must be saved regardless.
     ask(&mut wall, &Request::Tempo { bpm: 100.0 }).unwrap();
     wall.save(Instant::now());
-    let saved = Store::open(dir.path()).unwrap();
+    let saved = Store::peek(dir.path()).unwrap();
     let crate::store::Loaded::Patch { patch, .. } = saved.load_patch().unwrap() else {
         panic!("not saved");
     };
@@ -591,7 +596,7 @@ fn a_change_moves_the_fingerprints_and_says_so_with_its_seq() {
 fn fingerprints_survive_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
-    let store = Store::open(dir.path()).unwrap();
+    let store = Store::peek(dir.path()).unwrap();
     let mut wall = Wall::new(seed().unwrap(), control, None, Vec::new(), Some(store));
     wall.request("Tom", &turn("vco1", "tune", 3.0), Instant::now())
         .unwrap();
@@ -607,7 +612,7 @@ fn fingerprints_survive_a_restart() {
     .unwrap();
     let before = wall.snapshot().fingerprints;
     wall.save(Instant::now());
-    let saved = Store::open(dir.path()).unwrap();
+    let saved = Store::peek(dir.path()).unwrap();
     let crate::store::Loaded::Patch { patch, .. } = saved.load_patch().unwrap() else {
         panic!("not saved");
     };
@@ -1424,7 +1429,7 @@ fn the_seed_hangs_a_row_for_each_group() {
 #[test]
 fn a_move_is_shared_saved_and_told_but_never_logged() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
+    let store = Store::peek(dir.path()).unwrap();
     let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
     let mut wall = Wall::new(seed().unwrap(), control, None, Vec::new(), Some(store));
     let now = Instant::now();
@@ -1447,7 +1452,7 @@ fn a_move_is_shared_saved_and_told_but_never_logged() {
     assert_eq!(wall.snapshot().rack, Some(rows.clone()));
     // Saved with the patch.
     wall.tick(now);
-    let saved = Store::open(dir.path()).unwrap();
+    let saved = Store::peek(dir.path()).unwrap();
     let crate::store::Loaded::Patch { patch, .. } = saved.load_patch().unwrap() else {
         panic!("not saved");
     };
@@ -1536,4 +1541,2315 @@ fn adding_in_a_place_and_undoing_a_removal_keep_the_rows() {
     )
     .unwrap();
     assert_eq!(rows(&wall), before);
+}
+
+// ---------------------------------------------------------------------------
+// Saves
+// ---------------------------------------------------------------------------
+
+/// Tom's "Airports" wall as version 1 saved it.
+const AIRPORTS: &str = include_str!("../../../tests/fixtures/airports-v1.json");
+
+/// A wall on the seed patch keeping its state, saves and recordings in a
+/// directory of its own.
+/// Make step `at` of writing `wall`'s state fail, once.
+fn fail_once(wall: &mut Wall, at: FailAt) {
+    wall.store_mut().unwrap().fail_once(at);
+}
+
+fn saving_wall() -> (Wall, Engine, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let store = Store::open(dir.path()).unwrap();
+    let mut wall = Wall::new(seed().unwrap(), control, None, Vec::new(), Some(store));
+    wall.set_recordings_dir(dir.path().join("recordings"));
+    (wall, engine, dir)
+}
+
+fn save(wall: &mut Wall, name: &str, overwrite: bool) -> Result<Outcome, WallError> {
+    let request = Request::Save {
+        name: name.to_string(),
+        overwrite,
+    };
+    wall.request("Tom", &request, Instant::now())
+}
+
+fn load_save(wall: &mut Wall, name: &str) -> Result<LoadResult, WallError> {
+    let request = Request::Load {
+        name: name.to_string(),
+    };
+    ask(wall, &request).map(|value| serde_json::from_value(value).unwrap())
+}
+
+fn undo_load(wall: &mut Wall, change: u64) -> LoadResult {
+    serde_json::from_value(ask(wall, &Request::Undo { change }).unwrap()).unwrap()
+}
+
+/// The wall as it would be saved, but for the latest change's number
+/// (which every change moves on) and which wall it is (which every load
+/// moves on).
+fn as_saved(wall: &Wall) -> PatchFile {
+    PatchFile {
+        last_seq: 0,
+        wall: 0,
+        ..wall.patch().to_file()
+    }
+}
+
+/// A save's file, as written.
+fn save_file(dir: &tempfile::TempDir, name: &str) -> PatchFile {
+    let path = dir.path().join("saves").join(format!("{name}.json"));
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+/// Render a little, so the engine takes in everything it was sent, then
+/// tidy up after it.
+fn play(wall: &mut Wall, engine: &mut Engine) {
+    let mut buffer = vec![0.0; 4_096 * 2];
+    for _ in 0..3 {
+        engine.render(&mut buffer, 2);
+    }
+    wall.tick(Instant::now());
+}
+
+/// Every module the engine plays, by id, with its knobs where they are.
+fn playing(wall: &Wall) -> Vec<(String, Vec<f64>)> {
+    wall.snapshot()
+        .modules
+        .iter()
+        .map(|module| {
+            (
+                module.id.clone(),
+                module.knobs.iter().map(|knob| knob.value).collect(),
+            )
+        })
+        .collect()
+}
+
+/// Put a slow wobble on the filter and save the wall as `jam`; returns the
+/// wobble's id.
+fn save_a_wobble(wall: &mut Wall) -> String {
+    let add = Request::Add {
+        kind: "lfo".to_string(),
+        name: Some("slow wobble".to_string()),
+        place: None,
+    };
+    let lfo = changed(ask(wall, &add).unwrap()).module.unwrap();
+    let patch = Request::Patch {
+        from: format!("{lfo}.out"),
+        to: "vcf1.resonance".to_string(),
+        amount: Some(0.3),
+    };
+    ask(wall, &patch).unwrap();
+    save(wall, "jam", false).unwrap();
+    lfo
+}
+
+/// A load names the save `backup` it kept the wall in by the very bytes of
+/// its file (`fingerprint`), and that save is the wall that played (whose
+/// fingerprint then was `print`).
+fn kept_by_its_bytes(dir: &tempfile::TempDir, backup: &str, fingerprint: &str, print: &str) {
+    let file = dir.path().join("saves").join(format!("{backup}.json"));
+    assert_eq!(fingerprint, hash_bytes(&std::fs::read(&file).unwrap()));
+    let (kept, _) = Patch::load(&save_file(dir, backup)).unwrap();
+    assert_eq!(kept.fingerprint(), print, "and that save is the wall");
+}
+
+/// The engine plays every module of `saved`, in order, every knob at its
+/// target: nothing glides into a loaded wall.
+fn plays_at_its_targets(wall: &Wall, saved: &PatchFile) {
+    let now_playing = playing(wall);
+    let ids: Vec<&str> = now_playing.iter().map(|(id, _)| id.as_str()).collect();
+    let saved_ids: Vec<&str> = saved
+        .modules
+        .iter()
+        .map(|module| module.id.as_str())
+        .collect();
+    assert_eq!(ids, saved_ids);
+    for (module, (_, values)) in saved.modules.iter().zip(&now_playing) {
+        let spec = crate::catalogue::Kind::from_name(&module.kind)
+            .unwrap()
+            .spec();
+        for (knob, value) in spec.knobs.iter().zip(values) {
+            let target = module.knobs[knob.name];
+            assert!(
+                (value - target).abs() <= 1e-3 * target.abs().max(1.0),
+                "{}.{} is at {value}, not {target}",
+                module.id,
+                knob.name
+            );
+        }
+    }
+}
+
+#[test]
+fn a_save_is_the_wall_at_its_targets_and_changes_nothing() {
+    let (mut wall, _engine, dir) = saving_wall();
+    // A knob on its way somewhere: the save holds where it is going.
+    let glide = glided("vcf1", "cutoff", 2_000.0, 64.0);
+    ask(&mut wall, &glide).unwrap();
+    let revision = wall.revision();
+    let outcome = save(&mut wall, "jam", false).unwrap();
+    assert!(outcome.change.is_none(), "saving is not a change");
+    assert_eq!(wall.revision(), revision);
+    assert_eq!(
+        outcome.event,
+        Some(Event::Saved {
+            seat: "Tom".to_string(),
+            name: "jam".to_string(),
+            replaced: false,
+        })
+    );
+    let result: SaveResult = serde_json::from_value(outcome.result).unwrap();
+    assert_eq!(result.save.name, "jam");
+    assert!(!result.replaced && !result.save.auto);
+    assert_eq!(result.save.modules as usize, wall.patch().modules().len());
+    assert_eq!(result.save.cables as usize, wall.patch().cables().len());
+    assert!((result.save.tempo - wall.patch().tempo).abs() < 1e-9);
+    assert!(result.save.saved_at.ends_with('Z'));
+    let file = save_file(&dir, "jam");
+    assert_eq!(file, wall.patch().to_file(), "patch.json's own format");
+    let vcf = file
+        .modules
+        .iter()
+        .find(|module| module.id == "vcf1")
+        .unwrap();
+    assert!((vcf.knobs["cutoff"] - 2_000.0).abs() < 1e-9);
+    assert_eq!(
+        wall.snapshot().save,
+        Some(SaveMark {
+            name: "jam".to_string(),
+            revision,
+            changed: false,
+        })
+    );
+    // A save of that name (in any case) is replaced only when asked.
+    let refused = save(&mut wall, "JAM", false).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::SaveExists);
+    assert!(refused.message.contains("\"jam\""), "{}", refused.message);
+    let again = save(&mut wall, "JAM", true).unwrap();
+    let again: SaveResult = serde_json::from_value(again.result).unwrap();
+    assert!(again.replaced);
+    assert_eq!(again.save.name, "jam", "it keeps its name");
+    // Names that cannot be saves, and the wall's own.
+    for bad in ["", "../patch", "jam.", "before-load-20261009-143005"] {
+        let refused = save(&mut wall, bad, false).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::BadName, "{bad}");
+    }
+    let saves: SavesResult =
+        serde_json::from_value(ask(&mut wall, &Request::Saves).unwrap()).unwrap();
+    assert_eq!(saves.saves.len(), 1);
+    assert_eq!(saves.saves[0].name, "jam");
+    assert_eq!(saves.saves[0].version, crate::patch::FILE_VERSION);
+    assert!(saves.broken.is_empty());
+}
+
+#[test]
+fn a_load_replaces_the_wall_as_it_plays_and_undo_brings_it_back_exactly() {
+    let (mut wall, mut engine, dir) = saving_wall();
+    let lfo = save_a_wobble(&mut wall);
+    let saved = as_saved(&wall);
+    // Then the wall moves on: a module goes, another comes, a knob glides.
+    ask(&mut wall, &Request::Remove { module: lfo }).unwrap();
+    ask(
+        &mut wall,
+        &Request::Add {
+            kind: "noise".to_string(),
+            name: None,
+            place: None,
+        },
+    )
+    .unwrap();
+    ask(&mut wall, &glided("vcf1", "cutoff", 3_000.0, 64.0)).unwrap();
+    play(&mut wall, &mut engine);
+    let before = as_saved(&wall);
+    let before_print = wall.patch().fingerprint();
+    let before_playing: Vec<String> = playing(&wall).into_iter().map(|(id, _)| id).collect();
+
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    let What::Load {
+        save,
+        backup,
+        modules,
+        cables,
+        fingerprint,
+        ..
+    } = &loaded.change.what
+    else {
+        panic!("not a load: {:?}", loaded.change.what);
+    };
+    assert_eq!(save.as_deref(), Some("jam"));
+    assert!(backup.starts_with("before-load-"), "{backup}");
+    kept_by_its_bytes(&dir, backup, fingerprint, &before_print);
+    // The wall up is named by the load.
+    assert_eq!(wall.snapshot().wall, loaded.change.seq);
+    assert_eq!(&loaded.backup, backup);
+    assert_eq!(*modules as usize, saved.modules.len());
+    assert_eq!(*cables as usize, saved.cables.len());
+    assert!(
+        loaded
+            .change
+            .summary
+            .starts_with("Tom loaded the save \"jam\" ("),
+        "{}",
+        loaded.change.summary
+    );
+    // The wall is the save, ids and cable numbers and all...
+    assert_eq!(as_saved(&wall), saved);
+    assert_eq!(wall.patch().last_seq, loaded.change.seq);
+    assert_eq!(wall.revision(), loaded.change.seq, "one change");
+    // ...and the wall as it was was saved first, exactly.
+    assert_eq!(
+        PatchFile {
+            last_seq: 0,
+            wall: 0,
+            ..save_file(&dir, backup)
+        },
+        before
+    );
+    // Before the engine has swapped (it fades out first), the snapshot
+    // shows the save's knobs, never the old wall's left in the slots...
+    plays_at_its_targets(&wall, &saved);
+    // ...and after, the engine plays the save, every knob at its target.
+    play(&mut wall, &mut engine);
+    plays_at_its_targets(&wall, &saved);
+    assert_eq!(wall.snapshot().save.unwrap().name, "jam");
+    // The log tells the load without the wall it replaced.
+    let page: LogPage = serde_json::from_value(
+        ask(
+            &mut wall,
+            &Request::Log {
+                before: None,
+                limit: Some(1),
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(page.changes, std::slice::from_ref(&loaded.change));
+
+    // Undone, the wall before is back exactly. The wall up is still the
+    // save, untouched, so it is kept in that save, not written again.
+    let undone = undo_load(&mut wall, loaded.change.seq);
+    assert_eq!(undone.change.undoes, Some(loaded.change.seq));
+    assert_eq!(undone.backup, "jam");
+    assert!(
+        undone
+            .change
+            .summary
+            .contains("brought back the wall it replaced"),
+        "{}",
+        undone.change.summary
+    );
+    assert_eq!(as_saved(&wall), before);
+    assert_eq!(
+        PatchFile {
+            last_seq: 0,
+            wall: 0,
+            ..save_file(&dir, &undone.backup)
+        },
+        saved
+    );
+    assert_eq!(wall.snapshot().save, None);
+    play(&mut wall, &mut engine);
+    let back: Vec<String> = playing(&wall).into_iter().map(|(id, _)| id).collect();
+    assert_eq!(back, before_playing);
+    // And undoing the undo puts the save back up.
+    undo_load(&mut wall, undone.change.seq);
+    assert_eq!(as_saved(&wall), saved);
+    assert_eq!(wall.engine_mut().shared().leaked(), 0);
+}
+
+#[test]
+fn changes_to_a_wall_that_was_replaced_wait_until_it_is_back() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let first = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_200.0)).unwrap());
+    save(&mut wall, "jam", false).unwrap();
+    let second = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap());
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    // A change to the wall before the load would land on the wrong wall.
+    let refused = ask(
+        &mut wall,
+        &Request::Undo {
+            change: second.change.seq,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotAllowed);
+    assert!(
+        refused.message.contains(&format!(
+            "undo change {} to bring back the wall before it",
+            loaded.change.seq
+        )),
+        "{}",
+        refused.message
+    );
+    // A change to the wall that is up can be undone.
+    let third = changed(ask(&mut wall, &turn("vcf1", "cutoff", 400.0)).unwrap());
+    ask(
+        &mut wall,
+        &Request::Undo {
+            change: third.change.seq,
+        },
+    )
+    .unwrap();
+    // With the load undone, the wall before is up again, and so are its
+    // changes.
+    undo_load(&mut wall, loaded.change.seq);
+    let back = changed(
+        ask(
+            &mut wall,
+            &Request::Undo {
+                change: second.change.seq,
+            },
+        )
+        .unwrap(),
+    );
+    assert!(matches!(back.change.what, What::Turn { to, .. } if (to - 1_200.0).abs() < 1e-9));
+    ask(
+        &mut wall,
+        &Request::Undo {
+            change: first.change.seq,
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_wall_that_cannot_be_saved_first_is_not_replaced() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    let before = as_saved(&wall);
+    let revision = wall.revision();
+    // The disk refuses the wall as it is (it is full, say).
+    let saves = dir.path().join("saves");
+    fail_once(&mut wall, FailAt::WriteTemp);
+    let refused = load_save(&mut wall, "jam");
+    fail_once(&mut wall, FailAt::WriteTemp);
+    let cleared = ask(&mut wall, &Request::New);
+    for refused in [refused.map(|_| ()), cleared.map(|_| ())] {
+        let refused = refused.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Internal);
+        assert!(
+            refused.message.contains("nothing was replaced"),
+            "{}",
+            refused.message
+        );
+    }
+    assert_eq!(as_saved(&wall), before);
+    assert_eq!(wall.revision(), revision);
+    assert_eq!(std::fs::read_dir(&saves).unwrap().count(), 1);
+}
+
+#[test]
+fn unknown_broken_and_old_saves_are_told_apart() {
+    let (mut wall, _engine, dir) = saving_wall();
+    let saves = dir.path().join("saves");
+    std::fs::create_dir_all(&saves).unwrap();
+    assert_eq!(
+        load_save(&mut wall, "nope").unwrap_err().code,
+        ErrorCode::UnknownSave
+    );
+    assert_eq!(
+        load_save(&mut wall, "a/b").unwrap_err().code,
+        ErrorCode::BadName
+    );
+    std::fs::write(saves.join("torn.json"), b"{\"version\":").unwrap();
+    let broken = load_save(&mut wall, "torn").unwrap_err();
+    assert_eq!(broken.code, ErrorCode::BrokenSave);
+    assert!(
+        broken.message.contains("left as it is"),
+        "{}",
+        broken.message
+    );
+    let listed: SavesResult =
+        serde_json::from_value(ask(&mut wall, &Request::Saves).unwrap()).unwrap();
+    assert!(listed.saves.is_empty());
+    assert_eq!(listed.broken.len(), 1);
+    assert_eq!(listed.broken[0].name, "torn");
+    // A save from an older wall loads brought up to date, and says so; its
+    // file is left as it was.
+    std::fs::write(saves.join("airports.json"), AIRPORTS).unwrap();
+    let loaded = load_save(&mut wall, "Airports").unwrap();
+    assert_eq!(wall.patch().modules().len(), 47);
+    assert!(
+        loaded.notes[0].starts_with("the save was made by an older wall (version 1)"),
+        "{:?}",
+        loaded.notes
+    );
+    assert_eq!(
+        std::fs::read(saves.join("airports.json")).unwrap(),
+        AIRPORTS.as_bytes()
+    );
+    let listed: SavesResult =
+        serde_json::from_value(ask(&mut wall, &Request::Saves).unwrap()).unwrap();
+    let airports = listed
+        .saves
+        .iter()
+        .find(|save| save.name == "airports")
+        .unwrap();
+    assert_eq!((airports.version, airports.modules), (1, 47));
+    let backup = listed.saves.iter().find(|save| save.auto).unwrap();
+    assert!(backup.name.starts_with("before-load-"));
+}
+
+#[test]
+fn a_new_wall_is_empty_and_undo_brings_the_old_one_back() {
+    let (mut wall, mut engine, _dir) = saving_wall();
+    let before = as_saved(&wall);
+    let outcome = wall.request("Tom", &Request::New, Instant::now()).unwrap();
+    assert!(matches!(
+        outcome.event,
+        Some(Event::Loaded { save: None, .. })
+    ));
+    let cleared: LoadResult = serde_json::from_value(outcome.result).unwrap();
+    assert!(
+        cleared.backup.starts_with("before-new-"),
+        "{}",
+        cleared.backup
+    );
+    assert!(
+        cleared.change.summary.starts_with("Tom cleared the wall;"),
+        "{}",
+        cleared.change.summary
+    );
+    assert!(wall.patch().modules().is_empty() && wall.patch().cables().is_empty());
+    assert!(
+        (wall.patch().tempo - before.tempo).abs() < 1e-9,
+        "the tempo stays"
+    );
+    play(&mut wall, &mut engine);
+    assert!(wall.snapshot().modules.is_empty());
+    undo_load(&mut wall, cleared.change.seq);
+    assert_eq!(as_saved(&wall), before);
+}
+
+#[test]
+fn deleting_a_save_takes_only_the_save() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "Jam", false).unwrap();
+    let before = as_saved(&wall);
+    let outcome = wall
+        .request(
+            "Tom",
+            &Request::DeleteSave {
+                name: "jam".to_string(),
+            },
+            Instant::now(),
+        )
+        .unwrap();
+    assert!(outcome.change.is_none());
+    assert_eq!(
+        outcome.event,
+        Some(Event::SaveDeleted {
+            seat: "Tom".to_string(),
+            name: "Jam".to_string(),
+        })
+    );
+    assert!(!dir.path().join("saves").join("Jam.json").exists());
+    assert_eq!(wall.snapshot().save, None);
+    assert_eq!(as_saved(&wall), before);
+    let again = wall
+        .request(
+            "Tom",
+            &Request::DeleteSave {
+                name: "jam".to_string(),
+            },
+            Instant::now(),
+        )
+        .unwrap_err();
+    assert_eq!(again.code, ErrorCode::UnknownSave);
+}
+
+#[test]
+fn a_load_while_recording_records_on_through_it() {
+    let (mut wall, mut engine, _dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    let started = record_result(&record(&mut wall, "Tom", true));
+    play(&mut wall, &mut engine);
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    assert!(
+        loaded.notes.iter().any(|note| note.contains("recording")),
+        "{:?}",
+        loaded.notes
+    );
+    play(&mut wall, &mut engine);
+    let recording = wall.snapshot().recording.unwrap();
+    assert_eq!(Some(recording.path), started.path, "the same file");
+    // One file, all of it: from before the load to after it.
+    let stopped = record_result(&record(&mut wall, "Tom", false));
+    assert_eq!(stopped.path, started.path);
+    assert!(stopped.seconds > 0.45, "{}", stopped.seconds);
+    assert_eq!(stopped.dropped, 0);
+}
+
+fn undo(wall: &mut Wall, change: u64) -> Result<serde_json::Value, WallError> {
+    ask(wall, &Request::Undo { change })
+}
+
+#[test]
+fn undoing_the_same_load_twice_holds_only_the_changes_its_wall_had() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    // On the first wall: a change before the load.
+    let early = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_100.0)).unwrap());
+    save(&mut wall, "jam", false).unwrap();
+    let late = changed(ask(&mut wall, &turn("vcf1", "resonance", 0.2)).unwrap());
+    let before = as_saved(&wall);
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    // Undone: the first wall is back, and its changes hold again.
+    undo_load(&mut wall, loaded.change.seq);
+    assert_eq!(as_saved(&wall), before);
+    // A change made to the wall brought back...
+    let meanwhile = changed(ask(&mut wall, &turn("vcf1", "drive", 0.4)).unwrap());
+    // ...and the same load undone again: the first wall as it was before
+    // the load, which never had that change.
+    let again = undo_load(&mut wall, loaded.change.seq);
+    assert_eq!(again.change.undoes, Some(loaded.change.seq));
+    assert_eq!(as_saved(&wall), before);
+    let refused = undo(&mut wall, meanwhile.change.seq).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotAllowed, "{}", refused.message);
+    // The changes made before the load hold on it, newest first.
+    undo(&mut wall, late.change.seq).unwrap();
+    undo(&mut wall, early.change.seq).unwrap();
+    let vcf = wall.patch().module("vcf1").unwrap();
+    let cutoff = vcf.knobs[vcf.kind.spec().knob_index("cutoff").unwrap()];
+    assert!((cutoff - 900.0).abs() < 1e-3, "{cutoff}");
+    // Undoing the second undo puts up the wall the first undo had put up,
+    // with the change made to it.
+    undo_load(&mut wall, again.change.seq);
+    let drive = changed(undo(&mut wall, meanwhile.change.seq).unwrap());
+    assert!(matches!(drive.change.what, What::Turn { ref knob, .. } if knob == "drive"));
+}
+
+#[test]
+fn a_load_lands_whole_on_disk_and_survives_a_crash_after_it() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    let before = as_saved(&wall);
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    // With no housekeeping since: the backup, the log line and the new
+    // patch.json are all on disk already.
+    let store = Store::peek(dir.path()).unwrap();
+    let crate::store::Loaded::Patch { patch: on_disk, .. } = store.load_patch().unwrap() else {
+        panic!("no patch on disk");
+    };
+    assert_eq!(*on_disk, *wall.patch(), "patch.json is the loaded wall");
+    assert_eq!(on_disk.wall, loaded.change.seq);
+    let logged = store.load_log().unwrap().changes;
+    assert_eq!(logged.last(), Some(&loaded.change));
+    let What::Load { backup, .. } = &loaded.change.what else {
+        panic!("not a load");
+    };
+    assert_eq!(
+        PatchFile {
+            last_seq: 0,
+            wall: 0,
+            ..save_file(&dir, backup)
+        },
+        before
+    );
+    // The daemon dies here and starts again from the disk alone: the load
+    // undoes exactly.
+    drop(wall);
+    let (mut wall, _engine) = restart(&dir);
+    assert_eq!(wall.snapshot().wall, loaded.change.seq);
+    let logged = store.load_log().unwrap().changes;
+    assert!(
+        !logged
+            .iter()
+            .any(|change| matches!(change.what, What::Abandoned { .. } | What::Resumed { .. })),
+        "nothing was left out"
+    );
+    undo_load(&mut wall, loaded.change.seq);
+    assert_eq!(as_saved(&wall), before);
+}
+
+/// A wall starting again as the daemon does from what is on disk in
+/// `dir`: patch.json and the log.
+fn restart(dir: &tempfile::TempDir) -> (Wall, Engine) {
+    let store = Store::peek(dir.path()).unwrap();
+    let Loaded::Patch { patch, .. } = store.load_patch().unwrap() else {
+        panic!("no patch.json");
+    };
+    restart_on(dir, *patch, false)
+}
+
+/// A wall starting again as the daemon does on `patch` (`seeded` afresh,
+/// or patch.json) with the log in `dir`.
+fn restart_on(dir: &tempfile::TempDir, mut patch: Patch, seeded: bool) -> (Wall, Engine) {
+    let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let mut store = Store::open(dir.path()).unwrap();
+    let mut history = store.load_log().unwrap().changes;
+    resume(&mut store, &mut patch, &mut history, seeded, None, None).unwrap();
+    (
+        Wall::new(patch, control, None, history, Some(store)),
+        engine,
+    )
+}
+
+/// The notes the wall made as it started again ([`What::Resumed`]), in
+/// the log in `dir`.
+fn resumed_notes(dir: &tempfile::TempDir) -> Vec<Change> {
+    Store::peek(dir.path())
+        .unwrap()
+        .load_log()
+        .unwrap()
+        .changes
+        .into_iter()
+        .filter(|change| matches!(change.what, What::Resumed { .. }))
+        .collect()
+}
+
+/// patch.json in `dir` made `patch`, as a crash or a restored copy leaves
+/// it.
+fn put_patch_json(dir: &tempfile::TempDir, patch: &Patch) {
+    std::fs::write(
+        dir.path().join("patch.json"),
+        crate::store::encode(patch).unwrap(),
+    )
+    .unwrap();
+}
+
+/// The wall `before`, as patch.json held it just before change `load`.
+fn as_it_was(before: &PatchFile, load: u64) -> Patch {
+    Patch::load(&PatchFile {
+        last_seq: load - 1,
+        ..before.clone()
+    })
+    .unwrap()
+    .0
+}
+
+#[test]
+fn a_crash_between_the_log_line_and_patch_json_leaves_the_load_out() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    let made_before = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap());
+    let before = as_saved(&wall);
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    let load = loaded.change.seq;
+    drop(wall);
+    // The disk as a crash right after the log line leaves it: the load is
+    // in the log, and patch.json still holds the wall before it.
+    put_patch_json(&dir, &as_it_was(&before, load));
+    let (mut wall, _engine) = restart(&dir);
+    assert_eq!(as_saved(&wall), before, "the wall before plays");
+    // Said in the log, by the wall itself.
+    let page: LogPage = serde_json::from_value(
+        ask(
+            &mut wall,
+            &Request::Log {
+                before: None,
+                limit: Some(1),
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let note = &page.changes[0];
+    assert_eq!(note.seat, LOADER_SEAT);
+    assert_eq!(
+        note.what,
+        What::Resumed {
+            from: Some(0),
+            through: load - 1,
+            left_out: vec![load],
+        }
+    );
+    assert!(
+        note.summary.contains(&format!(
+            "the load in change {load} never reached it and is left out"
+        )),
+        "{}",
+        note.summary
+    );
+    // The wall up is a wall of its own, named by the note.
+    assert_eq!(wall.snapshot().wall, note.seq);
+    // The note itself is refused for what it is, not for the wall.
+    let refused = undo(&mut wall, note.seq).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotAllowed);
+    assert_eq!(
+        refused.message,
+        "the wall starting again from patch.json cannot be undone"
+    );
+    // The load is left out: it cannot be undone, and the change made
+    // before it is a change to the wall up again.
+    let refused = undo(&mut wall, load).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotAllowed);
+    assert!(
+        refused.message.contains("did not come back up"),
+        "{}",
+        refused.message
+    );
+    undo(&mut wall, made_before.change.seq).unwrap();
+    let after = changed(ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap());
+    undo(&mut wall, after.change.seq).unwrap();
+    // Starting again on the wall as it was saved says nothing more.
+    wall.save(Instant::now());
+    drop(wall);
+    let (wall, _engine) = restart(&dir);
+    drop(wall);
+    assert_eq!(resumed_notes(&dir).len(), 1);
+}
+
+#[test]
+fn a_start_that_cannot_say_what_it_starts_on_does_not_start() {
+    let (mut wall, _engine, dir) = saving_wall();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    drop(wall);
+    // Each start is a daemon of its own, reading the disk afresh.
+    for at in [FailAt::AppendLog, FailAt::SyncLog, FailAt::WritePatch] {
+        let mut store = Store::peek(dir.path()).unwrap();
+        let mut history = store.load_log().unwrap().changes;
+        store.fail_once(at);
+        let failed = resume(
+            &mut store,
+            &mut seed().unwrap(),
+            &mut history,
+            true,
+            None,
+            None,
+        );
+        assert!(failed.is_err(), "{at:?}");
+        assert!(
+            !dir.path().join("patch.json").exists(),
+            "{at:?}: patch.json is never ahead of the log"
+        );
+    }
+    // With the disk back, it starts: what the failed starts got into the
+    // log is read as it is, each a start on a seeded wall holding nothing.
+    let (mut wall, _engine) = restart_on(&dir, seed().unwrap(), true);
+    assert!(dir.path().join("patch.json").exists());
+    let notes = resumed_notes(&dir);
+    assert!(
+        notes
+            .iter()
+            .all(|note| matches!(note.what, What::Resumed { from: None, .. }))
+    );
+    assert_eq!(wall.snapshot().wall, notes.last().unwrap().seq);
+    let seqs: Vec<u64> = Store::peek(dir.path())
+        .unwrap()
+        .load_log()
+        .unwrap()
+        .changes
+        .iter()
+        .map(|change| change.seq)
+        .collect();
+    assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
+    assert_eq!(undo(&mut wall, 1).unwrap_err().code, ErrorCode::NotAllowed);
+}
+
+#[test]
+fn a_seeded_wall_holds_no_earlier_change() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    let turned = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap());
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    let after = changed(ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap());
+    wall.save(Instant::now());
+    drop(wall);
+    // patch.json was lost and the wall seeded afresh: its wall number (0)
+    // is one the log knows, but it is not that wall.
+    let (mut wall, _engine) = restart_on(&dir, seed().unwrap(), true);
+    let notes = resumed_notes(&dir);
+    assert_eq!(notes.len(), 1);
+    let What::Resumed {
+        from,
+        through,
+        left_out,
+    } = &notes[0].what
+    else {
+        panic!("{:?}", notes[0]);
+    };
+    assert_eq!((*from, *through), (None, 0));
+    assert_eq!(left_out, &[loaded.change.seq]);
+    assert_eq!(wall.snapshot().wall, notes[0].seq);
+    for earlier in [turned.change.seq, after.change.seq] {
+        let refused = undo(&mut wall, earlier).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::NotAllowed, "{}", refused.message);
+        assert!(
+            refused.message.contains("replaced since"),
+            "{}",
+            refused.message
+        );
+    }
+    // Its loads are left out, not said never to have happened.
+    let refused = undo(&mut wall, loaded.change.seq).unwrap_err();
+    assert!(
+        refused.message.contains("did not come back up"),
+        "{}",
+        refused.message
+    );
+    // Changes made to the seeded wall undo as ever.
+    let fresh = changed(ask(&mut wall, &turn("vcf1", "cutoff", 900.0)).unwrap());
+    undo(&mut wall, fresh.change.seq).unwrap();
+}
+
+#[test]
+fn a_patch_json_rolled_back_holds_only_what_it_had() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    save(&mut wall, "mix", false).unwrap();
+    let kept = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap());
+    wall.save(Instant::now());
+    // Tom keeps a copy of patch.json here...
+    let copy = std::fs::read(dir.path().join("patch.json")).unwrap();
+    let lost = changed(ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap());
+    // ...and the wall goes on, through several loads.
+    let first = load_save(&mut wall, "jam").unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 700.0)).unwrap();
+    let second = load_save(&mut wall, "mix").unwrap();
+    wall.save(Instant::now());
+    drop(wall);
+    // Then puts the copy back.
+    std::fs::write(dir.path().join("patch.json"), &copy).unwrap();
+    let (mut wall, _engine) = restart(&dir);
+    let notes = resumed_notes(&dir);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(
+        notes[0].what,
+        What::Resumed {
+            from: Some(0),
+            through: kept.change.seq,
+            left_out: vec![first.change.seq, second.change.seq],
+        }
+    );
+    // What the copy had undoes; what it never had does not.
+    let refused = undo(&mut wall, lost.change.seq).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotAllowed);
+    for load in [first.change.seq, second.change.seq] {
+        let refused = undo(&mut wall, load).unwrap_err();
+        assert!(
+            refused.message.contains("did not come back up"),
+            "{}",
+            refused.message
+        );
+    }
+    undo(&mut wall, kept.change.seq).unwrap();
+    // Neither load is said never to have happened.
+    assert!(
+        !Store::peek(dir.path())
+            .unwrap()
+            .load_log()
+            .unwrap()
+            .changes
+            .iter()
+            .any(|change| matches!(change.what, What::Abandoned { .. }))
+    );
+    // A second start, with nothing new to say, says nothing.
+    wall.save(Instant::now());
+    drop(wall);
+    let (wall, _engine) = restart(&dir);
+    drop(wall);
+    assert_eq!(resumed_notes(&dir).len(), 1);
+}
+
+#[test]
+fn a_patch_json_of_a_wall_the_log_does_not_know_holds_nothing() {
+    let (mut wall, _engine, dir) = saving_wall();
+    let turned = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap());
+    wall.save(Instant::now());
+    drop(wall);
+    // A patch.json from another wall's state (its wall is no load here).
+    let mut stranger = seed().unwrap();
+    stranger.wall = 4_000;
+    stranger.last_seq = 4_000;
+    put_patch_json(&dir, &stranger);
+    let (mut wall, _engine) = restart(&dir);
+    let notes = resumed_notes(&dir);
+    assert_eq!(notes.len(), 1);
+    assert!(matches!(notes[0].what, What::Resumed { from: None, .. }));
+    assert_eq!(notes[0].seq, 4_001, "numbers carry on past the file's");
+    let refused = undo(&mut wall, turned.change.seq).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotAllowed);
+}
+
+#[test]
+fn a_load_that_may_be_in_the_log_is_said_not_to_have_happened() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    let before = as_saved(&wall);
+    // The load's line is written, but its sync fails: it may be on disk.
+    fail_once(&mut wall, FailAt::SyncLog);
+    let refused = load_save(&mut wall, "jam").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Internal);
+    assert!(
+        refused.message.contains("nothing was replaced"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(as_saved(&wall), before, "the wall plays on");
+    // Said at once, durably, after the load's line.
+    let logged = Store::peek(dir.path()).unwrap().load_log().unwrap().changes;
+    let [.., load, note] = logged.as_slice() else {
+        panic!("{logged:?}");
+    };
+    assert!(matches!(load.what, What::Load { .. }));
+    assert_eq!(note.what, What::Abandoned { change: load.seq });
+    assert_eq!(note.seat, LOADER_SEAT);
+    // Told to everyone at the next tick.
+    let told = wall.tick(Instant::now());
+    assert!(told.iter().any(|event| matches!(
+        event,
+        Event::Change { change } if change.seq == note.seq
+    )));
+    // Neither it nor the note undoes; changes go on, to the wall up.
+    let refused = undo(&mut wall, load.seq).unwrap_err();
+    assert!(
+        refused.message.contains("did not happen"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(
+        undo(&mut wall, note.seq).unwrap_err().code,
+        ErrorCode::NotAllowed
+    );
+    let next = changed(ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap());
+    assert_eq!(next.change.seq, note.seq + 1);
+    undo(&mut wall, next.change.seq).unwrap();
+    // Starting again: the load stays not having happened, and nothing
+    // else is left out.
+    wall.save(Instant::now());
+    drop(wall);
+    let (mut wall, _engine) = restart(&dir);
+    assert!(resumed_notes(&dir).is_empty());
+    assert_eq!(wall.snapshot().wall, 0, "the wall before the load is up");
+    let refused = undo(&mut wall, load.seq).unwrap_err();
+    assert!(
+        refused.message.contains("did not happen"),
+        "{}",
+        refused.message
+    );
+}
+
+#[test]
+fn a_note_the_log_cannot_take_is_owed_and_nothing_moves_until_it_is_paid() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    wall.save(Instant::now());
+    let before = as_saved(&wall);
+    let patch_json = std::fs::read(dir.path().join("patch.json")).unwrap();
+    // The load's line fails, then the note saying so, then the next try.
+    for _ in 0..3 {
+        fail_once(&mut wall, FailAt::AppendLog);
+    }
+    load_save(&mut wall, "jam").unwrap_err();
+    let refused = ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Internal);
+    assert!(
+        refused.message.contains("nothing was changed"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(as_saved(&wall), before, "the turn was put back");
+    // patch.json is never ahead of the log: not saved while it owes.
+    fail_once(&mut wall, FailAt::AppendLog);
+    wall.save(Instant::now());
+    assert_eq!(
+        std::fs::read(dir.path().join("patch.json")).unwrap(),
+        patch_json
+    );
+    // The log takes lines again: the note first, then the change.
+    let next = changed(ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap());
+    let logged = Store::peek(dir.path()).unwrap().load_log().unwrap().changes;
+    let [.., note, last] = logged.as_slice() else {
+        panic!("{logged:?}");
+    };
+    assert!(matches!(note.what, What::Abandoned { .. }), "{note:?}");
+    assert_eq!(last, &next.change);
+    assert!(note.seq < last.seq);
+    wall.save(Instant::now());
+    assert_ne!(
+        std::fs::read(dir.path().join("patch.json")).unwrap(),
+        patch_json
+    );
+}
+
+#[test]
+fn a_change_the_log_cannot_take_is_not_made() {
+    let (mut wall, _engine, dir) = saving_wall();
+    let requests = every_kind_of_change(&mut wall);
+    let before = as_saved(&wall);
+    let modules = wall.patch().modules().len();
+    for request in &requests {
+        fail_once(&mut wall, FailAt::AppendLog);
+        let refused = ask(&mut wall, request).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Internal, "{request:?}");
+        // Exactly as it was: knobs, cables, ids and their numbering, rows,
+        // words and dye.
+        assert_eq!(as_saved(&wall), before, "{request:?}");
+    }
+    assert_eq!(wall.patch().modules().len(), modules);
+    assert_eq!(wall.snapshot().modules.len(), modules);
+    // Each is said not to have happened; the next change goes through.
+    let next = changed(ask(&mut wall, &turn("vco1", "tune", 3.0)).unwrap());
+    let logged = Store::peek(dir.path()).unwrap().load_log().unwrap().changes;
+    let abandoned: Vec<u64> = logged
+        .iter()
+        .filter_map(|change| match change.what {
+            What::Abandoned { change } => Some(change),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(abandoned.len(), requests.len());
+    assert!(abandoned.iter().all(|seq| *seq < next.change.seq));
+    assert_eq!(logged.last(), Some(&next.change));
+    // And what was refused goes through now, numbered after.
+    let added = ask(
+        &mut wall,
+        &Request::Add {
+            kind: "lfo".to_string(),
+            name: None,
+            place: None,
+        },
+    )
+    .unwrap();
+    assert!(changed(added).change.seq > next.change.seq);
+}
+
+/// A request of every kind of change the patch makes, after making on
+/// `wall` the changes they undo: a turn, a cable, a removal, an addition,
+/// an unplugging and a restoring.
+fn every_kind_of_change(wall: &mut Wall) -> Vec<Request> {
+    // Something of every kind to undo, and a cable to unplug.
+    let turned = changed(ask(wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap());
+    let plugged = changed(
+        ask(
+            wall,
+            &Request::Patch {
+                from: "lfo1.out".to_string(),
+                to: "vco1.fm".to_string(),
+                amount: Some(0.25),
+            },
+        )
+        .unwrap(),
+    );
+    let cable = plugged.cable.unwrap();
+    let removed = changed(
+        ask(
+            wall,
+            &Request::Remove {
+                module: "lfo2".to_string(),
+            },
+        )
+        .unwrap(),
+    );
+    let added = changed(
+        ask(
+            wall,
+            &Request::Add {
+                kind: "lfo".to_string(),
+                name: None,
+                place: None,
+            },
+        )
+        .unwrap(),
+    );
+    let unplugged = changed(
+        ask(
+            wall,
+            &Request::Unpatch {
+                cable: None,
+                to: Some("vcf1.resonance".to_string()),
+            },
+        )
+        .unwrap(),
+    );
+    // A module taken away and brought back: its restoring, to undo.
+    let gone = changed(
+        ask(
+            wall,
+            &Request::Remove {
+                module: "mix1".to_string(),
+            },
+        )
+        .unwrap(),
+    );
+    let restored = changed(undo(wall, gone.change.seq).unwrap());
+    assert!(matches!(restored.change.what, What::Restore { .. }));
+    vec![
+        turn("vco1", "tune", 3.0),
+        Request::Add {
+            kind: "lfo".to_string(),
+            name: None,
+            place: None,
+        },
+        Request::Patch {
+            from: "lfo1.out".to_string(),
+            to: "vco2.fm".to_string(),
+            amount: None,
+        },
+        Request::Unpatch {
+            cable: Some(cable),
+            to: None,
+        },
+        Request::Remove {
+            module: "vco1".to_string(),
+        },
+        // Undoing a turn, a cable, a removal, an addition, an unplugging
+        // and a restoring.
+        Request::Undo {
+            change: turned.change.seq,
+        },
+        Request::Undo {
+            change: plugged.change.seq,
+        },
+        Request::Undo {
+            change: removed.change.seq,
+        },
+        Request::Undo {
+            change: added.change.seq,
+        },
+        Request::Undo {
+            change: unplugged.change.seq,
+        },
+        Request::Undo {
+            change: restored.change.seq,
+        },
+    ]
+}
+
+#[test]
+fn a_log_that_cannot_be_synced_keeps_patch_json_where_it_was() {
+    let (mut wall, _engine, dir) = saving_wall();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    wall.save(Instant::now());
+    let patch_json = std::fs::read(dir.path().join("patch.json")).unwrap();
+    ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap();
+    fail_once(&mut wall, FailAt::SyncLog);
+    wall.save(Instant::now());
+    assert_eq!(
+        std::fs::read(dir.path().join("patch.json")).unwrap(),
+        patch_json,
+        "not ahead of the log"
+    );
+    // Still unsaved: the next save writes it.
+    let due = Instant::now() + SAVE_INTERVAL;
+    wall.tick(due);
+    assert_ne!(
+        std::fs::read(dir.path().join("patch.json")).unwrap(),
+        patch_json
+    );
+}
+
+#[test]
+fn a_load_whose_wall_is_not_in_patch_json_yet_says_so_and_saves_it_next() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    wall.save(Instant::now());
+    let patch_json = std::fs::read(dir.path().join("patch.json")).unwrap();
+    fail_once(&mut wall, FailAt::RenamePatch);
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    assert!(
+        loaded
+            .notes
+            .iter()
+            .any(|note| note.contains("could not be written to patch.json yet")),
+        "{:?}",
+        loaded.notes
+    );
+    assert_eq!(wall.snapshot().wall, loaded.change.seq);
+    assert_eq!(
+        std::fs::read(dir.path().join("patch.json")).unwrap(),
+        patch_json
+    );
+    let due = Instant::now() + SAVE_INTERVAL;
+    wall.tick(due);
+    let store = Store::peek(dir.path()).unwrap();
+    let Loaded::Patch { patch, .. } = store.load_patch().unwrap() else {
+        panic!("no patch.json");
+    };
+    assert_eq!(patch.wall, loaded.change.seq);
+    // A start from here has nothing to say.
+    drop(wall);
+    let (wall, _engine) = restart(&dir);
+    drop(wall);
+    assert!(resumed_notes(&dir).is_empty());
+}
+
+#[test]
+fn a_seat_that_is_not_a_console_has_a_load_allowance() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    let now = Instant::now();
+    let load_as = |wall: &mut Wall, seat: &str, console: bool, at: Instant| {
+        let request = Request::Load {
+            name: "jam".to_string(),
+        };
+        wall.request_as(seat, console, &request, at)
+    };
+    let mut loads = Vec::new();
+    for _ in 0..2 {
+        let outcome = load_as(&mut wall, "Ava", false, now).unwrap();
+        loads.push(outcome.change.unwrap().seq);
+    }
+    // Undoing a load and a new wall count too.
+    wall.request_as("Ava", false, &Request::Undo { change: loads[1] }, now)
+        .unwrap();
+    let refused = wall
+        .request_as("Ava", false, &Request::New, now)
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::SlowDown);
+    assert!(
+        refused.message.contains("replaced the wall"),
+        "{}",
+        refused.message
+    );
+    let refused = load_as(&mut wall, "Ava", false, now).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::SlowDown);
+    // Her other changes are not held to it.
+    wall.request_as("Ava", false, &turn("vcf1", "cutoff", 900.0), now)
+        .unwrap();
+    // The console is not held to it; a minute later Ava may again.
+    for _ in 0..5 {
+        load_as(&mut wall, "Tom", true, now).unwrap();
+    }
+    let later = now + Duration::from_secs(60);
+    let outcome = load_as(&mut wall, "Ava", false, later).unwrap();
+    let change = outcome.change.unwrap();
+    // A seat's load says it was not the console's.
+    assert!(matches!(
+        change.what,
+        What::Load {
+            by_console: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_crash_before_the_log_line_leaves_the_wall_and_a_spare_save() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    let before = as_saved(&wall);
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    drop(wall);
+    // The disk as a crash before the log line leaves it: the backup is in
+    // place, the log and patch.json are as they were.
+    let log = dir.path().join("log.jsonl");
+    let text = std::fs::read_to_string(&log).unwrap();
+    let kept: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+    let (last, rest) = kept.split_last().unwrap();
+    assert!(last.contains("\"op\":\"load\""), "{last}");
+    std::fs::write(&log, format!("{}\n", rest.join("\n"))).unwrap();
+    let load = loaded.change.seq;
+    put_patch_json(&dir, &as_it_was(&before, load));
+    let (mut wall, _engine) = restart(&dir);
+    assert_eq!(as_saved(&wall), before);
+    assert!(resumed_notes(&dir).is_empty(), "nothing to say");
+    let logged = Store::peek(dir.path()).unwrap().load_log().unwrap().changes;
+    assert!(
+        logged.iter().all(|change| change.seq < load),
+        "no trace of it"
+    );
+    assert_eq!(
+        undo(&mut wall, load).unwrap_err().code,
+        ErrorCode::UnknownChange
+    );
+    // The backup is a save nothing needs, let go with the others in time.
+    assert!(
+        dir.path()
+            .join("saves")
+            .join(format!("{}.json", loaded.backup))
+            .exists()
+    );
+    // And the next change takes the number the lost load had.
+    let next = changed(ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap());
+    assert_eq!(next.change.seq, load);
+}
+
+#[test]
+fn a_load_that_cannot_reach_the_disk_replaces_nothing_and_says_why() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    let before = as_saved(&wall);
+    let revision = wall.revision();
+    let log_before = std::fs::read(dir.path().join("log.jsonl")).unwrap();
+    // The disk refuses the new wall's temporary file.
+    fail_once(&mut wall, FailAt::WriteTemp);
+    let refused = load_save(&mut wall, "jam").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Internal);
+    assert!(
+        refused.message.contains("nothing was replaced"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(as_saved(&wall), before);
+    assert_eq!(wall.revision(), revision);
+    assert_eq!(
+        std::fs::read(dir.path().join("log.jsonl")).unwrap(),
+        log_before
+    );
+    // Nothing half-written is left among the saves.
+    let leftovers: Vec<std::path::PathBuf> = std::fs::read_dir(dir.path().join("saves"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    // With the disk back, the same load goes, and its number is the next.
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    assert_eq!(loaded.change.seq, revision + 1);
+}
+
+#[test]
+fn a_load_kept_by_an_older_build_still_undoes() {
+    let dir = tempfile::tempdir().unwrap();
+    let saves = dir.path().join("saves");
+    std::fs::create_dir_all(&saves).unwrap();
+    // An older wall kept the wall it replaced in a version-1 save, and
+    // logged the load by that file's bytes. This build reads the file
+    // through its migration into another shape entirely.
+    std::fs::write(saves.join("before-load-20260927-120000.json"), AIRPORTS).unwrap();
+    let load = Change {
+        seq: 5,
+        at: "2026-09-27T02:00:00Z".to_string(),
+        seat: "Tom".to_string(),
+        what: What::Load {
+            save: Some("jam".to_string()),
+            backup: "before-load-20260927-120000".to_string(),
+            fingerprint: hash_bytes(AIRPORTS.as_bytes()),
+            modules: 9,
+            cables: 8,
+            tempo: 120.0,
+            by_console: true,
+        },
+        summary: "Tom loaded the save \"jam\"".to_string(),
+        undoes: None,
+    };
+    let mut up = seed().unwrap();
+    up.last_seq = 5;
+    up.wall = 5;
+    let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let store = Store::peek(dir.path()).unwrap();
+    let mut wall = Wall::new(up, control, None, vec![load], Some(store));
+    drop(engine);
+    undo_load(&mut wall, 5);
+    assert_eq!(wall.patch().modules().len(), 47, "Airports is back");
+    // What this build makes of that wall is not the file it came from.
+    let rewritten = crate::store::encode(wall.patch()).unwrap();
+    assert_ne!(hash_bytes(&rewritten), hash_bytes(AIRPORTS.as_bytes()));
+}
+
+#[test]
+fn a_save_changed_from_outside_is_never_trusted_to_hold_the_wall() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "b", false).unwrap();
+    save(&mut wall, "a", false).unwrap();
+    let before = as_saved(&wall);
+    // The wall is "a", untouched; then "a" is replaced from outside.
+    let outside = crate::store::encode(&Patch::empty(90.0)).unwrap();
+    std::fs::write(dir.path().join("saves").join("a.json"), &outside).unwrap();
+    let loaded = load_save(&mut wall, "b").unwrap();
+    assert!(
+        loaded.backup.starts_with("before-load-"),
+        "{}",
+        loaded.backup
+    );
+    undo_load(&mut wall, loaded.change.seq);
+    assert_eq!(as_saved(&wall), before, "the wall that played is back");
+}
+
+#[test]
+fn a_seat_that_is_not_a_console_has_a_save_allowance_and_a_cap() {
+    let (mut wall, _engine, dir) = saving_wall();
+    let now = Instant::now();
+    let save_as = |wall: &mut Wall, seat: &str, console: bool, name: &str, at: Instant| {
+        let request = Request::Save {
+            name: name.to_string(),
+            overwrite: false,
+        };
+        wall.request_as(seat, console, &request, at)
+    };
+    for n in 0..3 {
+        save_as(&mut wall, "Ava", false, &format!("ava {n}"), now).unwrap();
+    }
+    let refused = save_as(&mut wall, "Ava", false, "ava 3", now).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::SlowDown);
+    // A bad name is refused as that, not counted.
+    let bad = save_as(&mut wall, "Ava", false, "../x", now).unwrap_err();
+    assert_eq!(bad.code, ErrorCode::BadName);
+    // A console is not held to it; a minute later Ava may save again.
+    for n in 0..5 {
+        save_as(&mut wall, "Tom", true, &format!("tom {n}"), now).unwrap();
+    }
+    let later = now + Duration::from_secs(60);
+    save_as(&mut wall, "Ava", false, "ava 3", later).unwrap();
+    // The saves at their cap: a seat may make no more; Tom may.
+    let much_later = later + Duration::from_secs(600);
+    save_as(&mut wall, "Ava", false, "ava 4", much_later).unwrap();
+    save_as(&mut wall, "Ava", false, "ava 5", much_later).unwrap();
+    let saves = dir.path().join("saves");
+    let bytes = std::fs::read(saves.join("ava 0.json")).unwrap();
+    for n in 0..MAX_SAVES {
+        std::fs::write(saves.join(format!("filler {n}.json")), &bytes).unwrap();
+    }
+    let full = save_as(&mut wall, "Ava", false, "one more", much_later).unwrap_err();
+    assert_eq!(full.code, ErrorCode::Full);
+    assert!(
+        full.message.contains("Tom's console can delete some"),
+        "{}",
+        full.message
+    );
+    // A name taken is refused as that.
+    let taken = save_as(&mut wall, "Ava", false, "ava 4", much_later).unwrap_err();
+    assert_eq!(taken.code, ErrorCode::SaveExists);
+    save_as(&mut wall, "Tom", true, "still mine", much_later).unwrap();
+    // Neither refusal cost Ava her last save: with room again, it goes.
+    for n in 0..MAX_SAVES {
+        std::fs::remove_file(saves.join(format!("filler {n}.json"))).unwrap();
+    }
+    save_as(&mut wall, "Ava", false, "one more", much_later).unwrap();
+    let refused = save_as(&mut wall, "Ava", false, "and another", much_later).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::SlowDown);
+}
+
+/// A link to a desk on a socket in `dir` that takes one instrument at
+/// `bpm`, and what to keep for as long as the link should stay up: its
+/// audio half and the desk's end.
+fn a_desk(
+    dir: &std::path::Path,
+    bpm: f32,
+) -> (
+    HubLink,
+    (
+        kazoo_core::ipc::link::HubLinkAudio,
+        std::os::unix::net::UnixStream,
+    ),
+) {
+    use kazoo_core::ipc::link::{HubAddress, LinkConfig, hub_link};
+    use kazoo_core::ipc::protocol::FrameBuffer;
+    use kazoo_core::ipc::types::{MSG_REGISTER, MSG_REGISTERED, RegisteredMsg};
+    let path = dir.join("desk.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let (link, audio) = hub_link(LinkConfig {
+        address: HubAddress::Socket(path),
+        ..LinkConfig::new("kazoo-wall", 2, 48_000, 256)
+    })
+    .unwrap();
+    let (mut stream, _) = listener.accept().unwrap();
+    let mut buf = FrameBuffer::new();
+    let header = buf.read_frame(&mut stream).unwrap();
+    assert_eq!(header.msg_type, MSG_REGISTER);
+    let reply = RegisteredMsg {
+        strip_index: 1,
+        hub_sample_rate: 48_000,
+        hub_buffer_size: 256,
+        transport_state: 0,
+        bpm,
+        position: 0,
+    };
+    reply.encode(buf.payload_mut());
+    buf.write_frame(MSG_REGISTERED, 0, RegisteredMsg::WIRE_SIZE, &mut stream)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !link.is_connected() {
+        assert!(Instant::now() < deadline, "the desk never linked");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    (link, (audio, stream))
+}
+
+#[test]
+fn a_load_on_the_desk_says_the_desk_keeps_its_tempo() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::peek(dir.path()).unwrap();
+    let mut slow = seed().unwrap();
+    slow.tempo = 97.0;
+    store.write_save("slow", &slow, false).unwrap();
+    let (link, _desk) = a_desk(dir.path(), 120.0);
+    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let mut wall = Wall::new(
+        seed().unwrap(),
+        control,
+        Some(link),
+        Vec::new(),
+        Some(store),
+    );
+    let loaded = load_save(&mut wall, "slow").unwrap();
+    // What plays is the desk's tempo, and the change says so.
+    let What::Load { tempo, .. } = loaded.change.what else {
+        panic!("not a load");
+    };
+    assert!((tempo - 120.0).abs() < 1e-9, "{tempo}");
+    assert!(
+        loaded.change.summary.contains("120 BPM"),
+        "{}",
+        loaded.change.summary
+    );
+    assert!(
+        loaded
+            .notes
+            .iter()
+            .any(|note| note.contains("the desk keeps the tempo at 120 BPM")),
+        "{:?}",
+        loaded.notes
+    );
+    // The wall's own clock was not moved to the save's tempo.
+    play(&mut wall, &mut engine);
+    assert!((wall.engine_mut().shared().bpm() - 120.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_change_meant_for_a_replaced_wall_is_refused() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let first = wall.snapshot().wall;
+    assert_eq!(first, 0);
+    save(&mut wall, "jam", false).unwrap();
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    let up = wall.snapshot().wall;
+    assert_eq!(up, loaded.change.seq);
+    let aimed = turn("vcf1", "cutoff", 500.0);
+    let refused = wall.check_wall(Some(first), &aimed).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::WallReplaced);
+    assert!(
+        refused.message.contains("look again"),
+        "{}",
+        refused.message
+    );
+    assert!(wall.check_wall(Some(up), &aimed).is_ok());
+    assert!(wall.check_wall(None, &aimed).is_ok(), "an older client");
+    // What names no module is not checked.
+    for free in [Request::Look, Request::Tempo { bpm: 100.0 }, Request::Saves] {
+        assert!(wall.check_wall(Some(first), &free).is_ok(), "{free:?}");
+    }
+}
+
+#[test]
+fn loads_keep_the_old_wall_once_and_let_the_walls_own_saves_go() {
+    let (mut wall, _engine, dir) = saving_wall();
+    let saves = dir.path().join("saves");
+    let autos = || {
+        std::fs::read_dir(&saves)
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("before-")
+            })
+            .count()
+    };
+    save(&mut wall, "a", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    save(&mut wall, "b", false).unwrap();
+    // The wall is "b", untouched: loading "a" keeps it in "b", and back.
+    let to_a = load_save(&mut wall, "a").unwrap();
+    assert_eq!(to_a.backup, "b");
+    let to_b = load_save(&mut wall, "b").unwrap();
+    assert_eq!(to_b.backup, "a");
+    assert_eq!(autos(), 0, "no copy of a wall a save already holds");
+    // Undo still brings each back exactly, from those saves.
+    let b_wall = as_saved(&wall);
+    undo_load(&mut wall, to_b.change.seq);
+    let a_wall = as_saved(&wall);
+    assert_ne!(a_wall, b_wall);
+    // A wall changed since its save is written afresh.
+    ask(&mut wall, &turn("vcf1", "cutoff", 700.0)).unwrap();
+    let fresh = load_save(&mut wall, "b").unwrap();
+    assert!(fresh.backup.starts_with("before-load-"));
+    assert_eq!(autos(), 1);
+    // Old automatic saves nobody needs go, beyond the newest kept.
+    let wall_file = std::fs::read(saves.join(format!("{}.json", fresh.backup))).unwrap();
+    for n in 0..crate::store::AUTO_SAVES_KEPT + 5 {
+        let stray = saves.join(format!("before-load-20200101-{n:06}.json"));
+        std::fs::write(&stray, &wall_file).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&stray)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_500_000_000 + n as u64))
+            .unwrap();
+    }
+    ask(&mut wall, &turn("vcf1", "cutoff", 650.0)).unwrap();
+    let pruned = load_save(&mut wall, "a").unwrap();
+    assert_eq!(autos(), crate::store::AUTO_SAVES_KEPT);
+    // Those the log needs stay, however old.
+    assert!(saves.join(format!("{}.json", fresh.backup)).exists());
+    assert!(saves.join(format!("{}.json", pruned.backup)).exists());
+    undo_load(&mut wall, fresh.change.seq);
+}
+
+#[test]
+fn listing_the_saves_has_a_budget_of_its_own() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let now = Instant::now();
+    for _ in 0..10 {
+        assert!(wall.request("Loop", &Request::Saves, now).is_ok());
+    }
+    let refused = wall.request("Loop", &Request::Saves, now).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::SlowDown);
+    // Others, and changes, are not held up by it; a second later it has
+    // room for one more.
+    assert!(wall.request("Tom", &Request::Saves, now).is_ok());
+    assert!(
+        wall.request("Loop", &turn("vcf1", "cutoff", 800.0), now)
+            .is_ok()
+    );
+    let later = now + Duration::from_secs(1);
+    assert!(wall.request("Loop", &Request::Saves, later).is_ok());
+    assert!(wall.request("Loop", &Request::Saves, later).is_err());
+}
+
+/// A save holds the wall to the last bit, dye amounts included (they are
+/// arbitrary f64s, which only read back exactly with `serde_json`'s
+/// `float_roundtrip`): a load kept in it comes back with the very
+/// fingerprint it left with.
+#[test]
+fn a_save_holds_the_wall_to_the_last_bit() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "a", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    save(&mut wall, "b", false).unwrap();
+    load_save(&mut wall, "a").unwrap();
+    let to_b = load_save(&mut wall, "b").unwrap();
+    undo_load(&mut wall, to_b.change.seq);
+    ask(&mut wall, &turn("vcf1", "cutoff", 700.0)).unwrap();
+    let live = as_saved(&wall);
+    let print = wall.patch().fingerprint();
+    let fresh = load_save(&mut wall, "b").unwrap();
+    let file = PatchFile {
+        last_seq: 0,
+        wall: 0,
+        ..save_file(&dir, &fresh.backup)
+    };
+
+    // The dye of turns after a load is the kind of number that read back
+    // one bit off without it.
+    assert!(!live.dye.is_empty());
+    assert_eq!(live, file, "the save is the wall as it was");
+    let (decoded, notes) = Patch::load(&file).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(decoded.fingerprint(), print, "and reads back as it");
+    undo_load(&mut wall, fresh.change.seq);
+    assert_eq!(as_saved(&wall), live);
+}
+
+/// Change `seq`, `what`, by Tom, as a log holds it.
+fn logged(seq: u64, what: What) -> Change {
+    Change {
+        seq,
+        at: "2026-10-09T00:00:00Z".to_string(),
+        seat: "Tom".to_string(),
+        summary: format!("change {seq}"),
+        what,
+        undoes: None,
+    }
+}
+
+/// A turn of the seed's filter, as a log holds it.
+fn a_turn() -> What {
+    What::Turn {
+        module: "vcf1".to_string(),
+        knob: "cutoff".to_string(),
+        from: 1_000.0,
+        to: 1_200.0,
+        glide_beats: 0.0,
+    }
+}
+
+/// A load, as a log holds it.
+fn a_load() -> What {
+    What::Load {
+        save: Some("jam".to_string()),
+        backup: "before-load-20261009-000000".to_string(),
+        fingerprint: "0".to_string(),
+        modules: 1,
+        cables: 0,
+        tempo: 120.0,
+        by_console: true,
+    }
+}
+
+#[test]
+fn a_tempo_the_log_cannot_take_never_reaches_the_desk() {
+    use kazoo_core::ipc::protocol::FrameBuffer;
+    use kazoo_core::ipc::types::{MSG_TRANSPORT_REQUEST, TransportRequestMsg};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::peek(dir.path()).unwrap();
+    let (link, (_audio, mut stream)) = a_desk(dir.path(), 120.0);
+    let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let mut wall = Wall::new(
+        seed().unwrap(),
+        control,
+        Some(link),
+        Vec::new(),
+        Some(store),
+    );
+    let tempo = wall.patch().tempo;
+    fail_once(&mut wall, FailAt::AppendLog);
+    let refused = ask(&mut wall, &Request::Tempo { bpm: 140.0 }).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Internal);
+    assert!((wall.patch().tempo - tempo).abs() < 1e-9);
+    let asked: TempoResult =
+        serde_json::from_value(ask(&mut wall, &Request::Tempo { bpm: 150.0 }).unwrap()).unwrap();
+    assert!(asked.desk);
+    // The first tempo the desk hears is the one the log took: the other
+    // never went.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut buf = FrameBuffer::new();
+    let request = loop {
+        let header = buf.read_frame(&mut stream).unwrap();
+        if header.msg_type == MSG_TRANSPORT_REQUEST {
+            break TransportRequestMsg::decode(buf.payload());
+        }
+    };
+    assert!((request.requested_bpm - 150.0).abs() < 1e-3, "{request:?}");
+    // The log says the one did not happen, and has the other.
+    let logged = Store::peek(dir.path()).unwrap().load_log().unwrap().changes;
+    let [note, made] = logged.as_slice() else {
+        panic!("{logged:?}");
+    };
+    assert!(matches!(note.what, What::Abandoned { .. }), "{note:?}");
+    assert_eq!(made, &asked.change);
+}
+
+#[test]
+fn words_the_log_cannot_take_never_reach_the_player() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let (speech, script) = super::super::speech::tests::scripted(16);
+    wall.speech = speech;
+    let now = Instant::now();
+    let add = Request::Add {
+        kind: "speak".to_string(),
+        name: None,
+        place: None,
+    };
+    wall.request("Tom", &add, now).unwrap();
+    let say = |text: &str| Request::Speak {
+        module: "speak1".to_string(),
+        text: text.to_string(),
+        voice: None,
+    };
+    let said = |wall: &Wall| {
+        wall.speech
+            .phrase("speak1")
+            .map(|phrase| phrase.samples().len() / 100)
+    };
+    let words = |wall: &Wall| {
+        wall.patch()
+            .speech
+            .get("speak1")
+            .map(|words| words.text.clone())
+    };
+    // A speaker with nothing to say, given words the log refuses: it
+    // still says nothing.
+    wall.request("Tom", &say("first words"), now).unwrap();
+    script.lock().unwrap().finish_all();
+    fail_once(&mut wall, FailAt::AppendLog);
+    let answers = wall.spoken();
+    assert_eq!(answers[0].1.as_ref().unwrap_err().code, ErrorCode::Internal);
+    assert_eq!(said(&wall), None);
+    assert_eq!(words(&wall), None);
+    // Words the log takes are said, and kept.
+    wall.request("Tom", &say("hello"), now).unwrap();
+    script.lock().unwrap().finish_all();
+    assert!(wall.spoken()[0].1.is_ok());
+    assert_eq!(said(&wall), Some("hello".len()));
+    assert_eq!(words(&wall).as_deref(), Some("hello"));
+    // New words the log refuses: the player goes on with the old ones,
+    // which the wall still has.
+    wall.request("Tom", &say("goodbye now"), now).unwrap();
+    script.lock().unwrap().finish_all();
+    fail_once(&mut wall, FailAt::AppendLog);
+    let answers = wall.spoken();
+    assert_eq!(answers[0].1.as_ref().unwrap_err().code, ErrorCode::Internal);
+    assert_eq!(said(&wall), Some("hello".len()));
+    assert_eq!(words(&wall).as_deref(), Some("hello"));
+}
+
+#[test]
+fn a_wall_whose_load_rotated_out_of_the_log_starts_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::peek(dir.path()).unwrap();
+    // A long-lived wall: its load, then more changes than both logs hold.
+    store.append(&logged(1, a_load())).unwrap();
+    let last = 2 * crate::store::LOG_ROTATE_LINES as u64 + 10;
+    for seq in 2..=last {
+        store.append(&logged(seq, a_turn())).unwrap();
+    }
+    store.sync_log().unwrap();
+    let history = store.load_log().unwrap().changes;
+    assert!(history[0].seq > 1, "the load has gone with older logs");
+    drop(store);
+    let mut patch = seed().unwrap();
+    patch.wall = 1;
+    patch.last_seq = last;
+    put_patch_json(&dir, &patch);
+    let (mut wall, _engine) = restart(&dir);
+    assert!(resumed_notes(&dir).is_empty(), "nothing to say");
+    assert_eq!(wall.snapshot().wall, 1);
+    // Its changes still undo.
+    undo(&mut wall, last).unwrap();
+    undo(&mut wall, last - 1).unwrap();
+}
+
+#[test]
+fn a_wall_started_again_beyond_memory_holds_what_it_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::peek(dir.path()).unwrap();
+    // Wall 1, then more changes to it than memory keeps; patch.json saved
+    // twenty changes short of the end.
+    store.append(&logged(1, a_load())).unwrap();
+    let last = MEMORY_CHANGES as u64 + 20;
+    for seq in 2..=last {
+        store.append(&logged(seq, a_turn())).unwrap();
+    }
+    store.sync_log().unwrap();
+    drop(store);
+    let through = MEMORY_CHANGES as u64;
+    let mut patch = seed().unwrap();
+    patch.wall = 1;
+    patch.last_seq = through;
+    put_patch_json(&dir, &patch);
+    let (mut wall, _engine) = restart(&dir);
+    let notes = resumed_notes(&dir);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(
+        notes[0].what,
+        What::Resumed {
+            from: Some(1),
+            through,
+            left_out: Vec::new(),
+        }
+    );
+    // Memory opens on wall 1, long after its load: what patch.json had of
+    // it undoes, what it did not does not.
+    assert!(wall.log.front().unwrap().seq > 1);
+    undo(&mut wall, through - 5).unwrap();
+    let refused = undo(&mut wall, through + 10).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotAllowed, "{}", refused.message);
+}
+
+#[test]
+fn a_log_that_owes_says_so_and_says_when_it_is_paid() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let now = Instant::now();
+    assert!(wall.snapshot().log.is_ok());
+    // The turn's line fails, then the note saying so.
+    fail_once(&mut wall, FailAt::AppendLog);
+    fail_once(&mut wall, FailAt::AppendLog);
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap_err();
+    let health = wall.snapshot().log;
+    assert_eq!(health.owed, 1);
+    assert!(health.error.is_some());
+    let said = |events: &[Event]| {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Log { log } => Some(log.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // Told once, and the owed change is not told before it is written.
+    let events = wall.tick(now);
+    assert_eq!(said(&events), [health]);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::Change { .. }))
+    );
+    assert!(said(&wall.tick(now)).is_empty());
+    // The log takes lines again: what it owed goes first, numbered then.
+    let next = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap());
+    assert!(wall.snapshot().log.is_ok());
+    let events = wall.tick(now);
+    assert_eq!(said(&events), [LogHealth::default()]);
+    let notes: Vec<&Change> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Change { change } => Some(change.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notes.len(), 1);
+    assert!(matches!(notes[0].what, What::Abandoned { .. }));
+    assert!(notes[0].seq < next.change.seq);
+}
+
+#[test]
+fn stopping_while_the_log_owes_numbers_nothing_twice() {
+    let (mut wall, _engine, dir) = saving_wall();
+    let now = Instant::now();
+    let first = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap());
+    wall.save(now);
+    let mut told = vec![first.change.seq];
+    // The log fails for good: the turn, its note, and every try after.
+    for _ in 0..8 {
+        fail_once(&mut wall, FailAt::AppendLog);
+    }
+    ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap_err();
+    told.extend(wall.tick(now).iter().filter_map(|event| match event {
+        Event::Change { change } => Some(change.seq),
+        _ => None,
+    }));
+    let events = wall.close(now);
+    told.extend(events.iter().filter_map(|event| match event {
+        Event::Change { change } => Some(change.seq),
+        _ => None,
+    }));
+    // What it still owed is lost, said, and never numbered.
+    assert_eq!(wall.snapshot().log.owed, 1);
+    drop(wall);
+    let (mut wall, _engine) = restart(&dir);
+    let next = changed(ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap());
+    let most = told.iter().copied().max().unwrap();
+    assert!(next.change.seq > most, "{} after {told:?}", next.change.seq);
+}
+
+#[test]
+fn a_load_after_owed_notes_are_paid_names_its_own_wall() {
+    let (mut wall, _engine, dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    let made = changed(ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap());
+    // The next turn's line fails, then the note saying so: it is owed.
+    fail_once(&mut wall, FailAt::AppendLog);
+    fail_once(&mut wall, FailAt::AppendLog);
+    ask(&mut wall, &turn("vcf1", "drive", 0.3)).unwrap_err();
+    assert_eq!(wall.snapshot().log.owed, 1);
+    // The revision is the latest change made, not the number given to
+    // the one that was not.
+    assert_eq!(wall.revision(), made.change.seq);
+    assert_eq!(wall.snapshot().revision, made.change.seq);
+    // The log recovers: the load pays the note first, then is numbered.
+    let loaded = load_save(&mut wall, "jam").unwrap();
+    let logged = Store::peek(dir.path()).unwrap().load_log().unwrap().changes;
+    let [.., note, load] = logged.as_slice() else {
+        panic!("{logged:?}");
+    };
+    assert!(matches!(note.what, What::Abandoned { .. }), "{note:?}");
+    assert_eq!(load, &loaded.change);
+    assert_eq!(wall.patch().wall, loaded.change.seq);
+    assert_eq!(wall.patch().last_seq, loaded.change.seq);
+    assert_eq!(wall.snapshot().wall, loaded.change.seq);
+    let on_disk = Store::peek(dir.path()).unwrap().load_patch().unwrap();
+    let Loaded::Patch { patch, .. } = on_disk else {
+        panic!("no patch.json");
+    };
+    assert_eq!(patch.wall, loaded.change.seq);
+    assert_eq!(patch.last_seq, loaded.change.seq);
+    // A start from here has nothing to say, and the load undoes.
+    drop(wall);
+    let (mut wall, _engine) = restart(&dir);
+    assert!(resumed_notes(&dir).is_empty());
+    undo_load(&mut wall, loaded.change.seq);
+}
+
+#[test]
+fn a_rotated_log_behind_patch_json_still_undoes_what_patch_json_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::peek(dir.path()).unwrap();
+    // Wall 0 for longer than both logs hold, and patch.json saved five
+    // changes short of the end.
+    let last = 2 * crate::store::LOG_ROTATE_LINES as u64 + 10;
+    for seq in 1..=last {
+        store.append(&logged(seq, a_turn())).unwrap();
+    }
+    store.sync_log().unwrap();
+    drop(store);
+    let through = last - 5;
+    let mut patch = seed().unwrap();
+    patch.last_seq = through;
+    put_patch_json(&dir, &patch);
+    let (mut wall, _engine) = restart(&dir);
+    let notes = resumed_notes(&dir);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(
+        notes[0].what,
+        What::Resumed {
+            from: Some(0),
+            through,
+            left_out: Vec::new(),
+        }
+    );
+    undo(&mut wall, through - 1).unwrap();
+    undo(&mut wall, through).unwrap();
+    let refused = undo(&mut wall, through + 1).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotAllowed, "{}", refused.message);
+}
+
+#[test]
+fn back_to_back_tempos_undo_to_the_one_before() {
+    let (mut wall, _engine) = wall();
+    let initial = wall.patch().tempo;
+    let first: TempoResult =
+        serde_json::from_value(ask(&mut wall, &Request::Tempo { bpm: 100.0 }).unwrap()).unwrap();
+    // At once, before the engine has played a block of the first.
+    let second: TempoResult =
+        serde_json::from_value(ask(&mut wall, &Request::Tempo { bpm: 110.0 }).unwrap()).unwrap();
+    let What::Tempo { from, .. } = second.change.what else {
+        panic!("{:?}", second.change);
+    };
+    assert!((from - 100.0).abs() < 1e-9, "{from}");
+    undo(&mut wall, second.change.seq).unwrap();
+    assert!((wall.patch().tempo - 100.0).abs() < 1e-9);
+    undo(&mut wall, first.change.seq).unwrap();
+    assert!(
+        (wall.patch().tempo - initial).abs() < 1e-9,
+        "{} after {initial}",
+        wall.patch().tempo
+    );
+}
+
+#[test]
+fn an_engine_rebuilt_mid_swap_plays_the_new_walls_tempo() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let mut slow = seed().unwrap();
+    slow.tempo = 97.0;
+    wall.store_mut()
+        .unwrap()
+        .write_save("slow", &slow, false)
+        .unwrap();
+    // The load sends its swap; before the engine plays a block of it, the
+    // audio is rebuilt on a new engine started at the old wall's tempo.
+    load_save(&mut wall, "slow").unwrap();
+    let (mut rebuilt, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    wall.attach(control, None);
+    play(&mut wall, &mut rebuilt);
+    assert!(
+        (wall.engine_mut().shared().bpm() - 97.0).abs() < 1e-9,
+        "{}",
+        wall.engine_mut().shared().bpm()
+    );
+    assert!((wall.snapshot().tempo - 97.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_save_says_it_changed_only_when_the_wall_did() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let changed_since = |wall: &Wall| wall.snapshot().save.unwrap().changed;
+    save(&mut wall, "jam", false).unwrap();
+    assert!(!changed_since(&wall));
+    // A note of the wall's own moves the revision, not the wall.
+    fail_once(&mut wall, FailAt::AppendLog);
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap_err();
+    assert!(wall.revision() > wall.snapshot().save.unwrap().revision);
+    assert!(!changed_since(&wall));
+    // A move on the rack moves no revision, but changes the wall.
+    let revision = wall.revision();
+    let rows = wall.patch().rows().to_vec();
+    ask(
+        &mut wall,
+        &Request::Arrange {
+            module: "lfo1".to_string(),
+            row: rows.len(),
+            before: None,
+            own: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(wall.revision(), revision);
+    assert!(changed_since(&wall));
+    // Saved again, it holds the wall as it is.
+    save(&mut wall, "jam", true).unwrap();
+    assert!(!changed_since(&wall));
+}
+
+#[test]
+fn a_save_or_deletion_whose_directory_cannot_be_flushed_still_happens() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    ask(&mut wall, &turn("vcf1", "cutoff", 1_500.0)).unwrap();
+    // Saved over: in place, so the wall says it is that save, tells
+    // everyone, and notes the flush.
+    fail_once(&mut wall, FailAt::SyncDir);
+    let outcome = save(&mut wall, "jam", true).unwrap();
+    let result: SaveResult = serde_json::from_value(outcome.result).unwrap();
+    assert!(result.replaced);
+    assert_eq!(result.notes.len(), 1, "{:?}", result.notes);
+    assert!(
+        result.notes[0].contains("take it back"),
+        "{:?}",
+        result.notes
+    );
+    assert!(matches!(outcome.event, Some(Event::Saved { .. })));
+    assert!(!wall.snapshot().save.unwrap().changed);
+    // Deleted: gone, so the wall forgets it and tells everyone.
+    fail_once(&mut wall, FailAt::SyncDir);
+    let outcome = ask_outcome(
+        &mut wall,
+        &Request::DeleteSave {
+            name: "jam".to_string(),
+        },
+    );
+    let result: DeleteSaveResult = serde_json::from_value(outcome.result).unwrap();
+    assert_eq!(result.name, "jam");
+    assert_eq!(result.notes.len(), 1, "{:?}", result.notes);
+    assert!(matches!(outcome.event, Some(Event::SaveDeleted { .. })));
+    assert!(wall.snapshot().save.is_none());
+}
+
+#[test]
+fn a_save_a_crash_could_take_back_is_no_backup() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    fail_once(&mut wall, FailAt::SyncDir);
+    let outcome = save(&mut wall, "jam", false).unwrap();
+    let result: SaveResult = serde_json::from_value(outcome.result).unwrap();
+    assert_eq!(result.notes.len(), 1);
+    // The wall is that save, but a new wall keeps it afresh.
+    let cleared: LoadResult =
+        serde_json::from_value(ask(&mut wall, &Request::New).unwrap()).unwrap();
+    assert!(
+        cleared.backup.starts_with("before-new-"),
+        "{}",
+        cleared.backup
+    );
+    // A save that was flushed is trusted.
+    save(&mut wall, "kept", false).unwrap();
+    let again: LoadResult = serde_json::from_value(ask(&mut wall, &Request::New).unwrap()).unwrap();
+    assert_eq!(again.backup, "kept");
+}
+
+#[test]
+fn on_the_desk_a_load_is_not_changed_by_the_desks_tempo() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let mut slow = seed().unwrap();
+    slow.tempo = 97.0;
+    store.write_save("slow", &slow, false).unwrap();
+    let (link, _desk) = a_desk(dir.path(), 120.0);
+    let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let mut wall = Wall::new(
+        seed().unwrap(),
+        control,
+        Some(link),
+        Vec::new(),
+        Some(store),
+    );
+    load_save(&mut wall, "slow").unwrap();
+    // The tick takes the desk's tempo into the wall's saved tempo.
+    wall.tick(Instant::now());
+    assert!(
+        (wall.patch().tempo - 120.0).abs() < 1e-9,
+        "{}",
+        wall.patch().tempo
+    );
+    assert!(!wall.snapshot().save.unwrap().changed);
+    // And the save still holds the wall: a new wall keeps it there.
+    let cleared: LoadResult =
+        serde_json::from_value(ask(&mut wall, &Request::New).unwrap()).unwrap();
+    assert_eq!(cleared.backup, "slow");
+}
+
+#[test]
+fn a_wall_too_large_to_keep_says_so_and_takes_nothing_that_grows_it() {
+    let (mut wall, _engine, dir) = saving_wall();
+    let now = Instant::now();
+    wall.save(now);
+    let kept = std::fs::read(dir.path().join("patch.json")).unwrap();
+    // Grown past its file by what no request could give it.
+    wall.patch.speech.insert(
+        "speak9".to_string(),
+        Words {
+            text: "a".repeat(usize::try_from(crate::store::MAX_WALL_FILE).unwrap()),
+            voice: None,
+        },
+    );
+    wall.dirty = true;
+    wall.save(now);
+    assert_eq!(std::fs::read(dir.path().join("patch.json")).unwrap(), kept);
+    let faults: Vec<String> = wall
+        .tick(now)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::Fault { summary, .. } => Some(summary),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(faults.len(), 1, "said once: {faults:?}");
+    assert!(
+        faults[0].contains("changes are not being kept"),
+        "{faults:?}"
+    );
+    // What grows it is refused; what takes away goes through.
+    let refused = ask(
+        &mut wall,
+        &Request::Add {
+            kind: "lfo".to_string(),
+            name: None,
+            place: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Full);
+    assert!(refused.message.contains("take some"), "{}", refused.message);
+    ask(
+        &mut wall,
+        &Request::Remove {
+            module: "lfo2".to_string(),
+        },
+    )
+    .unwrap();
+    // No load either: the wall as it is cannot be kept first.
+    let refused = ask(&mut wall, &Request::New).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Full);
+    assert!(
+        refused.message.contains("cannot be kept in a save first"),
+        "{}",
+        refused.message
+    );
+    // Small enough again: kept, said, and nothing refused for size.
+    wall.patch.speech.clear();
+    wall.save(now);
+    assert_ne!(std::fs::read(dir.path().join("patch.json")).unwrap(), kept);
+    assert!(wall.tick(now).iter().any(|event| matches!(
+        event,
+        Event::Fault { summary, .. } if summary.contains("small enough to keep again")
+    )));
+    ask(
+        &mut wall,
+        &Request::Add {
+            kind: "lfo".to_string(),
+            name: None,
+            place: None,
+        },
+    )
+    .unwrap();
+}
+
+/// `request` from Tom, as the whole outcome.
+fn ask_outcome(wall: &mut Wall, request: &Request) -> Outcome {
+    wall.request("Tom", request, Instant::now()).unwrap()
+}
+
+#[test]
+fn a_refused_load_costs_no_allowance() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    save(&mut wall, "jam", false).unwrap();
+    let now = Instant::now();
+    let load_as = |wall: &mut Wall, name: &str| {
+        let request = Request::Load {
+            name: name.to_string(),
+        };
+        wall.request_as("Ava", false, &request, now)
+    };
+    for _ in 0..5 {
+        assert_eq!(
+            load_as(&mut wall, "nope").unwrap_err().code,
+            ErrorCode::UnknownSave
+        );
+        assert_eq!(
+            load_as(&mut wall, "../x").unwrap_err().code,
+            ErrorCode::BadName
+        );
+    }
+    for _ in 0..3 {
+        load_as(&mut wall, "jam").unwrap();
+    }
+    assert_eq!(
+        load_as(&mut wall, "jam").unwrap_err().code,
+        ErrorCode::SlowDown
+    );
 }

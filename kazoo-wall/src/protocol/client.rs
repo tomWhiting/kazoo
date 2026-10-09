@@ -31,9 +31,10 @@ use serde::de::DeserializeOwned;
 
 use super::codec::{self, LineRead};
 use super::{
-    ArrangeResult, CatalogueResult, ChangeResult, Event, HelloResult, ListenResult, LogPage,
-    MAX_SERVER_LINE, MonitorResult, Place, RecordResult, Request, RequestLine, Response,
-    ServerLine, ShutdownResult, Snapshot, SubscribeResult, TempoResult, WallError,
+    ArrangeResult, CatalogueResult, ChangeResult, DeleteSaveResult, Event, HelloResult,
+    ListenResult, LoadResult, LogPage, MAX_SERVER_LINE, MonitorResult, Place, RecordResult,
+    Request, RequestLine, Response, SaveResult, SavesResult, ServerLine, ShutdownResult, Snapshot,
+    SubscribeResult, TempoResult, WallError,
 };
 
 /// Why a request did not produce a result.
@@ -95,6 +96,8 @@ pub struct WallClient {
     next_id: u64,
     hello: HelloResult,
     events: VecDeque<Event>,
+    /// The wall requests are sent for (see [`Self::set_wall`]).
+    wall: Option<u64>,
 }
 
 impl WallClient {
@@ -146,6 +149,7 @@ impl WallClient {
                 watcher,
             },
             events: VecDeque::new(),
+            wall: None,
         };
         wall.hello = wall.call_as(Request::Hello {
             seat: seat.to_string(),
@@ -160,6 +164,13 @@ impl WallClient {
     #[must_use]
     pub const fn hello(&self) -> &HelloResult {
         &self.hello
+    }
+
+    /// Send `wall` (from [`Snapshot::wall`]) with every request from now
+    /// on, so one that names modules is refused (`wall_replaced`) once
+    /// another wall has been put up; `None` sends none.
+    pub const fn set_wall(&mut self, wall: Option<u64>) {
+        self.wall = wall;
     }
 
     /// Give up on a read after `timeout` (`None` waits for ever).
@@ -182,7 +193,12 @@ impl WallClient {
     pub fn call(&mut self, request: Request) -> Result<serde_json::Value, ClientError> {
         let id = self.next_id;
         self.next_id += 1;
-        codec::write_line(&mut self.writer, &RequestLine { id, request })?;
+        let line = RequestLine {
+            id,
+            wall: self.wall,
+            request,
+        };
+        codec::write_line(&mut self.writer, &line)?;
         loop {
             match self.read()? {
                 ServerLine::Event(event) => self.events.push_back(event),
@@ -418,6 +434,65 @@ impl WallClient {
     /// `not_allowed` from a watcher.
     pub fn record(&mut self, on: bool) -> Result<RecordResult, ClientError> {
         self.call_as(Request::Record { on })
+    }
+
+    /// Save the wall as it is now under `name`, replacing a save of that
+    /// name when `overwrite` is set (consoles only).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call`]: `bad_name`, `save_exists`, `not_allowed` (a
+    /// watcher, or a seat replacing a save), `internal` when it cannot be
+    /// written.
+    pub fn save(&mut self, name: &str, overwrite: bool) -> Result<SaveResult, ClientError> {
+        self.call_as(Request::Save {
+            name: name.to_string(),
+            overwrite,
+        })
+    }
+
+    /// Every save, newest first.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call`].
+    pub fn saves(&mut self) -> Result<SavesResult, ClientError> {
+        self.call_as(Request::Saves)
+    }
+
+    /// Replace the wall with the save `name` (the wall as it was is saved
+    /// first).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call`]: `unknown_save`, `broken_save`, `internal` when
+    /// the wall as it was cannot be saved first (then nothing changes).
+    pub fn load(&mut self, name: &str) -> Result<LoadResult, ClientError> {
+        self.call_as(Request::Load {
+            name: name.to_string(),
+        })
+    }
+
+    /// Replace the wall with an empty one (the wall as it was is saved
+    /// first).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load`].
+    pub fn new_wall(&mut self) -> Result<LoadResult, ClientError> {
+        self.call_as(Request::New)
+    }
+
+    /// Delete the save `name`. Consoles only.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call`]: `unknown_save`, `not_allowed` from a seat that
+    /// is not a console.
+    pub fn delete_save(&mut self, name: &str) -> Result<DeleteSaveResult, ClientError> {
+        self.call_as(Request::DeleteSave {
+            name: name.to_string(),
+        })
     }
 
     /// Stop the daemon. Consoles only.

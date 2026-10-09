@@ -238,6 +238,30 @@ fn a_corrupt_patch_is_set_aside_and_the_wall_seeds() {
         std::fs::read(state.path().join(&aside[0])).unwrap(),
         b"{\"version\": 1, \"modules\": ["
     );
+    // Said in the log, as the wall's own change, with why and where.
+    let logged = wall.log(None, None).unwrap().changes;
+    let note = logged
+        .iter()
+        .find(|change| matches!(change.what, What::SetAside { .. }))
+        .expect("the setting aside, logged");
+    assert_eq!(note.seat, "kazoo-wall");
+    let What::SetAside { reason, moved_to } = &note.what else {
+        panic!("{note:?}");
+    };
+    assert_eq!(moved_to, &aside[0]);
+    assert!(reason.contains("not JSON"), "{reason}");
+    assert!(note.summary.contains(&aside[0]), "{}", note.summary);
+    assert_eq!(
+        code(&wall.undo(note.seq).unwrap_err()),
+        ErrorCode::NotAllowed
+    );
+    // And listed among the broken saves, never out of sight.
+    let saves = wall.saves().unwrap();
+    assert!(
+        saves.broken.iter().any(|broken| broken.name == aside[0]),
+        "{:?}",
+        saves.broken
+    );
     drop(wall);
     daemon.stop();
     daemon.wait().unwrap();
@@ -370,6 +394,111 @@ fn connections_are_capped_and_a_second_daemon_is_refused() {
     assert!(refused.to_string().contains("already playing"), "{refused}");
     daemon.stop();
     daemon.wait().unwrap();
+}
+
+#[test]
+fn a_patch_json_past_the_limits_with_the_log_ahead_starts_within_them() {
+    let (runtime, state) = dirs();
+    // A patch.json larger than a wall's file may be (words no speaker
+    // could be given), and a log with a change it does not have.
+    let mut patch = kazoo_wall::seed::seed().unwrap();
+    patch.add("speak", None, None).unwrap();
+    let mut file = patch.to_file();
+    let limit = usize::try_from(kazoo_wall::store::MAX_WALL_FILE).unwrap();
+    file.speech.insert(
+        "speak1".to_string(),
+        kazoo_wall::patch::Words {
+            text: "a".repeat(limit + 1),
+            voice: None,
+        },
+    );
+    let bytes = serde_json::to_vec(&file).unwrap();
+    assert!(bytes.len() > limit);
+    std::fs::write(state.path().join("patch.json"), &bytes).unwrap();
+    let mut store = kazoo_wall::store::Store::open(state.path()).unwrap();
+    store
+        .append(&kazoo_wall::protocol::Change {
+            seq: 1,
+            at: "2026-10-09T00:00:00Z".to_string(),
+            seat: "Tom".to_string(),
+            summary: "Tom set the tempo".to_string(),
+            what: What::Tempo {
+                from: 92.0,
+                to: 100.0,
+                desk: false,
+            },
+            undoes: None,
+        })
+        .unwrap();
+    store.sync_log().unwrap();
+    drop(store);
+    // It starts: read whole (the wall wrote it), brought within today's
+    // limits, said so in the log, and saved within them.
+    let daemon = start(runtime.path(), state.path());
+    let mut wall = WallClient::connect(daemon.socket(), "Tom", "test", true).unwrap();
+    assert_eq!(
+        wall.look().unwrap().log,
+        kazoo_wall::protocol::LogHealth::default()
+    );
+    let logged = wall.log(None, None).unwrap().changes;
+    assert!(
+        logged
+            .iter()
+            .any(|change| matches!(change.what, What::Resumed { .. }))
+    );
+    assert!(
+        logged.iter().any(|change| matches!(
+            &change.what,
+            What::Migrate { notes, .. }
+                if notes.iter().any(|note| note.contains("longer than a speaker may be given"))
+        )),
+        "{logged:?}"
+    );
+    let saved = std::fs::metadata(state.path().join("patch.json"))
+        .unwrap()
+        .len();
+    assert!(saved <= kazoo_wall::store::MAX_WALL_FILE, "{saved}");
+    drop(wall);
+    daemon.stop();
+    daemon.wait().unwrap();
+}
+
+#[test]
+fn a_wall_stopped_can_be_started_again_at_once() {
+    let (runtime, state) = dirs();
+    let daemon = start(runtime.path(), state.path());
+    let socket = daemon.socket().to_path_buf();
+    // As `serve` does: waiting for the daemon to stop.
+    let serving = std::thread::spawn(move || daemon.wait());
+    kazoo_wall::daemon::stop_daemon(&socket, Duration::from_secs(10)).unwrap();
+    // Stopped means its state is free: a wall starts on it at once.
+    let again = start(runtime.path(), state.path());
+    serving.join().unwrap().unwrap();
+    again.stop();
+    again.wait().unwrap();
+}
+
+#[test]
+fn a_wall_started_while_another_stops_waits_for_its_state() {
+    let (runtime, state) = dirs();
+    let first = start(runtime.path(), state.path());
+    // Asked to stop, but not waited for: it still holds the state a
+    // moment, while it saves.
+    first.stop();
+    let other = tempfile::Builder::new()
+        .prefix("kw")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let second = start(other.path(), state.path());
+    first.wait().unwrap();
+    // A wall on the same state that does not stop is refused, saying so.
+    let refused = Daemon::start(DaemonConfig::headless(runtime.path(), state.path())).unwrap_err();
+    assert!(
+        refused.to_string().contains("another wall is using"),
+        "{refused}"
+    );
+    second.stop();
+    second.wait().unwrap();
 }
 
 #[test]
@@ -883,9 +1012,13 @@ fn a_move_is_told_to_every_console_the_mover_too_and_logs_nothing() {
                     break;
                 }
                 Event::Change { change } => panic!("a move was logged: {change:?}"),
+                Event::Loaded { .. } | Event::Saved { .. } | Event::SaveDeleted { .. } => {
+                    panic!("a move touched the saves")
+                }
                 Event::Seat { .. }
                 | Event::Fingerprints { .. }
                 | Event::Fault { .. }
+                | Event::Log { .. }
                 | Event::Unknown => {}
             }
         }
@@ -894,6 +1027,219 @@ fn a_move_is_told_to_every_console_the_mover_too_and_logs_nothing() {
     assert_eq!(after.revision, before.revision);
     assert_eq!(after.rack, Some(moved.rows));
     assert!(tom.log(None, None).unwrap().changes.is_empty());
+    drop(tom);
+    daemon.stop();
+    daemon.wait().unwrap();
+}
+
+/// The next event that is not a seat coming or going, nor fingerprints.
+fn next_news(events: &mut Subscription) -> Event {
+    loop {
+        let event = events.next_event().unwrap();
+        if !matches!(event, Event::Seat { .. } | Event::Fingerprints { .. }) {
+            return event;
+        }
+    }
+}
+
+/// What a wall is, as `look` shows it: every module with its knob targets,
+/// every cable, and the rows.
+fn shape(look: &kazoo_wall::protocol::Snapshot) -> (Vec<(String, Vec<f64>)>, String, String) {
+    let modules = look
+        .modules
+        .iter()
+        .map(|module| {
+            let targets = module.knobs.iter().map(|knob| knob.target).collect();
+            (module.id.clone(), targets)
+        })
+        .collect();
+    (
+        modules,
+        serde_json::to_string(&look.cables).unwrap(),
+        serde_json::to_string(&look.rack).unwrap(),
+    )
+}
+
+/// A daemon started on a state directory holding a copy of the patch Tom
+/// made by hand beside it (before the wall had saves), which comes in as a
+/// save.
+fn a_wall_with_a_copy_by_hand(runtime: &Path, state: &Path) -> Daemon {
+    let seeded = {
+        let daemon = start(runtime, state);
+        drop(daemon);
+        std::fs::read(state.join("patch.json")).unwrap()
+    };
+    // As a wall from before the saves left it.
+    std::fs::remove_dir_all(state.join("saves")).unwrap();
+    std::fs::write(state.join("patch.by-hand-2026-09-29.json"), &seeded).unwrap();
+    let daemon = start(runtime, state);
+    let mut tom = WallClient::connect(daemon.socket(), "Tom", "test", true).unwrap();
+    let listed = tom.saves().unwrap();
+    let names: Vec<&str> = listed.saves.iter().map(|save| save.name.as_str()).collect();
+    assert_eq!(names, ["by-hand-2026-09-29"]);
+    assert!(
+        state.join("patch.by-hand-2026-09-29.json").exists(),
+        "copied, not moved"
+    );
+    daemon
+}
+
+/// Only a console replaces or deletes a save; a watcher saves, loads and
+/// deletes nothing, but may list them.
+fn only_a_console_destroys_a_save(socket: &Path, waffles: &mut WallClient) {
+    assert_eq!(
+        code(&waffles.save("waffles jam", true).unwrap_err()),
+        ErrorCode::NotAllowed
+    );
+    assert_eq!(
+        code(&waffles.save("Waffles Jam", false).unwrap_err()),
+        ErrorCode::SaveExists
+    );
+    assert_eq!(
+        code(&waffles.delete_save("waffles jam").unwrap_err()),
+        ErrorCode::NotAllowed
+    );
+    let mut looking = WallClient::watch(socket, "meridian", "a visualiser").unwrap();
+    for refused in [
+        looking.save("watched", false).map(|_| ()),
+        looking.load("waffles jam").map(|_| ()),
+        looking.new_wall().map(|_| ()),
+        looking.delete_save("waffles jam").map(|_| ()),
+    ] {
+        assert_eq!(code(&refused.unwrap_err()), ErrorCode::NotAllowed);
+    }
+    assert_eq!(looking.saves().unwrap().saves.len(), 2);
+}
+
+/// A turn Tom aimed at the wall he last saw (wall 0) is refused once wall
+/// `up` has replaced it: it would land on the new wall's `vcf1`. The wall
+/// is still `shape` after it; Tom then sends for wall `up`.
+fn a_turn_for_the_old_wall_is_refused(
+    tom: &mut WallClient,
+    up: u64,
+    shape_now: &(Vec<(String, Vec<f64>)>, String, String),
+) {
+    tom.set_wall(Some(0));
+    assert_eq!(
+        code(&tom.turn("vcf1", "cutoff", 500.0, Some(0.0)).unwrap_err()),
+        ErrorCode::WallReplaced
+    );
+    assert_eq!(
+        &shape(&tom.look().unwrap()),
+        shape_now,
+        "nothing was turned"
+    );
+    tom.set_wall(Some(up));
+}
+
+#[test]
+fn saves_load_live_over_the_socket_and_a_load_undoes_after_a_restart() {
+    let (runtime, state) = dirs();
+    let daemon = a_wall_with_a_copy_by_hand(runtime.path(), state.path());
+    let socket = daemon.socket().to_path_buf();
+    let mut tom = WallClient::connect(&socket, "Tom", "test", true).unwrap();
+    let (mut tom_events, _) = Subscription::open(&socket, "Tom", "test", true).unwrap();
+    tom_events
+        .set_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let (mut waffles_events, _) = Subscription::open(&socket, "Waffles", "test", false).unwrap();
+    waffles_events
+        .set_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut waffles = WallClient::connect(&socket, "Waffles", "test", false).unwrap();
+
+    // Waffles saves the wall with a knob turned; Tom is told.
+    waffles.turn("vcf1", "cutoff", 1_234.0, Some(0.0)).unwrap();
+    let jam_saved = waffles.save("waffles jam", false).unwrap();
+    assert!(!jam_saved.replaced);
+    let jam = shape(&tom.look().unwrap());
+    // Tom hears the turn, then the save; Waffles hears its own save too.
+    assert!(matches!(next_news(&mut tom_events), Event::Change { .. }));
+    let told = Event::Saved {
+        seat: "Waffles".to_string(),
+        name: "waffles jam".to_string(),
+        replaced: false,
+    };
+    assert_eq!(next_news(&mut tom_events), told);
+    assert_eq!(next_news(&mut waffles_events), told);
+    only_a_console_destroys_a_save(&socket, &mut waffles);
+
+    // The wall moves on; Waffles loads the jam back while it plays.
+    tom.turn("vcf1", "cutoff", 400.0, Some(0.0)).unwrap();
+    tom.add("noise", None).unwrap();
+    assert!(matches!(
+        next_news(&mut waffles_events),
+        Event::Change { .. }
+    ));
+    assert!(matches!(
+        next_news(&mut waffles_events),
+        Event::Change { .. }
+    ));
+    let moved_on = shape(&tom.look().unwrap());
+    let loaded = waffles.load("waffles jam").unwrap();
+    assert!(loaded.backup.starts_with("before-load-"));
+    let look = tom.look().unwrap();
+    assert_eq!(shape(&look), jam);
+    assert_eq!(look.revision, loaded.change.seq);
+    assert_eq!(
+        look.save.as_ref().map(|mark| mark.name.as_str()),
+        Some("waffles jam")
+    );
+    // Tom hears the change, then that the wall was replaced; Waffles, who
+    // loaded it, hears only that.
+    let Event::Change { change } = next_news(&mut tom_events) else {
+        panic!("Tom did not hear the load");
+    };
+    assert_eq!(*change, loaded.change);
+    assert!(matches!(&change.what, What::Load { .. }));
+    assert_eq!(look.wall, loaded.change.seq);
+    a_turn_for_the_old_wall_is_refused(&mut tom, look.wall, &jam);
+    let replaced = Event::Loaded {
+        seq: loaded.change.seq,
+        seat: "Waffles".to_string(),
+        save: Some("waffles jam".to_string()),
+        backup: loaded.backup.clone(),
+    };
+    assert_eq!(next_news(&mut tom_events), replaced);
+    assert_eq!(next_news(&mut waffles_events), replaced);
+    // The wall as it was is among the saves, marked as the wall's own.
+    let saves = tom.saves().unwrap();
+    let backup = saves
+        .saves
+        .iter()
+        .find(|save| save.name == loaded.backup)
+        .unwrap();
+    assert!(backup.auto);
+    drop((waffles, waffles_events, tom_events));
+    drop(tom);
+    daemon.stop();
+    daemon.wait().unwrap();
+
+    // After a restart the load is still in the log, with the wall it
+    // replaced: undoing it brings that wall back exactly.
+    let daemon = start(runtime.path(), state.path());
+    let mut tom = WallClient::connect(daemon.socket(), "Tom", "test", true).unwrap();
+    assert_eq!(shape(&tom.look().unwrap()), jam);
+    let log = tom.log(None, Some(1)).unwrap();
+    assert_eq!(
+        log.changes[0], loaded.change,
+        "seats see it without the wall"
+    );
+    let undone = tom.undo(loaded.change.seq).unwrap();
+    assert_eq!(undone.change.undoes, Some(loaded.change.seq));
+    assert_eq!(shape(&tom.look().unwrap()), moved_on);
+    // Tom deletes the hand-made copy's save; the copy itself stays.
+    tom.delete_save("BY-HAND-2026-09-29").unwrap();
+    assert!(state.path().join("patch.by-hand-2026-09-29.json").exists());
+    assert_eq!(
+        code(&tom.load("by-hand-2026-09-29").unwrap_err()),
+        ErrorCode::UnknownSave
+    );
+    // An empty wall, and back.
+    let cleared = tom.new_wall().unwrap();
+    assert!(tom.look().unwrap().modules.is_empty());
+    tom.undo(cleared.change.seq).unwrap();
+    assert_eq!(shape(&tom.look().unwrap()), moved_on);
     drop(tom);
     daemon.stop();
     daemon.wait().unwrap();

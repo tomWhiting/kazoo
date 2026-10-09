@@ -28,15 +28,18 @@ use tokio::sync::mpsc;
 const NOT_RUNNING: &str = "the wall is not running (start it with `kazoo-wall`)";
 
 /// Every tool.
-const TOOLS: [&str; 13] = [
+const TOOLS: [&str; 16] = [
     "wall_add",
     "wall_catalogue",
     "wall_listen",
+    "wall_load",
     "wall_log",
     "wall_look",
     "wall_patch",
     "wall_record",
     "wall_remove",
+    "wall_save",
+    "wall_saves",
     "wall_speak",
     "wall_tempo",
     "wall_turn",
@@ -234,6 +237,99 @@ async fn every_tool_plays_a_real_wall() {
     the_log_listening_and_tempo(&client).await;
     speaking(&client).await;
     recording(&client, &state.path().join("recordings")).await;
+    client.cancel().await.unwrap();
+    stop(daemon);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seat_saves_lists_and_loads_and_cannot_destroy_a_save() {
+    let (runtime, state) = dirs();
+    let daemon = start(runtime.path(), state.path());
+    let (client, _notifications) = seat(daemon.socket(), "Waffles", 1, None).await;
+    let empty = works(&client, "wall_saves", serde_json::json!({})).await;
+    assert_eq!(empty, "No saves yet: wall_save saves the wall as it is.");
+    works(
+        &client,
+        "wall_turn",
+        serde_json::json!({"module": "vcf1", "knob": "cutoff", "value": 1234, "glide_beats": 0}),
+    )
+    .await;
+    let saved = works(
+        &client,
+        "wall_save",
+        serde_json::json!({"name": "waffles dub"}),
+    )
+    .await;
+    assert!(
+        saved.starts_with("Saved the wall as \"waffles dub\": "),
+        "{saved}"
+    );
+    // Taken names, the wall's own names, and replacing are refused.
+    for (name, code) in [
+        ("Waffles Dub", "save_exists"),
+        ("before-load-1", "bad_name"),
+        ("../out", "bad_name"),
+    ] {
+        let (failed, why) = call(&client, "wall_save", serde_json::json!({"name": name})).await;
+        assert!(failed && why.contains(code), "{name}: {why}");
+    }
+    let (failed, why) = call(
+        &client,
+        "wall_save",
+        serde_json::json!({"name": "waffles dub", "overwrite": true}),
+    )
+    .await;
+    assert!(failed, "a seat has no way to save over a save: {why}");
+    // The wall moves on, and the save puts it back.
+    works(
+        &client,
+        "wall_turn",
+        serde_json::json!({"module": "vcf1", "knob": "cutoff", "value": 300, "glide_beats": 0}),
+    )
+    .await;
+    works(&client, "wall_look", serde_json::json!({})).await;
+    let loaded = works(
+        &client,
+        "wall_load",
+        serde_json::json!({"name": "WAFFLES DUB"}),
+    )
+    .await;
+    let load = number_after(&loaded, "Change #");
+    assert!(
+        loaded.contains("Waffles loaded the save \"waffles dub\""),
+        "{loaded}"
+    );
+    assert!(
+        loaded.contains("call wall_look before changing anything"),
+        "{loaded}"
+    );
+    // This seat last looked at the wall before: its turn is refused
+    // rather than landing on the new wall's vcf1, until it looks again.
+    let (failed, why) = call(
+        &client,
+        "wall_turn",
+        serde_json::json!({"module": "vcf1", "knob": "cutoff", "value": 777, "glide_beats": 0}),
+    )
+    .await;
+    assert!(failed && why.contains("wall_replaced"), "{why}");
+    let look = works(&client, "wall_look", serde_json::json!({})).await;
+    assert!(look.contains("cutoff=1234"), "{look}");
+    assert!(
+        look.contains("Save: last saved as or loaded from \"waffles dub\""),
+        "{look}"
+    );
+    let listed = works(&client, "wall_saves", serde_json::json!({})).await;
+    assert!(listed.contains("- \"waffles dub\" saved "), "{listed}");
+    assert!(
+        listed.contains("The wall's own saves (the wall as it was before each load)"),
+        "{listed}"
+    );
+    // Undoing the load brings the wall before it back.
+    works(&client, "wall_undo", serde_json::json!({"change": load})).await;
+    let look = works(&client, "wall_look", serde_json::json!({})).await;
+    assert!(look.contains("cutoff=300"), "{look}");
+    let (failed, why) = call(&client, "wall_load", serde_json::json!({"name": "nothing"})).await;
+    assert!(failed && why.contains("unknown_save"), "{why}");
     client.cancel().await.unwrap();
     stop(daemon);
 }

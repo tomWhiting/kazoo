@@ -30,7 +30,7 @@ pub fn summarise_with(
     undoes: Option<u64>,
     kind_of: impl Fn(&str) -> Option<Kind>,
 ) -> String {
-    let body = describe_with(what, &kind_of);
+    let body = describe_with(what, undoes.is_some(), &kind_of);
     undoes.map_or_else(
         || format!("{seat} {body}"),
         |change| format!("{seat} undid change {change}: {body}"),
@@ -40,10 +40,12 @@ pub fn summarise_with(
 /// `what` as a sentence without its subject: `turned vcf1 cutoff ...`.
 #[must_use]
 pub fn describe(what: &What) -> String {
-    describe_with(what, &kind_of_id)
+    describe_with(what, false, &kind_of_id)
 }
 
-fn describe_with(what: &What, kind_of: &impl Fn(&str) -> Option<Kind>) -> String {
+/// `what` in words; `undo` when it undid another change (which tells a
+/// load that brought a wall back from one that cleared it).
+fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind>) -> String {
     match what {
         What::Turn {
             module,
@@ -96,23 +98,7 @@ fn describe_with(what: &What, kind_of: &impl Fn(&str) -> Option<Kind>) -> String
             replaced,
             skipped,
             ..
-        } => {
-            let mut parts = vec![format!(
-                "brought back {} with {}",
-                module_words(module),
-                count(cables.len(), "cable")
-            )];
-            if !replaced.is_empty() {
-                parts.push(format!(", replacing {}", count(replaced.len(), "cable")));
-            }
-            if !skipped.is_empty() {
-                parts.push(format!(
-                    "; {} could not come back",
-                    count(skipped.len(), "cable")
-                ));
-            }
-            parts.concat()
-        }
+        } => restored(module, cables.len(), replaced.len(), skipped.len()),
         What::Speak {
             module,
             words,
@@ -140,7 +126,103 @@ fn describe_with(what: &What, kind_of: &impl Fn(&str) -> Option<Kind>) -> String
             reason.as_deref(),
         ),
         What::Tempo { from, to, desk } => tempo(*from, *to, *desk),
+        What::Load {
+            save,
+            backup,
+            modules,
+            cables,
+            tempo,
+            ..
+        } => loaded(save.as_deref(), undo, backup, (*modules, *cables, *tempo)),
+        What::Abandoned { .. } | What::Resumed { .. } | What::SetAside { .. } => noted(what),
     }
+}
+
+/// What a note the daemon makes of its own accord says.
+fn noted(what: &What) -> String {
+    match what {
+        What::Abandoned { change } => format!(
+            "could not write change {change} to the log for certain, so it did not happen: \
+             nothing of it is on the wall"
+        ),
+        What::Resumed {
+            from,
+            through,
+            left_out,
+        } => resumed(*from, *through, left_out),
+        What::SetAside { reason, moved_to } => format!(
+            "found patch.json could not be used ({reason}), so moved it to {moved_to} in the \
+             wall's state (listed among the broken saves) and started from the seed"
+        ),
+        _ => String::new(),
+    }
+}
+
+/// The daemon starting on a `patch.json` that is not the wall the log ends
+/// on (see [`What::Resumed`]).
+fn resumed(from: Option<u64>, through: u64, left_out: &[u64]) -> String {
+    let wall = from.map_or_else(
+        || "started again on a wall the change log does not know (seeded, or restored)".to_string(),
+        |_| format!("started again on the wall as patch.json had it after change {through}"),
+    );
+    let lost = match left_out {
+        [] => String::new(),
+        [only] => format!("; the load in change {only} never reached it and is left out"),
+        loads => format!(
+            "; the loads in changes {} never reached it and are left out",
+            loads
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let held = if from.is_some() {
+        "; changes after that are not on it and cannot be undone"
+    } else {
+        "; no earlier change can be undone on it"
+    };
+    format!("{wall}{lost}{held}")
+}
+
+/// A removed module brought back with `cables` of its cables, `replaced`
+/// cables its cables displaced, and `skipped` that could not come back.
+fn restored(module: &ModuleRecord, cables: usize, replaced: usize, skipped: usize) -> String {
+    let mut parts = vec![format!(
+        "brought back {} with {}",
+        module_words(module),
+        count(cables, "cable")
+    )];
+    if replaced > 0 {
+        parts.push(format!(", replacing {}", count(replaced, "cable")));
+    }
+    if skipped > 0 {
+        parts.push(format!("; {} could not come back", count(skipped, "cable")));
+    }
+    parts.concat()
+}
+
+/// The wall replaced: by a save, by an empty wall, or (an undo) by the
+/// wall a load replaced; with what is up now and where the wall as it was
+/// went. Save names pass [`crate::protocol::valid_save_name`].
+fn loaded(
+    save: Option<&str>,
+    undo: bool,
+    backup: &str,
+    (modules, cables, bpm): (u32, u32, f64),
+) -> String {
+    let now = format!(
+        "{}, {}, {}",
+        count(usize::try_from(modules).unwrap_or(usize::MAX), "module"),
+        count(usize::try_from(cables).unwrap_or(usize::MAX), "cable"),
+        format::bpm(bpm)
+    );
+    let what = match (save, undo) {
+        (Some(save), _) => format!("loaded the save \"{save}\" ({now})"),
+        (None, false) => "cleared the wall".to_string(),
+        (None, true) => format!("brought back the wall it replaced ({now})"),
+    };
+    format!("{what}; the wall as it was is saved as \"{backup}\"")
 }
 
 /// A tempo set on the wall's own clock, or asked of the desk.
@@ -432,6 +514,34 @@ mod tests {
             summarise("kazoo-wall", &carried, None),
             "kazoo-wall started recording wall-2026-09-27-203404.wav, carrying on from \
              wall-2026-09-27-203001.wav: the audio restarted at 44100 Hz"
+        );
+    }
+
+    #[test]
+    fn loads_say_what_is_up_and_where_the_old_wall_went() {
+        let load = |save: Option<&str>| What::Load {
+            save: save.map(str::to_string),
+            backup: "before-load-20261009-143005".to_string(),
+            modules: 12,
+            cables: 1,
+            tempo: 96.0,
+            fingerprint: "0123456789abcdef-2048".to_string(),
+            by_console: true,
+        };
+        assert_eq!(
+            summarise("Tom", &load(Some("garage-korgy-2026-09-29")), None),
+            "Tom loaded the save \"garage-korgy-2026-09-29\" (12 modules, 1 cable, 96 BPM); \
+             the wall as it was is saved as \"before-load-20261009-143005\""
+        );
+        assert_eq!(
+            summarise("Tom", &load(None), None),
+            "Tom cleared the wall; the wall as it was is saved as \
+             \"before-load-20261009-143005\""
+        );
+        assert_eq!(
+            summarise("Waffles", &load(None), Some(41)),
+            "Waffles undid change 41: brought back the wall it replaced (12 modules, 1 cable, \
+             96 BPM); the wall as it was is saved as \"before-load-20261009-143005\""
         );
     }
 

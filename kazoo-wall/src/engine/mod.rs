@@ -14,7 +14,9 @@
 //!
 //! The engine tolerates any order of commands: a cable or order entry naming
 //! an empty slot reads silence or is skipped, so the control side never needs
-//! a transaction.
+//! a transaction. To swap the whole wall for another without a click, it
+//! brackets the swap with [`Command::Hush`] and [`Command::Unhush`]: the
+//! master fades out, the swap is applied in silence, and it fades back in.
 
 pub mod lines;
 pub mod master;
@@ -97,6 +99,13 @@ pub enum Command {
     /// Set the wall's own tempo. While following a playing desk, the desk's
     /// next change overrides it.
     Tempo(f64),
+    /// Fade the master out over [`SWAP_FADE_SECONDS`], and hold every
+    /// command after this one until it is silent: the commands between a
+    /// `Hush` and its [`Command::Unhush`] (a whole wall taken out and
+    /// another put in) are all heard at once, in silence, never half done.
+    Hush,
+    /// Fade the master back in over [`SWAP_FADE_SECONDS`].
+    Unhush,
 }
 
 /// Something the engine hands back to be freed off the audio thread.
@@ -139,6 +148,7 @@ pub struct Shared {
     record_dropped: AtomicU64,
     syncs_lost: AtomicU64,
     ignored: AtomicU64,
+    unhushed: AtomicU64,
 }
 
 impl Shared {
@@ -163,6 +173,7 @@ impl Shared {
             record_dropped: AtomicU64::new(0),
             syncs_lost: AtomicU64::new(0),
             ignored: AtomicU64::new(0),
+            unhushed: AtomicU64::new(0),
         }
     }
 
@@ -285,6 +296,14 @@ impl Shared {
         self.ignored.load(Ordering::Relaxed)
     }
 
+    /// Swaps finished: [`Command::Unhush`]es taken in, so every command
+    /// sent before each has been too. Until a swap is in, the knobs read
+    /// here are the old wall's.
+    #[must_use]
+    pub fn unhushed(&self) -> u64 {
+        self.unhushed.load(Ordering::Acquire)
+    }
+
     fn store_knob(&self, slot: usize, knob: usize, value: f32) {
         if let Some(cell) = self.knobs.get(slot).and_then(|knobs| knobs.get(knob)) {
             cell.store(value.to_bits(), Ordering::Relaxed);
@@ -330,6 +349,11 @@ impl EngineConfig {
 /// How long the output takes to fade in or out when it is made heard or
 /// silent.
 pub const MONITOR_FADE_SECONDS: f32 = 0.05;
+
+/// How long the master takes to fade out, and back in, around a whole wall
+/// being swapped for another ([`Command::Hush`]): long enough that neither
+/// edge clicks, short enough to read as a cut in the music.
+pub const SWAP_FADE_SECONDS: f32 = 0.06;
 
 /// The shortest a knob takes to move, even when told to move at once: a
 /// jump in a level or a cutoff would click.
@@ -435,6 +459,14 @@ pub struct Engine {
     monitor_gain: Option<f32>,
     /// How far `monitor_gain` moves per frame.
     monitor_step: f32,
+    /// Gain on the master around a swap of the whole wall: 1 but for the
+    /// fade out and in that [`Command::Hush`] and [`Command::Unhush`] ask
+    /// for.
+    hush_gain: f32,
+    /// Whether the master is fading out for a swap, or silent for it.
+    hushed: bool,
+    /// How far `hush_gain` moves per frame.
+    hush_step: f32,
 }
 
 impl std::fmt::Debug for Engine {
@@ -528,6 +560,9 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         lines: lines::Lines::new(rate),
         monitor_gain: None,
         monitor_step: 1.0 / (rate * MONITOR_FADE_SECONDS),
+        hush_gain: 1.0,
+        hushed: false,
+        hush_step: 1.0 / (rate * SWAP_FADE_SECONDS),
     };
     let control = EngineControl {
         sample_rate,
@@ -629,8 +664,17 @@ impl Engine {
         self.monitor_gain = Some(gain);
     }
 
+    /// Whether commands are held: a hush is fading the master out and it is
+    /// not silent yet.
+    fn holding(&self) -> bool {
+        self.hushed && self.hush_gain > 0.0
+    }
+
     fn drain_commands(&mut self) {
-        while let Some(command) = self.commands.try_pop() {
+        while !self.holding() {
+            let Some(command) = self.commands.try_pop() else {
+                return;
+            };
             match command {
                 Command::Insert {
                     slot,
@@ -658,8 +702,33 @@ impl Engine {
                     self.bpm = clamp_bpm(bpm);
                     self.shared.bpm.store(self.bpm.to_bits(), Ordering::Relaxed);
                 }
+                Command::Hush => self.hushed = true,
+                Command::Unhush => {
+                    self.hushed = false;
+                    self.shared.unhushed.fetch_add(1, Ordering::Release);
+                }
             }
         }
+    }
+
+    /// Fade the master by the hush gain, moving it towards silence while a
+    /// swap is hushed and back to 1 after.
+    fn apply_hush(&mut self, left: &mut Block, right: &mut Block) {
+        if !self.hushed && self.hush_gain >= 1.0 {
+            return;
+        }
+        let step = self.hush_step;
+        let mut gain = self.hush_gain;
+        for (left, right) in left.iter_mut().zip(right.iter_mut()) {
+            gain = if self.hushed {
+                (gain - step).max(0.0)
+            } else {
+                (gain + step).min(1.0)
+            };
+            *left *= gain;
+            *right *= gain;
+        }
+        self.hush_gain = gain;
     }
 
     fn insert(
@@ -771,6 +840,11 @@ impl Engine {
     }
 
     fn render_sub_block(&mut self) {
+        if self.hushed {
+            // The commands a hush held go as soon as it is silent, not at
+            // the next callback.
+            self.drain_commands();
+        }
         self.follow_desk();
         let tick = Tick::new(self.sample_rate, self.bpm, self.beat);
         for index in 0..self.order.slots().len() {
@@ -788,6 +862,9 @@ impl Engine {
             }
         }
         self.master.process(&mut left, &mut right);
+        // After the master, so the fade is what the meters, the listening
+        // and a recording hear too.
+        self.apply_hush(&mut left, &mut right);
         self.publish(&left, &right);
         self.carry = [left, right];
         self.beat = tick.beat_at(SUB_BLOCK);

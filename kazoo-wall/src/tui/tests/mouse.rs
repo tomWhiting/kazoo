@@ -32,6 +32,7 @@ fn calls(app: &mut App) -> Vec<Request> {
         .map(|job| match job {
             Job::Call(request) => request,
             Job::Launch => panic!("the mouse started the wall"),
+            Job::Wall(wall) => panic!("the mouse told the worker of wall {wall}"),
         })
         .collect()
 }

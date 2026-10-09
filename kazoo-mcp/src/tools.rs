@@ -9,8 +9,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use kazoo_wall::protocol::{
-    CatalogueResult, ChangeResult, ListenResult, LogPage, RecordResult, Request, Snapshot,
-    TempoResult,
+    CatalogueResult, ChangeResult, ListenResult, LoadResult, LogPage, RecordResult, Request,
+    SaveResult, SavesResult, Snapshot, TempoResult,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -51,6 +51,11 @@ that is already used replaces the cable there.
 - Pitch is 1.0 per octave with 0 = C4; gates are high above 0.5.
 - wall_listen says what the wall sounds like now, in numbers and words.
 - wall_record starts or stops recording what the wall plays to a WAV file.
+- wall_save keeps the wall as it is under a name; wall_saves lists the saves; wall_load puts \
+one back up while the wall plays (the wall as it was is saved first, and wall_undo of the load \
+brings it back). Only Tom's console replaces or deletes a save. Once a wall is loaded, every \
+module and cable is new: changes meant for the wall last looked at are refused (wall_replaced) \
+until wall_look is called again.
 
 When other seats change the wall, this server sends a channel notification (source \
 kazoo-wall). Those are hints about the past: call wall_look before acting on them.";
@@ -181,6 +186,24 @@ pub struct SpeakArgs {
     pub voice: Option<String>,
 }
 
+/// `wall_save`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveArgs {
+    /// The save's name: 1 to 64 of A-Z a-z 0-9 space _ . -, starting with
+    /// a letter or digit, e.g. `waffles dub 2026-10-09`. Not one starting
+    /// with `before-` (the wall's own) nor one already saved (any case).
+    pub name: String,
+}
+
+/// `wall_load`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoadArgs {
+    /// The save's name, as `wall_saves` lists it (any case).
+    pub name: String,
+}
+
 /// `wall_record`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -275,11 +298,15 @@ impl Seat {
 impl Seat {
     #[tool(
         name = "wall_look",
-        description = "The whole wall as a listing: tempo and position, the seats here, the master peaks, what it sounds like, every module with each knob's exact value (a→b while gliding) and range, each module's inputs and outputs, every cable with its number and amount, and whether a recording is under way. Call this before changing anything, and after a channel notification."
+        description = "The whole wall as a listing: tempo and position, the seats here, the master peaks, what it sounds like, every module with each knob's exact value (a→b while gliding) and range, each module's inputs and outputs, every cable with its number and amount, and whether a recording is under way. Call this before changing anything, and after a channel notification: once another wall has been loaded, changes meant for the wall last looked at are refused (wall_replaced) until this seat looks again."
     )]
     async fn wall_look(&self, Parameters(_): Parameters<NoArgs>) -> CallToolResult {
-        self.read::<Snapshot>(Request::Look, |snapshot| Ok(render::look(snapshot)))
-            .await
+        self.read::<Snapshot>(Request::Look, |snapshot| {
+            // Changes from now on are for the wall this seat has seen.
+            self.wall.saw(snapshot.wall);
+            Ok(render::look(snapshot))
+        })
+        .await
     }
 
     #[tool(
@@ -442,6 +469,49 @@ impl Seat {
     }
 
     #[tool(
+        name = "wall_save",
+        description = "Save the wall as it is now under a name (1 to 64 of A-Z a-z 0-9 space _ . -): every module with its knobs where they are going, every cable, the tempo and the rack's rows. The sound does not change and nothing is logged; the other seats are told. A name already saved is refused (only Tom's console can replace or delete a save), as are names starting with before-, which are the wall's own. A seat may save three times a minute (slow_down beyond), and not once there are 200 saves (full)."
+    )]
+    async fn wall_save(&self, Parameters(args): Parameters<SaveArgs>) -> CallToolResult {
+        self.read::<SaveResult>(
+            Request::Save {
+                name: args.name,
+                overwrite: false,
+            },
+            |result| Ok(render::saved(result)),
+        )
+        .await
+    }
+
+    #[tool(
+        name = "wall_saves",
+        description = "Every save, newest first: its name, when it was saved (UTC), its tempo, and how many modules and cables it holds; which are the wall's own (before-load-..., the wall as it was before it was replaced); and any file among them that cannot be loaded, with why."
+    )]
+    async fn wall_saves(&self, Parameters(_): Parameters<NoArgs>) -> CallToolResult {
+        self.read::<SavesResult>(Request::Saves, |result| Ok(render::saves(result)))
+            .await
+    }
+
+    #[tool(
+        name = "wall_load",
+        description = "Replace the whole wall with a save (by its name from wall_saves) while it plays on: the master fades out and back in over a few hundredths of a second. The wall as it is is kept first (as before-load-<time>, or in the save that already holds it unchanged), and the load is one change: wall_undo with its number brings the wall back exactly. Every seat is told. Call wall_look afterwards: every module and cable is new, and changes are refused (wall_replaced) until this seat has looked. A seat may replace the wall (a load, or undoing one) three times a minute (slow_down beyond)."
+    )]
+    async fn wall_load(&self, Parameters(args): Parameters<LoadArgs>) -> CallToolResult {
+        match self
+            .wall
+            .ask::<LoadResult>(Request::Load { name: args.name })
+            .await
+        {
+            Ok(Answer::Read(result)) => {
+                self.own(result.change.seq);
+                ok(render::loaded(&result))
+            }
+            Ok(Answer::Unread(why, value)) => ok(render::unread(&why, &value)),
+            Err(err) => bad(err.to_string()),
+        }
+    }
+
+    #[tool(
         name = "wall_tempo",
         description = "Set the tempo in BPM (20 to 300). On its own clock the wall changes at once; while it follows the kazoo-mix desk, the desk is asked and changes the tempo for everyone."
     )]
@@ -521,15 +591,18 @@ mod tests {
     use super::*;
 
     /// Every tool, in the router's order.
-    const TOOLS: [&str; 13] = [
+    const TOOLS: [&str; 16] = [
         "wall_add",
         "wall_catalogue",
         "wall_listen",
+        "wall_load",
         "wall_log",
         "wall_look",
         "wall_patch",
         "wall_record",
         "wall_remove",
+        "wall_save",
+        "wall_saves",
         "wall_speak",
         "wall_tempo",
         "wall_turn",
@@ -589,5 +662,16 @@ mod tests {
         );
         let record: RecordArgs = serde_json::from_str(r#"{"on":true}"#).unwrap();
         assert!(record.on);
+        // A seat cannot ask to save over a save: there is no such field.
+        assert!(
+            serde_json::from_str::<SaveArgs>(r#"{"name":"jam","overwrite":true}"#).is_err(),
+            "overwrite is the console's"
+        );
+        let save: SaveArgs = serde_json::from_str(r#"{"name":"jam"}"#).unwrap();
+        assert_eq!(save.name, "jam");
+        assert!(
+            serde_json::from_str::<LoadArgs>("{}").is_err(),
+            "name is required"
+        );
     }
 }
