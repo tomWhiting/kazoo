@@ -17,17 +17,27 @@
 //!   difference at 0.9), so the envelope fits the formants rather than the
 //!   voice's falling slope, and through a Hann window 20 ms long, two
 //!   periods of a low voice.
-//! - The autocorrelation is tapered by a Gaussian lag window (100 Hz wide)
-//!   and its zero lag raised by a thousandth (a noise floor 30 dB down):
+//! - The autocorrelation is tapered by a Gaussian lag window (150 Hz wide)
+//!   and its zero lag raised by a hundredth (a noise floor 20 dB down):
 //!   the classic guards that keep the envelope from locking onto single
-//!   harmonics and keep every pole well inside the unit circle.
-//! - The order follows the rate (one pole pair for every 2 kHz of band:
-//!   22 at 44.1 kHz, 24 at 48 kHz, at most 32), so the envelope has the
-//!   same detail at every rate.
+//!   harmonics and keep every pole well inside the unit circle. The floor
+//!   is high for speech coding on purpose: a pure tone's envelope is the
+//!   tone itself, and the floor holds how far flattening can take a tone
+//!   down to 20 dB.
+//! - The order follows the analysis rate (one pole pair for every 2 kHz of
+//!   band: 22 at 44.1 kHz, 24 at 48 kHz, at most 32). The pitch shifter
+//!   analyses at 40 to 80 kHz whatever the host's rate (see `pitch::keep`),
+//!   which is what gives the envelope the same detail at every rate.
 //! - Every set is kept for as long as the shifter can hold audio back, so
 //!   the envelope put back on the shifted sound is the one its audio was
 //!   analysed with: [`Formants::at`] reads the sets at any age, gliding
 //!   between them.
+//! - A set stands for the window that ended a hop before it is used: the
+//!   envelope given for any moment of the audio is centred about 14 ms
+//!   (half the window and a hop) earlier, so it follows a change of vowel
+//!   that late. Centring it would mean reading 14 ms ahead, every shifted
+//!   sound 14 ms later; the lag only shows as formants gliding through a
+//!   quick change of vowel.
 //!
 //! Sources: J. Makhoul, "Linear prediction: a tutorial review" (Proc. IEEE,
 //! 1975); J. D. Markel and A. H. Gray, "Linear prediction of speech"

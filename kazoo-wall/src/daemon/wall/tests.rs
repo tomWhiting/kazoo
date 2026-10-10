@@ -1185,7 +1185,11 @@ fn a_full_wall_holds_every_module_and_cable_and_no_more() {
 /// The share of a callback's time a full wall takes at `rate` with
 /// `frames`-frame buffers: the 99th percentile over `callbacks` calls.
 fn load(rate: u32, frames: usize, callbacks: usize) -> f64 {
-    let (patch, _) = full_wall();
+    load_of(full_wall().0, rate, frames, callbacks)
+}
+
+/// The share of a callback's time `patch` takes, as [`load`] measures it.
+fn load_of(patch: Patch, rate: u32, frames: usize, callbacks: usize) -> f64 {
     let (mut engine, control) = engine(EngineConfig::new(rate, 120.0, 0.0), None);
     let mut wall = Wall::new(patch, control, None, Vec::new(), None);
     let mut buffer = vec![0.0_f32; frames * 2];
@@ -1216,6 +1220,60 @@ fn a_full_wall_keeps_well_inside_the_callback_budget() {
         // Only an optimised build says anything about the audio thread.
         if !cfg!(debug_assertions) {
             assert!(share < 0.6, "{:.1}% at {rate} Hz", share * 100.0);
+        }
+    }
+}
+
+/// A wall of pitch shifters: `count` voices, each an oscillator through a
+/// shifter with its `formant` switch at `formant` and its wet signal
+/// patched on, into an `out`.
+fn pitch_wall(count: usize, formant: f64) -> Patch {
+    let mut patch = Patch::empty(120.0);
+    let mut added = |kind: &str| match patch.add(kind, None, None).unwrap() {
+        What::Add { module } => module.id,
+        other => panic!("{other:?}"),
+    };
+    let mut voices = Vec::new();
+    for _ in 0..count {
+        voices.push((added("vco"), added("pitch"), added("out")));
+    }
+    for (vco, pitch, out) in voices {
+        patch.turn(&pitch, "formant", formant, None).unwrap();
+        patch.turn(&pitch, "shift", 7.0, None).unwrap();
+        patch
+            .plug(&format!("{vco}.out"), &format!("{pitch}.left"), None, None)
+            .unwrap();
+        patch
+            .plug(&format!("{pitch}.left"), &format!("{out}.left"), None, None)
+            .unwrap();
+        patch
+            .plug(
+                &format!("{pitch}.wet_right"),
+                &format!("{out}.right"),
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    patch
+}
+
+#[test]
+fn pitch_shifters_keep_inside_the_callback_budget() {
+    // Sixteen voices, each shifted with its formants moved or kept: well
+    // past what a wall holds of any one effect in practice.
+    for (formant, way) in [(0.0, "moved"), (1.0, "kept")] {
+        for (rate, frames) in [(48_000, 512), (192_000, 1_024)] {
+            let share = load_of(pitch_wall(16, formant), rate, frames, 200);
+            println!(
+                "16 pitch shifters, formants {way}, at {rate} Hz, {frames} frames: \
+                 {:.1}% of the callback",
+                share * 100.0
+            );
+            // Only an optimised build says anything about the audio thread.
+            if !cfg!(debug_assertions) {
+                assert!(share < 0.6, "{way}: {:.1}% at {rate} Hz", share * 100.0);
+            }
         }
     }
 }

@@ -352,9 +352,11 @@ fn a_low_note_comes_out_clean() {
 
 #[test]
 fn a_big_move_bends_without_a_bump() {
-    // A sine at 0.5 changes by at most 0.029 a sample up to 440 Hz. With
-    // the formants kept, a move that sweeps through no shift lets the
-    // loudness match catch up for a moment: a few decibels, never a click.
+    // A sine at 0.5 changes by at most 0.029 a sample up to 440 Hz, and
+    // moved, its level (10 ms windows) holds within half a decibel through
+    // a jump. Kept, a jump that sweeps through no shift lets the loudness
+    // match catch up for a few milliseconds: up to 7 dB (12 to -7 st), the
+    // reason `move` is the default; never a click.
     let input = sine(96_000, 220.0, 0.5);
     for formant in [0.0, 1.0] {
         for (from, to) in [(-6.0, 5.0), (0.0, 12.0), (12.0, -7.0), (-7.0, 12.0)] {
@@ -372,8 +374,84 @@ fn a_big_move_bends_without_a_bump() {
             pitch.set_param(SHIFT, to);
             pitch.process(&context(120.0), [after, after], [left_after, right_after]);
             let step = largest_step(&left[24_000..]);
-            let most = if formant > 0.5 { 0.06 } else { 0.03 };
-            assert!(step < most, "{formant} {from} to {to}: {step}");
+            let (most_step, most_db) = if formant > 0.5 {
+                (0.06, 8.0)
+            } else {
+                (0.03, 0.5)
+            };
+            assert!(step < most_step, "{formant} {from} to {to}: {step}");
+            let level = rms(&input[24_000..]);
+            for window in left[24_000..].chunks(480) {
+                let db = 20.0 * (rms(window) / level).log10();
+                assert!(db.abs() < most_db, "{formant} {from} to {to}: {db} dB");
+            }
+        }
+    }
+}
+
+/// A naive sawtooth at `hz` and `level`, `len` samples long.
+fn saw(len: usize, hz: f32, level: f32) -> Vec<f32> {
+    (0..len)
+        .map(|n| level * 2.0f32.mul_add((hz * n as f32 / RATE).fract(), -1.0))
+        .collect()
+}
+
+#[test]
+fn an_lfo_sweep_holds_the_level_either_way() {
+    // An LFO on `shift`, every 32 samples as the wall hands it over: the
+    // short-term level (10 ms windows) of the shifted sound against the
+    // input's. A saw loses some top to the guard as the shift rises, so it
+    // moves a little more in either mode.
+    for (input, most) in [
+        (sine(144_000, 220.0, 0.5), 1.2),
+        (saw(144_000, 220.0, 0.3), 1.6),
+    ] {
+        for (centre, depth) in [(7.0f32, 5.0f32), (0.0, 12.0)] {
+            for formant in [0.0, 1.0] {
+                let mut pitch = shifter(&[(SHIFT, centre), (FORMANT, formant)]);
+                let mut left = vec![0.0; input.len()];
+                let mut right = vec![0.0; input.len()];
+                for (n, ((chunk, l), r)) in input
+                    .chunks(32)
+                    .zip(left.chunks_mut(32))
+                    .zip(right.chunks_mut(32))
+                    .enumerate()
+                {
+                    let t = n as f32 * 32.0 / RATE;
+                    let swing = (std::f32::consts::TAU * 0.5 * t).sin();
+                    pitch.set_param(SHIFT, depth.mul_add(swing, centre));
+                    pitch.process(&context(120.0), [chunk, chunk], [l, r]);
+                }
+                let level = rms(&input[24_000..]);
+                for window in left[24_000..].chunks(480) {
+                    let db = 20.0 * (rms(window) / level).log10();
+                    assert!(db.abs() < most, "{centre}±{depth} {formant}: {db} dB");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn splices_leave_a_periodic_sound_periodic() {
+    // The buzzing vowel repeats every 342 samples, so shifted an octave
+    // either way it repeats every 171 or 684: between splices exactly, and
+    // the splices are matched. What departs from that is what the splices
+    // (and, kept, the envelope's movement from one analysis to the next)
+    // leave behind.
+    let input = vowel(72_000);
+    for (semitones, period) in [(12.0f32, 171usize), (-12.0, 684)] {
+        for (formant, most) in [(0.0, -90.0), (1.0, -45.0)] {
+            let mut pitch = shifter(&[(SHIFT, semitones), (FORMANT, formant)]);
+            let (left, _) = render(pitch.as_mut(), context(120.0), &input, &input, 256);
+            let tail = &left[24_000..];
+            let (mut off, mut total) = (0.0f64, 0.0f64);
+            for n in period..tail.len() {
+                off += f64::from(tail[n] - tail[n - period]).powi(2);
+                total += f64::from(tail[n]).powi(2);
+            }
+            let db = 10.0 * (off / total).log10();
+            assert!(db < most, "{semitones} {formant}: {db} dB");
         }
     }
 }
