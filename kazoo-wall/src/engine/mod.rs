@@ -995,6 +995,7 @@ impl Engine {
                 knob_patched,
                 inputs: &self.inputs,
                 connected,
+                fed: std::array::from_fn(|port| self.cables.feeds(slot, port)),
                 outputs: &mut self.outputs[slot],
             },
         );

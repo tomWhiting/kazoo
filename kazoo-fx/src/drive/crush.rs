@@ -577,6 +577,9 @@ pub struct Crush {
     channels: [Channel; 2],
     /// The line stage's delay in whole host samples.
     latency: usize,
+    /// Whether the wet pads ran on the last frame: one that starts again
+    /// starts silent.
+    wet_live: bool,
 }
 
 impl Default for Crush {
@@ -599,6 +602,7 @@ impl Crush {
             redesign_in: 0,
             channels: [Channel::default(); 2],
             latency: 0,
+            wet_live: false,
         };
         crush.prepare(DEFAULT_RATE);
         crush
@@ -643,7 +647,15 @@ impl Crush {
         self.redesign_in = 0;
     }
 
-    fn frame(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
+    /// One block, with the wet signal to `wet` if it is wanted at all.
+    fn run(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2], wet: WetOut<'_>) {
+        let wanted = wet.wanted();
+        for_each_frame_wet(input, output, wet, |left, right| {
+            self.frame(left, right, wanted)
+        });
+    }
+
+    fn frame(&mut self, left: f32, right: f32, wanted: bool) -> [[f32; 2]; 2] {
         let knob = self.knobs.step();
         let (bits, clock, jitter) = (knob[BITS], knob[RATE], knob[JITTER]);
         let (dither, aa, mix, level) = (knob[DITHER], knob[AA], knob[MIX], knob[LEVEL]);
@@ -668,6 +680,12 @@ impl Crush {
         let mix = fraction(mix);
         let out_gain = db_gain(level);
         let noise = &mut self.dither_noise;
+        if wanted && !self.wet_live {
+            for channel in &mut self.channels {
+                channel.wet_pad.clear();
+            }
+        }
+        self.wet_live = wanted;
         let [first, second] = &mut self.channels;
         let [left, right] = [(first, left), (second, right)].map(|(channel, sample)| {
             let dry = f64::from(sample);
@@ -707,10 +725,12 @@ impl Crush {
             let wet = filtered.mul_add(restored - raw, raw);
             let dry = channel.dry_line.impulse(x2);
             let out = (mix.mul_add(wet - dry, dry) * out_gain) as f32;
-            [
-                ceiling(channel.pad.push(out)),
-                ceiling(channel.wet_pad.push((wet * out_gain) as f32)),
-            ]
+            let alone = if wanted {
+                ceiling(channel.wet_pad.push((wet * out_gain) as f32))
+            } else {
+                0.0
+            };
+            [ceiling(channel.pad.push(out)), alone]
         });
         [[left[0], right[0]], [left[1], right[1]]]
     }
@@ -762,9 +782,7 @@ impl Effect for Crush {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        for_each_frame_wet(input, output, WetOut::none(), |left, right| {
-            self.frame(left, right)
-        });
+        self.run(input, output, WetOut::none());
     }
 
     fn process_wet(
@@ -774,9 +792,7 @@ impl Effect for Crush {
         output: [&mut [f32]; 2],
         wet: [&mut [f32]; 2],
     ) {
-        for_each_frame_wet(input, output, WetOut::to(wet), |left, right| {
-            self.frame(left, right)
-        });
+        self.run(input, output, WetOut::to(wet));
     }
 
     /// The line stage's delay at low frequencies and the sample the

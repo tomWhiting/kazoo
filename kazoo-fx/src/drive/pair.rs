@@ -32,6 +32,9 @@ pub struct Pair<C> {
     channels: [Channel<C>; 2],
     anti_alias: bool,
     rate: f64,
+    /// Whether the wet decimators ran on the last frame: one that starts
+    /// again starts silent, never from audio it last heard long ago.
+    wet_live: bool,
 }
 
 impl<C: Circuit> Pair<C> {
@@ -44,6 +47,7 @@ impl<C: Circuit> Pair<C> {
             channels: [Channel::default(); 2],
             anti_alias,
             rate: 0.0,
+            wet_live: false,
         }
     }
 
@@ -123,12 +127,20 @@ impl<C: Circuit> Pair<C> {
     /// the mixed sample and the wet sample alone for every oversampled
     /// sample, in the order [`Self::process`] calls it. Returns the mixed
     /// frame, then the wet frame, each brought down through its own
-    /// decimator, so the two are equally late.
+    /// decimator, so the two are equally late. Unless `wanted`, the wet
+    /// decimators are not run and the wet frame is silence.
     pub fn process_wet(
         &mut self,
         frame: [f32; 2],
+        wanted: bool,
         mut tick: impl FnMut(usize, &mut C, f32) -> [f32; 2],
     ) -> [[f32; 2]; 2] {
+        if wanted && !self.wet_live {
+            for channel in &mut self.channels {
+                channel.wet.reset();
+            }
+        }
+        self.wet_live = wanted;
         let mut out = [[0.0; 2]; 2];
         for (index, (channel, sample)) in self.channels.iter_mut().zip(frame).enumerate() {
             let factor = channel.oversampler.factor();
@@ -138,7 +150,9 @@ impl<C: Circuit> Pair<C> {
                 [*value, *wet] = tick(index, &mut channel.circuit, *value);
             }
             out[0][index] = channel.oversampler.reduce(mixed);
-            out[1][index] = channel.wet.reduce(alone);
+            if wanted {
+                out[1][index] = channel.wet.reduce(alone);
+            }
         }
         out
     }

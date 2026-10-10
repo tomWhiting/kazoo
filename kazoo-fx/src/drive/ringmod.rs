@@ -269,7 +269,15 @@ impl Ringmod {
         self.tune(now);
     }
 
-    fn frame(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
+    /// One block, with the wet signal to `wet` if it is wanted at all.
+    fn run(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2], wet: WetOut<'_>) {
+        let wanted = wet.wanted();
+        for_each_frame_wet(input, output, wet, |left, right| {
+            self.frame(left, right, wanted)
+        });
+    }
+
+    fn frame(&mut self, left: f32, right: f32, wanted: bool) -> [[f32; 2]; 2] {
         let knob = self.knobs.step();
         if self.retune.due([knob[FREQUENCY]]) {
             self.tune([knob[FREQUENCY]]);
@@ -292,7 +300,7 @@ impl Ringmod {
         let mut slots = [0usize; 2];
         let phase = &mut self.phase;
         self.pair
-            .process_wet([left, right], |index, transformer, x| {
+            .process_wet([left, right], wanted, |index, transformer, x| {
                 let slot = slots[index] % MAX_FACTOR;
                 slots[index] += 1;
                 let at = if index == 0 {
@@ -346,9 +354,7 @@ impl Effect for Ringmod {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        for_each_frame_wet(input, output, WetOut::none(), |left, right| {
-            self.frame(left, right)
-        });
+        self.run(input, output, WetOut::none());
     }
 
     fn process_wet(
@@ -358,9 +364,7 @@ impl Effect for Ringmod {
         output: [&mut [f32]; 2],
         wet: [&mut [f32]; 2],
     ) {
-        for_each_frame_wet(input, output, WetOut::to(wet), |left, right| {
-            self.frame(left, right)
-        });
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

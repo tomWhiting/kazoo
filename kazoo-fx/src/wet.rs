@@ -25,6 +25,13 @@ impl<'a> WetOut<'a> {
         Self { sides: Some(sides) }
     }
 
+    /// Whether anyone wants the wet signal: an effect that does extra work
+    /// for it alone (a second decimator) skips that work when not.
+    #[must_use]
+    pub const fn wanted(&self) -> bool {
+        self.sides.is_some()
+    }
+
     /// `frames` cut to the wet slices' length, so a block never runs past
     /// the shortest of all its slices.
     #[must_use]

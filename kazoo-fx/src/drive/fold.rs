@@ -657,7 +657,15 @@ impl Fold {
         down.mul_add(far - near, near)
     }
 
-    fn frame(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
+    /// One block, with the wet signal to `wet` if it is wanted at all.
+    fn run(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2], wet: WetOut<'_>) {
+        let wanted = wet.wanted();
+        for_each_frame_wet(input, output, wet, |left, right| {
+            self.frame(left, right, wanted)
+        });
+    }
+
+    fn frame(&mut self, left: f32, right: f32, wanted: bool) -> [[f32; 2]; 2] {
         let knob = self.knobs.step();
         let drive = (DRIVE_HIGH / DRIVE_LOW).powf(fraction(knob[FOLDS])) * DRIVE_LOW;
         let serge = f64::from(weight(knob[MODEL], 1.0));
@@ -676,7 +684,9 @@ impl Fold {
         };
         let out_gain = db_gain(knob[LEVEL]);
         self.pair
-            .process_wet([left, right], |_, folder, x| folder.tick(x, &settings))
+            .process_wet([left, right], wanted, |_, folder, x| {
+                folder.tick(x, &settings)
+            })
             .map(|side| side.map(|out| ceiling((f64::from(out) * out_gain) as f32)))
     }
 }
@@ -708,9 +718,7 @@ impl Effect for Fold {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        for_each_frame_wet(input, output, WetOut::none(), |left, right| {
-            self.frame(left, right)
-        });
+        self.run(input, output, WetOut::none());
     }
 
     fn process_wet(
@@ -720,9 +728,7 @@ impl Effect for Fold {
         output: [&mut [f32]; 2],
         wet: [&mut [f32]; 2],
     ) {
-        for_each_frame_wet(input, output, WetOut::to(wet), |left, right| {
-            self.frame(left, right)
-        });
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

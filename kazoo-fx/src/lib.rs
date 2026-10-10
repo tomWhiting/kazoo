@@ -148,7 +148,9 @@ pub trait Effect: Send + fmt::Debug {
     /// the effect's `mix` knob all the way to wet, every other knob as it
     /// is. An effect with no mix knob is all effect, so its wet signal is
     /// its output. It comes out of the same pass as the mix: asking for it
-    /// costs a copy, never a second run. All six slices have the same
+    /// costs a copy, never a second run (an effect that mixes inside an
+    /// oversampler also brings the wet signal down through a decimator of
+    /// its own, which [`Self::process`] never runs). All six slices have the same
     /// length; if they differ, only the shortest length is processed and
     /// the rest of every output, `wet` included, is silenced. Real-time
     /// safe.

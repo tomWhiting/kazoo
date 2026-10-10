@@ -6,7 +6,10 @@
 //! `right` is mono-normalled: with nothing plugged into it, the effect hears
 //! `left` on both sides. The outputs are the mix (`left`, `right`) and the
 //! wet signal alone (`wet_left`, `wet_right`), both from the one pass
-//! through the effect ([`kazoo_fx::Effect::process_wet`]).
+//! through the effect ([`kazoo_fx::Effect::process_wet`]). With neither wet
+//! output patched the effect runs plain [`kazoo_fx::Effect::process`], so
+//! nothing is spent on a wet signal no one hears, and the wet outputs are
+//! held silent.
 
 use kazoo_fx::{Context, Effect, EffectKind};
 
@@ -15,6 +18,8 @@ use crate::{MAX_KNOBS, SUB_BLOCK};
 
 const IN_LEFT: usize = 0;
 const IN_RIGHT: usize = 1;
+const WET_LEFT: usize = 2;
+const WET_RIGHT: usize = 3;
 
 /// Output bound: an effect's own caps keep it far inside this.
 const LIMIT: f32 = 16.0;
@@ -66,12 +71,19 @@ impl Module for EffectModule {
         }
         let [left, right, wet_left, wet_right] = io.outputs;
         let context = Context { bpm: tick.bpm };
-        self.effect.process_wet(
-            &context,
-            [&self.left, &self.right],
-            [left, right],
-            [wet_left, wet_right],
-        );
+        if io.fed[WET_LEFT] || io.fed[WET_RIGHT] {
+            self.effect.process_wet(
+                &context,
+                [&self.left, &self.right],
+                [left, right],
+                [wet_left, wet_right],
+            );
+        } else {
+            self.effect
+                .process(&context, [&self.left, &self.right], [left, right]);
+            wet_left.fill(0.0);
+            wet_right.fill(0.0);
+        }
         for port in io.outputs.iter_mut() {
             for sample in port.iter_mut() {
                 *sample = finite(*sample).clamp(-LIMIT, LIMIT);

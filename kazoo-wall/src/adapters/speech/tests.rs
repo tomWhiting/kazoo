@@ -95,6 +95,7 @@ fn play(module: &mut SpeakModule, gate: f32, blocks: usize) -> Vec<f32> {
                     knob_patched: [false; MAX_KNOBS],
                     inputs: &inputs,
                     connected: [true, false, false, false],
+                    fed: [true; MAX_OUTPUTS],
                     outputs: &mut outputs,
                 },
             );
