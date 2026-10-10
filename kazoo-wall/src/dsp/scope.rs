@@ -96,6 +96,9 @@ pub struct Scope {
     /// Points across the screen, and frames to each.
     capacity: usize,
     frames_per_point: u32,
+    /// Points still to be drawn before input b's trace is all of what is
+    /// plugged into b now: a screen's worth from when b was re-plugged.
+    b_owed: usize,
     /// The span the screen is laid out for, in frames, and the span its
     /// `time` knob asks for now (taken at the next sweep's start).
     span_frames: u32,
@@ -134,6 +137,7 @@ impl Scope {
             filled: 0,
             drawn: 0,
             capacity: TRACE_POINTS,
+            b_owed: 0,
             frames_per_point: 1,
             span_frames: 0,
             wanted: 0,
@@ -177,6 +181,7 @@ impl Scope {
         self.point = 0;
         self.filled = 0;
         self.drawn = 0;
+        self.b_owed = 0;
     }
 
     /// At a sweep's start (or, rolling, a point's), take the span the
@@ -241,6 +246,7 @@ impl Scope {
         trace.capacity = self.sweep.capacity;
         trace.span = self.sweep.span;
         trace.xy = self.sweep.xy;
+        trace.b_current = self.b_owed == 0;
         trace.triggered = self.triggered;
         // At most TRACE_POINTS: exact.
         trace.points = points as u16;
@@ -279,6 +285,7 @@ impl Scope {
         }
         self.filled = 0;
         self.point += 1;
+        self.b_owed = self.b_owed.saturating_sub(1);
         if self.point < self.capacity {
             return;
         }
@@ -302,6 +309,7 @@ impl Scope {
         }
         self.filled = 0;
         self.point = (self.point + 1) % self.capacity;
+        self.b_owed = self.b_owed.saturating_sub(1);
         self.drawn = (self.drawn + 1).min(self.capacity);
         self.publish(self.gap);
     }
@@ -321,6 +329,7 @@ impl Scope {
         }
         self.filled = 0;
         self.point += 1;
+        self.b_owed = self.b_owed.saturating_sub(1);
         if self.point < self.capacity {
             return;
         }
@@ -388,6 +397,10 @@ impl Module for Scope {
         }
         if moved[IN_A] {
             self.mode = None;
+        } else if moved[IN_B] {
+            // a's trace stands; b's is of the old signal until a screen of
+            // the new one is drawn.
+            self.b_owed = self.capacity;
         }
         self.ready = false;
     }
@@ -746,6 +759,32 @@ mod tests {
         assert_eq!(
             first.trace.points, first.trace.capacity,
             "a's screen was not cleared"
+        );
+        // Short sweeps redraw b long before its first reading: b's trace
+        // is all of the new b.
+        assert!(first.trace.b_current);
+        let points = usize::from(first.trace.points);
+        assert!(
+            first.trace.low[1][..points]
+                .iter()
+                .all(|s| (s + 0.75).abs() < 1e-6)
+        );
+        // A long sweep still holds b's old points when b's first reading
+        // comes: b's trace is not b's until a screen of the new b is drawn.
+        let mut bench = Bench::new(Kind::SCOPE);
+        bench.knob("time", 1.0);
+        captures(&mut bench, 96_000, &wave, Some(&|_| 0.25));
+        bench.module.rewired([false, true, false, false]);
+        let shots = captures(
+            &mut bench,
+            96_000,
+            |frame| wave(96_000 + frame),
+            Some(&|_| -0.75),
+        );
+        assert!(!shots[0].trace.b_current, "b's old points are not b now");
+        assert!(
+            shots.last().unwrap().trace.b_current,
+            "a screen later they are"
         );
         assert!(first.trace.points > 0);
     }

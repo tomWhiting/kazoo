@@ -1000,6 +1000,18 @@ fn probes_leave_out_what_they_do_not_have_and_read_back_whole() {
         assert!(quiet.get(absent).is_none(), "{absent} in {quiet}");
     }
     assert_eq!(quiet["rhythm"], json!("none"));
+    // A rhythm a newer wall names reads as none: the reading still reads.
+    let mut newer = quiet.clone();
+    newer["rhythm"] = json!("swinging");
+    let read: Measured = serde_json::from_value(newer).unwrap();
+    assert_eq!(read.rhythm, Rhythm::None);
+    for (rhythm, name) in [
+        (Rhythm::Steady, "steady"),
+        (Rhythm::Wavering, "wavering"),
+        (Rhythm::Paused, "paused"),
+    ] {
+        assert_eq!(serde_json::to_value(rhythm).unwrap(), json!(name));
+    }
     assert_eq!(quiet["gate"], json!({"high": false}));
     let result = ProbeResult {
         probes: vec![

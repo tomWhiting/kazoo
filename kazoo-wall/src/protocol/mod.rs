@@ -1371,9 +1371,6 @@ impl Measured {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rhythm {
-    /// It does not repeat, as far as can be told.
-    #[default]
-    None,
     /// Its latest periods agree: a steady pitch or rate.
     Steady,
     /// It repeats, but its periods wander (a wobble, or noise).
@@ -1381,6 +1378,11 @@ pub enum Rhythm {
     /// It repeated, and the cycle under way has run past the longest kept
     /// (it stopped, or slowed): `hz` is its last rate.
     Paused,
+    /// It does not repeat, as far as can be told; also how this build reads
+    /// a rhythm a newer wall names that it does not know.
+    #[default]
+    #[serde(other)]
+    None,
 }
 
 /// What a measured input is as a gate (high above 0.5).

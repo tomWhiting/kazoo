@@ -244,7 +244,10 @@ pub fn scope(capture: &Capture) -> ScopeReading {
             })
             .collect()
     };
-    let (a, b, xy) = if trace.xy {
+    let (a, b, xy) = if trace.xy && !trace.b_current {
+        // b only just re-plugged: no figure of half the old b.
+        (Vec::new(), Vec::new(), Vec::new())
+    } else if trace.xy {
         let xy = (0..filled)
             .map(|point| [level(trace.low[0][point]), level(trace.low[1][point])])
             .collect();
@@ -252,7 +255,8 @@ pub fn scope(capture: &Capture) -> ScopeReading {
     } else {
         // Unplugged, or only just plugged (nothing of it measured yet):
         // no trace of b.
-        let b_measured = capture.inputs[1].connected && capture.inputs[1].frames > 0;
+        let b_measured =
+            capture.inputs[1].connected && capture.inputs[1].frames > 0 && trace.b_current;
         let b = if b_measured { pairs(1) } else { Vec::new() };
         (pairs(0), b, Vec::new())
     };

@@ -4059,7 +4059,7 @@ fn a_readout_on_auto_shows_what_its_cable_carries() {
             ("scope2.a", "readout5.in"),
         ],
     );
-    let source = |wall: &Wall, id: &str| wall.source_show(id);
+    let source = |wall: &Wall, id: &str| wall.source_show(id, &mut wall.trail());
     assert_eq!(source(&wall, "readout1"), Some(probe::Show::Gate));
     assert_eq!(source(&wall, "readout2"), Some(probe::Show::Pitch));
     assert_eq!(source(&wall, "readout3"), Some(probe::Show::Audio));
@@ -4455,7 +4455,7 @@ fn pitch_through_a_slew_or_a_sample_and_hold_is_still_pitch() {
             ("sh2.out", "readout3.in"),
         ],
     );
-    let source = |id: &str| wall.source_show(id);
+    let source = |id: &str| wall.source_show(id, &mut wall.trail());
     assert_eq!(source("readout1"), Some(probe::Show::Pitch));
     assert_eq!(source("readout2"), Some(probe::Show::Pitch));
     assert_eq!(source("readout3"), Some(probe::Show::Cv));
@@ -4489,7 +4489,7 @@ fn pitch_through_the_routers_and_math_is_still_pitch() {
             ("math1.abs", "readout6.in"),
         ],
     );
-    let source = |id: &str| wall.source_show(id);
+    let source = |id: &str| wall.source_show(id, &mut wall.trail());
     assert_eq!(source("readout1"), Some(probe::Show::Pitch));
     assert_eq!(source("readout2"), Some(probe::Show::Pitch));
     assert_eq!(source("readout3"), Some(probe::Show::Audio));
@@ -4498,5 +4498,67 @@ fn pitch_through_the_routers_and_math_is_still_pitch() {
     assert_eq!(source("readout6"), Some(probe::Show::Cv));
     // An empty switch sends a steady 1.0, as its outputs say they carry.
     let (empty, _engine) = probing_wall(&["switch", "readout"], &[("switch1.out1", "readout1.in")]);
-    assert_eq!(empty.source_show("readout1"), Some(probe::Show::Audio));
+    assert_eq!(
+        empty.source_show("readout1", &mut empty.trail()),
+        Some(probe::Show::Audio)
+    );
+}
+
+#[test]
+fn a_loop_of_routers_reads_the_same_whatever_order_its_cables_went_in() {
+    // Two selectors feeding each other, one also fed a pitch; a readout
+    // on each, a mixer of the pitch and an LFO, and one on that too.
+    let kinds = [
+        "seq", "lfo", "select", "select", "mix", "readout", "readout", "readout",
+    ];
+    let cables = [
+        ("seq1.pitch", "select1.in1"),
+        ("select2.out", "select1.in2"),
+        ("select1.out", "select2.in1"),
+        ("select1.out", "readout1.in"),
+        ("select2.out", "readout2.in"),
+        ("seq1.pitch", "mix1.a"),
+        ("lfo1.out", "mix1.b"),
+        ("mix1.out", "readout3.in"),
+    ];
+    let read = |cables: &[(&str, &str)]| {
+        let (wall, _engine) = probing_wall(&kinds, cables);
+        let mut trail = wall.trail();
+        // In both orders of asking, on one trail.
+        let forward: Vec<_> = ["readout1", "readout2", "readout3"]
+            .iter()
+            .map(|id| wall.source_show(id, &mut trail))
+            .collect();
+        let mut trail = wall.trail();
+        let mut backward: Vec<_> = ["readout3", "readout2", "readout1"]
+            .iter()
+            .map(|id| wall.source_show(id, &mut trail))
+            .collect();
+        backward.reverse();
+        assert_eq!(forward, backward);
+        forward
+    };
+    let pitch = Some(probe::Show::Pitch);
+    let expected = vec![pitch, pitch, pitch];
+    assert_eq!(read(&cables), expected);
+    let mut reversed = cables;
+    reversed.reverse();
+    assert_eq!(read(&reversed), expected);
+    // A loop with nothing else in it shows nothing.
+    let (alone, _engine) = probing_wall(
+        &["select", "select", "readout"],
+        &[
+            ("select2.out", "select1.in1"),
+            ("select1.out", "select2.in1"),
+            ("select1.out", "readout1.in"),
+        ],
+    );
+    assert_eq!(alone.source_show("readout1", &mut alone.trail()), None);
+    // A scope's probe asks nothing of the cables: only readouts do.
+    let (scoped, _engine) = probing_wall(&["seq", "scope"], &[("seq1.pitch", "scope1.a")]);
+    let mut trail = scoped.trail();
+    scoped.probes_now(Instant::now());
+    let found = scoped.probe_of(&scoped.patch.modules()[1], Instant::now(), &mut trail);
+    assert!(found.readout.is_none());
+    assert_eq!(trail.steps, 0);
 }

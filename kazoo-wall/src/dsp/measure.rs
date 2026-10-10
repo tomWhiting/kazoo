@@ -196,6 +196,10 @@ pub struct Trace {
     pub triggered: bool,
     /// Whether it is input a against input b.
     pub xy: bool,
+    /// Whether input b's points are all of what is plugged into b now:
+    /// not from b being re-plugged until a screen of the new b is drawn
+    /// (until then b's points, and an XY figure, are not to be shown).
+    pub b_current: bool,
     /// Each input's lowest at each point.
     pub low: [[f32; TRACE_POINTS]; 2],
     /// Each input's highest at each point.
@@ -211,6 +215,7 @@ impl Trace {
         span: 0.0,
         triggered: false,
         xy: false,
+        b_current: true,
         low: [[0.0; TRACE_POINTS]; 2],
         high: [[0.0; TRACE_POINTS]; 2],
     };
@@ -320,10 +325,12 @@ impl History {
         }
         // Alternating long and short: each pair is one cycle (a wave), or
         // two pulses (a swung gate).
+        // Three pairs at least: two can agree by chance (a held random
+        // value crossing on clock ticks).
         let pairs = used / 2;
         let (sum, paired) =
             agreeing((0..pairs).map(|pair| self.nth(2 * pair) + self.nth(2 * pair + 1)));
-        if paired {
+        if paired && pairs >= 3 {
             let per_pair = sum / pairs as f64;
             return Some(match repeats {
                 Repeats::Wave => (per_pair, true),
@@ -371,6 +378,35 @@ impl History {
             self.clear();
             self.push(before);
             self.push(newest);
+        }
+    }
+
+    /// After a gate's new gap: when its three newest gaps agree with each
+    /// other and every older gap is more than half as long again (or as
+    /// short) as them, its rate has changed (a clock turned from 1/16 to a
+    /// bar), and only those three are kept. Rests are older gaps whole
+    /// numbers of the newest, and some older gaps are as long as the
+    /// newest: they are kept.
+    fn follow_pulse_change(&mut self) {
+        if self.count < 4 {
+            return;
+        }
+        let newest = [self.nth(0), self.nth(1), self.nth(2)];
+        let (low, high) = (
+            newest.iter().copied().fold(f64::INFINITY, f64::min),
+            newest.iter().copied().fold(0.0, f64::max),
+        );
+        if high - low > CHANGE_AGREE * high {
+            return;
+        }
+        let mean = newest.iter().sum::<f64>() / 3.0;
+        let changed = (3..self.count)
+            .all(|age| !(1.0 / CHANGE_RATIO..=CHANGE_RATIO).contains(&(self.nth(age) / mean)));
+        if changed {
+            self.clear();
+            for gap in newest.iter().rev() {
+                self.push(*gap);
+            }
         }
     }
 
@@ -529,6 +565,7 @@ impl Pulses {
                 let period = frame.saturating_sub(last);
                 if period > 0 {
                     self.history.push(period as f64);
+                    self.history.follow_pulse_change();
                     self.pulse = Some(self.high_frames);
                 }
             }
@@ -1000,6 +1037,64 @@ mod tests {
             assert!((reading.gate.hz - 8.0).abs() < 1e-3, "{reading:?}");
             assert!((reading.gate.duty - 0.5).abs() < 1e-3, "{reading:?}");
         }
+    }
+
+    /// Readings of a clock with `period` frames between rises, high half
+    /// the time, for `frames` frames from `meter`'s next frame.
+    fn clocked(meter: &mut Meter, period: usize, frames: usize) -> Vec<Reading> {
+        let mut readings = Vec::new();
+        for frame in 0..frames {
+            if meter.feed(if frame % period < period / 2 {
+                1.0
+            } else {
+                0.0
+            }) {
+                readings.push(*meter.latest());
+            }
+        }
+        readings
+    }
+
+    #[test]
+    fn a_clock_turned_slower_or_faster_reads_true_within_three_pulses() {
+        // Sixteenths at 120 BPM (6 000 frames apart), then a bar (96 000).
+        let mut meter = Meter::new(RATE);
+        clocked(&mut meter, 6_000, 48_000 * 2);
+        let slow = clocked(&mut meter, 96_000, 96_000 * 3 + 4_800);
+        let last = slow.last().unwrap();
+        assert!((last.gate.hz - 0.5).abs() < 1e-3, "{last:?}");
+        // A bar, then sixteenths again: within three of them.
+        let mut meter = Meter::new(RATE);
+        clocked(&mut meter, 96_000, 96_000 * 5);
+        let fast = clocked(&mut meter, 6_000, 6_000 * 3 + 4_800);
+        let last = fast.last().unwrap();
+        assert!((last.gate.hz - 8.0).abs() < 1e-3, "{last:?}");
+    }
+
+    #[test]
+    fn held_random_steps_on_a_clock_are_almost_never_a_steady_wave() {
+        // A sample and hold of noise on an 8 Hz clock: its crossings land
+        // on clock ticks, so its periods are whole numbers of ticks, but
+        // they do not repeat.
+        let mut rng = crate::dsp::Rng::new(77);
+        let mut meter = Meter::new(RATE);
+        meter.set_connected(true);
+        let (mut steady, mut readings) = (0, 0);
+        let mut held = 0.0;
+        for frame in 0..48_000 * 120 {
+            if frame % 6_000 == 0 {
+                held = rng.bipolar();
+            }
+            if meter.feed(held) {
+                readings += 1;
+                steady += usize::from(meter.latest().steady);
+            }
+        }
+        assert_eq!(readings, 1_200);
+        assert!(
+            steady * 100 <= readings * 3,
+            "{steady} of {readings} read steady"
+        );
     }
 
     #[test]

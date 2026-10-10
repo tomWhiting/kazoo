@@ -378,13 +378,44 @@ fn unmeasured(capture: &mut Capture, input: usize, plugged: bool) {
     }
 }
 
-/// What [`Wall::source_show`] has followed: each output's answer once
-/// known (so a selector of selectors is followed once each, not once per
-/// way to it), and the outputs on the way to it (so a loop ends).
+/// Most outputs one readout's trail follows: a wall holds 96 modules of
+/// at most 4 outputs, so a trail longer than this has gone wrong.
+const TRAIL_STEPS: usize = 4_096;
+
+/// What [`Wall::source_show`] follows the cables with, for one answer:
+/// every cable by the input it goes into; each output's answer once known
+/// (so a selector of selectors is followed once each, not once per way to
+/// it; only answers that did not cut a loop short, which depend on where
+/// the loop was entered); the outputs on the way (so a loop ends); and
+/// the outputs followed for this readout.
 #[derive(Debug, Default)]
 struct Trail<'a> {
+    into: HashMap<(&'a str, usize), &'a Cable>,
     known: HashMap<(&'a str, usize), Option<probe::Show>>,
     on_the_way: HashSet<(&'a str, usize)>,
+    steps: usize,
+}
+
+/// What a trail found at an output: how it is shown, and whether that
+/// was found by cutting a loop short.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Found {
+    show: Option<probe::Show>,
+    cut: bool,
+}
+
+impl Found {
+    /// Nothing plugged in.
+    const NOTHING: Self = Self {
+        show: None,
+        cut: false,
+    };
+
+    /// Round a loop.
+    const LOOP: Self = Self {
+        show: None,
+        cut: true,
+    };
 }
 
 /// The reading end of the engine's probe ring.
@@ -3268,6 +3299,7 @@ impl Wall {
     /// [`MAX_PROBES`] of them in the wall's order, and the ids of the
     /// rest.
     fn probes_now(&self, now: Instant) -> (Vec<Probe>, Vec<String>) {
+        let mut trail = self.trail();
         let mut shown = Vec::new();
         let mut left_out = Vec::new();
         for module in self.patch.modules() {
@@ -3275,7 +3307,7 @@ impl Wall {
                 continue;
             }
             if shown.len() < MAX_PROBES {
-                shown.push(self.probe_of(module, now));
+                shown.push(self.probe_of(module, now, &mut trail));
             } else {
                 left_out.push(module.id.clone());
             }
@@ -3283,89 +3315,109 @@ impl Wall {
         (shown, left_out)
     }
 
-    /// What `module` (a scope or readout) measured last, as of `now`.
-    fn probe_of(&self, module: &Module, now: Instant) -> Probe {
+    /// What `module` (a scope or readout) measured last, as of `now`;
+    /// `trail` follows readouts' cables (see [`Self::source_show`]).
+    fn probe_of<'a>(&'a self, module: &Module, now: Instant, trail: &mut Trail<'a>) -> Probe {
         let latest = self
             .readings
             .get(&module.id)
             .map(|(at, capture)| (capture, now.saturating_duration_since(*at)));
+        // Only a readout shows by what is plugged in.
+        let source = (module.kind == Kind::READOUT)
+            .then(|| self.source_show(&module.id, trail))
+            .flatten();
         probe::probe(
             &module.id,
             module.kind,
             latest,
-            self.source_show(&module.id),
+            source,
             self.engine.shared().bpm(),
         )
+    }
+
+    /// A trail to follow the wall's cables with, for one answer: every
+    /// cable by the input it goes into, made once.
+    fn trail(&self) -> Trail<'_> {
+        Trail {
+            into: self
+                .patch
+                .cables()
+                .iter()
+                .filter_map(|cable| match cable.to_jack {
+                    Jack::Input(input) => Some(((cable.to_module.as_str(), input), cable)),
+                    Jack::Knob(_) => None,
+                })
+                .collect(),
+            ..Trail::default()
+        }
     }
 
     /// How what is plugged into readout `id`'s input is shown at `auto`
     /// (see [`probe::Show`]): by the output its cable comes from, followed
     /// back through what passes its input on (see [`Self::show_out`]).
-    /// None when nothing is plugged in, or the trail goes round in a loop.
-    fn source_show(&self, id: &str) -> Option<probe::Show> {
-        self.show_into(id, 0, &mut Trail::default())
+    /// None when nothing is plugged in, or the trail only goes round in a
+    /// loop.
+    fn source_show<'a>(&'a self, id: &str, trail: &mut Trail<'a>) -> Option<probe::Show> {
+        trail.steps = 0;
+        self.show_into(id, 0, trail).show
     }
 
-    /// How what arrives at `module`'s input `input` is shown; `trail`
-    /// holds what has been followed (see [`Trail`]).
-    fn show_into<'a>(
-        &'a self,
-        module: &str,
-        input: usize,
-        trail: &mut Trail<'a>,
-    ) -> Option<probe::Show> {
-        let cable = self
-            .patch
-            .cables()
-            .iter()
-            .find(|cable| cable.to_module == module && cable.to_jack == Jack::Input(input))?;
-        self.show_out(&cable.from_module, cable.from_port, trail)
+    /// How what arrives at `module`'s input `input` is shown.
+    fn show_into<'a>(&'a self, module: &str, input: usize, trail: &mut Trail<'a>) -> Found {
+        let cable = trail.into.get(&(module, input)).copied();
+        cable.map_or(Found::NOTHING, |cable| {
+            self.show_out(&cable.from_module, cable.from_port, trail)
+        })
     }
 
     /// How what output `port` of `module` carries is shown.
     ///
     /// Most outputs say so themselves (see
-    /// [`crate::catalogue::PortSpec::pitch`]). Some pass
-    /// on what comes in, and are followed back to it: a scope's output a
-    /// is its input a, b is b; a readout's out is its in; a slew limiter's
-    /// and a sample and hold's out is their in, slewed or held; a switch's
-    /// outputs are its in, sent on; a selector's out is whichever input is
-    /// chosen, so it is followed when every input plugged in is shown
-    /// alike; and `math`'s `sum`, `min` and `max` of a pitch and anything
-    /// (a transposition, a vibrato) are still pitch (its `abs` is a plain
-    /// CV). One of those with nothing plugged in shows what its output is
-    /// said to carry (a sample and hold of its own noise is a plain CV, a
-    /// switch with no input sends a steady 1.0), but a scope or readout,
-    /// which passes on silence, shows nothing.
-    fn show_out<'a>(
-        &'a self,
-        module: &str,
-        port: usize,
-        trail: &mut Trail<'a>,
-    ) -> Option<probe::Show> {
-        let from = self.patch.module(module)?;
+    /// [`crate::catalogue::PortSpec::pitch`]). Some pass on what comes in,
+    /// and are followed back to it: a scope's output a is its input a, b
+    /// is b; a readout's out is its in; a slew limiter's and a sample and
+    /// hold's out is their in, slewed or held; a switch's outputs are its
+    /// in, sent on; a selector's out is whichever input is chosen, so it
+    /// is followed when every input plugged in is shown alike; and the
+    /// sums (`mix`'s out, `math`'s `sum`, `min` and `max`) of a pitch and
+    /// anything (a transposition, a vibrato) are still pitch (`math`'s
+    /// `abs` is a plain CV). One of those with nothing plugged in shows
+    /// what its output is said to carry (a sample and hold of its own noise
+    /// is a plain CV, a switch with no input sends a steady 1.0), but a
+    /// scope or readout, which passes on silence, shows nothing. An input
+    /// that only leads round a loop says nothing either way.
+    fn show_out<'a>(&'a self, module: &str, port: usize, trail: &mut Trail<'a>) -> Found {
+        let Some(from) = self.patch.module(module) else {
+            return Found::NOTHING;
+        };
         let key = (from.id.as_str(), port);
         if let Some(known) = trail.known.get(&key) {
-            return *known;
+            return Found {
+                show: *known,
+                cut: false,
+            };
         }
-        if !trail.on_the_way.insert(key) {
-            // Round a loop: nothing at its start.
-            return None;
+        trail.steps += 1;
+        if trail.steps > TRAIL_STEPS || !trail.on_the_way.insert(key) {
+            // Round a loop (or a trail too long to follow): nothing here.
+            return Found::LOOP;
         }
-        let shown = self.shown_out(from, port, trail);
+        let found = self.shown_out(from, port, trail);
         trail.on_the_way.remove(&key);
-        trail.known.insert(key, shown);
-        shown
+        // What was found by cutting a loop short depends on where the loop
+        // was entered: only what was not is kept for the next readout.
+        if !found.cut {
+            trail.known.insert(key, found.show);
+        }
+        found
     }
 
     /// [`Self::show_out`] of `from`, once the trail has been checked.
-    fn shown_out<'a>(
-        &'a self,
-        from: &'a Module,
-        port: usize,
-        trail: &mut Trail<'a>,
-    ) -> Option<probe::Show> {
-        let own = from.kind.spec().outputs.get(port).map(probe::Show::of);
+    fn shown_out<'a>(&'a self, from: &'a Module, port: usize, trail: &mut Trail<'a>) -> Found {
+        let own = Found {
+            show: from.kind.spec().outputs.get(port).map(probe::Show::of),
+            cut: false,
+        };
         let kind = from.kind;
         // A scope passes input `port` to output `port`.
         let same = [port];
@@ -3373,39 +3425,48 @@ impl Wall {
             &same
         } else if kind == Kind::SLEW || kind == Kind::SH || kind == Kind::SWITCH {
             &[0]
-        } else if kind == Kind::SELECT {
+        } else if kind == Kind::SELECT || kind == Kind::MIX {
             &[0, 1, 2, 3]
         } else if kind == Kind::MATH && port <= 2 {
             &[0, 1]
         } else {
             return own;
         };
-        let shown: Vec<Option<probe::Show>> = inputs
+        let plugged: Vec<usize> = inputs
             .iter()
-            .filter(|&&input| {
-                self.patch
-                    .cables()
-                    .iter()
-                    .any(|cable| cable.to_module == from.id && cable.to_jack == Jack::Input(input))
-            })
-            .map(|&input| self.show_into(&from.id, input, trail))
+            .copied()
+            .filter(|&input| trail.into.contains_key(&(from.id.as_str(), input)))
             .collect();
-        if shown.is_empty() {
-            return own.filter(|_| !probe::measures(kind));
-        }
-        if kind == Kind::MATH {
-            return if shown.contains(&Some(probe::Show::Pitch)) {
-                Some(probe::Show::Pitch)
-            } else {
-                own
+        if plugged.is_empty() {
+            return Found {
+                show: own.show.filter(|_| !probe::measures(kind)),
+                cut: false,
             };
         }
-        let first = shown[0];
-        if shown.iter().all(|show| *show == first) {
-            first
-        } else {
-            own
+        let mut cut = false;
+        let mut shown = Vec::with_capacity(plugged.len());
+        for input in plugged {
+            let found = self.show_into(&from.id, input, trail);
+            cut |= found.cut;
+            // An input that only leads round a loop says nothing.
+            if !(found.cut && found.show.is_none()) {
+                shown.push(found.show);
+            }
         }
+        let show = if shown.is_empty() {
+            None
+        } else if kind == Kind::MATH || kind == Kind::MIX {
+            if shown.contains(&Some(probe::Show::Pitch)) {
+                Some(probe::Show::Pitch)
+            } else {
+                own.show
+            }
+        } else if shown.iter().all(|show| *show == shown[0]) {
+            shown[0]
+        } else {
+            own.show
+        };
+        Found { show, cut }
     }
 
     /// Answer `probe`: what `module` (a scope or readout) measured (one
@@ -3431,7 +3492,7 @@ impl Wall {
             }
             (Some(id), []) => {
                 return Ok(ProbeResult {
-                    probes: vec![self.probe_of(self.measuring(id)?, now)],
+                    probes: vec![self.probe_of(self.measuring(id)?, now, &mut self.trail())],
                     left_out: Vec::new(),
                     missing: Vec::new(),
                     dropped,
@@ -3459,13 +3520,14 @@ impl Wall {
         // rest.
         let mut probes = Vec::with_capacity(ids.len());
         let mut missing = Vec::new();
+        let mut trail = self.trail();
         for id in ids {
             match self
                 .patch
                 .module(id)
                 .filter(|module| probe::measures(module.kind))
             {
-                Some(found) => probes.push(self.probe_of(found, now)),
+                Some(found) => probes.push(self.probe_of(found, now, &mut trail)),
                 None => missing.push(id.to_string()),
             }
         }

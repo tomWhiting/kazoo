@@ -1486,34 +1486,27 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_constant_is_its_place_in_the_registry() {
-        for kind in [
-            Kind::VCO,
-            Kind::LFO,
-            Kind::NOISE,
-            Kind::VCF,
-            Kind::VCA,
-            Kind::ENV,
-            Kind::CLOCK,
-            Kind::SEQ,
-            Kind::SH,
-            Kind::QUANT,
-            Kind::SLEW,
-            Kind::MIX,
-            Kind::OUT,
-            Kind::COMPARE,
-            Kind::LOGIC,
-            Kind::BRANCH,
-            Kind::SWITCH,
-            Kind::SELECT,
-            Kind::DIVIDE,
-            Kind::MATH,
-            Kind::SCOPE,
-            Kind::READOUT,
-        ] {
-            assert_eq!(kind.spec().kind, kind, "{kind:?}");
-            assert_eq!(Kind::from_name(kind.name()), Some(kind));
+    fn the_wall_s_own_kinds_come_first_and_end_with_the_readout() {
+        // The constants index the registry: the wall's own kinds must fill
+        // it from 0 up to the last constant (READOUT), in order, and every
+        // effect and adapted kind come after them.
+        let kinds: Vec<Kind> = Kind::all().collect();
+        let own = kinds
+            .iter()
+            .take_while(|kind| kind.spec().family == "synth")
+            .count();
+        assert_eq!(own, usize::from(Kind::READOUT.0) + 1, "{kinds:?}");
+        assert_eq!(own, native_kinds().len());
+        for (index, kind) in kinds.iter().enumerate() {
+            assert_eq!(usize::from(kind.0), index);
+            if index < own {
+                assert_eq!(kind.spec().name, native_kinds()[index].name);
+            } else {
+                assert_ne!(kind.spec().family, "synth", "{kind:?} after the readout");
+            }
         }
+        assert_eq!(kinds[own - 1], Kind::READOUT);
+        assert_eq!(kinds[own - 2], Kind::SCOPE);
     }
 
     #[test]
