@@ -2026,6 +2026,84 @@ fn a_new_wall_is_empty_and_undo_brings_the_old_one_back() {
 }
 
 #[test]
+fn a_wall_of_decisions_and_routers_saves_and_loads_back_exactly() {
+    let (mut wall, mut engine, dir) = saving_wall();
+    let kinds = [
+        "compare", "logic", "branch", "switch", "select", "divide", "math",
+    ];
+    for kind in kinds {
+        let add = Request::Add {
+            kind: kind.to_string(),
+            name: None,
+            place: None,
+        };
+        let id = changed(ask(&mut wall, &add).unwrap()).module.unwrap();
+        assert_eq!(id, format!("{kind}1"));
+    }
+    for (module, knob, value) in [
+        ("compare1", "window", 0.4),
+        ("compare1", "hysteresis", 0.1),
+        ("logic1", "threshold", 0.3),
+        ("branch1", "mode", 1.0),
+        ("branch1", "chance", 0.3),
+        ("switch1", "positions", 3.0),
+        ("switch1", "fade", 0.02),
+        ("select1", "select", 2.0),
+        ("divide1", "division", 4.0),
+        ("math1", "scale_b", -1.0),
+        ("math1", "offset_a", 0.25),
+    ] {
+        ask(&mut wall, &turn(module, knob, value)).unwrap();
+    }
+    for (from, to, amount) in [
+        ("clock1.out", "divide1.in", 1.0),
+        ("divide1.out", "branch1.in", 1.0),
+        ("branch1.a", "switch1.step", 1.0),
+        ("seq1.pitch", "math1.a", 1.0),
+        ("math1.sum", "compare1.in", 1.0),
+        ("compare1.gate", "logic1.a", 1.0),
+        ("logic1.xor", "select1.in1", 1.0),
+        ("switch1.out2", "select1.in2", 1.0),
+        ("divide1.count", "select1.select", 1.0),
+        ("select1.out", "vcf1.cutoff", 0.2),
+    ] {
+        let patch = Request::Patch {
+            from: from.to_string(),
+            to: to.to_string(),
+            amount: Some(amount),
+        };
+        ask(&mut wall, &patch).unwrap();
+    }
+    play(&mut wall, &mut engine);
+    save(&mut wall, "routers", false).unwrap();
+    let saved = as_saved(&wall);
+    let file = save_file(&dir, "routers");
+    for kind in kinds {
+        let module = file
+            .modules
+            .iter()
+            .find(|module| module.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind} in the save"));
+        assert_eq!(module.id, format!("{kind}1"));
+    }
+    let branch = file.modules.iter().find(|m| m.id == "branch1").unwrap();
+    assert!((branch.knobs["mode"] - 1.0).abs() < 1e-9);
+
+    // Cleared, then loaded: the wall is the save, and plays it.
+    ask(&mut wall, &Request::New).unwrap();
+    play(&mut wall, &mut engine);
+    assert!(wall.snapshot().modules.is_empty());
+    load_save(&mut wall, "routers").unwrap();
+    assert_eq!(as_saved(&wall), saved);
+    play(&mut wall, &mut engine);
+    plays_at_its_targets(&wall, &saved);
+    // Nothing in the file needed mending to read back.
+    let (_, notes) = Patch::load(&file).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(wall.engine_mut().shared().leaked(), 0);
+}
+
+#[test]
 fn deleting_a_save_takes_only_the_save() {
     let (mut wall, _engine, dir) = saving_wall();
     save(&mut wall, "Jam", false).unwrap();
@@ -3981,7 +4059,7 @@ fn a_readout_on_auto_shows_what_its_cable_carries() {
             ("scope2.a", "readout5.in"),
         ],
     );
-    let source = |wall: &Wall, id: &str| wall.source_port(id).map(probe::Show::of);
+    let source = |wall: &Wall, id: &str| wall.source_show(id);
     assert_eq!(source(&wall, "readout1"), Some(probe::Show::Gate));
     assert_eq!(source(&wall, "readout2"), Some(probe::Show::Pitch));
     assert_eq!(source(&wall, "readout3"), Some(probe::Show::Audio));
@@ -4377,8 +4455,48 @@ fn pitch_through_a_slew_or_a_sample_and_hold_is_still_pitch() {
             ("sh2.out", "readout3.in"),
         ],
     );
-    let source = |id: &str| wall.source_port(id).map(probe::Show::of);
+    let source = |id: &str| wall.source_show(id);
     assert_eq!(source("readout1"), Some(probe::Show::Pitch));
     assert_eq!(source("readout2"), Some(probe::Show::Pitch));
     assert_eq!(source("readout3"), Some(probe::Show::Cv));
+}
+
+#[test]
+fn pitch_through_the_routers_and_math_is_still_pitch() {
+    let (wall, _engine) = probing_wall(
+        &[
+            "seq", "lfo", "switch", "select", "select", "math", "math", "readout", "readout",
+            "readout", "readout", "readout", "switch", "readout",
+        ],
+        &[
+            // A switch sends its in on.
+            ("seq1.pitch", "switch1.in"),
+            ("switch1.out3", "readout1.in"),
+            // A selector of pitches is pitch; of a pitch and an LFO, its
+            // own port's (audio).
+            ("seq1.pitch", "select1.in1"),
+            ("seq1.pitch", "select1.in3"),
+            ("select1.out", "readout2.in"),
+            ("seq1.pitch", "select2.in1"),
+            ("lfo1.out", "select2.in2"),
+            ("select2.out", "readout3.in"),
+            // A pitch plus a vibrato is pitch; its absolute value is not.
+            ("seq1.pitch", "math1.a"),
+            ("lfo1.out", "math1.b"),
+            ("math1.sum", "readout4.in"),
+            ("lfo1.out", "math2.a"),
+            ("math2.sum", "readout5.in"),
+            ("math1.abs", "readout6.in"),
+        ],
+    );
+    let source = |id: &str| wall.source_show(id);
+    assert_eq!(source("readout1"), Some(probe::Show::Pitch));
+    assert_eq!(source("readout2"), Some(probe::Show::Pitch));
+    assert_eq!(source("readout3"), Some(probe::Show::Audio));
+    assert_eq!(source("readout4"), Some(probe::Show::Pitch));
+    assert_eq!(source("readout5"), Some(probe::Show::Cv));
+    assert_eq!(source("readout6"), Some(probe::Show::Cv));
+    // An empty switch sends a steady 1.0, as its outputs say they carry.
+    let (empty, _engine) = probing_wall(&["switch", "readout"], &[("switch1.out1", "readout1.in")]);
+    assert_eq!(empty.source_show("readout1"), Some(probe::Show::Audio));
 }

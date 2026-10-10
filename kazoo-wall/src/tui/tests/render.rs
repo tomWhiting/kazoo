@@ -415,8 +415,9 @@ fn the_header_says_when_the_change_log_takes_no_changes() {
 /// A full wall: every module the wall holds, of every sort, and every
 /// cable, each into its own knob.
 fn full_wall() -> kazoo_wall::protocol::Snapshot {
-    const KINDS: [&str; 12] = [
+    const KINDS: [&str; 19] = [
         "vco", "lfo", "vcf", "vca", "env", "seq", "mix", "noise", "sh", "slew", "clock", "out",
+        "compare", "logic", "branch", "switch", "select", "divide", "math",
     ];
     let mut wall = snapshot();
     wall.modules = (0..kazoo_wall::MAX_MODULES)

@@ -1079,3 +1079,53 @@ fn probes_leave_out_what_they_do_not_have_and_read_back_whole() {
     let none: ProbeResult = serde_json::from_value(json!({"probes":[]})).unwrap();
     assert!(none.left_out.is_empty());
 }
+
+/// A selector's `select` knob, as the catalogue sends it.
+fn select_knob(jack: JackLaw) -> KnobInfo {
+    KnobInfo {
+        name: "select".to_string(),
+        min: 0.0,
+        max: 3.0,
+        default: 0.0,
+        unit: String::new(),
+        curve: Curve::Linear,
+        stepped: true,
+        labels: vec!["in1".into(), "in2".into(), "in3".into(), "in4".into()],
+        jack,
+    }
+}
+
+#[test]
+fn a_spanning_jack_round_trips_and_an_unknown_law_still_reads() {
+    let knob = select_knob(JackLaw::Span);
+    let text = serde_json::to_string(&knob).unwrap();
+    assert!(text.contains("\"jack\":\"span\""), "{text}");
+    let back: KnobInfo = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, knob);
+    // A law from a newer wall, plain or with data, reads as unknown: the
+    // knob (and so the catalogue) still reads.
+    for law in [json!("tides"), json!({"tides": {"depth": 2}})] {
+        let mut value = serde_json::to_value(&knob).unwrap();
+        value["jack"] = law.clone();
+        let read: KnobInfo = serde_json::from_value(value).unwrap();
+        assert_eq!(read, select_knob(JackLaw::Unknown), "{law}");
+    }
+    // A law this build knows, written wrongly, fails the knob: it is never
+    // passed off as unknown. So does anything that is not a name or one
+    // name with a body.
+    for law in [
+        json!({"octaves": "x"}),
+        json!({"octaves": null}),
+        json!("octaves"),
+        json!({"span": 1}),
+        json!({}),
+        json!({"tides": 1, "waves": 2}),
+        json!(5),
+        json!([]),
+        json!(true),
+    ] {
+        let mut value = serde_json::to_value(&knob).unwrap();
+        value["jack"] = law.clone();
+        assert!(serde_json::from_value::<KnobInfo>(value).is_err(), "{law}");
+    }
+}

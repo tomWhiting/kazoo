@@ -16,7 +16,7 @@ use super::record::{Ending, Finished, Recorder};
 use super::speech::Speech;
 use super::timing::{Timing, timing};
 use crate::adapters::{self, Adapter};
-use crate::catalogue::{Builder, Curve, Jack, Kind, KnobSpec, PortSpec, Signal};
+use crate::catalogue::{Builder, Curve, Jack, Kind, KnobSpec, Signal};
 use crate::change::{summarise_with, utc, utc_now};
 use crate::dsp;
 use crate::dsp::measure::{Capture, Reading};
@@ -376,6 +376,15 @@ fn unmeasured(capture: &mut Capture, input: usize, plugged: bool) {
             ..Reading::NONE
         };
     }
+}
+
+/// What [`Wall::source_show`] has followed: each output's answer once
+/// known (so a selector of selectors is followed once each, not once per
+/// way to it), and the outputs on the way to it (so a loop ends).
+#[derive(Debug, Default)]
+struct Trail<'a> {
+    known: HashMap<(&'a str, usize), Option<probe::Show>>,
+    on_the_way: HashSet<(&'a str, usize)>,
 }
 
 /// The reading end of the engine's probe ring.
@@ -3284,55 +3293,119 @@ impl Wall {
             &module.id,
             module.kind,
             latest,
-            self.source_port(&module.id).map(probe::Show::of),
+            self.source_show(&module.id),
             self.engine.shared().bpm(),
         )
     }
 
-    /// The output plugged into readout `id`'s input: the one its cable
-    /// comes from, followed back through any scope, readout, slew limiter
-    /// or sample and hold it passes through (each passes its input on).
+    /// How what is plugged into readout `id`'s input is shown at `auto`
+    /// (see [`probe::Show`]): by the output its cable comes from, followed
+    /// back through what passes its input on (see [`Self::show_out`]).
     /// None when nothing is plugged in, or the trail goes round in a loop.
-    fn source_port(&self, id: &str) -> Option<&'static PortSpec> {
-        let mut module = self.patch.module(id)?;
-        let mut input = 0;
-        // What follows its input to its output: a scope's output a is its
-        // input a, b is b; a readout's out is its in; a slew limiter's and
-        // a sample and hold's out is their in, slewed or held (so pitch
-        // through them is still pitch).
-        let passes = |kind: Kind, port: usize| {
-            if probe::measures(kind) {
-                Some(port)
-            } else if kind == Kind::SLEW || kind == Kind::SH {
-                Some(0)
-            } else {
-                None
-            }
-        };
-        // Each hop goes back one module: a trail longer than the wall is a
-        // loop.
-        for _ in 0..=self.patch.modules().len() {
-            let cable = self.patch.cables().iter().find(|cable| {
-                cable.to_module == module.id && cable.to_jack == Jack::Input(input)
-            })?;
-            let from = self.patch.module(&cable.from_module)?;
-            let own = from.kind.spec().outputs.get(cable.from_port);
-            let Some(through) = passes(from.kind, cable.from_port) else {
-                return own;
-            };
-            let followed =
-                self.patch.cables().iter().any(|cable| {
-                    cable.to_module == from.id && cable.to_jack == Jack::Input(through)
-                });
-            if !followed {
-                // Nothing goes in (a sample and hold samples its own noise):
-                // what its output is said to carry.
-                return own.filter(|_| !probe::measures(from.kind));
-            }
-            module = from;
-            input = through;
+    fn source_show(&self, id: &str) -> Option<probe::Show> {
+        self.show_into(id, 0, &mut Trail::default())
+    }
+
+    /// How what arrives at `module`'s input `input` is shown; `trail`
+    /// holds what has been followed (see [`Trail`]).
+    fn show_into<'a>(
+        &'a self,
+        module: &str,
+        input: usize,
+        trail: &mut Trail<'a>,
+    ) -> Option<probe::Show> {
+        let cable = self
+            .patch
+            .cables()
+            .iter()
+            .find(|cable| cable.to_module == module && cable.to_jack == Jack::Input(input))?;
+        self.show_out(&cable.from_module, cable.from_port, trail)
+    }
+
+    /// How what output `port` of `module` carries is shown.
+    ///
+    /// Most outputs say so themselves (see
+    /// [`crate::catalogue::PortSpec::pitch`]). Some pass
+    /// on what comes in, and are followed back to it: a scope's output a
+    /// is its input a, b is b; a readout's out is its in; a slew limiter's
+    /// and a sample and hold's out is their in, slewed or held; a switch's
+    /// outputs are its in, sent on; a selector's out is whichever input is
+    /// chosen, so it is followed when every input plugged in is shown
+    /// alike; and `math`'s `sum`, `min` and `max` of a pitch and anything
+    /// (a transposition, a vibrato) are still pitch (its `abs` is a plain
+    /// CV). One of those with nothing plugged in shows what its output is
+    /// said to carry (a sample and hold of its own noise is a plain CV, a
+    /// switch with no input sends a steady 1.0), but a scope or readout,
+    /// which passes on silence, shows nothing.
+    fn show_out<'a>(
+        &'a self,
+        module: &str,
+        port: usize,
+        trail: &mut Trail<'a>,
+    ) -> Option<probe::Show> {
+        let from = self.patch.module(module)?;
+        let key = (from.id.as_str(), port);
+        if let Some(known) = trail.known.get(&key) {
+            return *known;
         }
-        None
+        if !trail.on_the_way.insert(key) {
+            // Round a loop: nothing at its start.
+            return None;
+        }
+        let shown = self.shown_out(from, port, trail);
+        trail.on_the_way.remove(&key);
+        trail.known.insert(key, shown);
+        shown
+    }
+
+    /// [`Self::show_out`] of `from`, once the trail has been checked.
+    fn shown_out<'a>(
+        &'a self,
+        from: &'a Module,
+        port: usize,
+        trail: &mut Trail<'a>,
+    ) -> Option<probe::Show> {
+        let own = from.kind.spec().outputs.get(port).map(probe::Show::of);
+        let kind = from.kind;
+        // A scope passes input `port` to output `port`.
+        let same = [port];
+        let inputs: &[usize] = if probe::measures(kind) {
+            &same
+        } else if kind == Kind::SLEW || kind == Kind::SH || kind == Kind::SWITCH {
+            &[0]
+        } else if kind == Kind::SELECT {
+            &[0, 1, 2, 3]
+        } else if kind == Kind::MATH && port <= 2 {
+            &[0, 1]
+        } else {
+            return own;
+        };
+        let shown: Vec<Option<probe::Show>> = inputs
+            .iter()
+            .filter(|&&input| {
+                self.patch
+                    .cables()
+                    .iter()
+                    .any(|cable| cable.to_module == from.id && cable.to_jack == Jack::Input(input))
+            })
+            .map(|&input| self.show_into(&from.id, input, trail))
+            .collect();
+        if shown.is_empty() {
+            return own.filter(|_| !probe::measures(kind));
+        }
+        if kind == Kind::MATH {
+            return if shown.contains(&Some(probe::Show::Pitch)) {
+                Some(probe::Show::Pitch)
+            } else {
+                own
+            };
+        }
+        let first = shown[0];
+        if shown.iter().all(|show| *show == first) {
+            first
+        } else {
+            own
+        }
     }
 
     /// Answer `probe`: what `module` (a scope or readout) measured (one

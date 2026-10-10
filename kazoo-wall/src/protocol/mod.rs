@@ -1551,7 +1551,10 @@ pub struct KnobInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
     /// How a cable into the knob's jack moves it: `range` adds
-    /// `cv × (max − min) / 2`; `{"octaves": n}` multiplies by `2^(cv × n)`.
+    /// `cv × (max − min) / 2`; `{"octaves": n}` multiplies by `2^(cv × n)`;
+    /// `span` adds `cv × (max − min + 1)` whole positions, rounded down. A
+    /// law from a newer wall reads as `unknown`, so an older console or
+    /// seat still reads the catalogue.
     pub jack: JackLaw,
 }
 

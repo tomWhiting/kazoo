@@ -307,6 +307,41 @@ fn files_round_trip() {
 }
 
 #[test]
+fn decisions_and_routers_round_trip_through_a_file() {
+    let mut patch = Patch::empty(120.0);
+    for kind in [
+        "compare", "logic", "branch", "switch", "select", "divide", "math",
+    ] {
+        added(&mut patch, kind);
+    }
+    patch.turn("compare1", "hysteresis", 0.1, None).unwrap();
+    patch.turn("branch1", "mode", 2.0, None).unwrap();
+    patch.turn("switch1", "fade", 0.02, None).unwrap();
+    patch.turn("select1", "select", 3.0, None).unwrap();
+    patch.turn("divide1", "division", 7.0, None).unwrap();
+    patch.turn("math1", "scale_b", -1.0, None).unwrap();
+    patch.plug("math1.sum", "compare1.in", None, None).unwrap();
+    patch.plug("compare1.trig", "logic1.b", None, None).unwrap();
+    patch.plug("logic1.xor", "branch1.in", None, None).unwrap();
+    patch.plug("branch1.b", "switch1.step", None, None).unwrap();
+    patch
+        .plug("divide1.count", "select1.select", Some(-0.5), None)
+        .unwrap();
+    patch
+        .plug("switch1.out3", "select1.in2", None, None)
+        .unwrap();
+    patch
+        .plug("select1.out", "math1.b", Some(0.7), None)
+        .unwrap();
+    let text = serde_json::to_string_pretty(&patch.to_file()).unwrap();
+    let back: PatchFile = serde_json::from_str(&text).unwrap();
+    assert_eq!(Patch::from_file(&back).unwrap(), patch);
+    let (loaded, notes) = Patch::load(&back).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(loaded.fingerprint(), patch.fingerprint());
+}
+
+#[test]
 fn broken_files_are_refused_with_a_reason() {
     let good = small().to_file();
 
