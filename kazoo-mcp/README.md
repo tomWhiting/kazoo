@@ -45,6 +45,7 @@ Ports are named `module.port`, for example `lfo1.out` or `vcf1.in`. Every knob i
 | `wall_undo` | `change` | Undoes any seat's change by its number, applying the inverse as a new change. |
 | `wall_log` | `before?`, `limit?` | Lists recent changes, oldest first: number, time (UTC), seat and summary. `limit` defaults to 50 and is at most 500. `before` pages back to older changes. |
 | `wall_listen` | none | Says what the wall sounds like now, in plain words and in numbers: RMS and peak dBFS, centroid, low/mid/high balance, onsets per second, and pitch. |
+| `wall_probe` | `module?` | Reads what a `scope` or `readout` module measures, as numbers: each input's latest value, low and high, mean (DC), RMS and peak dBFS, frequency (and whether it is steady, wavering or paused) and shape, its rate and duty as a gate (and whether it has paused), and its lowest and highest since its reset; a pitch CV as a note with cents and Hz (only outputs that carry pitch are shown so on auto; any other CV as a plain CV); non-numbers arriving counted as a fault, in the last tenth of a second and since its reset. A scope also gives its mode, span, zoom and trigger, each trace as a sparkline (a band, a fast wave across a long span, as its highs and lows), and the picture in words. It says when the wall has dropped captures. Without `module` it reads every one on the wall (the first 16 in the wall's order). Add one with `wall_add` and patch into it: it passes the signal on, so it can sit inline. |
 | `wall_speak` | `module`, `text`, `voice?` | Gives a `speak` module words to say, rendered with macOS `say`; answers when they are ready (a few seconds). The module plays them on its `gate`. The words stay private: other seats hear only that the module was given words. |
 | `wall_tempo` | `bpm` | Sets the tempo, from 20 to 300 BPM. While the wall follows the kazoo-mix desk, the desk is asked instead, and it changes the tempo for everyone. |
 | `wall_save` | `name` | Saves the wall as it is under a name (1 to 64 of `A-Z a-z 0-9 space _ . -`). The sound does not change and nothing is logged. A name already saved (in any case), and names starting with `before-` (the wall's own), are refused: only Tom's console replaces or deletes a save. |
@@ -90,7 +91,7 @@ Notifications are hints about the past. Call `wall_look` before acting on one.
 `cargo test -p kazoo-mcp` runs two sets of tests:
 - **Unit tests** cover the command line, the batching rules (the window, the 10-line cap, faults at once, own changes), the rendering, and the codec.
 - **Integration tests** start a real headless daemon in a temporary directory. They drive the built binary with rmcp's own client over the child-process transport, and check each of these:
-  - the tool list and every tool;
+  - the tool list and every tool, `wall_probe` reading a real scope and readout;
   - the wall's refusals;
   - the channel notification's shape and coalescing;
   - that own changes do not notify;

@@ -21,6 +21,7 @@
 //! - [`migrate`]: bringing patches saved by older walls up to date.
 //! - [`seed`]: the patch a new wall starts from.
 //! - [`listen`]: describing what the wall sounds like.
+//! - [`probe`]: what the scopes and readouts measured, as it is shown.
 //! - [`fingerprints`]: who touched what, and where the signal carried it.
 
 pub mod adapters;
@@ -35,6 +36,7 @@ pub mod listen;
 pub mod migrate;
 pub mod patch;
 pub mod paths;
+pub mod probe;
 pub mod protocol;
 pub mod seed;
 pub mod store;

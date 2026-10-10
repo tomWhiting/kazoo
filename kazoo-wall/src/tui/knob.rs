@@ -185,6 +185,7 @@ pub fn show(value: f64, unit: &str, labels: &[String], min: f64) -> String {
                 format!("{text} {unit}")
             }
         }
+        "×" => format!("×{}", format::number(narrow)),
         other => format!("{} {other}", format::number(narrow)),
     }
 }
@@ -246,6 +247,7 @@ mod tests {
         assert_eq!(show(-2.0, "oct", &[], -4.0), "-2 oct");
         assert_eq!(show(0.4, "", &[], 0.0), "0.4");
         assert_eq!(show(4.0, "steps", &[], 1.0), "4 steps");
+        assert_eq!(show(4.0, "×", &[], 0.125), "×4");
         let scales = vec!["chromatic".to_string(), "major".to_string()];
         assert_eq!(show(1.0, "scale", &scales, 0.0), "major");
         assert_eq!(show(9.0, "scale", &scales, 0.0), "9 scale");

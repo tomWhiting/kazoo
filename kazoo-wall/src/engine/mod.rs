@@ -10,7 +10,8 @@
 //! allocates: it sends [`Command`]s over a lock-free ring, frees what the
 //! engine hands back over the retire ring, and collects fault reports. The
 //! engine publishes its clock, meters and current knob values through
-//! [`Shared`] atomics.
+//! [`Shared`] atomics, and what the scopes and readouts measured as
+//! [`ProbeFrame`]s over a ring of its own.
 //!
 //! The engine tolerates any order of commands: a cable or order entry naming
 //! an empty slot reads silence or is skipped, so the control side never needs
@@ -33,6 +34,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
 use crate::catalogue::{Kind, KnobSpec};
+use crate::dsp::measure::Capture;
 use crate::dsp::{Block, Io, Module, Sweep, Tick};
 use crate::{MAX_INPUTS, MAX_KNOBS, MAX_MODULES, MAX_OUTPUTS, SUB_BLOCK};
 pub use master::CEILING;
@@ -46,6 +48,14 @@ const RETIRE_BACKLOG: usize = COMMAND_BACKLOG * 2;
 
 /// Fault reports waiting for the control side.
 const FAULT_BACKLOG: usize = 64;
+
+/// Captures from scopes and readouts waiting for the control side.
+///
+/// A scope hands on at most 25 a second and a readout 10, and the control
+/// side takes them every few hundredths of a second: room for a busy
+/// moment with a dozen of them on the wall. Beyond it captures are dropped
+/// (and counted): the next one is as good.
+pub const PROBE_BACKLOG: usize = 128;
 
 /// Seconds of stereo the record ring holds: how far the recording's writer
 /// may fall behind (a slow disk, a busy machine) before samples are lost.
@@ -119,6 +129,22 @@ pub enum Retired {
     Order(Box<Order>),
 }
 
+/// What a scope or readout measured, from engine slot `slot`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProbeFrame {
+    /// The module's slot.
+    pub slot: usize,
+    /// The tag it was inserted with.
+    pub tag: u32,
+    /// How many cable tables the engine had taken in when it was handed
+    /// on: everything in it was measured with that table's cables (a
+    /// module whose inputs a new table moves starts afresh, see
+    /// [`Module::rewired`]).
+    pub cables: u64,
+    /// What it measured.
+    pub capture: Capture,
+}
+
 /// A module produced a non-finite sample: it was silenced and reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fault {
@@ -144,6 +170,7 @@ pub struct Shared {
     faults_unreported: AtomicU64,
     leaked: AtomicU64,
     listen_dropped: AtomicU64,
+    probes_dropped: AtomicU64,
     recording: AtomicBool,
     record_dropped: AtomicU64,
     syncs_lost: AtomicU64,
@@ -169,6 +196,7 @@ impl Shared {
             faults_unreported: AtomicU64::new(0),
             leaked: AtomicU64::new(0),
             listen_dropped: AtomicU64::new(0),
+            probes_dropped: AtomicU64::new(0),
             recording: AtomicBool::new(false),
             record_dropped: AtomicU64::new(0),
             syncs_lost: AtomicU64::new(0),
@@ -261,6 +289,13 @@ impl Shared {
     #[must_use]
     pub fn listen_dropped(&self) -> u64 {
         self.listen_dropped.load(Ordering::Relaxed)
+    }
+
+    /// Captures from scopes and readouts dropped because the probe ring
+    /// was full.
+    #[must_use]
+    pub fn probes_dropped(&self) -> u64 {
+        self.probes_dropped.load(Ordering::Relaxed)
     }
 
     /// Whether the master goes to the record ring.
@@ -436,11 +471,15 @@ pub struct Engine {
     cables: Box<CableTable>,
     order: Box<Order>,
     commands: HeapCons<Command>,
+    /// Cable tables taken in (see [`ProbeFrame::cables`]).
+    tables: u64,
     retired: HeapProd<Retired>,
     faults: HeapProd<Fault>,
     listen: HeapProd<f32>,
     /// The master, stereo interleaved, while [`Shared::recording`].
     record: HeapProd<f32>,
+    /// What scopes and readouts measured.
+    probes: HeapProd<ProbeFrame>,
     shared: Arc<Shared>,
     hub: Option<HubLinkAudio>,
     follower: TransportFollower,
@@ -490,6 +529,7 @@ pub struct EngineControl {
     faults: HeapCons<Fault>,
     listen: Option<HeapCons<f32>>,
     record: Option<HeapCons<f32>>,
+    probes: Option<HeapCons<ProbeFrame>>,
     shared: Arc<Shared>,
 }
 
@@ -500,6 +540,7 @@ impl std::fmt::Debug for EngineControl {
             .field("backlog", &self.backlog.len())
             .field("listen_taken", &self.listen.is_none())
             .field("record_taken", &self.record.is_none())
+            .field("probes_taken", &self.probes.is_none())
             .finish_non_exhaustive()
     }
 }
@@ -523,6 +564,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
     // least one.
     let (record_tx, record_rx) =
         HeapRb::<f32>::new(config.record_frames.max(SUB_BLOCK).saturating_mul(2)).split();
+    let (probe_tx, probe_rx) = HeapRb::<ProbeFrame>::new(PROBE_BACKLOG).split();
     let shared = Arc::new(Shared::new(bpm, beat, config.audible));
     // 8 kHz to a few hundred kHz: exact in f32.
     let rate = sample_rate as f32;
@@ -542,10 +584,12 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         cables: Box::new(CableTable::new()),
         order: Box::new(Order::default()),
         commands: command_rx,
+        tables: 0,
         retired: retired_tx,
         faults: fault_tx,
         listen: listen_tx,
         record: record_tx,
+        probes: probe_tx,
         shared: Arc::clone(&shared),
         hub,
         follower: TransportFollower::new(sample_rate),
@@ -572,6 +616,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         faults: fault_rx,
         listen: Some(listen_rx),
         record: Some(record_rx),
+        probes: Some(probe_rx),
         shared,
     };
     (engine, control)
@@ -686,6 +731,8 @@ impl Engine {
                 Command::Remove { slot } => self.remove(slot),
                 Command::Cables(table) => {
                     let old = std::mem::replace(&mut self.cables, table);
+                    self.rewire(&old);
+                    self.tables = self.tables.wrapping_add(1);
                     self.retire(Retired::Cables(old));
                 }
                 Command::Order(order) => {
@@ -729,6 +776,25 @@ impl Engine {
             *right *= gain;
         }
         self.hush_gain = gain;
+    }
+
+    /// Tell every module whose inputs come from elsewhere under the new
+    /// cable table than under `old` (another source or port, another
+    /// amount, or a cable plugged or unplugged), and which.
+    fn rewire(&mut self, old: &CableTable) {
+        let source = |route: Option<Route>| {
+            route.map(|route| (route.slot, route.port, route.amount.to_bits()))
+        };
+        for slot in 0..MAX_MODULES {
+            let moved: [bool; MAX_INPUTS] = std::array::from_fn(|input| {
+                source(old.route(slot, input)) != source(self.cables.route(slot, input))
+            });
+            if moved.contains(&true) {
+                if let Some(module) = self.slots[slot].as_mut() {
+                    module.rewired(moved);
+                }
+            }
+        }
     }
 
     fn insert(
@@ -949,6 +1015,17 @@ impl Engine {
                     .fetch_add(1, Ordering::Relaxed);
             }
         }
+        if let Some(capture) = module.capture() {
+            let frame = ProbeFrame {
+                slot,
+                tag: self.tags[slot],
+                cables: self.tables,
+                capture: *capture,
+            };
+            if self.probes.try_push(frame).is_err() {
+                self.shared.probes_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     fn publish(&mut self, left: &Block, right: &Block) {
@@ -1105,6 +1182,12 @@ impl EngineControl {
     /// interleaved, while [`Shared::recording`] is set.
     pub const fn take_record(&mut self) -> Option<HeapCons<f32>> {
         self.record.take()
+    }
+
+    /// Take the probe ring's reading end (once): what the scopes and
+    /// readouts measured.
+    pub const fn take_probes(&mut self) -> Option<HeapCons<ProbeFrame>> {
+        self.probes.take()
     }
 
     /// Items waiting in the retire ring.

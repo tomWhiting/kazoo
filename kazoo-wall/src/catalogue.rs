@@ -16,9 +16,11 @@
 //!
 //! Every knob is also a jack: a CV input with the knob's name. A cable into
 //! it adds `cv × (max − min) / 2 × amount` to the knob's gliding value, held
-//! to the knob's range, so modulation never crosses a safety cap (the
-//! filter's cutoff jack is the one exception: it moves the cutoff five
-//! octaves per 1.0, as on the hardware). Knob names and input names share
+//! to the knob's range, so modulation never crosses a safety cap. Two
+//! jacks differ: the filter's cutoff jack moves the cutoff five octaves
+//! per 1.0, as on the hardware, and the `select` knobs of `switch` and
+//! `select` span their positions, so 0 to 1 reaches every one (see
+//! [`JackLaw::Span`]). Knob names and input names share
 //! one namespace per kind, so `vcf1.cutoff` always means one thing.
 
 use std::fmt;
@@ -63,6 +65,24 @@ impl Kind {
     pub const MIX: Self = Self(11);
     /// Output to the master bus.
     pub const OUT: Self = Self(12);
+    /// Comparator and window comparator.
+    pub const COMPARE: Self = Self(13);
+    /// Gate logic.
+    pub const LOGIC: Self = Self(14);
+    /// Bernoulli gate.
+    pub const BRANCH: Self = Self(15);
+    /// Sequential switch: one input to four outputs.
+    pub const SWITCH: Self = Self(16);
+    /// Selector: four inputs to one output.
+    pub const SELECT: Self = Self(17);
+    /// Clock divider.
+    pub const DIVIDE: Self = Self(18);
+    /// CV maths.
+    pub const MATH: Self = Self(19);
+    /// Oscilloscope.
+    pub const SCOPE: Self = Self(20);
+    /// Numerical readout.
+    pub const READOUT: Self = Self(21);
 
     /// The kind's catalogue entry.
     #[must_use]
@@ -164,13 +184,88 @@ pub enum Curve {
 }
 
 /// How a cable into a knob's jack moves the knob.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// It reads tolerantly: a law this build does not know (from a newer wall),
+/// written as a bare name or a name with a body, reads as
+/// [`JackLaw::Unknown`] rather than failing the whole catalogue. A law it
+/// does know with a body that is wrong (`{"octaves": "x"}`) is an error,
+/// never quietly unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JackLaw {
     /// `cv × (max − min) / 2` is added to the knob.
     Range,
     /// The knob is multiplied by `2^(cv × octaves)`.
     Octaves(f32),
+    /// For a stepped knob: `cv × (max − min + 1)`, rounded down, whole
+    /// positions are added, so a CV from 0 up to 1 reaches every position
+    /// from the knob's lowest (as a clock's `beat` or a divider's `count`
+    /// does). A product within a thousandth of a whole number counts as
+    /// that number, so a CV a hair under a step (a tiny negative wobble at
+    /// 0) never drops a whole position.
+    Span,
+    /// A law from a newer wall that this build does not know. No knob of
+    /// this build's catalogue has it; a jack with it does not move its knob.
+    Unknown,
+}
+
+impl<'de> Deserialize<'de> for JackLaw {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The laws this build knows, as they are written.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Known {
+            Range,
+            Octaves(f32),
+            Span,
+            Unknown,
+        }
+        /// A known law, or another law's name, bare or with a body.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Known(Known),
+            Name(String),
+            Tagged(std::collections::BTreeMap<String, serde_json::Value>),
+        }
+        /// The names this build knows.
+        const KNOWN: [&str; 4] = ["range", "octaves", "span", "unknown"];
+        let name = match Wire::deserialize(deserializer)? {
+            Wire::Known(Known::Range) => return Ok(Self::Range),
+            Wire::Known(Known::Octaves(octaves)) => return Ok(Self::Octaves(octaves)),
+            Wire::Known(Known::Span) => return Ok(Self::Span),
+            Wire::Known(Known::Unknown) => return Ok(Self::Unknown),
+            Wire::Name(name) => name,
+            Wire::Tagged(map) => {
+                let mut names = map.into_keys();
+                match (names.next(), names.next()) {
+                    (Some(name), None) => name,
+                    _ => {
+                        return Err(serde::de::Error::custom(
+                            "a jack law is a name, or one name with a body",
+                        ));
+                    }
+                }
+            }
+        };
+        if KNOWN.contains(&name.as_str()) {
+            return Err(serde::de::Error::custom(format!(
+                "the jack law '{name}' is not written as this build writes it"
+            )));
+        }
+        Ok(Self::Unknown)
+    }
+}
+
+/// Snap `steps` to the nearest whole number when it is within a thousandth
+/// of it, else round it down.
+fn whole_steps(steps: f32) -> f32 {
+    let nearest = steps.round();
+    if (steps - nearest).abs() < 1e-3 {
+        nearest
+    } else {
+        steps.floor()
+    }
 }
 
 /// One knob of a module kind.
@@ -240,6 +335,15 @@ impl KnobSpec {
         }
     }
 
+    /// The same knob with its jack spanning every position (see
+    /// [`JackLaw::Span`]).
+    const fn span_jack(self) -> Self {
+        Self {
+            jack: JackLaw::Span,
+            ..self
+        }
+    }
+
     /// `value` held to the knob's range (and to whole steps on a stepped
     /// knob). A value that is not a number gives the default.
     #[must_use]
@@ -304,6 +408,11 @@ impl KnobSpec {
         let moved = match self.jack {
             JackLaw::Range => ((self.max - self.min) * 0.5).mul_add(cv, self.clamp(knob)),
             JackLaw::Octaves(octaves) => self.clamp(knob) * (cv * octaves).exp2(),
+            JackLaw::Span => {
+                let positions = self.max - self.min + 1.0;
+                self.clamp(knob) + whole_steps(cv * positions)
+            }
+            JackLaw::Unknown => self.clamp(knob),
         };
         self.clamp(moved)
     }
@@ -354,10 +463,11 @@ pub fn group(family: &str, kind: &str, audio_in: bool, audio_out: bool, outputs:
     if family == "synth" {
         match kind {
             "vco" | "noise" => return 0,
-            "lfo" | "env" | "clock" | "seq" | "sh" | "slew" | "quant" => return 1,
+            "lfo" | "env" | "clock" | "seq" | "sh" | "slew" | "quant" | "compare" | "logic"
+            | "branch" | "divide" => return 1,
             "vcf" | "vca" => return 2,
             "delay" | "reverb" => return 3,
-            "mix" | "out" => return 4,
+            "mix" | "out" | "switch" | "select" | "math" | "scope" | "readout" => return 4,
             _ => {}
         }
     }
@@ -378,6 +488,21 @@ pub struct PortSpec {
     pub signal: Signal,
     /// What it is for, in a few words.
     pub about: &'static str,
+    /// Whether it carries pitch (a CV at 1.0 per octave, 0 = C4), so a
+    /// readout on `auto` shows it as a note. Any port may say so (see
+    /// [`PortSpec::pitched`]); every other CV is shown as a plain CV.
+    pub pitch: bool,
+}
+
+impl PortSpec {
+    /// The same port, carrying pitch.
+    #[must_use]
+    pub const fn pitched(self) -> Self {
+        Self {
+            pitch: true,
+            ..self
+        }
+    }
 }
 
 /// An input a cable can plug into: a listed input or a knob's jack.
@@ -758,6 +883,17 @@ const LFO_SHAPES: [&str; 6] = [
 ];
 const NOISE_COLOURS: [&str; 3] = ["white", "pink", "brown"];
 const FILTER_MODES: [&str; 3] = ["low-pass", "band-pass", "high-pass"];
+const BRANCH_MODES: [&str; 3] = ["gate", "latch", "toggle"];
+const COMPARE_MODES: [&str; 2] = ["above", "window"];
+const SELECT_INPUTS: [&str; 4] = ["in1", "in2", "in3", "in4"];
+
+/// The scope's modes: each sweep waits for input a to rise through the
+/// trigger level; the trace rolls freely; or input a against input b.
+pub const SCOPE_MODES: [&str; 3] = ["trigger", "free", "xy"];
+
+/// The readout's modes: chosen by what is plugged in, or shown as pitch,
+/// as a plain CV, as a gate, or as audio.
+pub const READOUT_MODES: [&str; 5] = ["auto", "pitch", "cv", "gate", "audio"];
 
 /// The beats a sync knob stands for: `None` when free-running (0).
 #[must_use]
@@ -778,6 +914,7 @@ const fn audio(name: &'static str, about: &'static str) -> PortSpec {
         name,
         signal: Signal::Audio,
         about,
+        pitch: false,
     }
 }
 
@@ -786,6 +923,7 @@ const fn gate(name: &'static str, about: &'static str) -> PortSpec {
         name,
         signal: Signal::Gate,
         about,
+        pitch: false,
     }
 }
 
@@ -794,6 +932,7 @@ const fn cv(name: &'static str, about: &'static str) -> PortSpec {
         name,
         signal: Signal::Cv,
         about,
+        pitch: false,
     }
 }
 
@@ -823,6 +962,9 @@ fn native_kinds() -> Vec<KindSpec> {
     let mut kinds = sound_kinds();
     kinds.extend(shaping_kinds());
     kinds.extend(control_kinds());
+    kinds.extend(decision_kinds());
+    kinds.extend(routing_kinds());
+    kinds.extend(measuring_kinds());
     kinds
 }
 
@@ -953,7 +1095,7 @@ fn shaping_kinds() -> Vec<KindSpec> {
                 gate("reset", "the next clock plays step 1"),
             ],
             vec![
-                cv("pitch", "the step's pitch, 1.0 per octave"),
+                cv("pitch", "the step's pitch, 1.0 per octave").pitched(),
                 gate("gate", "gate for each step that plays"),
             ],
             dsp::seq,
@@ -984,7 +1126,7 @@ fn control_kinds() -> Vec<KindSpec> {
                 KnobSpec::stepped("root", 0.0, 11.0, 0.0, Unit::None).named(&NOTE_NAMES),
             ],
             vec![cv("in", "pitch, 1.0 per octave")],
-            vec![cv("out", "quantised pitch")],
+            vec![cv("out", "quantised pitch").pitched()],
             dsp::quant,
         ),
         native(
@@ -1029,6 +1171,203 @@ fn control_kinds() -> Vec<KindSpec> {
             ],
             Vec::new(),
             dsp::out,
+        ),
+    ]
+}
+
+/// `compare`, `logic`, `branch`: the decisions.
+fn decision_kinds() -> Vec<KindSpec> {
+    use crate::dsp::native as dsp;
+    vec![
+        native(
+            "compare",
+            "comparator: a gate while the input is above threshold, or within a window of it",
+            vec![
+                KnobSpec::linear("threshold", -4.0, 4.0, 0.0, Unit::None),
+                KnobSpec::log("window", 0.0, 8.0, 0.5, Unit::None),
+                KnobSpec::log("hysteresis", 0.0, 2.0, 0.02, Unit::None),
+                KnobSpec::stepped("mode", 0.0, 1.0, 0.0, Unit::None).named(&COMPARE_MODES),
+            ],
+            vec![cv("in", "signal to compare")],
+            vec![
+                gate(
+                    "gate",
+                    "high while the input is above threshold \
+                     (in window mode: within window/2 of it)",
+                ),
+                gate("inverse", "high while the gate is low"),
+                gate("trig", "a 5 ms trigger as the gate rises"),
+            ],
+            dsp::compare,
+        ),
+        native(
+            "logic",
+            "gate logic: and, or, xor and nand of two gates",
+            vec![KnobSpec::linear("threshold", 0.05, 0.95, 0.5, Unit::None)],
+            vec![
+                gate("a", "a gate, high above threshold"),
+                gate(
+                    "b",
+                    "a gate, high above threshold; reads as a when unplugged",
+                ),
+            ],
+            vec![
+                gate("and", "high while a and b are"),
+                gate("or", "high while a or b is"),
+                gate("xor", "high while one of a and b is, not both"),
+                gate("nand", "low while a and b are; not a when b is unplugged"),
+            ],
+            dsp::logic,
+        ),
+        native(
+            "branch",
+            "Bernoulli gate: a coin toss sends each gate to a or b",
+            vec![
+                KnobSpec::linear("chance", 0.0, 1.0, 0.5, Unit::None),
+                KnobSpec::stepped("mode", 0.0, 2.0, 0.0, Unit::None).named(&BRANCH_MODES),
+            ],
+            vec![gate("in", "each rising gate tosses the coin")],
+            vec![
+                gate("a", "the gates the coin sends this way"),
+                gate(
+                    "b",
+                    "the gates the coin sends this way, with the chance knob's chance",
+                ),
+            ],
+            dsp::branch,
+        ),
+    ]
+}
+
+/// `switch`, `select`, `divide`, `math`: the routers and utilities.
+fn routing_kinds() -> Vec<KindSpec> {
+    use crate::dsp::native as dsp;
+    let fade = KnobSpec::log("fade", 0.001, 1.0, 0.005, Unit::Seconds);
+    vec![
+        native(
+            "switch",
+            "sequential switch: one input to one of four outputs, stepped, crossfaded",
+            vec![
+                KnobSpec::stepped("positions", 2.0, 4.0, 4.0, Unit::None),
+                KnobSpec::stepped("select", 0.0, 3.0, 0.0, Unit::None).span_jack(),
+                fade,
+            ],
+            vec![
+                audio("in", "signal to send on; a steady 1.0 when unplugged"),
+                gate("step", "moves on to the next output on a rising gate"),
+                gate("reset", "back to the first output on a rising gate"),
+            ],
+            vec![
+                audio("out1", "the input while the first position is chosen"),
+                audio("out2", "the input while the second position is chosen"),
+                audio("out3", "the input while the third position is chosen"),
+                audio("out4", "the input while the fourth position is chosen"),
+            ],
+            dsp::switch,
+        ),
+        native(
+            "select",
+            "selector: one of four inputs to one output, crossfaded",
+            vec![
+                KnobSpec::stepped("select", 0.0, 3.0, 0.0, Unit::None)
+                    .named(&SELECT_INPUTS)
+                    .span_jack(),
+                fade,
+            ],
+            vec![
+                audio("in1", "signal, heard when select is on in1"),
+                audio("in2", "signal, heard when select is on in2"),
+                audio("in3", "signal, heard when select is on in3"),
+                audio("in4", "signal, heard when select is on in4"),
+            ],
+            vec![audio("out", "the selected input")],
+            dsp::select,
+        ),
+        native(
+            "divide",
+            "clock divider: passes on the first of every division gates",
+            vec![KnobSpec::stepped("division", 1.0, 32.0, 2.0, Unit::None)],
+            vec![
+                gate("in", "gates to count"),
+                gate("reset", "the next gate starts a cycle"),
+            ],
+            vec![
+                gate(
+                    "out",
+                    "the first gate of every division, as long as it lasts",
+                ),
+                cv(
+                    "count",
+                    "where the latest gate fell in the cycle (k / division for the kth, from 0); \
+                     kept through a reset until the next gate",
+                ),
+            ],
+            dsp::divide,
+        ),
+        native(
+            "math",
+            "CV maths: two inputs scaled and offset, summed, compared, rectified",
+            vec![
+                KnobSpec::linear("scale_a", -2.0, 2.0, 1.0, Unit::None),
+                KnobSpec::linear("offset_a", -1.0, 1.0, 0.0, Unit::None),
+                KnobSpec::linear("scale_b", -2.0, 2.0, 1.0, Unit::None),
+                KnobSpec::linear("offset_b", -1.0, 1.0, 0.0, Unit::None),
+            ],
+            vec![
+                cv("a", "a signal, times scale_a plus offset_a"),
+                cv("b", "a signal, times scale_b plus offset_b"),
+            ],
+            vec![
+                cv("sum", "a + b"),
+                cv("min", "the lesser of a and b"),
+                cv("max", "the larger of a and b"),
+                cv("abs", "|a + b|, rectified"),
+            ],
+            dsp::math,
+        ),
+    ]
+}
+
+/// `scope`, `readout`: they measure what is plugged into them, and pass
+/// it straight through.
+fn measuring_kinds() -> Vec<KindSpec> {
+    use crate::dsp::native as dsp;
+    vec![
+        native(
+            "scope",
+            "oscilloscope: draws a and b across time on its face (triggered on a, rolling, or a \
+             against b) and passes both through",
+            vec![
+                KnobSpec::log("time", 0.001, 10.0, 0.02, Unit::Seconds),
+                KnobSpec::log("zoom", 0.125, 64.0, 1.0, Unit::Other("×")),
+                KnobSpec::linear("trigger", -1.0, 1.0, 0.0, Unit::None),
+                KnobSpec::stepped("mode", 0.0, 2.0, 0.0, Unit::None).named(&SCOPE_MODES),
+            ],
+            vec![
+                audio("a", "any signal; the trigger watches it"),
+                audio("b", "any signal"),
+            ],
+            vec![
+                audio("a", "input a, passed through"),
+                audio("b", "input b, passed through"),
+            ],
+            dsp::scope,
+        ),
+        native(
+            "readout",
+            "readout: shows its input as numbers (a note, a CV's value and rate, a gate's rate \
+             and duty, or a level and frequency) and passes it through",
+            vec![KnobSpec::stepped("mode", 0.0, 4.0, 0.0, Unit::None).named(&READOUT_MODES)],
+            vec![
+                cv("in", "any signal to measure"),
+                gate(
+                    "reset",
+                    "clears the lowest and highest seen, and the non-numbers counted, on a \
+                     rising gate",
+                ),
+            ],
+            vec![cv("out", "the input, passed through")],
+            dsp::readout,
         ),
     ]
 }
@@ -1078,6 +1417,15 @@ mod tests {
             (Kind::SLEW, "slew"),
             (Kind::MIX, "mix"),
             (Kind::OUT, "out"),
+            (Kind::COMPARE, "compare"),
+            (Kind::LOGIC, "logic"),
+            (Kind::BRANCH, "branch"),
+            (Kind::SWITCH, "switch"),
+            (Kind::SELECT, "select"),
+            (Kind::DIVIDE, "divide"),
+            (Kind::MATH, "math"),
+            (Kind::SCOPE, "scope"),
+            (Kind::READOUT, "readout"),
         ] {
             assert_eq!(kind.name(), name);
             assert_eq!(kind.spec().family, "synth");
@@ -1148,6 +1496,68 @@ mod tests {
     }
 
     #[test]
+    fn the_wall_s_own_kinds_come_first_and_end_with_the_readout() {
+        // The constants index the registry: the wall's own kinds must fill
+        // it from 0 up to the last constant (READOUT), in order, and every
+        // effect and adapted kind come after them.
+        let kinds: Vec<Kind> = Kind::all().collect();
+        let own = kinds
+            .iter()
+            .take_while(|kind| kind.spec().family == "synth")
+            .count();
+        assert_eq!(own, usize::from(Kind::READOUT.0) + 1, "{kinds:?}");
+        assert_eq!(own, native_kinds().len());
+        for (index, kind) in kinds.iter().enumerate() {
+            assert_eq!(usize::from(kind.0), index);
+            if index < own {
+                assert_eq!(kind.spec().name, native_kinds()[index].name);
+            } else {
+                assert_ne!(kind.spec().family, "synth", "{kind:?} after the readout");
+            }
+        }
+        assert_eq!(kinds[own - 1], Kind::READOUT);
+        assert_eq!(kinds[own - 2], Kind::SCOPE);
+    }
+
+    #[test]
+    fn only_ports_that_carry_pitch_say_so() {
+        let pitched: Vec<String> = Kind::all()
+            .flat_map(|kind| {
+                let spec = kind.spec();
+                spec.outputs
+                    .iter()
+                    .chain(&spec.inputs)
+                    .filter(|port| port.pitch)
+                    .map(move |port| format!("{}.{}", spec.name, port.name))
+            })
+            .collect();
+        assert_eq!(pitched, ["seq.pitch", "quant.out"]);
+        assert!(cv("x", "y").pitched().pitch && !cv("x", "y").pitch);
+    }
+
+    #[test]
+    fn the_measuring_kinds_pass_their_signals_through_and_sit_with_the_utilities() {
+        for kind in [Kind::SCOPE, Kind::READOUT] {
+            let spec = kind.spec();
+            assert_eq!(GROUPS[spec.group()], "utilities", "{kind}");
+            assert_eq!(spec.family, "synth");
+        }
+        let scope = Kind::SCOPE.spec();
+        assert_eq!(
+            scope.jack_names(),
+            ["a", "b", "time", "zoom", "trigger", "mode"]
+        );
+        assert_eq!(scope.output_index("a"), Some(0));
+        assert_eq!(scope.output_index("b"), Some(1));
+        assert_eq!(knob(Kind::SCOPE, "mode").labels, SCOPE_MODES);
+        assert!((knob(Kind::SCOPE, "zoom").clamp(1_000.0) - 64.0).abs() < f32::EPSILON);
+        let readout = Kind::READOUT.spec();
+        assert_eq!(readout.jack_names(), ["in", "reset", "mode"]);
+        assert_eq!(readout.output_index("out"), Some(0));
+        assert_eq!(knob(Kind::READOUT, "mode").labels, READOUT_MODES);
+    }
+
+    #[test]
     fn safety_caps_hold() {
         assert!((knob(Kind::VCF, "resonance").clamp(5.0) - 0.95).abs() < f32::EPSILON);
         assert!((knob(Kind::OUT, "level").clamp(3.0) - 1.0).abs() < f32::EPSILON);
@@ -1199,6 +1609,86 @@ mod tests {
         // Stepped knobs stay on whole steps.
         let division = knob(Kind::CLOCK, "division");
         assert!((division.modulate(1.0, 0.3) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_spanning_jack_reaches_every_position_from_0_to_1() {
+        for kind in [Kind::SELECT, Kind::SWITCH] {
+            let select = knob(kind, "select");
+            assert_eq!(select.jack, JackLaw::Span);
+            let reached: Vec<f32> = [0.0, 0.2, 0.25, 0.49, 0.5, 0.74, 0.75, 0.999, 1.0, 3.0]
+                .iter()
+                .map(|cv| select.modulate(0.0, *cv))
+                .collect();
+            assert_eq!(
+                reached,
+                [0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0],
+                "{kind}"
+            );
+            // From a turned knob it moves on, held to the last position;
+            // below 0 it moves back.
+            assert!((select.modulate(2.0, 0.25) - 3.0).abs() < f32::EPSILON);
+            assert!((select.modulate(2.0, 0.5) - 3.0).abs() < f32::EPSILON);
+            assert!((select.modulate(2.0, -0.25) - 1.0).abs() < f32::EPSILON);
+            assert!((select.modulate(2.0, f32::NAN) - 2.0).abs() < f32::EPSILON);
+            // A hair either side of a whole step counts as that step: a
+            // tiny negative wobble never drops a position.
+            for (knob, cv, expected) in [
+                (2.0, -1e-6, 2.0),
+                (2.0, 1e-6, 2.0),
+                (2.0, -0.25, 1.0),
+                (2.0, -0.249_99, 1.0),
+                (2.0, 0.999, 3.0),
+                (0.0, 0.249_99, 1.0),
+                (0.0, 0.499_99, 2.0),
+                (0.0, 0.749_99, 3.0),
+            ] {
+                let got = select.modulate(knob, cv);
+                assert!((got - expected).abs() < f32::EPSILON, "{knob} {cv}: {got}");
+            }
+            // Just under each boundary, past the snap, it rounds down.
+            for (cv, expected) in [(0.249, 0.0), (0.499, 1.0), (0.749, 2.0), (0.999, 3.0)] {
+                let got = select.modulate(0.0, cv);
+                assert!((got - expected).abs() < f32::EPSILON, "{cv}: {got}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_jack_law_this_build_does_not_know_reads_as_unknown() {
+        for (json, law) in [
+            ("\"range\"", JackLaw::Range),
+            ("{\"octaves\":5.0}", JackLaw::Octaves(5.0)),
+            ("\"span\"", JackLaw::Span),
+            ("\"unknown\"", JackLaw::Unknown),
+            ("\"tides\"", JackLaw::Unknown),
+            ("{\"tides\":[1,2]}", JackLaw::Unknown),
+        ] {
+            let read: JackLaw = serde_json::from_str(json).unwrap();
+            assert_eq!(read, law, "{json}");
+        }
+        // A known law written wrongly is an error, never quietly unknown;
+        // so is anything that is not a name or one name with a body.
+        for json in [
+            "{\"octaves\":\"x\"}",
+            "{\"octaves\":null}",
+            "\"octaves\"",
+            "{\"range\":1}",
+            "{\"span\":[]}",
+            "{\"tides\":1,\"waves\":2}",
+            "{}",
+            "3",
+            "null",
+        ] {
+            assert!(serde_json::from_str::<JackLaw>(json).is_err(), "{json}");
+        }
+        assert_eq!(serde_json::to_string(&JackLaw::Span).unwrap(), "\"span\"");
+        // An unknown law moves nothing.
+        let unknown = KnobSpec {
+            jack: JackLaw::Unknown,
+            ..*knob(Kind::VCO, "width")
+        };
+        assert!((unknown.modulate(0.5, 1.0) - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 mod keys;
 mod live;
 mod mouse;
+mod probes;
 mod rack;
 mod render;
 mod saves;
@@ -136,6 +137,7 @@ pub fn snapshot() -> Snapshot {
         rack: None,
         save: None,
         log: kazoo_wall::protocol::LogHealth::default(),
+        probes: Vec::new(),
     }
 }
 

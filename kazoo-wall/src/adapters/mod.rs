@@ -154,5 +154,6 @@ const fn port(name: &'static str, signal: Signal, about: &'static str) -> PortSp
         name,
         signal,
         about,
+        pitch: false,
     }
 }

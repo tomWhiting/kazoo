@@ -9,6 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kazoo_core::ipc::link::{HubLink, RequestError};
 use kazoo_fx::Effect;
+use ringbuf::HeapCons;
+use ringbuf::traits::{Consumer, Observer};
 
 use super::record::{Ending, Finished, Recorder};
 use super::speech::Speech;
@@ -17,8 +19,9 @@ use crate::adapters::{self, Adapter};
 use crate::catalogue::{Builder, Curve, Jack, Kind, KnobSpec, Signal};
 use crate::change::{summarise_with, utc, utc_now};
 use crate::dsp;
+use crate::dsp::measure::{Capture, Reading};
 use crate::engine::{
-    CableTable, Command, EngineControl, Order, Route, clamp_bpm, processing_order,
+    CableTable, Command, EngineControl, Order, ProbeFrame, Route, clamp_bpm, processing_order,
 };
 use crate::fingerprints::Fingerprints;
 use crate::format;
@@ -26,12 +29,14 @@ use crate::listen::dbfs;
 use crate::patch::{
     Cable, FILE_VERSION, Module, Patch, Words, hash_bytes, never_undone, printable,
 };
+use crate::probe;
 use crate::protocol::{
     ArrangeResult, BrokenSave, CatalogueResult, Change, ChangeResult, ClockSource,
     DeleteSaveResult, ErrorCode, Event, Faults, KindInfo, KnobInfo, KnobView, Levels, Listen,
-    ListenResult, LoadResult, LogHealth, LogPage, MAX_SAVE_NAME, ModuleTiming, ModuleView, Place,
-    PortInfo, RecordResult, Recording, Request, SaveInfo, SaveMark, SaveResult, SavesResult,
-    Snapshot, TempoResult, Timings, WallError, What, is_auto_save, valid_save_name, widen,
+    ListenResult, LoadResult, LogHealth, LogPage, MAX_PROBES, MAX_SAVE_NAME, ModuleTiming,
+    ModuleView, Place, PortInfo, Probe, ProbeResult, RecordResult, Recording, Request, SaveInfo,
+    SaveMark, SaveResult, SavesResult, Snapshot, TempoResult, Timings, WallError, What,
+    is_auto_save, valid_save_name, widen,
 };
 use crate::store::{AUTO_SAVES_KEPT, LoadWriteError, Need, SaveError, Store};
 use crate::{MAX_CABLES, MAX_INPUTS, MAX_KNOBS, MAX_MODULES};
@@ -272,6 +277,23 @@ pub struct Wall {
     faults: FaultLog,
     levels: (f32, f32),
     listen: Option<Listen>,
+    /// What the engine's scopes and readouts hand on.
+    probe_ring: Option<ProbeRing>,
+    /// Each scope's and readout's latest capture, and when it came, by
+    /// module id.
+    readings: HashMap<String, (Instant, Capture)>,
+    /// Cable tables sent to this engine (it counts those it takes in the
+    /// same way: see [`ProbeFrame::cables`]).
+    tables_sent: u64,
+    /// What each scope's and readout's inputs come from (source slot,
+    /// port and amount, by input), as the tables last sent have it.
+    wiring: HashMap<String, Wiring>,
+    /// The first table each scope's and readout's inputs are as they are
+    /// now under, input by input: a capture measured under an earlier one
+    /// is of what was plugged in before. Its first input (a scope's `a`,
+    /// which its sweep follows; a readout's `in`) moved, it is let go
+    /// whole; another, only what it says of that input.
+    fresh_from: HashMap<String, [u64; MAX_INPUTS]>,
     fingerprints: Fingerprints,
     speech: Speech,
     recorder: Recorder,
@@ -339,6 +361,72 @@ pub struct Wall {
     /// them all in, its knobs are the old wall's, and `look` shows the
     /// targets instead.
     swaps_sent: u64,
+}
+
+/// What each input of a module comes from: the source's slot, its port,
+/// and the cable's amount (as bits), or nothing plugged in.
+type Wiring = [Option<(usize, usize, u32)>; MAX_INPUTS];
+
+/// Say in `capture` that nothing is known of its `input` (re-plugged, and
+/// not measured since): no reading, plugged in or not.
+fn unmeasured(capture: &mut Capture, input: usize, plugged: bool) {
+    if let Some(reading) = capture.inputs.get_mut(input) {
+        *reading = Reading {
+            connected: plugged,
+            ..Reading::NONE
+        };
+    }
+}
+
+/// Most outputs one readout's trail follows: a wall holds 96 modules of
+/// at most 4 outputs, so a trail longer than this has gone wrong.
+const TRAIL_STEPS: usize = 4_096;
+
+/// What [`Wall::source_show`] follows the cables with, for one answer:
+/// every cable by the input it goes into; each output's answer once known
+/// (so a selector of selectors is followed once each, not once per way to
+/// it; only answers that did not cut a loop short, which depend on where
+/// the loop was entered); the outputs on the way (so a loop ends); and
+/// the outputs followed for this readout.
+#[derive(Debug, Default)]
+struct Trail<'a> {
+    into: HashMap<(&'a str, usize), &'a Cable>,
+    known: HashMap<(&'a str, usize), Option<probe::Show>>,
+    on_the_way: HashSet<(&'a str, usize)>,
+    steps: usize,
+}
+
+/// What a trail found at an output: how it is shown, and whether that
+/// was found by cutting a loop short.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Found {
+    show: Option<probe::Show>,
+    cut: bool,
+}
+
+impl Found {
+    /// Nothing plugged in.
+    const NOTHING: Self = Self {
+        show: None,
+        cut: false,
+    };
+
+    /// Round a loop.
+    const LOOP: Self = Self {
+        show: None,
+        cut: true,
+    };
+}
+
+/// The reading end of the engine's probe ring.
+struct ProbeRing(HeapCons<ProbeFrame>);
+
+impl std::fmt::Debug for ProbeRing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProbeRing")
+            .field("waiting", &self.0.occupied_len())
+            .finish()
+    }
 }
 
 fn error(code: ErrorCode, message: impl Into<String>) -> WallError {
@@ -892,6 +980,7 @@ impl Wall {
             |store| store.dir().join("recordings"),
         );
         let recorder = Recorder::new(recordings, &mut engine);
+        let probe_ring = engine.take_probes().map(ProbeRing);
         let mut wall = Self {
             speech: Speech::new(speech_cache),
             recorder,
@@ -917,6 +1006,11 @@ impl Wall {
             faults: FaultLog::default(),
             levels: (0.0, 0.0),
             listen: None,
+            probe_ring,
+            readings: HashMap::new(),
+            tables_sent: 0,
+            wiring: HashMap::new(),
+            fresh_from: HashMap::new(),
             buckets: HashMap::new(),
             seats: BTreeMap::new(),
             save_mark: None,
@@ -944,10 +1038,15 @@ impl Wall {
     pub fn attach(&mut self, mut engine: EngineControl, desk: Option<HubLink>) {
         let before = self.recorder.sample_rate();
         let stopped = self.recorder.attach(&mut engine);
+        self.probe_ring = engine.take_probes().map(ProbeRing);
         self.engine = engine;
         self.desk = desk;
-        // A new engine has no swap to take in: everything goes in afresh.
+        // A new engine has no swap to take in, and has taken in no cable
+        // table: everything goes in afresh.
         self.swaps_sent = 0;
+        self.tables_sent = 0;
+        self.wiring.clear();
+        self.fresh_from.clear();
         self.load_engine();
         if let Some(finished) = stopped {
             let rate = self.engine.sample_rate();
@@ -1017,6 +1116,8 @@ impl Wall {
 
     fn load_engine(&mut self) {
         self.rack = Rack::new();
+        // What the old engine's modules measured is gone with them.
+        self.readings.clear();
         // Every knob goes in at its target, with nothing gliding.
         self.settled.clear();
         self.settling.clear();
@@ -1051,9 +1152,11 @@ impl Wall {
         self.lines.clear();
         self.settled.clear();
         self.settling.clear();
-        // Faults not yet told belong to modules that have gone.
+        // Faults not yet told, and readings, belong to modules that have
+        // gone.
         self.faults.unreported.clear();
         self.faults.last_report.clear();
+        self.readings.clear();
         let modules = self.patch.modules().to_vec();
         for module in &modules {
             if self.insert(module) {
@@ -1177,6 +1280,59 @@ impl Wall {
         }
         self.engine.send(Command::Cables(Box::new(table)));
         self.engine.send(Command::Order(Box::new(order)));
+        self.tables_sent = self.tables_sent.wrapping_add(1);
+        self.note_rewiring();
+    }
+
+    /// Note each scope and readout whose inputs the table just sent moves
+    /// (see [`Self::fresh_from`]), letting go of what it measured of what
+    /// was plugged in before.
+    fn note_rewiring(&mut self) {
+        let mut rewired = Vec::new();
+        for module in self.patch.modules() {
+            if !probe::measures(module.kind) {
+                continue;
+            }
+            let mut wiring = [None; MAX_INPUTS];
+            for cable in self.patch.cables() {
+                if let (true, Jack::Input(input), Some(from)) = (
+                    cable.to_module == module.id,
+                    cable.to_jack,
+                    self.rack.slot_of(&cable.from_module),
+                ) {
+                    if let Some(entry) = wiring.get_mut(input) {
+                        *entry = Some((from, cable.from_port, cable.amount.to_bits()));
+                    }
+                }
+            }
+            let before = self.wiring.get(&module.id);
+            let moved: [bool; MAX_INPUTS] =
+                std::array::from_fn(|input| before.is_none_or(|old| old[input] != wiring[input]));
+            if moved.contains(&true) {
+                rewired.push((module.id.clone(), wiring, moved));
+            }
+        }
+        for (id, wiring, moved) in rewired {
+            let fresh = self.fresh_from.entry(id.clone()).or_insert([0; MAX_INPUTS]);
+            for (from, moved) in fresh.iter_mut().zip(moved) {
+                if moved {
+                    *from = self.tables_sent;
+                }
+            }
+            if moved[0] {
+                self.readings.remove(&id);
+            } else if let Some((_, capture)) = self.readings.get_mut(&id) {
+                for (input, moved) in moved.iter().enumerate() {
+                    if *moved {
+                        unmeasured(capture, input, wiring[input].is_some());
+                    }
+                }
+            }
+            self.wiring.insert(id, wiring);
+        }
+        let patch = &self.patch;
+        self.wiring.retain(|id, _| patch.module(id).is_some());
+        self.fresh_from.retain(|id, _| patch.module(id).is_some());
     }
 
     /// Whether `cable` carries a gate (it comes from a gate output, or goes
@@ -1381,6 +1537,9 @@ impl Wall {
             }
             What::Remove { module, .. } => {
                 self.speech.forget(&module.id);
+                // What it measured goes with it: brought back, it measures
+                // afresh.
+                self.readings.remove(&module.id);
                 let slot = self.rack.free(&module.id);
                 self.send_tables();
                 if let Some(slot) = slot {
@@ -1891,6 +2050,10 @@ impl Wall {
                 listen: self.listen.clone(),
             })
             .map(read),
+            Request::Probe { module, modules } => self
+                .probe(module.as_deref(), modules, now)
+                .and_then(|result| encode(&result))
+                .map(read),
             Request::Log { before, limit } => encode(&self.log_page(*before, *limit)).map(read),
             Request::Turn {
                 module,
@@ -3128,7 +3291,313 @@ impl Wall {
                 ..mark.clone()
             }),
             log: self.log_health(),
+            probes: self.probes_now(Instant::now()).0,
         }
+    }
+
+    /// What the scopes and readouts measured, as of `now`: the first
+    /// [`MAX_PROBES`] of them in the wall's order, and the ids of the
+    /// rest.
+    fn probes_now(&self, now: Instant) -> (Vec<Probe>, Vec<String>) {
+        let mut trail = self.trail();
+        let mut shown = Vec::new();
+        let mut left_out = Vec::new();
+        for module in self.patch.modules() {
+            if !probe::measures(module.kind) {
+                continue;
+            }
+            if shown.len() < MAX_PROBES {
+                shown.push(self.probe_of(module, now, &mut trail));
+            } else {
+                left_out.push(module.id.clone());
+            }
+        }
+        (shown, left_out)
+    }
+
+    /// What `module` (a scope or readout) measured last, as of `now`;
+    /// `trail` follows readouts' cables (see [`Self::source_show`]).
+    fn probe_of<'a>(&'a self, module: &Module, now: Instant, trail: &mut Trail<'a>) -> Probe {
+        let latest = self
+            .readings
+            .get(&module.id)
+            .map(|(at, capture)| (capture, now.saturating_duration_since(*at)));
+        // Only a readout shows by what is plugged in.
+        let source = (module.kind == Kind::READOUT)
+            .then(|| self.source_show(&module.id, trail))
+            .flatten();
+        probe::probe(
+            &module.id,
+            module.kind,
+            latest,
+            source,
+            self.engine.shared().bpm(),
+        )
+    }
+
+    /// A trail to follow the wall's cables with, for one answer: every
+    /// cable by the input it goes into, made once.
+    fn trail(&self) -> Trail<'_> {
+        Trail {
+            into: self
+                .patch
+                .cables()
+                .iter()
+                .filter_map(|cable| match cable.to_jack {
+                    Jack::Input(input) => Some(((cable.to_module.as_str(), input), cable)),
+                    Jack::Knob(_) => None,
+                })
+                .collect(),
+            ..Trail::default()
+        }
+    }
+
+    /// How what is plugged into readout `id`'s input is shown at `auto`
+    /// (see [`probe::Show`]): by the output its cable comes from, followed
+    /// back through what passes its input on (see [`Self::show_out`]).
+    /// None when nothing is plugged in, or the trail only goes round in a
+    /// loop.
+    fn source_show<'a>(&'a self, id: &str, trail: &mut Trail<'a>) -> Option<probe::Show> {
+        trail.steps = 0;
+        self.show_into(id, 0, trail).show
+    }
+
+    /// How what arrives at `module`'s input `input` is shown.
+    fn show_into<'a>(&'a self, module: &str, input: usize, trail: &mut Trail<'a>) -> Found {
+        let cable = trail.into.get(&(module, input)).copied();
+        cable.map_or(Found::NOTHING, |cable| {
+            self.show_out(&cable.from_module, cable.from_port, trail)
+        })
+    }
+
+    /// How what output `port` of `module` carries is shown.
+    ///
+    /// Most outputs say so themselves (see
+    /// [`crate::catalogue::PortSpec::pitch`]). Some pass on what comes in,
+    /// and are followed back to it: a scope's output a is its input a, b
+    /// is b; a readout's out is its in; a slew limiter's and a sample and
+    /// hold's out is their in, slewed or held; a switch's outputs are its
+    /// in, sent on; a selector's out is whichever input is chosen, so it
+    /// is followed when every input plugged in is shown alike; and the
+    /// sums (`mix`'s out, `math`'s `sum`, `min` and `max`) of a pitch and
+    /// anything (a transposition, a vibrato) are still pitch (`math`'s
+    /// `abs` is a plain CV). One of those with nothing plugged in shows
+    /// what its output is said to carry (a sample and hold of its own noise
+    /// is a plain CV, a switch with no input sends a steady 1.0), but a
+    /// scope or readout, which passes on silence, shows nothing. An input
+    /// that only leads round a loop says nothing either way.
+    fn show_out<'a>(&'a self, module: &str, port: usize, trail: &mut Trail<'a>) -> Found {
+        let Some(from) = self.patch.module(module) else {
+            return Found::NOTHING;
+        };
+        let key = (from.id.as_str(), port);
+        if let Some(known) = trail.known.get(&key) {
+            return Found {
+                show: *known,
+                cut: false,
+            };
+        }
+        trail.steps += 1;
+        if trail.steps > TRAIL_STEPS || !trail.on_the_way.insert(key) {
+            // Round a loop (or a trail too long to follow): nothing here.
+            return Found::LOOP;
+        }
+        let found = self.shown_out(from, port, trail);
+        trail.on_the_way.remove(&key);
+        // What was found by cutting a loop short depends on where the loop
+        // was entered: only what was not is kept for the next readout.
+        if !found.cut {
+            trail.known.insert(key, found.show);
+        }
+        found
+    }
+
+    /// [`Self::show_out`] of `from`, once the trail has been checked.
+    fn shown_out<'a>(&'a self, from: &'a Module, port: usize, trail: &mut Trail<'a>) -> Found {
+        let own = Found {
+            show: from.kind.spec().outputs.get(port).map(probe::Show::of),
+            cut: false,
+        };
+        let kind = from.kind;
+        // A scope passes input `port` to output `port`.
+        let same = [port];
+        let inputs: &[usize] = if probe::measures(kind) {
+            &same
+        } else if kind == Kind::SLEW || kind == Kind::SH || kind == Kind::SWITCH {
+            &[0]
+        } else if kind == Kind::SELECT || kind == Kind::MIX {
+            &[0, 1, 2, 3]
+        } else if kind == Kind::MATH && port <= 2 {
+            &[0, 1]
+        } else {
+            return own;
+        };
+        let plugged: Vec<usize> = inputs
+            .iter()
+            .copied()
+            .filter(|&input| trail.into.contains_key(&(from.id.as_str(), input)))
+            .collect();
+        if plugged.is_empty() {
+            return Found {
+                show: own.show.filter(|_| !probe::measures(kind)),
+                cut: false,
+            };
+        }
+        let mut cut = false;
+        let mut shown = Vec::with_capacity(plugged.len());
+        for input in plugged {
+            let found = self.show_into(&from.id, input, trail);
+            cut |= found.cut;
+            // An input that only leads round a loop says nothing.
+            if !(found.cut && found.show.is_none()) {
+                shown.push(found.show);
+            }
+        }
+        let show = if shown.is_empty() {
+            None
+        } else if kind == Kind::MATH || kind == Kind::MIX {
+            if shown.contains(&Some(probe::Show::Pitch)) {
+                Some(probe::Show::Pitch)
+            } else {
+                own.show
+            }
+        } else if shown.iter().all(|show| *show == shown[0]) {
+            shown[0]
+        } else {
+            own.show
+        };
+        Found { show, cut }
+    }
+
+    /// Answer `probe`: what `module` (a scope or readout) measured (one
+    /// not there, or measuring nothing, refused); what each of `modules`
+    /// did (those not there passed over and listed); or with neither,
+    /// every one on the wall (up to [`MAX_PROBES`]).
+    fn probe(
+        &self,
+        module: Option<&str>,
+        modules: &[String],
+        now: Instant,
+    ) -> Result<ProbeResult, WallError> {
+        let dropped = self.engine.shared().probes_dropped();
+        let ids: Vec<&str> = match (module, modules) {
+            (None, []) => {
+                let (probes, left_out) = self.probes_now(now);
+                return Ok(ProbeResult {
+                    probes,
+                    left_out,
+                    missing: Vec::new(),
+                    dropped,
+                });
+            }
+            (Some(id), []) => {
+                return Ok(ProbeResult {
+                    probes: vec![self.probe_of(self.measuring(id)?, now, &mut self.trail())],
+                    left_out: Vec::new(),
+                    missing: Vec::new(),
+                    dropped,
+                });
+            }
+            (None, ids) if ids.len() <= MAX_PROBES => ids.iter().map(String::as_str).collect(),
+            (None, ids) => {
+                return Err(error(
+                    ErrorCode::BadRequest,
+                    format!(
+                        "probe reads at most {MAX_PROBES} modules at once; {} were asked for",
+                        ids.len()
+                    ),
+                ));
+            }
+            (Some(_), _) => {
+                return Err(error(
+                    ErrorCode::BadRequest,
+                    "probe takes module or modules, not both",
+                ));
+            }
+        };
+        // Several at once (a console's screens in view): one taken away by
+        // another seat meanwhile is passed over and named, never fails the
+        // rest.
+        let mut probes = Vec::with_capacity(ids.len());
+        let mut missing = Vec::new();
+        let mut trail = self.trail();
+        for id in ids {
+            match self
+                .patch
+                .module(id)
+                .filter(|module| probe::measures(module.kind))
+            {
+                Some(found) => probes.push(self.probe_of(found, now, &mut trail)),
+                None => missing.push(id.to_string()),
+            }
+        }
+        Ok(ProbeResult {
+            probes,
+            left_out: Vec::new(),
+            missing,
+            dropped,
+        })
+    }
+
+    /// Module `id`, if it is a scope or a readout.
+    fn measuring(&self, id: &str) -> Result<&Module, WallError> {
+        let found = self.patch.find(id)?;
+        if !probe::measures(found.kind) {
+            let probes: Vec<&str> = self
+                .patch
+                .modules()
+                .iter()
+                .filter(|module| probe::measures(module.kind))
+                .map(|module| module.id.as_str())
+                .collect();
+            let which = if probes.is_empty() {
+                "there are none on the wall: add a scope or a readout".to_string()
+            } else {
+                format!("probes: {}", probes.join(", "))
+            };
+            return Err(error(
+                ErrorCode::BadRequest,
+                format!("{id} is a {} and measures nothing; {which}", found.kind),
+            ));
+        }
+        Ok(found)
+    }
+
+    /// Take in what the scopes and readouts handed on since the last
+    /// tick, keeping each one's latest, and let go of what modules that
+    /// have gone measured.
+    fn take_readings(&mut self, now: Instant) {
+        if let Some(ProbeRing(ring)) = self.probe_ring.as_mut() {
+            while let Some(frame) = ring.try_pop() {
+                let Some(id) = self.rack.id_of(frame.slot, frame.tag) else {
+                    // The module has gone since (or a swap is under way).
+                    continue;
+                };
+                let fresh = self.fresh_from.get(id).copied().unwrap_or([0; MAX_INPUTS]);
+                if frame.cables < fresh[0] {
+                    // Measured of what was plugged in before.
+                    continue;
+                }
+                let mut capture = frame.capture;
+                for (input, from) in fresh.iter().enumerate().skip(1) {
+                    if frame.cables < *from {
+                        let plugged = self
+                            .wiring
+                            .get(id)
+                            .is_some_and(|wiring| wiring[input].is_some());
+                        unmeasured(&mut capture, input, plugged);
+                    }
+                }
+                match self.readings.get_mut(id) {
+                    Some(latest) => *latest = (now, capture),
+                    None => {
+                        self.readings.insert(id.to_string(), (now, capture));
+                    }
+                }
+            }
+        }
+        let patch = &self.patch;
+        self.readings.retain(|id, _| patch.module(id).is_some());
     }
 
     /// Whether the change log is taking changes (see [`LogHealth`]).
@@ -3254,6 +3723,7 @@ impl Wall {
                 self.dirty = true;
             }
         }
+        self.take_readings(now);
         let (left, right) = self.engine.shared().take_peaks();
         self.levels = (
             left.max(self.levels.0 * METER_DECAY),
@@ -3457,6 +3927,7 @@ pub fn catalogue() -> CatalogueResult {
                             name: port.name.to_string(),
                             signal: port.signal,
                             about: port.about.to_string(),
+                            pitch: port.pitch,
                         })
                         .collect(),
                     outputs: spec
@@ -3466,6 +3937,7 @@ pub fn catalogue() -> CatalogueResult {
                             name: port.name.to_string(),
                             signal: port.signal,
                             about: port.about.to_string(),
+                            pitch: port.pitch,
                         })
                         .collect(),
                 }

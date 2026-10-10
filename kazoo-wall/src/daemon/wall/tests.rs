@@ -9,7 +9,7 @@ use crate::SUB_BLOCK;
 use crate::dsp::{Io, Module as DspModule, Tick};
 use crate::engine::{Engine, EngineConfig, engine};
 use crate::patch::PatchFile;
-use crate::protocol::{ChangeResult, Snapshot};
+use crate::protocol::{ChangeResult, ProbeResult, Snapshot};
 use crate::seed::seed;
 use crate::store::{FailAt, Loaded};
 
@@ -2026,6 +2026,84 @@ fn a_new_wall_is_empty_and_undo_brings_the_old_one_back() {
 }
 
 #[test]
+fn a_wall_of_decisions_and_routers_saves_and_loads_back_exactly() {
+    let (mut wall, mut engine, dir) = saving_wall();
+    let kinds = [
+        "compare", "logic", "branch", "switch", "select", "divide", "math",
+    ];
+    for kind in kinds {
+        let add = Request::Add {
+            kind: kind.to_string(),
+            name: None,
+            place: None,
+        };
+        let id = changed(ask(&mut wall, &add).unwrap()).module.unwrap();
+        assert_eq!(id, format!("{kind}1"));
+    }
+    for (module, knob, value) in [
+        ("compare1", "window", 0.4),
+        ("compare1", "hysteresis", 0.1),
+        ("logic1", "threshold", 0.3),
+        ("branch1", "mode", 1.0),
+        ("branch1", "chance", 0.3),
+        ("switch1", "positions", 3.0),
+        ("switch1", "fade", 0.02),
+        ("select1", "select", 2.0),
+        ("divide1", "division", 4.0),
+        ("math1", "scale_b", -1.0),
+        ("math1", "offset_a", 0.25),
+    ] {
+        ask(&mut wall, &turn(module, knob, value)).unwrap();
+    }
+    for (from, to, amount) in [
+        ("clock1.out", "divide1.in", 1.0),
+        ("divide1.out", "branch1.in", 1.0),
+        ("branch1.a", "switch1.step", 1.0),
+        ("seq1.pitch", "math1.a", 1.0),
+        ("math1.sum", "compare1.in", 1.0),
+        ("compare1.gate", "logic1.a", 1.0),
+        ("logic1.xor", "select1.in1", 1.0),
+        ("switch1.out2", "select1.in2", 1.0),
+        ("divide1.count", "select1.select", 1.0),
+        ("select1.out", "vcf1.cutoff", 0.2),
+    ] {
+        let patch = Request::Patch {
+            from: from.to_string(),
+            to: to.to_string(),
+            amount: Some(amount),
+        };
+        ask(&mut wall, &patch).unwrap();
+    }
+    play(&mut wall, &mut engine);
+    save(&mut wall, "routers", false).unwrap();
+    let saved = as_saved(&wall);
+    let file = save_file(&dir, "routers");
+    for kind in kinds {
+        let module = file
+            .modules
+            .iter()
+            .find(|module| module.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind} in the save"));
+        assert_eq!(module.id, format!("{kind}1"));
+    }
+    let branch = file.modules.iter().find(|m| m.id == "branch1").unwrap();
+    assert!((branch.knobs["mode"] - 1.0).abs() < 1e-9);
+
+    // Cleared, then loaded: the wall is the save, and plays it.
+    ask(&mut wall, &Request::New).unwrap();
+    play(&mut wall, &mut engine);
+    assert!(wall.snapshot().modules.is_empty());
+    load_save(&mut wall, "routers").unwrap();
+    assert_eq!(as_saved(&wall), saved);
+    play(&mut wall, &mut engine);
+    plays_at_its_targets(&wall, &saved);
+    // Nothing in the file needed mending to read back.
+    let (_, notes) = Patch::load(&file).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(wall.engine_mut().shared().leaked(), 0);
+}
+
+#[test]
 fn deleting_a_save_takes_only_the_save() {
     let (mut wall, _engine, dir) = saving_wall();
     save(&mut wall, "Jam", false).unwrap();
@@ -3852,4 +3930,635 @@ fn a_refused_load_costs_no_allowance() {
         load_as(&mut wall, "jam").unwrap_err().code,
         ErrorCode::SlowDown
     );
+}
+
+/// A wall of `kinds` cabled `cables`, built straight into its patch (no
+/// flood guard to meet), with the engine that plays it.
+fn probing_wall(kinds: &[&str], cables: &[(&str, &str)]) -> (Wall, Engine) {
+    let mut patch = Patch::empty(120.0);
+    for kind in kinds {
+        patch.add(kind, None, None).unwrap();
+    }
+    for (from, to) in cables {
+        patch.plug(from, to, None, None).unwrap();
+    }
+    let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    (Wall::new(patch, control, None, Vec::new(), None), engine)
+}
+
+/// Play `seconds` of the wall, ticking every 20 ms as the daemon does.
+fn run_for(wall: &mut Wall, engine: &mut Engine, seconds: f64) {
+    let mut buffer = vec![0.0_f32; 960 * 2];
+    for _ in 0..(seconds * 50.0).round() as usize {
+        engine.render(&mut buffer, 2);
+        wall.tick(Instant::now());
+    }
+}
+
+fn probed(wall: &mut Wall, module: Option<&str>) -> ProbeResult {
+    let request = Request::Probe {
+        module: module.map(str::to_string),
+        modules: Vec::new(),
+    };
+    serde_json::from_value(ask(wall, &request).unwrap()).unwrap()
+}
+
+#[test]
+fn a_scope_and_a_readout_measure_what_is_plugged_into_them() {
+    let (mut wall, mut engine) = probing_wall(
+        &["vco", "scope", "readout"],
+        &[("vco1.out", "scope1.a"), ("scope1.a", "readout1.in")],
+    );
+    // A4, as a sine.
+    ask(&mut wall, &turn("vco1", "tune", 9.0)).unwrap();
+    ask(&mut wall, &turn("vco1", "shape", 0.0)).unwrap();
+    let revision = wall.revision();
+    run_for(&mut wall, &mut engine, 1.0);
+    let result = probed(&mut wall, None);
+    assert!(result.left_out.is_empty());
+    let modules: Vec<&str> = result
+        .probes
+        .iter()
+        .map(|probe| probe.module.as_str())
+        .collect();
+    assert_eq!(modules, ["scope1", "readout1"]);
+    let scope = result.probes[0].scope.as_ref().unwrap();
+    assert!(result.probes[0].readout.is_none());
+    assert!(result.probes[0].age < 0.5, "{}", result.probes[0].age);
+    assert!(scope.triggered, "{scope:?}");
+    assert_eq!(scope.a.len(), 96);
+    assert!(scope.b.is_empty(), "b is unplugged");
+    let hz = scope.input_a.hz.unwrap();
+    assert!((hz - 440.0).abs() < 0.5, "{hz}");
+    assert_eq!(scope.input_a.shape.as_deref(), Some("sine"));
+    assert!(
+        scope.words.starts_with("a: 440 Hz sine from "),
+        "{}",
+        scope.words
+    );
+    assert!(
+        scope.words.contains("; b unplugged; triggered"),
+        "{}",
+        scope.words
+    );
+    // The readout hears it through the scope, and shows it as the audio
+    // it is.
+    let readout = result.probes[1].readout.as_ref().unwrap();
+    assert_eq!(readout.mode, "audio");
+    assert!(readout.auto);
+    assert!((readout.input.hz.unwrap() - 440.0).abs() < 0.5);
+    assert_eq!(readout.lines[3], "440 Hz", "{:?}", readout.lines);
+    // A look carries the same; probing changed nothing.
+    let look = wall.snapshot();
+    assert_eq!(look.probes.len(), 2);
+    assert_eq!(wall.revision(), revision);
+    // One by its id; one that measures nothing; one that is not there.
+    assert_eq!(probed(&mut wall, Some("readout1")).probes.len(), 1);
+    let refused = ask(
+        &mut wall,
+        &Request::Probe {
+            module: Some("vco1".to_string()),
+            modules: Vec::new(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::BadRequest);
+    assert!(
+        refused.message.contains("probes: scope1, readout1"),
+        "{}",
+        refused.message
+    );
+    let missing = Request::Probe {
+        module: Some("scope9".to_string()),
+        modules: Vec::new(),
+    };
+    assert_eq!(code(ask(&mut wall, &missing)), ErrorCode::UnknownModule);
+    // A watcher may look too: it is a read, not a change.
+    let every = Request::Probe {
+        module: None,
+        modules: Vec::new(),
+    };
+    assert!(!every.is_change());
+}
+
+#[test]
+fn a_readout_on_auto_shows_what_its_cable_carries() {
+    let (mut wall, mut engine) = probing_wall(
+        &[
+            "clock", "seq", "vco", "scope", "scope", "readout", "readout", "readout", "readout",
+            "readout", "lfo", "readout",
+        ],
+        &[
+            ("lfo1.out", "readout6.in"),
+            ("clock1.out", "readout1.in"),
+            ("seq1.pitch", "readout2.in"),
+            ("vco1.out", "scope1.b"),
+            ("scope1.b", "readout3.in"),
+            // A loop of pass-throughs: nothing at its start.
+            ("readout5.out", "scope2.a"),
+            ("scope2.a", "readout5.in"),
+        ],
+    );
+    let source = |wall: &Wall, id: &str| wall.source_show(id, &mut wall.trail());
+    assert_eq!(source(&wall, "readout1"), Some(probe::Show::Gate));
+    assert_eq!(source(&wall, "readout2"), Some(probe::Show::Pitch));
+    assert_eq!(source(&wall, "readout3"), Some(probe::Show::Audio));
+    assert_eq!(source(&wall, "readout4"), None);
+    assert_eq!(source(&wall, "readout5"), None);
+    // Every other CV is a plain CV, not a note.
+    assert_eq!(source(&wall, "readout6"), Some(probe::Show::Cv));
+    run_for(&mut wall, &mut engine, 0.5);
+    let shown = |wall: &mut Wall, id: &str| {
+        probed(wall, Some(id)).probes[0]
+            .readout
+            .clone()
+            .unwrap_or_else(|| panic!("{id} has no reading"))
+    };
+    assert_eq!(shown(&mut wall, "readout1").mode, "gate");
+    let pitch = shown(&mut wall, "readout2");
+    assert_eq!(pitch.mode, "pitch");
+    assert!(pitch.note.is_some(), "{pitch:?}");
+    assert_eq!(shown(&mut wall, "readout3").mode, "audio");
+    let lfo = shown(&mut wall, "readout6");
+    assert_eq!(lfo.mode, "cv");
+    assert!(
+        lfo.note.is_none() && lfo.lines[0].starts_with("cv "),
+        "{lfo:?}"
+    );
+    let unplugged = shown(&mut wall, "readout4");
+    assert_eq!(unplugged.lines, ["nothing plugged in"]);
+    // The knob overrides what is plugged in.
+    ask(&mut wall, &turn("readout1", "mode", 1.0)).unwrap();
+    run_for(&mut wall, &mut engine, 0.3);
+    let chosen = shown(&mut wall, "readout1");
+    assert_eq!(chosen.mode, "pitch");
+    assert!(!chosen.auto);
+}
+
+#[test]
+fn an_answer_carries_at_most_sixteen_probes_and_stays_small() {
+    let kinds: Vec<&str> = std::iter::once("noise")
+        .chain(std::iter::repeat_n("scope", MAX_PROBES + 2))
+        .collect();
+    let ids: Vec<String> = (1..=MAX_PROBES + 2).map(|n| format!("scope{n}")).collect();
+    let mut cables = Vec::new();
+    for id in &ids {
+        cables.push(("noise1.out".to_string(), format!("{id}.a")));
+        cables.push(("noise1.out".to_string(), format!("{id}.b")));
+    }
+    let cables: Vec<(&str, &str)> = cables
+        .iter()
+        .map(|(from, to)| (from.as_str(), to.as_str()))
+        .collect();
+    let (mut wall, mut engine) = probing_wall(&kinds, &cables);
+    run_for(&mut wall, &mut engine, 0.3);
+    let look = wall.snapshot();
+    assert_eq!(look.probes.len(), MAX_PROBES);
+    assert_eq!(look.probes[MAX_PROBES - 1].module, ids[MAX_PROBES - 1]);
+    let result = probed(&mut wall, None);
+    assert_eq!(result.probes.len(), MAX_PROBES);
+    assert_eq!(result.left_out, ids[MAX_PROBES..]);
+    // Every trace is whole, and the answer is bounded: two traces of at
+    // most 96 points a scope.
+    let bytes = serde_json::to_string(&result).unwrap().len();
+    assert!(bytes < MAX_PROBES * 8 * 1024, "{bytes} bytes");
+    for found in &result.probes {
+        let scope = found.scope.as_ref().unwrap();
+        assert_eq!((scope.a.len(), scope.b.len()), (96, 96), "{}", found.module);
+    }
+    // One past the sixteen is still there by its id.
+    let last = probed(&mut wall, Some(&ids[MAX_PROBES + 1]));
+    assert!(last.probes[0].scope.is_some());
+}
+
+#[test]
+fn readings_of_modules_gone_or_replaced_are_let_go() {
+    let (mut wall, mut engine) = probing_wall(&["readout"], &[]);
+    run_for(&mut wall, &mut engine, 0.3);
+    assert!(probed(&mut wall, None).probes[0].readout.is_some());
+    let remove = Request::Remove {
+        module: "readout1".to_string(),
+    };
+    ask(&mut wall, &remove).unwrap();
+    run_for(&mut wall, &mut engine, 0.1);
+    assert!(wall.readings.is_empty());
+    assert!(probed(&mut wall, None).probes.is_empty());
+    // Undone, it is back, and measures afresh.
+    let removal = wall.revision();
+    ask(&mut wall, &Request::Undo { change: removal }).unwrap();
+    let back = probed(&mut wall, None);
+    assert_eq!(back.probes.len(), 1);
+    assert!(back.probes[0].readout.is_none(), "nothing measured yet");
+    run_for(&mut wall, &mut engine, 0.3);
+    assert!(probed(&mut wall, None).probes[0].readout.is_some());
+}
+
+#[test]
+fn a_wall_of_scopes_and_readouts_saves_and_loads_back_and_measures_again() {
+    let (mut wall, mut engine, dir) = saving_wall();
+    for kind in ["scope", "readout"] {
+        let add = Request::Add {
+            kind: kind.to_string(),
+            name: Some(format!("my {kind}")),
+            place: None,
+        };
+        ask(&mut wall, &add).unwrap();
+    }
+    for (module, knob, value) in [
+        ("scope1", "time", 0.5),
+        ("scope1", "zoom", 4.0),
+        ("scope1", "trigger", -0.25),
+        ("scope1", "mode", 1.0),
+        ("readout1", "mode", 3.0),
+    ] {
+        ask(&mut wall, &turn(module, knob, value)).unwrap();
+    }
+    for (from, to) in [
+        ("vco1.out", "scope1.a"),
+        ("lfo1.out", "scope1.b"),
+        ("clock1.out", "readout1.in"),
+        ("readout1.out", "scope1.trigger"),
+    ] {
+        let patch = Request::Patch {
+            from: from.to_string(),
+            to: to.to_string(),
+            amount: Some(0.5),
+        };
+        ask(&mut wall, &patch).unwrap();
+    }
+    play(&mut wall, &mut engine);
+    save(&mut wall, "probes", false).unwrap();
+    let saved = save_file(&dir, "probes");
+    let kinds: Vec<&str> = saved
+        .modules
+        .iter()
+        .map(|module| module.kind.as_str())
+        .collect();
+    assert!(
+        kinds.contains(&"scope") && kinds.contains(&"readout"),
+        "{kinds:?}"
+    );
+    let cables = wall.snapshot().cables;
+    // Replaced by an empty wall, then loaded back: the same modules at the
+    // same knobs, the same cables.
+    ask(&mut wall, &Request::New).unwrap();
+    play(&mut wall, &mut engine);
+    assert!(wall.snapshot().probes.is_empty());
+    load_save(&mut wall, "probes").unwrap();
+    play(&mut wall, &mut engine);
+    plays_at_its_targets(&wall, &saved);
+    assert_eq!(wall.snapshot().cables, cables);
+    let names: Vec<Option<String>> = wall
+        .snapshot()
+        .modules
+        .iter()
+        .filter(|module| module.kind == "scope" || module.kind == "readout")
+        .map(|module| module.name.clone())
+        .collect();
+    assert_eq!(
+        names,
+        [Some("my scope".to_string()), Some("my readout".to_string())]
+    );
+    // And they measure again.
+    run_for(&mut wall, &mut engine, 0.6);
+    let result = probed(&mut wall, None);
+    let scope = result.probes[0].scope.as_ref().unwrap();
+    assert_eq!(scope.mode, "free");
+    assert!((scope.zoom - 4.0).abs() < 1e-9);
+    assert!(scope.input_b.connected);
+    let readout = result.probes[1].readout.as_ref().unwrap();
+    assert_eq!(readout.mode, "gate");
+    assert!(!readout.auto);
+}
+
+/// Render `frames` without a tick: captures wait in the probe ring.
+fn render_only(engine: &mut Engine, frames: usize) {
+    let mut buffer = vec![0.0_f32; frames * 2];
+    engine.render(&mut buffer, 2);
+}
+
+#[test]
+fn what_was_measured_before_a_cable_moved_is_never_shown() {
+    let (mut wall, mut engine) =
+        probing_wall(&["vco", "noise", "scope"], &[("vco1.out", "scope1.a")]);
+    run_for(&mut wall, &mut engine, 0.4);
+    let before = probed(&mut wall, Some("scope1")).probes[0]
+        .scope
+        .clone()
+        .unwrap();
+    assert!(
+        before.input_a.hz.is_some_and(|hz| (hz - 261.6).abs() < 1.0),
+        "{before:?}"
+    );
+    // Captures of the oscillator wait in the ring when the cable moves.
+    render_only(&mut engine, 9_600);
+    let patch = Request::Patch {
+        from: "noise1.out".to_string(),
+        to: "scope1.a".to_string(),
+        amount: None,
+    };
+    ask(&mut wall, &patch).unwrap();
+    assert!(
+        probed(&mut wall, Some("scope1")).probes[0].scope.is_none(),
+        "the oscillator's reading is let go at once"
+    );
+    wall.tick(Instant::now());
+    assert!(
+        probed(&mut wall, Some("scope1")).probes[0].scope.is_none(),
+        "and those waiting in the ring are let go too"
+    );
+    // What comes after is the noise alone, never the oscillator.
+    for _ in 0..20 {
+        run_for(&mut wall, &mut engine, 0.04);
+        if let Some(scope) = probed(&mut wall, Some("scope1")).probes[0].scope.clone() {
+            assert!(scope.input_a.shape.is_none(), "{scope:?}");
+            assert!(!scope.input_a.steady(), "{scope:?}");
+        }
+    }
+    assert!(probed(&mut wall, Some("scope1")).probes[0].scope.is_some());
+}
+
+#[test]
+fn a_removed_scope_s_capture_never_lands_on_what_takes_its_slot() {
+    let (mut wall, mut engine) = probing_wall(&["vco", "scope"], &[("vco1.out", "scope1.a")]);
+    run_for(&mut wall, &mut engine, 0.3);
+    // Captures of the scope wait in the ring as it goes and a readout
+    // takes its slot.
+    render_only(&mut engine, 9_600);
+    let remove = Request::Remove {
+        module: "scope1".to_string(),
+    };
+    ask(&mut wall, &remove).unwrap();
+    let add = Request::Add {
+        kind: "readout".to_string(),
+        name: None,
+        place: None,
+    };
+    ask(&mut wall, &add).unwrap();
+    wall.tick(Instant::now());
+    let found = probed(&mut wall, Some("readout1"));
+    assert!(found.probes[0].scope.is_none() && found.probes[0].readout.is_none());
+    assert!(!wall.readings.contains_key("scope1"));
+}
+
+#[test]
+fn readings_follow_a_load_and_its_undo() {
+    let (mut wall, mut engine, _dir) = saving_wall();
+    let add = Request::Add {
+        kind: "scope".to_string(),
+        name: None,
+        place: None,
+    };
+    ask(&mut wall, &add).unwrap();
+    let patch = Request::Patch {
+        from: "vco1.out".to_string(),
+        to: "scope1.a".to_string(),
+        amount: None,
+    };
+    ask(&mut wall, &patch).unwrap();
+    save(&mut wall, "measured", false).unwrap();
+    ask(&mut wall, &Request::New).unwrap();
+    run_for(&mut wall, &mut engine, 0.2);
+    assert!(wall.snapshot().probes.is_empty());
+    let loaded = load_save(&mut wall, "measured").unwrap();
+    // Nothing of the empty wall, nor of the scope before it went.
+    assert!(wall.readings.is_empty());
+    run_for(&mut wall, &mut engine, 0.5);
+    let scope = probed(&mut wall, Some("scope1")).probes[0]
+        .scope
+        .clone()
+        .unwrap();
+    assert!(scope.input_a.connected, "{scope:?}");
+    // Undone, the empty wall is back: no probes, no readings.
+    undo_load(&mut wall, loaded.change.seq);
+    assert!(wall.readings.is_empty());
+    run_for(&mut wall, &mut engine, 0.2);
+    assert!(wall.snapshot().probes.is_empty());
+    assert!(wall.readings.is_empty());
+}
+
+#[test]
+fn a_rebuilt_engine_at_another_rate_measures_afresh() {
+    let (mut wall, mut engine) = probing_wall(&["vco", "scope"], &[("vco1.out", "scope1.a")]);
+    run_for(&mut wall, &mut engine, 0.3);
+    assert!(probed(&mut wall, None).probes[0].scope.is_some());
+    // Captures of the old engine wait in its ring, which goes with it.
+    render_only(&mut engine, 4_800);
+    drop(engine);
+    let (mut rebuilt, control) = crate::engine::engine(EngineConfig::new(96_000, 120.0, 0.0), None);
+    wall.attach(control, None);
+    assert!(wall.readings.is_empty());
+    assert!(probed(&mut wall, None).probes[0].scope.is_none());
+    let mut buffer = vec![0.0_f32; 1_920 * 2];
+    for _ in 0..25 {
+        rebuilt.render(&mut buffer, 2);
+        wall.tick(Instant::now());
+    }
+    let scope = probed(&mut wall, None).probes[0].scope.clone().unwrap();
+    assert!((scope.span - 0.02).abs() < 1e-3, "{}", scope.span);
+    let hz = scope.input_a.hz.unwrap();
+    assert!((hz - 261.6).abs() < 1.0, "{hz}");
+}
+
+#[test]
+fn probing_several_passes_over_one_another_seat_took_away() {
+    let (mut wall, mut engine) = probing_wall(&["readout", "readout", "vco"], &[]);
+    run_for(&mut wall, &mut engine, 0.3);
+    let remove = Request::Remove {
+        module: "readout2".to_string(),
+    };
+    wall.request("Ava", &remove, Instant::now()).unwrap();
+    let several = Request::Probe {
+        module: None,
+        modules: vec![
+            "readout1".to_string(),
+            "readout2".to_string(),
+            "vco1".to_string(),
+        ],
+    };
+    let found: ProbeResult = serde_json::from_value(ask(&mut wall, &several).unwrap()).unwrap();
+    let ids: Vec<&str> = found
+        .probes
+        .iter()
+        .map(|probe| probe.module.as_str())
+        .collect();
+    assert_eq!(ids, ["readout1"]);
+    assert_eq!(found.missing, ["readout2", "vco1"]);
+    assert!(found.probes[0].readout.is_some());
+    // One named alone is still refused.
+    let one = Request::Probe {
+        module: Some("readout2".to_string()),
+        modules: Vec::new(),
+    };
+    assert_eq!(code(ask(&mut wall, &one)), ErrorCode::UnknownModule);
+}
+
+#[test]
+fn plugging_b_alone_lets_go_of_b_and_keeps_a() {
+    let (mut wall, mut engine) =
+        probing_wall(&["vco", "lfo", "scope"], &[("vco1.out", "scope1.a")]);
+    run_for(&mut wall, &mut engine, 0.4);
+    let before = probed(&mut wall, Some("scope1")).probes[0]
+        .scope
+        .clone()
+        .unwrap();
+    assert!(before.input_a.hz.is_some());
+    // Captures wait in the ring as b is plugged.
+    render_only(&mut engine, 4_800);
+    let patch = Request::Patch {
+        from: "lfo1.out".to_string(),
+        to: "scope1.b".to_string(),
+        amount: None,
+    };
+    ask(&mut wall, &patch).unwrap();
+    let kept = probed(&mut wall, Some("scope1")).probes[0]
+        .scope
+        .clone()
+        .unwrap();
+    assert_eq!(kept.input_a, before.input_a, "a's reading stays");
+    assert!(kept.input_b.waiting && kept.b.is_empty(), "{kept:?}");
+    // The waiting captures keep a and say nothing of b.
+    wall.tick(Instant::now());
+    let taken = probed(&mut wall, Some("scope1")).probes[0]
+        .scope
+        .clone()
+        .unwrap();
+    assert!(
+        taken.input_a.hz.is_some() && taken.input_b.waiting,
+        "{taken:?}"
+    );
+    // Then b is measured.
+    run_for(&mut wall, &mut engine, 0.3);
+    let after = probed(&mut wall, Some("scope1")).probes[0]
+        .scope
+        .clone()
+        .unwrap();
+    assert!(
+        after.input_b.connected && !after.input_b.waiting,
+        "{after:?}"
+    );
+    assert!(!after.b.is_empty());
+}
+
+#[test]
+fn pitch_through_a_slew_or_a_sample_and_hold_is_still_pitch() {
+    let (wall, _engine) = probing_wall(
+        &[
+            "seq", "quant", "slew", "sh", "sh", "readout", "readout", "readout",
+        ],
+        &[
+            ("seq1.pitch", "slew1.in"),
+            ("slew1.out", "readout1.in"),
+            ("quant1.out", "sh1.in"),
+            ("sh1.out", "readout2.in"),
+            // A sample and hold of its own noise is a plain CV.
+            ("sh2.out", "readout3.in"),
+        ],
+    );
+    let source = |id: &str| wall.source_show(id, &mut wall.trail());
+    assert_eq!(source("readout1"), Some(probe::Show::Pitch));
+    assert_eq!(source("readout2"), Some(probe::Show::Pitch));
+    assert_eq!(source("readout3"), Some(probe::Show::Cv));
+}
+
+#[test]
+fn pitch_through_the_routers_and_math_is_still_pitch() {
+    let (wall, _engine) = probing_wall(
+        &[
+            "seq", "lfo", "switch", "select", "select", "math", "math", "readout", "readout",
+            "readout", "readout", "readout", "switch", "readout",
+        ],
+        &[
+            // A switch sends its in on.
+            ("seq1.pitch", "switch1.in"),
+            ("switch1.out3", "readout1.in"),
+            // A selector of pitches is pitch; of a pitch and an LFO, its
+            // own port's (audio).
+            ("seq1.pitch", "select1.in1"),
+            ("seq1.pitch", "select1.in3"),
+            ("select1.out", "readout2.in"),
+            ("seq1.pitch", "select2.in1"),
+            ("lfo1.out", "select2.in2"),
+            ("select2.out", "readout3.in"),
+            // A pitch plus a vibrato is pitch; its absolute value is not.
+            ("seq1.pitch", "math1.a"),
+            ("lfo1.out", "math1.b"),
+            ("math1.sum", "readout4.in"),
+            ("lfo1.out", "math2.a"),
+            ("math2.sum", "readout5.in"),
+            ("math1.abs", "readout6.in"),
+        ],
+    );
+    let source = |id: &str| wall.source_show(id, &mut wall.trail());
+    assert_eq!(source("readout1"), Some(probe::Show::Pitch));
+    assert_eq!(source("readout2"), Some(probe::Show::Pitch));
+    assert_eq!(source("readout3"), Some(probe::Show::Audio));
+    assert_eq!(source("readout4"), Some(probe::Show::Pitch));
+    assert_eq!(source("readout5"), Some(probe::Show::Cv));
+    assert_eq!(source("readout6"), Some(probe::Show::Cv));
+    // An empty switch sends a steady 1.0, as its outputs say they carry.
+    let (empty, _engine) = probing_wall(&["switch", "readout"], &[("switch1.out1", "readout1.in")]);
+    assert_eq!(
+        empty.source_show("readout1", &mut empty.trail()),
+        Some(probe::Show::Audio)
+    );
+}
+
+#[test]
+fn a_loop_of_routers_reads_the_same_whatever_order_its_cables_went_in() {
+    // Two selectors feeding each other, one also fed a pitch; a readout
+    // on each, a mixer of the pitch and an LFO, and one on that too.
+    let kinds = [
+        "seq", "lfo", "select", "select", "mix", "readout", "readout", "readout",
+    ];
+    let cables = [
+        ("seq1.pitch", "select1.in1"),
+        ("select2.out", "select1.in2"),
+        ("select1.out", "select2.in1"),
+        ("select1.out", "readout1.in"),
+        ("select2.out", "readout2.in"),
+        ("seq1.pitch", "mix1.a"),
+        ("lfo1.out", "mix1.b"),
+        ("mix1.out", "readout3.in"),
+    ];
+    let read = |cables: &[(&str, &str)]| {
+        let (wall, _engine) = probing_wall(&kinds, cables);
+        let mut trail = wall.trail();
+        // In both orders of asking, on one trail.
+        let forward: Vec<_> = ["readout1", "readout2", "readout3"]
+            .iter()
+            .map(|id| wall.source_show(id, &mut trail))
+            .collect();
+        let mut trail = wall.trail();
+        let mut backward: Vec<_> = ["readout3", "readout2", "readout1"]
+            .iter()
+            .map(|id| wall.source_show(id, &mut trail))
+            .collect();
+        backward.reverse();
+        assert_eq!(forward, backward);
+        forward
+    };
+    let pitch = Some(probe::Show::Pitch);
+    let expected = vec![pitch, pitch, pitch];
+    assert_eq!(read(&cables), expected);
+    let mut reversed = cables;
+    reversed.reverse();
+    assert_eq!(read(&reversed), expected);
+    // A loop with nothing else in it shows nothing.
+    let (alone, _engine) = probing_wall(
+        &["select", "select", "readout"],
+        &[
+            ("select2.out", "select1.in1"),
+            ("select1.out", "select2.in1"),
+            ("select1.out", "readout1.in"),
+        ],
+    );
+    assert_eq!(alone.source_show("readout1", &mut alone.trail()), None);
+    // A scope's probe asks nothing of the cables: only readouts do.
+    let (scoped, _engine) = probing_wall(&["seq", "scope"], &[("seq1.pitch", "scope1.a")]);
+    let mut trail = scoped.trail();
+    scoped.probes_now(Instant::now());
+    let found = scoped.probe_of(&scoped.patch.modules()[1], Instant::now(), &mut trail);
+    assert!(found.readout.is_none());
+    assert_eq!(trail.steps, 0);
 }

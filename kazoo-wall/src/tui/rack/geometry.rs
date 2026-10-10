@@ -3,7 +3,8 @@
 //!
 //! Every module is a faceplate as tall as its row of the rack, like a
 //! Eurorack case: a title, its knobs in columns of [`KNOB_ROWS`], a meter
-//! if it is an `out`, and its jacks along the bottom, outputs below inputs.
+//! if it is an `out`, a screen if it is a `scope` or a `readout`, and its
+//! jacks along the bottom, outputs below inputs.
 //! The rack's rows are the wall's own, shared by every console like a
 //! real case, and it pans the rest of the way, like walking along the
 //! wall. (From a wall older than the rows, it wraps into as many rows as
@@ -43,6 +44,14 @@ pub const TITLE_H: u16 = 2;
 
 /// Width of an `out` module's meter.
 pub const METER_W: u16 = 4;
+
+/// Width of a `scope`'s screen, a column either side included: 64 braille
+/// dots across, and room under it for the longest label.
+pub const SCOPE_W: u16 = 34;
+
+/// Width of a `readout`'s screen, a column either side included: room for
+/// its longest line.
+pub const READOUT_W: u16 = kazoo_wall::probe::READOUT_COLUMNS as u16 + 2;
 
 /// Narrowest faceplate inside.
 pub const MIN_INNER: u16 = 12;
@@ -211,6 +220,9 @@ pub struct Plate {
     pub jacks: Vec<JackPlace>,
     /// The meter's top-left, for an `out`.
     pub meter: Option<Point>,
+    /// The screen's top-left, for a `scope` or a `readout`: as wide as
+    /// [`screen_width`] says and as tall as the knobs' columns.
+    pub screen: Option<Point>,
 }
 
 impl Plate {
@@ -351,6 +363,17 @@ pub fn has_meter(module: &ModuleView) -> bool {
     module.kind == "out"
 }
 
+/// How wide `module`'s screen is: a scope's and a readout's; 0 for
+/// everything else.
+#[must_use]
+pub fn screen_width(module: &ModuleView) -> u16 {
+    match module.kind.as_str() {
+        "scope" => SCOPE_W,
+        "readout" => READOUT_W,
+        _ => 0,
+    }
+}
+
 fn count(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX / 16)
 }
@@ -362,8 +385,9 @@ fn knob_columns(module: &ModuleView, scale: Scale) -> u16 {
 
 /// The width inside a module's faceplate.
 fn inner_width(module: &ModuleView, scale: Scale) -> u16 {
-    let knobs =
-        knob_columns(module, scale) * scale.knob_w + if has_meter(module) { METER_W } else { 0 };
+    let knobs = knob_columns(module, scale) * scale.knob_w
+        + if has_meter(module) { METER_W } else { 0 }
+        + screen_width(module);
     let across = usize::from(scale.jacks_across);
     let jacks = count(module.inputs.len().max(module.outputs.len()).min(across)) * scale.jack_w;
     knobs.max(jacks).max(scale.min_inner)
@@ -615,6 +639,10 @@ fn place(
         x: inner_x + u32::from(knob_columns(module, scale) * scale.knob_w),
         y: knobs_y,
     });
+    let screen = (screen_width(module) > 0).then(|| Point {
+        x: inner_x + u32::from(knob_columns(module, scale) * scale.knob_w),
+        y: knobs_y,
+    });
     let inner = width - 2;
     let columns = u32::from(jack_columns(inner, scale));
     // Jacks sit along the bottom, as on hardware.
@@ -644,6 +672,7 @@ fn place(
         knobs,
         jacks,
         meter,
+        screen,
     }
 }
 
@@ -690,6 +719,7 @@ fn block(index: usize, module: &ModuleView, at: Point, (width, height): (u16, u1
         knobs,
         jacks,
         meter: None,
+        screen: None,
     }
 }
 
@@ -830,6 +860,7 @@ struct Shape {
     inputs: Vec<String>,
     outputs: Vec<String>,
     meter: bool,
+    screen: u16,
 }
 
 impl Shape {
@@ -839,6 +870,7 @@ impl Shape {
             inputs: module.inputs.clone(),
             outputs: module.outputs.clone(),
             meter: has_meter(module),
+            screen: screen_width(module),
         }
     }
 
@@ -847,6 +879,7 @@ impl Shape {
             && self.inputs == module.inputs
             && self.outputs == module.outputs
             && self.meter == has_meter(module)
+            && self.screen == screen_width(module)
     }
 }
 

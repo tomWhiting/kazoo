@@ -42,8 +42,8 @@ use kazoo_wall::fingerprints::Shares;
 use kazoo_wall::format;
 use kazoo_wall::protocol::{
     ArrangeResult, CableRecord, CatalogueResult, ChangeResult, DeleteSaveResult, ErrorCode, Event,
-    KindInfo, KnobInfo, LoadResult, LogPage, ModuleView, MonitorResult, Place, RecordResult,
-    Request, SaveResult, SavesResult, Snapshot, TempoResult,
+    KindInfo, KnobInfo, LoadResult, LogPage, ModuleView, MonitorResult, Place, ProbeResult,
+    RecordResult, Request, SaveResult, SavesResult, Snapshot, TempoResult,
 };
 
 use super::knob::Travel;
@@ -79,6 +79,10 @@ pub const STATUS_LIFE: Duration = Duration::from_secs(12);
 
 /// Changes fetched on connecting.
 const LOG_PAGE: u32 = 100;
+
+/// How often the rack view reads the scopes and readouts in view past
+/// those `look` carries: as often as it looks.
+pub const PROBE_EVERY: Duration = Duration::from_millis(100);
 
 /// Changes fetched when the wall's revision runs ahead of the log.
 const CATCH_UP: u32 = 50;
@@ -1015,6 +1019,7 @@ impl App {
 
     fn on_result(&mut self, request: &Request, value: serde_json::Value, now: Instant) {
         match request {
+            Request::Probe { .. } => self.probed(request, value, now),
             Request::Catalogue => {
                 if let Some(catalogue) = self.parse::<CatalogueResult>(request, value, now) {
                     self.catalogue = catalogue.kinds;
@@ -1172,6 +1177,14 @@ impl App {
 
     fn on_failure(&mut self, request: &Request, failure: &Failure, now: Instant) {
         match request {
+            // Asked ten times a second for screens in view (one may have
+            // just been taken away): the next asks again, and a screen
+            // left without a reading says so itself.
+            Request::Probe { .. } => {
+                self.rack.probing = false;
+                self.rack.readings.clear();
+                return;
+            }
             Request::Log { .. } => self.log_inflight = false,
             Request::Turn { module, knob, .. } => self
                 .sent
@@ -1210,6 +1223,41 @@ impl App {
         );
     }
 
+    /// Take in the readings of the screens in view asked for: only those
+    /// (the rest are out of view, or carried by `look`).
+    fn probed(&mut self, request: &Request, value: serde_json::Value, now: Instant) {
+        self.rack.probing = false;
+        if let Some(result) = self.parse::<ProbeResult>(request, value, now) {
+            self.rack.readings = result
+                .probes
+                .into_iter()
+                .map(|probe| (probe.module.clone(), probe))
+                .collect();
+        }
+    }
+
+    /// Ask for the readings of the scopes and readouts in view that the
+    /// wall's `look` does not carry, as often as it is looked at.
+    fn probe_screens(&mut self, now: Instant) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        if self.rack.probing || self.rack.next_probe.is_some_and(|at| now < at) {
+            return;
+        }
+        let modules = self.rack.unread(snapshot);
+        if modules.is_empty() {
+            self.rack.readings.clear();
+            return;
+        }
+        self.rack.probing = true;
+        self.rack.next_probe = Some(now + PROBE_EVERY);
+        self.jobs.push(Job::Call(Request::Probe {
+            module: None,
+            modules,
+        }));
+    }
+
     fn say(&mut self, tone: Tone, text: String, now: Instant) {
         self.status = Some(Status {
             text,
@@ -1234,6 +1282,7 @@ impl App {
         if self.view == View::Rack {
             self.rack.edge_pan(now);
             self.carry_plate(false);
+            self.probe_screens(now);
         }
         self.tick_moves(now);
         self.tick_saves(now);
