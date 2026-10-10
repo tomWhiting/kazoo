@@ -735,8 +735,14 @@ fn effect_candidate(effect: &'static kazoo_fx::EffectKind) -> Candidate {
         outputs: vec![
             audio("left", "sound, left"),
             audio("right", "sound, right"),
-            audio("wet_left", "the effect alone, left, whatever the mix"),
-            audio("wet_right", "the effect alone, right, whatever the mix"),
+            audio(
+                "wet_left",
+                "the mix all the way to wet, left (the output itself where there is no mix knob)",
+            ),
+            audio(
+                "wet_right",
+                "the mix all the way to wet, right (the output itself where there is no mix knob)",
+            ),
         ],
         build: Builder::Effect(effect),
     }
@@ -1477,6 +1483,29 @@ mod tests {
         assert!(mode.stepped);
         assert_eq!(mode.labels, &["soft", "hard"]);
         assert_eq!(knob(kind, "gain").unit, Unit::Other("dB"));
+    }
+
+    #[test]
+    fn every_effect_is_admitted_with_all_its_outputs() {
+        // Effects sit at the engine's limit of outputs: one more port on
+        // every effect, or a kind that outgrew the limit some other way,
+        // would leave kinds out of the wall, said only in the daemon's log.
+        assert!(
+            registry().skipped().is_empty(),
+            "{:?}",
+            registry().skipped()
+        );
+        for effect in kazoo_fx::catalogue() {
+            let kind = Kind::from_name(effect.id).unwrap();
+            let outputs: Vec<&str> = kind.spec().outputs.iter().map(|port| port.name).collect();
+            assert_eq!(
+                outputs,
+                ["left", "right", "wet_left", "wet_right"],
+                "{}",
+                effect.id
+            );
+            assert_eq!(outputs.len(), MAX_OUTPUTS, "{}", effect.id);
+        }
     }
 
     #[test]

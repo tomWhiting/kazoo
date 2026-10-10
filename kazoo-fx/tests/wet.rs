@@ -107,6 +107,10 @@ fn bits(signal: &[Vec<f32>; 2]) -> Vec<u32> {
 
 #[test]
 fn the_wet_output_is_the_mix_all_the_way_to_wet_at_any_mix() {
+    // With every other knob at its default, then all at their least, then
+    // all at their most: the wet output is the fully wet mix to within
+    // 1e-5 (an equal-power mix at full wet still lets cos(π/2), about
+    // 4e-8, of the dry through), whatever the mix.
     let input = programme(14_400);
     let mut checked = 0;
     for kind in catalogue() {
@@ -114,24 +118,49 @@ fn the_wet_output_is_the_mix_all_the_way_to_wet_at_any_mix() {
             continue;
         };
         let spec = kind.params[mix];
-        let all_wet = mixed(built(kind, &[(mix, spec.max)]).as_mut(), &input);
-        for share in [0.0, 0.5, 1.0] {
-            let value = (spec.max - spec.min).mul_add(share, spec.min);
-            let (out, wet) = both(built(kind, &[(mix, value)]).as_mut(), &input);
-            let most = largest_difference(&wet, &all_wet);
-            assert!(most < 1e-5, "{} at mix {value}: {most}", kind.id);
-            // Asking for the wet signal changes nothing in the mix.
-            let plain = mixed(built(kind, &[(mix, value)]).as_mut(), &input);
-            assert_eq!(bits(&out), bits(&plain), "{} at mix {value}", kind.id);
-            if share < 0.5 {
-                // At dry the mix is the input (or near it) and the wet
-                // signal is still all effect: they differ.
-                assert!(largest_difference(&wet, &out) > 1e-3, "{}", kind.id);
+        let others = |end: fn(&kazoo_fx::ParamSpec) -> f32| -> Vec<(usize, f32)> {
+            kind.params
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != mix)
+                .map(|(index, other)| (index, end(other)))
+                .collect()
+        };
+        let settings = [
+            ("defaults", Vec::new()),
+            ("least", others(|other| other.min)),
+            ("most", others(|other| other.max)),
+        ];
+        for (name, knobs) in settings {
+            let with_mix = |value: f32| {
+                let mut all = knobs.clone();
+                all.push((mix, value));
+                all
+            };
+            let all_wet = mixed(built(kind, &with_mix(spec.max)).as_mut(), &input);
+            for share in [0.0, 0.5, 1.0] {
+                let value = (spec.max - spec.min).mul_add(share, spec.min);
+                let (out, wet) = both(built(kind, &with_mix(value)).as_mut(), &input);
+                let most = largest_difference(&wet, &all_wet);
+                assert!(most < 1e-5, "{} {name} at mix {value}: {most}", kind.id);
+                // Asking for the wet signal changes nothing in the mix.
+                let plain = mixed(built(kind, &with_mix(value)).as_mut(), &input);
+                assert_eq!(
+                    bits(&out),
+                    bits(&plain),
+                    "{} {name} at mix {value}",
+                    kind.id
+                );
+                if share < 0.5 && knobs.is_empty() {
+                    // At dry the mix is the input (or near it) and the wet
+                    // signal is still all effect: they differ.
+                    assert!(largest_difference(&wet, &out) > 1e-3, "{}", kind.id);
+                }
             }
         }
         checked += 1;
     }
-    assert!(checked >= 24, "{checked}");
+    assert!(checked >= 25, "{checked}");
 }
 
 #[test]
