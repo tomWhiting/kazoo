@@ -54,12 +54,12 @@
 //! harder the hit. Played gently, the tank never boings.
 
 use crate::dsp::{DcBlocker, Noise, Phasor, flush};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 use super::halfband::{Down2, Halfband, Up2};
 use super::kit::{
-    CONTROL, Knobs, MAX_SLEW, Ramp, Slew, ceiling, clean, decay_gain, equal_power, frames, silence,
-    sine, usable_rate,
+    CONTROL, Knobs, MAX_SLEW, Ramp, Slew, ceiling, clean, decay_gain, equal_power, run_block,
+    silence, sine, usable_rate,
 };
 use super::line::{Kernel, Line, MIN_SINC_READ};
 use super::matched::{self, Biquad};
@@ -841,7 +841,8 @@ impl Spring {
         self.shake * BOING_DEPTH * self.rate * sine(phase)
     }
 
-    fn frame(&mut self, left: f32, right: f32) -> (f32, f32) {
+    /// One stereo frame: the mixed frame, then the wet frame alone.
+    fn frame(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
         self.knobs.step();
         self.tension.set(self.knobs.get(TENSION));
         self.tension.next();
@@ -898,10 +899,12 @@ impl Spring {
         }
         let (dry_gain, wet_gain) = equal_power(self.knobs.get(MIX));
         let mut out = [0.0f32; 2];
+        let mut alone = [0.0f32; 2];
         for (side, (dry, wet)) in [left, right].into_iter().zip(wet).enumerate() {
             let toned = self.tone[side].process(f64::from(wet)) as f32;
             let settled = self.dc[side].process(toned);
-            out[side] = dry_gain.mul_add(dry, wet_gain * ceiling(PICKUP_LEVEL * settled));
+            alone[side] = ceiling(PICKUP_LEVEL * settled);
+            out[side] = dry_gain.mul_add(dry, wet_gain * alone[side]);
         }
         self.sweep_countdown = self.sweep_countdown.saturating_sub(1);
         if self.sweep_countdown == 0 {
@@ -909,7 +912,17 @@ impl Spring {
             self.highs.sweep();
             self.sweep_countdown = self.sweep_every;
         }
-        out.into()
+        [out, alone]
+    }
+
+    /// One block, with the wet side to `wet`.
+    fn run(&mut self, input: [&[f32]; 2], mut output: [&mut [f32]; 2], mut wet: WetOut<'_>) {
+        if !self.prepared {
+            silence(&mut output);
+            wet.silence_from(0);
+            return;
+        }
+        run_block(input, output, wet, |left, right| self.frame(left, right));
     }
 }
 
@@ -1015,18 +1028,18 @@ impl Effect for Spring {
         self.knobs.set(index, value);
     }
 
-    fn process(&mut self, _context: &Context, input: [&[f32]; 2], mut output: [&mut [f32]; 2]) {
-        if !self.prepared {
-            silence(&mut output);
-            return;
-        }
-        let count = frames(input, &mut output);
-        let [out_left, out_right] = output;
-        for n in 0..count {
-            let (l, r) = self.frame(input[0][n], input[1][n]);
-            out_left[n] = l;
-            out_right[n] = r;
-        }
+    fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
+        self.run(input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

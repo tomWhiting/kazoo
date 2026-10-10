@@ -1,8 +1,9 @@
 //! Pieces every drive effect shares: knobs that glide, the stereo frame
-//! loop, the input guard and the output ceiling.
+//! loop (with the wet signal alone beside the mix), the input guard and the
+//! output ceiling.
 
-use crate::ParamSpec;
 use crate::dsp::Smoothed;
+use crate::{ParamSpec, WetOut};
 
 /// How long a knob takes to glide to a new setting.
 const GLIDE_SECONDS: f32 = 0.02;
@@ -166,24 +167,44 @@ pub fn for_each_frame(
     output: [&mut [f32]; 2],
     mut frame: impl FnMut(f32, f32) -> [f32; 2],
 ) {
+    for_each_frame_wet(input, output, WetOut::none(), |left, right| {
+        let out = frame(left, right);
+        [out, out]
+    });
+}
+
+/// [`for_each_frame`] for an effect with a mix knob: `frame` returns the
+/// mixed frame for the outputs and the wet frame alone for `wet`. Only the
+/// shortest of the six slices' lengths is processed; the rest of every
+/// output is silenced.
+pub fn for_each_frame_wet(
+    input: [&[f32]; 2],
+    output: [&mut [f32]; 2],
+    mut wet: WetOut<'_>,
+    mut frame: impl FnMut(f32, f32) -> [[f32; 2]; 2],
+) {
     let [in_left, in_right] = input;
     let [out_left, out_right] = output;
-    let frames = in_left
-        .len()
-        .min(in_right.len())
-        .min(out_left.len())
-        .min(out_right.len());
+    let frames = wet.limit(
+        in_left
+            .len()
+            .min(in_right.len())
+            .min(out_left.len())
+            .min(out_right.len()),
+    );
     let (out_left, rest_left) = out_left.split_at_mut(frames);
     let (out_right, rest_right) = out_right.split_at_mut(frames);
     rest_left.fill(0.0);
     rest_right.fill(0.0);
     let inputs = in_left.iter().zip(in_right);
     let outputs = out_left.iter_mut().zip(out_right.iter_mut());
-    for ((left, right), (to_left, to_right)) in inputs.zip(outputs) {
-        let [new_left, new_right] = frame(guard(*left), guard(*right));
+    for (n, ((left, right), (to_left, to_right))) in inputs.zip(outputs).enumerate() {
+        let [[new_left, new_right], alone] = frame(guard(*left), guard(*right));
         *to_left = new_left;
         *to_right = new_right;
+        wet.frame(n, alone);
     }
+    wet.silence_from(frames);
 }
 
 /// An input sample made safe: a NaN or infinity becomes silence and

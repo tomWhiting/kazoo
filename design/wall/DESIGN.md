@@ -63,7 +63,7 @@ A knob has a name, a range, a unit, a default and a curve (linear or log). Value
 
 Several `out` modules sum into the master bus.
 
-Every knob is also a jack by its own name (see "Wiring rule" below), so the table lists only the inputs that are not knobs. Delay and reverb come from `kazoo-fx`: every effect in its catalogue is a module kind named by its id (`tape`, `bbd`, `plate`, `hall`, ...), with inputs `left`/`right` (right normalled to left), outputs `left`/`right`, and a knob per parameter.
+Every knob is also a jack by its own name (see "Wiring rule" below), so the table lists only the inputs that are not knobs. Delay and reverb come from `kazoo-fx`: every effect in its catalogue is a module kind named by its id (`tape`, `bbd`, `plate`, `hall`, `pitch`, ...), with inputs `left`/`right` (right normalled to left), outputs `left`/`right` (the mix) and `wet_left`/`wet_right` (the effect alone), and a knob per parameter.
 
 Module ids are `kind` + a number (`vco1`, `lfo3`), assigned by the daemon and never reused within a patch's lifetime. An optional display `name` is limited to `[A-Za-z0-9 _.-]{1,24}`.
 
@@ -381,11 +381,12 @@ Audio and trigger inputs are listed separately. A module's knob names and input 
 
 ### Effects: `kazoo-fx`
 
-- **Interface:** the `Effect` trait, `EffectKind` and `ParamSpec` (see `kazoo-fx/src/lib.rs`). Every effect is stereo in and stereo out.
-- **Wall adapter:** each effect kind becomes a wall module kind whose id is the effect's id. It gets inputs `left` and `right` (`right` is mono-normalled to `left`), outputs `left` and `right`, and a knob for every param.
+- **Interface:** the `Effect` trait, `EffectKind` and `ParamSpec` (see `kazoo-fx/src/lib.rs`). Every effect is stereo in and stereo out. `Effect::process_wet` hands over the wet signal alone beside the mix, from the same pass (a copy, never a second run).
+- **Wall adapter:** each effect kind becomes a wall module kind whose id is the effect's id. It gets inputs `left` and `right` (`right` is mono-normalled to `left`), outputs `left` and `right` (the mix) then `wet_left` and `wet_right` (the wet signal alone), and a knob for every param. The wet outputs come after the mix's, so cables saved before they existed load unchanged.
+- **What wet means:** for an effect with a `mix` knob, the wet outputs are exactly what `left`/`right` would be with `mix` all the way to wet, every other knob as set, whatever `mix` is at: patch `plate1.wet_left` into `pitch1.left` to shift only the tail. An effect with no mix knob (the overdrives, fuzz, amp, `trem`, `eq`) is all effect: its wet outputs carry the same signal as `left`/`right`, so a patch can always take an effect's wet side without asking which kind it has. (Processed-minus-dry was considered and refused: through an oversampled drive it is a phase-dependent difference signal, not a sound anyone patches for.)
 - **Families:**
   - `drive`: circuit-modelled overdrives and fuzzes, a wavefolder, a bitcrusher, a ring modulator, a compressor.
-  - `time`: tape, bucket-brigade (BBD) and digital delays, chorus, flanger, phaser, tremolo, a frequency shifter, a granular delay.
+  - `time`: tape, bucket-brigade (BBD) and digital delays, chorus, flanger, phaser, tremolo, a frequency shifter, a granular delay, and `pitch`, a clean pitch shifter: `shift` in semitones (±24), `fine` in cents (±100), `formant` (`move` or `keep`: keep holds a voice's formants in place so it never goes chipmunk) and `mix`. A jack on `shift` moves it 24 semitones per 1.0, so a cable at amount 0.5 tracks 1.0 per octave.
   - `space`: hall, plate, spring and shimmer reverbs, a resonator bank, an EQ.
   - `lofi`: worn media: VHS, cassette and reel tape machines, vinyl, generation loss.
 - **The bar:** boutique, component-level modelling where a real circuit exists, anti-aliased (oversampling or ADAA), with character first. The wall's own `delay` and `reverb` rows in the catalogue above are replaced by these.

@@ -30,7 +30,7 @@ use super::parts::{
     Biquad, Sinc, accept, clean, defaults, frames, guard, silence_from, sine, triangle,
 };
 use crate::dsp::{DelayLine, Phasor, Smoothed, sane_rate};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const MODE: usize = 0;
 const RATE: usize = 1;
@@ -253,7 +253,13 @@ impl Chorus {
         self.glide.all().into_iter().chain(knobs)
     }
 
-    fn render(&mut self, input: [&[f32]; 2], output: &mut [&mut [f32]; 2], n: usize) {
+    fn render(
+        &mut self,
+        input: [&[f32]; 2],
+        output: &mut [&mut [f32]; 2],
+        wet_out: &mut WetOut<'_>,
+        n: usize,
+    ) {
         let rate = self.rate;
         for i in 0..n {
             let centre = self.glide.centre.step();
@@ -291,7 +297,20 @@ impl Chorus {
             let wet_gain = (2.0 * mix).min(1.0);
             output[0][i] = guard(dry_gain.mul_add(x[0], wet_gain * (mid + side)));
             output[1][i] = guard(dry_gain.mul_add(x[1], wet_gain * (mid - side)));
+            wet_out.frame(i, [guard(mid + side), guard(mid - side)]);
         }
+    }
+
+    /// One block, with the wet side to `wet_out`.
+    fn run(&mut self, input: [&[f32]; 2], mut output: [&mut [f32]; 2], mut wet_out: WetOut<'_>) {
+        let n = if self.prepared {
+            wet_out.limit(frames(&input, &output))
+        } else {
+            0
+        };
+        self.render(input, &mut output, &mut wet_out, n);
+        silence_from(&mut output, n);
+        wet_out.silence_from(n);
     }
 }
 
@@ -346,14 +365,17 @@ impl Effect for Chorus {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        let mut output = output;
-        let n = if self.prepared {
-            frames(&input, &output)
-        } else {
-            0
-        };
-        self.render(input, &mut output, n);
-        silence_from(&mut output, n);
+        self.run(input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

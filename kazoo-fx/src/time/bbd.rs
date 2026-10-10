@@ -49,7 +49,7 @@ use super::parts::{
     triangle,
 };
 use crate::dsp::{Noise, Phasor, Smoothed, db_to_gain, flush, sane_rate};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const TIME: usize = 0;
 const FEEDBACK: usize = 1;
@@ -291,7 +291,13 @@ impl Bbd {
         ]
     }
 
-    fn render(&mut self, input: [&[f32]; 2], output: &mut [&mut [f32]; 2], n: usize) {
+    fn render(
+        &mut self,
+        input: [&[f32]; 2],
+        output: &mut [&mut [f32]; 2],
+        wet_out: &mut WetOut<'_>,
+        n: usize,
+    ) {
         let rate = self.rate;
         for i in 0..n {
             let time = self.time.step();
@@ -331,8 +337,21 @@ impl Bbd {
                 chip.last_out = echo;
                 flush(&mut chip.last_out);
                 output[c][i] = guard(dry.mul_add(x, wet * echo));
+                wet_out.put(c, i, guard(echo));
             }
         }
+    }
+
+    /// One block, with the wet side to `wet_out`.
+    fn run(&mut self, input: [&[f32]; 2], mut output: [&mut [f32]; 2], mut wet_out: WetOut<'_>) {
+        let n = if self.prepared {
+            wet_out.limit(frames(&input, &output))
+        } else {
+            0
+        };
+        self.render(input, &mut output, &mut wet_out, n);
+        silence_from(&mut output, n);
+        wet_out.silence_from(n);
     }
 }
 
@@ -390,14 +409,17 @@ impl Effect for Bbd {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        let mut output = output;
-        let n = if self.prepared {
-            frames(&input, &output)
-        } else {
-            0
-        };
-        self.render(input, &mut output, n);
-        silence_from(&mut output, n);
+        self.run(input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

@@ -45,7 +45,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use super::parts::{Saturator, accept, clean, defaults, equal_power, frames, guard, silence_from};
 use crate::dsp::{Noise, Smoothed, flush, hermite, sane_rate};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const POSITION: usize = 0;
 const SIZE: usize = 1;
@@ -409,7 +409,13 @@ impl Granular {
         }
     }
 
-    fn render(&mut self, input: [&[f32]; 2], output: &mut [&mut [f32]; 2], n: usize) {
+    fn render(
+        &mut self,
+        input: [&[f32]; 2],
+        output: &mut [&mut [f32]; 2],
+        wet_out: &mut WetOut<'_>,
+        n: usize,
+    ) {
         self.follow_freeze();
         let interval = self.rate / self.values[DENSITY];
         for i in 0..n {
@@ -442,8 +448,21 @@ impl Granular {
                 self.last_cloud[c] = returned;
                 let heard = played / heard_divisor(gains, squares);
                 channel[i] = guard(dry.mul_add(x[c], wet * heard));
+                wet_out.put(c, i, guard(heard));
             }
         }
+    }
+
+    /// One block, with the wet side to `wet_out`.
+    fn run(&mut self, input: [&[f32]; 2], mut output: [&mut [f32]; 2], mut wet_out: WetOut<'_>) {
+        let n = if self.prepared {
+            wet_out.limit(frames(&input, &output))
+        } else {
+            0
+        };
+        self.render(input, &mut output, &mut wet_out, n);
+        silence_from(&mut output, n);
+        wet_out.silence_from(n);
     }
 }
 
@@ -501,14 +520,17 @@ impl Effect for Granular {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        let mut output = output;
-        let n = if self.prepared {
-            frames(&input, &output)
-        } else {
-            0
-        };
-        self.render(input, &mut output, n);
-        silence_from(&mut output, n);
+        self.run(input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

@@ -35,7 +35,7 @@ use super::parts::{
     Saturator, Sinc, accept, clean, defaults, frames, guard, silence_from, triangle,
 };
 use crate::dsp::{DelayLine, Phasor, Smoothed, flush, sane_rate};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const MANUAL: usize = 0;
 const RATE: usize = 1;
@@ -202,7 +202,13 @@ impl Flanger {
         ]
     }
 
-    fn render(&mut self, input: [&[f32]; 2], output: &mut [&mut [f32]; 2], n: usize) {
+    fn render(
+        &mut self,
+        input: [&[f32]; 2],
+        output: &mut [&mut [f32]; 2],
+        wet_out: &mut WetOut<'_>,
+        n: usize,
+    ) {
         let rate = self.rate;
         let hold = self.hold;
         let sinc = &self.sinc;
@@ -245,8 +251,21 @@ impl Flanger {
                 let behind = side.dry.tap(hold + LOOKAHEAD + 1);
                 let dry = (behind - direct).mul_add(zero, direct);
                 output[c][i] = guard((wet - dry).mul_add(mix, dry));
+                wet_out.put(c, i, guard(wet));
             }
         }
+    }
+
+    /// One block, with the wet side to `wet_out`.
+    fn run(&mut self, input: [&[f32]; 2], mut output: [&mut [f32]; 2], mut wet_out: WetOut<'_>) {
+        let n = if self.prepared {
+            wet_out.limit(frames(&input, &output))
+        } else {
+            0
+        };
+        self.render(input, &mut output, &mut wet_out, n);
+        silence_from(&mut output, n);
+        wet_out.silence_from(n);
     }
 }
 
@@ -312,14 +331,17 @@ impl Effect for Flanger {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        let mut output = output;
-        let n = if self.prepared {
-            frames(&input, &output)
-        } else {
-            0
-        };
-        self.render(input, &mut output, n);
-        silence_from(&mut output, n);
+        self.run(input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

@@ -34,7 +34,7 @@
 
 use super::parts::{self, Butterworth, CONTROL, Decibels};
 use crate::dsp::{DelayLine, Smoothed};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const FILTER: usize = 0;
 const RATE: usize = 1;
@@ -285,8 +285,8 @@ impl Sampler12 {
         }
     }
 
-    /// One stereo sample.
-    fn tick(&mut self, left: f32, right: f32) -> (f32, f32) {
+    /// One stereo sample: the mixed frame, then the wet frame alone.
+    fn tick(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
         if self.until_control == 0 {
             self.control();
             self.until_control = CONTROL;
@@ -332,13 +332,14 @@ impl Sampler12 {
                 break;
             }
         }
-        let mut out = [0.0f32; 2];
-        for (((channel, line), (input, value)), sample) in self
+        let mut out = [[0.0f32; 2]; 2];
+        let [mixed, alone] = &mut out;
+        for (((channel, line), (input, value)), (sample, heard)) in self
             .channels
             .iter_mut()
             .zip(&mut self.dry)
             .zip([left, right].into_iter().zip(filtered))
-            .zip(&mut out)
+            .zip(mixed.iter_mut().zip(alone.iter_mut()))
         {
             channel.last_in = value;
             let staircase = channel.emit();
@@ -347,8 +348,9 @@ impl Sampler12 {
                 .process(channel.output_filter.process(staircase));
             line.push(input);
             *sample = parts::lerp(line.read(1.0), rebuilt, mix) * output;
+            *heard = rebuilt * output;
         }
-        out.into()
+        out
     }
 }
 
@@ -399,7 +401,21 @@ impl Effect for Sampler12 {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        parts::run_block(input, output, |left, right| self.tick(left, right));
+        parts::run_block(input, output, WetOut::none(), |left, right| {
+            self.tick(left, right)
+        });
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        parts::run_block(input, output, WetOut::to(wet), |left, right| {
+            self.tick(left, right)
+        });
     }
 }
 

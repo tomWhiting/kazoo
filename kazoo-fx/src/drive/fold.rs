@@ -73,13 +73,13 @@ use std::f64::consts::TAU;
 
 use super::filter::{Analogue, Iir3};
 use super::kit::{
-    DEFAULT_RATE, Knobs, ceiling, for_each_frame, fraction, gain as db_gain, log_cosh, weight,
+    DEFAULT_RATE, Knobs, ceiling, for_each_frame_wet, fraction, gain as db_gain, log_cosh, weight,
 };
 use super::oversample::TARGET_RATE;
 use super::pair::{self, Pair};
 use super::solve::rising_root_within;
 use crate::dsp::sane_rate;
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const FOLDS: usize = 0;
 const SYMMETRY: usize = 1;
@@ -552,7 +552,8 @@ impl Folder {
         out
     }
 
-    fn tick(&mut self, sample: f32, settings: &Settings) -> f32 {
+    /// One oversampled sample: the mixed sample, then the wet one alone.
+    fn tick(&mut self, sample: f32, settings: &Settings) -> [f32; 2] {
         let dry = f64::from(sample);
         let volts = settings.drive.mul_add(dry, settings.offset);
         let anti_alias = settings.anti_alias;
@@ -585,7 +586,10 @@ impl Folder {
         let aligned = settings
             .serge
             .mul_add(delayed[SERGE_STAGES] - pointed_dry, pointed_dry);
-        settings.mix.mul_add(wet - aligned, aligned) as f32
+        [
+            settings.mix.mul_add(wet - aligned, aligned) as f32,
+            wet as f32,
+        ]
     }
 }
 
@@ -653,7 +657,7 @@ impl Fold {
         down.mul_add(far - near, near)
     }
 
-    fn frame(&mut self, left: f32, right: f32) -> [f32; 2] {
+    fn frame(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
         let knob = self.knobs.step();
         let drive = (DRIVE_HIGH / DRIVE_LOW).powf(fraction(knob[FOLDS])) * DRIVE_LOW;
         let serge = f64::from(weight(knob[MODEL], 1.0));
@@ -672,8 +676,8 @@ impl Fold {
         };
         let out_gain = db_gain(knob[LEVEL]);
         self.pair
-            .process([left, right], |_, folder, x| folder.tick(x, &settings))
-            .map(|out| ceiling((f64::from(out) * out_gain) as f32))
+            .process_wet([left, right], |_, folder, x| folder.tick(x, &settings))
+            .map(|side| side.map(|out| ceiling((f64::from(out) * out_gain) as f32)))
     }
 }
 
@@ -704,7 +708,21 @@ impl Effect for Fold {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        for_each_frame(input, output, |left, right| self.frame(left, right));
+        for_each_frame_wet(input, output, WetOut::none(), |left, right| {
+            self.frame(left, right)
+        });
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        for_each_frame_wet(input, output, WetOut::to(wet), |left, right| {
+            self.frame(left, right)
+        });
     }
 }
 

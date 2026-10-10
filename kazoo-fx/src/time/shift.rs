@@ -41,7 +41,7 @@ use super::parts::{
     Biquad, Saturator, Sinc, accept, clean, defaults, flush_wide, frames, guard, silence_from,
 };
 use crate::dsp::{DelayLine, Smoothed, flush, sane_rate};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 /// The qualities of a fourth-order Butterworth's two sections, for the
 /// guard against folding off the top.
@@ -388,7 +388,13 @@ impl Shift {
         .chain(self.routes.iter_mut().flatten())
     }
 
-    fn render(&mut self, input: [&[f32]; 2], output: &mut [&mut [f32]; 2], n: usize) {
+    fn render(
+        &mut self,
+        input: [&[f32]; 2],
+        output: &mut [&mut [f32]; 2],
+        wet_out: &mut WetOut<'_>,
+        n: usize,
+    ) {
         let rate = self.rate;
         for i in 0..n {
             let shift = self.hz.step();
@@ -433,8 +439,21 @@ impl Shift {
                 side.dry.push(x);
                 let dry = side.dry.tap(self.latency + 1);
                 output[c][i] = guard((shifted - dry).mul_add(mix, dry));
+                wet_out.put(c, i, guard(shifted));
             }
         }
+    }
+
+    /// One block, with the wet side to `wet_out`.
+    fn run(&mut self, input: [&[f32]; 2], mut output: [&mut [f32]; 2], mut wet_out: WetOut<'_>) {
+        let n = if self.prepared {
+            wet_out.limit(frames(&input, &output))
+        } else {
+            0
+        };
+        self.render(input, &mut output, &mut wet_out, n);
+        silence_from(&mut output, n);
+        wet_out.silence_from(n);
     }
 }
 
@@ -513,14 +532,17 @@ impl Effect for Shift {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        let mut output = output;
-        let n = if self.prepared {
-            frames(&input, &output)
-        } else {
-            0
-        };
-        self.render(input, &mut output, n);
-        silence_from(&mut output, n);
+        self.run(input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

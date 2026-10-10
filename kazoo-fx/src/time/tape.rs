@@ -53,7 +53,7 @@ use super::parts::{
 };
 use crate::drive::oversample::{Oversampler, TARGET_RATE, factor_for};
 use crate::dsp::{DelayLine, Noise, OnePole, Phasor, Smoothed, db_to_gain, flush, sane_rate};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const TIME: usize = 0;
 const SYNC: usize = 1;
@@ -431,7 +431,14 @@ impl Tape {
         }
     }
 
-    fn render(&mut self, bpm: f64, input: [&[f32]; 2], output: &mut [&mut [f32]; 2], n: usize) {
+    fn render(
+        &mut self,
+        bpm: f64,
+        input: [&[f32]; 2],
+        output: &mut [&mut [f32]; 2],
+        wet_out: &mut WetOut<'_>,
+        n: usize,
+    ) {
         let target = f64::from(self.target_time(bpm));
         if !self.settled {
             self.motor = target;
@@ -494,11 +501,30 @@ impl Tape {
                 let white = self.noise.sample() * self.hiss_scale;
                 let hum = track.hiss_tone.lowpass(white) * hiss * level;
                 output[c][i] = guard(dry.mul_add(x, wet * (echo + hum)));
+                wet_out.put(c, i, guard(echo + hum));
             }
             self.capstan.advance(self.rate);
             self.pinch.advance(self.rate);
             self.idler.advance(self.rate);
         }
+    }
+
+    /// One block, with the wet side to `wet_out`.
+    fn run(
+        &mut self,
+        bpm: f64,
+        input: [&[f32]; 2],
+        mut output: [&mut [f32]; 2],
+        mut wet_out: WetOut<'_>,
+    ) {
+        let n = if self.prepared {
+            wet_out.limit(frames(&input, &output))
+        } else {
+            0
+        };
+        self.render(bpm, input, &mut output, &mut wet_out, n);
+        silence_from(&mut output, n);
+        wet_out.silence_from(n);
     }
 }
 
@@ -586,14 +612,17 @@ impl Effect for Tape {
     }
 
     fn process(&mut self, context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        let mut output = output;
-        let n = if self.prepared {
-            frames(&input, &output)
-        } else {
-            0
-        };
-        self.render(context.bpm, input, &mut output, n);
-        silence_from(&mut output, n);
+        self.run(context.bpm, input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(context.bpm, input, output, WetOut::to(wet));
     }
 }
 

@@ -320,3 +320,51 @@ fn words_that_cannot_be_read_are_never_quoted() {
         "{notes:?}"
     );
 }
+
+#[test]
+fn a_saved_wall_of_effects_loads_unchanged_beside_the_wet_outputs() {
+    // A wall saved before effects had wet outputs: an oscillator through a
+    // digital delay into a plate, cabled by `left` and `right` only.
+    let text = r#"{"version":2,"tempo":100.0,"last_seq":9,
+        "next_ids":{"vco":2,"digital":2,"plate":2,"out":2},"next_cable":6,
+        "modules":[{"id":"vco1","kind":"vco","knobs":{}},
+                   {"id":"digital1","kind":"digital","knobs":{"mix":0.3}},
+                   {"id":"plate1","kind":"plate","knobs":{"mix":0.4}},
+                   {"id":"out1","kind":"out","knobs":{}}],
+        "cables":[{"id":1,"from":"vco1.out","to":"digital1.left","amount":1.0},
+                  {"id":2,"from":"digital1.left","to":"plate1.left","amount":1.0},
+                  {"id":3,"from":"digital1.right","to":"plate1.right","amount":1.0},
+                  {"id":4,"from":"plate1.left","to":"out1.left","amount":0.8},
+                  {"id":5,"from":"plate1.right","to":"out1.right","amount":0.8}]}"#;
+    let (mut file, notes) = read(text.as_bytes()).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert!(migrate(&mut file).unwrap().is_empty());
+    let saved = file.cables.clone();
+    let (mut patch, left_out) = Patch::load(&file).unwrap();
+    assert!(left_out.is_empty(), "{left_out:?}");
+    // Every cable comes back by the same number and the same ends, from
+    // the same output index it always had.
+    assert_eq!(patch.cable_records(), saved);
+    for cable in patch.cables() {
+        if cable.from_module != "vco1" {
+            let wanted = usize::from(cable.id % 2 == 1);
+            assert_eq!(cable.from_port, wanted, "cable {}", cable.id);
+        }
+    }
+    // The new outputs plug like any other and save by name.
+    patch
+        .plug("plate1.wet_left", "out1.left", Some(0.5), None)
+        .unwrap();
+    let again = serde_json::to_vec(&patch.to_file()).unwrap();
+    let (file, notes) = read(&again).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    let (reloaded, left_out) = Patch::load(&file).unwrap();
+    assert!(left_out.is_empty(), "{left_out:?}");
+    assert_eq!(reloaded.cable_records(), patch.cable_records());
+    assert!(
+        reloaded
+            .cable_records()
+            .iter()
+            .any(|cable| cable.from == "plate1.wet_left")
+    );
+}

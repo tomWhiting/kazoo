@@ -41,7 +41,7 @@ use super::parts::{
     Wobble,
 };
 use crate::dsp::{DelayLine, Smoothed, db_to_gain};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const SPEED: usize = 0;
 const DRIVE: usize = 1;
@@ -425,8 +425,8 @@ impl Reel {
         self.ghost.set(if printing { level } else { 0.0 });
     }
 
-    /// One stereo sample.
-    fn tick(&mut self, left: f32, right: f32) -> (f32, f32) {
+    /// One stereo sample: the mixed frame, then the wet frame alone.
+    fn tick(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
         if self.until_control == 0 {
             self.control();
             self.until_control = CONTROL;
@@ -449,16 +449,23 @@ impl Reel {
         self.echo.step(fade);
         let frame = self.frame;
         let (programme, echo) = (self.programme, self.echo);
-        let mut out = [0.0f32; 2];
-        for ((channel, input), wet) in self.channels.iter_mut().zip([left, right]).zip(&mut out) {
+        let mut out = [[0.0f32; 2]; 2];
+        let [mixed, alone] = &mut out;
+        for ((channel, input), (wet, heard)) in self
+            .channels
+            .iter_mut()
+            .zip([left, right])
+            .zip(mixed.iter_mut().zip(alone.iter_mut()))
+        {
             channel.line.push(input);
             let dry = programme.read(&channel.line, Oversampler4::LATENCY);
             let into = programme.read(&channel.line, wobble);
             let ghost = echo.read(&channel.line, wobble);
             let played = channel.play(into, ghost, &frame);
             *wet = parts::lerp(dry, played, mix) * output;
+            *heard = played * output;
         }
-        out.into()
+        out
     }
 }
 
@@ -523,7 +530,21 @@ impl Effect for Reel {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        parts::run_block(input, output, |left, right| self.tick(left, right));
+        parts::run_block(input, output, WetOut::none(), |left, right| {
+            self.tick(left, right)
+        });
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        parts::run_block(input, output, WetOut::to(wet), |left, right| {
+            self.tick(left, right)
+        });
     }
 }
 

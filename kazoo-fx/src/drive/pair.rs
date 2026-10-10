@@ -3,9 +3,12 @@
 //! Each channel is its own copy of the circuit behind its own
 //! [`Oversampler`]; [`Pair::prepare`] picks the factor that takes the host's
 //! rate to the model's target, and [`Pair::process`] runs one frame through
-//! both. What the models keep to themselves is only their circuit.
+//! both. A model with a mix knob mixes at the high rate, so its wet signal
+//! alone comes down through a second decimator of its own
+//! ([`Pair::process_wet`]). What the models keep to themselves is only their
+//! circuit.
 
-use super::oversample::{Oversampler, factor_for};
+use super::oversample::{MAX_FACTOR, Oversampler, factor_for};
 
 /// A circuit one channel runs.
 pub trait Circuit: Copy + Default + std::fmt::Debug {
@@ -16,6 +19,10 @@ pub trait Circuit: Copy + Default + std::fmt::Debug {
 #[derive(Debug, Clone, Copy, Default)]
 struct Channel<C> {
     oversampler: Oversampler,
+    /// The way down for the wet signal alone: the same filters and pad as
+    /// `oversampler`'s, so it comes out exactly as late. Only its
+    /// decimating half is used.
+    wet: Oversampler,
     circuit: C,
 }
 
@@ -59,6 +66,7 @@ impl<C: Circuit> Pair<C> {
         };
         for channel in &mut self.channels {
             channel.oversampler.configure(factor, base_rate, extra);
+            channel.wet.configure(factor, base_rate, extra);
         }
         self.rate = f64::from(base_rate) * factor as f64;
         self.reset();
@@ -88,6 +96,7 @@ impl<C: Circuit> Pair<C> {
     pub fn reset(&mut self) {
         for channel in &mut self.channels {
             channel.oversampler.reset();
+            channel.wet.reset();
             channel.circuit.reset();
         }
     }
@@ -106,6 +115,30 @@ impl<C: Circuit> Pair<C> {
             out[index] = channel
                 .oversampler
                 .process(sample, |x| tick(index, circuit, x));
+        }
+        out
+    }
+
+    /// One frame through circuits that mix at the high rate: `tick` gives
+    /// the mixed sample and the wet sample alone for every oversampled
+    /// sample, in the order [`Self::process`] calls it. Returns the mixed
+    /// frame, then the wet frame, each brought down through its own
+    /// decimator, so the two are equally late.
+    pub fn process_wet(
+        &mut self,
+        frame: [f32; 2],
+        mut tick: impl FnMut(usize, &mut C, f32) -> [f32; 2],
+    ) -> [[f32; 2]; 2] {
+        let mut out = [[0.0; 2]; 2];
+        for (index, (channel, sample)) in self.channels.iter_mut().zip(frame).enumerate() {
+            let factor = channel.oversampler.factor();
+            let mut mixed = channel.oversampler.expand(sample);
+            let mut alone = [0.0f32; MAX_FACTOR];
+            for (value, wet) in mixed[..factor].iter_mut().zip(&mut alone) {
+                [*value, *wet] = tick(index, &mut channel.circuit, *value);
+            }
+            out[0][index] = channel.oversampler.reduce(mixed);
+            out[1][index] = channel.wet.reduce(alone);
         }
         out
     }

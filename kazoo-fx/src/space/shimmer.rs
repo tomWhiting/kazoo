@@ -61,11 +61,11 @@
 //! no faster than 2% of real time: at most a third of a semitone of bend.
 
 use crate::dsp::{OnePole, flush};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 use super::kit::{
     CONTROL, Knobs, MAX_SLEW, Ramp, Slew, TapAllpass, ceiling, clean, decay_gain, equal_power,
-    frames, silence, usable_rate,
+    run_block, silence, usable_rate,
 };
 use super::line::{Kernel, Line};
 use super::matched::{self, Biquad, FirstOrder, lowpass_first_order};
@@ -490,7 +490,8 @@ impl Shimmer {
         }
     }
 
-    fn frame(&mut self, left: f32, right: f32) -> (f32, f32) {
+    /// One stereo frame: the mixed frame, then the wet frame alone.
+    fn frame(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
         self.knobs.step();
         self.size.set(self.knobs.get(SIZE));
         self.size.next();
@@ -568,10 +569,24 @@ impl Shimmer {
             .zip(&outs)
             .fold(0.0, |sum, (w, o)| w.mul_add(*o, sum));
         let (dry, wet) = equal_power(self.knobs.get(MIX));
-        (
-            dry.mul_add(input[0], wet * ceiling(level * tail_left)),
-            dry.mul_add(input[1], wet * ceiling(level * tail_right)),
-        )
+        let alone = [ceiling(level * tail_left), ceiling(level * tail_right)];
+        [
+            [
+                dry.mul_add(input[0], wet * alone[0]),
+                dry.mul_add(input[1], wet * alone[1]),
+            ],
+            alone,
+        ]
+    }
+
+    /// One block, with the wet side to `wet`.
+    fn run(&mut self, input: [&[f32]; 2], mut output: [&mut [f32]; 2], mut wet: WetOut<'_>) {
+        if !self.prepared {
+            silence(&mut output);
+            wet.silence_from(0);
+            return;
+        }
+        run_block(input, output, wet, |left, right| self.frame(left, right));
     }
 }
 
@@ -634,18 +649,18 @@ impl Effect for Shimmer {
         self.knobs.set(index, value);
     }
 
-    fn process(&mut self, _context: &Context, input: [&[f32]; 2], mut output: [&mut [f32]; 2]) {
-        if !self.prepared {
-            silence(&mut output);
-            return;
-        }
-        let count = frames(input, &mut output);
-        let [out_left, out_right] = output;
-        for n in 0..count {
-            let (l, r) = self.frame(input[0][n], input[1][n]);
-            out_left[n] = l;
-            out_right[n] = r;
-        }
+    fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
+        self.run(input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

@@ -330,5 +330,5 @@ macro_rules! contract {
 }
 
 contract!(
-    tape, bbd, digital, chorus, flanger, phaser, trem, shift, granular
+    tape, bbd, digital, chorus, flanger, phaser, trem, shift, granular, pitch
 );

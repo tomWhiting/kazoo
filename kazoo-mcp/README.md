@@ -31,7 +31,7 @@ While the daemon is down, every tool answers ``the wall is not running (start it
 
 ## Tools
 
-Ports are named `module.port`, for example `lfo1.out` or `vcf1.in`. Every knob is also a jack by its own name, so `lfo1.out` into `vcf1.cutoff` moves the cutoff.
+Ports are named `module.port`, for example `lfo1.out` or `vcf1.in`. Every knob is also a jack by its own name, so `lfo1.out` into `vcf1.cutoff` moves the cutoff. Every effect has the mix on `left` and `right` and the effect alone on `wet_left` and `wet_right`, so `plate1.wet_left` into `pitch1.left` shifts only a reverb's tail.
 
 | Tool | Arguments | What it does |
 |---|---|---|
