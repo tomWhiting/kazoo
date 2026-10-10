@@ -529,6 +529,61 @@ fn the_wall_keeps_time_and_listens() {
 }
 
 #[test]
+fn scopes_and_readouts_are_probed_over_the_socket() {
+    let (runtime, state) = dirs();
+    let daemon = start(runtime.path(), state.path());
+    let mut wall = WallClient::connect(daemon.socket(), "Waffles", "test", false).unwrap();
+    assert!(wall.probe(None).unwrap().probes.is_empty());
+    let scope = wall.add("scope", None).unwrap().module.unwrap();
+    let readout = wall.add("readout", None).unwrap().module.unwrap();
+    wall.patch("vco1.out", &format!("{scope}.a"), None).unwrap();
+    wall.patch("seq1.pitch", &format!("{readout}.in"), None)
+        .unwrap();
+    // A debug build on a busy machine renders when it can.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let probed = loop {
+        let probed = wall.probe(None).unwrap();
+        // Measured (what was measured before the cables reached the
+        // engine is let go, never shown).
+        let measured = probed
+            .probes
+            .iter()
+            .all(|probe| probe.scope.is_some() || probe.readout.is_some());
+        if measured || Instant::now() > deadline {
+            break probed;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(probed.probes.len(), 2);
+    let trace = probed.probes[0].scope.as_ref().expect("the scope measured");
+    assert_eq!(trace.a.len(), 96);
+    assert!(trace.input_a.connected && !trace.input_b.connected);
+    let shown = probed.probes[1]
+        .readout
+        .as_ref()
+        .expect("the readout measured");
+    assert_eq!(shown.mode, "pitch", "a sequencer's pitch is shown as pitch");
+    assert!(shown.note.is_some(), "{shown:?}");
+    assert_eq!(wall.look().unwrap().probes.len(), 2);
+    assert_eq!(wall.probe(Some(&readout)).unwrap().probes.len(), 1);
+    assert_eq!(
+        code(&wall.probe(Some("vco1")).unwrap_err()),
+        ErrorCode::BadRequest
+    );
+    assert_eq!(
+        code(&wall.probe(Some("scope9")).unwrap_err()),
+        ErrorCode::UnknownModule
+    );
+    // A watcher may probe: it is a read.
+    let mut watcher = WallClient::watch(daemon.socket(), "meridian", "test").unwrap();
+    assert_eq!(watcher.probe(Some(&scope)).unwrap().probes.len(), 1);
+    drop(watcher);
+    drop(wall);
+    daemon.stop();
+    daemon.wait().unwrap();
+}
+
+#[test]
 fn a_watcher_sees_everything_and_changes_nothing() {
     let (runtime, state) = dirs();
     let daemon = start(runtime.path(), state.path());

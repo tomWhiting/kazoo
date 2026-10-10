@@ -7,7 +7,7 @@ use crate::catalogue::{KnobSpec, Unit};
 ///
 /// That is its label when the knob names its positions (`1/8`, `dorian`,
 /// `saw`, or `2.5 (saw→square)` between two named points), else the number
-/// with its unit (`420 Hz`, `1.2 kHz`, `350 ms`, `+3 st`, `-6 dB`).
+/// with its unit (`420 Hz`, `1.2 kHz`, `350 ms`, `+3 st`, `-6 dB`, `×4`).
 #[must_use]
 pub fn knob_value(spec: &KnobSpec, value: f32) -> String {
     let value = spec.clamp(value);
@@ -22,6 +22,7 @@ pub fn knob_value(spec: &KnobSpec, value: f32) -> String {
         Unit::Octaves => format!("{} oct", signed(value)),
         Unit::Steps => format!("{} steps", value.round()),
         Unit::Other("%") => format!("{}%", number(value)),
+        Unit::Other("×") => format!("×{}", number(value)),
         Unit::Other(unit) => format!("{} {unit}", number(value)),
     }
 }
@@ -224,6 +225,10 @@ mod tests {
         let effect = Kind::from_name("testgain").unwrap();
         assert_eq!(show(effect, "gain", -6.0), "-6 dB");
         assert_eq!(show(effect, "mode", 1.0), "hard");
+        assert_eq!(show(Kind::SCOPE, "zoom", 4.0), "×4");
+        assert_eq!(show(Kind::SCOPE, "time", 0.02), "20 ms");
+        assert_eq!(show(Kind::SCOPE, "mode", 2.0), "xy");
+        assert_eq!(show(Kind::READOUT, "mode", 0.0), "auto");
     }
 
     #[test]

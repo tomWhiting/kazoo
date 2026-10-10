@@ -36,6 +36,11 @@ pub const MAX_LINE: usize = 64 * 1024;
 /// bound keeps clients safe from a runaway one.
 pub const MAX_SERVER_LINE: usize = 4 * 1024 * 1024;
 
+/// Most scopes and readouts whose readings one answer carries: `look`, or
+/// `probe` for every one, carry the first in the wall's order; `probe`
+/// names any of them (up to this many at once).
+pub const MAX_PROBES: usize = 16;
+
 /// The daemon's socket file name, in kazoo's runtime directory.
 pub const SOCKET_NAME: &str = "kazoo-wall.sock";
 
@@ -102,10 +107,14 @@ pub fn is_auto_save(name: &str) -> bool {
 /// A knob value or cable amount (held as `f32`) as the number people
 /// meant: the shortest decimal that reads back as the same `f32`, so 0.35
 /// travels as `0.35` rather than `0.3499999940395355`.
+///
+/// Not a number travels as 0.
 #[must_use]
 pub fn widen(value: f32) -> f64 {
     if !value.is_finite() {
-        return f64::from(value);
+        // JSON carries no such number: a reply holding one could not be
+        // read by anybody.
+        return 0.0;
     }
     // The shortest round-trip form of a finite f32 always parses as f64.
     value
@@ -253,6 +262,20 @@ pub enum Request {
     },
     /// What the wall sounds like: a [`ListenResult`].
     Listen,
+    /// What the scopes and readouts measured: a [`ProbeResult`]. A read:
+    /// anyone may ask, watchers too.
+    Probe {
+        /// A scope's or readout's id. With neither this nor `modules`,
+        /// every one on the wall (the first [`MAX_PROBES`] in the wall's
+        /// order).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        module: Option<String>,
+        /// Several scopes' or readouts' ids, at most [`MAX_PROBES`] (a
+        /// console reading the screens in view past those `look` carries);
+        /// not with `module`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        modules: Vec<String>,
+    },
     /// Set the tempo: asks the desk when the wall is on it.
     Tempo {
         /// Beats per minute, 20 to 300.
@@ -329,6 +352,7 @@ impl Request {
             Self::Speak { .. } => "speak",
             Self::Log { .. } => "log",
             Self::Listen => "listen",
+            Self::Probe { .. } => "probe",
             Self::Tempo { .. } => "tempo",
             Self::Subscribe => "subscribe",
             Self::Monitor { .. } => "monitor",
@@ -1032,6 +1056,12 @@ pub struct Snapshot {
     /// Whether the change log is taking changes: left out while it is.
     #[serde(default, skip_serializing_if = "LogHealth::is_ok")]
     pub log: LogHealth,
+    /// What the scopes and readouts on the wall measured, at most
+    /// [`MAX_PROBES`] of them (the first in the wall's order; `probe` reads
+    /// the rest). Left out when there are none, and from a wall older than
+    /// them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probes: Vec<Probe>,
 }
 
 /// Whether the change log is taking changes.
@@ -1253,6 +1283,212 @@ pub struct ListenResult {
     pub listen: Option<Listen>,
 }
 
+/// What a scope or readout measured, as `look` and `probe` carry it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Probe {
+    /// The module's id.
+    pub module: String,
+    /// `scope` or `readout`.
+    pub kind: String,
+    /// How long ago it measured this, in seconds.
+    pub age: f64,
+    /// A scope's trace and readings; none until it has drawn one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ScopeReading>,
+    /// A readout's reading; none until it has taken one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readout: Option<ReadoutReading>,
+}
+
+/// One input as a scope or readout measured it over its latest tenth of
+/// a second. Levels are in the signal's own units (audio and CV are
+/// nominally ±1, pitch is 1.0 per octave).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Measured {
+    /// Whether a cable is in.
+    pub connected: bool,
+    /// Whether a cable is in that has only just been plugged, and nothing
+    /// of it measured yet: the numbers below are not of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waiting: bool,
+    /// The latest value.
+    pub last: f64,
+    /// Lowest over the window.
+    pub low: f64,
+    /// Highest over the window.
+    pub high: f64,
+    /// The mean over the window: its DC offset.
+    pub mean: f64,
+    /// Its RMS level, in dBFS (-120 is silence).
+    pub rms_db: f64,
+    /// Its peak (largest magnitude), in dBFS.
+    pub peak_db: f64,
+    /// How often it repeats, in Hz, when it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hz: Option<f64>,
+    /// How it repeats: `steady`, `wavering` or `paused` (with `hz`), or
+    /// `none`.
+    #[serde(default)]
+    pub rhythm: Rhythm,
+    /// Its shape in a word or two (`sine`, `triangle`, `saw`, `square`,
+    /// `pulse`, ...), when it repeats steadily.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<String>,
+    /// What it is as a gate (high above 0.5).
+    #[serde(default)]
+    pub gate: GateMeasured,
+    /// Lowest since the last reset; none when nothing has been measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Highest since the last reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// Samples in the window that were not numbers: something upstream is
+    /// faulty. They are counted, never measured.
+    #[serde(default)]
+    pub faults: u32,
+    /// Samples that were not numbers since the last reset (a readout's
+    /// `reset` gate clears them; a scope has none).
+    #[serde(default)]
+    pub faults_since_reset: u32,
+}
+
+impl Measured {
+    /// Whether it repeats steadily.
+    #[must_use]
+    pub fn steady(&self) -> bool {
+        self.rhythm == Rhythm::Steady
+    }
+
+    /// Whether it has paused (see [`Rhythm::Paused`]).
+    #[must_use]
+    pub fn paused(&self) -> bool {
+        self.rhythm == Rhythm::Paused
+    }
+}
+
+/// How a measured input repeats.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rhythm {
+    /// It does not repeat, as far as can be told.
+    #[default]
+    None,
+    /// Its latest periods agree: a steady pitch or rate.
+    Steady,
+    /// It repeats, but its periods wander (a wobble, or noise).
+    Wavering,
+    /// It repeated, and the cycle under way has run past the longest kept
+    /// (it stopped, or slowed): `hz` is its last rate.
+    Paused,
+}
+
+/// What a measured input is as a gate (high above 0.5).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GateMeasured {
+    /// How often it rises, in Hz, when it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hz: Option<f64>,
+    /// The share of a pulse's time its latest pulse was high (rests left
+    /// out), 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duty: Option<f64>,
+    /// Whether it is high now.
+    #[serde(default)]
+    pub high: bool,
+    /// Whether it has gone without a rise for longer than its longest gap,
+    /// and `hz` is its last rate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
+}
+
+/// A scope's latest sweep.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScopeReading {
+    /// `trigger`, `free` or `xy`.
+    pub mode: String,
+    /// Seconds across the screen.
+    pub span: f64,
+    /// The screen shows ±1 / zoom.
+    pub zoom: f64,
+    /// The trigger level, in the signal's units.
+    pub trigger: f64,
+    /// Whether the sweep started on input a rising through the trigger
+    /// level (in `trigger` mode; otherwise it swept without one).
+    pub triggered: bool,
+    /// Points across the screen.
+    pub points: u32,
+    /// While a sweep is under way, the points it has drawn so far: those
+    /// are this sweep, the rest the last. Left out when the screen shows
+    /// whole sweeps (or rolls).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweeping: Option<u32>,
+    /// Input a, `[lowest, highest]` at each point filled, oldest first.
+    /// In `trigger` mode the sweep is drawn from the left: while one is
+    /// under way, its points so far then what is left of the last. In
+    /// `free` mode the trace rolls in from the right: while the screen
+    /// first fills there are fewer points than `points`, drawn
+    /// right-aligned, the newest at the right edge. Empty in `xy` mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub a: Vec<[f64; 2]>,
+    /// Input b, likewise; empty when it is unplugged or in `xy` mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub b: Vec<[f64; 2]>,
+    /// In `xy` mode, `[a, b]` at each point.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub xy: Vec<[f64; 2]>,
+    /// What input a measured.
+    pub input_a: Measured,
+    /// What input b measured.
+    pub input_b: Measured,
+    /// The picture in plain words, e.g. `a: 220 Hz sine from -0.8 to 0.8;
+    /// b unplugged; triggered on a rising through 0`.
+    pub words: String,
+}
+
+/// A readout's latest reading.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReadoutReading {
+    /// How it is shown: `pitch`, `gate` or `audio`.
+    pub mode: String,
+    /// Whether the mode was chosen by what is plugged in (the `mode` knob
+    /// at `auto`) rather than by the knob.
+    pub auto: bool,
+    /// What its input measured.
+    pub input: Measured,
+    /// As pitch (1.0 per octave, 0 = C4): the nearest note, e.g. `A4`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// As pitch: cents from the nearest note, -50 to 50.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cents: Option<f64>,
+    /// As pitch: the frequency it stands for, in Hz.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch_hz: Option<f64>,
+    /// The face, a line each, as the console shows it.
+    pub lines: Vec<String>,
+}
+
+/// The result of `probe`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProbeResult {
+    /// The probes asked for, in the wall's order.
+    pub probes: Vec<Probe>,
+    /// Scopes and readouts on the wall past the first [`MAX_PROBES`],
+    /// left out of an answer for every one (ask for them by id).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_out: Vec<String>,
+    /// Of `modules` asked for, those not on the wall (another seat took
+    /// them away) or that measure nothing: passed over, not refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
+    /// Captures the engine has dropped since it started because the wall
+    /// fell behind taking them in (a busy machine): readings then come a
+    /// little less often, never wrong.
+    #[serde(default)]
+    pub dropped: u64,
+}
+
 /// The result of `catalogue`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CatalogueResult {
@@ -1328,6 +1564,10 @@ pub struct PortInfo {
     pub signal: Signal,
     /// What it carries.
     pub about: String,
+    /// Whether it carries pitch (1.0 per octave, 0 = C4): a readout on
+    /// `auto` shows it as a note. Left out when it does not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pitch: bool,
 }
 
 /// The result of `turn`, `patch`, `unpatch`, `add`, `remove` and `undo`.

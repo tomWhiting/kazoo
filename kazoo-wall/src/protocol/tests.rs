@@ -339,7 +339,9 @@ fn knob_values_travel_as_the_numbers_people_meant() {
     assert_eq!(widen(0.35).to_string(), "0.35");
     assert_eq!(widen(0.2).to_string(), "0.2");
     assert!((widen(18_000.0) - 18_000.0).abs() < f64::EPSILON);
-    assert!(widen(f32::NAN).is_nan());
+    // Not a number travels as 0: JSON has no such number.
+    assert!(widen(f32::NAN).abs() < f64::EPSILON);
+    assert!(widen(f32::INFINITY).abs() < f64::EPSILON);
     let exact: f32 = 0.1 + 0.2;
     assert!((widen(exact) as f32 - exact).abs() < f32::EPSILON);
 }
@@ -911,4 +913,169 @@ fn a_request_says_which_wall_it_is_for() {
     }))
     .unwrap();
     assert_eq!(snapshot.wall, 0);
+}
+
+/// A reading of a quiet input, as a probe carries it.
+fn quiet_input(connected: bool) -> Measured {
+    Measured {
+        connected,
+        waiting: false,
+        last: 0.0,
+        low: 0.0,
+        high: 0.0,
+        mean: 0.0,
+        rms_db: -120.0,
+        peak_db: -120.0,
+        hz: None,
+        rhythm: Rhythm::None,
+        shape: None,
+        gate: GateMeasured::default(),
+        min: None,
+        max: None,
+        faults: 0,
+        faults_since_reset: 0,
+    }
+}
+
+#[test]
+fn a_probe_is_a_read_and_older_walls_have_none() {
+    // A read anyone may make, naming a module or not.
+    let one = Request::Probe {
+        module: Some("scope1".to_string()),
+        modules: Vec::new(),
+    };
+    assert!(!one.is_change() && !one.acts_on_modules());
+    assert_eq!(one.op(), "probe");
+    assert_eq!(
+        serde_json::to_value(RequestLine {
+            id: 7,
+            wall: None,
+            request: one.clone()
+        })
+        .unwrap(),
+        json!({"id":7,"op":"probe","module":"scope1"})
+    );
+    round_trip_request(one);
+    let every = Request::Probe {
+        module: None,
+        modules: Vec::new(),
+    };
+    round_trip_request(every.clone());
+    let line: RequestLine = serde_json::from_value(json!({"id":8,"op":"probe"})).unwrap();
+    assert_eq!(line.request, every);
+    let several: RequestLine =
+        serde_json::from_value(json!({"id":9,"op":"probe","modules":["scope17","readout20"]}))
+            .unwrap();
+    assert_eq!(
+        several.request,
+        Request::Probe {
+            module: None,
+            modules: vec!["scope17".to_string(), "readout20".to_string()],
+        }
+    );
+    round_trip_request(several.request);
+
+    // A snapshot from a wall older than probes has none, and a snapshot
+    // with none sends none.
+    let older: Snapshot = serde_json::from_value(json!({
+        "revision":1,"tempo":90.0,"beat":0.0,"clock":"own","on_desk":false,"seats":[],
+        "modules":[],"cables":[],"levels":{"peak_l":-120.0,"peak_r":-120.0},"listen":null,
+        "faults":{"count":0,"recent":[]}
+    }))
+    .unwrap();
+    assert!(older.probes.is_empty());
+    assert!(
+        serde_json::to_value(&older)
+            .unwrap()
+            .get("probes")
+            .is_none()
+    );
+}
+
+#[test]
+fn probes_leave_out_what_they_do_not_have_and_read_back_whole() {
+    // A reading leaves out what it does not have, and reads back whole.
+    let quiet = serde_json::to_value(quiet_input(true)).unwrap();
+    for absent in ["hz", "shape", "min", "max", "waiting"] {
+        assert!(quiet.get(absent).is_none(), "{absent} in {quiet}");
+    }
+    assert_eq!(quiet["rhythm"], json!("none"));
+    assert_eq!(quiet["gate"], json!({"high": false}));
+    let result = ProbeResult {
+        probes: vec![
+            Probe {
+                module: "scope1".to_string(),
+                kind: "scope".to_string(),
+                age: 0.04,
+                scope: Some(ScopeReading {
+                    mode: "trigger".to_string(),
+                    span: 0.02,
+                    zoom: 1.0,
+                    trigger: 0.0,
+                    triggered: true,
+                    points: 96,
+                    sweeping: None,
+                    a: vec![[-0.5, 0.25]; 96],
+                    b: Vec::new(),
+                    xy: Vec::new(),
+                    input_a: Measured {
+                        hz: Some(220.0),
+                        rhythm: Rhythm::Steady,
+                        shape: Some("sine".to_string()),
+                        min: Some(-0.8),
+                        max: Some(0.8),
+                        ..quiet_input(true)
+                    },
+                    input_b: quiet_input(false),
+                    words: "a: 220 Hz sine from -0.800 to +0.800; b unplugged; triggered on a \
+                            rising through 0, 20 ms across"
+                        .to_string(),
+                }),
+                readout: None,
+            },
+            Probe {
+                module: "readout1".to_string(),
+                kind: "readout".to_string(),
+                age: 0.08,
+                scope: None,
+                readout: Some(ReadoutReading {
+                    mode: "pitch".to_string(),
+                    auto: true,
+                    input: Measured {
+                        last: 0.75,
+                        ..quiet_input(true)
+                    },
+                    note: Some("A4".to_string()),
+                    cents: Some(0.0),
+                    pitch_hz: Some(440.0),
+                    lines: vec!["A4".to_string(), "440 Hz".to_string()],
+                }),
+            },
+            Probe {
+                module: "scope2".to_string(),
+                kind: "scope".to_string(),
+                age: 0.0,
+                scope: None,
+                readout: None,
+            },
+        ],
+        left_out: vec!["readout9".to_string()],
+        missing: vec!["scope30".to_string()],
+        dropped: 3,
+    };
+    let value = serde_json::to_value(&result).unwrap();
+    assert!(
+        value["probes"][0]["scope"].get("b").is_none(),
+        "an empty trace is left out"
+    );
+    assert!(value["probes"][2].get("scope").is_none());
+    assert_eq!(value["probes"][1]["readout"]["note"], json!("A4"));
+    assert_eq!(
+        serde_json::from_value::<ProbeResult>(value).unwrap(),
+        result
+    );
+    // An answer listing every probe without any left out says nothing of
+    // them.
+    let none: ProbeResult = serde_json::from_value(json!({"probes":[]})).unwrap();
+    assert!(none.left_out.is_empty());
 }

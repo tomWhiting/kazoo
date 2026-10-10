@@ -927,3 +927,171 @@ fn a_swap_too_big_for_the_ring_waits_in_order_unhush_and_all() {
     assert!(peak(&left(&buffer)) > 0.1, "heard again");
     assert_eq!(engine.shared.leaked(), 0);
 }
+
+#[test]
+fn scopes_and_readouts_hand_their_captures_on_without_allocating() {
+    let (mut engine, mut control) = fresh();
+    let mut probes = control.take_probes().unwrap();
+    assert!(control.take_probes().is_none(), "taken once");
+    let mut model = Model::default();
+    model.add(&mut control, 0, Kind::VCO);
+    model.add(&mut control, 1, Kind::SCOPE);
+    model.add(&mut control, 2, Kind::READOUT);
+    model.plug(&mut control, (0, 0, 1, 0, 1.0));
+    model.plug(&mut control, (1, 0, 2, 0, 1.0));
+    let mut buffer = Vec::new();
+    // `render` runs the engine under assert_no_alloc.
+    render(&mut engine, 48_000, &mut buffer);
+    let (mut scopes, mut readouts) = (0, 0);
+    while let Some(frame) = probes.try_pop() {
+        match (frame.slot, frame.tag) {
+            (1, 2) => {
+                scopes += 1;
+                assert_eq!(
+                    usize::from(frame.capture.trace.points),
+                    crate::dsp::measure::TRACE_POINTS
+                );
+                assert!(frame.capture.trace.triggered);
+            }
+            (2, 3) => {
+                readouts += 1;
+                assert!(frame.capture.inputs[0].connected);
+                assert!(frame.capture.trace.points == 0, "a readout has no trace");
+            }
+            other => panic!("a capture from {other:?}"),
+        }
+    }
+    assert!((20..=26).contains(&scopes), "{scopes}");
+    assert_eq!(readouts, 10);
+    assert_eq!(control.shared().probes_dropped(), 0);
+    // Nobody takes them: the ring fills, and what does not fit is
+    // dropped and counted, never waited for.
+    render(&mut engine, 48_000 * 8, &mut buffer);
+    assert_eq!(probes.occupied_len(), PROBE_BACKLOG);
+    assert!(control.shared().probes_dropped() > 0);
+    // Taken again, they flow again.
+    while probes.try_pop().is_some() {}
+    let dropped = control.shared().probes_dropped();
+    render(&mut engine, 4_800, &mut buffer);
+    assert!(probes.occupied_len() > 0);
+    assert_eq!(control.shared().probes_dropped(), dropped);
+}
+
+/// A module that counts the times it is told its inputs were re-plugged,
+/// and keeps which were, the last time (a bit each).
+#[derive(Debug)]
+struct Listening {
+    rewired: Arc<AtomicU32>,
+    moved: Arc<AtomicU32>,
+}
+
+impl Module for Listening {
+    fn process(&mut self, _tick: &Tick, io: Io<'_>) {
+        io.outputs[0] = [0.0; SUB_BLOCK];
+    }
+
+    fn reset(&mut self) {}
+
+    fn rewired(&mut self, moved: [bool; crate::MAX_INPUTS]) {
+        self.rewired.fetch_add(1, Ordering::Relaxed);
+        let bits = moved
+            .iter()
+            .enumerate()
+            .filter(|(_, moved)| **moved)
+            .fold(0, |bits, (input, _)| bits | 1 << input);
+        self.moved.store(bits, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn a_new_cable_table_tells_only_the_modules_whose_inputs_it_moves() {
+    let (mut engine, mut control) = fresh();
+    let counts = [Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0))];
+    let moved = [Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0))];
+    control.send(Command::Insert {
+        slot: 0,
+        tag: 1,
+        kind: Kind::VCO,
+        module: build(Kind::VCO, 48_000.0),
+        knobs: [0.0; MAX_KNOBS],
+    });
+    for (slot, count) in counts.iter().enumerate() {
+        control.send(Command::Insert {
+            slot: slot + 1,
+            tag: 2 + u32::try_from(slot).unwrap(),
+            kind: Kind::VCA,
+            module: Box::new(Listening {
+                rewired: Arc::clone(count),
+                moved: Arc::clone(&moved[slot]),
+            }),
+            knobs: [0.0; MAX_KNOBS],
+        });
+    }
+    let table = |routes: &[(usize, usize, f32)]| {
+        let mut table = CableTable::new();
+        for (line, &(to, input, amount)) in routes.iter().enumerate() {
+            let line = u16::try_from(line).unwrap();
+            table.set(
+                to,
+                input,
+                Some(Route::new(0, 0, amount, line, u32::from(line) + 1)),
+            );
+        }
+        Command::Cables(Box::new(table))
+    };
+    let mut buffer = Vec::new();
+    let seen =
+        |counts: &[Arc<AtomicU32>; 2]| counts.each_ref().map(|count| count.load(Ordering::Relaxed));
+    control.send(table(&[(1, 0, 1.0)]));
+    render(&mut engine, SUB_BLOCK, &mut buffer);
+    assert_eq!(seen(&counts), [1, 0]);
+    // The same cables again: nothing moved.
+    control.send(table(&[(1, 0, 1.0)]));
+    render(&mut engine, SUB_BLOCK, &mut buffer);
+    assert_eq!(seen(&counts), [1, 0]);
+    // A cable into the second, and the first's amount changed.
+    control.send(table(&[(1, 0, 0.5), (2, 1, 1.0)]));
+    render(&mut engine, SUB_BLOCK, &mut buffer);
+    assert_eq!(seen(&counts), [2, 1]);
+    // Each is told which of its inputs moved.
+    assert_eq!(seen(&moved), [0b01, 0b10]);
+    // A knob's jack is no input: plugging one tells nobody.
+    control.send(table(&[
+        (1, 0, 0.5),
+        (2, 1, 1.0),
+        (2, crate::MAX_INPUTS, 1.0),
+    ]));
+    render(&mut engine, SUB_BLOCK, &mut buffer);
+    assert_eq!(seen(&counts), [2, 1]);
+    // Unplugged everywhere.
+    control.send(table(&[]));
+    render(&mut engine, SUB_BLOCK, &mut buffer);
+    assert_eq!(seen(&counts), [3, 2]);
+}
+
+#[test]
+fn a_capture_says_which_cable_table_it_was_measured_under() {
+    let (mut engine, mut control) = fresh();
+    let mut probes = control.take_probes().unwrap();
+    let mut model = Model::default();
+    model.add(&mut control, 0, Kind::VCO);
+    model.add(&mut control, 1, Kind::READOUT);
+    model.plug(&mut control, (0, 0, 1, 0, 1.0));
+    let mut buffer = Vec::new();
+    render(&mut engine, 9_600, &mut buffer);
+    let first: Vec<u64> = std::iter::from_fn(|| probes.try_pop())
+        .map(|frame| frame.cables)
+        .collect();
+    assert!(!first.is_empty());
+    // Plugging the one cable sent the first table.
+    assert!(first.iter().all(|cables| *cables == 1), "{first:?}");
+    model.plug(&mut control, (0, 0, 1, 0, 0.5));
+    render(&mut engine, 9_600, &mut buffer);
+    let later: Vec<u64> = std::iter::from_fn(|| probes.try_pop())
+        .map(|frame| frame.cables)
+        .collect();
+    assert!(
+        !later.is_empty() && later.iter().all(|cables| *cables == 2),
+        "{later:?}"
+    );
+}

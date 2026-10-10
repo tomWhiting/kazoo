@@ -1,6 +1,7 @@
 //! The rack view: every module a cream faceplate, its knobs round dials
 //! (stepped knobs rotary switches with their detents), its jacks sockets,
-//! and the cables hanging between them in their fingerprints' dye.
+//! a scope's or readout's screen live with what it measures, and the
+//! cables hanging between them in their fingerprints' dye.
 
 use std::collections::BTreeMap;
 
@@ -9,13 +10,16 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 
 use kazoo_wall::catalogue::Signal;
-use kazoo_wall::protocol::{KnobView, ModuleView, Snapshot};
+use kazoo_wall::protocol::{
+    KnobView, MAX_PROBES, ModuleView, Probe, ReadoutReading, ScopeReading, Snapshot,
+};
 
 use super::super::app::{App, Drag, Focus, PathKey};
 use super::super::dye;
 use super::super::knob::{Travel, show};
 use super::super::rack::dial::{self, Part, braille};
 use super::super::rack::geometry::{self, Blank, Density, Hanging, Hit, Plate, Point, Rack, Scale};
+use super::super::rack::screen::{self, Ink};
 use super::super::theme::{
     AMBER, BRASS, CREAM, INK, INK_DIM, JACK_EMPTY, KNOB, METER_BG, RACK, RED, SAGE, STEEL,
     TEXT_DIM, bold, cable_colour, jack_glyph, plain,
@@ -379,6 +383,9 @@ fn faceplate(buf: &mut Buffer, scene: Scene<'_>, module: &ModuleView, plate: &Pl
     if let Some(at) = plate.meter {
         meter(buf, window, snapshot, module, at, scale);
     }
+    if let Some(at) = plate.screen {
+        probe_screen(buf, window, app, module, at, scale);
+    }
     for jack in &plate.jacks {
         let hit = Hit::Jack {
             module: plate.module,
@@ -706,6 +713,178 @@ fn meter(
         label,
         plain(INK_DIM, CREAM),
     );
+}
+
+/// A scope's or readout's screen at `at`: dark like a meter's, its latest
+/// trace or numbers on it and a line saying how they were taken under
+/// them; or why there is nothing to show yet.
+fn probe_screen(
+    buf: &mut Buffer,
+    window: &Window,
+    app: &App,
+    module: &ModuleView,
+    at: Point,
+    scale: Scale,
+) {
+    let width = geometry::screen_width(module).saturating_sub(2);
+    let height = (scale.knob_rows * scale.knob_h).saturating_sub(1);
+    if width == 0 || height < 2 {
+        return;
+    }
+    let left = Point { x: at.x + 1, ..at };
+    // Blank braille, not spaces: no cable hangs across the screen.
+    let blank = braille(0).to_string().repeat(usize::from(width));
+    for row in 0..u32::from(height) {
+        window.put(
+            buf,
+            Point {
+                y: left.y + row,
+                ..left
+            },
+            &blank,
+            plain(STEEL, METER_BG),
+        );
+    }
+    // `look` carries the first few; the console asks for the rest in view.
+    let found = app
+        .snapshot()
+        .and_then(|snapshot| {
+            snapshot
+                .probes
+                .iter()
+                .find(|probe| probe.module == module.id)
+        })
+        .or_else(|| app.rack.readings.get(&module.id));
+    let waiting = |text: &str| {
+        let middle = Point {
+            y: left.y + u32::from(height - 1) / 2,
+            ..left
+        };
+        (middle, text.to_string())
+    };
+    let face = Face {
+        window,
+        left,
+        width,
+        height,
+    };
+    let note = match (module.kind.as_str(), found) {
+        // Past the first few, asked for and not answered yet; or from a wall
+        // older than probes, which sends none.
+        (_, None)
+            if app
+                .snapshot()
+                .is_some_and(|snapshot| snapshot.probes.len() >= MAX_PROBES) =>
+        {
+            Some(waiting("reading…"))
+        }
+        (_, None) => Some(waiting("no readings")),
+        (
+            "scope",
+            Some(Probe {
+                scope: Some(reading),
+                ..
+            }),
+        ) => {
+            scope_face(buf, &face, reading);
+            None
+        }
+        (
+            "readout",
+            Some(Probe {
+                readout: Some(reading),
+                ..
+            }),
+        ) => {
+            readout_face(buf, &face, reading);
+            None
+        }
+        _ => Some(waiting("waiting…")),
+    };
+    if let Some((middle, text)) = note {
+        window.centred(buf, middle, width, &text, plain(TEXT_DIM, METER_BG));
+    }
+}
+
+/// Where a screen is drawn: its window, its top-left inside the
+/// faceplate's margin, and its size in cells (the last row its label).
+struct Face<'a> {
+    window: &'a Window,
+    left: Point,
+    width: u16,
+    height: u16,
+}
+
+impl Face<'_> {
+    /// Write `text` on row `row` of the screen, cut to its width.
+    fn line(&self, buf: &mut Buffer, row: u32, text: &str, style: Style) {
+        self.window.put(
+            buf,
+            Point {
+                y: self.left.y + row,
+                ..self.left
+            },
+            &truncate(text, usize::from(self.width)),
+            style,
+        );
+    }
+
+    /// Write the label under the screen.
+    fn label(&self, buf: &mut Buffer, text: &str) {
+        self.line(
+            buf,
+            u32::from(self.height) - 1,
+            text,
+            plain(TEXT_DIM, METER_BG),
+        );
+    }
+}
+
+/// A scope's trace, a green, b amber, over the graticule, and its label.
+fn scope_face(buf: &mut Buffer, face: &Face<'_>, reading: &ScopeReading) {
+    let rows = usize::from(face.height - 1);
+    let cells = screen::scope(reading, usize::from(face.width), rows);
+    for (row, line) in cells.iter().enumerate() {
+        for (col, cell) in line.iter().enumerate() {
+            let colour = match cell.ink {
+                Ink::A => SAGE,
+                Ink::B => AMBER,
+                Ink::Grid | Ink::Blank => STEEL,
+            };
+            face.window.put(
+                buf,
+                Point {
+                    x: face.left.x + u32::try_from(col).unwrap_or(0),
+                    y: face.left.y + u32::try_from(row).unwrap_or(0),
+                },
+                &cell.glyph.to_string(),
+                plain(colour, METER_BG),
+            );
+        }
+    }
+    face.label(buf, &screen::full_label(reading));
+}
+
+/// A readout's lines (a fault in red, the first bold) and its mode under
+/// them.
+fn readout_face(buf: &mut Buffer, face: &Face<'_>, reading: &ReadoutReading) {
+    let room = usize::from(face.height.saturating_sub(2));
+    for (row, line) in reading.lines.iter().enumerate().take(room) {
+        let style = if line.starts_with('!') {
+            bold(RED, METER_BG)
+        } else if row == 0 {
+            bold(SAGE, METER_BG)
+        } else {
+            plain(SAGE, METER_BG)
+        };
+        face.line(buf, 1 + u32::try_from(row).unwrap_or(0), line, style);
+    }
+    let how = if reading.auto {
+        format!("{} · auto", reading.mode)
+    } else {
+        reading.mode.clone()
+    };
+    face.label(buf, &how);
 }
 
 /// One jack (`hit`, a [`Hit::Jack`]): a socket, and its name (outputs

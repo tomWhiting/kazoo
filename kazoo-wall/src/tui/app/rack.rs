@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
 
-use kazoo_wall::protocol::ModuleView;
+use kazoo_wall::protocol::{MAX_PROBES, ModuleView, Probe, Snapshot};
 
 use super::super::knob::Travel;
 use super::super::rack::geometry::{self, Density, Hanging, Hit, LayoutKey, Point, Rack};
@@ -177,9 +177,41 @@ pub struct RackState {
     pub(super) last_click: Option<(Hit, Instant)>,
     /// Since when a carried cable has been panning the rack at its edge.
     edge_since: Option<Instant>,
+    /// What the scopes and readouts in view past those `look` carries
+    /// measured, by module id, as `probe` last answered.
+    pub readings: BTreeMap<String, Probe>,
+    /// Whether a `probe` for them is on its way, and when the next may go.
+    pub(super) probing: bool,
+    pub(super) next_probe: Option<Instant>,
 }
 
 impl RackState {
+    /// The scopes and readouts whose faceplates are in view and whose
+    /// readings `snapshot` does not carry (it carries the first
+    /// [`MAX_PROBES`]): at most that many, left to right, top to bottom.
+    #[must_use]
+    pub fn unread(&self, snapshot: &Snapshot) -> Vec<String> {
+        let (area, pan) = (self.area, self.pan);
+        let mut ids = Vec::new();
+        for plate in &self.layout.plates {
+            let in_view = plate.at.x < pan.x + u32::from(area.width)
+                && plate.at.y < pan.y + u32::from(area.height)
+                && plate.at.x + u32::from(plate.width) > pan.x
+                && plate.at.y + u32::from(plate.height) > pan.y;
+            let Some(module) = snapshot.modules.get(plate.module) else {
+                continue;
+            };
+            let carried = snapshot
+                .probes
+                .iter()
+                .any(|probe| probe.module == module.id);
+            if in_view && plate.screen.is_some() && !carried && ids.len() < MAX_PROBES {
+                ids.push(module.id.clone());
+            }
+        }
+        ids
+    }
+
     /// The sheet cell under screen cell `(column, row)`, if it is in the
     /// rack's area.
     #[must_use]

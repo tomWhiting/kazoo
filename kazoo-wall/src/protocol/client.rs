@@ -32,9 +32,9 @@ use serde::de::DeserializeOwned;
 use super::codec::{self, LineRead};
 use super::{
     ArrangeResult, CatalogueResult, ChangeResult, DeleteSaveResult, Event, HelloResult,
-    ListenResult, LoadResult, LogPage, MAX_SERVER_LINE, MonitorResult, Place, RecordResult,
-    Request, RequestLine, Response, SaveResult, SavesResult, ServerLine, ShutdownResult, Snapshot,
-    SubscribeResult, TempoResult, WallError,
+    ListenResult, LoadResult, LogPage, MAX_SERVER_LINE, MonitorResult, Place, ProbeResult,
+    RecordResult, Request, RequestLine, Response, SaveResult, SavesResult, ServerLine,
+    ShutdownResult, Snapshot, SubscribeResult, TempoResult, WallError,
 };
 
 /// Why a request did not produce a result.
@@ -385,6 +385,19 @@ impl WallClient {
     /// As [`Self::call`].
     pub fn listen(&mut self) -> Result<ListenResult, ClientError> {
         self.call_as(Request::Listen)
+    }
+
+    /// What scope or readout `module` measured; with none, every one on
+    /// the wall (at most [`super::MAX_PROBES`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call`].
+    pub fn probe(&mut self, module: Option<&str>) -> Result<ProbeResult, ClientError> {
+        self.call_as(Request::Probe {
+            module: module.map(str::to_string),
+            modules: Vec::new(),
+        })
     }
 
     /// Set the tempo (asking the desk, when the wall is on it).

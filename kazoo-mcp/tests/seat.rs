@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 const NOT_RUNNING: &str = "the wall is not running (start it with `kazoo-wall`)";
 
 /// Every tool.
-const TOOLS: [&str; 16] = [
+const TOOLS: [&str; 17] = [
     "wall_add",
     "wall_catalogue",
     "wall_listen",
@@ -36,6 +36,7 @@ const TOOLS: [&str; 16] = [
     "wall_log",
     "wall_look",
     "wall_patch",
+    "wall_probe",
     "wall_record",
     "wall_remove",
     "wall_save",
@@ -330,6 +331,88 @@ async fn a_seat_saves_lists_and_loads_and_cannot_destroy_a_save() {
     assert!(look.contains("cutoff=300"), "{look}");
     let (failed, why) = call(&client, "wall_load", serde_json::json!({"name": "nothing"})).await;
     assert!(failed && why.contains("unknown_save"), "{why}");
+    client.cancel().await.unwrap();
+    stop(daemon);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seat_probes_a_scope_and_a_readout_as_numbers() {
+    let (runtime, state) = dirs();
+    let daemon = start(runtime.path(), state.path());
+    let (client, _notifications) = seat(daemon.socket(), "Waffles", 1, None).await;
+    let none = works(&client, "wall_probe", serde_json::json!({})).await;
+    assert!(
+        none.starts_with("No scopes or readouts on the wall."),
+        "{none}"
+    );
+    for kind in ["scope", "readout"] {
+        let added = works(&client, "wall_add", serde_json::json!({"kind": kind})).await;
+        assert!(added.contains(&format!("Module id: {kind}1.")), "{added}");
+    }
+    for (from, to) in [("vco1.out", "scope1.a"), ("clock1.out", "readout1.in")] {
+        works(
+            &client,
+            "wall_patch",
+            serde_json::json!({"from": from, "to": to}),
+        )
+        .await;
+    }
+    // A debug build on a busy machine renders when it can: wait until both
+    // have measured. (What they measured before their cables reached the
+    // engine is let go, never shown.)
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let probed = loop {
+        let probed = works(&client, "wall_probe", serde_json::json!({})).await;
+        if !probed.contains("no reading yet") || Instant::now() > deadline {
+            break probed;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(probed.contains("scope1 (scope), measured "), "{probed}");
+    assert!(
+        probed.contains("  Screen: trigger mode, 0.02 s across in 96 points"),
+        "{probed}"
+    );
+    assert!(probed.contains("  a: last "), "{probed}");
+    assert!(probed.contains("  b: unplugged."), "{probed}");
+    // A saw's drop makes a point a band; either way the trace is drawn.
+    assert!(
+        probed.contains("  Trace a, left to right (▁ bottom to █ top of the screen): ")
+            || probed.contains("  Trace a is a band"),
+        "{probed}"
+    );
+    assert!(probed.contains("readout1 (readout), measured "), "{probed}");
+    assert!(
+        probed.contains("  Shown as gate (chosen by what is plugged in): "),
+        "the clock's gate is shown as a gate: {probed}"
+    );
+    let one = works(
+        &client,
+        "wall_probe",
+        serde_json::json!({"module": "readout1"}),
+    )
+    .await;
+    assert!(one.starts_with("readout1 (readout)"), "{one}");
+    assert!(!one.contains("scope1"), "{one}");
+    let (failed, why) = call(&client, "wall_probe", serde_json::json!({"module": "vco1"})).await;
+    assert!(failed, "{why}");
+    assert!(
+        why.starts_with("the wall said no (bad_request): vco1 is a vco and measures nothing"),
+        "{why}"
+    );
+    let (failed, why) = call(
+        &client,
+        "wall_probe",
+        serde_json::json!({"module": "scope7"}),
+    )
+    .await;
+    assert!(failed && why.contains("unknown_module"), "{why}");
+    // The listing points at them.
+    let look = works(&client, "wall_look", serde_json::json!({})).await;
+    assert!(
+        look.contains("Probes (wall_probe has their numbers): scope1 (scope): a: "),
+        "{look}"
+    );
     client.cancel().await.unwrap();
     stop(daemon);
 }

@@ -10,8 +10,9 @@ use kazoo_wall::catalogue::{Curve, JackLaw, Signal};
 use kazoo_wall::fingerprints::Shares;
 use kazoo_wall::protocol::{
     CatalogueResult, Change, ChangeResult, ClockSource, KindInfo, KnobView, Listen, ListenResult,
-    LoadResult, LogHealth, LogPage, ModuleView, RecordResult, Recording, SaveResult, SavesResult,
-    Snapshot, TempoResult, Timings,
+    LoadResult, LogHealth, LogPage, MAX_PROBES, Measured, ModuleView, Probe, ProbeResult,
+    ReadoutReading, RecordResult, Recording, SaveResult, SavesResult, ScopeReading, Snapshot,
+    TempoResult, Timings,
 };
 
 /// Beats in a bar, for the position line.
@@ -65,6 +66,7 @@ pub fn look(snapshot: &Snapshot) -> String {
         ),
         None => line(&mut out, format_args!("Sounds like: not heard yet.")),
     }
+    probes_line(&mut out, &snapshot.probes);
     if snapshot.faults.count > 0 {
         line(
             &mut out,
@@ -660,6 +662,333 @@ fn listen_line(heard: &Listen) -> String {
     )
 }
 
+/// The scopes and readouts in a line, for the listing: what each shows,
+/// and that `wall_probe` has the numbers.
+fn probes_line(out: &mut String, probes: &[Probe]) {
+    if probes.is_empty() {
+        return;
+    }
+    let each: Vec<String> = probes
+        .iter()
+        .map(|probe| {
+            let shows = match (&probe.scope, &probe.readout) {
+                (Some(scope), _) => scope.words.clone(),
+                (None, Some(readout)) => readout.lines.join(", "),
+                (None, None) => "no reading yet".to_string(),
+            };
+            format!("{} ({}): {shows}", probe.module, probe.kind)
+        })
+        .collect();
+    line(
+        out,
+        format_args!(
+            "Probes (wall_probe has their numbers): {}.",
+            each.join("; ")
+        ),
+    );
+}
+
+/// The blocks a sparkline is drawn in, lowest first.
+const SPARKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Most characters a trace's sparkline takes.
+const SPARK_WIDTH: usize = 48;
+
+/// Which part of each point of a trace a sparkline draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    /// Its middle (neighbouring points averaged).
+    Middle,
+    /// Its highest (the highest of neighbouring points).
+    High,
+    /// Its lowest (the lowest of neighbouring points).
+    Low,
+}
+
+/// A screen's zoom that draws: the scope's own, or 1 when it is not a
+/// number.
+fn screen_zoom(zoom: f64) -> f64 {
+    if zoom.is_finite() && zoom > 0.0 {
+        zoom
+    } else {
+        1.0
+    }
+}
+
+/// Whether a trace is a band: some point spans more than one of a
+/// sparkline's eight steps from its lowest to its highest (a fast wave
+/// across a long span), so its middle alone would read as flat.
+fn banded(points: &[[f64; 2]], zoom: f64) -> bool {
+    let zoom = screen_zoom(zoom);
+    points
+        .iter()
+        .any(|[low, high]| (high - low) * zoom * 3.5 >= 1.0)
+}
+
+/// A trace as a sparkline: `edge` of each point, `▁` at the bottom of the
+/// screen (-1 / zoom) up to `█` at its top, at most [`SPARK_WIDTH`]
+/// characters (neighbouring points taken together).
+fn sparkline(points: &[[f64; 2]], zoom: f64, edge: Edge) -> String {
+    if points.is_empty() {
+        return String::new();
+    }
+    let zoom = screen_zoom(zoom);
+    let per = points.len().div_ceil(SPARK_WIDTH);
+    points
+        .chunks(per)
+        .map(|chunk| {
+            let value = match edge {
+                Edge::Middle => {
+                    chunk
+                        .iter()
+                        .map(|[low, high]| f64::midpoint(*low, *high))
+                        .sum::<f64>()
+                        / chunk.len() as f64
+                }
+                Edge::High => chunk.iter().map(|[_, high]| *high).fold(f64::MIN, f64::max),
+                Edge::Low => chunk.iter().map(|[low, _]| *low).fold(f64::MAX, f64::min),
+            };
+            let height = (value * zoom).mul_add(0.5, 0.5) * 7.0;
+            let level = if height.is_finite() {
+                height.round().clamp(0.0, 7.0)
+            } else {
+                0.0
+            };
+            // Held to 0..=7: the cast is exact.
+            SPARKS[level as usize]
+        })
+        .collect()
+}
+
+/// One input's numbers.
+fn measured_line(input: &Measured) -> String {
+    if !input.connected {
+        return "unplugged.".to_string();
+    }
+    if input.waiting {
+        return "just plugged in, not measured yet.".to_string();
+    }
+    let repeats = match (input.hz, input.steady()) {
+        (Some(hz), _) if input.paused() => format!(
+            "paused: it was cycling at {} Hz, and has gone longer than a cycle since",
+            round(hz, 3)
+        ),
+        (Some(hz), true) => format!("{} Hz (steady)", round(hz, 3)),
+        (Some(hz), false) => format!("about {} Hz (unsteady)", round(hz, 3)),
+        (None, _) => "does not repeat".to_string(),
+    };
+    let shape = input
+        .shape
+        .as_ref()
+        .map_or_else(String::new, |shape| format!(", {shape}"));
+    let state = if input.gate.high { "high" } else { "low" };
+    let gate = match (input.gate.hz, input.gate.duty) {
+        (Some(hz), _) if input.gate.paused => format!(
+            "as a gate paused (it was rising at {} Hz), {state} now",
+            round(hz, 3)
+        ),
+        (Some(hz), Some(duty)) => format!(
+            "as a gate {} Hz ({}/min), duty {}%, {state} now",
+            round(hz, 3),
+            round(hz * 60.0, 1),
+            round(duty * 100.0, 1)
+        ),
+        (Some(hz), None) => format!(
+            "as a gate {} Hz ({}/min), {state} now",
+            round(hz, 3),
+            round(hz * 60.0, 1)
+        ),
+        (None, _) => format!("as a gate no pulses, {state} now"),
+    };
+    let extremes = match (input.min, input.max) {
+        (Some(min), Some(max)) => format!("since reset {min} to {max}"),
+        _ => "nothing measured since reset".to_string(),
+    };
+    let faults = if input.faults > 0 || input.faults_since_reset > 0 {
+        format!(
+            "; {} non-numbers in the last tenth of a second, {} since its reset (a fault \
+             upstream: counted, never measured)",
+            input.faults, input.faults_since_reset
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "last {}, low {}, high {}, mean (DC) {}, RMS {} dBFS, peak {} dBFS; {repeats}{shape}; \
+         {gate}; {extremes}{faults}.",
+        input.last, input.low, input.high, input.mean, input.rms_db, input.peak_db
+    )
+}
+
+fn scope_block(out: &mut String, scope: &ScopeReading) {
+    line(out, format_args!("  {}.", scope.words));
+    let trigger = match (scope.mode.as_str(), scope.triggered) {
+        ("trigger", true) => format!(", trigger at {} (this sweep triggered)", scope.trigger),
+        ("trigger", false) => format!(
+            ", trigger at {} (nothing rose through it: this sweep ran without one)",
+            scope.trigger
+        ),
+        _ => String::new(),
+    };
+    // Only a whole sweep is a sweep: one under way is said to be.
+    let under_way = scope.sweeping.map_or_else(String::new, |drawn| {
+        format!(
+            " A sweep is under way: its first {drawn} of {} points are drawn; the rest are the \
+             last sweep's.",
+            scope.points
+        )
+    });
+    line(
+        out,
+        format_args!(
+            "  Screen: {} mode, {} s across in {} points, zoom ×{} (it shows ±{}){trigger}.\
+             {under_way}",
+            scope.mode,
+            scope.span,
+            scope.points,
+            scope.zoom,
+            round(1.0 / scope.zoom, 4)
+        ),
+    );
+    line(out, format_args!("  a: {}", measured_line(&scope.input_a)));
+    line(out, format_args!("  b: {}", measured_line(&scope.input_b)));
+    if scope.xy.is_empty() {
+        for (name, trace) in [("a", &scope.a), ("b", &scope.b)] {
+            if trace.is_empty() {
+                continue;
+            }
+            if banded(trace, scope.zoom) {
+                line(
+                    out,
+                    format_args!(
+                        "  Trace {name} is a band (each point spans a swing: a fast wave across \
+                         the span), left to right (▁ bottom to █ top of the screen):"
+                    ),
+                );
+                line(
+                    out,
+                    format_args!("    highs {}", sparkline(trace, scope.zoom, Edge::High)),
+                );
+                line(
+                    out,
+                    format_args!("    lows  {}", sparkline(trace, scope.zoom, Edge::Low)),
+                );
+            } else {
+                line(
+                    out,
+                    format_args!(
+                        "  Trace {name}, left to right (▁ bottom to █ top of the screen): {}",
+                        sparkline(trace, scope.zoom, Edge::Middle)
+                    ),
+                );
+            }
+        }
+    } else {
+        line(
+            out,
+            format_args!(
+                "  Figure: {} points of a (across) against b (up).",
+                scope.xy.len()
+            ),
+        );
+    }
+}
+
+fn readout_block(out: &mut String, readout: &ReadoutReading) {
+    let how = if readout.auto {
+        "chosen by what is plugged in"
+    } else {
+        "set by its mode knob"
+    };
+    line(
+        out,
+        format_args!(
+            "  Shown as {} ({how}): {}.",
+            readout.mode,
+            readout.lines.join(" | ")
+        ),
+    );
+    if let (Some(note), Some(cents), Some(hz)) = (&readout.note, readout.cents, readout.pitch_hz) {
+        line(
+            out,
+            format_args!("  As pitch (1.0 per octave, 0 = C4): {note} {cents:+} cents, {hz} Hz."),
+        );
+    }
+    line(
+        out,
+        format_args!("  Input: {}", measured_line(&readout.input)),
+    );
+}
+
+/// What the scopes and readouts measured.
+#[must_use]
+pub fn probe(result: &ProbeResult) -> String {
+    if result.probes.is_empty() {
+        return "No scopes or readouts on the wall. wall_add a scope (it draws inputs a and b) \
+                or a readout (numbers for one input), patch what you want to measure into it \
+                (it passes it through, so it can sit inline), then call wall_probe again."
+            .to_string();
+    }
+    let mut out = String::new();
+    for found in &result.probes {
+        match (&found.scope, &found.readout) {
+            (None, None) => line(
+                &mut out,
+                format_args!(
+                    "{} ({}): no reading yet; it hands one on every tenth of a second or so \
+                     (a scope once a sweep), so ask again in a moment.",
+                    found.module, found.kind
+                ),
+            ),
+            (scope, readout) => {
+                line(
+                    &mut out,
+                    format_args!(
+                        "{} ({}), measured {} s ago:",
+                        found.module, found.kind, found.age
+                    ),
+                );
+                if let Some(scope) = scope {
+                    scope_block(&mut out, scope);
+                }
+                if let Some(readout) = readout {
+                    readout_block(&mut out, readout);
+                }
+            }
+        }
+    }
+    if !result.missing.is_empty() {
+        line(
+            &mut out,
+            format_args!(
+                "Not on the wall (taken away), or not a scope or readout: {}.",
+                result.missing.join(", ")
+            ),
+        );
+    }
+    if result.dropped > 0 {
+        line(
+            &mut out,
+            format_args!(
+                "The wall has dropped {} captures since it started, falling behind taking them \
+                 in (a busy machine): readings come a little less often, never wrong.",
+                result.dropped
+            ),
+        );
+    }
+    if !result.left_out.is_empty() {
+        line(
+            &mut out,
+            format_args!(
+                "Not listed (an answer for every one carries the first {MAX_PROBES}): {}; ask \
+                 for each with module.",
+                result.left_out.join(", ")
+            ),
+        );
+    }
+    out.trim_end().to_string()
+}
+
 /// An answer this build could not read, shown as it came.
 #[must_use]
 pub fn unread(why: &str, value: &serde_json::Value) -> String {
@@ -694,7 +1023,9 @@ fn line(out: &mut String, args: std::fmt::Arguments<'_>) {
 #[cfg(test)]
 mod tests {
     use kazoo_wall::fingerprints::Fingerprints;
-    use kazoo_wall::protocol::{CableRecord, Faults, KnobInfo, Levels, PortInfo, What};
+    use kazoo_wall::protocol::{
+        CableRecord, Faults, GateMeasured, KnobInfo, Levels, PortInfo, Rhythm, What,
+    };
 
     use super::*;
 
@@ -775,6 +1106,7 @@ mod tests {
             rack: None,
             save: None,
             log: kazoo_wall::protocol::LogHealth::default(),
+            probes: Vec::new(),
         }
     }
 
@@ -928,11 +1260,13 @@ mod tests {
                     name: "reset".to_string(),
                     signal: Signal::Gate,
                     about: "back to the start".to_string(),
+                    pitch: false,
                 }],
                 outputs: vec![PortInfo {
                     name: "out".to_string(),
                     signal: Signal::Gate,
                     about: "the ticks".to_string(),
+                    pitch: false,
                 }],
             }],
         };
@@ -1084,6 +1418,291 @@ mod tests {
              0.05, 1.5 onsets per second, pitch A2 (110 Hz)."
         );
         assert!(listen(&ListenResult { listen: None }).contains("not been heard yet"));
+    }
+
+    fn quiet(connected: bool) -> Measured {
+        Measured {
+            connected,
+            waiting: false,
+            last: 0.0,
+            low: 0.0,
+            high: 0.0,
+            mean: 0.0,
+            rms_db: -120.0,
+            peak_db: -120.0,
+            hz: None,
+            rhythm: Rhythm::None,
+            shape: None,
+            gate: GateMeasured::default(),
+            min: None,
+            max: None,
+            faults: 0,
+            faults_since_reset: 0,
+        }
+    }
+
+    fn probes() -> ProbeResult {
+        let ramp: Vec<[f64; 2]> = (0..96)
+            .map(|point| {
+                let value = f64::from(point) / 47.5 - 1.0;
+                [value, value]
+            })
+            .collect();
+        ProbeResult {
+            probes: vec![
+                Probe {
+                    module: "scope1".to_string(),
+                    kind: "scope".to_string(),
+                    age: 0.04,
+                    scope: Some(ScopeReading {
+                        mode: "trigger".to_string(),
+                        span: 0.02,
+                        zoom: 1.0,
+                        trigger: 0.0,
+                        triggered: true,
+                        points: 96,
+                        sweeping: None,
+                        a: ramp,
+                        b: Vec::new(),
+                        xy: Vec::new(),
+                        input_a: Measured {
+                            last: 0.5,
+                            low: -0.8,
+                            high: 0.8,
+                            rms_db: -3.01,
+                            peak_db: -1.94,
+                            hz: Some(220.0),
+                            rhythm: Rhythm::Steady,
+                            shape: Some("sine".to_string()),
+                            gate: GateMeasured {
+                                hz: Some(220.0),
+                                duty: Some(0.333),
+                                high: true,
+                                paused: false,
+                            },
+                            min: Some(-0.8),
+                            max: Some(0.8),
+                            ..quiet(true)
+                        },
+                        input_b: quiet(false),
+                        words: "a: 220 Hz sine from -0.800 to +0.800; b unplugged; triggered \
+                                on a rising through 0, 20 ms across"
+                            .to_string(),
+                    }),
+                    readout: None,
+                },
+                Probe {
+                    module: "readout1".to_string(),
+                    kind: "readout".to_string(),
+                    age: 0.1,
+                    scope: None,
+                    readout: Some(kazoo_wall::protocol::ReadoutReading {
+                        mode: "pitch".to_string(),
+                        auto: true,
+                        input: Measured {
+                            last: 0.7525,
+                            faults: 12,
+                            faults_since_reset: 12,
+                            ..quiet(true)
+                        },
+                        note: Some("A4".to_string()),
+                        cents: Some(3.0),
+                        pitch_hz: Some(440.764),
+                        lines: vec![
+                            "! 12 not numbers".to_string(),
+                            "A4 +3¢".to_string(),
+                            "441 Hz".to_string(),
+                        ],
+                    }),
+                },
+                Probe {
+                    module: "scope2".to_string(),
+                    kind: "scope".to_string(),
+                    age: 0.0,
+                    scope: None,
+                    readout: None,
+                },
+            ],
+            left_out: vec!["readout17".to_string()],
+            missing: Vec::new(),
+            dropped: 0,
+        }
+    }
+
+    #[test]
+    fn probes_read_as_numbers_a_sparkline_and_words() {
+        let text = probe(&probes());
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "scope1 (scope), measured 0.04 s ago:");
+        assert_eq!(
+            lines[1],
+            "  a: 220 Hz sine from -0.800 to +0.800; b unplugged; triggered on a rising through \
+             0, 20 ms across."
+        );
+        assert_eq!(
+            lines[2],
+            "  Screen: trigger mode, 0.02 s across in 96 points, zoom ×1 (it shows ±1), trigger \
+             at 0 (this sweep triggered)."
+        );
+        assert_eq!(
+            lines[3],
+            "  a: last 0.5, low -0.8, high 0.8, mean (DC) 0, RMS -3.01 dBFS, peak -1.94 dBFS; \
+             220 Hz (steady), sine; as a gate 220 Hz (13200/min), duty 33.3%, high now; since \
+             reset -0.8 to 0.8."
+        );
+        assert_eq!(lines[4], "  b: unplugged.");
+        let spark = lines[5]
+            .strip_prefix("  Trace a, left to right (▁ bottom to █ top of the screen): ")
+            .unwrap();
+        assert_eq!(spark.chars().count(), 48);
+        assert!(spark.starts_with('▁') && spark.ends_with('█'), "{spark}");
+        assert_eq!(lines[6], "readout1 (readout), measured 0.1 s ago:");
+        assert_eq!(
+            lines[7],
+            "  Shown as pitch (chosen by what is plugged in): ! 12 not numbers | A4 +3¢ | 441 Hz."
+        );
+        assert_eq!(
+            lines[8],
+            "  As pitch (1.0 per octave, 0 = C4): A4 +3 cents, 440.764 Hz."
+        );
+        assert!(
+            lines[9].contains(
+                "12 non-numbers in the last tenth of a second, 12 since its reset (a fault \
+                 upstream"
+            ),
+            "{}",
+            lines[9]
+        );
+        assert!(
+            lines[10].starts_with("scope2 (scope): no reading yet"),
+            "{}",
+            lines[10]
+        );
+        assert_eq!(
+            lines[11],
+            "Not listed (an answer for every one carries the first 16): readout17; ask for each \
+             with module."
+        );
+        assert!(
+            probe(&ProbeResult {
+                probes: Vec::new(),
+                left_out: Vec::new(),
+                missing: Vec::new(),
+                dropped: 0,
+            })
+            .starts_with("No scopes or readouts on the wall.")
+        );
+        // A sweep under way, a b just plugged, a paused wave, and ids
+        // another seat took away, all said.
+        let mut partial = probes();
+        if let Some(scope) = partial.probes[0].scope.as_mut() {
+            scope.sweeping = Some(30);
+            scope.input_b = Measured {
+                waiting: true,
+                ..quiet(true)
+            };
+            scope.input_a.rhythm = Rhythm::Paused;
+        }
+        partial.missing = vec!["scope9".to_string()];
+        let text = probe(&partial);
+        assert!(
+            text.contains("A sweep is under way: its first 30 of 96 points are drawn"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  b: just plugged in, not measured yet."),
+            "{text}"
+        );
+        assert!(text.contains("paused: it was cycling at 220 Hz"), "{text}");
+        assert!(
+            text.contains("Not on the wall (taken away), or not a scope or readout: scope9."),
+            "{text}"
+        );
+        // Captures the wall dropped are said, as what they mean.
+        let mut busy = probes();
+        busy.dropped = 7;
+        assert!(probe(&busy).contains(
+            "The wall has dropped 7 captures since it started, falling behind taking them in"
+        ));
+    }
+
+    #[test]
+    fn a_fast_wave_across_a_long_span_reads_as_a_band() {
+        // Each point spans the wave from -0.8 to 0.8: its middle is flat,
+        // so the highs and the lows are drawn instead.
+        let mut wide = probes();
+        if let Some(scope) = wide.probes[0].scope.as_mut() {
+            scope.a = vec![[-0.8, 0.8]; 96];
+        }
+        let text = probe(&wide);
+        assert!(
+            text.contains("  Trace a is a band (each point spans a swing"),
+            "{text}"
+        );
+        let highs = text
+            .lines()
+            .find_map(|line| line.strip_prefix("    highs "))
+            .unwrap();
+        let lows = text
+            .lines()
+            .find_map(|line| line.strip_prefix("    lows  "))
+            .unwrap();
+        assert_eq!(highs, "▇".repeat(48));
+        assert_eq!(lows, "▂".repeat(48));
+        assert!(banded(&[[-0.8, 0.8]], 1.0));
+        assert!(!banded(&[[0.1, 0.12]], 1.0));
+        assert!(banded(&[[0.1, 0.12]], 64.0), "a narrow band zoomed in");
+    }
+
+    #[test]
+    fn a_sparkline_spans_the_screen_and_survives_nonsense() {
+        assert_eq!(sparkline(&[], 1.0, Edge::Middle), "");
+        assert_eq!(
+            sparkline(&[[-1.0, -1.0], [0.0, 0.0], [1.0, 1.0]], 1.0, Edge::Middle),
+            "▁▅█"
+        );
+        // Zoomed in, a small wave fills the screen; beyond it, the edge.
+        assert_eq!(
+            sparkline(&[[-0.25, -0.25], [0.25, 0.25]], 4.0, Edge::Middle),
+            "▁█"
+        );
+        assert_eq!(
+            sparkline(&[[-9.0, -9.0], [9.0, 9.0]], 1.0, Edge::Middle),
+            "▁█"
+        );
+        assert_eq!(
+            sparkline(&[[f64::NAN, f64::NAN]], f64::NAN, Edge::Middle),
+            "▁"
+        );
+        assert_eq!(
+            sparkline(&[[0.0, 0.0]; 96], 1.0, Edge::Middle)
+                .chars()
+                .count(),
+            48
+        );
+        assert_eq!(
+            sparkline(&[[0.0, 0.0]; 7], 1.0, Edge::Middle)
+                .chars()
+                .count(),
+            7
+        );
+    }
+
+    #[test]
+    fn the_listing_points_at_the_probes() {
+        let mut wall = snapshot();
+        assert!(!look(&wall).contains("Probes"));
+        wall.probes = probes().probes;
+        let listing = look(&wall);
+        assert!(
+            listing.contains(
+                "Probes (wall_probe has their numbers): scope1 (scope): a: 220 Hz sine from \
+                 -0.800 to +0.800; b unplugged; triggered on a rising through 0, 20 ms across; \
+                 readout1 (readout): ! 12 not numbers, A4 +3¢, 441 Hz; scope2 (scope): no \
+                 reading yet."
+            ),
+            "{listing}"
+        );
     }
 
     fn save_info(name: &str, auto: bool, version: u32) -> kazoo_wall::protocol::SaveInfo {

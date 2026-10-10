@@ -63,7 +63,10 @@ impl Module {
                 .knobs
                 .iter()
                 .zip(&self.knobs)
-                .map(|(spec, value)| (spec.name.to_string(), widen(*value)))
+                // Targets are held to the knob's range as they are set, so
+                // always finite; held again here, so none could travel as a
+                // value outside it (`widen` sends a non-number as 0).
+                .map(|(spec, value)| (spec.name.to_string(), widen(spec.clamp(*value))))
                 .collect(),
         }
     }
@@ -484,7 +487,9 @@ impl Patch {
                 || format!("{}.?", cable.to_module),
                 |kind| cable.to_label(kind),
             ),
-            amount: widen(cable.amount),
+            // Amounts are held to -1..1 as cables are plugged, so always
+            // finite; held again here (`widen` sends a non-number as 0).
+            amount: widen(cable.amount.clamp(-1.0, 1.0)),
         }
     }
 
@@ -544,8 +549,10 @@ impl Patch {
         Ok(What::Turn {
             module: module.to_string(),
             knob: spec.knobs[index].name.to_string(),
-            from: widen(from),
-            to: widen(target),
+            // Both held to the knob's range (always finite: `target` was
+            // clamped above, `from` when it was set).
+            from: widen(spec.knobs[index].clamp(from)),
+            to: widen(spec.knobs[index].clamp(target)),
             glide_beats: glide,
         })
     }

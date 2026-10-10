@@ -9,8 +9,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use kazoo_wall::protocol::{
-    CatalogueResult, ChangeResult, ListenResult, LoadResult, LogPage, RecordResult, Request,
-    SaveResult, SavesResult, Snapshot, TempoResult,
+    CatalogueResult, ChangeResult, ListenResult, LoadResult, LogPage, ProbeResult, RecordResult,
+    Request, SaveResult, SavesResult, Snapshot, TempoResult,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -50,6 +50,9 @@ not a crash. Values are held to each knob's range, and the dangerous ones are ca
 that is already used replaces the cable there.
 - Pitch is 1.0 per octave with 0 = C4; gates are high above 0.5.
 - wall_listen says what the wall sounds like now, in numbers and words.
+- To measure a point in the patch, wall_add a scope (inputs a and b) or a readout (one input), \
+patch the signal into it (it passes it on, so it can sit inline), and wall_probe reads it: \
+frequency, levels, DC, a gate's rate and duty, a pitch CV as a note, and the waveform in words.
 - wall_record starts or stops recording what the wall plays to a WAV file.
 - wall_save keeps the wall as it is under a name; wall_saves lists the saves; wall_load puts \
 one back up while the wall plays (the wall as it was is saved first, and wall_undo of the load \
@@ -202,6 +205,17 @@ pub struct SaveArgs {
 pub struct LoadArgs {
     /// The save's name, as `wall_saves` lists it (any case).
     pub name: String,
+}
+
+/// `wall_probe`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeArgs {
+    /// A scope's or readout's id, as `wall_look` lists it, e.g. `scope1`.
+    /// Leave it out for every one on the wall (the first 16 in the wall's
+    /// order).
+    #[serde(default)]
+    pub module: Option<String>,
 }
 
 /// `wall_record`.
@@ -435,6 +449,21 @@ impl Seat {
     }
 
     #[tool(
+        name = "wall_probe",
+        description = "What a scope or readout module is measuring, as numbers: for each input its latest value, low and high, mean (DC offset), RMS and peak in dBFS, frequency (and whether it is steady) and shape (sine, triangle, saw, square, pulse), its rate and duty as a gate, and its lowest and highest (and any non-numbers counted) since its reset gate; a pitch CV as a note with cents and Hz; non-numbers arriving (a fault upstream) are counted, never measured. A scope also says how its screen is set (span, zoom, trigger, trigger/free/xy) and draws each trace as a sparkline, with the picture in words. Give module (e.g. scope1) for one, or leave it out for every one on the wall. Add one with wall_add (scope or readout) and patch the signal into it: it passes the signal on, so it can sit inline."
+    )]
+    async fn wall_probe(&self, Parameters(args): Parameters<ProbeArgs>) -> CallToolResult {
+        self.read::<ProbeResult>(
+            Request::Probe {
+                module: args.module,
+                modules: Vec::new(),
+            },
+            |result| Ok(render::probe(result)),
+        )
+        .await
+    }
+
+    #[tool(
         name = "wall_speak",
         description = "Give a speak module words to say, rendered with macOS `say` (this can take a few seconds; the answer comes when they are ready). The module plays them on its gate input (once, looped or held, by its mode knob) out of its out jack; patch a clock or a gate into it, and its out into an out module or a vocoder's modulator. The words stay private: other seats hear only that the module was given words."
     )]
@@ -591,7 +620,7 @@ mod tests {
     use super::*;
 
     /// Every tool, in the router's order.
-    const TOOLS: [&str; 16] = [
+    const TOOLS: [&str; 17] = [
         "wall_add",
         "wall_catalogue",
         "wall_listen",
@@ -599,6 +628,7 @@ mod tests {
         "wall_log",
         "wall_look",
         "wall_patch",
+        "wall_probe",
         "wall_record",
         "wall_remove",
         "wall_save",
@@ -667,6 +697,11 @@ mod tests {
             serde_json::from_str::<SaveArgs>(r#"{"name":"jam","overwrite":true}"#).is_err(),
             "overwrite is the console's"
         );
+        let probe: ProbeArgs = serde_json::from_str("{}").unwrap();
+        assert_eq!(probe.module, None);
+        let probe: ProbeArgs = serde_json::from_str(r#"{"module":"scope1"}"#).unwrap();
+        assert_eq!(probe.module.as_deref(), Some("scope1"));
+        assert!(serde_json::from_str::<ProbeArgs>(r#"{"modules":["scope1"]}"#).is_err());
         let save: SaveArgs = serde_json::from_str(r#"{"name":"jam"}"#).unwrap();
         assert_eq!(save.name, "jam");
         assert!(

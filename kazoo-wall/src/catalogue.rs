@@ -63,6 +63,10 @@ impl Kind {
     pub const MIX: Self = Self(11);
     /// Output to the master bus.
     pub const OUT: Self = Self(12);
+    /// Oscilloscope.
+    pub const SCOPE: Self = Self(13);
+    /// Numerical readout.
+    pub const READOUT: Self = Self(14);
 
     /// The kind's catalogue entry.
     #[must_use]
@@ -357,7 +361,7 @@ pub fn group(family: &str, kind: &str, audio_in: bool, audio_out: bool, outputs:
             "lfo" | "env" | "clock" | "seq" | "sh" | "slew" | "quant" => return 1,
             "vcf" | "vca" => return 2,
             "delay" | "reverb" => return 3,
-            "mix" | "out" => return 4,
+            "mix" | "out" | "scope" | "readout" => return 4,
             _ => {}
         }
     }
@@ -378,6 +382,21 @@ pub struct PortSpec {
     pub signal: Signal,
     /// What it is for, in a few words.
     pub about: &'static str,
+    /// Whether it carries pitch (a CV at 1.0 per octave, 0 = C4), so a
+    /// readout on `auto` shows it as a note. Any port may say so (see
+    /// [`PortSpec::pitched`]); every other CV is shown as a plain CV.
+    pub pitch: bool,
+}
+
+impl PortSpec {
+    /// The same port, carrying pitch.
+    #[must_use]
+    pub const fn pitched(self) -> Self {
+        Self {
+            pitch: true,
+            ..self
+        }
+    }
 }
 
 /// An input a cable can plug into: a listed input or a knob's jack.
@@ -750,6 +769,14 @@ const LFO_SHAPES: [&str; 6] = [
 const NOISE_COLOURS: [&str; 3] = ["white", "pink", "brown"];
 const FILTER_MODES: [&str; 3] = ["low-pass", "band-pass", "high-pass"];
 
+/// The scope's modes: each sweep waits for input a to rise through the
+/// trigger level; the trace rolls freely; or input a against input b.
+pub const SCOPE_MODES: [&str; 3] = ["trigger", "free", "xy"];
+
+/// The readout's modes: chosen by what is plugged in, or shown as pitch,
+/// as a plain CV, as a gate, or as audio.
+pub const READOUT_MODES: [&str; 5] = ["auto", "pitch", "cv", "gate", "audio"];
+
 /// The beats a sync knob stands for: `None` when free-running (0).
 #[must_use]
 pub fn sync_beats(table: &[f64], knob: f32) -> Option<f64> {
@@ -769,6 +796,7 @@ const fn audio(name: &'static str, about: &'static str) -> PortSpec {
         name,
         signal: Signal::Audio,
         about,
+        pitch: false,
     }
 }
 
@@ -777,6 +805,7 @@ const fn gate(name: &'static str, about: &'static str) -> PortSpec {
         name,
         signal: Signal::Gate,
         about,
+        pitch: false,
     }
 }
 
@@ -785,6 +814,7 @@ const fn cv(name: &'static str, about: &'static str) -> PortSpec {
         name,
         signal: Signal::Cv,
         about,
+        pitch: false,
     }
 }
 
@@ -814,6 +844,7 @@ fn native_kinds() -> Vec<KindSpec> {
     let mut kinds = sound_kinds();
     kinds.extend(shaping_kinds());
     kinds.extend(control_kinds());
+    kinds.extend(measuring_kinds());
     kinds
 }
 
@@ -944,7 +975,7 @@ fn shaping_kinds() -> Vec<KindSpec> {
                 gate("reset", "the next clock plays step 1"),
             ],
             vec![
-                cv("pitch", "the step's pitch, 1.0 per octave"),
+                cv("pitch", "the step's pitch, 1.0 per octave").pitched(),
                 gate("gate", "gate for each step that plays"),
             ],
             dsp::seq,
@@ -975,7 +1006,7 @@ fn control_kinds() -> Vec<KindSpec> {
                 KnobSpec::stepped("root", 0.0, 11.0, 0.0, Unit::None).named(&NOTE_NAMES),
             ],
             vec![cv("in", "pitch, 1.0 per octave")],
-            vec![cv("out", "quantised pitch")],
+            vec![cv("out", "quantised pitch").pitched()],
             dsp::quant,
         ),
         native(
@@ -1020,6 +1051,50 @@ fn control_kinds() -> Vec<KindSpec> {
             ],
             Vec::new(),
             dsp::out,
+        ),
+    ]
+}
+
+/// `scope`, `readout`: they measure what is plugged into them, and pass
+/// it straight through.
+fn measuring_kinds() -> Vec<KindSpec> {
+    use crate::dsp::native as dsp;
+    vec![
+        native(
+            "scope",
+            "oscilloscope: draws a and b across time on its face (triggered on a, rolling, or a \
+             against b) and passes both through",
+            vec![
+                KnobSpec::log("time", 0.001, 10.0, 0.02, Unit::Seconds),
+                KnobSpec::log("zoom", 0.125, 64.0, 1.0, Unit::Other("×")),
+                KnobSpec::linear("trigger", -1.0, 1.0, 0.0, Unit::None),
+                KnobSpec::stepped("mode", 0.0, 2.0, 0.0, Unit::None).named(&SCOPE_MODES),
+            ],
+            vec![
+                audio("a", "any signal; the trigger watches it"),
+                audio("b", "any signal"),
+            ],
+            vec![
+                audio("a", "input a, passed through"),
+                audio("b", "input b, passed through"),
+            ],
+            dsp::scope,
+        ),
+        native(
+            "readout",
+            "readout: shows its input as numbers (a note, a CV's value and rate, a gate's rate \
+             and duty, or a level and frequency) and passes it through",
+            vec![KnobSpec::stepped("mode", 0.0, 4.0, 0.0, Unit::None).named(&READOUT_MODES)],
+            vec![
+                cv("in", "any signal to measure"),
+                gate(
+                    "reset",
+                    "clears the lowest and highest seen, and the non-numbers counted, on a \
+                     rising gate",
+                ),
+            ],
+            vec![cv("out", "the input, passed through")],
+            dsp::readout,
         ),
     ]
 }
@@ -1069,6 +1144,8 @@ mod tests {
             (Kind::SLEW, "slew"),
             (Kind::MIX, "mix"),
             (Kind::OUT, "out"),
+            (Kind::SCOPE, "scope"),
+            (Kind::READOUT, "readout"),
         ] {
             assert_eq!(kind.name(), name);
             assert_eq!(kind.spec().family, "synth");
@@ -1135,6 +1212,68 @@ mod tests {
         {
             assert!(why.contains(word), "{why}");
         }
+    }
+
+    #[test]
+    fn every_kind_constant_is_its_place_in_the_registry() {
+        for kind in [
+            Kind::VCO,
+            Kind::LFO,
+            Kind::NOISE,
+            Kind::VCF,
+            Kind::VCA,
+            Kind::ENV,
+            Kind::CLOCK,
+            Kind::SEQ,
+            Kind::SH,
+            Kind::QUANT,
+            Kind::SLEW,
+            Kind::MIX,
+            Kind::OUT,
+            Kind::SCOPE,
+            Kind::READOUT,
+        ] {
+            assert_eq!(kind.spec().kind, kind, "{kind:?}");
+            assert_eq!(Kind::from_name(kind.name()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn only_ports_that_carry_pitch_say_so() {
+        let pitched: Vec<String> = Kind::all()
+            .flat_map(|kind| {
+                let spec = kind.spec();
+                spec.outputs
+                    .iter()
+                    .chain(&spec.inputs)
+                    .filter(|port| port.pitch)
+                    .map(move |port| format!("{}.{}", spec.name, port.name))
+            })
+            .collect();
+        assert_eq!(pitched, ["seq.pitch", "quant.out"]);
+        assert!(cv("x", "y").pitched().pitch && !cv("x", "y").pitch);
+    }
+
+    #[test]
+    fn the_measuring_kinds_pass_their_signals_through_and_sit_with_the_utilities() {
+        for kind in [Kind::SCOPE, Kind::READOUT] {
+            let spec = kind.spec();
+            assert_eq!(GROUPS[spec.group()], "utilities", "{kind}");
+            assert_eq!(spec.family, "synth");
+        }
+        let scope = Kind::SCOPE.spec();
+        assert_eq!(
+            scope.jack_names(),
+            ["a", "b", "time", "zoom", "trigger", "mode"]
+        );
+        assert_eq!(scope.output_index("a"), Some(0));
+        assert_eq!(scope.output_index("b"), Some(1));
+        assert_eq!(knob(Kind::SCOPE, "mode").labels, SCOPE_MODES);
+        assert!((knob(Kind::SCOPE, "zoom").clamp(1_000.0) - 64.0).abs() < f32::EPSILON);
+        let readout = Kind::READOUT.spec();
+        assert_eq!(readout.jack_names(), ["in", "reset", "mode"]);
+        assert_eq!(readout.output_index("out"), Some(0));
+        assert_eq!(knob(Kind::READOUT, "mode").labels, READOUT_MODES);
     }
 
     #[test]

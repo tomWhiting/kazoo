@@ -169,6 +169,16 @@ const HELP: &[(&str, &str)] = &[
     ("● ○", "audio jacks, filled when a cable is in"),
     ("■ □", "gate jacks"),
     ("◆ ◇", "CV jacks; every knob is one too"),
+    (
+        "scope",
+        "a live trace on its screen (rack view): a green, b amber; under it trig'd, auto, \
+         roll or xy, then the span and zoom",
+    ),
+    (
+        "readout",
+        "numbers for what is plugged in (rack view): a note, a CV, a gate's rate and duty, or \
+         levels; a red ! when it gets non-numbers (its reset gate clears it)",
+    ),
 ];
 
 /// The key list.
