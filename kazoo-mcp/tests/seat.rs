@@ -386,6 +386,36 @@ async fn looking_and_the_catalogue(client: &Client) {
     let vcf = works(client, "wall_catalogue", serde_json::json!({"kind": "vcf"})).await;
     assert!(vcf.contains("knob cutoff: 20..18000 Hz"), "{vcf}");
     assert!(!vcf.contains("\nlfo ("), "{vcf}");
+    // The decisions and routers are kinds like any other.
+    for kind in [
+        "compare", "logic", "branch", "switch", "select", "divide", "math",
+    ] {
+        assert!(catalogue.contains(&format!("\n{kind} (synth): ")), "{kind}");
+    }
+    let branch = works(
+        client,
+        "wall_catalogue",
+        serde_json::json!({"kind": "branch"}),
+    )
+    .await;
+    assert!(
+        branch.contains("positions: 0=gate, 1=latch, 2=toggle"),
+        "{branch}"
+    );
+    assert!(branch.contains("  out b (gate): "), "{branch}");
+    let select = works(
+        client,
+        "wall_catalogue",
+        serde_json::json!({"kind": "select"}),
+    )
+    .await;
+    assert!(
+        select.contains(
+            "knob select: 0..3, default 0, stepped, \
+             jack moves it through every position as cv goes 0 to 1"
+        ),
+        "{select}"
+    );
     let (failed, why) = call(client, "wall_catalogue", serde_json::json!({"kind": "vcx"})).await;
     assert!(failed && why.contains("kinds: "), "{why}");
 }

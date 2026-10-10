@@ -9,18 +9,25 @@
 //! turns NaN or infinite input into silence; the engine still checks every
 //! output and resets a module that produces a non-finite sample.
 
+mod branch;
 mod clock;
+mod compare;
+mod divide;
 pub mod effect;
 mod env;
 mod lfo;
+mod logic;
+mod math;
 mod mix;
 mod noise;
 mod out;
 pub mod oversample;
 mod quant;
+mod select;
 mod seq;
 mod sh;
 mod slew;
+mod switch;
 mod vca;
 mod vcf;
 mod vco;
@@ -211,7 +218,10 @@ pub fn build(kind: Kind, sample_rate: f32) -> Box<dyn Module> {
 
 /// Builders for the wall's own modules, as the catalogue names them.
 pub(crate) mod native {
-    use super::{Module, clock, env, lfo, mix, noise, out, quant, seq, sh, slew, vca, vcf, vco};
+    use super::{
+        Module, branch, clock, compare, divide, env, lfo, logic, math, mix, noise, out, quant,
+        select, seq, sh, slew, switch, vca, vcf, vco,
+    };
 
     pub fn vco(sample_rate: f32) -> Box<dyn Module> {
         Box::new(vco::Vco::new(sample_rate))
@@ -263,6 +273,34 @@ pub(crate) mod native {
 
     pub fn out(_sample_rate: f32) -> Box<dyn Module> {
         Box::new(out::Out::new())
+    }
+
+    pub fn compare(_sample_rate: f32) -> Box<dyn Module> {
+        Box::new(compare::Compare::new())
+    }
+
+    pub fn logic(_sample_rate: f32) -> Box<dyn Module> {
+        Box::new(logic::Logic::new())
+    }
+
+    pub fn branch(_sample_rate: f32) -> Box<dyn Module> {
+        Box::new(branch::Branch::new())
+    }
+
+    pub fn switch(_sample_rate: f32) -> Box<dyn Module> {
+        Box::new(switch::Switch::new())
+    }
+
+    pub fn select(_sample_rate: f32) -> Box<dyn Module> {
+        Box::new(select::Select::new())
+    }
+
+    pub fn divide(_sample_rate: f32) -> Box<dyn Module> {
+        Box::new(divide::Divide::new())
+    }
+
+    pub fn math(_sample_rate: f32) -> Box<dyn Module> {
+        Box::new(math::Math::new())
     }
 }
 
@@ -501,6 +539,34 @@ pub(crate) mod testing {
                 frame += SUB_BLOCK;
             }
             out.truncate(frames);
+            out
+        }
+
+        /// Render `frames` frames (whole sub-blocks) of every output, with
+        /// `input` fed from `feed` frame by frame.
+        pub fn render_all(
+            &mut self,
+            frames: usize,
+            input: &str,
+            mut feed: impl FnMut(usize) -> f32,
+        ) -> [Vec<f32>; MAX_OUTPUTS] {
+            let mut out: [Vec<f32>; MAX_OUTPUTS] =
+                std::array::from_fn(|_| Vec::with_capacity(frames));
+            let mut frame = 0;
+            while frame < frames {
+                let buffer = self.jack(input);
+                for (sample, target) in buffer.iter_mut().enumerate() {
+                    *target = feed(frame + sample);
+                }
+                self.step();
+                for (port, samples) in out.iter_mut().zip(&self.outputs) {
+                    port.extend_from_slice(samples);
+                }
+                frame += SUB_BLOCK;
+            }
+            for port in &mut out {
+                port.truncate(frames);
+            }
             out
         }
     }

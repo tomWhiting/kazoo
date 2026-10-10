@@ -377,6 +377,8 @@ fn kind_block(out: &mut String, kind: &KindInfo) {
             JackLaw::Octaves(octaves) => {
                 format!("jack moves it ±{} oct per unit cv", f64::from(octaves))
             }
+            JackLaw::Span => "jack moves it through every position as cv goes 0 to 1".to_string(),
+            JackLaw::Unknown => "jack law unknown to this build".to_string(),
         };
         line(
             out,
@@ -950,6 +952,13 @@ mod tests {
             catalogue(&listing, Some("vcx")).unwrap_err(),
             "there is no module kind or family 'vcx'; kinds: clock; families: time"
         );
+        // A law from a newer wall is said to be unknown, not left out.
+        let mut newer = listing;
+        newer.kinds[0].knobs[0].jack = JackLaw::Unknown;
+        let text = catalogue(&newer, None).unwrap();
+        assert!(text.contains(
+            "  knob division: 0..2 division, default 1, stepped, jack law unknown to this build\n"
+        ));
     }
 
     #[test]
