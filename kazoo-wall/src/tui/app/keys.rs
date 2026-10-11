@@ -702,8 +702,8 @@ impl App {
             KeyCode::Down => step_cursor(index, count, true),
             KeyCode::PageUp => index.saturating_sub(PICKER_PAGE),
             KeyCode::PageDown => (index + PICKER_PAGE).min(count.saturating_sub(1)),
-            KeyCode::Tab | KeyCode::BackTab => {
-                tab = step_group(tab, key.code == KeyCode::Tab);
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                tab = step_group(tab, matches!(key.code, KeyCode::Tab | KeyCode::Right));
                 0
             }
             KeyCode::Backspace => {

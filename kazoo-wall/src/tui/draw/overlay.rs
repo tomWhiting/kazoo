@@ -57,7 +57,7 @@ const HELP: &[(&str, &str)] = &[
     ),
     (
         "a",
-        "add a module: Tab / Shift-Tab change group, ↑↓ choose (what it is shows beside), \
+        "add a module: ←→ or Tab / Shift-Tab change group, ↑↓ choose (what it is shows beside), \
          type to search every group, Ctrl-N names it first, < > make it smaller or bigger \
          (remembered); in the rack view it goes after the selected one",
     ),
@@ -271,13 +271,13 @@ pub fn picker(
         ])
     } else {
         Line::from(Span::styled(
-            " type to find a kind · Tab ⇧Tab change category█",
+            " type to find a kind · ←→ or Tab change category█",
             plain(TEXT_DIM, PANEL),
         ))
     };
     Paragraph::new(find).render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
     Paragraph::new(Line::from(Span::styled(
-        " Tab ⇧Tab category · ↑↓ choose · ⏎ adds it · Ctrl-N names it first · Esc clears, then cancels",
+        " ←→ Tab category · ↑↓ choose · ⏎ adds it · Ctrl-N names it first · Esc clears, then cancels",
         plain(TEXT_DIM, PANEL),
     )))
     .render(Rect::new(inner.x, inner.bottom() - 1, inner.width, 1), buf);
