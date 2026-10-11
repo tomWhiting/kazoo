@@ -97,6 +97,22 @@ pub fn run() -> ExitCode {
         }
     };
     let mut app = App::new(SEAT, socket.display().to_string());
+    // A settings file that cannot be read is said in the log, and the
+    // console starts with the defaults (and does not write over it unless
+    // a setting changes).
+    let (prefs_file, refused) = match app::prefs_path() {
+        Ok(file) => {
+            let refused = match app::load_prefs(&file) {
+                Ok(prefs) => {
+                    app.apply_prefs(prefs);
+                    None
+                }
+                Err(why) => Some(why),
+            };
+            (Some(file), refused)
+        }
+        Err(why) => (None, Some(why)),
+    };
     let mut guard = match TerminalGuard::enter() {
         Ok(guard) => guard,
         Err(err) => {
@@ -107,9 +123,12 @@ pub fn run() -> ExitCode {
     if let Some(why) = guard.mouse_refused() {
         app.mouse_refused(why, Instant::now());
     }
+    if let Some(why) = refused {
+        app.prefs_trouble(why, Instant::now());
+    }
     let result = guard.terminal_mut().map_or_else(
         || Err("the terminal was given back before the console started".to_string()),
-        |terminal| console(terminal, &mut app, &connection),
+        |terminal| console(terminal, &mut app, &connection, prefs_file.as_deref()),
     );
     let restored = guard.restore();
     drop(connection);
@@ -154,8 +173,19 @@ fn console(
     terminal: &mut DefaultTerminal,
     app: &mut App,
     connection: &Connection,
+    prefs_file: Option<&Path>,
 ) -> Result<Exit, String> {
+    let mut remembered = app.prefs();
     loop {
+        if let Some(file) = prefs_file {
+            let prefs = app.prefs();
+            if prefs != remembered {
+                remembered = prefs;
+                if let Err(why) = app::save_prefs(file, prefs) {
+                    app.prefs_trouble(why, Instant::now());
+                }
+            }
+        }
         let now = Instant::now();
         while let Some(reply) = connection.try_reply()? {
             app.on_reply(reply, now);

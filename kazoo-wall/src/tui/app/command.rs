@@ -24,7 +24,7 @@ use super::{App, MAX_ENTRY, Mode, Tone, TurnKind, View, jack_names};
 const MAX_LINE: usize = 4 * MAX_ENTRY;
 
 /// Every command: its name, what it takes and what it does.
-pub const COMMANDS: [(&str, &str, &str); 8] = [
+pub const COMMANDS: [(&str, &str, &str); 9] = [
     (
         "add",
         "[kind] [name]",
@@ -53,6 +53,7 @@ pub const COMMANDS: [(&str, &str, &str); 8] = [
         "load a save (the wall as it is is saved first; z undoes it)",
     ),
     ("undo", "", "undo the latest change"),
+    ("keys", "", "every key and command"),
 ];
 
 /// The command line, as typed.
@@ -337,7 +338,8 @@ impl App {
                     return std::mem::replace(&mut self.mode, Mode::Normal);
                 }
                 return match self.run_command(line.text.trim(), now) {
-                    Ok(()) => Mode::Normal,
+                    // A command may open another mode (`keys` opens the help).
+                    Ok(()) => std::mem::replace(&mut self.mode, Mode::Normal),
                     Err(why) => {
                         line.cycle = None;
                         line.error = Some(why);
@@ -479,6 +481,7 @@ impl App {
                     name: rest.to_string(),
                 }));
             }
+            "keys" => self.mode = Mode::Help { scroll: 0 },
             _ => self.undo_latest(now),
         }
         Ok(())

@@ -744,6 +744,11 @@ impl App {
                     place,
                 };
             }
+            // No kind's name has these, so they size the picker.
+            KeyCode::Char(c @ ('<' | '>')) => {
+                self.resize_picker(c == '>');
+                index
+            }
             KeyCode::Char(c)
                 if !c.is_control() && !control && filter.chars().count() < MAX_ENTRY =>
             {

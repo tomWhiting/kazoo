@@ -23,8 +23,11 @@ mod flood;
 mod keys;
 mod mouse;
 mod moves;
+mod prefs;
 mod rack;
 mod saves;
+
+pub use prefs::{load as load_prefs, path as prefs_path, save as save_prefs};
 
 pub use command::{COMMAND_KEYS, CommandLine, usage};
 #[cfg(test)]
@@ -408,6 +411,8 @@ pub struct App {
     exit: Option<Exit>,
     view: View,
     log_hidden: bool,
+    /// The picker's size, a percentage of the screen.
+    picker_percent: u8,
     flood: flood::Flood,
     drag_sends: Vec<(String, String, Instant)>,
     saves: SavesList,
@@ -452,6 +457,7 @@ impl App {
             exit: None,
             view: View::List,
             log_hidden: false,
+            picker_percent: prefs::PICKER_MAX,
             flood: flood::Flood::new(),
             drag_sends: Vec::new(),
             saves: SavesList::default(),

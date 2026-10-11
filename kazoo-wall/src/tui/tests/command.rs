@@ -4,7 +4,7 @@ use crossterm::event::KeyCode;
 
 use kazoo_wall::protocol::Request;
 
-use super::super::app::{App, Mode};
+use super::super::app::{App, Mode, load_prefs, save_prefs};
 use super::super::worker::Job;
 use super::render::{render, text};
 use super::{connected, press, type_text};
@@ -272,4 +272,55 @@ fn a_bare_add_opens_the_picker() {
     press(&mut app, KeyCode::Enter);
     assert!(matches!(app.mode(), Mode::Add { .. }), "{:?}", app.mode());
     assert!(calls(&mut app).is_empty());
+}
+
+#[test]
+fn keys_opens_the_help() {
+    let mut app = connected();
+    open(&mut app);
+    type_text(&mut app, "keys");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.mode(), Mode::Help { scroll: 0 }),
+        "{:?}",
+        app.mode()
+    );
+    assert!(calls(&mut app).is_empty());
+}
+
+#[test]
+fn the_picker_resizes_within_its_bounds_and_is_remembered() {
+    let mut app = connected();
+    press(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.picker_percent(), 100);
+    press(&mut app, KeyCode::Char('>'));
+    assert_eq!(app.picker_percent(), 100);
+    for _ in 0..10 {
+        press(&mut app, KeyCode::Char('<'));
+    }
+    assert_eq!(app.picker_percent(), 40);
+    assert!(matches!(app.mode(), Mode::Add { filter, .. } if filter.is_empty()));
+    press(&mut app, KeyCode::Char('>'));
+    assert_eq!(app.prefs().picker_percent, 50);
+}
+
+#[test]
+fn settings_survive_a_round_trip_and_a_missing_file_is_the_defaults() {
+    let dir = tempfile::tempdir().expect("a folder");
+    let file = dir.path().join("console.json");
+    assert_eq!(
+        load_prefs(&file),
+        Ok(App::new("Tom", String::new()).prefs())
+    );
+    let mut app = connected();
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('c'));
+    let prefs = app.prefs();
+    assert!(prefs.rack);
+    save_prefs(&file, prefs).expect("saved");
+    let mut fresh = App::new("Tom", String::new());
+    fresh.apply_prefs(load_prefs(&file).expect("loaded"));
+    assert_eq!(fresh.prefs(), prefs);
+    std::fs::write(&file, "not json").expect("written");
+    assert!(load_prefs(&file).is_err());
 }

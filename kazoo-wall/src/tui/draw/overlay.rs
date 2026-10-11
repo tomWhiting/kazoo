@@ -58,12 +58,12 @@ const HELP: &[(&str, &str)] = &[
     (
         "a",
         "add a module: Tab / Shift-Tab change group, ↑↓ choose (what it is shows beside), \
-         type to search every group, Ctrl-N names it first; in the rack view it goes after \
-         the selected one",
+         type to search every group, Ctrl-N names it first, < > make it smaller or bigger \
+         (remembered); in the rack view it goes after the selected one",
     ),
     (
         ":",
-        "the command line: add, remove, patch, unplug, turn, save, load, undo; Tab completes \
+        "the command line: add, remove, patch, unplug, turn, save, load, undo, keys; Tab completes \
          kinds, modules, jacks, knobs, positions and saves, ↑↓ choose, ⏎ runs, Esc cancels",
     ),
     ("x", "remove the module and its cables (asks first)"),
@@ -103,7 +103,7 @@ const HELP: &[(&str, &str)] = &[
     ("", "anywhere"),
     (
         "v",
-        "switch between the list and the rack view (kept until you quit)",
+        "switch between the list and the rack view (remembered, like c, f and the picker's size)",
     ),
     (
         "Tab / Shift-Tab",
@@ -127,7 +127,10 @@ const HELP: &[(&str, &str)] = &[
         "r",
         "record what the wall plays to ~/Music/kazoo-wall, or stop (even while silent)",
     ),
-    ("?", "this list (↑↓ scroll it, any other key closes it)"),
+    (
+        "? / :keys",
+        "this list (↑↓ scroll it, any other key closes it)",
+    ),
     ("q / Ctrl-C", "leave the console; the wall keeps playing"),
     ("Q", "stop the wall for everyone (asks first)"),
     ("", "the mouse, in the rack view"),
@@ -243,7 +246,9 @@ pub fn picker(
         || "add a module".to_string(),
         |place| format!("add a module {}", app.place_words(place)),
     );
-    let rect = popup(buf, area, area.width, area.height);
+    let percent = u32::from(app.picker_percent());
+    let scaled = |full: u16| u16::try_from(u32::from(full) * percent / 100).unwrap_or(full);
+    let rect = popup(buf, area, scaled(area.width), scaled(area.height));
     let block = frame(&title, BRASS);
     let inner = block.inner(rect);
     block.render(rect, buf);
