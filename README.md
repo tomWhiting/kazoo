@@ -14,6 +14,19 @@ cargo build --workspace
 cargo run -p kazoo-tui --release
 ```
 
+## Modal bell instrument
+
+`kazoo-glass` is an eight-voice modal synthesizer for tuned glass, bells and metallic keys.
+Play from the keyboard or a `kazoo-play` phrase; it joins `kazoo-mix` automatically.
+
+```sh
+cargo run -p kazoo-glass --release
+cargo run -p kazoo-glass -- --demo /tmp/kazoo-glass.wav
+```
+
+Six presets and seven editable sound controls are on the front panel.
+See [the Glass instrument guide](studio/kazoo-glass.md) for keys and synthesis details.
+
 ## Architecture
 
 Two-crate Rust workspace:

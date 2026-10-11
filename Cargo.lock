@@ -1333,6 +1333,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kazoo-glass"
+version = "0.1.0"
+dependencies = [
+ "assert_no_alloc",
+ "color-eyre",
+ "cpal",
+ "crossbeam-channel",
+ "crossterm",
+ "hound",
+ "kazoo-core",
+ "ratatui",
+]
+
+[[package]]
 name = "kazoo-juno"
 version = "0.1.0"
 dependencies = [
