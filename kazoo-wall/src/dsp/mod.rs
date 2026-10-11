@@ -134,6 +134,10 @@ pub struct Io<'a> {
     pub inputs: &'a [Block; MAX_INPUTS],
     /// Which inputs have a cable in.
     pub connected: [bool; MAX_INPUTS],
+    /// Which outputs feed a cable. An output nothing reads may be left
+    /// unwritten (an effect skips its wet signal when neither wet output is
+    /// patched); whatever is in it then is never heard.
+    pub fed: [bool; MAX_OUTPUTS],
     /// Output samples to write, in catalogue order. `out` modules write the
     /// left and right master feed to the first two.
     pub outputs: &'a mut [Block; MAX_OUTPUTS],
@@ -462,6 +466,9 @@ pub(crate) mod testing {
         pub knob_cv: [Block; MAX_KNOBS],
         pub knob_patched: [bool; MAX_KNOBS],
         pub sweeps: [Sweep; MAX_KNOBS],
+        /// Which outputs count as patched: all of them unless a test says
+        /// otherwise.
+        pub fed: [bool; MAX_OUTPUTS],
         pub outputs: [Block; MAX_OUTPUTS],
         pub bpm: f64,
         pub beat: f64,
@@ -488,6 +495,7 @@ pub(crate) mod testing {
                 knob_cv: [[0.0; SUB_BLOCK]; MAX_KNOBS],
                 knob_patched: [false; MAX_KNOBS],
                 sweeps: [Sweep::REST; MAX_KNOBS],
+                fed: [true; MAX_OUTPUTS],
                 outputs: [[0.0; SUB_BLOCK]; MAX_OUTPUTS],
                 bpm: 120.0,
                 beat: 0.0,
@@ -537,6 +545,7 @@ pub(crate) mod testing {
                     knob_patched: self.knob_patched,
                     inputs: &self.inputs,
                     connected: self.connected,
+                    fed: self.fed,
                     outputs: &mut self.outputs,
                 },
             );

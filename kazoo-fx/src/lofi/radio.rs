@@ -38,7 +38,7 @@ use std::f32::consts::TAU;
 
 use super::parts::{self, Biquad, Butterworth, CONTROL, Decibels, Drift, Hiss, Oversampler2};
 use crate::dsp::{DelayLine, Noise, Smoothed};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const MODEL: usize = 0;
 const TUNE: usize = 1;
@@ -685,8 +685,8 @@ impl Radio {
         self.megaphone.control(&self.controls);
     }
 
-    /// One stereo sample.
-    fn tick(&mut self, left: f32, right: f32) -> (f32, f32) {
+    /// One stereo sample: the mixed frame, then the wet frame alone.
+    fn tick(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
         if self.until_control == 0 {
             self.control();
             self.until_control = CONTROL;
@@ -722,7 +722,7 @@ impl Radio {
             line.push(input);
             *sample = parts::lerp(line.read(latency.max(1.0)), wet, mix) * output;
         }
-        out.into()
+        [out, [wet * output; 2]]
     }
 }
 
@@ -792,7 +792,21 @@ impl Effect for Radio {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        parts::run_block(input, output, |left, right| self.tick(left, right));
+        parts::run_block(input, output, WetOut::none(), |left, right| {
+            self.tick(left, right)
+        });
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        parts::run_block(input, output, WetOut::to(wet), |left, right| {
+            self.tick(left, right)
+        });
     }
 }
 

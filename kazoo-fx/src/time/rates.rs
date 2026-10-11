@@ -36,6 +36,8 @@ fn still(kind: &EffectKind, rate: f32) -> Box<dyn Effect> {
             | "reverse" | "duck" => 0.0,
             "spread" if kind.id == "granular" => 0.0,
             "mix" => 1.0,
+            // The pitch shifter held at no shift is a plain delay.
+            "shift" | "formant" if kind.id == "pitch" => 0.0,
             "shift" => SHIFT_HZ,
             _ => continue,
         };
@@ -237,7 +239,7 @@ macro_rules! across_rates {
 }
 
 across_rates!(
-    tape, bbd, digital, chorus, flanger, phaser, trem, shift, granular
+    tape, bbd, digital, chorus, flanger, phaser, trem, shift, granular, pitch
 );
 
 /// Set the parameter called `name`, if `kind` has one.

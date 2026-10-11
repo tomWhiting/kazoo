@@ -40,7 +40,7 @@ use super::parts::{
     self, Biquad, Butterworth, CONTROL, Decibels, Hiss, Oversampler2, Partial, Wobble,
 };
 use crate::dsp::{DelayLine, Noise, OnePole, Smoothed};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const RPM: usize = 0;
 const WARP: usize = 1;
@@ -450,8 +450,8 @@ impl Vinyl {
         }
     }
 
-    /// One stereo sample.
-    fn tick(&mut self, left: f32, right: f32) -> (f32, f32) {
+    /// One stereo sample: the mixed frame, then the wet frame alone.
+    fn tick(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
         if self.until_control == 0 {
             self.control();
             self.until_control = CONTROL;
@@ -499,8 +499,15 @@ impl Vinyl {
         let side = self.side_cut.process(0.5 * (played[0] - played[1])) * width;
         let cut = [mid + side, mid - side];
         let dry_at = self.base + Oversampler2::LATENCY;
-        let mut out = [0.0f32; 2];
-        for (c, ((groove, wet), x)) in self.grooves.iter_mut().zip(&mut out).zip(cut).enumerate() {
+        let mut out = [[0.0f32; 2]; 2];
+        let [mixed, alone] = &mut out;
+        for (c, ((groove, (wet, heard)), x)) in self
+            .grooves
+            .iter_mut()
+            .zip(mixed.iter_mut().zip(alone.iter_mut()))
+            .zip(cut)
+            .enumerate()
+        {
             let traced = groove.trace(x, distortion) * platter;
             let tick = groove.tick.process(surface.ticks[c]);
             let pop = groove.pop.process(surface.pops[c]);
@@ -510,8 +517,9 @@ impl Vinyl {
                 .process(groove.rumble.process(surface.rumble[c]));
             let record = low.mul_add(4.0, traced + tick + pop + noise);
             *wet = parts::lerp(groove.line.read(dry_at), record, mix) * output;
+            *heard = record * output;
         }
-        out.into()
+        out
     }
 }
 
@@ -585,7 +593,21 @@ impl Effect for Vinyl {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        parts::run_block(input, output, |left, right| self.tick(left, right));
+        parts::run_block(input, output, WetOut::none(), |left, right| {
+            self.tick(left, right)
+        });
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        parts::run_block(input, output, WetOut::to(wet), |left, right| {
+            self.tick(left, right)
+        });
     }
 }
 

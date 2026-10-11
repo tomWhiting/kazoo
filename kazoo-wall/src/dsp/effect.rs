@@ -4,7 +4,12 @@
 //! side, before the engine ever sees it. Its knobs are its parameters, in
 //! order; each is handed over only when it changes (the effect smooths it).
 //! `right` is mono-normalled: with nothing plugged into it, the effect hears
-//! `left` on both sides.
+//! `left` on both sides. The outputs are the mix (`left`, `right`) and the
+//! wet signal alone (`wet_left`, `wet_right`), both from the one pass
+//! through the effect ([`kazoo_fx::Effect::process_wet`]). With neither wet
+//! output patched the effect runs plain [`kazoo_fx::Effect::process`], so
+//! nothing is spent on a wet signal no one hears, and the wet outputs are
+//! held silent.
 
 use kazoo_fx::{Context, Effect, EffectKind};
 
@@ -13,6 +18,8 @@ use crate::{MAX_KNOBS, SUB_BLOCK};
 
 const IN_LEFT: usize = 0;
 const IN_RIGHT: usize = 1;
+const WET_LEFT: usize = 2;
+const WET_RIGHT: usize = 3;
 
 /// Output bound: an effect's own caps keep it far inside this.
 const LIMIT: f32 = 16.0;
@@ -62,14 +69,22 @@ impl Module for EffectModule {
                 left
             };
         }
-        let (first, rest) = io.outputs.split_at_mut(1);
+        let [left, right, wet_left, wet_right] = io.outputs;
         let context = Context { bpm: tick.bpm };
-        self.effect.process(
-            &context,
-            [&self.left, &self.right],
-            [&mut first[0], &mut rest[0]],
-        );
-        for port in io.outputs.iter_mut().take(2) {
+        if io.fed[WET_LEFT] || io.fed[WET_RIGHT] {
+            self.effect.process_wet(
+                &context,
+                [&self.left, &self.right],
+                [left, right],
+                [wet_left, wet_right],
+            );
+        } else {
+            self.effect
+                .process(&context, [&self.left, &self.right], [left, right]);
+            wet_left.fill(0.0);
+            wet_right.fill(0.0);
+        }
+        for port in io.outputs.iter_mut() {
             for sample in port.iter_mut() {
                 *sample = finite(*sample).clamp(-LIMIT, LIMIT);
             }
@@ -234,6 +249,46 @@ mod tests {
         bench.step();
         // 0.1 at -24 dB.
         assert!((bench.outputs[0][0] - 0.006_309_57).abs() < 1e-5);
+    }
+
+    #[test]
+    fn an_effect_with_no_mix_hands_its_output_to_the_wet_outputs_too() {
+        let mut bench = Bench::new(kind());
+        bench
+            .knob("gain", 6.0)
+            .hold("left", 0.2)
+            .hold("right", -0.3);
+        bench.step();
+        for (wet, out) in [(2, 0), (3, 1)] {
+            assert_eq!(
+                bench.outputs[wet].map(f32::to_bits),
+                bench.outputs[out].map(f32::to_bits)
+            );
+        }
+        assert!((bench.outputs[2][0] - 0.399).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_wet_outputs_carry_the_effect_whatever_the_mix() {
+        // A plate turned fully dry: once its mix knob has glided down, the
+        // mix is the (silent) input and the wet outputs are the tail alone.
+        let mut bench = Bench::new(Kind::from_name("plate").unwrap());
+        bench.knob("mix", 0.0);
+        let (mut mixed, mut heard) = (0.0f32, 0.0f32);
+        for n in 0..400 {
+            bench.hold("left", if n == 0 { 0.5 } else { 0.0 });
+            bench.step();
+            // 250 sub-blocks is a sixth of a second: the glide is done.
+            if n >= 250 {
+                let loudest = |ports: &[[f32; crate::SUB_BLOCK]], most: f32| {
+                    ports.iter().flatten().fold(most, |m, x| m.max(x.abs()))
+                };
+                mixed = loudest(&bench.outputs[..2], mixed);
+                heard = loudest(&bench.outputs[2..], heard);
+            }
+        }
+        assert!(heard > 1e-3, "{heard}");
+        assert!(mixed < 0.01 * heard, "{mixed} against {heard}");
     }
 
     #[test]

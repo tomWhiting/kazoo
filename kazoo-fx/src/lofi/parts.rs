@@ -20,6 +20,7 @@
 
 use std::f32::consts::{FRAC_1_SQRT_2, PI, TAU};
 
+use crate::WetOut;
 use crate::dsp::{Noise, OnePole, db_to_gain, flush};
 
 /// Samples between control-rate updates: knobs that move filter
@@ -63,37 +64,46 @@ pub fn ceiling(x: f32) -> f32 {
 /// here so no internal sum can overflow.
 pub const HEADROOM: f32 = 64.0;
 
-/// Run `tick` over one block as [`crate::Effect::process`] describes: the
-/// shortest slice sets the length, non-finite inputs arrive as silence and
-/// huge ones are held to [`HEADROOM`], every output goes through
-/// [`ceiling`] and the rest of each output is silenced.
+/// Run `tick` over one block as [`crate::Effect::process_wet`] describes:
+/// the shortest slice sets the length, non-finite inputs arrive as silence
+/// and huge ones are held to [`HEADROOM`]. `tick` gives the mixed frame and
+/// the wet frame alone; the mixed one goes to `output` and the wet one to
+/// `wet`, each through [`ceiling`], and the rest of every output is
+/// silenced.
 pub fn run_block(
     input: [&[f32]; 2],
     output: [&mut [f32]; 2],
-    mut tick: impl FnMut(f32, f32) -> (f32, f32),
+    mut wet: WetOut<'_>,
+    mut tick: impl FnMut(f32, f32) -> [[f32; 2]; 2],
 ) {
     let [in_left, in_right] = input;
     let [out_left, out_right] = output;
-    let len = in_left
-        .len()
-        .min(in_right.len())
-        .min(out_left.len())
-        .min(out_right.len());
-    for (((left, right), out_l), out_r) in in_left
+    let len = wet.limit(
+        in_left
+            .len()
+            .min(in_right.len())
+            .min(out_left.len())
+            .min(out_right.len()),
+    );
+    for (n, (((left, right), out_l), out_r)) in in_left
         .iter()
         .zip(in_right)
         .zip(out_left.iter_mut())
         .zip(out_right.iter_mut())
+        .take(len)
+        .enumerate()
     {
-        let (wet_l, wet_r) = tick(
+        let [[mixed_l, mixed_r], alone] = tick(
             finite(*left).clamp(-HEADROOM, HEADROOM),
             finite(*right).clamp(-HEADROOM, HEADROOM),
         );
-        *out_l = ceiling(wet_l);
-        *out_r = ceiling(wet_r);
+        *out_l = ceiling(mixed_l);
+        *out_r = ceiling(mixed_r);
+        wet.frame(n, alone.map(ceiling));
     }
     out_left[len..].fill(0.0);
     out_right[len..].fill(0.0);
+    wet.silence_from(len);
 }
 
 /// Decibels to gain, remembering the last answer: a smoothed knob sits

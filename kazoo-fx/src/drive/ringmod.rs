@@ -40,13 +40,13 @@
 use std::f32::consts::TAU;
 
 use super::kit::{
-    DEFAULT_RATE, Knobs, Retune, ceiling, for_each_frame, fraction, gain as db_gain, weight,
+    DEFAULT_RATE, Knobs, Retune, ceiling, for_each_frame_wet, fraction, gain as db_gain, weight,
 };
 use super::oversample::{MAX_FACTOR, TARGET_RATE};
 use super::pair::{self, Pair};
 use crate::dsp::OnePole;
 use crate::dsp::sane_rate;
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const FREQUENCY: usize = 0;
 const SHAPE: usize = 1;
@@ -269,7 +269,15 @@ impl Ringmod {
         self.tune(now);
     }
 
-    fn frame(&mut self, left: f32, right: f32) -> [f32; 2] {
+    /// One block, with the wet signal to `wet` if it is wanted at all.
+    fn run(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2], wet: WetOut<'_>) {
+        let wanted = wet.wanted();
+        for_each_frame_wet(input, output, wet, |left, right| {
+            self.frame(left, right, wanted)
+        });
+    }
+
+    fn frame(&mut self, left: f32, right: f32, wanted: bool) -> [[f32; 2]; 2] {
         let knob = self.knobs.step();
         if self.retune.due([knob[FREQUENCY]]) {
             self.tune([knob[FREQUENCY]]);
@@ -292,7 +300,7 @@ impl Ringmod {
         let mut slots = [0usize; 2];
         let phase = &mut self.phase;
         self.pair
-            .process([left, right], |index, transformer, x| {
+            .process_wet([left, right], wanted, |index, transformer, x| {
                 let slot = slots[index] % MAX_FACTOR;
                 slots[index] += 1;
                 let at = if index == 0 {
@@ -305,20 +313,20 @@ impl Ringmod {
                 };
                 modulate(x, at as f32, transformer, &settings)
             })
-            .map(|out| ceiling(out * out_gain))
+            .map(|side| side.map(|out| ceiling(out * out_gain)))
     }
 }
 
 /// One sample of input `x` through the modulator at carrier phase
-/// `phase`.
-fn modulate(x: f32, phase: f32, transformer: &mut Transformer, settings: &Settings) -> f32 {
+/// `phase`: the mixed sample, then the wet one alone.
+fn modulate(x: f32, phase: f32, transformer: &mut Transformer, settings: &Settings) -> [f32; 2] {
     let dt = (settings.hz / settings.rate).clamp(1e-9, 0.5);
     let raw = carrier(phase, dt, settings.shapes);
     let rounded = transformer.poles[0].lowpass(raw);
     let c = transformer.poles[1].lowpass(rounded);
     let ideal = c * x;
     let wet = settings.diode.mul_add(ring(c, x) - ideal, ideal);
-    settings.mix.mul_add(wet - x, x)
+    [settings.mix.mul_add(wet - x, x), wet]
 }
 
 impl Effect for Ringmod {
@@ -346,7 +354,17 @@ impl Effect for Ringmod {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        for_each_frame(input, output, |left, right| self.frame(left, right));
+        self.run(input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

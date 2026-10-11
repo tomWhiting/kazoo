@@ -718,7 +718,11 @@ pub fn valid_kind_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-/// An effect as a candidate kind: stereo in and out.
+/// An effect as a candidate kind: stereo in, stereo out, and the wet
+/// signal alone beside the mix (`wet_left`, `wet_right`: for an effect with
+/// a mix knob, the sound with the knob all the way to wet; for one without,
+/// the same as `left` and `right`). The wet outputs come after `left` and
+/// `right`, so a cable saved before they existed still finds its output.
 fn effect_candidate(effect: &'static kazoo_fx::EffectKind) -> Candidate {
     Candidate {
         name: effect.id,
@@ -729,7 +733,18 @@ fn effect_candidate(effect: &'static kazoo_fx::EffectKind) -> Candidate {
             audio("left", "sound, left or mono"),
             audio("right", "sound, right; the left input when unplugged"),
         ],
-        outputs: vec![audio("left", "sound, left"), audio("right", "sound, right")],
+        outputs: vec![
+            audio("left", "sound, left"),
+            audio("right", "sound, right"),
+            audio(
+                "wet_left",
+                "the mix all the way to wet, left (the output itself where there is no mix knob)",
+            ),
+            audio(
+                "wet_right",
+                "the mix all the way to wet, right (the output itself where there is no mix knob)",
+            ),
+        ],
         build: Builder::Effect(effect),
     }
 }
@@ -1462,12 +1477,36 @@ mod tests {
         let spec = kind.spec();
         assert_eq!(spec.family, "fx");
         assert_eq!(spec.jack_names(), vec!["left", "right", "gain", "mode"]);
-        assert_eq!(spec.outputs.len(), 2);
+        let outputs: Vec<&str> = spec.outputs.iter().map(|port| port.name).collect();
+        assert_eq!(outputs, ["left", "right", "wet_left", "wet_right"]);
         assert!(matches!(spec.build, Builder::Effect(_)));
         let mode = knob(kind, "mode");
         assert!(mode.stepped);
         assert_eq!(mode.labels, &["soft", "hard"]);
         assert_eq!(knob(kind, "gain").unit, Unit::Other("dB"));
+    }
+
+    #[test]
+    fn every_effect_is_admitted_with_all_its_outputs() {
+        // Effects sit at the engine's limit of outputs: one more port on
+        // every effect, or a kind that outgrew the limit some other way,
+        // would leave kinds out of the wall, said only in the daemon's log.
+        assert!(
+            registry().skipped().is_empty(),
+            "{:?}",
+            registry().skipped()
+        );
+        for effect in kazoo_fx::catalogue() {
+            let kind = Kind::from_name(effect.id).unwrap();
+            let outputs: Vec<&str> = kind.spec().outputs.iter().map(|port| port.name).collect();
+            assert_eq!(
+                outputs,
+                ["left", "right", "wet_left", "wet_right"],
+                "{}",
+                effect.id
+            );
+            assert_eq!(outputs.len(), MAX_OUTPUTS, "{}", effect.id);
+        }
     }
 
     #[test]

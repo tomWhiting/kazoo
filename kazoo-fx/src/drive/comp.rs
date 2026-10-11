@@ -45,13 +45,13 @@
 
 use super::filter::{Analogue, Iir3, warp};
 use super::kit::{
-    DEFAULT_RATE, Knobs, Retune, ceiling, flush64, for_each_frame, fraction, gain as db_gain,
+    DEFAULT_RATE, Knobs, Retune, ceiling, flush64, for_each_frame_wet, fraction, gain as db_gain,
     one_pole, weight,
 };
 use super::oversample::{MAX_FACTOR, Oversampler, TARGET_RATE, factor_for};
 use super::solve::rising_root;
 use crate::dsp::sane_rate;
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const THRESHOLD: usize = 0;
 const RATIO: usize = 1;
@@ -411,6 +411,8 @@ impl Quadrature {
 #[derive(Debug, Clone, Copy, Default)]
 struct Channel {
     oversampler: Oversampler,
+    /// The way down for the wet signal alone, as late as `oversampler`'s.
+    wet: Oversampler,
     sidechain: Iir3,
     quadrature: Quadrature,
 }
@@ -446,6 +448,9 @@ pub struct Comp {
     /// Left and right, each on the heap: with their oversamplers the pair
     /// is larger than a stack frame should carry.
     channels: [Box<Channel>; 2],
+    /// Whether the wet decimators ran on the last frame (see
+    /// [`super::pair::Pair::process_wet`]).
+    wet_live: bool,
 }
 
 impl Default for Comp {
@@ -471,6 +476,7 @@ impl Comp {
             release: 0.0,
             detectors: Detectors::default(),
             channels: [Box::default(), Box::default()],
+            wet_live: false,
         };
         comp.prepare(DEFAULT_RATE);
         comp
@@ -489,8 +495,9 @@ impl Comp {
         }
     }
 
-    /// One oversampled frame through the detectors and the gain.
-    fn tick(&mut self, dry: [f64; 2], settings: &Settings, knob: &[f32; 9]) -> [f64; 2] {
+    /// One oversampled frame through the detectors and the gain: the mixed
+    /// frame, then the wet frame alone.
+    fn tick(&mut self, dry: [f64; 2], settings: &Settings, knob: &[f32; 9]) -> [[f64; 2]; 2] {
         let [heard_left, heard_right] = [0, 1].map(|i| self.channels[i].sidechain.process(dry[i]));
         let peak = heard_left.abs().max(heard_right.abs());
         let power = 0.5 * heard_left.mul_add(heard_left, heard_right * heard_right);
@@ -503,11 +510,12 @@ impl Comp {
         let colour = weights[1] * FET_COLOUR * (fet / 20.0).min(1.0);
         let mix = fraction(knob[MIX]);
         let coefficients = self.rates.quadrature;
-        [0, 1].map(|i| {
+        let [left, right] = [0, 1].map(|i| {
             let wet = dry[i] * gain;
-            let second = self.channels[i].colour(wet, colour, &coefficients);
-            mix.mul_add(wet + second - dry[i], dry[i])
-        })
+            let alone = wet + self.channels[i].colour(wet, colour, &coefficients);
+            [mix.mul_add(alone - dry[i], dry[i]), alone]
+        });
+        [[left[0], right[0]], [left[1], right[1]]]
     }
 
     /// Design for where the knobs are now, with nothing left waiting:
@@ -519,7 +527,15 @@ impl Comp {
         self.tune(now);
     }
 
-    fn frame(&mut self, left: f32, right: f32) -> [f32; 2] {
+    /// One block, with the wet signal to `wet` if it is wanted at all.
+    fn run(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2], wet: WetOut<'_>) {
+        let wanted = wet.wanted();
+        for_each_frame_wet(input, output, wet, |left, right| {
+            self.frame(left, right, wanted)
+        });
+    }
+
+    fn frame(&mut self, left: f32, right: f32, wanted: bool) -> [[f32; 2]; 2] {
         let knob = self.knobs.step();
         let timing = [knob[ATTACK], knob[RELEASE], knob[SIDECHAIN]];
         if self.retune.due(timing) {
@@ -539,13 +555,30 @@ impl Comp {
             self.channels[1].oversampler.expand(right),
         ];
         let mut out = [[0.0f32; MAX_FACTOR]; 2];
+        let mut alone = [[0.0f32; MAX_FACTOR]; 2];
         for k in 0..factor {
             let dry = [f64::from(up[0][k]), f64::from(up[1][k])];
-            let [wet_left, wet_right] = self.tick(dry, &settings, &knob);
-            out[0][k] = wet_left as f32;
-            out[1][k] = wet_right as f32;
+            let [mixed, wet] = self.tick(dry, &settings, &knob);
+            for side in 0..2 {
+                out[side][k] = mixed[side] as f32;
+                alone[side][k] = wet[side] as f32;
+            }
         }
-        [0, 1].map(|i| ceiling(self.channels[i].oversampler.reduce(out[i])))
+        if wanted && !self.wet_live {
+            for channel in &mut self.channels {
+                channel.wet.reset();
+            }
+        }
+        self.wet_live = wanted;
+        let channels = &mut self.channels;
+        let mixed = [0, 1].map(|i| ceiling(channels[i].oversampler.reduce(out[i])));
+        if !wanted {
+            return [mixed, [0.0; 2]];
+        }
+        [
+            mixed,
+            [0, 1].map(|i| ceiling(channels[i].wet.reduce(alone[i]))),
+        ]
     }
 }
 
@@ -563,6 +596,7 @@ impl Effect for Comp {
         };
         for channel in &mut self.channels {
             channel.oversampler.configure(factor, base, 0.0);
+            channel.wet.configure(factor, base, 0.0);
         }
         self.knobs.prepare(base);
         self.retune_now();
@@ -575,6 +609,7 @@ impl Effect for Comp {
         self.detectors = Detectors::default();
         for channel in &mut self.channels {
             channel.oversampler.reset();
+            channel.wet.reset();
             channel.sidechain.reset();
             channel.quadrature = Quadrature::default();
         }
@@ -589,7 +624,17 @@ impl Effect for Comp {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        for_each_frame(input, output, |left, right| self.frame(left, right));
+        self.run(input, output, WetOut::none());
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        self.run(input, output, WetOut::to(wet));
     }
 }
 

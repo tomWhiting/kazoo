@@ -10,7 +10,8 @@
 //! The effects come in four families, each in its own module:
 //!
 //! - [`drive`]: distortion, folding, crushing, ring modulation, dynamics.
-//! - [`time`]: delays and the modulation effects built on short delays.
+//! - [`time`]: delays, the modulation effects built on short delays, and
+//!   the shifters.
 //! - [`space`]: reverbs, resonators and tone shaping.
 //! - [`lofi`]: worn media: VHS, cassette and reel tape, vinyl, generation
 //!   loss.
@@ -18,8 +19,8 @@
 //! # Real-time contract
 //!
 //! [`Effect::prepare`] may allocate and is only ever called off the audio
-//! thread. [`Effect::process`], [`Effect::set_param`] and [`Effect::reset`]
-//! never allocate, lock, do I/O or panic, whatever they are given: a NaN or
+//! thread. [`Effect::process`], [`Effect::process_wet`],
+//! [`Effect::set_param`] and [`Effect::reset`] never allocate, lock, do I/O or panic, whatever they are given: a NaN or
 //! infinite input or parameter comes out as silence or is ignored, and the
 //! effect's state is never left poisoned by one.
 
@@ -28,8 +29,11 @@ pub mod dsp;
 pub mod lofi;
 pub mod space;
 pub mod time;
+mod wet;
 
 use std::fmt;
+
+pub(crate) use wet::WetOut;
 
 /// How a parameter's knob maps its travel onto its range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +142,44 @@ pub trait Effect: Send + fmt::Debug {
     /// from 0 up; if they differ, only the shortest length is processed and
     /// the rest of the outputs is silenced. Real-time safe.
     fn process(&mut self, context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]);
+
+    /// Process one block as [`Self::process`] does, and write the wet
+    /// signal alone to `wet` left and right: what `output` would be with
+    /// the effect's `mix` knob all the way to wet, every other knob as it
+    /// is. An effect with no mix knob is all effect, so its wet signal is
+    /// its output. It comes out of the same pass as the mix: asking for it
+    /// costs a copy, never a second run (an effect that mixes inside an
+    /// oversampler also brings the wet signal down through a decimator of
+    /// its own, which [`Self::process`] never runs). All six slices have the same
+    /// length; if they differ, only the shortest length is processed and
+    /// the rest of every output, `wet` included, is silenced. Real-time
+    /// safe.
+    fn process_wet(
+        &mut self,
+        context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        let [out_left, out_right] = output;
+        let frames = wet
+            .iter()
+            .map(|side| side.len())
+            .chain(input.iter().map(|side| side.len()))
+            .fold(out_left.len().min(out_right.len()), usize::min);
+        self.process(
+            context,
+            [&input[0][..frames], &input[1][..frames]],
+            [&mut out_left[..frames], &mut out_right[..frames]],
+        );
+        for (to, from) in wet.into_iter().zip([out_left, out_right]) {
+            let (heard, rest) = from.split_at_mut(frames);
+            rest.fill(0.0);
+            let (copy, after) = to.split_at_mut(frames);
+            copy.copy_from_slice(heard);
+            after.fill(0.0);
+        }
+    }
 
     /// How many samples, at the host rate, the effect delays its input by:
     /// oversampling filters and the like, not the effect's own sound (a

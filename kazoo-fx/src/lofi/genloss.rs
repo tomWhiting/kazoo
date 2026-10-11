@@ -39,7 +39,7 @@ use super::parts::{
     Partial, Wobble,
 };
 use crate::dsp::{DelayLine, Noise, OnePole, Smoothed};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const MODEL: usize = 0;
 const GENERATIONS: usize = 1;
@@ -499,8 +499,8 @@ impl GenLoss {
         self.frame.hiss = machine.hiss * hiss * hiss.sqrt();
     }
 
-    /// One stereo sample.
-    fn tick(&mut self, left: f32, right: f32) -> (f32, f32) {
+    /// One stereo sample: the mixed frame, then the wet frame alone.
+    fn tick(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
         if self.until_control == 0 {
             self.aim();
             self.control();
@@ -564,9 +564,10 @@ impl GenLoss {
         for awake in self.awake.iter_mut().skip(deepest + 1) {
             *awake = false;
         }
-        [0, 1]
-            .map(|c| parts::lerp(dry[c], wet[c], mix) * output)
-            .into()
+        [
+            [0, 1].map(|c| parts::lerp(dry[c], wet[c], mix) * output),
+            wet.map(|heard| heard * output),
+        ]
     }
 }
 
@@ -648,7 +649,21 @@ impl Effect for GenLoss {
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
-        parts::run_block(input, output, |left, right| self.tick(left, right));
+        parts::run_block(input, output, WetOut::none(), |left, right| {
+            self.tick(left, right)
+        });
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        parts::run_block(input, output, WetOut::to(wet), |left, right| {
+            self.tick(left, right)
+        });
     }
 }
 

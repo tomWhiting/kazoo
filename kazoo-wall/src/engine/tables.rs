@@ -49,11 +49,13 @@ impl Route {
 }
 
 /// For every slot and jack (see [`crate::MAX_JACKS`]), the cable plugged
-/// into it.
+/// into it; and for every slot's output, how many cables it feeds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CableTable {
     /// By slot ([`MAX_MODULES`] of them), then jack.
     routes: Box<[[Option<Route>; MAX_JACKS]]>,
+    /// By slot, then output: the cables reading it. Kept by [`Self::set`].
+    feeds: Box<[[u16; MAX_OUTPUTS]]>,
 }
 
 impl CableTable {
@@ -63,6 +65,7 @@ impl CableTable {
     pub fn new() -> Self {
         Self {
             routes: vec![[None; MAX_JACKS]; MAX_MODULES].into_boxed_slice(),
+            feeds: vec![[0; MAX_OUTPUTS]; MAX_MODULES].into_boxed_slice(),
         }
     }
 
@@ -79,11 +82,28 @@ impl CableTable {
         if slot >= MAX_MODULES || jack >= MAX_JACKS || !valid {
             return;
         }
-        self.routes[slot][jack] = route.map(|route| Route {
+        let new = route.map(|route| Route {
             amount: route.amount.clamp(-1.0, 1.0),
             delay: route.delay.min(MAX_CABLE_DELAY),
             ..route
         });
+        if let Some(old) = std::mem::replace(&mut self.routes[slot][jack], new) {
+            let count = &mut self.feeds[usize::from(old.slot)][usize::from(old.port)];
+            *count = count.saturating_sub(1);
+        }
+        if let Some(new) = new {
+            let count = &mut self.feeds[usize::from(new.slot)][usize::from(new.port)];
+            *count = count.saturating_add(1);
+        }
+    }
+
+    /// Whether `slot`'s output `port` feeds any cable.
+    #[must_use]
+    pub fn feeds(&self, slot: usize, port: usize) -> bool {
+        self.feeds
+            .get(slot)
+            .and_then(|ports| ports.get(port))
+            .is_some_and(|count| *count > 0)
     }
 
     /// The cable into `slot`'s `jack`.

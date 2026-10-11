@@ -1,6 +1,7 @@
 //! Pieces every effect in the space family shares.
 //!
-//! Block bookkeeping (how many frames to process, silencing the rest), input
+//! Block bookkeeping (how many frames to process, silencing the rest, the
+//! wet signal alone beside the mix), input
 //! cleaning, a soft safety ceiling, the equal-power wet/dry law, decay
 //! maths, a knob store that glides every knob, a linear ramp that lands
 //! exactly on its target, a Schroeder allpass whose inside can be tapped,
@@ -9,7 +10,7 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use crate::ParamSpec;
+use crate::{ParamSpec, WetOut};
 use std::sync::Arc;
 
 use crate::dsp::Smoothed;
@@ -77,6 +78,29 @@ pub fn silence(output: &mut [&mut [f32]; 2]) {
     for side in output.iter_mut() {
         side.fill(0.0);
     }
+}
+
+/// Run `frame` over one block, a stereo frame at a time. Each call gives
+/// the mixed frame for `output` and the wet frame alone for `wet`. The
+/// shortest slice sets the length and everything past it is silenced, as
+/// the [`crate::Effect::process_wet`] contract asks.
+pub fn run_block(
+    input: [&[f32]; 2],
+    mut output: [&mut [f32]; 2],
+    mut wet: WetOut<'_>,
+    mut frame: impl FnMut(f32, f32) -> [[f32; 2]; 2],
+) {
+    let count = wet.limit(frames(input, &mut output));
+    let [out_left, out_right] = output;
+    for n in 0..count {
+        let [[left, right], alone] = frame(input[0][n], input[1][n]);
+        out_left[n] = left;
+        out_right[n] = right;
+        wet.frame(n, alone);
+    }
+    out_left[count..].fill(0.0);
+    out_right[count..].fill(0.0);
+    wet.silence_from(count);
 }
 
 /// An input sample made safe: NaN and infinity become silence, absurd
