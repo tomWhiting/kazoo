@@ -788,15 +788,10 @@ impl App {
     /// picker order.
     #[must_use]
     pub fn picker_shown(&self, tab: usize, filter: &str) -> Vec<(usize, &KindInfo)> {
-        let kinds = self.picker_for(filter);
-        if filter.trim().is_empty() {
-            kinds
-                .into_iter()
-                .filter(|(group, _)| *group == tab)
-                .collect()
-        } else {
-            kinds
-        }
+        self.picker_for(filter)
+            .into_iter()
+            .filter(|(group, _)| *group == tab)
+            .collect()
     }
 
     // -----------------------------------------------------------------------

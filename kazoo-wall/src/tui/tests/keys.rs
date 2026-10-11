@@ -1316,7 +1316,7 @@ fn typing_in_the_picker_finds_a_kind() {
     assert!(found.contains(&"lfo".to_string()), "{found:?}");
     assert!(found.len() < app.picker().len());
     let screen = super::render::text(&render(&mut app, 120, 50));
-    assert!(screen.contains("find in every group: LF█"), "{screen}");
+    assert!(screen.contains("find in this category: LF█"), "{screen}");
     // j, k, n and q are letters to find by, not keys.
     press(&mut app, KeyCode::Backspace);
     press(&mut app, KeyCode::Backspace);

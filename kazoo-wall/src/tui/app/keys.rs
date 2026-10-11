@@ -635,7 +635,7 @@ impl App {
 
     /// Open the picker: in the rack view, for a module to go right after
     /// the selected one; in the list view, where the wall puts it.
-    fn open_picker(&mut self, now: Instant) {
+    pub(super) fn open_picker(&mut self, now: Instant) {
         let place = if self.view == View::Rack {
             self.after_selected()
         } else {
@@ -703,14 +703,8 @@ impl App {
             KeyCode::PageUp => index.saturating_sub(PICKER_PAGE),
             KeyCode::PageDown => (index + PICKER_PAGE).min(count.saturating_sub(1)),
             KeyCode::Tab | KeyCode::BackTab => {
-                let (next, at) = next_tab(
-                    &shown,
-                    (tab, index),
-                    filter.trim().is_empty(),
-                    key.code == KeyCode::Tab,
-                );
-                tab = next;
-                at
+                tab = step_group(tab, key.code == KeyCode::Tab);
+                0
             }
             KeyCode::Backspace => {
                 filter.pop();
@@ -754,6 +748,14 @@ impl App {
                 if !c.is_control() && !control && filter.chars().count() < MAX_ENTRY =>
             {
                 filter.push(c);
+                // Typing stays in this category while it has a match;
+                // otherwise it goes to the first category that does.
+                let found = self.picker_for(&filter);
+                if !found.iter().any(|(group, _)| *group == tab) {
+                    if let Some((group, _)) = found.first() {
+                        tab = *group;
+                    }
+                }
                 0
             }
             _ => {
@@ -1172,29 +1174,6 @@ impl App {
             ),
         }
     }
-}
-
-/// Where the picker goes on `Tab` (`forward`) or `Shift-Tab` from group
-/// `tab` at `index` of the kinds `shown` (each with its group): with
-/// nothing typed (`browsing`), the next group, at its first kind; while
-/// searching every group, the first match of the next group with one.
-fn next_tab(
-    shown: &[(usize, String)],
-    (tab, index): (usize, usize),
-    browsing: bool,
-    forward: bool,
-) -> (usize, usize) {
-    if browsing {
-        return (step_group(tab, forward), 0);
-    }
-    let mut group = shown.get(index).map_or(tab, |(group, _)| *group);
-    for _ in 0..GROUPS.len() {
-        group = step_group(group, forward);
-        if let Some(at) = shown.iter().position(|(other, _)| *other == group) {
-            return (group, at);
-        }
-    }
-    (tab, index)
 }
 
 /// The group after (or before) group `group`, round the [`GROUPS`].

@@ -25,7 +25,11 @@ const MAX_LINE: usize = 4 * MAX_ENTRY;
 
 /// Every command: its name, what it takes and what it does.
 pub const COMMANDS: [(&str, &str, &str); 8] = [
-    ("add", "<kind> [name]", "add a module"),
+    (
+        "add",
+        "[kind] [name]",
+        "add a module; alone, open the picker",
+    ),
     (
         "remove",
         "<module>",
@@ -326,6 +330,12 @@ impl App {
         match key.code {
             KeyCode::Esc => return Mode::Normal,
             KeyCode::Enter => {
+                // `:a` (or `:add`) with no kind opens the picker.
+                let text = line.text.trim();
+                if !text.contains(char::is_whitespace) && command(text) == Some("add") {
+                    self.open_picker(now);
+                    return std::mem::replace(&mut self.mode, Mode::Normal);
+                }
                 return match self.run_command(line.text.trim(), now) {
                     Ok(()) => Mode::Normal,
                     Err(why) => {

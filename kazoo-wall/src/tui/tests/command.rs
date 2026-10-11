@@ -249,18 +249,27 @@ fn tab_moves_between_the_pickers_groups_and_a_pane_tells_of_the_kind() {
         assert!(screen.contains("INPUTS"), "{width}×{height}\n{screen}");
         assert!(screen.contains("threshold"), "{width}×{height}\n{screen}");
     }
-    // Typing searches every group; Tab goes to the next group with a match.
-    type_text(&mut app, "o");
-    let Mode::Add { index, .. } = app.mode().clone() else {
-        panic!("the picker closed");
-    };
-    assert_eq!(index, 0);
-    let first_group = app.picker_for("o")[0].0;
-    press(&mut app, KeyCode::Tab);
+    // Typing finds within the category while it has a match, else goes to
+    // the first that does; Tab still steps category by category.
+    type_text(&mut app, "lfo");
     let Mode::Add { tab, index, .. } = app.mode().clone() else {
         panic!("the picker closed");
     };
-    let found = app.picker_for("o");
-    assert!(tab != first_group && found[index].0 == tab, "{tab} {index}");
-    assert!(found[..index].iter().all(|(group, _)| *group != tab));
+    assert_eq!(index, 0);
+    assert_eq!(app.picker_shown(tab, "lfo")[0].1.kind, "lfo");
+    press(&mut app, KeyCode::Tab);
+    let Mode::Add { tab: next, .. } = app.mode().clone() else {
+        panic!("the picker closed");
+    };
+    assert_eq!(next, (tab + 1) % crate::tui::app::GROUPS.len());
+}
+
+#[test]
+fn a_bare_add_opens_the_picker() {
+    let mut app = connected();
+    open(&mut app);
+    type_text(&mut app, "a");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::Add { .. }), "{:?}", app.mode());
+    assert!(calls(&mut app).is_empty());
 }

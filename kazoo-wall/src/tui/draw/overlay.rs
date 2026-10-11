@@ -238,16 +238,12 @@ pub fn picker(
 ) {
     let kinds = app.picker_shown(tab, filter);
     let searching = !filter.trim().is_empty();
-    let lit = if searching {
-        kinds.get(index).map(|(group, _)| *group)
-    } else {
-        Some(tab)
-    };
+    let lit = Some(tab);
     let title = place.map_or_else(
         || "add a module".to_string(),
         |place| format!("add a module {}", app.place_words(place)),
     );
-    let rect = popup(buf, area, 118, 34);
+    let rect = popup(buf, area, area.width, area.height);
     let block = frame(&title, BRASS);
     let inner = block.inner(rect);
     block.render(rect, buf);
@@ -264,24 +260,24 @@ pub fn picker(
         .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
     let find = if searching {
         Line::from(vec![
-            Span::styled(" find in every group: ", plain(TEXT_DIM, PANEL)),
+            Span::styled(" find in this category: ", plain(TEXT_DIM, PANEL)),
             Span::styled(format!("{filter}█"), bold(AMBER, PANEL)),
         ])
     } else {
         Line::from(Span::styled(
-            " type to find a kind in every group█",
+            " type to find a kind · Tab ⇧Tab change category█",
             plain(TEXT_DIM, PANEL),
         ))
     };
     Paragraph::new(find).render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
     Paragraph::new(Line::from(Span::styled(
-        " Tab ⇧Tab group · ↑↓ choose · ⏎ adds it · Ctrl-N names it first · Esc clears, then cancels",
+        " Tab ⇧Tab category · ↑↓ choose · ⏎ adds it · Ctrl-N names it first · Esc clears, then cancels",
         plain(TEXT_DIM, PANEL),
     )))
     .render(Rect::new(inner.x, inner.bottom() - 1, inner.width, 1), buf);
     let body = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 3);
     let (list_area, detail_area) = if body.width >= 90 {
-        let list_width = 40;
+        let list_width = (body.width * 2 / 5).max(40);
         (
             Rect::new(body.x, body.y, list_width, body.height),
             Rect::new(
@@ -354,8 +350,8 @@ fn tab_line(lit: Option<usize>, counts: &[usize], width: usize) -> Line<'static>
     Line::from(spans)
 }
 
-/// The picker's list of `kinds` in `area`, the one at `index` chosen and
-/// kept in view; grouped under headings while `searching`.
+/// The picker's list of `kinds` (one category's) in `area`, the one at
+/// `index` chosen and kept in view.
 fn picker_list(
     buf: &mut Buffer,
     area: Rect,
@@ -365,19 +361,7 @@ fn picker_list(
 ) {
     let width = usize::from(area.width);
     let mut rows: Vec<(Option<usize>, Line<'_>)> = Vec::new();
-    let mut group = None;
-    for (position, (kind_group, info)) in kinds.iter().enumerate() {
-        if searching && group != Some(*kind_group) {
-            group = Some(*kind_group);
-            let heading = GROUPS.get(*kind_group).copied().unwrap_or("other");
-            rows.push((
-                None,
-                Line::from(Span::styled(
-                    format!(" {}", heading.to_uppercase()),
-                    bold(BRASS, PANEL),
-                )),
-            ));
-        }
+    for (position, (_, info)) in kinds.iter().enumerate() {
         let chosen = position == index;
         let background = if chosen { PANEL_FOCUS } else { PANEL };
         let lead = if chosen { "▸ " } else { "  " };
@@ -507,78 +491,90 @@ fn knob_words(knob: &KnobInfo) -> String {
 /// Most completions shown at once over the command line.
 const COMPLETIONS_SHOWN: usize = 10;
 
-/// The command line, on the status line: what is typed and what the
-/// command takes; over it, why the line could not run and the completions
-/// of the word being typed, the one chosen lit.
+/// The command palette: a box floating near the top of the screen, as
+/// in Iridium. Its first row is what is typed; under it why the line could
+/// not run, then the completions of the word being typed (the chosen one
+/// lit, each with what it is on the right); last, what the command takes.
 pub fn command_line(buf: &mut Buffer, area: Rect, app: &App, line: &CommandLine) {
-    let row = Rect::new(area.x, area.bottom() - 1, area.width, 1);
-    Clear.render(row, buf);
-    let width = usize::from(row.width);
-    let typed = format!(" :{}█", line.text);
-    let hint = usage(&line.text).unwrap_or_else(|| COMMAND_KEYS.to_string());
-    let room = width.saturating_sub(typed.chars().count() + 3);
-    Paragraph::new(Line::from(vec![
-        Span::styled(truncate(&typed, width), bold(AMBER, PANEL)),
-        Span::styled(
-            format!("   {}", truncate(&hint, room)),
-            plain(TEXT_DIM, PANEL),
-        ),
-    ]))
-    .style(plain(TEXT, PANEL))
-    .render(row, buf);
+    let width = area.width.saturating_sub(4).min(96);
+    if width < 20 || area.height < 6 {
+        return;
+    }
+    let inner_width = usize::from(width - 2);
     let found = app.completions(line.typed());
     let chosen = line.chosen();
-    let mut lines: Vec<Line<'_>> = Vec::new();
+    let mut lines: Vec<Line<'_>> = vec![Line::from(vec![
+        Span::styled(" > ", bold(BRASS, PANEL)),
+        Span::styled(
+            truncate(&format!(":{}█", line.text), inner_width.saturating_sub(3)),
+            bold(AMBER, PANEL),
+        ),
+    ])];
     if let Some(error) = &line.error {
         lines.push(Line::from(Span::styled(
-            format!(" ✗ {error}"),
+            truncate(&format!(" ✗ {error}"), inner_width),
             bold(RED, PANEL),
         )));
     }
-    let first = chosen.map_or(0, |chosen| (chosen + 1).saturating_sub(COMPLETIONS_SHOWN));
-    let word_width = found
-        .iter()
-        .map(|completion| completion.word.chars().count())
-        .max()
-        .unwrap_or(0)
-        .min(28);
-    for (at, completion) in found.iter().enumerate().skip(first).take(COMPLETIONS_SHOWN) {
+    let shown = COMPLETIONS_SHOWN.min(usize::from(area.height.saturating_sub(8)).max(1));
+    let first = chosen.map_or(0, |chosen| (chosen + 1).saturating_sub(shown));
+    for (at, completion) in found.iter().enumerate().skip(first).take(shown) {
         let lit = Some(at) == chosen;
         let background = if lit { PANEL_FOCUS } else { PANEL };
+        let word = truncate(&completion.word, inner_width.saturating_sub(4));
+        let used = word.chars().count() + 3;
+        let note = truncate(&completion.note, inner_width.saturating_sub(used + 3));
+        let gap = inner_width.saturating_sub(used + note.chars().count() + 1);
         lines.push(Line::from(vec![
             Span::styled(
-                format!(" {:<word_width$} ", truncate(&completion.word, word_width)),
+                format!(" {} ", if lit { "▸" } else { " " }),
+                bold(BRASS, background),
+            ),
+            Span::styled(
+                word,
                 if lit {
                     bold(INK, BRASS)
                 } else {
                     bold(TEXT, background)
                 },
             ),
-            Span::styled(format!(" {}", completion.note), plain(TEXT_DIM, background)),
+            Span::styled(" ".repeat(gap), plain(TEXT, background)),
+            Span::styled(format!("{note} "), plain(TEXT_DIM, background)),
         ]));
     }
-    if found.len() > COMPLETIONS_SHOWN {
+    if found.is_empty() && line.error.is_none() {
         lines.push(Line::from(Span::styled(
-            format!(" {} in all · Tab or ↑↓ for more", found.len()),
+            "   nothing to complete here",
             plain(TEXT_DIM, PANEL),
         )));
     }
-    if lines.is_empty() {
-        return;
+    if found.len() > shown {
+        lines.push(Line::from(Span::styled(
+            format!("   {} in all · Tab or ↑↓ for more", found.len()),
+            plain(TEXT_DIM, PANEL),
+        )));
     }
-    let height = u16::try_from(lines.len())
+    let hint = usage(&line.text).unwrap_or_else(|| COMMAND_KEYS.to_string());
+    lines.push(Line::from(Span::styled(
+        truncate(&format!(" {hint}"), inner_width),
+        plain(TEXT_DIM, PANEL),
+    )));
+    let height = u16::try_from(lines.len() + 2)
         .unwrap_or(u16::MAX)
-        .min(area.height.saturating_sub(3));
-    let rect = Rect::new(
-        area.x,
-        row.y.saturating_sub(height),
-        area.width.min(100),
-        height,
-    );
+        .min(area.height.saturating_sub(2));
+    let rect = Rect::new(area.x + (area.width - width) / 2, area.y + 1, width, height);
     Clear.render(rect, buf);
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(plain(BRASS, PANEL))
+        .title(Span::styled(" command ", bold(BRASS, PANEL)))
+        .style(plain(TEXT, PANEL));
+    let inner = block.inner(rect);
+    block.render(rect, buf);
     Paragraph::new(lines)
         .style(plain(TEXT, PANEL))
-        .render(rect, buf);
+        .render(inner, buf);
 }
 
 /// When a save was made, as Tom reads it: the local day and time, and how
