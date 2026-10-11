@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 
 use kazoo_core::ipc::client::{HubIpcClient, HubMessage};
 use kazoo_core::ipc::types::{
-    DeskPaceMsg, NOTE_ON, NoteEventMsg, SYNC_NOW, TRANSPORT_PLAYING, TRANSPORT_UNCHANGED,
+    DeskHealthMsg, DeskPaceMsg, NOTE_ON, NoteEventMsg, SYNC_NOW, TRANSPORT_PLAYING,
+    TRANSPORT_UNCHANGED,
 };
 
-use super::instrument::PACE_INTERVAL;
+use super::instrument::{HEALTH_INTERVAL, PACE_INTERVAL};
 
 use super::*;
 use crate::callback::AudioCallback;
@@ -551,15 +552,16 @@ fn paced(rig: &mut Rig, client: &mut HubIpcClient, sent: &mut u64) -> Option<Des
 fn a_timer_paced_instrument_is_told_where_the_desk_plays_it_and_gets_its_lead() {
     let mut rig = Rig::new([false; DESK_CHANNELS]);
     let mut register = RegisterMsg::new("kazoo-wall", 2, RATE, 256);
-    register.pace_lead_frames = 1_920;
+    // The tenth of a second the headless wall asks for at 48 kHz.
+    register.pace_lead_frames = 4_800;
     let mut client = HubIpcClient::register_at(&rig.socket, &register).unwrap();
     assert!(matches!(rig.notice(), HubNotice::Joined { .. }));
     let mut sent = 0;
     let first = paced(&mut rig, &mut client, &mut sent).expect("a pace");
     // Its lead is the desk's usual (a device buffer, a block, a margin)
-    // and the 1 920 frames it asked for.
-    assert!(first.lead_frames >= 1_920 + 256 + 256, "{first:?}");
-    assert!(first.lead_frames < 1_920 + 4 * 1_024, "{first:?}");
+    // and the 4 800 frames it asked for.
+    assert!(first.lead_frames >= 4_800 + 256 + 256, "{first:?}");
+    assert!(first.lead_frames < 4_800 + 4 * 1_024, "{first:?}");
     // The desk plays behind what it was sent, by about that lead (at
     // first before the stream's frame 0: the frame wraps, as stream
     // frames do, and distances are signed).
@@ -596,7 +598,7 @@ fn a_device_clocked_instrument_is_never_paced() {
 }
 
 #[test]
-fn an_extra_lead_past_a_second_is_held_to_a_second() {
+fn an_extra_lead_is_held_to_what_the_strip_ring_holds() {
     let mut rig = Rig::new([false; DESK_CHANNELS]);
     let mut register = RegisterMsg::new("kazoo-wall", 2, RATE, 256);
     register.pace_lead_frames = u32::MAX;
@@ -604,8 +606,56 @@ fn an_extra_lead_past_a_second_is_held_to_a_second() {
     assert!(matches!(rig.notice(), HubNotice::Joined { .. }));
     let mut sent = 0;
     let pace = paced(&mut rig, &mut client, &mut sent).expect("a pace");
-    assert!(pace.lead_frames >= RATE, "{pace:?}");
-    assert!(pace.lead_frames < RATE + 4 * 1_024, "{pace:?}");
+    // The whole lead is at most half the stereo ring, and the extra lead
+    // is what is left of that half after a device buffer, the largest
+    // block and the margin.
+    let strip = strip_ring(0, 2);
+    let half = strip.capacity_blocks * strip.block_frames / 2;
+    assert!(pace.lead_frames <= half, "{pace:?} with half a ring {half}");
+    let most_extra = half - (256 + 4_096 + 144);
+    assert!(pace.lead_frames >= most_extra + 256 + 256, "{pace:?}");
+    // The wall's tenth of a second is well inside it.
+    assert!(4_800 < most_extra);
+}
+
+#[test]
+fn a_timer_paced_instruments_lead_is_never_over_a_second() {
+    let ring = AudioRingConfig::new(BufferId(0), 1, 128, 1 << 20);
+    let clock = DeskClock {
+        studio_now: 0,
+        elapsed_frames: 0,
+        device_frames: 256,
+        margin_frames: 144,
+        slack_frames: 960,
+    };
+    assert_eq!(most_extra_lead(ring_frames(ring), clock, RATE), RATE);
+    // And a ring too small for any extra lead gives none.
+    let tiny = AudioRingConfig::new(BufferId(0), 2, 128, 8);
+    assert_eq!(most_extra_lead(ring_frames(tiny), clock, RATE), 0);
+}
+
+#[test]
+fn an_extra_lead_follows_the_device_buffer_and_never_passes_half_the_ring() {
+    // Worked out again whenever the clock is read: a device buffer known
+    // only once the desk plays, or one rebuilt larger, never takes the
+    // whole lead past half the strip's ring.
+    let ring = ring_frames(strip_ring(0, 2));
+    for device_frames in [64, 256, 512, 2_048, 4_096] {
+        let clock = DeskClock {
+            studio_now: 0,
+            elapsed_frames: 0,
+            device_frames,
+            margin_frames: 144,
+            slack_frames: 960,
+        };
+        let extra = most_extra_lead(ring, clock, RATE);
+        let mut stamp = crate::studio_clock::StudioStamp::with_extra_lead(0);
+        stamp.set_extra_lead(extra);
+        assert_eq!(stamp.extra_lead(), extra);
+        // The largest block an instrument may send, counted in the lead.
+        let whole = stamp.lead(device_frames, 144) - 256 + 4_096;
+        assert!(whole <= ring / 2, "{device_frames}: {whole} of {ring}");
+    }
 }
 
 #[test]
@@ -689,4 +739,128 @@ fn a_paced_source_with_a_jittery_timer_is_placed_once_and_stays_placed() {
     assert!(snapshot.blocks > 200, "{snapshot:?}");
     assert_eq!(snapshot.resyncs, 1, "{snapshot:?}");
     drop(link);
+}
+
+#[test]
+fn the_hub_thread_says_whether_it_is_real_time() {
+    // The hub asks once as it starts, says how it went, and serves either
+    // way. Any process may have the time-constraint policy on macOS.
+    let mut rig = Rig::new([false; DESK_CHANNELS]);
+    rig.until("the hub thread to ask for real-time", |rig| {
+        rig.hub.real_time().is_some()
+    });
+    #[cfg(target_os = "macos")]
+    assert_eq!(rig.hub.real_time(), Some(&Ok(())));
+    #[cfg(not(target_os = "macos"))]
+    if let Some(Err(why)) = rig.hub.real_time() {
+        assert!(!why.to_string().is_empty());
+    }
+    let _client = rig.connect("kazoo-808", RATE).unwrap();
+    assert!(matches!(rig.notice(), HubNotice::Joined { .. }));
+}
+
+#[test]
+fn an_instrument_is_told_when_its_stream_is_placed_afresh() {
+    let mut rig = Rig::new([false; DESK_CHANNELS]);
+    let mut client = rig.connect("kazoo-808", RATE).unwrap();
+    assert!(matches!(rig.notice(), HubNotice::Joined { .. }));
+    let block = vec![0.0_f32; 256 * 2];
+    // The first placement is not news.
+    client.send_audio(0, 256, &block).unwrap();
+    client.send_audio(256, 256, &block).unwrap();
+    rig.until("both blocks to be read", |rig| {
+        rig.hub.snapshot().blocks == 2
+    });
+    let deadline = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < deadline {
+        rig.render();
+        while client.try_recv().unwrap().is_some() {}
+    }
+    assert_eq!(client.take_desk_health(), None);
+    // A stream that goes backwards (as one that restarted does) is placed
+    // afresh, and the instrument hears of it.
+    client.send_audio(0, 256, &block).unwrap();
+    let mut health = None;
+    rig.until("the desk's health report", |rig| {
+        rig.render();
+        while client.try_recv().unwrap().is_some() {}
+        health = client.take_desk_health();
+        health.is_some()
+    });
+    assert_eq!(
+        health,
+        Some(DeskHealthMsg {
+            placed_afresh: 1,
+            dropped: 0,
+        })
+    );
+}
+
+#[test]
+fn a_stream_dropped_for_a_full_ring_is_not_counted_as_placed_afresh_too() {
+    let mut rig = Rig::new([false; DESK_CHANNELS]);
+    let mut client = rig.connect("kazoo-808", RATE).unwrap();
+    assert!(matches!(rig.notice(), HubNotice::Joined { .. }));
+    let block = vec![0.0_f32; 256 * 2];
+    // The desk does not take the strip's audio: the ring fills, and the
+    // blocks past it are dropped.
+    // One at a time, each read before the next, so the socket never
+    // fills, until the ring is full and blocks are dropped. (Not with
+    // `until`, which runs the desk.)
+    let mut blocks = 0;
+    while rig.hub.snapshot().dropped_blocks < 4 {
+        assert!(blocks < 4_096, "the ring never filled");
+        client.send_audio(blocks * 256, 256, &block).unwrap();
+        blocks += 1;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let read = rig.hub.snapshot();
+            if read.blocks + read.dropped_blocks >= blocks {
+                break;
+            }
+            assert!(Instant::now() < deadline, "block {blocks} was never read");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    let mut health = DeskHealthMsg::default();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while health.dropped == 0 {
+        assert!(Instant::now() < deadline, "the drops were never told");
+        thread::sleep(Duration::from_millis(1));
+        while client.try_recv().unwrap().is_some() {}
+        if let Some(told) = client.take_desk_health() {
+            health = told;
+        }
+    }
+    // (With the desk's clock standing still, the stream crept ahead of it
+    // and was placed afresh as it filled: those count.)
+    let placed = health.placed_afresh;
+    // The desk takes the strip again, and the stream is placed anew: that
+    // is the drop already counted, not a block that came late. Step by
+    // step (the desk drains the ring, then each block is read before the
+    // desk plays on), so the stream is never late whatever the scheduling.
+    for _ in 0..1_024 {
+        rig.render();
+    }
+    let mut next = blocks * 256;
+    for _ in 0..32 {
+        let read = rig.hub.snapshot().blocks;
+        client.send_audio(next, 256, &block).unwrap();
+        next += 256;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while rig.hub.snapshot().blocks <= read {
+            assert!(Instant::now() < deadline, "a block was never read");
+            thread::sleep(Duration::from_millis(1));
+        }
+        rig.render();
+    }
+    let deadline = Instant::now() + HEALTH_INTERVAL * 3;
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+        while client.try_recv().unwrap().is_some() {}
+        if let Some(told) = client.take_desk_health() {
+            health = told;
+        }
+    }
+    assert_eq!(health.placed_afresh, placed, "{health:?}");
 }

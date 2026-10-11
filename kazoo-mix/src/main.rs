@@ -15,6 +15,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{self, Event, MouseEventKind};
 
 use kazoo_core::ipc::link::LinkStatus;
+use kazoo_core::realtime::NotRealTime;
 use kazoo_mix::callback::AudioCallback;
 use kazoo_mix::desk::Desk;
 use kazoo_mix::engine::MixerEngine;
@@ -23,7 +24,7 @@ use kazoo_mix::patchbay::{PatchbayCallback, PatchbayHub, patchbay};
 use kazoo_mix::shared::{DESK_CHANNELS, SharedState};
 use kazoo_mix::source::DemoEightOhEight;
 use kazoo_mix::terminal::{MixTerminal, TerminalGuard};
-use kazoo_mix::ui::{self, StatusInfo};
+use kazoo_mix::ui::{self, HubPriority, StatusInfo};
 
 /// Desk redraw interval (~30 fps).
 const UI_TICK: Duration = Duration::from_millis(33);
@@ -137,6 +138,7 @@ fn run_desk(
                 stream_errors: audio.shared.stream_errors(),
                 engine_faults: audio.shared.engine_faults(),
                 mouse,
+                hub_priority: hub_priority(hub.real_time()),
             };
             terminal.draw(|frame| ui::draw(frame, &mut desk, &audio.shared, &status))?;
             redraw = false;
@@ -228,6 +230,15 @@ impl HubNews {
             n => format!("{demo}{n} instruments plugged in"),
         };
         (line, false)
+    }
+}
+
+/// How the hub's thread is scheduled, from what it said when it asked.
+const fn hub_priority(outcome: Option<&Result<(), NotRealTime>>) -> HubPriority {
+    match outcome {
+        None => HubPriority::Asking,
+        Some(Ok(())) => HubPriority::RealTime,
+        Some(Err(_)) => HubPriority::Normal,
     }
 }
 
@@ -341,5 +352,15 @@ mod tests {
         assert_eq!(parse(&["--help"]).unwrap(), None);
         let err = parse(&["--nope"]).unwrap_err().to_string();
         assert!(err.contains("unknown option `--nope`"), "{err}");
+    }
+
+    #[test]
+    fn the_header_shows_the_hubs_priority_as_it_said() {
+        assert_eq!(hub_priority(None), HubPriority::Asking);
+        assert_eq!(hub_priority(Some(&Ok(()))), HubPriority::RealTime);
+        let refused = kazoo_core::realtime::RealTime::promote(std::time::Duration::ZERO)
+            .map(drop)
+            .expect_err("a zero period is refused");
+        assert_eq!(hub_priority(Some(&Err(refused))), HubPriority::Normal);
     }
 }

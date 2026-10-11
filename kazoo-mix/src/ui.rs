@@ -87,6 +87,19 @@ const VU_MARKS: [(f32, bool); 11] = [
     (3.0, true),
 ];
 
+/// Whether the instrument hub's thread is scheduled as real-time: when it is
+/// not, a busy machine can hold it up long enough for an instrument's
+/// audio to be placed afresh, heard as a jump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HubPriority {
+    /// It has not asked yet: the hub has only just started.
+    Asking,
+    /// It was granted real-time scheduling.
+    RealTime,
+    /// It was refused, and runs at normal priority.
+    Normal,
+}
+
 /// Engine facts shown in the header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusInfo {
@@ -108,6 +121,8 @@ pub struct StatusInfo {
     /// Whether the terminal accepted mouse capture; without it the desk is
     /// keyboard-only.
     pub mouse: bool,
+    /// How the instrument hub's thread is scheduled.
+    pub hub_priority: HubPriority,
 }
 
 /// Draw the whole desk and rebuild the hit map.
@@ -1063,9 +1078,20 @@ fn draw_header(
     put(buf, left, x + 2, area.y, &status.note, note_style);
 }
 
-/// Device facts and error counts at the right of the header, if there is
-/// room. Returns where the left-hand content must stop.
+/// Device facts, the hub's priority and error counts at the right of the
+/// header, if there is room. Returns where the left-hand content must stop.
 fn draw_device_info(buf: &mut Buffer, area: Rect, status: &StatusInfo) -> u16 {
+    let (priority, priority_style) = match status.hub_priority {
+        HubPriority::Asking => ("", Style::new().fg(TEXT_DIM).bg(PANEL)),
+        HubPriority::RealTime => ("hub rt · ", Style::new().fg(TEXT_DIM).bg(PANEL)),
+        HubPriority::Normal => (
+            "hub normal · ",
+            Style::new()
+                .fg(AMBER)
+                .bg(PANEL)
+                .add_modifier(Modifier::BOLD),
+        ),
+    };
     let right = format!(
         "{}{:.1} kHz · {} ch · buf {} · ",
         if status.mouse { "" } else { "keys only · " },
@@ -1093,13 +1119,16 @@ fn draw_device_info(buf: &mut Buffer, area: Rect, status: &StatusInfo) -> u16 {
     } else {
         Style::new().fg(TEXT_DIM).bg(PANEL)
     };
-    let total = u16::try_from(right.chars().count() + errors.chars().count()).unwrap_or(u16::MAX);
+    let total =
+        u16::try_from(priority.chars().count() + right.chars().count() + errors.chars().count())
+            .unwrap_or(u16::MAX);
     if total + 60 < area.width {
         let start = area.right() - total;
+        let after = put(buf, area, start, area.y, priority, priority_style);
         let after = put(
             buf,
             area,
-            start,
+            after,
             area.y,
             &right,
             Style::new().fg(TEXT_DIM).bg(PANEL),
@@ -1541,15 +1570,53 @@ mod tests {
             stream_errors: 0,
             engine_faults: 0,
             mouse: true,
+            hub_priority: HubPriority::RealTime,
         }
     }
 
     fn render(width: u16, height: u16, desk: &mut Desk, shared: &SharedState) -> Buffer {
+        render_with(width, height, desk, shared, &status())
+    }
+
+    fn render_with(
+        width: u16,
+        height: u16,
+        desk: &mut Desk,
+        shared: &SharedState,
+        status: &StatusInfo,
+    ) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|frame| draw(frame, desk, shared, &status()))
+            .draw(|frame| draw(frame, desk, shared, status))
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn the_header_says_how_the_hub_is_scheduled_apart_from_the_news() {
+        let shared = live_shared();
+        let header = |hub_priority| {
+            let status = StatusInfo {
+                hub_priority,
+                ..status()
+            };
+            let view = render_with(220, 60, &mut Desk::new(), &shared, &status);
+            let text = text(&view);
+            let first = text.lines().next().unwrap_or_default().to_string();
+            // The news keeps its place whatever the priority.
+            assert!(first.contains("808 demo pattern"), "{first}");
+            first
+        };
+        let granted = header(HubPriority::RealTime);
+        assert!(granted.contains("hub rt"), "{granted}");
+        let refused = header(HubPriority::Normal);
+        assert!(refused.contains("hub normal"), "{refused}");
+        assert!(!refused.contains("hub rt"), "{refused}");
+        let asking = header(HubPriority::Asking);
+        assert!(
+            !asking.contains("hub rt") && !asking.contains("hub normal"),
+            "{asking}"
+        );
     }
 
     fn text(buf: &Buffer) -> String {

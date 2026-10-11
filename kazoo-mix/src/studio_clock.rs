@@ -181,6 +181,19 @@ impl StudioStamp {
     pub const fn reset(&mut self) {
         self.offset = None;
     }
+
+    /// The lead beyond the usual this instrument is given now.
+    #[must_use]
+    pub const fn extra_lead(&self) -> u32 {
+        self.extra_lead
+    }
+
+    /// Give it `extra_lead` frames beyond the usual from now on (the desk
+    /// holds it to what its strip's ring takes, which moves with the
+    /// device's buffer).
+    pub const fn set_extra_lead(&mut self, extra_lead: u32) {
+        self.extra_lead = extra_lead;
+    }
 }
 
 impl Default for StudioStamp {
@@ -436,5 +449,51 @@ mod tests {
         assert_eq!(watch.elapsed(1_000, stalled, 48_000, 512), 512);
         // A new frame starts the count again.
         assert_eq!(watch.elapsed(1_512, stalled, 48_000, 512), 0);
+    }
+
+    /// Times the desk placed the stream of a source that asked for
+    /// `extra_lead` frames, renders 256-frame blocks up to its lead ahead
+    /// of the frame playing, and every tenth of a second stops for
+    /// `stall` frames, as an ordinary thread on a busy machine does; over
+    /// three seconds of a desk at 48 kHz. Counted in the desk's frames, so
+    /// how busy the machine running the test is makes no difference.
+    fn placements_with_stalls(extra_lead: u32, stall: u64) -> u64 {
+        let mut stamp = StudioStamp::with_extra_lead(extra_lead);
+        let mut stream = 0_u64;
+        let mut placements = 0;
+        let mut stalled_until = 0_u64;
+        let mut studio_now = 0_u64;
+        while studio_now < 3 * 48_000 {
+            let tenth = studio_now % 4_800 < u64::from(DEVICE);
+            if studio_now >= stalled_until && tenth && studio_now > 0 {
+                stalled_until = studio_now + stall;
+            }
+            if studio_now >= stalled_until {
+                let clock = at(studio_now);
+                let target = clock.playing_now() + stamp.lead(DEVICE, MARGIN);
+                while stamp.next_frame().is_none_or(|next| next < target) {
+                    if stamp.stamp(stream, 256, clock).resynced {
+                        placements += 1;
+                    }
+                    stream += 256;
+                }
+            }
+            studio_now += u64::from(DEVICE);
+        }
+        placements
+    }
+
+    #[test]
+    fn the_walls_tenth_of_a_second_rides_out_stalls_the_old_lead_could_not() {
+        // Stalls of 67 to 75 ms: past the 2 832 frames (59 ms) that the old
+        // 1 920 extra frames came to on this desk, well inside the 5 712
+        // (119 ms) that the wall's 4 800 come to now.
+        for stall in [3_240, 3_600] {
+            let old = placements_with_stalls(1_920, stall);
+            assert!(old > 10, "{stall}: placed {old} times with the old lead");
+            assert_eq!(placements_with_stalls(4_800, stall), 1, "{stall}");
+        }
+        // Without stalls, either lead places the stream once.
+        assert_eq!(placements_with_stalls(1_920, 0), 1);
     }
 }

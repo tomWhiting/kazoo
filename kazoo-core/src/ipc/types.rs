@@ -28,6 +28,10 @@ pub const MSG_TRANSPORT_REQUEST: u8 = 0x21;
 /// sent only to an instrument that renders on a timer and asked for it at
 /// registration (see [`RegisterMsg::pace_lead_frames`]).
 pub const MSG_DESK_PACE: u8 = 0x22;
+/// Hub -> Instrument. How the desk has been taking the instrument's audio
+/// (see [`DeskHealthMsg`]), sent when it changes. An instrument that does
+/// not know it passes it over.
+pub const MSG_DESK_HEALTH: u8 = 0x23;
 /// Routed through Hub. MIDI-style note events between instruments.
 pub const MSG_NOTE_EVENT: u8 = 0x30;
 /// Either direction. Mixer parameter update.
@@ -280,6 +284,48 @@ impl DeskPaceMsg {
         Self {
             playing_stream: u64::from_le_bytes(stream),
             lead_frames: u32::from_le_bytes(lead),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0x23: DeskHealth
+// ---------------------------------------------------------------------------
+
+/// How the desk has been taking one connection's audio, counted since the
+/// instrument registered: what a listener hears as a jump or a gap.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeskHealthMsg {
+    /// Times a block reached the desk after its time (or the stream went
+    /// backwards, or crept too far ahead) and the desk placed the stream
+    /// afresh. The first placement is not counted, and neither is the one
+    /// after blocks were dropped (counted in `dropped`).
+    pub placed_afresh: u64,
+    /// Blocks lost because the strip's ring was full.
+    pub dropped: u64,
+}
+
+impl DeskHealthMsg {
+    /// Wire size: 8 + 8 = 16 bytes.
+    pub const WIRE_SIZE: usize = 8 + 8;
+
+    /// Encode into a byte buffer. Returns the number of bytes written.
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        buf[0..8].copy_from_slice(&self.placed_afresh.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.dropped.to_le_bytes());
+        Self::WIRE_SIZE
+    }
+
+    /// Decode from a byte buffer of at least [`Self::WIRE_SIZE`] bytes.
+    #[must_use]
+    pub fn decode(buf: &[u8]) -> Self {
+        let mut placed = [0_u8; 8];
+        placed.copy_from_slice(&buf[0..8]);
+        let mut dropped = [0_u8; 8];
+        dropped.copy_from_slice(&buf[8..16]);
+        Self {
+            placed_afresh: u64::from_le_bytes(placed),
+            dropped: u64::from_le_bytes(dropped),
         }
     }
 }
@@ -578,6 +624,17 @@ mod tests {
         let mut buf = [0_u8; DeskPaceMsg::WIRE_SIZE];
         assert_eq!(msg.encode(&mut buf), DeskPaceMsg::WIRE_SIZE);
         assert_eq!(DeskPaceMsg::decode(&buf), msg);
+    }
+
+    #[test]
+    fn desk_health_msg_roundtrip() {
+        let msg = DeskHealthMsg {
+            placed_afresh: 0x0123_4567_89AB_CDEF,
+            dropped: u64::MAX,
+        };
+        let mut buf = [0_u8; DeskHealthMsg::WIRE_SIZE];
+        assert_eq!(msg.encode(&mut buf), DeskHealthMsg::WIRE_SIZE);
+        assert_eq!(DeskHealthMsg::decode(&buf), msg);
     }
 
     #[test]

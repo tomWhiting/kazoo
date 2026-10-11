@@ -8,6 +8,10 @@ rust-version = "1.85"
 workspace = true
 
 [dependencies]
+# MPL-2.0 (Mozilla), file-level copyleft: used unmodified from crates.io,
+# where its source is published; changes to its own files would have to be
+# published under the MPL too. Without default features it leaves out D-Bus.
+audio_thread_priority = { version = "0.38.0", default-features = false }
 audioadapter-buffers = "2.0.0"
 cpal = "0.17.1"
 crossbeam-channel = "0.5.15"

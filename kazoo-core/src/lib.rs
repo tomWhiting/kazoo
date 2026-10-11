@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod mixer;
 pub mod notation;
 pub mod protocol;
+pub mod realtime;
 pub mod synthesis;
 pub mod transport;
 

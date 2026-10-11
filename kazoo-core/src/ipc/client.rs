@@ -16,10 +16,10 @@ use std::time::Duration;
 use super::outbox::{Outbox, OutboxError};
 use super::protocol::{self, FrameBuffer};
 use super::types::{
-    self, DeskPaceMsg, MSG_AUDIO, MSG_DESK_PACE, MSG_NOTE_EVENT, MSG_PARAMETER_CHANGE, MSG_REFUSED,
-    MSG_REGISTER, MSG_REGISTERED, MSG_SHUTDOWN, MSG_TRANSPORT_REQUEST, MSG_TRANSPORT_SYNC,
-    NoteEventMsg, ParameterChangeMsg, RegisterMsg, RegisteredMsg, TransportRequestMsg,
-    TransportSyncMsg,
+    self, DeskHealthMsg, DeskPaceMsg, MSG_AUDIO, MSG_DESK_HEALTH, MSG_DESK_PACE, MSG_NOTE_EVENT,
+    MSG_PARAMETER_CHANGE, MSG_REFUSED, MSG_REGISTER, MSG_REGISTERED, MSG_SHUTDOWN,
+    MSG_TRANSPORT_REQUEST, MSG_TRANSPORT_SYNC, NoteEventMsg, ParameterChangeMsg, RegisterMsg,
+    RegisteredMsg, TransportRequestMsg, TransportSyncMsg,
 };
 
 /// Registration timeout: how long the client waits for the hub to respond
@@ -64,6 +64,9 @@ pub struct HubIpcClient {
     /// The desk's latest word on where it is playing this stream, until
     /// taken ([`Self::take_desk_pace`]).
     desk_pace: Option<DeskPaceMsg>,
+    /// The desk's latest word on how it is taking this stream, until taken
+    /// ([`Self::take_desk_health`]).
+    desk_health: Option<DeskHealthMsg>,
 }
 
 // UnixStream is !Debug on some platforms.
@@ -168,6 +171,7 @@ impl HubIpcClient {
             hub_buffer_size: resp.hub_buffer_size,
             registration: resp,
             desk_pace: None,
+            desk_health: None,
         })
     }
 
@@ -266,10 +270,11 @@ impl HubIpcClient {
     /// Returns `Ok(Some(msg))` if a complete message was received,
     /// `Ok(None)` if no data is available, or `Err` on connection failure.
     ///
-    /// A desk pace ([`MSG_DESK_PACE`]) is not a message for the
-    /// instrument: it is kept for [`Self::take_desk_pace`]. It, and any
-    /// message of a type this instrument does not know, is passed over and
-    /// reading goes on to the next message.
+    /// A desk pace ([`MSG_DESK_PACE`]) or desk health
+    /// ([`MSG_DESK_HEALTH`]) is not a message for the instrument: it is
+    /// kept for [`Self::take_desk_pace`] or [`Self::take_desk_health`].
+    /// They, and any message of a type this instrument does not know, are
+    /// passed over and reading goes on to the next message.
     ///
     /// # Errors
     ///
@@ -286,6 +291,9 @@ impl HubIpcClient {
             if header.msg_type == MSG_DESK_PACE {
                 let payload = self.whole(header.msg_type, len, DeskPaceMsg::WIRE_SIZE)?;
                 self.desk_pace = Some(DeskPaceMsg::decode(payload));
+            } else if header.msg_type == MSG_DESK_HEALTH {
+                let payload = self.whole(header.msg_type, len, DeskHealthMsg::WIRE_SIZE)?;
+                self.desk_health = Some(DeskHealthMsg::decode(payload));
             } else if let Some(message) = self.decode(header.msg_type, len)? {
                 return Ok(Some(message));
             }
@@ -309,6 +317,12 @@ impl HubIpcClient {
     /// The desk's latest pace since the last call, if one has arrived.
     pub const fn take_desk_pace(&mut self) -> Option<DeskPaceMsg> {
         self.desk_pace.take()
+    }
+
+    /// The desk's latest health report since the last call, if one has
+    /// arrived.
+    pub const fn take_desk_health(&mut self) -> Option<DeskHealthMsg> {
+        self.desk_health.take()
     }
 
     /// The instrument's message in the read buffer, of type `msg_type`
@@ -456,12 +470,29 @@ mod tests {
     }
 
     #[test]
+    fn desk_health_is_kept_and_the_next_message_still_arrives() {
+        let (mut client, mut hub, mut buf) = connected();
+        let health = DeskHealthMsg {
+            placed_afresh: 3,
+            dropped: 1,
+        };
+        health.encode(buf.payload_mut());
+        buf.write_frame(MSG_DESK_HEALTH, 0, DeskHealthMsg::WIRE_SIZE, &mut hub)
+            .unwrap();
+        buf.write_frame(MSG_SHUTDOWN, 1, 0, &mut hub).unwrap();
+        assert!(matches!(next(&mut client), Ok(Some(HubMessage::Shutdown))));
+        assert_eq!(client.take_desk_health(), Some(health));
+        assert_eq!(client.take_desk_health(), None);
+    }
+
+    #[test]
     fn a_short_message_of_a_known_type_is_an_error_not_old_bytes() {
         for (msg_type, len) in [
             (MSG_TRANSPORT_SYNC, TransportSyncMsg::WIRE_SIZE - 1),
             (MSG_NOTE_EVENT, 3),
             (MSG_PARAMETER_CHANGE, 0),
             (MSG_DESK_PACE, DeskPaceMsg::WIRE_SIZE - 4),
+            (MSG_DESK_HEALTH, DeskHealthMsg::WIRE_SIZE - 1),
         ] {
             let (mut client, mut hub, mut buf) = connected();
             buf.write_frame(msg_type, 0, len, &mut hub).unwrap();

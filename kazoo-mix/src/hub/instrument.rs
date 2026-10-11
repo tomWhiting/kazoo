@@ -11,8 +11,8 @@ use kazoo_core::ipc::protocol::{
     decode_audio_stream_frame,
 };
 use kazoo_core::ipc::types::{
-    DeskPaceMsg, MSG_AUDIO, MSG_DESK_PACE, MSG_NOTE_EVENT, MSG_SHUTDOWN, MSG_TRANSPORT_REQUEST,
-    NoteEventMsg, TransportRequestMsg,
+    DeskHealthMsg, DeskPaceMsg, MSG_AUDIO, MSG_DESK_HEALTH, MSG_DESK_PACE, MSG_NOTE_EVENT,
+    MSG_SHUTDOWN, MSG_TRANSPORT_REQUEST, NoteEventMsg, TransportRequestMsg,
 };
 use kazoo_core::protocol::{AudioBlockHeader, BlockFlags};
 
@@ -27,6 +27,13 @@ pub const MAX_MESSAGE_FRAMES: usize = 4096;
 /// stream: often enough that its own clock never carries it far between
 /// words.
 pub const PACE_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Least time between two reports to an instrument of how the desk has
+/// been taking its audio: a stream placed afresh again and again is told
+/// ten times a second, not once a block, so what an instrument hears last
+/// before it leaves is at most a tenth of a second old. (No final report is
+/// sent as it leaves: up to that tenth of a second goes untold.)
+pub const HEALTH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Something an instrument sent that the hub must act on.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -127,6 +134,21 @@ pub struct Instrument {
     paced: bool,
     /// When it was last told.
     last_pace: Option<Instant>,
+    /// The lead beyond the usual it asked for at registration.
+    asked_lead: u32,
+    /// Frames its strip's ring holds.
+    ring_frames: u64,
+    /// The desk's rate.
+    sample_rate: u32,
+    /// Times its stream was placed on the studio clock, the first included.
+    placements: u64,
+    /// Blocks lost because the strip's ring was full.
+    dropped: u64,
+    /// Whether the stream was let go because the ring was full, and not
+    /// placed again since.
+    dropped_since: bool,
+    /// What it was last told of those, and when.
+    last_health: (DeskHealthMsg, Option<Instant>),
 }
 
 impl Instrument {
@@ -147,10 +169,19 @@ impl Instrument {
             outbox: Outbox::default(),
             read_buf,
             producer,
-            stamp: StudioStamp::with_extra_lead(registration.pace_lead_frames),
+            // Fitted to the desk's clock at the first block or pace (see
+            // `fit_lead`).
+            stamp: StudioStamp::with_extra_lead(0),
             needs_song: true,
             paced: registration.pace_lead_frames > 0,
+            asked_lead: registration.pace_lead_frames,
+            ring_frames: registration.ring_frames,
+            sample_rate: registration.sample_rate,
             last_pace: None,
+            placements: 0,
+            dropped: 0,
+            dropped_since: false,
+            last_health: (DeskHealthMsg::default(), None),
             scratch: vec![0.0; MAX_MESSAGE_FRAMES * usize::from(registration.channels)],
         }
     }
@@ -162,6 +193,7 @@ impl Instrument {
     /// [`ConnectionError::Io`] if the socket failed or closed, and
     /// [`ConnectionError::Protocol`] for a malformed message.
     pub fn poll(&mut self, clock: DeskClock) -> Result<Option<Inbound>, ConnectionError> {
+        self.fit_lead(clock);
         let Some(header) = self
             .read_buf
             .try_read_frame(&mut &self.stream)
@@ -249,6 +281,12 @@ impl Instrument {
             },
             samples: &self.scratch[..samples],
         });
+        // A placement after the ring was full is the desk starting the
+        // stream afresh once it takes it again, not a block that came late:
+        // the drop was counted, and that is not.
+        if stamped.resynced && !std::mem::take(&mut self.dropped_since) {
+            self.placements = self.placements.saturating_add(1);
+        }
         match pushed {
             Ok(()) => Inbound::Audio {
                 resynced: stamped.resynced,
@@ -257,6 +295,8 @@ impl Instrument {
                 // The desk is not consuming (stream stopped, or the strip is
                 // still being patched in): start afresh when it is.
                 self.stamp.reset();
+                self.dropped = self.dropped.saturating_add(1);
+                self.dropped_since = true;
                 Inbound::AudioDropped
             }
         }
@@ -276,6 +316,7 @@ impl Instrument {
     ///
     /// See [`Outbox::queue`].
     pub fn pace(&mut self, clock: DeskClock, now: Instant) -> Result<(), OutboxError> {
+        self.fit_lead(clock);
         if !self.paced
             || self
                 .last_pace
@@ -295,6 +336,47 @@ impl Instrument {
         pace.encode(&mut payload);
         self.last_pace = Some(now);
         self.send(MSG_DESK_PACE, &payload)
+    }
+
+    /// Give the instrument the extra lead it asked for, held to what its
+    /// strip's ring takes against the desk's `clock` now (see
+    /// [`super::most_extra_lead`]): the device's buffer is only known once
+    /// the desk has played, and may change when the device is rebuilt, so
+    /// the hold is worked out again whenever the clock is read.
+    fn fit_lead(&mut self, clock: DeskClock) {
+        let most = super::most_extra_lead(self.ring_frames, clock, self.sample_rate);
+        self.stamp.set_extra_lead(self.asked_lead.min(most));
+    }
+
+    /// How the desk has been taking this instrument's audio since it
+    /// registered.
+    #[must_use]
+    pub const fn health(&self) -> DeskHealthMsg {
+        DeskHealthMsg {
+            placed_afresh: self.placements.saturating_sub(1),
+            dropped: self.dropped,
+        }
+    }
+
+    /// Tell the instrument how the desk has been taking its audio, when
+    /// that has changed since it was last told, at most every
+    /// [`HEALTH_INTERVAL`].
+    ///
+    /// # Errors
+    ///
+    /// See [`Outbox::queue`].
+    pub fn report_health(&mut self, now: Instant) -> Result<(), OutboxError> {
+        let health = self.health();
+        let (told, at) = self.last_health;
+        if health == told
+            || at.is_some_and(|at| now.saturating_duration_since(at) < HEALTH_INTERVAL)
+        {
+            return Ok(());
+        }
+        let mut payload = [0_u8; DeskHealthMsg::WIRE_SIZE];
+        health.encode(&mut payload);
+        self.last_health = (health, Some(now));
+        self.send(MSG_DESK_HEALTH, &payload)
     }
 
     /// Queue a frame to this instrument.
@@ -325,8 +407,13 @@ pub struct Registration {
     pub channels: u16,
     /// Extra lead asked for by an instrument that renders on a timer; 0
     /// for one clocked by its own device (see
-    /// [`kazoo_core::ipc::types::RegisterMsg::pace_lead_frames`]).
+    /// [`kazoo_core::ipc::types::RegisterMsg::pace_lead_frames`]). The
+    /// desk gives it as much of that as its strip's ring takes.
     pub pace_lead_frames: u32,
+    /// Frames the strip's ring holds.
+    pub ring_frames: u64,
+    /// The desk's rate.
+    pub sample_rate: u32,
 }
 
 /// How a connection failed.

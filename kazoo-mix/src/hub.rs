@@ -15,7 +15,15 @@
 //!
 //! Everything here runs on one polling thread. It never touches the audio
 //! callback except through the patchbay's lock-free queues and the shared
-//! state's atomics.
+//! state's atomics. The thread stamps each block onto the studio clock as it
+//! reads it, so a block it reads late is placed afresh (heard as a jump):
+//! it asks to be scheduled as real-time for its whole life (see
+//! [`kazoo_core::realtime`]), and [`Hub::real_time`] says whether it was.
+//! A poll allocates nothing; an instrument joining, leaving or being
+//! refused does (its ring, its name, the notice), which is rare and brief.
+//! Each instrument is told how the desk has been taking its audio (see
+//! [`kazoo_core::ipc::types::DeskHealthMsg`]), so a jump can be seen at the
+//! instrument as well as heard.
 
 mod instrument;
 #[cfg(test)]
@@ -26,9 +34,9 @@ use std::fmt;
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -41,6 +49,7 @@ use kazoo_core::ipc::types::{
     TRANSPORT_RECORDING, TRANSPORT_STOPPED, TransportSyncMsg,
 };
 use kazoo_core::protocol::BufferId;
+use kazoo_core::realtime::{NotRealTime, RealTime};
 
 use crate::engine::{MAX_SOURCE_RING_SAMPLES, MixerEngineError, short_name};
 use crate::patchbay::{PatchCommand, PatchEvent, PatchbayHub};
@@ -52,7 +61,8 @@ use crate::worker::join_worker;
 use instrument::{ConnectionError, Inbound, Instrument, NoteMessage, Registration};
 use kazoo_core::ipc::outbox::OutboxError;
 
-/// Time between polls of the sockets.
+/// Time between polls of the sockets. It is also the period the scheduler
+/// is told when the thread is real-time: one short pass per poll.
 const POLL_INTERVAL: Duration = Duration::from_micros(500);
 
 /// How long a new connection has to register.
@@ -291,6 +301,8 @@ pub struct Hub {
     notices: Receiver<HubNotice>,
     stats: Arc<HubStats>,
     socket: PathBuf,
+    /// Whether the hub thread is scheduled as real-time, once it has asked.
+    real_time: Arc<OnceLock<Result<(), NotRealTime>>>,
 }
 
 impl Hub {
@@ -340,9 +352,30 @@ impl Hub {
         let socket = config.socket.clone();
         let mut server = Server::new(listener, config, shared, patchbay, notice_tx, &stats);
         let thread_running = Arc::clone(&running);
+        let real_time = Arc::new(OnceLock::new());
+        let promoted = Arc::clone(&real_time);
         let join = thread::Builder::new()
             .name("kazoo-mix-hub".to_string())
-            .spawn(move || server.run(&thread_running))?;
+            .spawn(move || {
+                // Kept on this thread's stack for its whole life: the hub
+                // never blocks, so it never needs to step down.
+                let (priority, outcome) = match RealTime::promote(POLL_INTERVAL) {
+                    Ok(priority) => (Some(priority), Ok(())),
+                    // Kept for the desk to show, with why (see
+                    // `Hub::real_time`).
+                    Err(why) => (None, Err(why)),
+                };
+                promoted.get_or_init(|| outcome);
+                server.run(&thread_running);
+                if let Some(priority) = priority {
+                    if let Err(why) = priority.demote() {
+                        // The thread ends next, which ends its priority too.
+                        server.notify(HubNotice::Fault(format!(
+                            "the hub could not return to normal priority: {why}"
+                        )));
+                    }
+                }
+            })?;
 
         Ok(Self {
             running,
@@ -350,6 +383,7 @@ impl Hub {
             notices,
             stats,
             socket,
+            real_time,
         })
     }
 
@@ -372,6 +406,13 @@ impl Hub {
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.join.as_ref().is_some_and(|join| !join.is_finished())
+    }
+
+    /// Whether the hub thread is scheduled as real-time, and why not when
+    /// it is not; `None` until the thread has asked, just after it starts.
+    #[must_use]
+    pub fn real_time(&self) -> Option<&Result<(), NotRealTime>> {
+        self.real_time.get()
     }
 
     /// The hub's counters.
@@ -441,6 +482,11 @@ struct Server {
     /// The last refusal told to the desk, so a retrying instrument does not
     /// repeat it over every other notice.
     last_refusal: Option<HubNotice>,
+    /// Notes read this poll, kept between polls so a poll allocates
+    /// nothing.
+    notes: Vec<([u8; 16], NoteMessage)>,
+    /// Instruments leaving this pass, kept for the same reason.
+    leaving: Vec<(usize, LeaveReason)>,
 }
 
 impl Server {
@@ -474,6 +520,8 @@ impl Server {
             song: VecDeque::from([SongAnchor::stopped(f64::from(DEFAULT_BPM))]),
             timer,
             last_refusal: None,
+            notes: Vec::with_capacity(DESK_CHANNELS * MESSAGES_PER_POLL),
+            leaving: Vec::with_capacity(2 * DESK_CHANNELS),
         }
     }
 
@@ -703,9 +751,9 @@ impl Server {
                 name: name.clone(),
                 slot,
                 channels,
-                // At most a second of extra lead: more is a mistake, and
-                // would hold every transport change back as long.
-                pace_lead_frames: register.pace_lead_frames.min(self.config.sample_rate),
+                pace_lead_frames: register.pace_lead_frames,
+                ring_frames: ring_frames(strip_ring(slot, channels)),
+                sample_rate: self.config.sample_rate,
             },
             pending.read_buf,
             producer,
@@ -737,8 +785,8 @@ impl Server {
 
     fn read_instruments(&mut self) {
         let clock = self.clock();
-        let mut notes: Vec<([u8; 16], NoteMessage)> = Vec::new();
-        let mut leaving: Vec<(usize, LeaveReason)> = Vec::new();
+        let mut notes = std::mem::take(&mut self.notes);
+        let mut leaving = std::mem::take(&mut self.leaving);
         for (index, instrument) in self.instruments.iter_mut().enumerate() {
             for _ in 0..MESSAGES_PER_POLL {
                 match instrument.poll(clock) {
@@ -774,9 +822,11 @@ impl Server {
                 }
             }
         }
-        for (source, note) in notes {
-            self.route_note(source, &note, &mut leaving);
+        for (source, note) in &notes {
+            self.route_note(*source, note, &mut leaving);
         }
+        notes.clear();
+        self.notes = notes;
         self.remove(leaving);
     }
 
@@ -819,7 +869,7 @@ impl Server {
         }
         let fresh = fresh.min(self.song.len());
         let sample_rate = self.config.sample_rate;
-        let mut leaving = Vec::new();
+        let mut leaving = std::mem::take(&mut self.leaving);
         for (index, instrument) in self.instruments.iter_mut().enumerate() {
             let catch_up = instrument.needs_song && instrument.stamp().next_frame().is_some();
             let skip = if catch_up {
@@ -851,13 +901,17 @@ impl Server {
     }
 
     /// Tell every instrument that renders on a timer where the desk is
-    /// playing its stream.
+    /// playing its stream, and every instrument how the desk has been taking
+    /// its audio when that has changed.
     fn pace_instruments(&mut self) {
         let clock = self.clock();
         let now = Instant::now();
-        let mut leaving = Vec::new();
+        let mut leaving = std::mem::take(&mut self.leaving);
         for (index, instrument) in self.instruments.iter_mut().enumerate() {
-            if let Err(err) = instrument.pace(clock, now) {
+            if let Err(err) = instrument
+                .pace(clock, now)
+                .and_then(|()| instrument.report_health(now))
+            {
                 leaving.push((index, leave_reason(&err)));
             }
         }
@@ -865,7 +919,7 @@ impl Server {
     }
 
     fn flush_instruments(&mut self) {
-        let mut leaving = Vec::new();
+        let mut leaving = std::mem::take(&mut self.leaving);
         for (index, instrument) in self.instruments.iter_mut().enumerate() {
             if let Err(err) = instrument.flush() {
                 leaving.push((index, leave_reason(&err)));
@@ -874,11 +928,14 @@ impl Server {
         self.remove(leaving);
     }
 
-    /// Disconnect instruments, highest index first so the rest stay valid.
+    /// Disconnect instruments, highest index first so the rest stay valid,
+    /// and keep `leaving`, emptied, for the next pass.
     fn remove(&mut self, mut leaving: Vec<(usize, LeaveReason)>) {
-        leaving.sort_by_key(|(index, _)| std::cmp::Reverse(*index));
+        // Ascending, so taking from the end goes highest index first; the
+        // first reason given for an instrument is the one kept.
+        leaving.sort_by_key(|(index, _)| *index);
         leaving.dedup_by_key(|(index, _)| *index);
-        for (index, reason) in leaving {
+        while let Some((index, reason)) = leaving.pop() {
             let instrument = self.instruments.swap_remove(index);
             self.strips[instrument.slot] = Strip::Releasing;
             self.patches.push_back(PatchCommand::Detach {
@@ -890,6 +947,7 @@ impl Server {
                 reason,
             });
         }
+        self.leaving = leaving;
     }
 
     fn collect_patch_events(&mut self) {
@@ -986,6 +1044,27 @@ const fn transport_state(transport: Transport) -> u8 {
     } else {
         TRANSPORT_STOPPED
     }
+}
+
+/// Most extra lead an instrument may be given on a strip whose ring holds
+/// `ring_frames`, against the desk's `clock` at `sample_rate`: the whole
+/// lead held to half what the ring holds, so the other half takes the
+/// audio an instrument sends in a burst after a stall, with the largest
+/// block an instrument may send counted in the lead. And never more than a
+/// second, which would hold every transport change back as long.
+fn most_extra_lead(ring_frames: u64, clock: DeskClock, sample_rate: u32) -> u32 {
+    let base = u64::from(clock.device_frames)
+        + instrument::MAX_MESSAGE_FRAMES as u64
+        + u64::from(clock.margin_frames);
+    let most = (ring_frames / 2).saturating_sub(base);
+    // Held below the rate, a u32: the conversion is exact.
+    most.min(u64::from(sample_rate)) as u32
+}
+
+/// Frames `ring` holds.
+const fn ring_frames(ring: AudioRingConfig) -> u64 {
+    // Widened before multiplying: exact.
+    ring.capacity_blocks as u64 * ring.block_frames as u64
 }
 
 /// The ring an instrument's audio reaches strip `slot` through: as many

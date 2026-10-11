@@ -1319,6 +1319,12 @@ impl Wall {
         self.patch.modules().len() + self.patch.cables().len()
     }
 
+    /// The desk link, while the wall has one.
+    #[must_use]
+    pub const fn desk_link(&self) -> Option<&HubLink> {
+        self.desk.as_ref()
+    }
+
     /// Put recordings in `dir` from the next one on.
     pub fn set_recordings_dir(&mut self, dir: std::path::PathBuf) {
         self.recorder.set_dir(dir);

@@ -11,6 +11,13 @@
 //!   and requests, and hands over the hub's messages, through lock-free
 //!   rings: no socket I/O, locks or allocation on the audio thread.
 //!
+//! An instrument can ask for its link thread to be scheduled as real-time
+//! while it is plugged in ([`LinkConfig::real_time`]; see
+//! [`crate::realtime`]): a block the thread carries late reaches the desk
+//! after its time, and the desk places the stream afresh, which is heard as
+//! a jump. The desk says how it has been taking the audio
+//! ([`HubLink::desk_health`]), so a jump can be seen as well as heard.
+//!
 //! While [`HubLinkAudio::send_audio`] returns `true`, the desk is playing the
 //! instrument's audio, and the instrument should silence its own output so it
 //! is not heard twice.
@@ -36,15 +43,16 @@ use super::client::{HubIpcClient, HubMessage};
 use super::discovery;
 use super::outbox::OutboxError;
 use super::types::{
-    DeskPaceMsg, NOTE_CC, NOTE_OFF, NOTE_ON, NOTE_PITCH_BEND, NoteEventMsg, RegisterMsg, SYNC_NOW,
-    TRANSPORT_PAUSED, TRANSPORT_PLAYING, TRANSPORT_RECORDING, TRANSPORT_STOPPED,
-    TRANSPORT_UNCHANGED, TransportSyncMsg,
+    DeskHealthMsg, DeskPaceMsg, NOTE_CC, NOTE_OFF, NOTE_ON, NOTE_PITCH_BEND, NoteEventMsg,
+    RegisterMsg, SYNC_NOW, TRANSPORT_PAUSED, TRANSPORT_PLAYING, TRANSPORT_RECORDING,
+    TRANSPORT_STOPPED, TRANSPORT_UNCHANGED, TransportSyncMsg,
 };
 use crate::audio_transport::{
     AudioBlock, AudioBlockConsumer, AudioBlockProducer, AudioRingConfig, AudioRingPopError,
     AudioRingPushError, audio_block_ring,
 };
 use crate::protocol::{AudioBlockHeader, BlockFlags, BufferId};
+use crate::realtime::RealTime;
 
 /// How often the link looks for a hub while none is answering.
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -55,7 +63,9 @@ const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 /// How long the hub may stop reading before the link gives up on it.
 const STUCK_LIMIT: Duration = Duration::from_millis(500);
 
-/// Link thread poll interval while connected.
+/// Link thread poll interval while connected. It is also the period the
+/// scheduler is told when the thread is real-time: one short pass over the
+/// rings and the socket per poll.
 const POLL_INTERVAL: Duration = Duration::from_micros(500);
 
 /// Link thread poll interval while looking for a hub.
@@ -111,6 +121,12 @@ pub struct LinkConfig {
     /// follows [`HubLinkAudio::desk_owes`] (see
     /// [`RegisterMsg::pace_lead_frames`]).
     pub pace_lead_frames: u32,
+    /// Schedule the link thread as real-time while it is plugged in, so a
+    /// busy machine does not hold the audio up on its way to the desk. Off
+    /// by default. A refusal is said once on stderr, prefixed with
+    /// [`Self::name`], so turn it on only in a program whose stderr is a
+    /// log rather than a terminal it draws on.
+    pub real_time: bool,
 }
 
 impl LinkConfig {
@@ -124,6 +140,7 @@ impl LinkConfig {
             max_block_frames,
             address: HubAddress::Discover,
             pace_lead_frames: 0,
+            real_time: false,
         }
     }
 }
@@ -197,7 +214,26 @@ struct LinkState {
     connections: AtomicU64,
     last_refusal: std::sync::Mutex<Option<String>>,
     pace: PaceSlot,
+    /// [`NOT_ASKED`], [`GRANTED`] or [`REFUSED`]: how the link thread's
+    /// last request for real-time scheduling went.
+    real_time: AtomicU8,
+    /// The desk's count of fresh placements over every connection so far.
+    placed_afresh: AtomicU64,
+    /// The desk's count of dropped blocks over every connection so far.
+    desk_dropped: AtomicU64,
 }
+
+/// The link thread has not asked for real-time scheduling.
+const NOT_ASKED: u8 = 0;
+/// It asked and was granted it.
+const GRANTED: u8 = 1;
+/// It asked and was refused.
+const REFUSED: u8 = 2;
+
+/// Whether a link thread in this process has said it was refused real-time
+/// scheduling: a link that reconnects asks again, and once is enough to
+/// say so.
+static TOLD_REFUSED: AtomicBool = AtomicBool::new(false);
 
 /// The desk's latest pace, written by the link thread and read by the
 /// audio half without a lock: a sequence count, odd while a write is under
@@ -391,6 +427,9 @@ pub fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)> {
         connections: AtomicU64::new(0),
         last_refusal: std::sync::Mutex::new(None),
         pace: PaceSlot::new(),
+        real_time: AtomicU8::new(NOT_ASKED),
+        placed_afresh: AtomicU64::new(0),
+        desk_dropped: AtomicU64::new(0),
     });
     let sample_rate = config.sample_rate;
     let running = Arc::new(AtomicBool::new(true));
@@ -406,6 +445,8 @@ pub fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)> {
         pending: None,
         stuck_since: None,
         refusal_delay: RETRY_INTERVAL,
+        health_before: DeskHealthMsg::default(),
+        health_now: DeskHealthMsg::default(),
     };
     let thread_running = Arc::clone(&running);
     let join = thread::Builder::new()
@@ -442,6 +483,29 @@ impl HubLink {
     #[must_use]
     pub fn connected_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.state.connected)
+    }
+
+    /// Whether the link thread was granted real-time scheduling the last
+    /// time it plugged in; `None` if it was not asked to be
+    /// ([`LinkConfig::real_time`]) or has not plugged in yet.
+    #[must_use]
+    pub fn real_time(&self) -> Option<bool> {
+        match self.state.real_time.load(Ordering::Acquire) {
+            GRANTED => Some(true),
+            REFUSED => Some(false),
+            _ => None,
+        }
+    }
+
+    /// How the desk has taken this instrument's audio, over every
+    /// connection so far: zero until the desk reports anything (a desk too
+    /// old to report never does).
+    #[must_use]
+    pub fn desk_health(&self) -> DeskHealthMsg {
+        DeskHealthMsg {
+            placed_afresh: self.state.placed_afresh.load(Ordering::Relaxed),
+            dropped: self.state.desk_dropped.load(Ordering::Relaxed),
+        }
     }
 
     /// The link's counters.
@@ -693,27 +757,79 @@ struct LinkWorker {
     stuck_since: Option<Instant>,
     /// Wait after the next refusal; doubles on each one.
     refusal_delay: Duration,
+    /// The desk's counts from connections that have ended.
+    health_before: DeskHealthMsg,
+    /// The desk's latest counts for this connection.
+    health_now: DeskHealthMsg,
 }
 
 impl LinkWorker {
     fn run(&mut self, running: &AtomicBool) {
+        // Real-time (when asked for) only while plugged in and serving:
+        // finding the desk reads a file, registering blocks for up to its
+        // timeout, and connecting, disconnecting and saying goodbye allocate
+        // and take the refusal lock the UI shares, so all of that happens at
+        // the thread's normal priority. Serving allocates only on the way
+        // to a disconnection (the reason), after which it demotes.
+        let mut priority: Option<RealTime> = None;
         let mut next_attempt = Instant::now();
         while running.load(Ordering::Acquire) {
             if self.client.is_none() {
                 self.discard_backlog();
                 if Instant::now() >= next_attempt {
                     next_attempt = Instant::now() + self.try_connect();
+                    if self.client.is_some() {
+                        priority = self.promote();
+                    }
                 }
                 thread::sleep(IDLE_INTERVAL);
                 continue;
             }
             if let Err(why) = self.serve() {
+                self.demote(priority.take());
                 self.disconnect(why);
                 next_attempt = Instant::now() + RETRY_INTERVAL;
             }
             thread::sleep(POLL_INTERVAL);
         }
+        self.demote(priority.take());
         self.say_goodbye();
+    }
+
+    /// Ask for real-time scheduling, if the instrument wants it.
+    fn promote(&self) -> Option<RealTime> {
+        if !self.config.real_time {
+            return None;
+        }
+        match RealTime::promote(POLL_INTERVAL) {
+            Ok(priority) => {
+                self.state.real_time.store(GRANTED, Ordering::Release);
+                Some(priority)
+            }
+            Err(why) => {
+                self.state.real_time.store(REFUSED, Ordering::Release);
+                if !TOLD_REFUSED.swap(true, Ordering::Relaxed) {
+                    eprintln!(
+                        "{}: the desk link runs at normal priority ({why}); on a busy \
+                         machine the desk may hear it jump",
+                        self.config.name
+                    );
+                }
+                None
+            }
+        }
+    }
+
+    /// Go back to normal priority, if promoted.
+    fn demote(&self, priority: Option<RealTime>) {
+        if let Some(priority) = priority {
+            if let Err(why) = priority.demote() {
+                eprintln!(
+                    "{}: the desk link could not return to normal priority ({why})",
+                    self.config.name
+                );
+            }
+        }
     }
 
     /// Try to plug in; returns how long to wait before trying again.
@@ -883,6 +999,10 @@ impl LinkWorker {
                     if let Some(pace) = client.take_desk_pace() {
                         self.state.pace.store(Some((pace, Instant::now())));
                     }
+                    if let Some(health) = client.take_desk_health() {
+                        self.health_now = health;
+                        self.publish_health();
+                    }
                     return Ok(());
                 }
                 Err(err) => return Err(format!("the desk connection failed: {err}")),
@@ -897,10 +1017,39 @@ impl LinkWorker {
         self.state.strip.store(NO_STRIP, Ordering::Release);
         self.state.pace.store(None);
         self.client = None;
+        // The desk counts afresh for the next connection.
+        self.health_before = DeskHealthMsg {
+            placed_afresh: self
+                .health_before
+                .placed_afresh
+                .saturating_add(self.health_now.placed_afresh),
+            dropped: self
+                .health_before
+                .dropped
+                .saturating_add(self.health_now.dropped),
+        };
+        self.health_now = DeskHealthMsg::default();
+        self.publish_health();
         if self.pending.take().is_some() {
             self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
         }
         self.stuck_since = None;
+    }
+
+    /// Publish the desk's counts over every connection so far.
+    fn publish_health(&self) {
+        self.state.placed_afresh.store(
+            self.health_before
+                .placed_afresh
+                .saturating_add(self.health_now.placed_afresh),
+            Ordering::Relaxed,
+        );
+        self.state.desk_dropped.store(
+            self.health_before
+                .dropped
+                .saturating_add(self.health_now.dropped),
+            Ordering::Relaxed,
+        );
     }
 
     /// Drop audio and requests the halves queued before they saw the link
@@ -977,9 +1126,9 @@ mod tests {
     use crate::ipc::protocol::AUDIO_PAYLOAD_HEADER;
     use crate::ipc::protocol::FrameBuffer;
     use crate::ipc::types::{
-        MSG_AUDIO, MSG_DESK_PACE, MSG_NOTE_EVENT, MSG_REFUSED, MSG_REGISTER, MSG_REGISTERED,
-        MSG_SHUTDOWN, MSG_TRANSPORT_REQUEST, MSG_TRANSPORT_SYNC, RegisterMsg, RegisteredMsg,
-        TransportRequestMsg,
+        MSG_AUDIO, MSG_DESK_HEALTH, MSG_DESK_PACE, MSG_NOTE_EVENT, MSG_REFUSED, MSG_REGISTER,
+        MSG_REGISTERED, MSG_SHUTDOWN, MSG_TRANSPORT_REQUEST, MSG_TRANSPORT_SYNC, RegisterMsg,
+        RegisteredMsg, TransportRequestMsg,
     };
     use std::os::unix::net::{UnixListener, UnixStream};
 
@@ -1028,6 +1177,76 @@ mod tests {
             address: HubAddress::Socket(path.to_path_buf()),
             ..LinkConfig::new("kazoo-test", 2, 48_000, 256)
         }
+    }
+
+    #[test]
+    fn a_link_is_real_time_only_when_asked_and_only_once_plugged_in() {
+        let path = socket();
+        let listener = UnixListener::bind(&path).unwrap();
+        let (link, _audio) = hub_link(LinkConfig {
+            real_time: true,
+            ..config(&path)
+        })
+        .unwrap();
+        // Looking for the desk happens at normal priority.
+        assert_eq!(link.real_time(), None);
+        let (_stream, _buf) = accept(&listener);
+        wait("the link to connect", || link.is_connected());
+        wait("the link to ask for real-time", || {
+            link.real_time().is_some()
+        });
+        #[cfg(target_os = "macos")]
+        assert_eq!(link.real_time(), Some(true));
+        drop(link);
+
+        // Not asked: never promoted.
+        let (plain, _audio) = hub_link(config(&path)).unwrap();
+        let (_stream, _buf) = accept(&listener);
+        wait("the plain link to connect", || plain.is_connected());
+        assert_eq!(plain.real_time(), None);
+        drop(plain);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Tell the link how the desk is taking its audio.
+    fn health(stream: &mut UnixStream, buf: &mut FrameBuffer, placed_afresh: u64, dropped: u64) {
+        let health = DeskHealthMsg {
+            placed_afresh,
+            dropped,
+        };
+        health.encode(buf.payload_mut());
+        buf.write_frame(MSG_DESK_HEALTH, 0, DeskHealthMsg::WIRE_SIZE, stream)
+            .unwrap();
+    }
+
+    #[test]
+    fn the_desks_counts_are_kept_across_connections() {
+        let path = socket();
+        let listener = UnixListener::bind(&path).unwrap();
+        let (link, _audio) = hub_link(config(&path)).unwrap();
+        assert_eq!(link.desk_health(), DeskHealthMsg::default());
+        let (mut stream, mut buf) = accept(&listener);
+        wait("the link to connect", || link.is_connected());
+        health(&mut stream, &mut buf, 2, 1);
+        health(&mut stream, &mut buf, 3, 1);
+        wait("the counts to arrive", || {
+            link.desk_health().placed_afresh == 3
+        });
+        assert_eq!(link.desk_health().dropped, 1);
+
+        // The desk goes; a new one counts from zero, and the link adds on.
+        buf.write_frame(MSG_SHUTDOWN, 0, 0, &mut stream).unwrap();
+        wait("the link to notice", || !link.is_connected());
+        assert_eq!(link.desk_health().placed_afresh, 3);
+        let (mut stream, mut buf) = accept(&listener);
+        wait("the link to reconnect", || link.is_connected());
+        health(&mut stream, &mut buf, 1, 0);
+        wait("the new counts to arrive", || {
+            link.desk_health().placed_afresh == 4
+        });
+        assert_eq!(link.desk_health().dropped, 1);
+        drop(link);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

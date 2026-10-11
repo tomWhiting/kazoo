@@ -44,7 +44,9 @@ pub const DEVICE_RETRY: Duration = Duration::from_secs(2);
 /// Sample rate of the headless loop when it stands in for a device.
 const FALLBACK_RATE: u32 = 48_000;
 
-/// Audio glitch and error counts are reported at most this often.
+/// Audio counts (device glitches and errors, the render loop falling past
+/// the desk's lead, the desk's own counts) are reported at most this often,
+/// and whenever the audio is rebuilt.
 const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 
 /// The desk strip's name.
@@ -70,10 +72,117 @@ enum Running {
         // Held for its lifetime: dropping it stops the sound.
         _stream: cpal::Stream,
         health: Arc<StreamHealth>,
-        glitches: u64,
-        errors: u64,
     },
     Headless(Headless),
+}
+
+/// What the running backend and desk link have counted so far.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Counts {
+    /// Device underruns and overruns.
+    glitches: u64,
+    /// Other device errors.
+    errors: u64,
+    /// Times the render loop fell past the desk's lead.
+    past_lead: u64,
+    /// Times the desk placed the wall's stream afresh.
+    placed_afresh: u64,
+    /// Blocks the desk dropped because the strip's ring was full.
+    desk_dropped: u64,
+}
+
+/// One count kept across rebuilds of the audio: every rebuild starts a new
+/// backend and desk link, counting from zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Tally {
+    /// What the backends and links that have gone reached.
+    finished: u64,
+    /// The whole count as last reported.
+    told: u64,
+}
+
+impl Tally {
+    /// The whole count, given what the running backend or link has reached.
+    const fn total(self, running: u64) -> u64 {
+        self.finished.saturating_add(running)
+    }
+
+    /// The line to log if the whole count has changed since it was last
+    /// reported.
+    fn report(&mut self, running: u64, what: &str) -> Option<String> {
+        let total = self.total(running);
+        (total != self.told).then(|| {
+            self.told = total;
+            format!("kazoo-wall: {total} {what} so far")
+        })
+    }
+
+    /// The running backend or link is going: keep what it reached.
+    const fn finish(&mut self, running: u64) {
+        self.finished = self.total(running);
+    }
+}
+
+/// The audio counts across rebuilds, and when they were last reported.
+#[derive(Debug, Clone, Copy)]
+struct AudioCounts {
+    reported: Instant,
+    glitches: Tally,
+    errors: Tally,
+    past_lead: Tally,
+    placed_afresh: Tally,
+    desk_dropped: Tally,
+}
+
+impl AudioCounts {
+    fn new(now: Instant) -> Self {
+        Self {
+            reported: now,
+            glitches: Tally::default(),
+            errors: Tally::default(),
+            past_lead: Tally::default(),
+            placed_afresh: Tally::default(),
+            desk_dropped: Tally::default(),
+        }
+    }
+
+    /// Every count that has changed since it was last reported, given what
+    /// the running backend and link have counted, as lines for the log.
+    fn report(&mut self, running: Counts, now: Instant) -> Vec<String> {
+        self.reported = now;
+        [
+            self.glitches.report(running.glitches, "audio glitches"),
+            self.errors.report(running.errors, "audio device errors"),
+            self.past_lead
+                .report(running.past_lead, "render-loop stalls past the desk's lead"),
+            self.placed_afresh.report(
+                running.placed_afresh,
+                "fresh placements of the wall's stream by the desk (a block late, each heard as \
+                 a jump)",
+            ),
+            self.desk_dropped.report(
+                running.desk_dropped,
+                "wall blocks the desk dropped (its strip was full)",
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// Whether the counts are due to be reported at `now`.
+    fn due(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.reported) >= REPORT_INTERVAL
+    }
+
+    /// The running backend and link are going: keep what they counted.
+    const fn finish(&mut self, running: Counts) {
+        self.glitches.finish(running.glitches);
+        self.errors.finish(running.errors);
+        self.past_lead.finish(running.past_lead);
+        self.placed_afresh.finish(running.placed_afresh);
+        self.desk_dropped.finish(running.desk_dropped);
+    }
 }
 
 /// The audio side: where the engine runs, and its listening thread.
@@ -83,8 +192,6 @@ struct Backend {
     listen_join: Option<JoinHandle<()>>,
     /// When to try the device again, while standing in for it.
     retry_at: Option<Instant>,
-    /// When the device's counters were last reported.
-    reported: Instant,
 }
 
 impl Drop for Backend {
@@ -143,6 +250,8 @@ struct Control {
     /// `speak` requests waiting for their words: ticket → (connection,
     /// request id).
     awaiting: HashMap<u64, (u64, u64)>,
+    /// The audio counts, kept across rebuilds of the audio.
+    counts: AudioCounts,
 }
 
 /// Run the control thread until stopped.
@@ -170,6 +279,7 @@ pub fn run(setup: Setup) {
         heard: false,
         last_tick: Instant::now(),
         awaiting: HashMap::new(),
+        counts: AudioCounts::new(Instant::now()),
     };
     while !control.stopping {
         match setup.inbox.recv_timeout(TICK) {
@@ -219,8 +329,6 @@ fn start_audio(
                             Running::Device {
                                 _stream: stream,
                                 health,
-                                glitches: 0,
-                                errors: 0,
                             },
                             &mut control,
                             listen_tx,
@@ -297,7 +405,6 @@ fn backend(
         listen_stop,
         listen_join,
         retry_at,
-        reported: Instant::now(),
     }
 }
 
@@ -324,6 +431,10 @@ fn link_to_desk(
     // MAX_CHUNK_FRAMES is 4096: fits.
     let mut config = LinkConfig::new(DESK_NAME, 2, rate, MAX_CHUNK_FRAMES as u32);
     config.address = address;
+    // Whichever clocks the wall, its blocks go to the desk through the link
+    // thread: a busy machine must not hold them up on the way. The daemon's
+    // stderr is its log, where a refusal is said.
+    config.real_time = true;
     if pacing == Pacing::Timer {
         config.pace_lead_frames = headless_lead_frames(rate);
     }
@@ -698,24 +809,14 @@ impl Control {
     /// Rebuild the audio when the device failed, or try the device again
     /// while the headless loop stands in for it.
     fn watch_audio(&mut self, now: Instant) {
+        if self.counts.due(now) {
+            self.report_counts(now);
+        }
         let Some(backend) = self.backend.as_mut() else {
             return;
         };
-        let report = now.saturating_duration_since(backend.reported) >= REPORT_INTERVAL;
-        if report {
-            backend.reported = now;
-        }
         let rebuild = match &mut backend.running {
-            Running::Device {
-                health,
-                glitches,
-                errors,
-                ..
-            } => {
-                if report {
-                    report_count(&health.glitches, glitches, "audio glitches");
-                    report_count(&health.errors, errors, "audio device errors");
-                }
+            Running::Device { health, .. } => {
                 let failed = health.failed.load(Ordering::Acquire);
                 if failed {
                     eprintln!("kazoo-wall: the audio device went away; rebuilding in 2 s");
@@ -735,6 +836,58 @@ impl Control {
         }
     }
 
+    /// What the running backend and desk link have counted.
+    fn running_counts(&self) -> Counts {
+        let mut counts = self.desk_counts();
+        match self.backend.as_ref().map(|backend| &backend.running) {
+            Some(Running::Device { health, .. }) => {
+                counts.glitches = health.glitches.load(Ordering::Relaxed);
+                counts.errors = health.errors.load(Ordering::Relaxed);
+            }
+            Some(Running::Headless(headless)) => counts.past_lead = headless.times_past_lead(),
+            None => {}
+        }
+        counts
+    }
+
+    /// What the desk has said of the wall's stream over the running link.
+    fn desk_counts(&self) -> Counts {
+        let desk = self
+            .wall
+            .desk_link()
+            .map(HubLink::desk_health)
+            .unwrap_or_default();
+        Counts {
+            placed_afresh: desk.placed_afresh,
+            desk_dropped: desk.dropped,
+            ..Counts::default()
+        }
+    }
+
+    /// Log every audio count that has changed since it was last logged.
+    fn report_counts(&mut self, now: Instant) {
+        let running = self.running_counts();
+        for line in self.counts.report(running, now) {
+            eprintln!("{line}");
+        }
+    }
+
+    /// Report the counts of the backend and link about to go, and keep
+    /// them: the next ones count from zero.
+    fn finish_counts(&mut self, now: Instant) {
+        let running = self.running_counts();
+        self.finish_with(running, now);
+    }
+
+    /// Report `running`, the counts of the backend and link about to go,
+    /// and keep them.
+    fn finish_with(&mut self, running: Counts, now: Instant) {
+        for line in self.counts.report(running, now) {
+            eprintln!("{line}");
+        }
+        self.counts.finish(running);
+    }
+
     fn rebuild(&mut self, now: Instant) {
         let shared = Arc::clone(self.wall.engine_mut().shared());
         let (bpm, beat) = (shared.bpm(), shared.beat());
@@ -742,6 +895,10 @@ impl Control {
             self.backend.as_ref().map(|b| &b.running),
             Some(Running::Device { .. })
         );
+        // The old backend's counts are read as it goes; the old desk link
+        // serves until the new one takes its place, so what the desk says
+        // in the meantime is read last of all.
+        let device = self.running_counts();
         // The old engine (and its half of the desk link) stops first.
         self.backend = None;
         let (backend, engine, link) = if device_failed {
@@ -776,6 +933,15 @@ impl Control {
                 Some(now),
             )
         };
+        let desk = self.desk_counts();
+        self.finish_with(
+            Counts {
+                placed_afresh: desk.placed_afresh,
+                desk_dropped: desk.desk_dropped,
+                ..device
+            },
+            now,
+        );
         self.wall.attach(engine, link);
         self.backend = Some(backend);
     }
@@ -806,6 +972,7 @@ impl Control {
                 eprintln!("kazoo-wall: a connection's writer panicked");
             }
         }
+        self.finish_counts(now);
         self.backend = None;
         eprintln!("kazoo-wall: stopped; the patch is saved");
     }
@@ -842,18 +1009,72 @@ fn shut(stream: &UnixStream) {
     }
 }
 
-/// Report a counter that has grown since `seen`.
-fn report_count(counter: &std::sync::atomic::AtomicU64, seen: &mut u64, what: &str) {
-    let now = counter.load(Ordering::Relaxed);
-    if now != *seen {
-        eprintln!("kazoo-wall: {now} {what} so far");
-        *seen = now;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tally_reports_growth_once_and_keeps_counting_across_rebuilds() {
+        let mut tally = Tally::default();
+        assert_eq!(tally.report(0, "things"), None);
+        assert_eq!(
+            tally.report(2, "things").as_deref(),
+            Some("kazoo-wall: 2 things so far")
+        );
+        assert_eq!(tally.report(2, "things"), None);
+        // The backend goes at 3; the next counts from zero.
+        tally.finish(3);
+        assert_eq!(
+            tally.report(0, "things").as_deref(),
+            Some("kazoo-wall: 3 things so far")
+        );
+        assert_eq!(tally.report(0, "things"), None);
+        assert_eq!(
+            tally.report(1, "things").as_deref(),
+            Some("kazoo-wall: 4 things so far")
+        );
+    }
+
+    #[test]
+    fn audio_counts_report_what_changed_and_survive_a_rebuild() {
+        let start = Instant::now();
+        let mut counts = AudioCounts::new(start);
+        assert!(!counts.due(start));
+        assert!(counts.due(start + REPORT_INTERVAL));
+        assert!(counts.report(Counts::default(), start).is_empty());
+        let running = Counts {
+            past_lead: 2,
+            placed_afresh: 1,
+            ..Counts::default()
+        };
+        let lines = counts.report(running, start);
+        assert_eq!(
+            lines,
+            [
+                "kazoo-wall: 2 render-loop stalls past the desk's lead so far",
+                "kazoo-wall: 1 fresh placements of the wall's stream by the desk (a block late, each \
+                 heard as a jump) so far",
+            ]
+        );
+        // A device retry every two seconds rebuilds the audio: nothing is
+        // lost, and nothing is said again until something changes.
+        counts.finish(running);
+        for _ in 0..5 {
+            assert!(counts.report(Counts::default(), start).is_empty());
+            counts.finish(Counts::default());
+        }
+        let lines = counts.report(
+            Counts {
+                desk_dropped: 1,
+                ..Counts::default()
+            },
+            start,
+        );
+        assert_eq!(
+            lines,
+            ["kazoo-wall: 1 wall blocks the desk dropped (its strip was full) so far"]
+        );
+    }
 
     #[test]
     fn a_built_or_rebuilt_engine_is_heard_as_the_wall_was() {
