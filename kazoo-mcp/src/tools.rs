@@ -145,6 +145,19 @@ pub struct RemoveArgs {
     pub module: String,
 }
 
+/// `wall_group`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupArgs {
+    /// The group's name: 1 to 24 of A-Z a-z 0-9 _ . - (no spaces), e.g. `kick`.
+    pub group: String,
+    /// Module ids or names, e.g. `["osc1", "klon2"]`.
+    pub modules: Vec<String>,
+    /// True (the default) puts them in the group; false takes them out.
+    #[serde(default)]
+    pub leave: bool,
+}
+
 /// `wall_undo`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -414,6 +427,22 @@ impl Seat {
     }
 
     #[tool(
+        name = "wall_group",
+        description = "Put modules in a named group (a tag, e.g. a kick chain), or take them out with leave: true. A group is made by its first module and goes with its last; a removed module leaves its groups. Grouping is not logged and is not undone with wall_undo. wall_look lists the groups; consoles can show one group alone."
+    )]
+    async fn wall_group(&self, Parameters(args): Parameters<GroupArgs>) -> CallToolResult {
+        self.read(
+            Request::Group {
+                group: args.group,
+                modules: args.modules,
+                join: !args.leave,
+            },
+            |result| Ok(render::groups(result)),
+        )
+        .await
+    }
+
+    #[tool(
         name = "wall_undo",
         description = "Undo a change by its number (from wall_log or a tool's answer), whoever made it: the inverse is applied as a new change. Refused when the change no longer applies."
     )]
@@ -620,9 +649,10 @@ mod tests {
     use super::*;
 
     /// Every tool, in the router's order.
-    const TOOLS: [&str; 17] = [
+    const TOOLS: [&str; 18] = [
         "wall_add",
         "wall_catalogue",
+        "wall_group",
         "wall_listen",
         "wall_load",
         "wall_log",

@@ -24,7 +24,7 @@ use super::{App, MAX_ENTRY, Mode, Tone, TurnKind, View, jack_names};
 const MAX_LINE: usize = 4 * MAX_ENTRY;
 
 /// Every command: its name, what it takes and what it does.
-pub const COMMANDS: [(&str, &str, &str); 9] = [
+pub const COMMANDS: [(&str, &str, &str); 13] = [
     (
         "add",
         "[kind] [name]",
@@ -54,6 +54,22 @@ pub const COMMANDS: [(&str, &str, &str); 9] = [
     ),
     ("undo", "", "undo the latest change"),
     ("keys", "", "every key and command"),
+    (
+        "tag",
+        "<group> [module…]",
+        "put modules in a group (alone: the selected one)",
+    ),
+    (
+        "untag",
+        "<group> [module…]",
+        "take modules out of a group (alone: the selected one)",
+    ),
+    (
+        "group",
+        "[group]",
+        "show only that group; alone, the whole wall",
+    ),
+    ("groups", "", "say every group and its modules"),
 ];
 
 /// The command line, as typed.
@@ -198,7 +214,18 @@ impl App {
                     open: false,
                 })
                 .collect(),
-            ("remove", 1) => self
+            ("tag" | "untag" | "group", 1) => self
+                .groups()
+                .into_iter()
+                .flatten()
+                .filter(|(group, _)| group.to_lowercase().starts_with(&lower))
+                .map(|(group, members)| Completion {
+                    word: group.clone(),
+                    note: members.join(" "),
+                    open: false,
+                })
+                .collect(),
+            ("tag" | "untag", _) | ("remove", 1) => self
                 .modules()
                 .iter()
                 .filter(|module| module.id.to_lowercase().starts_with(&lower))
@@ -482,9 +509,65 @@ impl App {
                 }));
             }
             "keys" => self.mode = Mode::Help { scroll: 0 },
+            "tag" | "untag" => {
+                wants(1)?;
+                let modules = if args.len() > 1 {
+                    args[1..]
+                        .iter()
+                        .map(|module| self.on_whole_wall(module))
+                        .collect::<Result<Vec<String>, String>>()?
+                } else {
+                    vec![
+                        self.selected
+                            .clone()
+                            .ok_or_else(|| "select a module, or name the modules".to_string())?,
+                    ]
+                };
+                self.jobs.push(Job::Call(Request::Group {
+                    group: args[0].to_string(),
+                    modules,
+                    join: name == "tag",
+                }));
+            }
+            "group" => self.run_group(args.first().copied(), now)?,
+            "groups" => self.say_groups(now),
             _ => self.undo_latest(now),
         }
         Ok(())
+    }
+
+    /// `group`: show only `group`, or (`None`) the whole wall again.
+    fn run_group(&mut self, group: Option<&str>, now: Instant) -> Result<(), String> {
+        let Some(group) = group else {
+            self.show_group(None);
+            self.say(Tone::Info, "the whole wall".to_string(), now);
+            return Ok(());
+        };
+        let found = self
+            .groups()
+            .and_then(|groups| groups.keys().find(|name| name.eq_ignore_ascii_case(group)))
+            .cloned()
+            .ok_or_else(|| format!("there is no group called '{group}' (:groups says them)"))?;
+        self.show_group(Some(found.clone()));
+        self.say(
+            Tone::Info,
+            format!("only {found} is shown · :group alone shows the whole wall"),
+            now,
+        );
+        Ok(())
+    }
+
+    /// `groups`: say every group and its modules.
+    fn say_groups(&mut self, now: Instant) {
+        let words = match self.groups() {
+            Some(groups) if !groups.is_empty() => groups
+                .iter()
+                .map(|(group, members)| format!("{group}: {}", members.join(" ")))
+                .collect::<Vec<String>>()
+                .join(" · "),
+            _ => "no groups yet: :tag <group> <module…> makes one".to_string(),
+        };
+        self.say(Tone::Info, words, now);
     }
 
     /// `add`: a module of `kind`, named `given` (no name when empty).
@@ -554,6 +637,15 @@ impl App {
     }
 
     /// The id of module `id` on the wall, or why not.
+    /// As [`Self::on_wall`], but looking past the group shown.
+    fn on_whole_wall(&self, id: &str) -> Result<String, String> {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.modules.iter().find(|module| module.id == id))
+            .map(|module| module.id.clone())
+            .ok_or_else(|| format!("nothing on the wall is called '{id}'"))
+    }
+
     fn on_wall(&self, id: &str) -> Result<String, String> {
         self.module(id)
             .map(|module| module.id.clone())

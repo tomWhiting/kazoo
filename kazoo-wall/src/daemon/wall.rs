@@ -33,11 +33,11 @@ use crate::patch::{
 use crate::probe;
 use crate::protocol::{
     ArrangeResult, BrokenSave, CatalogueResult, Change, ChangeResult, ClockSource,
-    DeleteSaveResult, EngineHealth, ErrorCode, Event, Faults, KindInfo, KnobInfo, KnobView, Levels,
-    Listen, ListenResult, LoadResult, LogHealth, LogPage, MAX_PROBES, MAX_SAVE_NAME, ModuleTiming,
-    ModuleView, Place, PortInfo, Probe, ProbeResult, RecordResult, Recording, Request, SaveInfo,
-    SaveMark, SaveResult, SavesResult, Snapshot, TempoResult, Timings, WallError, What,
-    is_auto_save, valid_save_name, widen,
+    DeleteSaveResult, EngineHealth, ErrorCode, Event, Faults, GroupsResult, KindInfo, KnobInfo,
+    KnobView, Levels, Listen, ListenResult, LoadResult, LogHealth, LogPage, MAX_PROBES,
+    MAX_SAVE_NAME, ModuleTiming, ModuleView, Place, PortInfo, Probe, ProbeResult, RecordResult,
+    Recording, Request, SaveInfo, SaveMark, SaveResult, SavesResult, Snapshot, TempoResult,
+    Timings, WallError, What, is_auto_save, valid_save_name, widen,
 };
 use crate::store::{AUTO_SAVES_KEPT, LoadWriteError, Need, SaveError, Store};
 use crate::{MAX_INPUTS, MAX_KNOBS};
@@ -2307,6 +2307,7 @@ impl Wall {
     fn grows(&self, request: &Request) -> bool {
         match request {
             Request::Add { .. } | Request::Patch { .. } | Request::Speak { .. } => true,
+            Request::Group { join, .. } => *join,
             Request::Undo { change } => self.log.iter().any(|logged| {
                 logged.seq == *change
                     && matches!(logged.what, What::Remove { .. } | What::Unpatch { .. })
@@ -2400,6 +2401,11 @@ impl Wall {
                     own: *own,
                 },
             ),
+            Request::Group {
+                group,
+                modules,
+                join,
+            } => self.group(group, modules, *join),
             Request::Undo { change } => self.undo((seat, console), *change),
             Request::Tempo { bpm } => self.tempo(seat, *bpm, None),
             Request::Speak {
@@ -2740,6 +2746,24 @@ impl Wall {
             result,
             change: None,
             event: Some(Event::Rack { rows }),
+            pending: None,
+        })
+    }
+
+    /// Put modules in a group or take them out: not a change (like a
+    /// move), but saved with the patch and told to every subscriber.
+    fn group(&mut self, name: &str, modules: &[String], join: bool) -> Result<Outcome, WallError> {
+        if self.patch.group(name, modules, join)? {
+            self.dirty = true;
+        }
+        let groups = self.patch.groups().clone();
+        let result = encode(&GroupsResult {
+            groups: groups.clone(),
+        })?;
+        Ok(Outcome {
+            result,
+            change: None,
+            event: Some(Event::Groups { groups }),
             pending: None,
         })
     }
@@ -3866,6 +3890,7 @@ impl Wall {
                 sample_rate: status.sample_rate,
             }),
             rack: Some(self.patch.rows().to_vec()),
+            groups: self.patch.groups().clone(),
             save: self.save_mark.as_ref().map(|(mark, print)| SaveMark {
                 changed: !self.still(print),
                 ..mark.clone()

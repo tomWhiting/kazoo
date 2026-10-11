@@ -47,8 +47,8 @@ use kazoo_wall::fingerprints::Shares;
 use kazoo_wall::format;
 use kazoo_wall::protocol::{
     ArrangeResult, CableRecord, CatalogueResult, ChangeResult, DeleteSaveResult, ErrorCode, Event,
-    KindInfo, KnobInfo, LoadResult, LogPage, ModuleView, MonitorResult, Place, ProbeResult,
-    RecordResult, Request, SaveResult, SavesResult, Snapshot, TempoResult,
+    GroupsResult, KindInfo, KnobInfo, LoadResult, LogPage, ModuleView, MonitorResult, Place,
+    ProbeResult, RecordResult, Request, SaveResult, SavesResult, Snapshot, TempoResult,
 };
 
 use super::knob::Travel;
@@ -393,6 +393,10 @@ pub struct App {
     focus: Focus,
     mode: Mode,
     selected: Option<String>,
+    /// The group shown alone (`:group`), if one is.
+    group: Option<String>,
+    /// The wall as shown: [`Self::snapshot`] cut down to [`Self::group`].
+    shown: Option<Snapshot>,
     selected_hint: usize,
     knob: usize,
     cable_cursor: usize,
@@ -440,6 +444,8 @@ impl App {
             focus: Focus::Wall,
             mode: Mode::Normal,
             selected: None,
+            group: None,
+            shown: None,
             selected_hint: 0,
             knob: 0,
             cable_cursor: 0,
@@ -492,7 +498,78 @@ impl App {
     /// The wall, as last seen.
     #[must_use]
     pub const fn snapshot(&self) -> Option<&Snapshot> {
-        self.snapshot.as_ref()
+        match &self.shown {
+            Some(shown) => Some(shown),
+            None => self.snapshot.as_ref(),
+        }
+    }
+
+    /// The group shown alone, if one is.
+    #[must_use]
+    pub fn group(&self) -> Option<&str> {
+        self.group.as_deref()
+    }
+
+    /// The wall's groups, by name: each one's module ids.
+    #[must_use]
+    pub fn groups(&self) -> Option<&BTreeMap<String, Vec<String>>> {
+        self.snapshot.as_ref().map(|snapshot| &snapshot.groups)
+    }
+
+    /// The wall answered a `group`: say the group as it is now.
+    fn grouped(&mut self, request: &Request, group: &str, value: serde_json::Value, now: Instant) {
+        if let Some(result) = self.parse::<GroupsResult>(request, value, now) {
+            let words = result.groups.get(group).map_or_else(
+                || format!("there is no group {group} now"),
+                |members| format!("{group}: {}", members.join(" ")),
+            );
+            self.say(Tone::Done, words, now);
+            if let Some(snapshot) = self.snapshot.as_mut() {
+                snapshot.groups = result.groups;
+            }
+        }
+    }
+
+    /// Show only `group` (`None`: the whole wall).
+    pub(super) fn show_group(&mut self, group: Option<String>) {
+        self.group = group;
+        self.rack.drag = None;
+        self.refilter();
+    }
+
+    /// Cut the wall down to the group shown: its modules, the cables
+    /// between them and its rows. A group that has gone shows the whole
+    /// wall again.
+    fn refilter(&mut self) {
+        let Some(name) = self.group.clone() else {
+            self.shown = None;
+            return;
+        };
+        let Some(full) = self.snapshot.as_ref() else {
+            self.shown = None;
+            return;
+        };
+        let Some(members) = full.groups.get(&name) else {
+            self.group = None;
+            self.shown = None;
+            return;
+        };
+        let inside = |port: &str| {
+            let module = port.split_once('.').map_or(port, |(module, _)| module);
+            members.iter().any(|member| member == module)
+        };
+        let mut shown = full.clone();
+        shown.modules.retain(|module| members.contains(&module.id));
+        shown
+            .cables
+            .retain(|cable| inside(&cable.from) && inside(&cable.to));
+        if let Some(rows) = shown.rack.as_mut() {
+            for row in rows.iter_mut() {
+                row.retain(|id| members.contains(id));
+            }
+            rows.retain(|row| !row.is_empty());
+        }
+        self.shown = Some(shown);
     }
 
     /// The log.
@@ -649,7 +726,7 @@ impl App {
     /// only when the wall's shape, the density or the view has changed;
     /// false when there is nothing to lay out.
     pub fn lay_out_rack(&mut self, view: (u16, u16)) -> bool {
-        match self.snapshot.as_ref() {
+        match self.shown.as_ref().or(self.snapshot.as_ref()) {
             Some(snapshot) if !snapshot.modules.is_empty() => {
                 self.rack
                     .lay_out(&snapshot.modules, snapshot.rack.as_deref(), view);
@@ -663,8 +740,7 @@ impl App {
     }
 
     fn modules(&self) -> &[ModuleView] {
-        self.snapshot
-            .as_ref()
+        self.snapshot()
             .map_or(&[][..], |snapshot| snapshot.modules.as_slice())
     }
 
@@ -826,6 +902,9 @@ impl App {
             }
             Reply::Event(event) => self.on_event(event, now),
         }
+        if self.group.is_some() {
+            self.refilter();
+        }
     }
 
     fn on_link(&mut self, state: LinkState, now: Instant) {
@@ -911,6 +990,11 @@ impl App {
                     snapshot.rack = Some(rows);
                 }
                 self.rows_seen();
+            }
+            Event::Groups { groups } => {
+                if let Some(snapshot) = self.snapshot.as_mut() {
+                    snapshot.groups = groups;
+                }
             }
             Event::Loaded {
                 seat, save, backup, ..
@@ -1044,6 +1128,7 @@ impl App {
     fn on_result(&mut self, request: &Request, value: serde_json::Value, now: Instant) {
         match request {
             Request::Probe { .. } => self.probed(request, value, now),
+            Request::Group { group, .. } => self.grouped(request, group, value, now),
             Request::Catalogue => {
                 if let Some(catalogue) = self.parse::<CatalogueResult>(request, value, now) {
                     self.catalogue = catalogue.kinds;
@@ -1263,7 +1348,7 @@ impl App {
     /// Ask for the readings of the scopes and readouts in view that the
     /// wall's `look` does not carry, as often as it is looked at.
     fn probe_screens(&mut self, now: Instant) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
+        let Some(snapshot) = self.snapshot() else {
             return;
         };
         if self.rack.probing || self.rack.next_probe.is_some_and(|at| now < at) {
@@ -1498,6 +1583,10 @@ pub fn describe(request: &Request) -> String {
         Request::Add { kind, .. } => format!("add {kind}"),
         Request::Remove { module } => format!("remove {module}"),
         Request::Arrange { module, .. } => format!("move {module}"),
+        Request::Group {
+            group, join: true, ..
+        } => format!("group {group}"),
+        Request::Group { group, .. } => format!("ungroup {group}"),
         Request::Undo { change } => format!("undo change {change}"),
         Request::Tempo { bpm } => format!("tempo {}", format::bpm(*bpm)),
         Request::Monitor { on: true } => "hear the wall".to_string(),

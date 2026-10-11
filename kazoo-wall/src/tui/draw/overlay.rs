@@ -63,7 +63,8 @@ const HELP: &[(&str, &str)] = &[
     ),
     (
         ":",
-        "the command line: add, remove, patch, unplug, turn, save, load, undo, keys; Tab completes \
+        "the command line: add, remove, patch, unplug, turn, save, load, undo, keys, tag, untag, \
+         group, groups (:tag kick osc1 klon2, then :group kick shows only them); Tab completes \
          kinds, modules, jacks, knobs, positions and saves, ↑↓ choose, ⏎ runs, Esc cancels",
     ),
     ("x", "remove the module and its cables (asks first)"),

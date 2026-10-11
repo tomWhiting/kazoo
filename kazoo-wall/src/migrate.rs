@@ -105,6 +105,10 @@ pub fn read(bytes: &[u8]) -> Result<(PatchFile, Vec<String>), String> {
         None | Some(serde_json::Value::Null) => Vec::new(),
         Some(other) => list(other, "rack row", Said::Why, &mut notes),
     };
+    let groups = match fields.remove("groups") {
+        None | Some(serde_json::Value::Null) => BTreeMap::new(),
+        Some(other) => entries(other, "group", Said::Why, &mut notes),
+    };
     // Which wall the patch is: absent from patches saved before saves were
     // loaded, and from any wall never replaced (0).
     let wall = fields
@@ -125,6 +129,7 @@ pub fn read(bytes: &[u8]) -> Result<(PatchFile, Vec<String>), String> {
             speech,
             retired_speech,
             rack,
+            groups,
         },
         notes,
     ))

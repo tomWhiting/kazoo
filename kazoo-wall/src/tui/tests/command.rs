@@ -324,3 +324,49 @@ fn settings_survive_a_round_trip_and_a_missing_file_is_the_defaults() {
     std::fs::write(&file, "not json").expect("written");
     assert!(load_prefs(&file).is_err());
 }
+
+#[test]
+fn group_shows_only_its_modules_and_cables_until_group_alone() {
+    let mut app = connected();
+    let groups = std::collections::BTreeMap::from([(
+        "voice".to_string(),
+        vec!["vco1".to_string(), "vcf1".to_string()],
+    )]);
+    app.on_reply(
+        super::super::worker::Reply::Event(kazoo_wall::protocol::Event::Groups { groups }),
+        std::time::Instant::now(),
+    );
+    open(&mut app);
+    type_text(&mut app, "group voice");
+    press(&mut app, KeyCode::Enter);
+    let shown = app.snapshot().unwrap();
+    let ids: Vec<&str> = shown
+        .modules
+        .iter()
+        .map(|module| module.id.as_str())
+        .collect();
+    assert_eq!(ids, ["vco1", "vcf1"]);
+    assert_eq!(shown.cables.len(), 1);
+    assert_eq!(app.group(), Some("voice"));
+    press(&mut app, KeyCode::Char(':'));
+    type_text(&mut app, "group");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.snapshot().unwrap().modules.len(), 4);
+    assert_eq!(app.group(), None);
+}
+
+#[test]
+fn tag_sends_a_group_request_for_the_named_modules() {
+    let mut app = connected();
+    open(&mut app);
+    type_text(&mut app, "tag kick vco1 vcf1");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        calls(&mut app),
+        vec![Request::Group {
+            group: "kick".to_string(),
+            modules: vec!["vco1".to_string(), "vcf1".to_string()],
+            join: true,
+        }]
+    );
+}

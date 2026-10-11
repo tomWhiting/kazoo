@@ -118,6 +118,11 @@ pub fn header(buf: &mut Buffer, area: Rect, app: &App) {
         plain(TEXT, PANEL),
     );
     x = separator(buf, top, x, y);
+    if let Some(group) = app.group() {
+        x = put(buf, top, x, y, "group ", plain(TEXT_DIM, PANEL));
+        x = put(buf, top, x, y, group, bold(BRASS, PANEL));
+        x = separator(buf, top, x, y);
+    }
     let seats = if snapshot.seats.is_empty() {
         "nobody".to_string()
     } else {

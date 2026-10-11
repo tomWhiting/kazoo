@@ -842,3 +842,32 @@ fn however_much_junk_a_file_holds_its_notes_fit_one_answer() {
     let said: usize = notes.iter().map(String::len).sum();
     assert!(said < crate::protocol::MAX_SERVER_LINE / 64, "{said}");
 }
+
+#[test]
+fn groups_join_leave_follow_removals_and_round_trip() {
+    let mut patch = small();
+    let kick = |names: &[&str]| names.iter().map(ToString::to_string).collect::<Vec<_>>();
+    assert!(patch.group("kick", &kick(&["vco1", "vcf1"]), true).unwrap());
+    assert!(!patch.group("kick", &kick(&["vco1"]), true).unwrap());
+    assert_eq!(patch.groups()["kick"], kick(&["vco1", "vcf1"]));
+    assert_eq!(
+        patch
+            .group("kick drum", &kick(&["vco1"]), true)
+            .unwrap_err()
+            .code,
+        ErrorCode::BadName
+    );
+    assert_eq!(
+        patch
+            .group("kick", &kick(&["nope9"]), true)
+            .unwrap_err()
+            .code,
+        ErrorCode::UnknownModule
+    );
+    let back = Patch::from_file(&patch.to_file()).unwrap();
+    assert_eq!(back.groups(), patch.groups());
+    patch.remove("vco1", &[]).unwrap();
+    assert_eq!(patch.groups()["kick"], kick(&["vcf1"]));
+    assert!(patch.group("kick", &kick(&["vcf1"]), false).unwrap());
+    assert!(patch.groups().is_empty());
+}

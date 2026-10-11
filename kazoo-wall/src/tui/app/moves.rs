@@ -63,6 +63,14 @@ impl App {
 
     /// Shove the selected module one place `way`.
     pub(super) fn shove(&mut self, way: Shove, now: Instant) {
+        if let Some(group) = self.group.clone() {
+            self.say(
+                Tone::Info,
+                format!("modules move with the whole wall shown (:group alone), not just {group}"),
+                now,
+            );
+            return;
+        }
         if self.view != View::Rack {
             self.say(
                 Tone::Info,

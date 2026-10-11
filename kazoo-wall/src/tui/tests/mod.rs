@@ -136,6 +136,7 @@ pub fn snapshot() -> Snapshot {
         timing: kazoo_wall::protocol::Timings::default(),
         recording: None,
         rack: None,
+        groups: std::collections::BTreeMap::new(),
         save: None,
         log: kazoo_wall::protocol::LogHealth::default(),
         probes: Vec::new(),

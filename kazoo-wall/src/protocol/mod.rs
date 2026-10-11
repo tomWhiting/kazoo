@@ -59,6 +59,11 @@ pub const MAX_NAME: usize = 24;
 /// The daemon's name and version, as it reports itself in `hello`.
 pub const DAEMON: &str = concat!("kazoo-wall ", env!("CARGO_PKG_VERSION"));
 
+/// `group`'s `join` when it is left out: joining.
+const fn joins() -> bool {
+    true
+}
+
 /// Whether `name` is a valid seat or display name: 1 to 24 characters from
 /// `A-Z a-z 0-9 space _ . -`.
 #[must_use]
@@ -240,6 +245,19 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         own: bool,
     },
+    /// Put modules in a group, or take them out of it: a [`GroupsResult`].
+    /// Like a move, grouping is not a change to the sound: it is not
+    /// logged, cannot be undone from the log, and is told to subscribers
+    /// as [`Event::Groups`]. A module leaves its groups when it is removed.
+    Group {
+        /// The group's name: a name with no spaces.
+        group: String,
+        /// Module ids or names.
+        modules: Vec<String>,
+        /// Whether they join it (or leave it).
+        #[serde(default = "joins")]
+        join: bool,
+    },
     /// Apply the inverse of a change, as a new change.
     Undo {
         /// The change's sequence number.
@@ -357,6 +375,7 @@ impl Request {
             Self::Add { .. } => "add",
             Self::Remove { .. } => "remove",
             Self::Arrange { .. } => "arrange",
+            Self::Group { .. } => "group",
             Self::Undo { .. } => "undo",
             Self::Speak { .. } => "speak",
             Self::Log { .. } => "log",
@@ -389,6 +408,7 @@ impl Request {
                 | Self::Add { .. }
                 | Self::Remove { .. }
                 | Self::Arrange { .. }
+                | Self::Group { .. }
                 | Self::Speak { .. }
         )
     }
@@ -405,6 +425,7 @@ impl Request {
                 | Self::Add { .. }
                 | Self::Remove { .. }
                 | Self::Arrange { .. }
+                | Self::Group { .. }
                 | Self::Undo { .. }
                 | Self::Tempo { .. }
                 | Self::Speak { .. }
@@ -904,6 +925,13 @@ pub enum Event {
         /// The rows, top to bottom, each its module ids left to right.
         rows: Vec<Vec<String>>,
     },
+    /// A group was made, changed or emptied: sent to every subscriber, the
+    /// grouper included. Grouping is not a change: it is not logged and
+    /// does not move the revision.
+    Groups {
+        /// Every group now, by name: its module ids.
+        groups: BTreeMap<String, Vec<String>>,
+    },
     /// The whole wall was replaced (a save loaded, a new wall, or a load
     /// undone): sent to every subscriber, the loader included, right after
     /// the change. Everything held about the wall is stale: look again.
@@ -1060,6 +1088,10 @@ pub struct Snapshot {
     /// rack's rows (a console then lays the rack out itself).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rack: Option<Vec<Vec<String>>>,
+    /// The wall's groups, by name: each one's module ids, in the order they
+    /// joined.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub groups: BTreeMap<String, Vec<String>>,
     /// The save the wall was last saved as or loaded from since the daemon
     /// started, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1627,6 +1659,13 @@ pub struct ChangeResult {
     /// The cable plugged in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cable: Option<u32>,
+}
+
+/// The result of `group`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupsResult {
+    /// Every group now, by name: its module ids.
+    pub groups: BTreeMap<String, Vec<String>>,
 }
 
 /// The result of `arrange`.

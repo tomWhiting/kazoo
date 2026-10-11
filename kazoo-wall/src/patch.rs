@@ -154,6 +154,10 @@ pub struct PatchFile {
     /// afresh, a row for each group of modules).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rack: Vec<Vec<String>>,
+    /// The wall's groups: each group's name and its module ids, in the
+    /// order they joined. Absent in patches saved before groups.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub groups: BTreeMap<String, Vec<String>>,
 }
 
 /// A removed speaker's words.
@@ -203,6 +207,9 @@ pub struct Patch {
     retired_speech: VecDeque<RetiredWords>,
     /// The rack's rows: every module in exactly one, none empty.
     rows: Vec<Vec<String>>,
+    /// The groups: each one's module ids, in the order they joined; none
+    /// empty, every id on the wall.
+    groups: BTreeMap<String, Vec<String>>,
 }
 
 fn error(code: ErrorCode, message: impl Into<String>) -> WallError {
@@ -433,6 +440,7 @@ impl Patch {
             speech: BTreeMap::new(),
             retired_speech: VecDeque::new(),
             rows: Vec::new(),
+            groups: BTreeMap::new(),
         }
     }
 
@@ -809,6 +817,7 @@ impl Patch {
         let place = self.place_of(module);
         take_out(&mut self.rows, module);
         self.rows.retain(|row| !row.is_empty());
+        self.leave_groups(&record.id);
         let (gone, kept): (Vec<Cable>, Vec<Cable>) = std::mem::take(&mut self.cables)
             .into_iter()
             .partition(|cable| cable.from_module == module || cable.to_module == module);
@@ -943,6 +952,63 @@ impl Patch {
         let before = self.rows.clone();
         arrange_rows(&mut self.rows, &id, place);
         Ok(self.rows != before)
+    }
+
+    // -----------------------------------------------------------------
+    // Groups
+    // -----------------------------------------------------------------
+
+    /// The groups: each one's module ids, in the order they joined.
+    #[must_use]
+    pub const fn groups(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.groups
+    }
+
+    /// Put `modules` (ids or names) in group `name`, or take them out of it
+    /// (`join` false). A group is made by its first module and goes with
+    /// its last. Returns whether any group changed.
+    ///
+    /// # Errors
+    ///
+    /// `bad_name` for a group name that is not a name (or has a space),
+    /// `unknown_module` for a module not on the wall; nothing changes.
+    pub fn group(&mut self, name: &str, modules: &[String], join: bool) -> Result<bool, WallError> {
+        if !valid_group_name(name) {
+            return Err(error(
+                ErrorCode::BadName,
+                format!(
+                    "'{}' is not a group name: use 1 to 24 of A-Z a-z 0-9 _ . - (no spaces)",
+                    printable(name)
+                ),
+            ));
+        }
+        let ids = modules
+            .iter()
+            .map(|module| self.find(module).map(|found| found.id.clone()))
+            .collect::<Result<Vec<String>, WallError>>()?;
+        let before = self.groups.get(name).cloned();
+        let members = self.groups.entry(name.to_string()).or_default();
+        for id in ids {
+            if join {
+                if !members.contains(&id) {
+                    members.push(id);
+                }
+            } else {
+                members.retain(|member| *member != id);
+            }
+        }
+        if members.is_empty() {
+            self.groups.remove(name);
+        }
+        Ok(self.groups.get(name) != before.as_ref())
+    }
+
+    /// Take module `id` out of every group (it is leaving the wall).
+    fn leave_groups(&mut self, id: &str) {
+        for members in self.groups.values_mut() {
+            members.retain(|member| member != id);
+        }
+        self.groups.retain(|_, members| !members.is_empty());
     }
 
     /// Where module `id` is on the rack: its row, the module after it, and
@@ -1163,6 +1229,7 @@ impl Patch {
             speech: self.speech.clone(),
             retired_speech: self.retired_speech.iter().cloned().collect(),
             rack: self.rows.clone(),
+            groups: self.groups.clone(),
         }
     }
 
@@ -1324,6 +1391,17 @@ impl Patch {
         // The rows are where modules hang, not the patch's sound: they are
         // mended without a note.
         patch.hang_rows(&file.rack);
+        // So are the groups: a module no longer on the wall leaves them.
+        for (name, ids) in &file.groups {
+            let ids: Vec<String> = ids
+                .iter()
+                .filter(|id| patch.places.contains_key(id.as_str()))
+                .cloned()
+                .collect();
+            if valid_group_name(name) && !ids.is_empty() {
+                patch.groups.insert(name.clone(), ids);
+            }
+        }
         cap_notes(&mut notes);
         Ok((patch, notes))
     }
@@ -1574,6 +1652,12 @@ fn plugged(result: Result<What, WallError>) -> Option<CableRecord> {
         Ok(What::Patch { cable, .. }) => Some(cable),
         Ok(_) | Err(_) => None,
     }
+}
+
+/// Whether `name` can name a group: a name, with no spaces (so a command
+/// line can take it as one word).
+fn valid_group_name(name: &str) -> bool {
+    valid_name(name) && !name.contains(' ')
 }
 
 fn bad_name(name: &str) -> WallError {

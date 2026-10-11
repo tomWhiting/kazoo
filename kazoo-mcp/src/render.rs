@@ -48,9 +48,7 @@ pub fn look(snapshot: &Snapshot) -> String {
         &mut out,
         format_args!("Seats here: {}.", list_or(&snapshot.seats, "none")),
     );
-    log_health_line(&mut out, &snapshot.log);
-    recording_line(&mut out, snapshot.recording.as_ref());
-    save_line(&mut out, snapshot);
+    status_lines(&mut out, snapshot);
     line(
         &mut out,
         format_args!(
@@ -1062,6 +1060,39 @@ fn line(out: &mut String, args: std::fmt::Arguments<'_>) {
     out.push('\n');
 }
 
+/// The log's health, the recording, the save and the groups.
+fn status_lines(out: &mut String, snapshot: &Snapshot) {
+    log_health_line(out, &snapshot.log);
+    recording_line(out, snapshot.recording.as_ref());
+    save_line(out, snapshot);
+    groups_line(out, snapshot);
+}
+
+/// `Groups: kick (osc1, klon2).`, when the wall has groups.
+fn groups_line(out: &mut String, snapshot: &Snapshot) {
+    if !snapshot.groups.is_empty() {
+        let groups: Vec<String> = snapshot
+            .groups
+            .iter()
+            .map(|(group, members)| format!("{group} ({})", members.join(", ")))
+            .collect();
+        line(out, format_args!("Groups: {}.", groups.join("; ")));
+    }
+}
+/// What `wall_group` answers: every group now.
+#[must_use]
+pub fn groups(result: &kazoo_wall::protocol::GroupsResult) -> String {
+    if result.groups.is_empty() {
+        return "The wall has no groups now.".to_string();
+    }
+    let groups: Vec<String> = result
+        .groups
+        .iter()
+        .map(|(group, members)| format!("{group}: {}", members.join(", ")))
+        .collect();
+    format!("The wall's groups now: {}.", groups.join("; "))
+}
+
 #[cfg(test)]
 mod tests {
     use kazoo_wall::fingerprints::Fingerprints;
@@ -1146,6 +1177,7 @@ mod tests {
             timing: kazoo_wall::protocol::Timings::default(),
             recording: None,
             rack: None,
+            groups: std::collections::BTreeMap::new(),
             save: None,
             log: kazoo_wall::protocol::LogHealth::default(),
             probes: Vec::new(),
