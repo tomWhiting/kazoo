@@ -70,9 +70,13 @@ fn rms(signal: &[f32]) -> f32 {
     (signal.iter().map(|x| x * x).sum::<f32>() / signal.len().max(1) as f32).sqrt()
 }
 
+/// A sine, its phase worked out in double precision (in single precision a
+/// long tone's phase grows coarse enough to spread a noise floor about
+/// -60 dB down).
 fn tone(len: usize, hz: f32, level: f32, rate: f32) -> Vec<f32> {
+    let step = std::f64::consts::TAU * f64::from(hz) / f64::from(rate);
     (0..len)
-        .map(|n| level * (std::f32::consts::TAU * hz * n as f32 / rate).sin())
+        .map(|n| level * (step * n as f64).sin() as f32)
         .collect()
 }
 
@@ -251,5 +255,26 @@ fn every_rate_shifts_keeps_and_holds_alike() {
         );
         let level = kept_level / moved_level;
         assert!((0.7..1.4).contains(&level), "{rate}: {level}");
+    }
+}
+
+#[test]
+fn kept_at_a_high_rate_nothing_folds_back() {
+    // 15 kHz an octave up is 30 kHz: above the 24 kHz the kept path is
+    // shifted at, so unguarded it folds back to 18 kHz. With the formants
+    // kept (and the switch settled, so the output is the kept sound alone,
+    // which carries nothing above 24 kHz), nothing may come out above
+    // -80 dBFS.
+    for rate in [96_000.0f32, 192_000.0] {
+        let len = (0.5 * rate) as usize;
+        let input = tone(len, 15_000.0, 0.5, rate);
+        let mut pitch = shifter_at(rate, &[(SHIFT, 12.0), (FORMANT, 1.0)]);
+        let out = through(pitch.as_mut(), &input);
+        let settled = &out[len / 2..];
+        let level = rms(settled) * std::f32::consts::SQRT_2;
+        let db = 20.0 * level.max(1e-12).log10();
+        assert!(db < -80.0, "{rate}: {db} dBFS");
+        let alias = 20.0 * strength(settled, 18_000.0, rate).max(1e-12).log10();
+        assert!(alias < -80.0, "{rate}: alias at 18 kHz {alias} dBFS");
     }
 }

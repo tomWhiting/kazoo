@@ -9,7 +9,18 @@
 //! brought down through the drive family's linear-phase halfband
 //! oversampler run the other way, shifted at the analysis rate by the same
 //! taps as the plain sound (their delays scaled down), and brought back up
-//! through its interpolating half. The round trip delays the kept sound a
+//! through its interpolating half. Above 88.2 kHz the kept path has a guard
+//! of its own at the analysis rate, after the way down: the host-rate guard
+//! keeps the plain sound's raised top below the host's Nyquist, but the kept
+//! sound is shifted at the analysis rate, so whatever it raises past the
+//! analysis rate's Nyquist would fold back as an alias. A sixteenth-order
+//! lowpass (two eighth-order Butterworths) at 35% of the analysis rate over
+//! the ratio takes what would land there more than 90 dB down: above the
+//! analysis Nyquist the kept path carries nothing (a voice's formants lie far
+//! below it). The loudness match compares the kept sound with the plain
+//! sound shifted in that same band (read through the same taps at the
+//! analysis rate), so a sound the kept path cannot carry is not mistaken for
+//! one it has lost and lifted. The round trip delays the kept sound a
 //! little (none at 44.1 or 48 kHz beyond one frame, under a millisecond
 //! above), measured once in `prepare`, and the plain sound is read that
 //! much further back, so the two stay in step for the switch.
@@ -31,11 +42,18 @@
 use super::super::formant::{Formants, Lattice, MAX_ORDER, Set};
 use super::super::parts::Sinc;
 use super::taps::Taps;
+use super::{BUTTERWORTH_8, OPEN_SHARE, Svf};
 use crate::drive::oversample::{MAX_FACTOR, Oversampler};
 use crate::dsp::{DelayLine, Smoothed, flush};
 
 /// The analysis rate is the host's halved until it is under this.
 const HIGHEST_ANALYSIS_RATE: f32 = 80_000.0;
+/// The kept path's own guard, above 88.2 kHz: its corner as a share of the
+/// analysis rate, over the ratio for a shift up.
+const KEPT_SHARE: f32 = 0.35;
+/// The level below which (as a power) neither sound counts in the loudness
+/// match: -90 dBFS.
+const LEVEL_FLOOR: f32 = 1e-9;
 /// How much audio a new tap's lattice is warmed with, seconds.
 const WARM: f32 = 0.002;
 /// How quickly the kept sound's loudness follows the plain sound's,
@@ -64,7 +82,12 @@ struct Side {
     /// analysis frame's, coming up, waiting to be played.
     gathered: [f32; MAX_FACTOR],
     queued: [f32; MAX_FACTOR],
-    /// The input at the analysis rate, its envelope flattened out.
+    /// The kept path's guard at the analysis rate (two eighth-order
+    /// Butterworths), used above 88.2 kHz.
+    guard: [Svf; 8],
+    /// The guarded input at the analysis rate, as it is (for the loudness
+    /// match) and with its envelope flattened out.
+    plain: DelayLine,
     flat: DelayLine,
     flatten: Lattice,
     /// The envelope put back on, one lattice for each tap.
@@ -77,6 +100,10 @@ impl Side {
         self.up.reset();
         self.gathered = [0.0; MAX_FACTOR];
         self.queued = [0.0; MAX_FACTOR];
+        for section in &mut self.guard {
+            section.reset();
+        }
+        self.plain.clear();
         self.flat.clear();
         self.flatten.clear();
         for lattice in &mut self.shapes {
@@ -137,7 +164,7 @@ impl Level {
         let power = |frame: [f32; 2]| frame[0].mul_add(frame[0], frame[1] * frame[1]);
         let plain = smoothed_power(&mut self.plain, power(plain), self.coeff);
         let kept = smoothed_power(&mut self.kept, power(kept), self.coeff);
-        let wanted = ((plain + 1e-12) / (kept + 1e-12)).sqrt();
+        let wanted = ((plain + LEVEL_FLOOR) / (kept + LEVEL_FLOOR)).sqrt();
         self.lift.set(wanted.clamp(1.0 / MOST_LIFT, MOST_LIFT));
         self.lift.step()
     }
@@ -212,9 +239,10 @@ impl Keeper {
             side.down.configure(self.factor, analysis, 0.0);
             side.up.configure(self.factor, analysis, 0.0);
             side.flat.resize(reach as usize);
+            side.plain.resize(reach as usize);
         }
         self.formants.prepare(analysis, reach);
-        self.level.prepare(rate);
+        self.level.prepare(analysis);
         self.later = self.measure_round_trip();
         self.clear();
     }
@@ -302,23 +330,23 @@ impl Keeper {
         out
     }
 
-    /// The gain that holds the kept sound to the plain sound's loudness;
-    /// one while the kept sound is not being made.
-    pub fn lift(&mut self, plain: [f32; 2], kept: [f32; 2]) -> f32 {
-        if self.active {
-            self.level.follow(plain, kept)
-        } else {
-            1.0
-        }
-    }
-
     /// One frame at the analysis rate.
     fn analysis_frame(&mut self, taps: &Taps, gains: (f32, f32), sinc: &Sinc, wanted: bool) {
         let order = self.formants.order();
         self.formants.push(self.heard.reduce(self.heard_gathered));
         self.formants.at(0.0, &mut self.now);
+        let guarded = self.factor > 1;
+        let g = (std::f32::consts::PI * (KEPT_SHARE / self.ratio).min(OPEN_SHARE)).tan();
         for side in &mut self.sides {
-            let down = side.down.reduce(side.gathered);
+            let mut down = side.down.reduce(side.gathered);
+            if guarded {
+                down = side
+                    .guard
+                    .iter_mut()
+                    .zip(BUTTERWORTH_8.iter().chain(&BUTTERWORTH_8))
+                    .fold(down, |signal, (section, k)| section.lowpass(signal, g, *k));
+            }
+            side.plain.push(down);
             side.flat.push(side.flatten.flatten(down, &self.now, order));
         }
         let factor = self.factor as f32;
@@ -359,15 +387,23 @@ impl Keeper {
             self.formants.at(fading, &mut self.fading_set);
         }
         let lead = self.lead;
-        for side in &mut self.sides {
-            let excitation = sinc.read(&side.flat, f64::from(heard));
-            let mut kept = gains.0 * side.shapes[lead].shape(excitation, &self.heard_set, order);
+        let mut kept = [0.0f32; 2];
+        let mut plain = [0.0f32; 2];
+        for ((side, kept), plain) in self.sides.iter_mut().zip(&mut kept).zip(&mut plain) {
+            let read = |line: &DelayLine, delay: f32| sinc.read(line, f64::from(delay));
+            *kept =
+                gains.0 * side.shapes[lead].shape(read(&side.flat, heard), &self.heard_set, order);
+            *plain = gains.0 * read(&side.plain, heard);
             if gains.1 > 0.0 {
-                let excitation = sinc.read(&side.flat, f64::from(fading));
-                let shaped = side.shapes[1 - lead].shape(excitation, &self.fading_set, order);
-                kept = gains.1.mul_add(shaped, kept);
+                let shaped =
+                    side.shapes[1 - lead].shape(read(&side.flat, fading), &self.fading_set, order);
+                *kept = gains.1.mul_add(shaped, *kept);
+                *plain = gains.1.mul_add(read(&side.plain, fading), *plain);
             }
-            side.queued = side.up.expand(kept);
+        }
+        let lift = self.level.follow(plain, kept);
+        for (side, kept) in self.sides.iter_mut().zip(kept) {
+            side.queued = side.up.expand(kept * lift);
         }
     }
 

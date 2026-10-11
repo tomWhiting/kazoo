@@ -135,10 +135,10 @@ const GUIDE_HZ: f32 = 2_500.0;
 /// The guard's corner as a share of the rate: over the ratio for a shift
 /// up, and wide open for a shift down.
 const RAISED_SHARE: f32 = 0.42;
-const OPEN_SHARE: f32 = 0.47;
+pub(super) const OPEN_SHARE: f32 = 0.47;
 /// The damping (`1 / Q`) of the four sections of an eighth-order
 /// Butterworth lowpass.
-const BUTTERWORTH_8: [f32; 4] = [1.961_57, 1.662_939, 1.111_14, 0.390_181];
+pub(super) const BUTTERWORTH_8: [f32; 4] = [1.961_57, 1.662_939, 1.111_14, 0.390_181];
 /// Samples between guard corners worked out; the corner glides between
 /// them.
 const CONTROL: usize = 32;
@@ -204,7 +204,7 @@ fn build() -> Box<dyn Effect> {
 /// filter: the bilinear transform of the analogue state-variable filter,
 /// built so that its corner can move every sample without a click.
 #[derive(Debug, Clone, Copy, Default)]
-struct Svf {
+pub(super) struct Svf {
     first: f32,
     second: f32,
 }
@@ -212,7 +212,7 @@ struct Svf {
 impl Svf {
     /// One sample through at prewarped corner `g` (`tan(π fc / rate)`) and
     /// damping `k` (`1 / Q`).
-    fn lowpass(&mut self, input: f32, g: f32, k: f32) -> f32 {
+    pub(super) fn lowpass(&mut self, input: f32, g: f32, k: f32) -> f32 {
         let a1 = 1.0 / g.mul_add(g + k, 1.0);
         let a2 = g * a1;
         let a3 = g * a2;
@@ -226,7 +226,7 @@ impl Svf {
         v2
     }
 
-    const fn reset(&mut self) {
+    pub(super) const fn reset(&mut self) {
         self.first = 0.0;
         self.second = 0.0;
     }
@@ -371,9 +371,8 @@ impl Pitch {
                 &self.sinc,
                 (1.0 - drift, keeping),
             );
-            let lift = self.keeper.lift(plain, kept);
             for c in 0..2 {
-                let shifted = kept[c].mul_add(lift, -plain[c]).mul_add(keep, plain[c]);
+                let shifted = (kept[c] - plain[c]).mul_add(keep, plain[c]);
                 output[c][i] = guard(dry.mul_add(x[c], wet * shifted));
                 wet_out.put(c, i, guard(shifted));
             }
