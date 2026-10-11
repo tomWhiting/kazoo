@@ -9,10 +9,10 @@
 use kazoo_wall::catalogue::{Curve, JackLaw, Signal};
 use kazoo_wall::fingerprints::Shares;
 use kazoo_wall::protocol::{
-    CatalogueResult, Change, ChangeResult, ClockSource, KindInfo, KnobView, Listen, ListenResult,
-    LoadResult, LogHealth, LogPage, MAX_PROBES, Measured, ModuleView, Probe, ProbeResult,
-    ReadoutReading, RecordResult, Recording, SaveResult, SavesResult, ScopeReading, Snapshot,
-    TempoResult, Timings,
+    CatalogueResult, Change, ChangeResult, ClockSource, EngineHealth, KindInfo, KnobView, Listen,
+    ListenResult, LoadResult, LogHealth, LogPage, MAX_PROBES, Measured, ModuleView, Probe,
+    ProbeResult, ReadoutReading, RecordResult, Recording, SaveResult, SavesResult, ScopeReading,
+    Snapshot, TempoResult, Timings,
 };
 
 /// Beats in a bar, for the position line.
@@ -59,6 +59,7 @@ pub fn look(snapshot: &Snapshot) -> String {
             round(snapshot.levels.peak_r, 1)
         ),
     );
+    engine_line(&mut out, snapshot.engine.as_ref());
     match &snapshot.listen {
         Some(heard) => line(
             &mut out,
@@ -149,6 +150,45 @@ fn log_health_line(out: &mut String, log: &LogHealth) {
         line(
             out,
             format_args!("Warning: {trouble}. Nothing said to be made is lost; the wall plays on."),
+        );
+    }
+}
+
+/// How hard the engine is working: the share of its time it spends
+/// rendering, and whether the wall takes more modules and cables. Nothing
+/// from a wall older than the report.
+fn engine_line(out: &mut String, engine: Option<&EngineHealth>) {
+    let Some(engine) = engine else {
+        return;
+    };
+    let load = round(engine.load * 100.0, 0);
+    let room = match engine.load_guard {
+        Some(guard) if engine.refusing => format!(
+            "that is past what it keeps to ({}%), so it takes no more modules or cables until \
+             it is well below; take something away",
+            round(guard * 100.0, 0)
+        ),
+        Some(_) if engine.measuring => "the wall was just put up and is still being measured: \
+                                        more modules and cables wait a few seconds"
+            .to_string(),
+        Some(guard) => format!(
+            "it takes more modules and cables until {}%",
+            round(guard * 100.0, 0)
+        ),
+        None => "it does not refuse more for it".to_string(),
+    };
+    line(
+        out,
+        format_args!("Rendering: {load}% of the time the wall has; {room}."),
+    );
+    if engine.leaked > 0 || engine.ignored > 0 {
+        line(
+            out,
+            format_args!(
+                "Warning: the engine refused {} commands and kept {} retired items it could not \
+                 free: some of the wall may not be playing.",
+                engine.ignored, engine.leaked
+            ),
         );
     }
 }
@@ -1109,6 +1149,7 @@ mod tests {
             save: None,
             log: kazoo_wall::protocol::LogHealth::default(),
             probes: Vec::new(),
+            engine: None,
         }
     }
 

@@ -153,7 +153,7 @@ fn every_wall_error_code_is_reachable() {
 }
 
 #[test]
-fn undo_that_no_longer_applies_and_caps_are_errors() {
+fn undo_that_no_longer_applies_is_an_error() {
     let (mut wall, _engine) = wall();
     let added = changed(
         ask(
@@ -212,27 +212,256 @@ fn undo_that_no_longer_applies_and_caps_are_errors() {
         code(ask(&mut wall, &Request::Shutdown)),
         ErrorCode::Internal
     );
-    // Filled by many seats, each within its own flood allowance.
-    for count in wall.patch().modules().len()..crate::MAX_MODULES {
-        let add = Request::Add {
-            kind: "mix".to_string(),
-            name: None,
-            place: None,
-        };
-        wall.request(&format!("Filler{count}"), &add, Instant::now())
-            .unwrap();
+}
+
+fn add(kind: &str) -> Request {
+    Request::Add {
+        kind: kind.to_string(),
+        name: None,
+        place: None,
     }
-    assert_eq!(
-        code(ask(
+}
+
+fn patch(from: &str, to: &str) -> Request {
+    Request::Patch {
+        from: from.to_string(),
+        to: to.to_string(),
+        amount: None,
+    }
+}
+
+#[test]
+fn the_wall_has_no_fixed_size_and_grows_its_engine_as_it_goes() {
+    let (mut wall, _engine) = wall();
+    // Far past the 96 modules and 320 cables the wall once held at most,
+    // and past the engine's first room, by many seats, each within its
+    // own flood allowance.
+    let target = 130;
+    let mut mixers = Vec::new();
+    for count in wall.patch().modules().len()..target {
+        let added = wall
+            .request(&format!("Filler{count}"), &add("mix"), Instant::now())
+            .unwrap();
+        mixers.push(changed(added.result).module.unwrap());
+    }
+    assert_eq!(wall.patch().modules().len(), target);
+    let mut cables = wall.patch().cables().len();
+    for (n, mixer) in mixers.iter().enumerate() {
+        for jack in ["a", "b", "c", "d"] {
+            let seat = format!("Patcher{n}{jack}");
+            wall.request(
+                &seat,
+                &patch("vco1.out", &format!("{mixer}.{jack}")),
+                Instant::now(),
+            )
+            .unwrap();
+            cables += 1;
+        }
+    }
+    assert!(cables > 320, "{cables}");
+    assert_eq!(wall.patch().cables().len(), cables);
+    assert_eq!(wall.lines.len(), cables);
+    // Every cable has a line of its own, and the engine has been sent
+    // room for every module and line, grown by doubling.
+    let lines: BTreeSet<u32> = wall.lines.values().map(|(line, _)| *line).collect();
+    assert_eq!(lines.len(), cables);
+    assert!(wall.engine.slots() >= target && wall.engine.slots().is_power_of_two());
+    assert!(wall.engine.lines() >= cables);
+}
+
+#[test]
+fn the_wall_refuses_more_work_while_rendering_takes_most_of_its_time() {
+    let (mut wall, _engine) = wall();
+    let removed = changed(
+        ask(
             &mut wall,
-            &Request::Add {
-                kind: "mix".to_string(),
-                name: None,
-                place: None,
-            }
-        )),
-        ErrorCode::Full
+            &Request::Remove {
+                module: "lfo2".to_string(),
+            },
+        )
+        .unwrap(),
     );
+    let mixer = changed(ask(&mut wall, &add("mix")).unwrap())
+        .module
+        .unwrap();
+    let plugged = changed(ask(&mut wall, &patch("vco1.out", &format!("{mixer}.a"))).unwrap());
+    let unplugged = changed(
+        ask(
+            &mut wall,
+            &Request::Unpatch {
+                cable: plugged.cable,
+                to: None,
+            },
+        )
+        .unwrap(),
+    );
+    ask(&mut wall, &patch("vco1.out", &format!("{mixer}.b"))).unwrap();
+
+    // The daemon turns the guard on; the wall's load has been measured
+    // long enough to judge by.
+    wall.set_load_guard(true);
+    measured_long_enough(&wall);
+    wall.engine.shared().set_render_load(LOAD_GUARD + 0.05);
+    let full = ask(&mut wall, &add("mix")).unwrap_err();
+    assert_eq!(full.code, ErrorCode::Full);
+    assert!(full.message.contains("85%"), "{}", full.message);
+    // A new cable is more work; so is bringing back what was taken away.
+    let into_free = patch("vco1.out", &format!("{mixer}.c"));
+    assert_eq!(code(ask(&mut wall, &into_free)), ErrorCode::Full);
+    for change in [removed.change.seq, unplugged.change.seq] {
+        assert_eq!(
+            code(ask(&mut wall, &Request::Undo { change })),
+            ErrorCode::Full
+        );
+    }
+    // Refused changes changed nothing.
+    assert!(wall.patch().module("lfo2").is_none());
+    assert!(!wall.patch().is_plugged(&format!("{mixer}.c")));
+    // Changes that add no work still go: a knob, a cable moved to a jack
+    // already in use, taking things away.
+    ask(&mut wall, &turn("vcf1", "cutoff", 420.0)).unwrap();
+    ask(&mut wall, &patch("lfo1.out", &format!("{mixer}.b"))).unwrap();
+    ask(&mut wall, &Request::Remove { module: mixer }).unwrap();
+
+    // Once refusing, a load just under the guard is not enough: it takes
+    // more only below RESUME_SHARE of it.
+    wall.engine.shared().set_render_load(LOAD_GUARD - 0.05);
+    assert_eq!(code(ask(&mut wall, &add("mix"))), ErrorCode::Full);
+    wall.engine
+        .shared()
+        .set_render_load(LOAD_GUARD.mul_add(RESUME_SHARE, -0.2));
+    ask(&mut wall, &add("mix")).unwrap();
+    ask(
+        &mut wall,
+        &Request::Undo {
+            change: removed.change.seq,
+        },
+    )
+    .unwrap();
+    assert!(wall.patch().module("lfo2").is_some());
+    assert!(!wall.load_watch.refusing);
+
+    // A wall told not to guard (a test daemon in a debug build) takes more
+    // whatever the load.
+    wall.engine.shared().set_render_load(LOAD_GUARD + 1.0);
+    assert_eq!(code(ask(&mut wall, &add("mix"))), ErrorCode::Full);
+    wall.set_load_guard(false);
+    ask(&mut wall, &add("mix")).unwrap();
+    let health = wall.snapshot().engine.unwrap();
+    assert_eq!(health.load_guard, None);
+    assert!((health.load - f64::from(LOAD_GUARD + 1.0)).abs() < 1e-6);
+}
+
+/// Move the engine's frames on past what the wall waits for after it is
+/// put up, and past every change it has not taken in yet.
+fn measured_long_enough(wall: &Wall) {
+    let window = u64::from(wall.engine.sample_rate());
+    let shared = wall.engine.shared();
+    shared.set_frames(shared.frames() + window * ABSORBED_WINDOWS * 2);
+}
+
+#[test]
+fn a_wall_just_put_up_is_measured_before_it_takes_more() {
+    let (mut wall, _engine) = wall();
+    wall.set_load_guard(true);
+    let waits = ask(&mut wall, &add("mix")).unwrap_err();
+    assert_eq!(waits.code, ErrorCode::SlowDown);
+    assert!(waits.message.contains("measured"), "{}", waits.message);
+    assert!(wall.snapshot().engine.unwrap().measuring);
+    // What adds nothing goes meanwhile.
+    ask(&mut wall, &turn("vcf1", "cutoff", 420.0)).unwrap();
+    measured_long_enough(&wall);
+    ask(&mut wall, &add("mix")).unwrap();
+    let health = wall.snapshot().engine.unwrap();
+    assert!(!health.measuring && !health.refusing);
+    assert_eq!(health.load_guard, Some(f64::from(LOAD_GUARD)));
+    // Another wall put up is measured afresh.
+    wall.swap_engine();
+    assert!(wall.snapshot().engine.unwrap().measuring);
+    assert_eq!(code(ask(&mut wall, &add("mix"))), ErrorCode::SlowDown);
+}
+
+#[test]
+fn each_addition_is_costed_and_they_come_apart_near_the_guard() {
+    let (mut wall, _engine) = wall();
+    wall.set_load_guard(true);
+    measured_long_enough(&wall);
+    let units = wall.patch().modules().len() + wall.patch().cables().len();
+    assert!(units >= COSTED_FROM, "{units}");
+    // Each module and cable takes a share of the load: one more past the
+    // guard is refused, however the average stands.
+    let share = LOAD_GUARD / units as f32;
+    wall.engine
+        .shared()
+        .set_render_load(share * (units as f32 - 0.5));
+    let costed = ask(&mut wall, &add("mix")).unwrap_err();
+    assert_eq!(costed.code, ErrorCode::Full);
+    assert!(
+        costed.message.contains("would take it"),
+        "{}",
+        costed.message
+    );
+    assert!(!wall.load_watch.refusing, "costed, not refusing");
+
+    // Above SETTLE_SHARE of the guard, an addition waits for the last to
+    // be taken in.
+    let settling = LOAD_GUARD.mul_add(SETTLE_SHARE, 0.01);
+    wall.engine.shared().set_render_load(settling * 0.5);
+    ask(&mut wall, &add("mix")).unwrap();
+    wall.engine.shared().set_render_load(settling);
+    let wait = ask(&mut wall, &add("mix")).unwrap_err();
+    assert_eq!(wait.code, ErrorCode::SlowDown);
+    // Taking something away is no reason to wait, and is no addition.
+    let removed = changed(
+        ask(
+            &mut wall,
+            &Request::Remove {
+                module: "lfo2".to_string(),
+            },
+        )
+        .unwrap(),
+    );
+    assert_eq!(code(ask(&mut wall, &add("mix"))), ErrorCode::SlowDown);
+    // Below it, additions come as fast as the seats make them.
+    wall.engine.shared().set_render_load(settling * 0.5);
+    ask(&mut wall, &add("mix")).unwrap();
+    // Once the load has taken them in, the next is judged on it alone.
+    measured_long_enough(&wall);
+    wall.engine.shared().set_render_load(settling);
+    ask(
+        &mut wall,
+        &Request::Undo {
+            change: removed.change.seq,
+        },
+    )
+    .unwrap();
+    assert_eq!(wall.load_watch.recent.len(), 1);
+    assert!(wall.load_watch.recent[0].1 > 1, "a module and its cables");
+}
+
+#[test]
+fn what_was_taken_away_lately_counts_against_the_cost() {
+    let (mut wall, _engine) = wall();
+    wall.set_load_guard(true);
+    measured_long_enough(&wall);
+    let units = wall.patch().modules().len() + wall.patch().cables().len();
+    assert!((COSTED_FROM..50).contains(&units), "{units}");
+    // Measured with every module and cable there, just inside the guard
+    // for one more. (Shared over what is left after a removal instead, one
+    // more would be past it, on a wall of fewer than 50.)
+    let share = LOAD_GUARD / (units as f32 + 1.02);
+    wall.engine.shared().set_render_load(share * units as f32);
+    // Taking a module away, the load (not yet taking it in) is shared
+    // over what it was measured on, not over what is left: the next
+    // addition is costed no higher than before.
+    ask(
+        &mut wall,
+        &Request::Remove {
+            module: "lfo2".to_string(),
+        },
+    )
+    .unwrap();
+    ask(&mut wall, &add("mix")).unwrap();
 }
 
 #[test]
@@ -878,7 +1107,13 @@ fn a_gate_is_a_gate_whichever_input_it_goes_into() {
             .find(|cable| cable.id == id)
             .unwrap()
             .clone();
-        wall.carries_gate(&cable)
+        let kinds: HashMap<&str, Kind> = wall
+            .patch()
+            .modules()
+            .iter()
+            .map(|module| (module.id.as_str(), module.kind))
+            .collect();
+        carries_gate(&kinds, &cable)
     };
     assert!(gate(cables[0]), "a clock into a mixer");
     assert!(!gate(cables[1]), "a vco into a mixer");
@@ -899,7 +1134,7 @@ fn a_cable_keeps_its_line_and_a_new_one_takes_the_lowest_free() {
         now,
     );
     let before = wall.lines.clone();
-    let lines: Vec<u16> = cables.iter().map(|id| before[id].0).collect();
+    let lines: Vec<u32> = cables.iter().map(|id| before[id].0).collect();
     assert_eq!(lines, [0, 1, 2]);
     let unplug = Request::Unpatch {
         cable: Some(cables[1]),
@@ -1109,14 +1344,21 @@ fn a_dry_path_and_its_held_back_twin_cancel() {
     );
 }
 
-/// A full wall: `MAX_MODULES` modules, every kind in turn, and
-/// `MAX_CABLES` cables, each module's first output into the next one's
-/// first input and the rest into knob jacks. Returns it and its cable count.
-fn full_wall() -> (Patch, usize) {
+/// The most modules the wall once held, when it had a fixed size: the
+/// callback budget is still measured at it.
+const OLD_MODULES: usize = 96;
+
+/// The most cables the wall once held.
+const OLD_CABLES: usize = 320;
+
+/// A wall of `modules` modules, every kind in turn, and up to `most`
+/// cables, each module's first output into the next one's first input and
+/// the rest into knob jacks. Returns it and its cable count.
+fn full_wall(modules: usize, most: usize) -> (Patch, usize) {
     let mut patch = Patch::empty(120.0);
     let kinds: Vec<Kind> = Kind::all().collect();
     let mut ids = Vec::new();
-    for index in 0..crate::MAX_MODULES {
+    for index in 0..modules {
         let kind = kinds[index % kinds.len()];
         match patch.add(kind.name(), None, None).unwrap() {
             What::Add { module } => ids.push((module.id, kind)),
@@ -1139,7 +1381,7 @@ fn full_wall() -> (Patch, usize) {
     let mut cables = 0;
     let mut source = 0;
     for to in destinations {
-        if cables == crate::MAX_CABLES {
+        if cables == most {
             break;
         }
         // The next module that has an output feeds this jack.
@@ -1156,36 +1398,69 @@ fn full_wall() -> (Patch, usize) {
     (patch, cables)
 }
 
-#[test]
-fn a_full_wall_holds_every_module_and_cable_and_no_more() {
-    let (mut patch, cables) = full_wall();
-    assert_eq!(patch.modules().len(), crate::MAX_MODULES);
-    assert_eq!(cables, crate::MAX_CABLES);
-    assert_eq!(
-        patch.add("vco", None, None).unwrap_err().code,
-        ErrorCode::Full
-    );
-    // And it plays, without allocating, with every cable on a line.
-    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
-    let mut wall = Wall::new(patch, control, None, Vec::new(), None);
-    assert_eq!(wall.lines.len(), crate::MAX_CABLES);
-    let mut buffer = vec![0.0_f32; 512 * 2];
-    for _ in 0..20 {
-        engine.render(&mut buffer, 2);
-        wall.tick(Instant::now());
-    }
+/// Render one 512-frame block under `assert_no_alloc`, failing on any
+/// allocation or free.
+fn render_without_allocating(engine: &mut Engine, buffer: &mut [f32]) {
     let before = assert_no_alloc::violation_count();
-    for _ in 0..20 {
-        assert_no_alloc::assert_no_alloc(|| engine.render(&mut buffer, 2));
-        assert!(buffer.iter().all(|s| s.is_finite()));
-    }
-    assert_eq!(assert_no_alloc::violation_count(), before);
+    assert_no_alloc::assert_no_alloc(|| engine.render(buffer, 2));
+    assert_eq!(
+        assert_no_alloc::violation_count(),
+        before,
+        "the audio thread allocated or freed memory"
+    );
+    assert!(buffer.iter().all(|s| s.is_finite()));
 }
 
-/// The share of a callback's time a full wall takes at `rate` with
-/// `frames`-frame buffers: the 99th percentile over `callbacks` calls.
+#[test]
+fn a_wall_past_the_old_limits_grows_and_plays_without_allocating() {
+    let (patch, cables) = full_wall(OLD_MODULES * 2, OLD_CABLES * 2);
+    assert_eq!(patch.modules().len(), OLD_MODULES * 2);
+    assert_eq!(cables, OLD_CABLES * 2);
+    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let mut wall = Wall::new(patch, control, None, Vec::new(), None);
+    assert_eq!(wall.lines.len(), cables);
+    // The engine starts with room for a modest wall. The room and lines
+    // this one needs were built on the control side and sent; the engine
+    // moves into them as it renders, without allocating.
+    assert_eq!(wall.engine.shared().slots(), crate::engine::INITIAL_SLOTS);
+    let mut buffer = vec![0.0_f32; 512 * 2];
+    render_without_allocating(&mut engine, &mut buffer);
+    assert!(wall.engine.shared().slots() >= OLD_MODULES * 2);
+    assert!(wall.engine.shared().lines() >= cables);
+    for _ in 0..5 {
+        render_without_allocating(&mut engine, &mut buffer);
+        wall.tick(Instant::now());
+    }
+    // Seats add to it as it plays, past the room it has: it grows again.
+    // (Unguarded, as a test wall is: a debug build renders far slower than
+    // the audio thread will, so its load says nothing.)
+    let room = wall.engine.shared().slots();
+    let mut count = 0;
+    while wall.patch().modules().len() <= room {
+        wall.request(&format!("Grower{count}"), &add("vco"), Instant::now())
+            .unwrap();
+        count += 1;
+    }
+    for _ in 0..5 {
+        render_without_allocating(&mut engine, &mut buffer);
+        wall.tick(Instant::now());
+    }
+    assert!(wall.engine.shared().slots() > room);
+    assert!(wall.engine.shared().slots() >= wall.patch().modules().len());
+    assert_eq!(wall.engine_mut().shared().ignored(), 0);
+    assert_eq!(wall.engine_mut().shared().leaked(), 0);
+}
+
+/// The share of a callback's time a wall of the old most modules and
+/// cables takes at `rate` with `frames`-frame buffers: the 99th percentile
+/// over `callbacks` calls.
 fn load(rate: u32, frames: usize, callbacks: usize) -> f64 {
-    load_of(full_wall().0, rate, frames, callbacks)
+    load_of(
+        full_wall(OLD_MODULES, OLD_CABLES).0,
+        rate,
+        frames,
+        callbacks,
+    )
 }
 
 /// The share of a callback's time `patch` takes, as [`load`] measures it.
@@ -1210,11 +1485,11 @@ fn load_of(patch: Patch, rate: u32, frames: usize, callbacks: usize) -> f64 {
 }
 
 #[test]
-fn a_full_wall_keeps_well_inside_the_callback_budget() {
+fn a_wall_of_the_old_most_keeps_well_inside_the_callback_budget() {
     for (rate, frames) in [(192_000, 1_024), (48_000, 512)] {
         let share = load(rate, frames, 200);
         println!(
-            "full wall at {rate} Hz, {frames} frames: {:.1}% of the callback",
+            "{OLD_MODULES} modules and {OLD_CABLES} cables at {rate} Hz, {frames} frames: {:.1}% of the callback",
             share * 100.0
         );
         // Only an optimised build says anything about the audio thread.
@@ -4004,6 +4279,87 @@ fn probing_wall(kinds: &[&str], cables: &[(&str, &str)]) -> (Wall, Engine) {
     (Wall::new(patch, control, None, Vec::new(), None), engine)
 }
 
+#[test]
+fn a_trail_too_long_to_follow_shows_nothing_and_never_runs_out_of_stack() {
+    // A pitch through a chain of slews into a readout: followed back all
+    // the way while the chain is within TRAIL_DEPTH, and given up (shown
+    // as nothing) past it, on a thread with the control thread's stack.
+    for (slews, shown) in [
+        (TRAIL_DEPTH - 1, Some(probe::Show::Pitch)),
+        (TRAIL_DEPTH, None),
+        (TRAIL_STEPS * 2, None),
+    ] {
+        let mut patch = Patch::empty(120.0);
+        patch.add("seq", None, None).unwrap();
+        for _ in 0..slews {
+            patch.add("slew", None, None).unwrap();
+        }
+        patch.add("readout", None, None).unwrap();
+        patch.plug("seq1.pitch", "slew1.in", None, None).unwrap();
+        for n in 1..slews {
+            patch
+                .plug(
+                    &format!("slew{n}.out"),
+                    &format!("slew{}.in", n + 1),
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        patch
+            .plug(&format!("slew{slews}.out"), "readout1.in", None, None)
+            .unwrap();
+        let found = std::thread::Builder::new()
+            .name("trail".to_string())
+            .spawn(move || {
+                let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+                let wall = Wall::new(patch, control, None, Vec::new(), None);
+                let shown = wall.source_show("readout1", &mut wall.trail());
+                drop(engine);
+                shown
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(found, shown, "{slews} slews");
+    }
+}
+
+#[test]
+fn a_change_that_could_take_the_file_past_its_bound_is_refused() {
+    let (mut wall, _engine) = wall();
+    let measured = crate::store::encode(wall.patch()).unwrap().len();
+    // Room for a module at its worst, and not a byte more.
+    wall.file_limit = measured + crate::store::WORST_MODULE_BYTES - 1;
+    let refused = ask(&mut wall, &add("mix")).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Full);
+    assert!(
+        refused.message.contains("take something away"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(wall.patch().modules().len(), wall.rack.index.len());
+    wall.file_limit = measured + crate::store::WORST_MODULE_BYTES;
+    let mixer = changed(ask(&mut wall, &add("mix")).unwrap())
+        .module
+        .unwrap();
+    // The next is judged on the file as it now is, measured afresh.
+    assert_eq!(code(ask(&mut wall, &add("mix"))), ErrorCode::Full);
+    assert!(wall.file_bytes.unwrap() > measured);
+    // A cable takes far less at its worst: there is still room for one.
+    ask(&mut wall, &patch("vco1.out", &format!("{mixer}.a"))).unwrap();
+    // What adds nothing goes: a knob, taking things away.
+    ask(&mut wall, &turn("vcf1", "cutoff", 420.0)).unwrap();
+    ask(&mut wall, &Request::Remove { module: mixer }).unwrap();
+    // Well inside the bound, the file is not measured for every change.
+    wall.file_limit = measured * 10;
+    wall.file_bytes = Some(measured);
+    wall.file_grown = 0;
+    ask(&mut wall, &add("mix")).unwrap();
+    assert_eq!(wall.file_bytes, Some(measured));
+    assert_eq!(wall.file_grown, crate::store::WORST_MODULE_BYTES);
+}
+
 /// Play `seconds` of the wall, ticking every 20 ms as the daemon does.
 fn run_for(wall: &mut Wall, engine: &mut Engine, seconds: f64) {
     let mut buffer = vec![0.0_f32; 960 * 2];
@@ -4624,4 +4980,90 @@ fn a_loop_of_routers_reads_the_same_whatever_order_its_cables_went_in() {
     let found = scoped.probe_of(&scoped.patch.modules()[1], Instant::now(), &mut trail);
     assert!(found.readout.is_none());
     assert_eq!(trail.steps, 0);
+}
+
+#[test]
+fn a_wall_that_fits_its_file_fits_a_look() {
+    // A look shows every knob with its range, unit and words, where the
+    // file keeps only its value: the look is larger, by up to
+    // LOOK_PER_FILE (store), for a wall of knob-heavy modules with nothing
+    // else to them. Checked on such a wall (every kind, no names, no dye)
+    // and on one with names, dye from six seats on every module, and a
+    // cable into each.
+    // Each kind on its own: a wall of a hundred of it, at its defaults.
+    for kind in Kind::all() {
+        let mut bare = Patch::empty(120.0);
+        for _ in 0..100 {
+            bare.add(kind.name(), None, None).unwrap();
+        }
+        let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+        let bare = Wall::new(bare, control, None, Vec::new(), None);
+        let file = crate::store::encode(bare.patch()).unwrap().len();
+        let look = serde_json::to_vec(&bare.snapshot()).unwrap().len();
+        assert!(
+            look <= file * crate::store::LOOK_PER_FILE,
+            "{kind}: a look of {look} bytes for a file of {file} ({:.2} times)",
+            look as f64 / file as f64
+        );
+    }
+    let (mut worn, _worn_engine) = wall();
+    let seats: Vec<String> = (1..=6).map(|n| format!("{:x<23}{n}", "seat")).collect();
+    let mut n = 0;
+    let start = Instant::now();
+    for kind in Kind::all() {
+        n += 1;
+        // A second apart, so each seat keeps within its flood allowance.
+        let at = start + Duration::from_secs(n);
+        let added = worn.request(
+            &format!("Adder{n}"),
+            &Request::Add {
+                kind: kind.name().to_string(),
+                name: Some("x".repeat(24)),
+                place: None,
+            },
+            at,
+        );
+        let id = changed(added.unwrap().result).module.unwrap();
+        let spec = kind.spec();
+        for (step, seat) in seats.iter().enumerate() {
+            if let Some(knob) = spec.knobs.first() {
+                let value = 0.001_f64.mul_add(step as f64, f64::from(knob.min));
+                worn.request(seat, &turn(&id, knob.name, value), at)
+                    .unwrap();
+            }
+        }
+        if let (Some(knob), true) = (spec.knobs.first(), n > 1) {
+            worn.request(
+                &format!("Patcher{n}"),
+                &patch("vco1.out", &format!("{id}.{}", knob.name)),
+                at,
+            )
+            .unwrap();
+        }
+    }
+    let file = crate::store::encode(worn.patch()).unwrap().len();
+    let look = serde_json::to_vec(&worn.snapshot()).unwrap().len();
+    assert!(
+        look <= file * crate::store::LOOK_PER_FILE,
+        "a look of {look} bytes for a file of {file}"
+    );
+}
+
+#[test]
+fn a_small_heavy_wall_takes_additions_apart_and_says_when_it_is_full() {
+    let (mut wall, _engine) = probing_wall(&["vco", "vco", "vco"], &[]);
+    wall.set_load_guard(true);
+    measured_long_enough(&wall);
+    // Too small to cost by share, but working: one addition, then wait.
+    wall.engine
+        .shared()
+        .set_render_load(SMALL_WALL_SETTLE + 0.05);
+    ask(&mut wall, &add("vco")).unwrap();
+    assert_eq!(code(ask(&mut wall, &add("vco"))), ErrorCode::SlowDown);
+    // Past the guard, look says full as the load stands, without anyone
+    // trying an addition, and stops once it is well below.
+    wall.engine.shared().set_render_load(LOAD_GUARD + 0.05);
+    assert!(wall.snapshot().engine.unwrap().refusing);
+    wall.engine.shared().set_render_load(SMALL_WALL_SETTLE);
+    assert!(!wall.snapshot().engine.unwrap().refusing);
 }

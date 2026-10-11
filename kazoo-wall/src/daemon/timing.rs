@@ -13,7 +13,7 @@
 //! the master bus together. A cable needing more than the longest delay a
 //! line holds keeps that longest delay and is listed as uncompensated.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::catalogue::Kind;
 use crate::engine::MAX_CABLE_DELAY;
@@ -49,22 +49,38 @@ pub fn timing(patch: &Patch, order: &[String], latency: impl Fn(&str) -> u32) ->
         (Some(from), Some(to)) => from < to,
         _ => false,
     };
+    // Each module's sources, once, so a wall of any size is timed in one
+    // pass over its cables.
+    let mut sources: HashMap<&str, Vec<&str>> = HashMap::new();
+    for cable in patch.cables() {
+        sources
+            .entry(cable.to_module.as_str())
+            .or_default()
+            .push(cable.from_module.as_str());
+    }
     let mut timing = Timing::default();
     let mut arrival: HashMap<&str, u32> = HashMap::new();
     let mut ready: HashMap<&str, u32> = HashMap::new();
     for id in order {
-        let late = patch
-            .cables()
-            .iter()
-            .filter(|cable| cable.to_module == *id && forward(&cable.from_module, id))
-            .map(|cable| ready.get(cable.from_module.as_str()).copied().unwrap_or(0))
+        let late = sources
+            .get(id.as_str())
+            .into_iter()
+            .flatten()
+            .filter(|from| forward(from, id))
+            .map(|from| ready.get(from).copied().unwrap_or(0))
             .max()
             .unwrap_or(0);
         arrival.insert(id, late);
         ready.insert(id, late.saturating_add(latency(id)));
     }
     // Every out meets the master bus with the latest of them.
-    let is_out = |id: &str| patch.module(id).is_some_and(|m| m.kind == Kind::OUT);
+    let outs: HashSet<&str> = patch
+        .modules()
+        .iter()
+        .filter(|module| module.kind == Kind::OUT)
+        .map(|module| module.id.as_str())
+        .collect();
+    let is_out = |id: &str| outs.contains(id);
     let master = order
         .iter()
         .filter(|id| is_out(id))

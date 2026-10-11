@@ -74,6 +74,11 @@ pub struct DaemonConfig {
     pub desk: DeskMode,
     /// Where recordings go.
     pub recordings: PathBuf,
+    /// Whether the wall refuses more work while rendering takes most of the
+    /// time it has (see [`wall::LOAD_GUARD`]). On for every daemon that
+    /// plays for people; a test daemon in a debug build, which renders far
+    /// slower than real time, turns it off.
+    pub load_guard: bool,
 }
 
 impl DaemonConfig {
@@ -92,12 +97,13 @@ impl DaemonConfig {
             audio: AudioMode::Device { sample_rate: None },
             desk: DeskMode::Discover,
             recordings: paths::recordings_dir()?,
+            load_guard: true,
         })
     }
 
     /// A daemon for tests: socket in `runtime_dir`, state in `state_dir`
     /// and recordings in its `recordings` directory, no audio device (the
-    /// headless loop at 48 kHz), no desk.
+    /// headless loop at 48 kHz), no desk, and the load guard on.
     #[must_use]
     pub fn headless(runtime_dir: &Path, state_dir: &Path) -> Self {
         Self {
@@ -108,6 +114,7 @@ impl DaemonConfig {
             },
             desk: DeskMode::Off,
             recordings: state_dir.join("recordings"),
+            load_guard: true,
         }
     }
 }
@@ -181,6 +188,7 @@ impl Daemon {
             config.socket.display()
         );
         let recordings = config.recordings;
+        let load_guard = config.load_guard;
         let setup = control::Setup {
             audio: config.audio,
             desk: config.desk,
@@ -191,6 +199,7 @@ impl Daemon {
             build: Box::new(move |engine, link| {
                 let mut wall = Wall::new(patch, engine, link, changes, Some(store));
                 wall.set_recordings_dir(recordings);
+                wall.set_load_guard(load_guard);
                 if let Some(why) = &too_large {
                     wall.starts_too_large(why);
                 }
@@ -787,6 +796,7 @@ mod tests {
         if let Ok(config) = config {
             assert!(config.socket.ends_with(SOCKET_NAME));
             assert_eq!(config.audio, AudioMode::Device { sample_rate: None });
+            assert!(config.load_guard, "a daemon that plays for people guards");
         } else {
             assert!(std::env::var_os("HOME").is_none());
         }
@@ -795,6 +805,7 @@ mod tests {
         assert_eq!(headless.socket, Path::new("/r").join(SOCKET_NAME));
         assert_eq!(headless.desk, DeskMode::Off);
         assert_eq!(headless.recordings, Path::new("/s").join("recordings"));
+        assert!(headless.load_guard);
     }
 
     #[test]

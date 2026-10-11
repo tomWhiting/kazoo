@@ -32,9 +32,18 @@ use crate::fingerprints::{Fingerprints, Shares};
 pub const MAX_LINE: usize = 64 * 1024;
 
 /// Longest line the daemon sends. Requests are capped at [`MAX_LINE`]; the
-/// daemon's own answers can be longer (a full wall's snapshot), and this
+/// daemon's own answers can be longer (a big wall's snapshot), and this
 /// bound keeps clients safe from a runaway one.
-pub const MAX_SERVER_LINE: usize = 4 * 1024 * 1024;
+///
+/// The wall has no fixed size, so this is set far past anything a machine
+/// can render: a module's view is a few kilobytes, so 64 MiB describes
+/// tens of thousands of modules, several times what the render load lets
+/// the fastest machine play. The daemon still makes sure every `look` fits:
+/// it refuses (`full`) an addition that would take the wall's file past an
+/// eighth of this (`store::MAX_WALL_FILE`, see
+/// `daemon::wall::Wall::file_room`; a look is at most
+/// `store::LOOK_PER_FILE` times its file), rather than letting `look` fail.
+pub const MAX_SERVER_LINE: usize = 64 * 1024 * 1024;
 
 /// Most scopes and readouts whose readings one answer carries: `look`, or
 /// `probe` for every one, carry the first in the wall's order; `probe`
@@ -514,7 +523,10 @@ pub enum ErrorCode {
     UnknownCable,
     /// No change with that number in the log.
     UnknownChange,
-    /// A cap was reached: modules, cables or connections.
+    /// No room for more: the wall's rendering takes most of the time it has
+    /// (or the machine has no memory for more), the wall's file would be
+    /// too large (or already is, see `look`'s faults), a seat has made all
+    /// the saves it may, or the daemon has all the connections it takes.
     Full,
     /// No save with that name.
     UnknownSave,
@@ -672,8 +684,7 @@ pub enum What {
         /// Cables its cables replaced.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         replaced: Vec<CableRecord>,
-        /// Its cables that could not come back: the other end is gone, or
-        /// the wall is full.
+        /// Its cables that could not come back: the other end is gone.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skipped: Vec<CableRecord>,
         /// Where it went on the rack.
@@ -1062,6 +1073,11 @@ pub struct Snapshot {
     /// them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub probes: Vec<Probe>,
+    /// How hard the engine is working, whether the wall takes more, and
+    /// anything the engine could not do. Left out by a wall older than
+    /// this report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineHealth>,
 }
 
 /// Whether the change log is taking changes.
@@ -1132,6 +1148,31 @@ pub struct SaveMark {
     /// any knob, cable, module, word, row, tempo or touch.
     #[serde(default)]
     pub changed: bool,
+}
+
+/// How hard the engine is working, and anything it could not do.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EngineHealth {
+    /// The share of the time it has that the engine spends rendering,
+    /// averaged over about a second: 1 is all of it.
+    pub load: f64,
+    /// The load past which the wall takes no more modules or cables
+    /// (`full`); `None` when this wall does not refuse for it.
+    pub load_guard: Option<f64>,
+    /// Whether the wall is refusing more modules and cables for the load
+    /// (`full`): from past the guard until it is back well below it.
+    #[serde(default)]
+    pub refusing: bool,
+    /// Whether the load of a wall just put up (or of an engine just
+    /// started) is still being measured: more waits (`slow_down`).
+    #[serde(default)]
+    pub measuring: bool,
+    /// Retired items the engine had to leak rather than free (never
+    /// expected: the retire ring was full).
+    pub leaked: u64,
+    /// Commands the engine refused: a slot or knob out of range, or room
+    /// there was no memory for.
+    pub ignored: u64,
 }
 
 /// A recording under way.

@@ -109,7 +109,7 @@ Each step ships and is tested on its own. Steps 1 to 3 are console-only changes.
    - Build one jack-to-colour map per frame.
    - Fix follow-after-add and j/k in the rack view.
    - Files: `draw/rack.rs`, `rack/geometry.rs`, `app/mod.rs`, `app/keys.rs`.
-   - Tests: a new stress test in `tests/render.rs` with 96 modules and 320 cables (the wall's limits, `lib.rs:50-53`) that checks cables half off-screen still draw and the cache is used. Also tests in `tests/keys.rs` for reveal-after-add and j/k.
+   - Tests: a new stress test in `tests/render.rs` with 192 modules and 640 cables (twice the 96 and 320 the wall once held at most; it now has no fixed size) that checks cables half off-screen still draw and the cache is used. Also tests in `tests/keys.rs` for reveal-after-add and j/k.
 2. **Space and panning (about 1 day).** `f`, Shift-arrows, `.`, `g`, middle-drag, edge auto-pan.
    - Files: `app/keys.rs`, `app/mouse.rs`, `app/mod.rs` (new `Mode::Jump`), `draw/mod.rs`, `draw/overlay.rs` (help text).
    - Tests: `tests/keys.rs`, `tests/mouse.rs`, `tests/render.rs`.
@@ -131,7 +131,7 @@ Each step ships and is tested on its own. Steps 1 to 3 are console-only changes.
 Later and optional: `wall_look` could list modules by row, and `wall_add` could take `next_to`, so Claude seats can say "the filter on row 2".
 
 **Risks**
-- **Performance:** at 96 modules and 320 cables in overview, rebuilding every path every frame would be about 250k dot inserts per frame at 20 fps. Step 1's cache is what makes the overview level workable; ratatui only redraws cells that changed, so terminal output is not the problem.
+- **Performance:** at 96 modules and 320 cables in overview (and the wall now has no fixed size, so more is possible), rebuilding every path every frame would be about 250k dot inserts per frame at 20 fps. Step 1's cache is what makes the overview level workable; ratatui only redraws cells that changed, so terminal output is not the problem.
 - **Mouse in terminals:**
   - tmux needs `mouse on`.
   - Many terminals keep shift-drag for text selection, which already affects fine knob drags.

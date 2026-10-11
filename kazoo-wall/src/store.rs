@@ -24,13 +24,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::migrate;
 
+use crate::MAX_KNOBS;
 use crate::fingerprints::MAX_DYE_SEATS;
 use crate::patch::{MAX_RETIRED_WORDS, Patch, hash_bytes, printable};
 use crate::protocol::{
     AUTO_SAVE_PREFIX, Change, MAX_NAME, MAX_SAVE_NAME, MAX_SERVER_LINE, is_auto_save,
     valid_save_name,
 };
-use crate::{MAX_CABLES, MAX_KNOBS, MAX_MODULES};
 
 /// The patch file's name.
 pub const PATCH_FILE: &str = "patch.json";
@@ -45,18 +45,33 @@ pub const OLD_LOG_FILE: &str = "log.1.jsonl";
 /// a state directory (see [`Store::open`]).
 pub const LOCK_FILE: &str = "lock";
 
+/// How many times its file's size a wall's `look` may be, at most: a look
+/// shows every knob with its range, unit and value in words where the file
+/// keeps the value alone. A test holds every kind to it.
+pub const LOOK_PER_FILE: usize = 7;
+
 /// The largest wall file the wall reads or writes.
 ///
-/// Half the longest line the daemon sends ([`MAX_SERVER_LINE`]), so a
-/// wall that fits a file fits a `look` too (which adds each knob's shown
-/// value) with room to spare. A save or `patch.json` larger than it is
-/// refused, never written; a save or copy found larger is listed as
-/// broken, never read whole.
-pub const MAX_WALL_FILE: u64 = (MAX_SERVER_LINE / 2) as u64;
+/// An eighth of the longest line the daemon sends ([`MAX_SERVER_LINE`]), so
+/// a wall that fits a file fits a `look` too ([`LOOK_PER_FILE`] times
+/// larger at most) with room to spare for what a look carries besides
+/// (the scopes' readings, the log's health).
+///
+/// The wall has no fixed number of modules or cables, so this is the one
+/// bound on its size: a change that would take the file past it is
+/// refused (`full`, see [`WORST_MODULE_BYTES`]), a save or `patch.json`
+/// larger than it is refused, never written, and a save or copy found
+/// larger is listed as broken, never read whole.
+pub const MAX_WALL_FILE: u64 = (MAX_SERVER_LINE / 8) as u64;
+
+const _: () = assert!(
+    MAX_WALL_FILE as usize * LOOK_PER_FILE + 4 * 1024 * 1024 <= MAX_SERVER_LINE,
+    "a wall that fits its file may not fit a look"
+);
 
 /// The most kinds of module the catalogue may hold.
 ///
-/// For [`WORST_WALL_FILE`] (each kind may have its numbering in the
+/// For [`MAX_NUMBERING_BYTES`] (each kind may have its numbering in the
 /// file): a test holds the catalogue to it, and every kind's, knob's and
 /// port's name to [`MAX_CATALOGUE_NAME`] bytes.
 pub const MAX_KINDS: usize = 256;
@@ -64,43 +79,55 @@ pub const MAX_KINDS: usize = 256;
 /// The longest name of a kind, knob or port in the catalogue, in bytes.
 pub const MAX_CATALOGUE_NAME: usize = 32;
 
-/// A bound on the bytes of any wall's file (pretty-printed) the wall
-/// writes or keeps, under today's limits, each part at its worst:
+/// The most one module adds to a wall's file (pretty-printed).
 ///
-/// - every module: its id (at most 40 bytes), kind, name (24 characters,
-///   each escaped to 6 bytes at worst), and every knob's name and value;
-/// - every cable: its number, both ends (a module id and a port), amount;
-/// - the rack's rows: every module id once;
-/// - the numbering of every kind;
-/// - the fingerprints' dye: on every module, the [`MAX_DYE_SEATS`] seats it
-///   keeps (each name 24 characters, escaped at worst) and their amounts;
+/// At its worst: its id (at most 40 bytes), kind, name (24 characters,
+/// each escaped to 6 bytes at worst), and every knob's name and value; its
+/// place in the rack's rows; and its dye, the [`MAX_DYE_SEATS`] seats it
+/// keeps (each name 24 characters, escaped at worst) and their amounts;
+/// each with its JSON punctuation, and twice over for the indentation.
 ///
-/// each with its JSON punctuation, and all twice over for the
-/// indentation; then every speaker's words and every retired speaker's
-/// (the longest text and voice, each character escaped at worst, with
-/// 160 bytes for the entry around them). Decoding a file holds each part
-/// to these limits (dropping what is over, with a note), so no file read
-/// in can re-encode larger. It is a bound given the catalogue facts a test
-/// checks (see [`MAX_KINDS`]).
-const WORST_WALL_FILE: usize = 2
-    * (MAX_MODULES
-        * (64 + MAX_CATALOGUE_NAME + MAX_NAME * 6 + MAX_KNOBS * (MAX_CATALOGUE_NAME + 32) + 64)
-        + MAX_CABLES * (24 + 2 * (64 + MAX_CATALOGUE_NAME) + 32 + 64)
-        + MAX_MODULES * 64
-        + MAX_KINDS * 64
-        + MAX_MODULES * (64 + MAX_DYE_SEATS * (MAX_NAME * 6 + 32)))
-    + (MAX_MODULES + MAX_RETIRED_WORDS)
-        * (160 + (kazoo_speech::tts::MAX_TEXT_CHARS + kazoo_speech::tts::MAX_VOICE_CHARS) * 6);
+/// The wall checks a change against what it adds at worst (this, and
+/// [`WORST_CABLE_BYTES`] and [`WORST_WORDS_BYTES`]) before making it, so
+/// a wall never grows past [`MAX_WALL_FILE`] (see
+/// `daemon::wall::Wall::file_room`). It is a bound given the catalogue
+/// facts a test checks (see [`MAX_KINDS`]).
+pub const WORST_MODULE_BYTES: usize = 2
+    * ((64 + MAX_CATALOGUE_NAME + MAX_NAME * 6 + MAX_KNOBS * (MAX_CATALOGUE_NAME + 32) + 64)
+        + 64
+        + (64 + MAX_DYE_SEATS * (MAX_NAME * 6 + 32)));
 
+/// The most one cable adds to a wall's file: its number, both ends (a
+/// module id and a port), its amount, with punctuation, twice over for
+/// the indentation (see [`WORST_MODULE_BYTES`]).
+pub const WORST_CABLE_BYTES: usize = 2 * (24 + 2 * (64 + MAX_CATALOGUE_NAME) + 32 + 64);
+
+/// The most one speaker's words add to a wall's file: the longest text and
+/// voice, each character escaped at worst, with 160 bytes for the entry
+/// around them (see [`WORST_MODULE_BYTES`]).
+pub const WORST_WORDS_BYTES: usize =
+    160 + (kazoo_speech::tts::MAX_TEXT_CHARS + kazoo_speech::tts::MAX_VOICE_CHARS) * 6;
+
+/// The most the numbering of every kind and the retired speakers' words
+/// add to a wall's file, whatever its size.
+pub const MAX_NUMBERING_BYTES: usize = 2 * MAX_KINDS * 64 + MAX_RETIRED_WORDS * WORST_WORDS_BYTES;
+
+// A wall of the 96 modules and 320 cables it once held at most, every
+// module a speaker, fits its file many times over.
 const _: () = assert!(
-    WORST_WALL_FILE as u64 <= MAX_WALL_FILE,
-    "a wall at today's limits may not fit MAX_WALL_FILE"
+    (96 * (WORST_MODULE_BYTES + WORST_WORDS_BYTES) + 320 * WORST_CABLE_BYTES + MAX_NUMBERING_BYTES)
+        as u64
+        <= MAX_WALL_FILE / 4,
+    "a wall the size it once held at most may not fit MAX_WALL_FILE"
 );
 
 /// Save files one listing reads at most (the rest are read by later
-/// listings, and a few each tick): at most 16 MB parsed, a few hundred KB
-/// in practice, on the wall's control thread.
+/// listings, and a few each tick), on the wall's control thread...
 pub const HEADER_READS_PER_LISTING: usize = 8;
+
+/// ...and the bytes it reads at most, but for its first file (which may
+/// be as large as [`MAX_WALL_FILE`]): a few hundred KB in practice.
+pub const HEADER_BYTES_PER_LISTING: u64 = 16 * 1024 * 1024;
 
 /// Lines in the log before it rotates.
 pub const LOG_ROTATE_LINES: usize = 10_000;
@@ -126,9 +153,9 @@ pub const AUTO_SAVES_KEPT: usize = 20;
 ///
 /// Older ones beyond [`AUTO_SAVES_KEPT`] are kept only while a load in the
 /// change log still needs one to be undone, and never more than this many
-/// in all, so a seat loading in a loop cannot fill the disk (a full wall
-/// is about 100 KB: at most about 10 MB). A load whose wall was let go
-/// says so when asked to be undone.
+/// in all, so a seat loading in a loop cannot fill the disk (a wall of a
+/// hundred modules is about 100 KB: about 10 MB of them). A load whose
+/// wall was let go says so when asked to be undone.
 pub const AUTO_SAVES_MOST: usize = 100;
 
 /// A save read back.
@@ -805,8 +832,9 @@ impl Store {
     ///
     /// What was found is kept between listings and found again only for a
     /// file whose stamp has moved, and one listing reads at most
-    /// [`HEADER_READS_PER_LISTING`] files (each at most
-    /// [`MAX_WALL_FILE`]), newest first: so a listing's work on the wall's
+    /// [`HEADER_READS_PER_LISTING`] files and [`HEADER_BYTES_PER_LISTING`]
+    /// (but for its first file, at most [`MAX_WALL_FILE`]), newest first:
+    /// so a listing's work on the wall's
     /// control thread is bounded however many saves there are, cold or
     /// warm. The rest are read by [`Self::warm_saves`], a file a tick, and
     /// by the listings after.
@@ -888,13 +916,19 @@ impl Store {
         }
         found.sort_by(|a, b| b.0.modified.cmp(&a.0.modified).then_with(|| a.1.cmp(&b.1)));
         let mut reads = budget;
+        let mut bytes = 0_u64;
         let mut listed = Vec::with_capacity(found.len());
         let mut kept = HashMap::new();
         for (stamp, name, path) in found {
+            // The first file read is read whatever its size, so every
+            // listing moves on; the rest while they fit the bytes left.
+            let fits =
+                reads == budget || bytes.saturating_add(stamp.len) <= HEADER_BYTES_PER_LISTING;
             let read = match self.headers.remove(&name) {
                 Some((was, read)) if was == stamp => Some(read),
-                Some(_) | None if reads > 0 => {
+                Some(_) | None if reads > 0 && fits => {
                     reads -= 1;
+                    bytes = bytes.saturating_add(stamp.len);
                     Some(header_of(&name, &path))
                 }
                 Some(_) | None => None,
@@ -1735,7 +1769,8 @@ fn read_wall_file(path: &Path) -> io::Result<Result<Vec<u8>, String>> {
         .read_to_end(&mut bytes)?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_WALL_FILE {
         return Ok(Err(format!(
-            "it is too large to be a wall (more than {} MB; a full wall is about 100 KB)",
+            "it is too large to be a wall (more than {} MB; a wall of a hundred modules is \
+             about 100 KB)",
             MAX_WALL_FILE / (1024 * 1024)
         )));
     }
@@ -3195,7 +3230,7 @@ mod tests {
         assert!(matches!(store.load_patch().unwrap(), Loaded::Patch { .. }));
     }
 
-    /// The catalogue facts [`WORST_WALL_FILE`] is a bound under.
+    /// The catalogue facts [`WORST_MODULE_BYTES`] is a bound under.
     #[test]
     fn the_catalogue_is_within_what_the_wall_file_bound_assumes() {
         use crate::catalogue::Kind;

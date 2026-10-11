@@ -11,7 +11,7 @@
 //! no row is empty. Moving a module ([`Patch::arrange`]) is not a change to
 //! the sound and returns no [`What`].
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,6 @@ use crate::fingerprints::Dye;
 use crate::protocol::{
     CableRecord, ErrorCode, ModuleRecord, Place, WallError, What, valid_name, widen,
 };
-use crate::{MAX_CABLES, MAX_MODULES};
 
 /// Glide used when a turn names none, in beats.
 pub const DEFAULT_GLIDE_BEATS: f64 = 2.0;
@@ -180,6 +179,11 @@ pub struct Words {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Patch {
     modules: Vec<Module>,
+    /// Each module's place in `modules`, by id, so a wall of any size finds
+    /// a module without a search.
+    places: BTreeMap<String, usize>,
+    /// Every cable, in number order (so a cable is found by a binary
+    /// search).
     cables: Vec<Cable>,
     /// The next number for each kind's ids, by kind name: kept even for
     /// kinds the wall no longer has, so their ids are never reused.
@@ -384,10 +388,20 @@ pub fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-/// `names` joined with commas, for error messages.
+/// Most names an error message lists: a wall has no fixed size, and a
+/// message naming thousands of modules helps nobody.
+const LISTED: usize = 32;
+
+/// `names` joined with commas, for error messages: the first [`LISTED`],
+/// and how many more there are.
 fn list(names: impl IntoIterator<Item = impl AsRef<str>>) -> String {
     let mut out = String::new();
-    for name in names {
+    let mut more = 0_usize;
+    for (at, name) in names.into_iter().enumerate() {
+        if at >= LISTED {
+            more += 1;
+            continue;
+        }
         if !out.is_empty() {
             out.push_str(", ");
         }
@@ -395,6 +409,9 @@ fn list(names: impl IntoIterator<Item = impl AsRef<str>>) -> String {
     }
     if out.is_empty() {
         out.push_str("none");
+    }
+    if more > 0 {
+        out = format!("{out} and {more} more");
     }
     out
 }
@@ -405,6 +422,7 @@ impl Patch {
     pub const fn empty(tempo: f64) -> Self {
         Self {
             modules: Vec::new(),
+            places: BTreeMap::new(),
             cables: Vec::new(),
             next_ids: BTreeMap::new(),
             next_cable: 1,
@@ -439,7 +457,23 @@ impl Patch {
     /// The module with id `id`.
     #[must_use]
     pub fn module(&self, id: &str) -> Option<&Module> {
-        self.modules.iter().find(|module| module.id == id)
+        self.places.get(id).and_then(|&at| self.modules.get(at))
+    }
+
+    /// The module with id `id`, to change.
+    fn module_mut(&mut self, id: &str) -> Option<&mut Module> {
+        self.places.get(id).and_then(|&at| self.modules.get_mut(at))
+    }
+
+    /// Put `module` on the wall, after the rest.
+    fn push_module(&mut self, module: Module) {
+        self.places.insert(module.id.clone(), self.modules.len());
+        self.modules.push(module);
+    }
+
+    /// Where cable `id` is in the list, or where it would go.
+    fn cable_at(&self, id: u32) -> Result<usize, usize> {
+        self.cables.binary_search_by_key(&id, |cable| cable.id)
     }
 
     /// Put module `id`'s knob targets back to `knobs`, exactly as they
@@ -447,7 +481,7 @@ impl Patch {
     /// made). Nothing happens if the module has gone or the knobs do not
     /// fit it.
     pub fn put_knobs_back(&mut self, id: &str, knobs: &[f32]) {
-        if let Some(module) = self.modules.iter_mut().find(|module| module.id == id) {
+        if let Some(module) = self.module_mut(id) {
             if module.knobs.len() == knobs.len() {
                 module.knobs.copy_from_slice(knobs);
             }
@@ -538,7 +572,7 @@ impl Patch {
         })?;
         // Values past f32's range clamp like any other.
         let target = spec.knobs[index].clamp(value.clamp(-1.0e30, 1.0e30) as f32);
-        let Some(entry) = self.modules.iter_mut().find(|m| m.id == module) else {
+        let Some(entry) = self.module_mut(module) else {
             return Err(error(
                 ErrorCode::UnknownModule,
                 format!("no module '{module}'"),
@@ -557,14 +591,36 @@ impl Patch {
         })
     }
 
+    /// Check a [`Self::plug`] of output `from` into jack `to` without
+    /// making it, so the daemon can judge the room for it first. Returns
+    /// whether it would add a cable: `false` when one in `to` would be
+    /// replaced.
+    ///
+    /// # Errors
+    ///
+    /// `unknown_module`, `unknown_port`, or `bad_request` for an amount
+    /// that is not a number, as [`Self::plug`].
+    pub fn check_plug(&self, from: &str, to: &str, amount: Option<f64>) -> Result<bool, WallError> {
+        if !amount.unwrap_or(1.0).is_finite() {
+            return Err(error(ErrorCode::BadRequest, "the amount must be a number"));
+        }
+        self.output(from)?;
+        let (to_module, to_jack) = self.input(to)?;
+        Ok(!self
+            .cables
+            .iter()
+            .any(|cable| cable.to_module == to_module && cable.to_jack == to_jack))
+    }
+
     /// Plug output `from` into jack `to`, replacing any cable already in
     /// it. `id` restores a cable under its old number (when undoing).
     ///
     /// # Errors
     ///
     /// `unknown_module`, `unknown_port`, `bad_request` for an amount that
-    /// is not a number, `full` at the cable cap, `not_allowed` when `id` is
-    /// already plugged in.
+    /// is not a number, `not_allowed` when `id` is already plugged in.
+    /// The patch holds any number of cables: what the machine can render
+    /// is the daemon's to judge.
     pub fn plug(
         &mut self,
         from: &str,
@@ -579,7 +635,7 @@ impl Patch {
         let (from_module, from_port) = self.output(from)?;
         let (to_module, to_jack) = self.input(to)?;
         if let Some(id) = id {
-            if self.cables.iter().any(|cable| cable.id == id) {
+            if self.cable_at(id).is_ok() {
                 return Err(error(
                     ErrorCode::NotAllowed,
                     format!("cable {id} is already plugged in"),
@@ -590,12 +646,6 @@ impl Patch {
             .cables
             .iter()
             .position(|cable| cable.to_module == to_module && cable.to_jack == to_jack);
-        if existing.is_none() && self.cables.len() >= MAX_CABLES {
-            return Err(error(
-                ErrorCode::Full,
-                format!("the wall holds {MAX_CABLES} cables; unplug one first"),
-            ));
-        }
         let replaced = existing.map(|index| {
             let old = self.cables.remove(index);
             self.cable_record(&old)
@@ -618,7 +668,7 @@ impl Patch {
         let record = self.cable_record(&cable);
         // Cables stay in number order, so a cable plugged back by an undo
         // takes its old place in the list.
-        let at = self.cables.partition_point(|other| other.id < cable.id);
+        let (Ok(at) | Err(at)) = self.cable_at(cable.id);
         self.cables.insert(at, cable);
         Ok(What::Patch {
             cable: record,
@@ -633,19 +683,15 @@ impl Patch {
     ///
     /// `unknown_cable`.
     pub fn unplug(&mut self, id: u32, replug: Option<&CableRecord>) -> Result<What, WallError> {
-        let index = self
-            .cables
-            .iter()
-            .position(|cable| cable.id == id)
-            .ok_or_else(|| {
-                error(
-                    ErrorCode::UnknownCable,
-                    format!(
-                        "no cable {id}; cables: {}",
-                        list(self.cables.iter().map(|c| c.id.to_string()))
-                    ),
-                )
-            })?;
+        let index = self.cable_at(id).map_err(|_| {
+            error(
+                ErrorCode::UnknownCable,
+                format!(
+                    "no cable {id}; cables: {}",
+                    list(self.cables.iter().map(|c| c.id.to_string()))
+                ),
+            )
+        })?;
         let cable = self.cable_record(&self.cables[index]);
         self.cables.remove(index);
         // A cable whose other end is gone, or that is back already, stays
@@ -653,6 +699,17 @@ impl Patch {
         let replugged = replug
             .and_then(|old| plugged(self.plug(&old.from, &old.to, Some(old.amount), Some(old.id))));
         Ok(What::Unpatch { cable, replugged })
+    }
+
+    /// Whether a cable is plugged into jack `to` (false for a jack that is
+    /// not on the wall).
+    #[must_use]
+    pub fn is_plugged(&self, to: &str) -> bool {
+        self.input(to).is_ok_and(|(module, jack)| {
+            self.cables
+                .iter()
+                .any(|cable| cable.to_module == module && cable.to_jack == jack)
+        })
     }
 
     /// Unplug whatever is in jack `to`.
@@ -677,20 +734,15 @@ impl Patch {
         self.unplug(id, None)
     }
 
-    /// Add a module of `kind`, with its knobs at their defaults, at `place`
-    /// on the rack (or at the end of the row holding the newest module of
-    /// its group, or on a new bottom row).
+    /// Check an [`Self::add`] of a module of `kind` named `name` without
+    /// making it, so the daemon can judge the room for it first. Returns
+    /// the kind.
     ///
     /// # Errors
     ///
-    /// `unknown_kind`, `bad_name`, or `full` at the module cap.
-    pub fn add(
-        &mut self,
-        kind: &str,
-        name: Option<&str>,
-        place: Option<&Place>,
-    ) -> Result<What, WallError> {
-        let kind = Kind::from_name(kind).ok_or_else(|| {
+    /// `unknown_kind` or `bad_name`, as [`Self::add`].
+    pub fn check_add(kind: &str, name: Option<&str>) -> Result<Kind, WallError> {
+        let found = Kind::from_name(kind).ok_or_else(|| {
             error(
                 ErrorCode::UnknownKind,
                 format!(
@@ -705,12 +757,24 @@ impl Patch {
                 return Err(bad_name(name));
             }
         }
-        if self.modules.len() >= MAX_MODULES {
-            return Err(error(
-                ErrorCode::Full,
-                format!("the wall holds {MAX_MODULES} modules; take one away first"),
-            ));
-        }
+        Ok(found)
+    }
+
+    /// Add a module of `kind`, with its knobs at their defaults, at `place`
+    /// on the rack (or at the end of the row holding the newest module of
+    /// its group, or on a new bottom row).
+    ///
+    /// # Errors
+    ///
+    /// `unknown_kind` or `bad_name`. The patch holds any number of modules:
+    /// what the machine can render is the daemon's to judge.
+    pub fn add(
+        &mut self,
+        kind: &str,
+        name: Option<&str>,
+        place: Option<&Place>,
+    ) -> Result<What, WallError> {
+        let kind = Self::check_add(kind, name)?;
         let mut number = self.next_ids.get(kind.name()).copied().unwrap_or(1).max(1);
         let mut id = make_id(kind.name(), number);
         // Migrated modules keep ids of other kinds: never take one.
@@ -729,7 +793,7 @@ impl Patch {
         let record = module.record();
         let place = place.cloned().unwrap_or_else(|| self.usual_place(kind));
         put(&mut self.rows, &module.id, &place);
-        self.modules.push(module);
+        self.push_module(module);
         Ok(What::Add { module: record })
     }
 
@@ -761,7 +825,15 @@ impl Patch {
                 self.retired_speech.pop_front();
             }
         }
-        self.modules.retain(|m| m.id != module);
+        if let Some(at) = self.places.remove(module) {
+            self.modules.remove(at);
+            // Those after it move up one.
+            for later in self.places.values_mut() {
+                if *later > at {
+                    *later -= 1;
+                }
+            }
+        }
         let mut replugged = Vec::new();
         for old in replug {
             let free = self.input(&old.to).is_ok_and(|(to, jack)| {
@@ -797,8 +869,8 @@ impl Patch {
     ///
     /// # Errors
     ///
-    /// `not_allowed` if the id is on the wall already, `full` at the module
-    /// cap, or the record's own problems (`unknown_knob`, `bad_name`).
+    /// `not_allowed` if the id is on the wall already, or the record's own
+    /// problems (`unknown_knob`, `bad_name`).
     pub fn restore(
         &mut self,
         record: &ModuleRecord,
@@ -809,12 +881,6 @@ impl Patch {
             return Err(error(
                 ErrorCode::NotAllowed,
                 format!("{} is on the wall already", record.id),
-            ));
-        }
-        if self.modules.len() >= MAX_MODULES {
-            return Err(error(
-                ErrorCode::Full,
-                format!("the wall holds {MAX_MODULES} modules; take one away first"),
             ));
         }
         let (module, _) = module_from_record(record)?;
@@ -834,7 +900,7 @@ impl Patch {
             .unwrap_or_else(|| self.usual_place(module.kind));
         put(&mut self.rows, &module.id, &place);
         let place = self.place_of(&module.id);
-        self.modules.push(module);
+        self.push_module(module);
         let mut back = Vec::new();
         let mut replaced = Vec::new();
         let mut skipped = Vec::new();
@@ -976,7 +1042,7 @@ impl Patch {
             } => self.turn(module, knob, *from, Some(*glide_beats)),
             What::Patch { cable, replaced } => self.unplug(cable.id, replaced.as_ref()),
             What::Unpatch { cable, .. } => {
-                if self.cables.iter().any(|c| c.id == cable.id) {
+                if self.cable_at(cable.id).is_ok() {
                     return Err(error(
                         ErrorCode::NotAllowed,
                         format!("cable {} is plugged in already", cable.id),
@@ -1201,8 +1267,9 @@ impl Patch {
                 ));
             }
         }
+        let mut plugged = HashSet::with_capacity(file.cables.len());
         for record in &file.cables {
-            if let Err(why) = patch.load_cable(record) {
+            if let Err(why) = patch.load_cable(record, &mut plugged) {
                 notes.push(format!(
                     "cable {} ({} → {}) left out: {why}",
                     record.id,
@@ -1316,9 +1383,6 @@ impl Patch {
         record: &ModuleRecord,
         notes: &mut Vec<String>,
     ) -> Result<(), String> {
-        if self.modules.len() >= MAX_MODULES {
-            return Err(format!("the wall holds {MAX_MODULES} modules"));
-        }
         if self.module(&record.id).is_some() {
             return Err("its id appears twice".to_string());
         }
@@ -1331,33 +1395,43 @@ impl Patch {
             ));
         }
         self.count_id(&module.id);
-        self.modules.push(module);
+        self.push_module(module);
         Ok(())
     }
 
-    fn load_cable(&mut self, record: &CableRecord) -> Result<(), String> {
-        if self.cables.iter().any(|c| c.id == record.id) {
+    /// Plug in a cable from a file, as [`Self::plug`] would under its old
+    /// number. `plugged` holds the jacks the file's cables are in so far,
+    /// so a wall of any size loads in one pass over its cables.
+    fn load_cable(
+        &mut self,
+        record: &CableRecord,
+        plugged: &mut HashSet<(String, Jack)>,
+    ) -> Result<(), String> {
+        if self.cable_at(record.id).is_ok() {
             return Err("its number appears twice".to_string());
         }
+        if !record.amount.is_finite() {
+            return Err("the amount must be a number".to_string());
+        }
+        let (from_module, from_port) = self.output(&record.from).map_err(|err| err.message)?;
         let (to_module, to_jack) = self.input(&record.to).map_err(|err| err.message)?;
-        if self
-            .cables
-            .iter()
-            .any(|c| c.to_module == to_module && c.to_jack == to_jack)
-        {
+        if !plugged.insert((to_module.clone(), to_jack)) {
             return Err(format!("another cable is plugged into {}", record.to));
         }
-        if self.cables.len() >= MAX_CABLES {
-            return Err(format!("the wall holds {MAX_CABLES} cables"));
-        }
-        self.plug(
-            &record.from,
-            &record.to,
-            Some(record.amount),
-            Some(record.id),
-        )
-        .map(|_| ())
-        .map_err(|err| err.message)
+        self.next_cable = self.next_cable.max(record.id.saturating_add(1));
+        let cable = Cable {
+            id: record.id,
+            from_module,
+            from_port,
+            to_module,
+            to_jack,
+            // Held to -1..1, so the narrowing is exact enough.
+            amount: record.amount.clamp(-1.0, 1.0) as f32,
+        };
+        // A file keeps its cables in number order: each goes at the end.
+        let (Ok(at) | Err(at)) = self.cable_at(cable.id);
+        self.cables.insert(at, cable);
+        Ok(())
     }
 }
 

@@ -15,7 +15,8 @@
 //! changes: a touch, or a cable plugged or unplugged (which re-routes the
 //! dye). Nothing fades with time, and nothing here judges or labels.
 
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -224,55 +225,81 @@ impl Dye {
     }
 
     /// Where the dye is on `patch`: each module's and cable's shares.
+    ///
+    /// The strongest path from each module whose dye there is to every
+    /// module it reaches is found once per such module (Dijkstra's search
+    /// on products: every hop keeps at most half, so a path only thins as
+    /// it goes on, and the strongest is settled first): about
+    /// `S·E·log V` for `S` dyed modules, `E` cables and `V` modules, and
+    /// memory as the wall is large, so a wall of any size is fingerprinted
+    /// on every change.
     #[must_use]
     pub fn flow(&self, patch: &Patch) -> Fingerprints {
         let modules = patch.modules();
         let count = modules.len();
-        let index = |id: &str| modules.iter().position(|m| m.id == id);
-        // reach[u][v]: how much of u's dye reaches v by the strongest path.
-        let mut reach = vec![vec![0.0_f64; count]; count];
-        for (u, row) in reach.iter_mut().enumerate() {
-            row[u] = 1.0;
-        }
+        let index: HashMap<&str, usize> = modules
+            .iter()
+            .enumerate()
+            .map(|(at, module)| (module.id.as_str(), at))
+            .collect();
+        // feeds[u]: the modules u feeds, each by its strongest cable.
+        let mut feeds: Vec<BTreeMap<usize, f64>> = vec![BTreeMap::new(); count];
         for cable in patch.cables() {
-            if let (Some(u), Some(v)) = (index(&cable.from_module), index(&cable.to_module)) {
+            if let (Some(&u), Some(&v)) = (
+                index.get(cable.from_module.as_str()),
+                index.get(cable.to_module.as_str()),
+            ) {
                 let carried = HOP * f64::from(cable.amount.abs());
-                if u != v && carried > reach[u][v] {
-                    reach[u][v] = carried;
-                }
-            }
-        }
-        // Strongest paths (Floyd–Warshall on products): every weight is
-        // at most 1, so no loop ever strengthens a path.
-        for k in 0..count {
-            let onwards = reach[k].clone();
-            for row in &mut reach {
-                let through = row[k];
-                if through <= 0.0 {
-                    continue;
-                }
-                for (best, onward) in row.iter_mut().zip(&onwards) {
-                    let strength = through * onward;
-                    if strength > *best {
-                        *best = strength;
-                    }
+                if u != v && carried > 0.0 {
+                    let best = feeds[u].entry(v).or_insert(0.0);
+                    *best = best.max(carried);
                 }
             }
         }
         let mut shares_of: Vec<Shares> = vec![Shares::new(); count];
+        // How much of the source's dye reaches each module, and which
+        // modules it reached, cleared after each source.
+        let mut reach = vec![0.0_f64; count];
+        let mut reached = vec![false; count];
+        let mut touched = Vec::new();
+        let mut queue = BinaryHeap::new();
         for (u, source) in modules.iter().enumerate() {
             let Some(deposits) = self.deposits.get(&source.id) else {
                 continue;
             };
-            for (v, shares) in shares_of.iter_mut().enumerate() {
-                let weight = reach[u][v];
-                if weight <= 0.0 {
+            reach[u] = 1.0;
+            reached[u] = true;
+            touched.push(u);
+            queue.push(Strength(1.0, u));
+            while let Some(Strength(strength, v)) = queue.pop() {
+                // A module is settled at its strongest; weaker entries for
+                // it that were queued before are passed over.
+                if strength < reach[v] {
                     continue;
                 }
-                for (seat, amount) in deposits {
-                    *shares.entry(seat.clone()).or_insert(0.0) += amount * weight;
+                for (&w, &carried) in &feeds[v] {
+                    let onward = strength * carried;
+                    if onward > reach[w] {
+                        if !reached[w] {
+                            reached[w] = true;
+                            touched.push(w);
+                        }
+                        reach[w] = onward;
+                        queue.push(Strength(onward, w));
+                    }
                 }
             }
+            for &v in &touched {
+                let weight = reach[v];
+                if weight > 0.0 {
+                    for (seat, amount) in deposits {
+                        *shares_of[v].entry(seat.clone()).or_insert(0.0) += amount * weight;
+                    }
+                }
+                reach[v] = 0.0;
+                reached[v] = false;
+            }
+            touched.clear();
         }
         for shares in &mut shares_of {
             normalise(shares);
@@ -284,7 +311,7 @@ impl Dye {
             }
         }
         for cable in patch.cables() {
-            let Some(u) = index(&cable.from_module) else {
+            let Some(&u) = index.get(cable.from_module.as_str()) else {
                 continue;
             };
             // The cable carries its source's mix, whatever it plugs into.
@@ -295,6 +322,33 @@ impl Dye {
             }
         }
         prints
+    }
+}
+
+/// How much of a source's dye reaches a module (by its place in the wall),
+/// ordered by the amount for the search in [`Dye::flow`]: strongest first.
+#[derive(Debug, Clone, Copy)]
+struct Strength(f64, usize);
+
+impl PartialEq for Strength {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Strength {}
+
+impl PartialOrd for Strength {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Strength {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0
+            .total_cmp(&other.0)
+            .then_with(|| self.1.cmp(&other.1))
     }
 }
 

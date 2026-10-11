@@ -507,7 +507,7 @@ impl PortSpec {
 }
 
 /// An input a cable can plug into: a listed input or a knob's jack.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Jack {
     /// The kind's input at this index.
     Input(usize),

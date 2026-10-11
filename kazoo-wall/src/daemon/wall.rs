@@ -4,7 +4,7 @@
 //! Sockets live elsewhere ([`super::control`]); this is plain state with
 //! methods, so it can be tested without any.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kazoo_core::ipc::link::{HubLink, RequestError};
@@ -21,7 +21,8 @@ use crate::change::{summarise_with, utc, utc_now};
 use crate::dsp;
 use crate::dsp::measure::{Capture, Reading};
 use crate::engine::{
-    CableTable, Command, EngineControl, Order, ProbeFrame, Route, clamp_bpm, processing_order,
+    CableTable, Command, EngineControl, LOAD_SECONDS, Order, ProbeFrame, Route, clamp_bpm,
+    processing_order,
 };
 use crate::fingerprints::Fingerprints;
 use crate::format;
@@ -32,14 +33,14 @@ use crate::patch::{
 use crate::probe;
 use crate::protocol::{
     ArrangeResult, BrokenSave, CatalogueResult, Change, ChangeResult, ClockSource,
-    DeleteSaveResult, ErrorCode, Event, Faults, KindInfo, KnobInfo, KnobView, Levels, Listen,
-    ListenResult, LoadResult, LogHealth, LogPage, MAX_PROBES, MAX_SAVE_NAME, ModuleTiming,
+    DeleteSaveResult, EngineHealth, ErrorCode, Event, Faults, KindInfo, KnobInfo, KnobView, Levels,
+    Listen, ListenResult, LoadResult, LogHealth, LogPage, MAX_PROBES, MAX_SAVE_NAME, ModuleTiming,
     ModuleView, Place, PortInfo, Probe, ProbeResult, RecordResult, Recording, Request, SaveInfo,
     SaveMark, SaveResult, SavesResult, Snapshot, TempoResult, Timings, WallError, What,
     is_auto_save, valid_save_name, widen,
 };
 use crate::store::{AUTO_SAVES_KEPT, LoadWriteError, Need, SaveError, Store};
-use crate::{MAX_CABLES, MAX_INPUTS, MAX_KNOBS, MAX_MODULES};
+use crate::{MAX_INPUTS, MAX_KNOBS};
 
 /// The seat the daemon's own changes (bringing the patch up to date,
 /// carrying a recording on or stopping one) are logged under.
@@ -53,6 +54,78 @@ pub const FLOOD_BURST: f64 = 30.0;
 
 /// ...refilled at this many per second (30 per 10 s).
 pub const FLOOD_REFILL_PER_SECOND: f64 = 3.0;
+
+/// The render load (see [`crate::engine::Shared::render_load`]) past which
+/// the wall takes no more modules or cables, answering `full`.
+///
+/// The wall has no fixed number of modules or cables: it holds as many as
+/// the machine can render. Every module renders every sub-block, and every
+/// cable carries its signal through a delay line, so each one added costs
+/// the audio thread time. Past this share of the time it has, a busy
+/// moment elsewhere on the machine would leave the device waiting and the
+/// wall would drop out for everyone listening, so a change that would add
+/// more work is refused until something is taken away (or a heavy module
+/// swapped for a light one). Changes that add nothing (turning a knob,
+/// moving a cable to a jack already in use, taking things away) are never
+/// refused for it.
+///
+/// The load is an average over about a second, so on its own it would let
+/// a burst through before it moved. Three things stop one:
+/// - Every addition is costed before it is taken: the load, shared over
+///   the modules and cables it was measured on, times what the wall will
+///   hold with the addition and everything added in the last second (which
+///   the average has not caught up with yet). Past the guard, `full`.
+/// - Hysteresis: once refusing, the wall takes nothing more until the load
+///   is below [`RESUME_SHARE`] of the guard.
+/// - Settling: above [`SETTLE_SHARE`] of the guard, an addition waits
+///   (`slow_down`) until the engine has rendered [`ABSORBED_WINDOWS`]
+///   averaging windows ([`crate::engine::LOAD_SECONDS`]) since the last
+///   one, so the next is judged on a load that includes it.
+///
+/// A load (or `new`, or a load undone) is not refused for it: the wall it
+/// puts up costs what it costs, which this wall's load cannot tell. Once it
+/// is up (and when the engine starts), the wall takes no more (`slow_down`)
+/// until its load has been measured for [`ABSORBED_WINDOWS`] windows, then
+/// nothing more while past the guard.
+///
+/// The load is wall-clock time: a render the machine preempts counts the
+/// time it was held off the processor. That errs towards refusing early,
+/// and it is what the device lives with: a preempted render is late all
+/// the same.
+pub const LOAD_GUARD: f32 = 0.8;
+
+/// Once refusing, the wall takes more only below this share of the guard
+/// (0.7 of the time it has, at the default guard).
+pub const RESUME_SHARE: f32 = 0.875;
+
+/// Above this share of the guard (0.6 of the time it has, at the default
+/// guard), additions come [`ABSORBED_WINDOWS`] averaging windows apart.
+pub const SETTLE_SHARE: f32 = 0.75;
+
+/// Averaging windows ([`LOAD_SECONDS`]) after which the render load has
+/// taken in a change of the wall.
+///
+/// The average moves `1 - e^-n` of the way to a new level in `n` windows,
+/// so 95% in three. A change is counted as not yet measured for this long,
+/// and a wall just put up (or an engine just started) is measured for this
+/// long before it takes more.
+pub const ABSORBED_WINDOWS: u64 = 3;
+
+/// The load above which additions to a small wall come apart.
+///
+/// A wall too small to be costed by share (see [`COSTED_FROM`]) takes an
+/// addition every [`ABSORBED_WINDOWS`] windows above it, so a few heavy
+/// modules added in a burst cannot pass the guard before the average
+/// moves.
+pub const SMALL_WALL_SETTLE: f32 = 0.3;
+
+/// Modules and cables the load must have been measured on before an
+/// addition is costed by its share.
+///
+/// On a smaller wall the master's own work, which every wall has, is most
+/// of the load, and sharing it out would refuse a few modules on an idle
+/// machine.
+pub const COSTED_FROM: usize = 16;
 
 /// The most changes one `log` request returns.
 pub const MAX_LOG_PAGE: u32 = 500;
@@ -93,7 +166,7 @@ pub const SAVES_REFILL_PER_SECOND: f64 = 1.0;
 pub const SAVE_BURST: f64 = 3.0;
 
 /// ...refilled at this many per second: three a minute. A save is a whole
-/// wall (up to about 100 KB) written to disk; a seat keeping its work
+/// wall (about 100 KB for a hundred modules) written to disk; a seat keeping its work
 /// saves now and then, never in a loop.
 pub const SAVE_REFILL_PER_SECOND: f64 = 0.05;
 
@@ -101,7 +174,7 @@ pub const SAVE_REFILL_PER_SECOND: f64 = 0.05;
 /// saves to.
 ///
 /// Beyond it, only replacing one (Tom's console) or deleting some makes
-/// room. With a full wall at about 100 KB, at most about 20 MB.
+/// room. At about 100 KB for a wall of a hundred modules, about 20 MB.
 pub const MAX_SAVES: usize = 200;
 
 /// Walls a seat that is not a console may put up in a burst...
@@ -166,38 +239,55 @@ impl Bucket {
     }
 }
 
-/// Which engine slot holds which module.
+/// Which engine slot holds which module. There are as many slots as the
+/// most modules the wall has held at once; a freed slot is used again
+/// before a new one is made.
 #[derive(Debug, Clone, Default)]
 struct Rack {
     slots: Vec<Option<(String, u32)>>,
+    /// Each placed module's slot, by id.
+    index: HashMap<String, usize>,
+    /// The free slots below `slots.len()`, lowest first.
+    free: BTreeSet<usize>,
     next_tag: u32,
 }
 
 impl Rack {
-    fn new() -> Self {
-        Self {
-            slots: vec![None; MAX_MODULES],
-            next_tag: 0,
-        }
+    fn slot_of(&self, id: &str) -> Option<usize> {
+        self.index.get(id).copied()
     }
 
-    fn slot_of(&self, id: &str) -> Option<usize> {
-        self.slots
-            .iter()
-            .position(|placed| placed.as_ref().is_some_and(|(placed, _)| placed == id))
+    /// The slot the next module placed goes in: the lowest free one, or a
+    /// new one past the end.
+    fn next_free(&self) -> usize {
+        self.free.first().copied().unwrap_or(self.slots.len())
+    }
+
+    /// Slots needed to place `more` modules beside those placed now.
+    fn slots_for(&self, more: usize) -> usize {
+        self.slots.len() + more.saturating_sub(self.free.len())
     }
 
     /// Give `id` a free slot and a fresh tag.
-    fn place(&mut self, id: &str) -> Option<(usize, u32)> {
-        let slot = self.slots.iter().position(Option::is_none)?;
+    fn place(&mut self, id: &str) -> (usize, u32) {
+        let slot = self.next_free();
         self.next_tag = self.next_tag.wrapping_add(1);
-        self.slots[slot] = Some((id.to_string(), self.next_tag));
-        Some((slot, self.next_tag))
+        let placed = Some((id.to_string(), self.next_tag));
+        if self.free.remove(&slot) {
+            self.slots[slot] = placed;
+        } else {
+            self.slots.push(placed);
+        }
+        self.index.insert(id.to_string(), slot);
+        (slot, self.next_tag)
     }
 
     fn free(&mut self, id: &str) -> Option<usize> {
-        let slot = self.slot_of(id)?;
-        self.slots[slot] = None;
+        let slot = self.index.remove(id)?;
+        if let Some(placed) = self.slots.get_mut(slot) {
+            *placed = None;
+            self.free.insert(slot);
+        }
         Some(slot)
     }
 
@@ -211,6 +301,8 @@ impl Rack {
                 taken.push(slot);
             }
         }
+        self.index.clear();
+        self.free = (0..self.slots.len()).collect();
         taken
     }
 
@@ -229,6 +321,81 @@ impl Rack {
             .and_then(Option::as_ref)
             .filter(|(_, placed)| *placed == tag)
             .map(|(id, _)| id.as_str())
+    }
+}
+
+/// Whether the wall refuses more at render load `load`, having been
+/// refusing (`was`) or not: past [`LOAD_GUARD`] it refuses, and once
+/// refusing it goes on until the load is below [`RESUME_SHARE`] of it.
+fn refusing_at(was: bool, load: f32) -> bool {
+    load > LOAD_GUARD || (was && load >= LOAD_GUARD * RESUME_SHARE)
+}
+
+/// How the render load stands against [`LOAD_GUARD`] (see
+/// [`Wall::render_room`]). Frames are the engine's: while an engine renders
+/// nothing (a device lost, until the audio is rebuilt with a new engine
+/// that measures afresh), a wall just put up waits on it.
+#[derive(Debug)]
+struct LoadWatch {
+    /// Whether more work is refused while the render load is past the
+    /// guard (see [`Wall::set_load_guard`]).
+    on: bool,
+    /// Whether the wall is refusing more work, until the load falls below
+    /// [`RESUME_SHARE`] of the guard.
+    refusing: bool,
+    /// Changes the load has not yet taken in (see [`ABSORBED_WINDOWS`]):
+    /// the frames the engine had rendered when each was made, and how many
+    /// modules and cables it added (less than none for what it took away).
+    recent: VecDeque<(u64, i64)>,
+    /// The frames the engine will have rendered when its load has taken in
+    /// the whole wall, after the wall was put up or the engine started.
+    measured_from: u64,
+}
+
+impl LoadWatch {
+    /// Off, with nothing measured yet: the daemon turns it on (see
+    /// [`Wall::set_load_guard`]).
+    const fn new() -> Self {
+        Self {
+            on: false,
+            refusing: false,
+            recent: VecDeque::new(),
+            measured_from: 0,
+        }
+    }
+
+    /// Start measuring afresh: the wall was put up, or the engine started,
+    /// when it had rendered `rendered` frames, `window` frames to a window.
+    fn restart(&mut self, rendered: u64, window: u64) {
+        self.refusing = false;
+        self.recent.clear();
+        self.measured_from = rendered.saturating_add(window.saturating_mul(ABSORBED_WINDOWS));
+    }
+}
+
+/// What a change adds to the wall: modules, cables, and speakers' words
+/// (see [`Wall::room_to_grow`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Growth {
+    modules: usize,
+    cables: usize,
+    words: usize,
+}
+
+impl Growth {
+    /// Nothing added.
+    const NONE: Self = Self {
+        modules: 0,
+        cables: 0,
+        words: 0,
+    };
+
+    /// The most it adds to the wall's file.
+    const fn bytes(self) -> usize {
+        self.modules
+            .saturating_mul(crate::store::WORST_MODULE_BYTES)
+            .saturating_add(self.cables.saturating_mul(crate::store::WORST_CABLE_BYTES))
+            .saturating_add(self.words.saturating_mul(crate::store::WORST_WORDS_BYTES))
     }
 }
 
@@ -303,7 +470,7 @@ pub struct Wall {
     /// Latency and delays as the tables were last sent.
     timing: Timing,
     /// Each cable's delay line and the tag it owns it under, by cable id.
-    lines: BTreeMap<u32, (u16, u32)>,
+    lines: BTreeMap<u32, (u32, u32)>,
     /// The last tag given to a delay line.
     line_tags: u32,
     /// One prepared effect of each kind on the wall, and the rate it was
@@ -361,6 +528,24 @@ pub struct Wall {
     /// them all in, its knobs are the old wall's, and `look` shows the
     /// targets instead.
     swaps_sent: u64,
+    /// How the render load stands against [`LOAD_GUARD`].
+    load_watch: LoadWatch,
+    /// The wall's file as last measured, in bytes, if it has been since the
+    /// wall last changed hands or was saved (see [`Self::file_room`]).
+    file_bytes: Option<usize>,
+    /// The most the changes let through since then can have added to it.
+    file_grown: usize,
+    /// The revision the file was last measured at.
+    file_measured_at: u64,
+    /// The most bytes the wall's file may hold: [`crate::store::MAX_WALL_FILE`]
+    /// (smaller in tests, to reach it).
+    file_limit: usize,
+    /// The cable table the next [`Self::send_tables`] fills, made (by
+    /// [`Self::room_to_grow`]) before a change that needs a larger one.
+    spare_table: Option<CableTable>,
+    /// The engine's leaked and ignored counts as last looked at, so a move
+    /// is reported once.
+    engine_counts: (u64, u64),
 }
 
 /// What each input of a module comes from: the source's slot, its port,
@@ -378,9 +563,16 @@ fn unmeasured(capture: &mut Capture, input: usize, plugged: bool) {
     }
 }
 
-/// Most outputs one readout's trail follows: a wall holds 96 modules of
-/// at most 4 outputs, so a trail longer than this has gone wrong.
+/// Most outputs one readout's trail follows: a bound on the work one
+/// readout's answer takes on a wall of any size. A trail longer than this
+/// shows nothing.
 const TRAIL_STEPS: usize = 4_096;
+
+/// Deepest a readout's trail goes back through modules that pass their
+/// input on: each is a call deeper, so this keeps the control thread's
+/// stack safe on a wall of any size. Further back than this, it shows
+/// nothing.
+const TRAIL_DEPTH: usize = 256;
 
 /// What [`Wall::source_show`] follows the cables with, for one answer:
 /// every cable by the input it goes into; each output's answer once known
@@ -994,7 +1186,7 @@ impl Wall {
             settling: HashMap::new(),
             fingerprints: patch.dye.flow(&patch),
             patch,
-            rack: Rack::new(),
+            rack: Rack::default(),
             engine,
             desk,
             log: history.into_iter().skip(skip).collect(),
@@ -1025,6 +1217,14 @@ impl Wall {
             too_large: false,
             unmade: false,
             swaps_sent: 0,
+            load_watch: LoadWatch::new(),
+            file_bytes: None,
+            file_grown: 0,
+            file_measured_at: 0,
+            // 8 MiB: fits any usize the wall runs on.
+            file_limit: usize::try_from(crate::store::MAX_WALL_FILE).unwrap_or(usize::MAX),
+            spare_table: None,
+            engine_counts: (0, 0),
         };
         wall.load_engine();
         wall
@@ -1040,6 +1240,10 @@ impl Wall {
         let stopped = self.recorder.attach(&mut engine);
         self.probe_ring = engine.take_probes().map(ProbeRing);
         self.engine = engine;
+        // A new engine counts its frames, leaks and refusals from nothing,
+        // and has measured no load yet.
+        self.engine_counts = (0, 0);
+        self.spare_table = None;
         self.desk = desk;
         // A new engine has no swap to take in, and has taken in no cable
         // table: everything goes in afresh.
@@ -1086,6 +1290,35 @@ impl Wall {
         });
     }
 
+    /// Refuse more work while rendering takes more than [`LOAD_GUARD`] of
+    /// the time the wall has (`true`, every wall that plays for people), or
+    /// never for the load (`false`: a test daemon in a debug build, which
+    /// renders far slower than real time).
+    pub const fn set_load_guard(&mut self, guard: bool) {
+        self.load_watch.on = guard;
+        self.load_watch.refusing = false;
+    }
+
+    /// Frames in one averaging window of the render load.
+    fn load_window(&self) -> u64 {
+        // The engine's rate is at most a few hundred kHz: a window is a few
+        // hundred thousand frames, exact in f32 and u64.
+        (LOAD_SECONDS * self.engine.sample_rate() as f32) as u64
+    }
+
+    /// Measure the render load afresh, from now: a wall was put up, or the
+    /// engine started.
+    fn restart_load_watch(&mut self) {
+        let rendered = self.engine.shared().frames();
+        let window = self.load_window();
+        self.load_watch.restart(rendered, window);
+    }
+
+    /// Modules and cables on the wall: what the render load is shared over.
+    fn held(&self) -> usize {
+        self.patch.modules().len() + self.patch.cables().len()
+    }
+
     /// Put recordings in `dir` from the next one on.
     pub fn set_recordings_dir(&mut self, dir: std::path::PathBuf) {
         self.recorder.set_dir(dir);
@@ -1115,13 +1348,15 @@ impl Wall {
     }
 
     fn load_engine(&mut self) {
-        self.rack = Rack::new();
+        self.restart_load_watch();
+        self.rack = Rack::default();
         // What the old engine's modules measured is gone with them.
         self.readings.clear();
         // Every knob goes in at its target, with nothing gliding.
         self.settled.clear();
         self.settling.clear();
         let modules = self.patch.modules().to_vec();
+        self.reserve_for(modules.len(), self.patch.cables().len());
         for module in &modules {
             if self.insert(module) {
                 self.put_back_words(&module.id);
@@ -1133,6 +1368,18 @@ impl Wall {
         // started at, unless the desk keeps the tempo.
         if !self.on_desk() {
             self.engine.send(Command::Tempo(self.patch.tempo));
+        }
+    }
+
+    /// Size the engine for a wall of `modules` modules and `cables` cables
+    /// before anything goes in: one room and one line table, not a doubling
+    /// at every page on the way.
+    fn reserve_for(&mut self, modules: usize, cables: usize) {
+        let slots = self.rack.slots_for(modules);
+        if !self.engine.reserve_slots(slots) || !self.engine.reserve_lines(cables) {
+            eprintln!(
+                "kazoo-wall: no memory for {modules} modules and {cables} cables in the engine"
+            );
         }
     }
 
@@ -1157,7 +1404,12 @@ impl Wall {
         self.faults.unreported.clear();
         self.faults.last_report.clear();
         self.readings.clear();
+        // Another wall: measured afresh, and judged afresh for the load.
+        self.file_bytes = None;
+        self.file_grown = 0;
+        self.restart_load_watch();
         let modules = self.patch.modules().to_vec();
+        self.reserve_for(modules.len(), self.patch.cables().len());
         for module in &modules {
             if self.insert(module) {
                 self.put_back_words(&module.id);
@@ -1199,12 +1451,17 @@ impl Wall {
     /// Put `module` in the engine. Returns whether it is a speaker that
     /// needs its words rendered.
     fn insert(&mut self, module: &Module) -> bool {
-        let Some((slot, tag)) = self.rack.place(&module.id) else {
-            // The patch holds at most MAX_MODULES modules, and the rack as
-            // many slots: never expected.
-            eprintln!("kazoo-wall: no engine slot for {}", module.id);
+        if !self.engine.reserve_slots(self.rack.next_free() + 1) {
+            // Requests that add a module make room before they change the
+            // patch (see `room_to_grow`): only a patch loaded on a machine
+            // with no memory for it gets here.
+            eprintln!(
+                "kazoo-wall: no memory for an engine slot; {} is not played",
+                module.id
+            );
             return false;
-        };
+        }
+        let (slot, tag) = self.rack.place(&module.id);
         let mut knobs = [0.0; MAX_KNOBS];
         for (target, value) in knobs.iter_mut().zip(&module.knobs) {
             *target = *value;
@@ -1249,7 +1506,8 @@ impl Wall {
         let rendered: Vec<String> = order
             .slots()
             .iter()
-            .filter_map(|slot| self.rack.id_at(usize::from(*slot)).map(str::to_string))
+            // u32 into usize: lossless.
+            .filter_map(|slot| self.rack.id_at(*slot as usize).map(str::to_string))
             .collect();
         let latencies = self.latencies();
         self.timing = timing(&self.patch, &rendered, |id| {
@@ -1257,7 +1515,27 @@ impl Wall {
         });
         self.timing.unsteady = self.unsteady();
         self.assign_lines();
-        let mut table = CableTable::new();
+        // The table room_to_grow made sure of, or one made now for the rack
+        // as it stands (a re-timing, or a change that added nothing).
+        let slots = self.rack.slots.len();
+        let table = self
+            .spare_table
+            .take()
+            .filter(|table| table.slots() >= slots)
+            .or_else(|| CableTable::with_slots(slots));
+        let Some(mut table) = table else {
+            eprintln!(
+                "kazoo-wall: no memory for a cable table of {slots} slots; the engine keeps \
+                 the cables it has"
+            );
+            return;
+        };
+        let kinds: HashMap<&str, Kind> = self
+            .patch
+            .modules()
+            .iter()
+            .map(|module| (module.id.as_str(), module.kind))
+            .collect();
         for cable in self.patch.cables() {
             let (Some(from), Some(to), Some(&(line, tag))) = (
                 self.rack.slot_of(&cable.from_module),
@@ -1270,13 +1548,23 @@ impl Wall {
                 Jack::Input(index) => index,
                 Jack::Knob(index) => MAX_INPUTS + index,
             };
+            // A slot past u32 would need more modules than any machine can
+            // render, and ports are below MAX_OUTPUTS (4): both always fit.
+            let (Ok(from), Ok(port)) = (u32::try_from(from), u8::try_from(cable.from_port)) else {
+                eprintln!("kazoo-wall: cable {} is out of any range", cable.id);
+                continue;
+            };
             let route = Route {
                 delay: self.timing.delays.get(&cable.id).copied().unwrap_or(0),
-                gate: self.carries_gate(cable),
-                // Slots and ports are below MAX_MODULES (at most 256) and 4: they fit.
-                ..Route::new(from as u8, cable.from_port as u8, cable.amount, line, tag)
+                gate: carries_gate(&kinds, cable),
+                ..Route::new(from, port, cable.amount, line, tag)
             };
-            table.set(to, jack, Some(route));
+            if !table.set(to, jack, Some(route)) {
+                eprintln!(
+                    "kazoo-wall: cable {} could not go in the engine's table and is not played",
+                    cable.id
+                );
+            }
         }
         self.engine.send(Command::Cables(Box::new(table)));
         self.engine.send(Command::Order(Box::new(order)));
@@ -1288,30 +1576,40 @@ impl Wall {
     /// (see [`Self::fresh_from`]), letting go of what it measured of what
     /// was plugged in before.
     fn note_rewiring(&mut self) {
-        let mut rewired = Vec::new();
-        for module in self.patch.modules() {
-            if !probe::measures(module.kind) {
-                continue;
-            }
-            let mut wiring = [None; MAX_INPUTS];
-            for cable in self.patch.cables() {
-                if let (true, Jack::Input(input), Some(from)) = (
-                    cable.to_module == module.id,
-                    cable.to_jack,
-                    self.rack.slot_of(&cable.from_module),
-                ) {
-                    if let Some(entry) = wiring.get_mut(input) {
-                        *entry = Some((from, cable.from_port, cable.amount.to_bits()));
-                    }
+        // What each scope's and readout's inputs come from, in one pass over
+        // the cables.
+        let measuring: HashSet<&str> = self
+            .patch
+            .modules()
+            .iter()
+            .filter(|module| probe::measures(module.kind))
+            .map(|module| module.id.as_str())
+            .collect();
+        let mut wirings: HashMap<&str, Wiring> = measuring
+            .iter()
+            .map(|id| (*id, [None; MAX_INPUTS]))
+            .collect();
+        for cable in self.patch.cables() {
+            if let (Some(wiring), Jack::Input(input), Some(from)) = (
+                wirings.get_mut(cable.to_module.as_str()),
+                cable.to_jack,
+                self.rack.slot_of(&cable.from_module),
+            ) {
+                if let Some(entry) = wiring.get_mut(input) {
+                    *entry = Some((from, cable.from_port, cable.amount.to_bits()));
                 }
             }
-            let before = self.wiring.get(&module.id);
+        }
+        let mut rewired = Vec::new();
+        for (id, wiring) in wirings {
+            let before = self.wiring.get(id);
             let moved: [bool; MAX_INPUTS] =
                 std::array::from_fn(|input| before.is_none_or(|old| old[input] != wiring[input]));
             if moved.contains(&true) {
-                rewired.push((module.id.clone(), wiring, moved));
+                rewired.push((id.to_string(), wiring, moved));
             }
         }
+        let measuring: HashSet<String> = measuring.into_iter().map(str::to_string).collect();
         for (id, wiring, moved) in rewired {
             let fresh = self.fresh_from.entry(id.clone()).or_insert([0; MAX_INPUTS]);
             for (from, moved) in fresh.iter_mut().zip(moved) {
@@ -1330,50 +1628,31 @@ impl Wall {
             }
             self.wiring.insert(id, wiring);
         }
-        let patch = &self.patch;
-        self.wiring.retain(|id, _| patch.module(id).is_some());
-        self.fresh_from.retain(|id, _| patch.module(id).is_some());
-    }
-
-    /// Whether `cable` carries a gate (it comes from a gate output, or goes
-    /// into a gate input), which must switch delay between pulses rather
-    /// than fade.
-    fn carries_gate(&self, cable: &Cable) -> bool {
-        let from_gate = self.patch.module(&cable.from_module).is_some_and(|module| {
-            module
-                .kind
-                .spec()
-                .outputs
-                .get(cable.from_port)
-                .map(|port| port.signal)
-                == Some(Signal::Gate)
-        });
-        from_gate
-            || match cable.to_jack {
-                Jack::Input(index) => self.patch.module(&cable.to_module).is_some_and(|module| {
-                    module.kind.spec().inputs.get(index).map(|port| port.signal)
-                        == Some(Signal::Gate)
-                }),
-                Jack::Knob(_) => false,
-            }
+        self.wiring.retain(|id, _| measuring.contains(id));
+        self.fresh_from.retain(|id, _| measuring.contains(id));
     }
 
     /// Give every cable a delay line of its own, kept for its life: a cable
     /// keeps its line and tag across table swaps, a new cable takes the
     /// lowest free line under a tag never used before.
     fn assign_lines(&mut self) {
-        let present: Vec<u32> = self.patch.cables().iter().map(|cable| cable.id).collect();
+        let present: BTreeSet<u32> = self.patch.cables().iter().map(|cable| cable.id).collect();
         self.lines.retain(|id, _| present.contains(id));
+        let mut taken: BTreeSet<u32> = self.lines.values().map(|(line, _)| *line).collect();
+        // Lines below `lowest` are all taken: the search for a free one
+        // carries on from where the last one was found.
+        let mut lowest = 0_u32;
         for id in present {
             if self.lines.contains_key(&id) {
                 continue;
             }
-            let taken: Vec<u16> = self.lines.values().map(|(line, _)| *line).collect();
-            // The wall holds at most MAX_CABLES cables: a line is free.
-            let lines = u16::try_from(MAX_CABLES).unwrap_or(u16::MAX);
-            let Some(line) = (0..lines).find(|line| !taken.contains(line)) else {
+            // There are fewer cables than u32 has numbers, so a free line
+            // is always found.
+            let Some(line) = (lowest..=u32::MAX).find(|line| !taken.contains(line)) else {
                 continue;
             };
+            lowest = line;
+            taken.insert(line);
             self.line_tags = self.line_tags.wrapping_add(1).max(1);
             self.lines.insert(id, (line, self.line_tags));
         }
@@ -1386,10 +1665,10 @@ impl Wall {
     fn latencies(&mut self) -> BTreeMap<String, u32> {
         let rate = self.engine.sample_rate();
         let modules = self.patch.modules();
-        self.probes
-            .retain(|kind, _| modules.iter().any(|module| module.kind == *kind));
-        self.settled
-            .retain(|id, _| modules.iter().any(|module| module.id == *id));
+        let kinds: HashSet<Kind> = modules.iter().map(|module| module.kind).collect();
+        let ids: HashSet<&str> = modules.iter().map(|module| module.id.as_str()).collect();
+        self.probes.retain(|kind, _| kinds.contains(kind));
+        self.settled.retain(|id, _| ids.contains(id.as_str()));
         let mut latencies = BTreeMap::new();
         for module in modules {
             let knobs = self
@@ -1409,22 +1688,28 @@ impl Wall {
     /// they are compensated only for the knob as set.
     fn unsteady(&mut self) -> Vec<String> {
         let rate = self.engine.sample_rate();
+        // The knobs with a cable in them, by module: one pass over the
+        // cables.
+        let mut patched_knobs: HashMap<&str, Vec<usize>> = HashMap::new();
+        for cable in self.patch.cables() {
+            if let Jack::Knob(index) = cable.to_jack {
+                patched_knobs
+                    .entry(cable.to_module.as_str())
+                    .or_default()
+                    .push(index);
+            }
+        }
         let mut unsteady = Vec::new();
         for module in self.patch.modules() {
             let spec = module.kind.spec();
-            let Some(knobs) = self.settled.get(&module.id) else {
+            let (Some(knobs), Some(patched)) = (
+                self.settled.get(&module.id),
+                patched_knobs.get(module.id.as_str()),
+            ) else {
                 continue;
             };
-            let patched = self
-                .patch
-                .cables()
-                .iter()
-                .filter_map(|cable| match cable.to_jack {
-                    Jack::Knob(index) if cable.to_module == module.id => Some(index),
-                    Jack::Knob(_) | Jack::Input(_) => None,
-                });
             let mut moves = false;
-            for index in patched {
+            for &index in patched {
                 let Some(knob) = spec.knobs.get(index) else {
                     continue;
                 };
@@ -1922,9 +2207,16 @@ impl Wall {
         // A change that cannot be logged is not made: what of the patch it
         // touched goes back as it was.
         let before = self.before(request);
+        let (held, swaps) = (self.held(), self.swaps_sent);
         let outcome = self.answer((seat, console), request, now);
         if std::mem::take(&mut self.unmade) {
             self.put_back(before);
+        }
+        // A wall put up is measured afresh (see `swap_engine`); any other
+        // change counts towards the load not yet taken in (one the log
+        // refused was put back, and counts nothing).
+        if self.swaps_sent == swaps {
+            self.note_held(held);
         }
         // A refused load (no such save, a name that is not one, a save
         // changed since) replaced nothing, and costs none of the allowance;
@@ -2068,14 +2360,7 @@ impl Wall {
                 let what = self.patch.turn(module, knob, *value, *glide_beats)?;
                 self.changed(seat, what, None, None, None)
             }
-            Request::Patch { from, to, amount } => {
-                let what = self.patch.plug(from, to, *amount, None)?;
-                let cable = match &what {
-                    What::Patch { cable, .. } => Some(cable.id),
-                    _ => None,
-                };
-                self.changed(seat, what, None, None, cable)
-            }
+            Request::Patch { from, to, amount } => self.plug(seat, from, to, *amount),
             Request::Unpatch { cable, to } => {
                 let what = match (cable, to) {
                     (Some(cable), None) => self.patch.unplug(*cable, None)?,
@@ -2090,12 +2375,7 @@ impl Wall {
                 self.changed(seat, what, None, None, None)
             }
             Request::Add { kind, name, place } => {
-                let what = self.patch.add(kind, name.as_deref(), place.as_ref())?;
-                let module = match &what {
-                    What::Add { module } => Some(module.id.clone()),
-                    _ => None,
-                };
-                self.changed(seat, what, None, module, None)
+                self.add(seat, kind, name.as_deref(), place.as_ref())
             }
             Request::Remove { module } => {
                 let what = self.patch.remove(module, &[])?;
@@ -2137,6 +2417,277 @@ impl Wall {
                 ErrorCode::Internal,
                 "connection requests are handled by the connection",
             )),
+        }
+    }
+
+    /// Plug output `from` into jack `to` for `seat`. The request is checked
+    /// first, then the room for it, and only then is the patch changed. A
+    /// cable into a jack already in use replaces it: no more work than
+    /// before.
+    fn plug(
+        &mut self,
+        seat: &str,
+        from: &str,
+        to: &str,
+        amount: Option<f64>,
+    ) -> Result<Outcome, WallError> {
+        let growth = Growth {
+            cables: usize::from(self.patch.check_plug(from, to, amount)?),
+            ..Growth::NONE
+        };
+        self.room_to_grow(growth)?;
+        let what = self.patch.plug(from, to, amount, None)?;
+        let cable = match &what {
+            What::Patch { cable, .. } => Some(cable.id),
+            _ => None,
+        };
+        self.changed(seat, what, None, None, cable)
+    }
+
+    /// Add a module of `kind` for `seat`: checked, then the room for it,
+    /// then added.
+    fn add(
+        &mut self,
+        seat: &str,
+        kind: &str,
+        name: Option<&str>,
+        place: Option<&Place>,
+    ) -> Result<Outcome, WallError> {
+        Patch::check_add(kind, name)?;
+        let growth = Growth {
+            modules: 1,
+            ..Growth::NONE
+        };
+        self.room_to_grow(growth)?;
+        let what = self.patch.add(kind, name, place)?;
+        let module = match &what {
+            What::Add { module } => Some(module.id.clone()),
+            _ => None,
+        };
+        self.changed(seat, what, None, module, None)
+    }
+
+    /// Make sure the wall can take `growth`: its file stays within
+    /// [`crate::store::MAX_WALL_FILE`] (see [`Self::file_room`]), the
+    /// machine is rendering it with time to spare (see [`LOAD_GUARD`] and
+    /// [`Self::render_room`]), and the engine has, or has been sent, room
+    /// for it. A change that adds nothing always can.
+    ///
+    /// # Errors
+    ///
+    /// `full` when the file would be too large, while rendering takes
+    /// most of the time the wall has (unless the guard is off, see
+    /// [`Self::set_load_guard`]), or when there is no memory for the room;
+    /// `slow_down` while the wall settles after the last addition.
+    fn room_to_grow(&mut self, growth: Growth) -> Result<(), WallError> {
+        if growth == Growth::NONE {
+            return Ok(());
+        }
+        self.file_room(growth.bytes())?;
+        self.render_room(growth.modules + growth.cables)?;
+        let slots = self.rack.slots_for(growth.modules);
+        if !self.engine.reserve_slots(slots) {
+            return Err(error(
+                ErrorCode::Full,
+                "the machine has no memory for another module",
+            ));
+        }
+        // Each cable has a line, and a new one takes the lowest free.
+        if !self
+            .engine
+            .reserve_lines(self.lines.len().saturating_add(growth.cables))
+        {
+            return Err(error(
+                ErrorCode::Full,
+                "the machine has no memory for another cable",
+            ));
+        }
+        // The cable table the change will send, made now so that a machine
+        // with no memory for it refuses the change rather than playing on
+        // without it.
+        if self
+            .spare_table
+            .as_ref()
+            .is_none_or(|table| table.slots() < slots)
+        {
+            self.spare_table = CableTable::with_slots(slots);
+            if self.spare_table.is_none() {
+                return Err(error(
+                    ErrorCode::Full,
+                    "the machine has no memory for the wall's cables",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Make sure the wall's file has room for `bytes` more, at worst.
+    ///
+    /// The file is measured (the patch encoded as it would be saved) only
+    /// when what was measured, and the most every change let through
+    /// since can have added, would leave no room: a wall well inside the
+    /// bound is never encoded for it. What is let through counts at its
+    /// worst, and taking something away does not count down, so the sum
+    /// only errs high; it is measured afresh at every save of the patch.
+    /// (A change the bound does not see, the dye on a module filling as
+    /// seats touch it, is a few bytes; the save catches it, see
+    /// [`Self::say_too_large`].)
+    ///
+    /// # Errors
+    ///
+    /// `full` when the file would be larger than
+    /// [`crate::store::MAX_WALL_FILE`]; `internal` when the patch cannot
+    /// be encoded.
+    fn file_room(&mut self, bytes: usize) -> Result<(), WallError> {
+        let limit = self.file_limit;
+        let room = |measured: usize, grown: usize| {
+            measured.saturating_add(grown).saturating_add(bytes) <= limit
+        };
+        if self
+            .file_bytes
+            .is_some_and(|measured| room(measured, self.file_grown))
+        {
+            self.file_grown = self.file_grown.saturating_add(bytes);
+            return Ok(());
+        }
+        // Measured at this revision, with nothing let through since: what
+        // was measured is the file as it is (a seat asking again and again
+        // near the bound costs no encoding).
+        let fresh = self
+            .file_bytes
+            .filter(|_| self.file_grown == 0 && self.file_measured_at == self.revision());
+        let measured = match fresh {
+            Some(measured) => measured,
+            None => crate::store::encode(&self.patch)
+                .map_err(|err| {
+                    error(
+                        ErrorCode::Internal,
+                        format!("the wall could not be measured: {err}"),
+                    )
+                })?
+                .len(),
+        };
+        self.file_bytes = Some(measured);
+        self.file_measured_at = self.revision();
+        self.file_grown = 0;
+        if !room(measured, 0) {
+            return Err(error(
+                ErrorCode::Full,
+                format!(
+                    "the wall's file is {} KB, and this could take it past the {} KB a wall's \
+                     file may hold; take something away first",
+                    measured / 1024,
+                    limit / 1024
+                ),
+            ));
+        }
+        self.file_grown = bytes;
+        Ok(())
+    }
+
+    /// Make sure the machine has time to render `units` more modules and
+    /// cables (see [`LOAD_GUARD`]).
+    ///
+    /// # Errors
+    ///
+    /// `full` while rendering takes more than [`LOAD_GUARD`] of the time
+    /// the wall has (until it is back below [`RESUME_SHARE`] of it), or
+    /// when the addition, costed at the load each module and cable is
+    /// taking now, would take it past; `slow_down` while the load of a
+    /// wall just put up is still being measured, and above
+    /// [`SETTLE_SHARE`] of the guard until the last addition has been
+    /// taken in (see [`ABSORBED_WINDOWS`]).
+    fn render_room(&mut self, units: usize) -> Result<(), WallError> {
+        if !self.load_watch.on || units == 0 {
+            return Ok(());
+        }
+        let shared = self.engine.shared();
+        let load = shared.render_load();
+        let rendered = shared.frames();
+        let absorbed = self.load_window().saturating_mul(ABSORBED_WINDOWS);
+        while self
+            .load_watch
+            .recent
+            .front()
+            .is_some_and(|(at, _)| rendered.saturating_sub(*at) >= absorbed)
+        {
+            self.load_watch.recent.pop_front();
+        }
+        self.load_watch.refusing = refusing_at(self.load_watch.refusing, load);
+        if self.load_watch.refusing {
+            return Err(error(
+                ErrorCode::Full,
+                format!(
+                    "the wall is spending {:.0}% of its time rendering, so there is no room for \
+                     more until it is below {:.0}%; take something away first",
+                    load * 100.0,
+                    LOAD_GUARD * RESUME_SHARE * 100.0
+                ),
+            ));
+        }
+        if rendered < self.load_watch.measured_from {
+            return Err(error(
+                ErrorCode::SlowDown,
+                "the wall has just been put up (or its sound started), and how hard it is \
+                 working is still being measured; wait a few seconds",
+            ));
+        }
+        // The load was measured on the wall as it was before the changes
+        // it has not taken in yet: share it over the modules and cables it
+        // had then, and cost the wall with this addition too.
+        let held = self.held();
+        let lately: i64 = self.load_watch.recent.iter().map(|(_, units)| units).sum();
+        // Counts of modules and cables: far inside i64.
+        let measured_on = usize::try_from(i64::try_from(held).unwrap_or(i64::MAX) - lately)
+            .unwrap_or(0)
+            .max(1);
+        if measured_on >= COSTED_FROM {
+            // Counts far below 2^24: close enough in f32.
+            let projected = load / measured_on as f32 * held.saturating_add(units) as f32;
+            if projected > LOAD_GUARD {
+                return Err(error(
+                    ErrorCode::Full,
+                    format!(
+                        "the wall is spending {:.0}% of its time rendering, and this would take \
+                         it to about {:.0}%, past the {:.0}% it keeps to; take something away \
+                         first",
+                        load * 100.0,
+                        projected * 100.0,
+                        LOAD_GUARD * 100.0
+                    ),
+                ));
+            }
+        }
+        let adding_lately = self.load_watch.recent.iter().any(|(_, units)| *units > 0);
+        // A wall too small to cost by its share can still be heavy: its
+        // additions come apart from a lower load.
+        let settle_from = if measured_on >= COSTED_FROM {
+            LOAD_GUARD * SETTLE_SHARE
+        } else {
+            SMALL_WALL_SETTLE
+        };
+        if load > settle_from && adding_lately {
+            return Err(error(
+                ErrorCode::SlowDown,
+                format!(
+                    "the wall is spending {:.0}% of its time rendering, so it takes an addition \
+                     every few seconds, to measure each; wait a moment",
+                    load * 100.0
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Count a change that took the wall from `before` modules and cables
+    /// to as many as it holds now, towards the render load the averaging
+    /// has not taken in yet (see [`Self::render_room`]).
+    fn note_held(&mut self, before: usize) {
+        let delta = i64::try_from(self.held()).unwrap_or(i64::MAX)
+            - i64::try_from(before).unwrap_or(i64::MAX);
+        if delta != 0 {
+            let rendered = self.engine.shared().frames();
+            self.load_watch.recent.push_back((rendered, delta));
         }
     }
 
@@ -2241,6 +2792,22 @@ impl Wall {
         if let What::Tempo { from, .. } = what {
             return self.tempo(seat, from, Some(seq));
         }
+        // Undoing a removal brings a module, its cables and its words back,
+        // and undoing an unplugging brings a cable back: more work, like
+        // any other addition. Every other undo adds nothing.
+        let growth = match &what {
+            What::Remove { cables, .. } => Growth {
+                modules: 1,
+                cables: cables.len(),
+                words: 1,
+            },
+            What::Unpatch { .. } => Growth {
+                cables: 1,
+                ..Growth::NONE
+            },
+            _ => Growth::NONE,
+        };
+        self.room_to_grow(growth)?;
         let inverse = self.patch.undo(&what)?;
         self.changed(seat, inverse, Some(seq), None, None)
     }
@@ -2980,6 +3547,9 @@ impl Wall {
         words: Words,
         (phrase, seconds): (kazoo_speech::Phrase, f64),
     ) -> Result<Outcome, WallError> {
+        // Words make the wall's file larger: the room for them is judged as
+        // they are logged.
+        self.file_room(crate::store::WORST_WORDS_BYTES)?;
         let what = What::Speak {
             module: module.clone(),
             words: u32::try_from(words.text.split_whitespace().count()).unwrap_or(u32::MAX),
@@ -3296,6 +3866,16 @@ impl Wall {
             }),
             log: self.log_health(),
             probes: self.probes_now(Instant::now()).0,
+            engine: Some(EngineHealth {
+                load: f64::from(shared.render_load()),
+                load_guard: self.load_watch.on.then_some(f64::from(LOAD_GUARD)),
+                // As an addition would find it now, not as the last one did.
+                refusing: self.load_watch.on
+                    && refusing_at(self.load_watch.refusing, shared.render_load()),
+                measuring: self.load_watch.on && shared.frames() < self.load_watch.measured_from,
+                leaked: shared.leaked(),
+                ignored: shared.ignored(),
+            }),
         }
     }
 
@@ -3402,8 +3982,11 @@ impl Wall {
             };
         }
         trail.steps += 1;
-        if trail.steps > TRAIL_STEPS || !trail.on_the_way.insert(key) {
-            // Round a loop (or a trail too long to follow): nothing here.
+        // The outputs on the way are the calls deep this one is.
+        let too_far = trail.steps > TRAIL_STEPS || trail.on_the_way.len() >= TRAIL_DEPTH;
+        if too_far || !trail.on_the_way.insert(key) {
+            // Round a loop (or a trail too long to follow): nothing here,
+            // and not kept, as it depends on where the trail came from.
             return Found::LOOP;
         }
         let found = self.shown_out(from, port, trail);
@@ -3649,7 +4232,6 @@ impl Wall {
             .rack
             .slot_of(&module.id)
             .filter(|_| self.engine.shared().unhushed() >= self.swaps_sent);
-        let shared = self.engine.shared();
         let knobs = spec
             .knobs
             .iter()
@@ -3657,7 +4239,7 @@ impl Wall {
             .enumerate()
             .map(|(index, (knob, target))| {
                 let value = slot
-                    .and_then(|slot| shared.knob(slot, index))
+                    .and_then(|slot| self.engine.knob(slot, index))
                     .filter(|value| value.is_finite())
                     .map_or(*target, |value| knob.clamp(value));
                 KnobView {
@@ -3773,6 +4355,17 @@ impl Wall {
                 seq: Some(self.revision()),
             });
         }
+        if let Some(summary) = self.engine_trouble() {
+            eprintln!("kazoo-wall: {summary}");
+            self.faults.recent.push_back(summary.clone());
+            while self.faults.recent.len() > RECENT_FAULTS {
+                self.faults.recent.pop_front();
+            }
+            events.push(Event::Fault {
+                summary,
+                seq: Some(self.revision()),
+            });
+        }
         let due = self
             .last_save
             .is_none_or(|at| now.saturating_duration_since(at) >= SAVE_INTERVAL);
@@ -3790,6 +4383,33 @@ impl Wall {
         events
     }
 
+    /// What the engine could not do since last asked, in a sentence: items
+    /// it had to leak rather than free (the retire ring was full), and
+    /// commands it refused (a room there was no memory for). Never
+    /// expected; each is said once.
+    fn engine_trouble(&mut self) -> Option<String> {
+        let shared = self.engine.shared();
+        let counts = (shared.leaked(), shared.ignored());
+        let (leaked, ignored) = (
+            counts.0.saturating_sub(self.engine_counts.0),
+            counts.1.saturating_sub(self.engine_counts.1),
+        );
+        self.engine_counts = counts;
+        let mut said = Vec::new();
+        if leaked > 0 {
+            said.push(format!(
+                "the engine kept {leaked} retired items it could not hand back to be freed"
+            ));
+        }
+        if ignored > 0 {
+            said.push(format!(
+                "the engine refused {ignored} commands (no memory for the room they needed, \
+                 or a slot, knob or value out of range): some of the wall may not be playing"
+            ));
+        }
+        (!said.is_empty()).then(|| said.join("; "))
+    }
+
     /// Save the patch now, after the log: `patch.json` is never ahead of
     /// the changes that made it. So nothing is written while the daemon's
     /// own changes are owed to the log, or the log cannot be synced: the
@@ -3798,6 +4418,9 @@ impl Wall {
     /// daemon's log.)
     pub fn save(&mut self, now: Instant) {
         self.last_save = Some(now);
+        // The file is measured afresh at the next change that adds to it.
+        self.file_bytes = None;
+        self.file_grown = 0;
         if self.store.is_none() {
             self.dirty = false;
             return;
@@ -3848,6 +4471,26 @@ impl Wall {
             }
         }
     }
+}
+
+/// Whether `cable` carries a gate (it comes from a gate output, or goes
+/// into a gate input), which must switch delay between pulses rather than
+/// fade. `kinds` is every module's kind, by id.
+fn carries_gate(kinds: &HashMap<&str, Kind>, cable: &Cable) -> bool {
+    let from_gate = kinds.get(cable.from_module.as_str()).is_some_and(|kind| {
+        kind.spec()
+            .outputs
+            .get(cable.from_port)
+            .map(|port| port.signal)
+            == Some(Signal::Gate)
+    });
+    from_gate
+        || match cable.to_jack {
+            Jack::Input(index) => kinds.get(cable.to_module.as_str()).is_some_and(|kind| {
+                kind.spec().inputs.get(index).map(|port| port.signal) == Some(Signal::Gate)
+            }),
+            Jack::Knob(_) => false,
+        }
 }
 
 /// How long into a glide from `from` to `to` a knob of `spec` arrives, as

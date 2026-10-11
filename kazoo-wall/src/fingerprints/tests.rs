@@ -218,3 +218,44 @@ fn a_module_keeps_the_dye_of_its_strongest_seats_only() {
     assert!(saved.contains_key("b") && saved.contains_key("c"));
     assert!(!saved.contains_key("d") && !saved.contains_key("a"));
 }
+
+#[test]
+fn a_wall_far_past_the_old_limits_is_fingerprinted_on_every_change() {
+    // Two thousand mixers in a chain, each added by a seat in turn: the
+    // strongest paths from every one of them, which a table of every pair
+    // could not hold at this size, and the nearest dye wins.
+    const MIXERS: usize = 2_000;
+    let mut patch = Patch::empty(120.0);
+    let mut dye = Dye::new();
+    let seats = ["Tom", "Waffles", "Cassio"];
+    for n in 0..MIXERS {
+        let what = patch.add("mix", None, None).unwrap();
+        dye.touch(seats[n % seats.len()], &what, &patch);
+    }
+    for n in 1..MIXERS {
+        patch
+            .plug(
+                &format!("mix{n}.out"),
+                &format!("mix{}.a", n + 1),
+                Some(1.0),
+                None,
+            )
+            .unwrap();
+    }
+    let prints = dye.flow(&patch);
+    assert_eq!(prints.modules.len(), MIXERS);
+    assert_eq!(prints.cables.len(), MIXERS - 1);
+    // The last mixer holds its own unit, the one before it reaches it with
+    // a half, the one before that a quarter, and so on back: the nearest
+    // seat's dye is the strongest.
+    let last = &prints.modules[&format!("mix{MIXERS}")];
+    let own = seats[(MIXERS - 1) % seats.len()];
+    let before = seats[(MIXERS - 2) % seats.len()];
+    let earlier = seats[(MIXERS - 3) % seats.len()];
+    assert!(
+        last[own] > last[before] && last[before] > last[earlier],
+        "{last:?}"
+    );
+    // And again, the same.
+    assert_eq!(dye.flow(&patch), prints);
+}

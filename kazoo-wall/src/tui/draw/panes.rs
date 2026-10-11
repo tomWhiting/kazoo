@@ -7,9 +7,11 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 
-use kazoo_wall::MAX_CABLES;
+use kazoo_wall::daemon::wall::SETTLE_SHARE;
 use kazoo_wall::format;
-use kazoo_wall::protocol::{CableRecord, ClockSource, LogHealth, Recording, Snapshot};
+use kazoo_wall::protocol::{
+    CableRecord, ClockSource, EngineHealth, LogHealth, Recording, Snapshot,
+};
 
 use super::super::app::{App, Focus, Mode, Patching, Tone, View, glide_words};
 use super::super::knob::{Travel, show};
@@ -141,6 +143,39 @@ fn log_badge(log: &LogHealth) -> String {
     }
 }
 
+/// `render 42%`, the share of its time the wall's engine spends rendering,
+/// and its colour: amber once additions come a few seconds apart, or while
+/// a wall just put up is measured (` · measuring`); red with ` · full`
+/// while the wall takes no more modules or cables. What the engine could
+/// not do (never expected) is said after, in red.
+fn render_load(engine: &EngineHealth) -> (String, Color) {
+    let load = if engine.load.is_finite() {
+        engine.load.max(0.0)
+    } else {
+        0.0
+    };
+    // A share of the time, at most a few times over: fits u64.
+    let percent = (load * 100.0).round() as u64;
+    let mut words = format!("render {percent}%");
+    let mut colour = match engine.load_guard {
+        Some(guard) if load > guard * f64::from(SETTLE_SHARE) => AMBER,
+        _ => TEXT_DIM,
+    };
+    if engine.refusing {
+        words.push_str(" · full");
+        colour = RED;
+    } else if engine.measuring {
+        words.push_str(" · measuring");
+        colour = AMBER;
+    }
+    if engine.leaked > 0 || engine.ignored > 0 {
+        let trouble = format!(" · {} refused, {} leaked", engine.ignored, engine.leaked);
+        words.push_str(&trouble);
+        colour = RED;
+    }
+    (words, colour)
+}
+
 /// ` ● REC 3:20 `, and the samples lost when there are any.
 fn rec_badge(recording: &Recording) -> String {
     if recording.dropped > 0 {
@@ -184,6 +219,11 @@ fn meters_and_listen(buf: &mut Buffer, area: Rect, y: u16, snapshot: &Snapshot) 
     x = put(buf, area, x + 2, y, "R ", plain(TEXT_DIM, PANEL));
     x = meter(buf, area, x, y, snapshot.levels.peak_r);
     x = separator(buf, area, x, y);
+    if let Some(engine) = &snapshot.engine {
+        let (words, colour) = render_load(engine);
+        x = put(buf, area, x, y, &words, plain(colour, PANEL));
+        x = separator(buf, area, x, y);
+    }
     let faults = snapshot.faults.count;
     let right = if faults > 0 {
         put_right(
@@ -285,7 +325,7 @@ pub fn cables(buf: &mut Buffer, area: Rect, app: &App) {
         area,
         x + 1,
         area.y,
-        &format!("{} of {MAX_CABLES}", cables.len()),
+        &cables.len().to_string(),
         plain(TEXT_DIM, PANEL),
     );
     let list = Rect::new(area.x, area.y + 1, area.width, area.height - 1);

@@ -48,16 +48,11 @@ pub mod store;
 #[global_allocator]
 static TEST_ALLOCATOR: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-/// Most modules the wall holds.
-pub const MAX_MODULES: usize = 96;
-
-/// Most cables the wall holds.
-pub const MAX_CABLES: usize = 320;
-
-// The processing order keeps slots as bytes, and delay lines are numbered
-// in u16.
-const _: () = assert!(MAX_MODULES <= 256);
-const _: () = assert!(MAX_CABLES <= u16::MAX as usize);
+// The wall holds as many modules and cables as the machine can render: there
+// is no fixed count. The engine starts with room for a modest wall and the
+// control side grows it, off the audio thread (see `engine`); the daemon
+// refuses more only while rendering takes most of the time it has (see
+// `daemon::wall::LOAD_GUARD`).
 
 /// Frames the engine renders at once: every module sees the others' output
 /// from this far back at most, which is the delay a feedback cycle adds.

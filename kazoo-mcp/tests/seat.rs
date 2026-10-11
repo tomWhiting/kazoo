@@ -89,8 +89,14 @@ fn dirs() -> (tempfile::TempDir, tempfile::TempDir) {
     (runtime, state)
 }
 
+/// A test daemon with the load guard off: a debug build renders far slower
+/// than real time, so its render load says nothing about the wall.
 fn start(runtime: &Path, state: &Path) -> Daemon {
-    Daemon::start(DaemonConfig::headless(runtime, state)).unwrap()
+    Daemon::start(DaemonConfig {
+        load_guard: false,
+        ..DaemonConfig::headless(runtime, state)
+    })
+    .unwrap()
 }
 
 fn stop(daemon: Daemon) {

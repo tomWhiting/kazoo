@@ -1,4 +1,4 @@
-//! Patch model tests: operations, caps, undo and saving.
+//! Patch model tests: operations, size, undo and saving.
 
 use super::*;
 
@@ -136,31 +136,34 @@ fn ports_are_checked() {
 }
 
 #[test]
-fn caps_are_enforced() {
+fn the_patch_has_no_fixed_number_of_modules_or_cables() {
+    // Far past the 96 modules and 320 cables the wall once held: what the
+    // machine can render is the daemon's to judge, not the patch's.
+    const MIXERS: usize = 400;
     let mut patch = Patch::empty(120.0);
-    for _ in 0..MAX_MODULES {
+    for _ in 0..MIXERS {
         added(&mut patch, "mix");
     }
-    assert_eq!(code(patch.add("vco", None, None)), ErrorCode::Full);
-    // 48 mixers have 48 × 8 jacks: enough to reach the cable cap.
-    let mut plugged_count = 0;
-    'outer: for to in 1..=MAX_MODULES {
+    assert_eq!(patch.modules().len(), MIXERS);
+    for to in 1..=MIXERS {
         for jack in ["a", "b", "c", "d"] {
-            if plugged_count == MAX_CABLES {
-                break 'outer;
-            }
             patch
                 .plug("mix1.out", &format!("mix{to}.{jack}"), None, None)
                 .unwrap();
-            plugged_count += 1;
         }
     }
-    assert_eq!(
-        code(patch.plug("mix1.out", "mix48.level_a", None, None)),
-        ErrorCode::Full
-    );
-    // Replacing a cable is still fine at the cap.
+    assert_eq!(patch.cables().len(), MIXERS * 4);
+    assert!(patch.is_plugged("mix400.d"));
+    assert!(!patch.is_plugged("mix400.level_a"));
+    assert!(!patch.is_plugged("nowhere.a"));
+    // Replacing a cable leaves the count where it was.
     assert!(patch.plug("mix2.out", "mix1.a", None, None).is_ok());
+    assert_eq!(patch.cables().len(), MIXERS * 4);
+    // And it saves and loads whole.
+    let (loaded, notes) = Patch::load(&patch.to_file()).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(loaded.modules().len(), MIXERS);
+    assert_eq!(loaded.cables().len(), MIXERS * 4);
 }
 
 #[test]

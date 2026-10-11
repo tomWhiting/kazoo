@@ -1,17 +1,28 @@
 //! The realtime engine.
 //!
 //! [`engine`] returns two halves. The [`Engine`] moves into the audio
-//! callback (or the headless render loop): it owns a fixed table of
-//! [`MAX_MODULES`] module slots, the cable and order tables, pre-sized port
-//! buffers, the master chain and the wall's clock, and renders in sub-blocks
-//! of [`SUB_BLOCK`] frames. It never allocates, frees, locks or does I/O.
+//! callback (or the headless render loop): it owns the module slots and
+//! their port buffers (its [`Room`]), a delay line per cable, the cable and
+//! order tables, the master chain and the wall's clock, and renders in
+//! sub-blocks of [`SUB_BLOCK`] frames. It never allocates, frees, locks or
+//! does I/O.
 //!
 //! The [`EngineControl`] stays on the control side, the only place that
 //! allocates: it sends [`Command`]s over a lock-free ring, frees what the
 //! engine hands back over the retire ring, and collects fault reports. The
-//! engine publishes its clock, meters and current knob values through
-//! [`Shared`] atomics, and what the scopes and readouts measured as
-//! [`ProbeFrame`]s over a ring of its own.
+//! engine publishes its clock, meters, render load and current knob values
+//! through atomics ([`Shared`], and the room's knob cells), and what the
+//! scopes and readouts measured as [`ProbeFrame`]s over a ring of its own.
+//!
+//! There is no fixed number of slots or lines. The engine starts with room
+//! for [`INITIAL_SLOTS`] modules and [`INITIAL_LINES`] cables; when a
+//! command needs more, [`EngineControl::send`] first builds a larger room
+//! or line table on the control side (twice the size, or what is needed if
+//! more) and sends it ahead of the command. Slots and lines live in pages
+//! ([`room::SLOTS_PER_PAGE`], [`lines::LINES_PER_PAGE`]); the engine moves
+//! its pages into the new table, one pointer each, and retires the old
+//! table, so growing costs the audio thread a few hundred pointer moves at
+//! most, and never a copy of anything a slot or line holds.
 //!
 //! The engine tolerates any order of commands: a cable or order entry naming
 //! an empty slot reads silence or is skipped, so the control side never needs
@@ -21,11 +32,13 @@
 
 pub mod lines;
 pub mod master;
+pub mod room;
 pub mod tables;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
 
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::follow::{TransportChange, TransportFollower};
@@ -36,14 +49,29 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 use crate::catalogue::{Kind, KnobSpec};
 use crate::dsp::measure::Capture;
 use crate::dsp::{Block, Io, Module, Sweep, Tick};
-use crate::{MAX_INPUTS, MAX_KNOBS, MAX_MODULES, MAX_OUTPUTS, SUB_BLOCK};
+use crate::{MAX_INPUTS, MAX_KNOBS, MAX_OUTPUTS, SUB_BLOCK};
+pub use lines::MoreLines;
 pub use master::CEILING;
+pub use room::{KnobCells, Room};
 pub use tables::{CableTable, MAX_CABLE_DELAY, Order, Route, processing_order};
+
+/// Module slots a new engine has room for before it first grows.
+pub const INITIAL_SLOTS: usize = 64;
+
+/// Delay lines (one per cable) a new engine has before it first grows.
+pub const INITIAL_LINES: usize = 256;
+
+/// Seconds over which the render load is averaged (see
+/// [`Shared::render_load`]): long enough that one slow block (a room
+/// growing, the machine busy for a moment) does not count as the wall
+/// being full.
+pub const LOAD_SECONDS: f32 = 1.0;
 
 /// Commands waiting for the engine.
 const COMMAND_BACKLOG: usize = 512;
 
-/// Items waiting to be freed: every command retires at most one.
+/// Items waiting to be freed: every command retires at most one (see
+/// [`EngineControl::flush`]).
 const RETIRE_BACKLOG: usize = COMMAND_BACKLOG * 2;
 
 /// Fault reports waiting for the control side.
@@ -75,7 +103,7 @@ pub enum Command {
     /// Put `module` in `slot`, with its knobs at `knobs`. A module already
     /// there is retired.
     Insert {
-        /// Slot, below [`MAX_MODULES`].
+        /// Slot. [`EngineControl::send`] makes room for it first.
         slot: usize,
         /// The control side's name for this placement, echoed in faults.
         tag: u32,
@@ -88,16 +116,24 @@ pub enum Command {
     },
     /// Take the module out of `slot`; it is retired.
     Remove {
-        /// Slot, below [`MAX_MODULES`].
+        /// Slot.
         slot: usize,
     },
     /// Swap in a new cable table; the old one is retired.
+    /// [`EngineControl::send`] makes sure there is a line for every cable
+    /// in it first.
     Cables(Box<CableTable>),
     /// Swap in a new render order; the old one is retired.
     Order(Box<Order>),
+    /// Move every slot into a larger room; the old room is retired, empty.
+    /// Sent by [`EngineControl`] as it needs more slots.
+    Room(Box<Room>),
+    /// Move every delay line into a larger table; the old table is
+    /// retired, empty. Sent by [`EngineControl`] as it needs more lines.
+    Lines(Box<MoreLines>),
     /// Glide a knob to `target` over `glide_frames` frames.
     Knob {
-        /// Slot, below [`MAX_MODULES`].
+        /// Slot.
         slot: usize,
         /// Knob index, below [`MAX_KNOBS`].
         knob: usize,
@@ -127,6 +163,11 @@ pub enum Retired {
     Cables(Box<CableTable>),
     /// A replaced render order.
     Order(Box<Order>),
+    /// A room outgrown (its modules moved on), or one too small to use.
+    Room(Box<Room>),
+    /// A line table outgrown (its lines moved on), or one too small to
+    /// use.
+    Lines(Box<MoreLines>),
 }
 
 /// What a scope or readout measured, from engine slot `slot`.
@@ -164,7 +205,12 @@ pub struct Shared {
     audible: AtomicBool,
     peak_left: AtomicU32,
     peak_right: AtomicU32,
-    knobs: Box<[[AtomicU32; MAX_KNOBS]]>,
+    /// Slots in the engine's room, stored once the room is in place.
+    slots: AtomicUsize,
+    /// Delay lines the engine holds, stored once they are in place.
+    lines: AtomicUsize,
+    /// The render load, as f32 bits.
+    load: AtomicU32,
     frames: AtomicU64,
     faults: AtomicU64,
     faults_unreported: AtomicU64,
@@ -179,7 +225,7 @@ pub struct Shared {
 }
 
 impl Shared {
-    fn new(bpm: f64, beat: f64, audible: bool) -> Self {
+    const fn new(bpm: f64, beat: f64, audible: bool, slots: usize, lines: usize) -> Self {
         Self {
             bpm: AtomicU64::new(bpm.to_bits()),
             beat: AtomicU64::new(beat.to_bits()),
@@ -188,9 +234,9 @@ impl Shared {
             audible: AtomicBool::new(audible),
             peak_left: AtomicU32::new(0),
             peak_right: AtomicU32::new(0),
-            knobs: (0..MAX_MODULES)
-                .map(|_| std::array::from_fn(|_| AtomicU32::new(0)))
-                .collect(),
+            slots: AtomicUsize::new(slots),
+            lines: AtomicUsize::new(lines),
+            load: AtomicU32::new(0.0_f32.to_bits()),
             frames: AtomicU64::new(0),
             faults: AtomicU64::new(0),
             faults_unreported: AtomicU64::new(0),
@@ -252,13 +298,36 @@ impl Shared {
         )
     }
 
-    /// The current (glided) value of `slot`'s knob `knob`.
+    /// Module slots the engine has room for now.
     #[must_use]
-    pub fn knob(&self, slot: usize, knob: usize) -> Option<f32> {
-        self.knobs
-            .get(slot)
-            .and_then(|knobs| knobs.get(knob))
-            .map(|value| f32::from_bits(value.load(Ordering::Relaxed)))
+    pub fn slots(&self) -> usize {
+        self.slots.load(Ordering::Acquire)
+    }
+
+    /// Delay lines (one per cable) the engine holds now.
+    #[must_use]
+    pub fn lines(&self) -> usize {
+        self.lines.load(Ordering::Acquire)
+    }
+
+    /// How much of the time it has the engine spends rendering, averaged
+    /// over about [`LOAD_SECONDS`]: 0 when idle, 1 when rendering takes as
+    /// long as the audio lasts (and the device would run dry).
+    #[must_use]
+    pub fn render_load(&self) -> f32 {
+        f32::from_bits(self.load.load(Ordering::Relaxed))
+    }
+
+    /// Set the render load, as a test would find it.
+    #[cfg(test)]
+    pub(crate) fn set_render_load(&self, load: f32) {
+        self.load.store(load.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Set the frames rendered, as a test would find them.
+    #[cfg(test)]
+    pub(crate) fn set_frames(&self, frames: u64) {
+        self.frames.store(frames, Ordering::Release);
     }
 
     /// Frames rendered. Each sub-block stores it after its master went to
@@ -325,7 +394,9 @@ impl Shared {
         self.syncs_lost.load(Ordering::Relaxed)
     }
 
-    /// Commands that named a slot or knob out of range.
+    /// Commands that named a slot or knob out of range (a slot there was
+    /// no memory to make room for), or brought a room or line table no
+    /// larger than the one in place.
     #[must_use]
     pub fn ignored(&self) -> u64 {
         self.ignored.load(Ordering::Relaxed)
@@ -337,12 +408,6 @@ impl Shared {
     #[must_use]
     pub fn unhushed(&self) -> u64 {
         self.unhushed.load(Ordering::Acquire)
-    }
-
-    fn store_knob(&self, slot: usize, knob: usize, value: f32) {
-        if let Some(cell) = self.knobs.get(slot).and_then(|knobs| knobs.get(knob)) {
-            cell.store(value.to_bits(), Ordering::Relaxed);
-        }
     }
 }
 
@@ -453,19 +518,12 @@ impl Glide {
 /// The audio-callback half of the engine.
 pub struct Engine {
     sample_rate: f32,
-    slots: [Option<Box<dyn Module>>; MAX_MODULES],
-    tags: [u32; MAX_MODULES],
-    kinds: [Option<Kind>; MAX_MODULES],
-    /// Per slot, [`MAX_MODULES`] long.
-    glides: Box<[[Glide; MAX_KNOBS]]>,
+    /// Every slot's module, knobs and outputs.
+    room: Room,
     /// How the module being rendered has its knobs move this sub-block.
     sweeps: [Sweep; MAX_KNOBS],
     /// [`MIN_GLIDE_SECONDS`] in frames.
     min_glide: u32,
-    /// Per slot, [`MAX_MODULES`] long.
-    knobs: Box<[[f32; MAX_KNOBS]]>,
-    /// Per slot, [`MAX_MODULES`] long.
-    outputs: Box<[[Block; MAX_OUTPUTS]]>,
     inputs: [Block; MAX_INPUTS],
     knob_cv: [Block; MAX_KNOBS],
     cables: Box<CableTable>,
@@ -506,6 +564,8 @@ pub struct Engine {
     hushed: bool,
     /// How far `hush_gain` moves per frame.
     hush_step: f32,
+    /// The render load, averaged (see [`Shared::render_load`]).
+    load: f32,
 }
 
 impl std::fmt::Debug for Engine {
@@ -516,6 +576,8 @@ impl std::fmt::Debug for Engine {
             .field("beat", &self.beat)
             .field("following_desk", &self.following_desk)
             .field("rendered", &self.rendered)
+            .field("slots", &self.room.len())
+            .field("lines", &self.lines.len())
             .finish_non_exhaustive()
     }
 }
@@ -531,12 +593,22 @@ pub struct EngineControl {
     record: Option<HeapCons<f32>>,
     probes: Option<HeapCons<ProbeFrame>>,
     shared: Arc<Shared>,
+    /// Slots in the largest room sent to the engine (or its first).
+    slots: usize,
+    /// Lines in the largest line table sent to the engine (or its first).
+    lines: usize,
+    /// The knob cells of every page sent to the engine, by page number.
+    /// A page's cells never move, so they read the same before and after
+    /// the engine puts the page in place (NaN until it publishes to them).
+    knobs: Vec<Arc<KnobCells>>,
 }
 
 impl std::fmt::Debug for EngineControl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EngineControl")
             .field("sample_rate", &self.sample_rate)
+            .field("slots", &self.slots)
+            .field("lines", &self.lines)
             .field("backlog", &self.backlog.len())
             .field("listen_taken", &self.listen.is_none())
             .field("record_taken", &self.record.is_none())
@@ -565,20 +637,29 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
     let (record_tx, record_rx) =
         HeapRb::<f32>::new(config.record_frames.max(SUB_BLOCK).saturating_mul(2)).split();
     let (probe_tx, probe_rx) = HeapRb::<ProbeFrame>::new(PROBE_BACKLOG).split();
-    let shared = Arc::new(Shared::new(bpm, beat, config.audible));
+    // A machine with no memory for a modest wall starts with none, and
+    // grows as the wall asks.
+    let room = Room::new(0, INITIAL_SLOTS).unwrap_or_default();
+    let knobs = room
+        .published()
+        .into_iter()
+        .map(|(_, cells)| cells)
+        .collect();
     // 8 kHz to a few hundred kHz: exact in f32.
     let rate = sample_rate as f32;
+    let lines = lines::Lines::new(rate, INITIAL_LINES);
+    let shared = Arc::new(Shared::new(
+        bpm,
+        beat,
+        config.audible,
+        room.len(),
+        lines.len(),
+    ));
     let engine = Engine {
         sample_rate: rate,
-        slots: std::array::from_fn(|_| None),
-        tags: [0; MAX_MODULES],
-        kinds: [None; MAX_MODULES],
-        glides: vec![[Glide::at(0.0, 0.0); MAX_KNOBS]; MAX_MODULES].into_boxed_slice(),
         sweeps: [Sweep::REST; MAX_KNOBS],
         // A few hundred frames at most: exact.
         min_glide: ((rate * MIN_GLIDE_SECONDS).round() as u32).max(1),
-        knobs: vec![[0.0; MAX_KNOBS]; MAX_MODULES].into_boxed_slice(),
-        outputs: vec![[[0.0; SUB_BLOCK]; MAX_OUTPUTS]; MAX_MODULES].into_boxed_slice(),
         inputs: [[0.0; SUB_BLOCK]; MAX_INPUTS],
         knob_cv: [[0.0; SUB_BLOCK]; MAX_KNOBS],
         cables: Box::new(CableTable::new()),
@@ -601,12 +682,14 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         carry: [[0.0; SUB_BLOCK]; 2],
         carry_used: SUB_BLOCK,
         stereo: vec![0.0; MAX_CHUNK_FRAMES * 2].into_boxed_slice(),
-        lines: lines::Lines::new(rate),
         monitor_gain: None,
         monitor_step: 1.0 / (rate * MONITOR_FADE_SECONDS),
         hush_gain: 1.0,
         hushed: false,
         hush_step: 1.0 / (rate * SWAP_FADE_SECONDS),
+        load: 0.0,
+        room,
+        lines,
     };
     let control = EngineControl {
         sample_rate,
@@ -617,9 +700,30 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         listen: Some(listen_rx),
         record: Some(record_rx),
         probes: Some(probe_rx),
+        slots: shared.slots(),
+        lines: shared.lines(),
         shared,
+        knobs,
     };
     (engine, control)
+}
+
+/// `len` items made by `make`, or `None` when there is no memory for them.
+/// It allocates: control side only.
+fn slice_of<T>(len: usize, make: impl FnMut() -> T) -> Option<Box<[T]>> {
+    let mut items = Vec::new();
+    if items.try_reserve_exact(len).is_err() {
+        return None;
+    }
+    items.resize_with(len, make);
+    Some(items.into_boxed_slice())
+}
+
+/// How large to grow to from `have` when `need` is asked for: twice as
+/// large, so growth is amortised, or `need` if that is more.
+const fn doubled(have: usize, need: usize) -> usize {
+    let twice = have.saturating_mul(2);
+    if twice > need { twice } else { need }
 }
 
 /// A tempo held to the wall's range; not a number gives 120.
@@ -641,9 +745,38 @@ impl Engine {
     /// desk alike, fades to silence; the meters and the listening still
     /// hear it.
     pub fn render(&mut self, data: &mut [f32], channels: usize) {
+        // Reading the monotonic clock takes no allocation, lock or system
+        // call on the platforms the wall runs on.
+        let started = Instant::now();
         self.drain_commands();
         self.drain_hub();
         let channels = channels.max(1);
+        self.render_frames(data, channels);
+        self.measure(started, data.len() / channels);
+    }
+
+    /// Fold how long rendering `frames` frames took, since `started`, into
+    /// the render load.
+    fn measure(&mut self, started: Instant, frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        // Blocks are at most a few seconds: close enough in f32.
+        let lasted = frames as f32 / self.sample_rate;
+        let load = started.elapsed().as_secs_f32() / lasted;
+        // An average over about LOAD_SECONDS, whatever the block size.
+        let weight = 1.0 - (-lasted / LOAD_SECONDS).exp();
+        let averaged = weight.mul_add(load - self.load, self.load);
+        if averaged.is_finite() {
+            self.load = averaged;
+            self.shared
+                .load
+                .store(averaged.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Render `data` (see [`Self::render`]) once the commands are in.
+    fn render_frames(&mut self, data: &mut [f32], channels: usize) {
         for chunk in data.chunks_mut(MAX_CHUNK_FRAMES * channels) {
             let frames = chunk.len() / channels;
             for frame in 0..frames {
@@ -739,6 +872,15 @@ impl Engine {
                     let old = std::mem::replace(&mut self.order, order);
                     self.retire(Retired::Order(old));
                 }
+                Command::Room(room) => self.grow_room(room),
+                Command::Lines(mut more) => {
+                    if self.lines.grow(&mut more) {
+                        self.shared.lines.store(self.lines.len(), Ordering::Release);
+                    } else {
+                        self.shared.ignored.fetch_add(1, Ordering::Relaxed);
+                    }
+                    self.retire(Retired::Lines(more));
+                }
                 Command::Knob {
                     slot,
                     knob,
@@ -785,12 +927,17 @@ impl Engine {
         let source = |route: Option<Route>| {
             route.map(|route| (route.slot, route.port, route.amount.to_bits()))
         };
-        for slot in 0..MAX_MODULES {
+        // A slot past both tables has nothing plugged in under either.
+        for slot in 0..old.slots().max(self.cables.slots()) {
             let moved: [bool; MAX_INPUTS] = std::array::from_fn(|input| {
                 source(old.route(slot, input)) != source(self.cables.route(slot, input))
             });
             if moved.contains(&true) {
-                if let Some(module) = self.slots[slot].as_mut() {
+                let module = self
+                    .room
+                    .page_mut(slot)
+                    .and_then(|(page, at)| page.modules[at].as_mut());
+                if let Some(module) = module {
                     module.rewired(moved);
                 }
             }
@@ -805,46 +952,70 @@ impl Engine {
         module: Box<dyn Module>,
         knobs: [f32; MAX_KNOBS],
     ) {
-        if slot >= MAX_MODULES {
+        // Every slice in a page is SLOTS_PER_PAGE long, so a slot's place
+        // in its page is in range in each.
+        let Some((page, at)) = self.room.page_mut(slot) else {
+            // The control side makes room first; there was no memory for
+            // it.
             self.shared.ignored.fetch_add(1, Ordering::Relaxed);
             self.retire(Retired::Module(module));
             return;
-        }
-        if let Some(old) = self.slots[slot].replace(module) {
-            self.retire(Retired::Module(old));
-        }
-        self.tags[slot] = tag;
-        self.kinds[slot] = Some(kind);
-        self.outputs[slot] = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
+        };
+        let old = page.modules[at].replace(module);
+        page.tags[at] = tag;
+        page.kinds[at] = Some(kind);
+        page.outputs[at] = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
         for (index, value) in knobs.iter().enumerate() {
             let value = kazoo_core::sanitize_sample(*value);
-            self.glides[slot][index] = Glide::resting(value, kind.spec().knobs.get(index));
-            self.knobs[slot][index] = value;
-            self.shared.store_knob(slot, index, value);
+            page.glides[at][index] = Glide::resting(value, kind.spec().knobs.get(index));
+            page.knobs[at][index] = value;
+            page.publish(at, index, value);
+        }
+        if let Some(old) = old {
+            self.retire(Retired::Module(old));
         }
     }
 
     fn remove(&mut self, slot: usize) {
-        if slot >= MAX_MODULES {
+        let Some((page, at)) = self.room.page_mut(slot) else {
             self.shared.ignored.fetch_add(1, Ordering::Relaxed);
             return;
-        }
-        if let Some(old) = self.slots[slot].take() {
+        };
+        let old = page.modules[at].take();
+        page.kinds[at] = None;
+        page.outputs[at] = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
+        if let Some(old) = old {
             self.retire(Retired::Module(old));
         }
-        self.kinds[slot] = None;
-        self.outputs[slot] = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
+    }
+
+    /// Move into a larger `room`, and retire the one outgrown (or `room`,
+    /// if it is no larger).
+    fn grow_room(&mut self, mut room: Box<Room>) {
+        if room.len() > self.room.len() {
+            room.take_from(&mut self.room);
+            std::mem::swap(&mut self.room, &mut *room);
+            self.shared.slots.store(self.room.len(), Ordering::Release);
+        } else {
+            self.shared.ignored.fetch_add(1, Ordering::Relaxed);
+        }
+        self.retire(Retired::Room(room));
     }
 
     fn knob(&mut self, slot: usize, knob: usize, target: f32, glide_frames: u32) {
-        if slot >= MAX_MODULES || knob >= MAX_KNOBS || !target.is_finite() {
+        let min_glide = self.min_glide;
+        let Some((page, at)) = self
+            .room
+            .page_mut(slot)
+            .filter(|_| knob < MAX_KNOBS && target.is_finite())
+        else {
             self.shared.ignored.fetch_add(1, Ordering::Relaxed);
             return;
-        }
-        let spec = self.kinds[slot].and_then(|kind| kind.spec().knobs.get(knob));
-        let glide = &mut self.glides[slot][knob];
+        };
+        let spec = page.kinds[at].and_then(|kind| kind.spec().knobs.get(knob));
+        let glide = &mut page.glides[at][knob];
         if let Some(spec) = spec {
-            let frames = glide_frames.max(self.min_glide);
+            let frames = glide_frames.max(min_glide);
             // Frame counts are far below 2^24 per sub-step: close enough in
             // f32, and the last step lands exactly on the target.
             glide.step = (spec.normalise(target) - glide.position) / frames as f32;
@@ -855,8 +1026,9 @@ impl Engine {
             // reads it, so it just takes the value.
             *glide = Glide::at(target, 0.0);
         }
-        self.knobs[slot][knob] = glide.value;
-        self.shared.store_knob(slot, knob, glide.value);
+        let value = glide.value;
+        page.knobs[at][knob] = value;
+        page.publish(at, knob, value);
     }
 
     fn retire(&mut self, item: Retired) {
@@ -914,16 +1086,20 @@ impl Engine {
         self.follow_desk();
         let tick = Tick::new(self.sample_rate, self.bpm, self.beat);
         for index in 0..self.order.slots().len() {
-            let slot = usize::from(self.order.slots()[index]);
+            // u32 into usize: lossless.
+            let slot = self.order.slots()[index] as usize;
             self.render_module(slot, &tick);
         }
         let mut left = [0.0; SUB_BLOCK];
         let mut right = [0.0; SUB_BLOCK];
-        for slot in 0..MAX_MODULES {
-            if self.kinds[slot] == Some(Kind::OUT) && self.slots[slot].is_some() {
-                for frame in 0..SUB_BLOCK {
-                    left[frame] += self.outputs[slot][crate::dsp::FEED_LEFT][frame];
-                    right[frame] += self.outputs[slot][crate::dsp::FEED_RIGHT][frame];
+        for page in self.room.pages().iter().flatten() {
+            let slots = page.kinds.iter().zip(&page.modules).zip(&page.outputs);
+            for ((kind, module), outputs) in slots {
+                if *kind == Some(Kind::OUT) && module.is_some() {
+                    for frame in 0..SUB_BLOCK {
+                        left[frame] += outputs[crate::dsp::FEED_LEFT][frame];
+                        right[frame] += outputs[crate::dsp::FEED_RIGHT][frame];
+                    }
                 }
             }
         }
@@ -947,24 +1123,32 @@ impl Engine {
     }
 
     fn render_module(&mut self, slot: usize, tick: &Tick) {
-        let Some(kind) = self.kinds[slot] else {
+        // An order entry past the room (never sent: the room grows first)
+        // or naming an empty slot is skipped. Every slice in a page is
+        // SLOTS_PER_PAGE long, so a slot's place in its page is in range.
+        let Some((page, at)) = self.room.page_mut(slot) else {
             return;
         };
-        for knob in 0..MAX_KNOBS {
-            let glide = &mut self.glides[slot][knob];
+        let Some(kind) = page.kinds[at] else {
+            return;
+        };
+        let knob_state = page.glides[at]
+            .iter_mut()
+            .zip(page.knobs[at].iter_mut())
+            .zip(page.published[at].iter());
+        for (knob, ((glide, value), cell)) in knob_state.enumerate() {
             let sweep = glide.advance(kind.spec().knobs.get(knob));
             self.sweeps[knob] = sweep;
             if sweep.frames > 0 {
-                let value = glide.value;
-                self.knobs[slot][knob] = value;
-                self.shared.store_knob(slot, knob, value);
+                *value = glide.value;
+                cell.store(value.to_bits(), Ordering::Relaxed);
             }
         }
         let mut connected = [false; MAX_INPUTS];
         for (input, plugged) in connected.iter_mut().enumerate() {
             *plugged = gather(
                 &self.cables,
-                &self.outputs,
+                &self.room,
                 &mut self.lines,
                 slot,
                 input,
@@ -975,41 +1159,46 @@ impl Engine {
         for (knob, plugged) in knob_patched.iter_mut().enumerate() {
             *plugged = gather(
                 &self.cables,
-                &self.outputs,
+                &self.room,
                 &mut self.lines,
                 slot,
                 MAX_INPUTS + knob,
                 &mut self.knob_cv[knob],
             );
         }
-        let Some(module) = self.slots[slot].as_mut() else {
+        let Some((page, at)) = self.room.page_mut(slot) else {
+            return;
+        };
+        let (Some(module), knobs, outputs, tag) = (
+            page.modules[at].as_mut(),
+            &page.knobs[at],
+            &mut page.outputs[at],
+            page.tags[at],
+        ) else {
             return;
         };
         module.process(
             tick,
             Io {
                 spec: kind.spec(),
-                knobs: &self.knobs[slot],
+                knobs,
                 sweeps: &self.sweeps,
                 knob_cv: &self.knob_cv,
                 knob_patched,
                 inputs: &self.inputs,
                 connected,
                 fed: std::array::from_fn(|port| self.cables.feeds(slot, port)),
-                outputs: &mut self.outputs[slot],
+                outputs: &mut *outputs,
             },
         );
-        let healthy = self.outputs[slot]
+        let healthy = outputs
             .iter()
             .all(|port| port.iter().all(|sample| sample.is_finite()));
         if !healthy {
-            self.outputs[slot] = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
+            *outputs = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
             module.reset();
             self.shared.faults.fetch_add(1, Ordering::Relaxed);
-            let fault = Fault {
-                slot,
-                tag: self.tags[slot],
-            };
+            let fault = Fault { slot, tag };
             if self.faults.try_push(fault).is_err() {
                 self.shared
                     .faults_unreported
@@ -1019,7 +1208,7 @@ impl Engine {
         if let Some(capture) = module.capture() {
             let frame = ProbeFrame {
                 slot,
-                tag: self.tags[slot],
+                tag,
                 cables: self.tables,
                 capture: *capture,
             };
@@ -1107,16 +1296,15 @@ pub const fn follow(
 /// Returns whether a cable is in.
 fn gather(
     cables: &CableTable,
-    outputs: &[[Block; MAX_OUTPUTS]],
+    room: &Room,
     lines: &mut lines::Lines,
     slot: usize,
     jack: usize,
     buffer: &mut Block,
 ) -> bool {
     let source = cables.route(slot, jack).and_then(|route| {
-        outputs
-            .get(usize::from(route.slot))
-            .and_then(|ports| ports.get(usize::from(route.port)))
+        // u32 into usize: lossless.
+        room.output(route.slot as usize, usize::from(route.port))
             .map(|source| (source, route))
     });
     if let Some((source, route)) = source {
@@ -1141,9 +1329,97 @@ impl EngineControl {
         &self.shared
     }
 
-    /// Send a command. If the ring is full it waits in order on this side
-    /// and goes with the next [`Self::pump`].
+    /// Module slots the engine has room for, or will have once the rooms
+    /// sent so far are in place.
+    #[must_use]
+    pub const fn slots(&self) -> usize {
+        self.slots
+    }
+
+    /// Delay lines the engine holds, or will once the tables sent so far
+    /// are in place.
+    #[must_use]
+    pub const fn lines(&self) -> usize {
+        self.lines
+    }
+
+    /// Make sure the engine will have room for `slots` module slots, by
+    /// sending it a larger room when it needs one: twice its size, or
+    /// `slots` if that is more (or just `slots`, when there is no memory
+    /// for twice). Returns whether it will have the room; `false` when
+    /// there is no memory for it.
+    pub fn reserve_slots(&mut self, slots: usize) -> bool {
+        if slots <= self.slots {
+            return true;
+        }
+        let have = self.slots;
+        let Some(room) = Room::new(have, doubled(have, slots)).or_else(|| Room::new(have, slots))
+        else {
+            return false;
+        };
+        for (number, cells) in room.published() {
+            if number >= self.knobs.len() {
+                self.knobs.push(cells);
+            }
+        }
+        self.slots = room.len();
+        self.push(Command::Room(Box::new(room)));
+        true
+    }
+
+    /// Make sure the engine will have `lines` delay lines, by sending it a
+    /// larger table when it needs one: twice its size, or `lines` if that
+    /// is more (or just `lines`, when there is no memory for twice).
+    /// Returns whether it will have them; `false` when there is no memory
+    /// for them.
+    pub fn reserve_lines(&mut self, lines: usize) -> bool {
+        if lines <= self.lines {
+            return true;
+        }
+        let have = self.lines;
+        let Some(more) =
+            MoreLines::new(have, doubled(have, lines)).or_else(|| MoreLines::new(have, lines))
+        else {
+            return false;
+        };
+        self.lines = more.len();
+        self.push(Command::Lines(Box::new(more)));
+        true
+    }
+
+    /// The current (glided) value of `slot`'s knob `knob`, as the engine
+    /// last published it; `None` for a slot or knob out of range, or one
+    /// the engine has published nothing to yet.
+    #[must_use]
+    pub fn knob(&self, slot: usize, knob: usize) -> Option<f32> {
+        self.knobs
+            .get(slot / room::SLOTS_PER_PAGE)
+            .and_then(|cells| cells.get(slot % room::SLOTS_PER_PAGE))
+            .and_then(|knobs| knobs.get(knob))
+            .map(|value| f32::from_bits(value.load(Ordering::Relaxed)))
+            .filter(|value| !value.is_nan())
+    }
+
+    /// Send a command, making room for it first: a module's slot, or a
+    /// line for every cable in a table. With no memory for the room, the
+    /// command goes anyway and the engine refuses it (counting it in
+    /// [`Shared::ignored`]). If the ring is full it waits in order on this
+    /// side and goes with the next [`Self::pump`].
     pub fn send(&mut self, command: Command) {
+        let room = match &command {
+            Command::Insert { slot, .. } => self.reserve_slots(slot.saturating_add(1)),
+            Command::Cables(table) => self.reserve_lines(table.lines()),
+            _ => true,
+        };
+        if !room {
+            eprintln!("kazoo-wall: no memory to grow the engine; a change goes unplayed");
+        }
+        self.push(command);
+    }
+
+    /// Send a command as it is. If the ring is full it waits in order on
+    /// this side and goes with the next [`Self::pump`].
+    fn push(&mut self, command: Command) {
         self.flush();
         if !self.backlog.is_empty() {
             self.backlog.push_back(command);
@@ -1164,9 +1440,6 @@ impl EngineControl {
     /// and return the faults it reported.
     pub fn pump(&mut self) -> Vec<Fault> {
         self.flush();
-        while let Some(item) = self.retired.try_pop() {
-            drop(item);
-        }
         let mut faults = Vec::new();
         while let Some(fault) = self.faults.try_pop() {
             faults.push(fault);
@@ -1197,8 +1470,25 @@ impl EngineControl {
         self.retired.occupied_len()
     }
 
+    /// Free what the engine retired, and move waiting commands into the
+    /// ring. Every send does this too, so a burst of changes between pumps
+    /// keeps the retire ring from filling (the engine would have to leak
+    /// what it cannot retire).
+    ///
+    /// What was retired is freed before each command goes in: then what
+    /// waits in the retire ring was retired by commands that were in the
+    /// command ring when it was last freed, at most [`COMMAND_BACKLOG`],
+    /// and what the commands in the ring now will retire is at most as
+    /// many again, so [`RETIRE_BACKLOG`] never fills, however long the
+    /// backlog (a whole wall swapped out under a hush).
     fn flush(&mut self) {
-        while let Some(command) = self.backlog.pop_front() {
+        loop {
+            while let Some(item) = self.retired.try_pop() {
+                drop(item);
+            }
+            let Some(command) = self.backlog.pop_front() else {
+                return;
+            };
             if let Err(command) = self.commands.try_push(command) {
                 self.backlog.push_front(command);
                 return;

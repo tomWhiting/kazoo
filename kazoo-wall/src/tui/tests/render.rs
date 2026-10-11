@@ -73,8 +73,7 @@ fn a_snapshot_shows_the_wall_its_cables_and_its_log() {
         "out1",
         "cutoff",
         "420 Hz → 800 Hz",
-        "CABLES",
-        "3 of 320",
+        " CABLES  3",
         "#2",
         "lfo1.out",
         "→ vcf1.cutoff",
@@ -412,15 +411,20 @@ fn the_header_says_when_the_change_log_takes_no_changes() {
     assert!(screen.contains("changes still go to it"), "{screen}");
 }
 
-/// A full wall: every module the wall holds, of every sort, and every
-/// cable, each into its own knob.
+/// Modules on a big wall: twice the 96 the wall once held at most.
+const BIG_MODULES: usize = 192;
+
+/// Cables on a big wall: twice the 320 the wall once held at most.
+const BIG_CABLES: usize = 640;
+
+/// A big wall: modules of every sort, and cables each into its own knob.
 fn full_wall() -> kazoo_wall::protocol::Snapshot {
     const KINDS: [&str; 19] = [
         "vco", "lfo", "vcf", "vca", "env", "seq", "mix", "noise", "sh", "slew", "clock", "out",
         "compare", "logic", "branch", "switch", "select", "divide", "math",
     ];
     let mut wall = snapshot();
-    wall.modules = (0..kazoo_wall::MAX_MODULES)
+    wall.modules = (0..BIG_MODULES)
         .map(|n| {
             let kind = KINDS[n % KINDS.len()];
             module(&format!("{kind}{n}"), kind, None)
@@ -437,15 +441,27 @@ fn full_wall() -> kazoo_wall::protocol::Snapshot {
             .map(move |knob| format!("{}.{}", view.id, knob.name))
     });
     wall.cables = inputs
-        .take(kazoo_wall::MAX_CABLES)
+        .take(BIG_CABLES)
         .enumerate()
         .map(|(n, to)| {
             let id = u32::try_from(n + 1).expect("few cables");
             cable(id, &sources[(n * 7 + 3) % sources.len()], &to, 1.0)
         })
         .collect();
-    assert_eq!(wall.cables.len(), kazoo_wall::MAX_CABLES);
+    assert_eq!(wall.cables.len(), BIG_CABLES);
     wall
+}
+
+#[test]
+fn a_big_wall_counts_its_cables_with_no_ceiling() {
+    let mut app = connected();
+    app.on_reply(Reply::Snapshot(Box::new(full_wall())), Instant::now());
+    let screen = text(&render(&mut app, 160, 40));
+    assert!(
+        screen.contains(&format!(" CABLES  {BIG_CABLES}")),
+        "{screen}"
+    );
+    assert!(!screen.contains(&format!("{BIG_CABLES} of")), "{screen}");
 }
 
 #[test]
@@ -455,9 +471,9 @@ fn a_full_wall_is_laid_out_once_and_its_cables_hang_from_frame_to_frame() {
     app.on_reply(Reply::Snapshot(Box::new(full_wall())), Instant::now());
     let buf = render(&mut app, 200, 60);
     assert_eq!(app.rack.builds.layouts, 1);
-    let cables = u64::try_from(kazoo_wall::MAX_CABLES).expect("fits");
+    let cables = u64::try_from(BIG_CABLES).expect("fits");
     assert_eq!(app.rack.builds.paths, cables, "every cable hangs once");
-    assert_eq!(app.rack.paths.len(), kazoo_wall::MAX_CABLES);
+    assert_eq!(app.rack.paths.len(), BIG_CABLES);
 
     // Cables that run off the screen still hang where they are in view.
     let area = app.rack.area;

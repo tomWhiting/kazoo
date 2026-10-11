@@ -29,8 +29,14 @@ fn runtime_dir() -> tempfile::TempDir {
         .expect("a runtime directory")
 }
 
+/// A test daemon with the load guard off: a debug build renders far slower
+/// than real time, so its render load says nothing about the wall.
 fn start(runtime: &Path, state: &Path) -> Daemon {
-    Daemon::start(DaemonConfig::headless(runtime, state)).expect("the daemon starts")
+    Daemon::start(DaemonConfig {
+        load_guard: false,
+        ..DaemonConfig::headless(runtime, state)
+    })
+    .expect("the daemon starts")
 }
 
 /// Send the console's jobs and take in its replies until `done`.

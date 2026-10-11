@@ -139,6 +139,7 @@ pub fn snapshot() -> Snapshot {
         save: None,
         log: kazoo_wall::protocol::LogHealth::default(),
         probes: Vec::new(),
+        engine: None,
     }
 }
 

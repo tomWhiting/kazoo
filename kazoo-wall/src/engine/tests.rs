@@ -66,17 +66,17 @@ impl Model {
             // A tag from the cable's ends: a line that changes hands is
             // started afresh by the engine.
             let tag = u32::try_from(((from * 7 + port) * 97 + to) * 31 + input + 1).unwrap();
-            table.set(
+            assert!(table.set(
                 to,
                 input,
                 Some(Route::new(
-                    from as u8,
-                    port as u8,
+                    u32::try_from(from).unwrap(),
+                    u8::try_from(port).unwrap(),
                     amount,
-                    u16::try_from(line).unwrap(),
+                    u32::try_from(line).unwrap(),
                     tag,
                 )),
-            );
+            ));
         }
         let slots: Vec<usize> = self.slots.iter().map(|(s, _)| *s).collect();
         let edges: Vec<(usize, usize)> = self.cables.iter().map(|c| (c.0, c.2)).collect();
@@ -112,10 +112,12 @@ fn random_patching_never_allocates_on_the_audio_thread() {
         .filter(|kind| kind.spec().family == "synth" || kind.name() == "testgain")
         .collect();
     let pick = |rng: &mut Rng, n: usize| (rng.unit() * n as f32) as usize % n.max(1);
+    // Enough modules to outgrow the engine's first room while it plays.
+    let most = INITIAL_SLOTS * 2;
     for round in 0..600 {
         match pick(&mut rng, 6) {
-            0 | 1 if model.slots.len() < MAX_MODULES => {
-                let free = (0..MAX_MODULES)
+            0 | 1 if model.slots.len() < most => {
+                let free = (0..most)
                     .find(|slot| model.slots.iter().all(|(s, _)| s != slot))
                     .unwrap();
                 let kind = kinds[pick(&mut rng, kinds.len())];
@@ -210,7 +212,7 @@ fn removed_modules_come_back_over_the_retire_ring() {
     assert_eq!(control.retired_waiting(), 3);
     control.pump();
     assert_eq!(control.retired_waiting(), 0);
-    assert!(engine.slots[5].is_none());
+    assert!(!engine.room.holds(5));
 }
 
 #[test]
@@ -266,7 +268,7 @@ fn a_module_producing_nan_is_silenced_reset_and_reported() {
         knobs: [1.0; MAX_KNOBS],
     });
     let mut table = CableTable::new();
-    table.set(8, 0, Some(Route::new(7, 0, 1.0, 0, 1)));
+    assert!(table.set(8, 0, Some(Route::new(7, 0, 1.0, 0, 1))));
     control.send(Command::Cables(Box::new(table)));
     control.send(Command::Order(Box::new(Order::new(&[7, 8]))));
     let mut buffer = Vec::new();
@@ -276,7 +278,7 @@ fn a_module_producing_nan_is_silenced_reset_and_reported() {
     let faults = control.pump();
     assert_eq!(faults, vec![Fault { slot: 7, tag: 99 }]);
     assert_eq!(control.shared().faults(), (1, 0));
-    assert!(engine.outputs[7][0].iter().all(|s| *s == 0.0));
+    assert!(engine.room.output(7, 0).unwrap().iter().all(|s| *s == 0.0));
 }
 
 #[test]
@@ -302,10 +304,10 @@ fn knobs_glide_evenly_along_their_travel() {
     render(&mut engine, 2_400, &mut buffer);
     // Half way along a logarithmic cutoff is the geometric middle, 800 Hz,
     // give or take a sub-block (the carry renders ahead).
-    let middle = control.shared().knob(3, 0).unwrap();
+    let middle = control.knob(3, 0).unwrap();
     assert!((middle - 800.0).abs() < 15.0, "{middle}");
     render(&mut engine, 4_800, &mut buffer);
-    assert!((control.shared().knob(3, 0).unwrap() - 3_200.0).abs() < f32::EPSILON);
+    assert!((control.knob(3, 0).unwrap() - 3_200.0).abs() < f32::EPSILON);
     // A glide of zero still takes a millisecond, so it cannot click, and
     // then lands exactly.
     control.send(Command::Knob {
@@ -315,10 +317,10 @@ fn knobs_glide_evenly_along_their_travel() {
         glide_frames: 0,
     });
     render(&mut engine, 1, &mut buffer);
-    let moving = control.shared().knob(3, 0).unwrap();
+    let moving = control.knob(3, 0).unwrap();
     assert!(moving > 300.0 && moving < 3_200.0, "{moving}");
     render(&mut engine, 96, &mut buffer);
-    assert!((control.shared().knob(3, 0).unwrap() - 300.0).abs() < f32::EPSILON);
+    assert!((control.knob(3, 0).unwrap() - 300.0).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -395,7 +397,7 @@ fn a_knob_jack_moves_the_knob() {
     render(&mut engine, 4_800, &mut buffer);
     // Each sub-block adds the last one's output times half the offset
     // range (1.0): it climbs to the top of the range and stays there.
-    assert!((engine.outputs[0][0][0] - 1.0).abs() < 1e-6);
+    assert!((engine.room.output(0, 0).unwrap()[0] - 1.0).abs() < 1e-6);
 }
 
 #[test]
@@ -472,18 +474,117 @@ fn nonsense_commands_are_counted_not_obeyed() {
         target: f32::NAN,
         glide_frames: 0,
     });
+    // A slot no machine has the memory to make room for.
     control.send(Command::Insert {
-        slot: 99,
+        slot: usize::MAX,
         tag: 1,
         kind: Kind::VCO,
         module: build(Kind::VCO, 48_000.0),
         knobs: [0.0; MAX_KNOBS],
     });
+    assert!(!control.reserve_slots(usize::MAX));
+    assert_eq!(control.slots(), INITIAL_SLOTS);
     let mut buffer = Vec::new();
     render(&mut engine, 32, &mut buffer);
     assert_eq!(control.shared().ignored(), 4);
     // The refused module still comes back to be freed.
     assert_eq!(control.retired_waiting(), 1);
+    // A room or line table no larger than the one in place is refused, and
+    // comes back to be freed too. (Sending frees what came back before
+    // it: the module.)
+    control.send(Command::Room(Box::new(
+        Room::new(0, INITIAL_SLOTS).unwrap(),
+    )));
+    control.send(Command::Lines(Box::new(
+        MoreLines::new(INITIAL_LINES, INITIAL_LINES).unwrap(),
+    )));
+    render(&mut engine, 32, &mut buffer);
+    assert_eq!(control.shared().ignored(), 6);
+    assert_eq!(control.retired_waiting(), 2);
+    assert_eq!(engine.room.len(), INITIAL_SLOTS);
+    assert_eq!(control.shared().lines(), INITIAL_LINES);
+}
+
+#[test]
+fn the_engine_grows_far_past_its_first_room_without_allocating() {
+    let (mut engine, mut control) = fresh();
+    let mut model = Model::default();
+    model.add(&mut control, 0, Kind::VCO);
+    model.add(&mut control, 1, Kind::OUT);
+    model.plug(&mut control, (0, 0, 1, 0, 1.0));
+    control.send(Command::Knob {
+        slot: 1,
+        knob: 0,
+        target: 0.5,
+        glide_frames: 0,
+    });
+    let mut buffer = Vec::new();
+    render(&mut engine, 4_800, &mut buffer);
+    control.pump();
+    assert!(peak(&buffer[2_400..]) > 0.1, "the tone plays");
+
+    // Three hundred mixers more, and the oscillator into all four inputs
+    // of each: far past the first room's slots and lines, and past the 96
+    // modules and 320 cables the wall once held at most.
+    let more = 300;
+    let mix = Kind::from_name("mix").unwrap();
+    for slot in 2..2 + more {
+        model.add(&mut control, slot, mix);
+        for jack in 0..4 {
+            model.cables.push((0, 0, slot, jack, 0.1));
+        }
+    }
+    model.send_tables(&mut control);
+    // Sent, not yet in place: the engine grows as it takes its commands.
+    assert!(control.slots() >= 2 + more);
+    assert!(control.lines() >= model.cables.len());
+    assert_eq!(control.shared().slots(), INITIAL_SLOTS);
+    assert_eq!(control.shared().lines(), INITIAL_LINES);
+
+    // `render` runs the engine under assert_no_alloc: moving into the new
+    // room and lines allocates and frees nothing on the audio thread.
+    render(&mut engine, 4_800, &mut buffer);
+    assert_eq!(control.shared().slots(), control.slots());
+    assert_eq!(control.shared().lines(), control.lines());
+    assert_eq!(engine.room.len(), control.slots());
+    // Grown by doubling, not a slot at a time.
+    assert_eq!(control.slots(), INITIAL_SLOTS * 8);
+    assert!(peak(&buffer) > 0.1, "the tone plays on through the growth");
+    assert!(engine.room.holds(0) && engine.room.holds(1));
+    // The out's level, published before the growth, reads the same after,
+    // before and after the old room is freed.
+    assert!((control.knob(1, 0).unwrap() - 0.5).abs() < f32::EPSILON);
+    control.pump();
+    assert!((control.knob(1, 0).unwrap() - 0.5).abs() < f32::EPSILON);
+    assert_eq!(control.retired_waiting(), 0);
+    // The last mixer hears the oscillator through its new lines.
+    let last = 1 + more;
+    assert!(
+        engine
+            .room
+            .output(last, 0)
+            .unwrap()
+            .iter()
+            .any(|s| *s != 0.0),
+        "the last mixer is silent"
+    );
+    assert_eq!(engine.shared.ignored(), 0);
+    assert_eq!(engine.shared.leaked(), 0);
+}
+
+#[test]
+fn the_render_load_is_measured_and_averaged() {
+    let (mut engine, control) = tone(true);
+    assert!(control.shared().render_load() > 0.0);
+    // A block that took no time at all pulls the average down, and never
+    // below nothing.
+    let before = control.shared().render_load();
+    engine.measure(Instant::now() + std::time::Duration::from_secs(1), 48_000);
+    let after = control.shared().render_load();
+    assert!(after < before && after >= 0.0, "{before} then {after}");
+    // Nothing rendered measures nothing.
+    engine.measure(Instant::now(), 0);
+    assert!((control.shared().render_load() - after).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -752,14 +853,14 @@ fn a_hushed_swap_fades_out_swaps_in_silence_and_fades_back_in() {
     let mut buffer = Vec::new();
     render(&mut engine, 480, &mut buffer);
     let mut heard = left(&buffer);
-    assert!(engine.slots[0].is_some() && engine.slots[2].is_none());
+    assert!(engine.room.holds(0) && !engine.room.holds(2));
     assert_eq!(control.shared().unhushed(), 0, "not swapped yet");
     assert!(peak(&heard) > 0.1, "it fades rather than cuts");
     // The rest of the fade out, the swap, and the fade in.
     render(&mut engine, SWAP_FADE_FRAMES * 3, &mut buffer);
     heard.extend(left(&buffer));
-    assert!(engine.slots[0].is_none() && engine.slots[1].is_none());
-    assert!(engine.slots[2].is_some() && engine.slots[3].is_some());
+    assert!(!engine.room.holds(0) && !engine.room.holds(1));
+    assert!(engine.room.holds(2) && engine.room.holds(3));
     assert_eq!(control.shared().unhushed(), 1, "the swap is in");
 
     // Never louder than the fade allows on the way out (the limiter holds
@@ -818,14 +919,14 @@ fn a_hush_on_a_silent_master_holds_nothing_back() {
     control.send(Command::Unhush);
     // The first waits for its fade out: nothing of either is in yet.
     render(&mut engine, SUB_BLOCK, &mut buffer);
-    assert!(engine.slots[2].is_none() && engine.slots[3].is_none());
+    assert!(!engine.room.holds(2) && !engine.room.holds(3));
     assert_eq!(control.shared().unhushed(), 0);
     // Once it is silent the first goes in; the second hush finds the
     // master silent still and holds nothing, so the second goes in with
     // it, in the same sub-block, with no fade of its own.
     render(&mut engine, SWAP_FADE_FRAMES + SUB_BLOCK * 2, &mut buffer);
     assert_eq!(control.shared().unhushed(), 2, "straight through");
-    assert!(engine.slots[2].is_none() && engine.slots[3].is_some());
+    assert!(!engine.room.holds(2) && engine.room.holds(3));
     assert!(!engine.hushed);
     assert!(
         engine.hush_gain > 0.0 && engine.hush_gain < 0.1,
@@ -835,7 +936,7 @@ fn a_hush_on_a_silent_master_holds_nothing_back() {
     render(&mut engine, SWAP_FADE_FRAMES, &mut buffer);
     control.send(Command::Remove { slot: 3 });
     render(&mut engine, SUB_BLOCK, &mut buffer);
-    assert!(engine.slots[3].is_none());
+    assert!(!engine.room.holds(3));
     assert!(!engine.hushed);
     assert!((engine.hush_gain - 1.0).abs() < f32::EPSILON);
 }
@@ -873,13 +974,13 @@ fn a_change_sent_during_the_hold_lands_after_the_swap_in_order() {
         glide_frames: 0,
     });
     render(&mut engine, SUB_BLOCK * 4, &mut buffer);
-    assert!(engine.slots[2].is_none(), "still held");
-    assert!(engine.slots[0].is_some(), "the old wall plays on meanwhile");
+    assert!(!engine.room.holds(2), "still held");
+    assert!(engine.room.holds(0), "the old wall plays on meanwhile");
     render(&mut engine, SWAP_FADE_FRAMES + SUB_BLOCK * 2, &mut buffer);
-    assert!(engine.slots[0].is_none());
-    assert!(engine.slots[2].is_some());
+    assert!(!engine.room.holds(0));
+    assert!(engine.room.holds(2));
     // The turn landed on the new module, after it went in.
-    let landed = control.shared().knob(2, tune).unwrap();
+    let landed = control.knob(2, tune).unwrap();
     assert!((landed - 5.0).abs() < 1e-3, "{landed}");
     assert_eq!(engine.shared.ignored(), 0);
 }
@@ -922,7 +1023,7 @@ fn a_swap_too_big_for_the_ring_waits_in_order_unhush_and_all() {
         "faded back in"
     );
     // Every turn went in, in order: the last one sent is where it ends.
-    let tuned = control.shared().knob(0, tune).unwrap();
+    let tuned = control.knob(0, tune).unwrap();
     assert!((tuned - 7.0).abs() < 1e-3, "{tuned}");
     assert!(peak(&left(&buffer)) > 0.1, "heard again");
     assert_eq!(engine.shared.leaked(), 0);
@@ -1033,12 +1134,8 @@ fn a_new_cable_table_tells_only_the_modules_whose_inputs_it_moves() {
     let table = |routes: &[(usize, usize, f32)]| {
         let mut table = CableTable::new();
         for (line, &(to, input, amount)) in routes.iter().enumerate() {
-            let line = u16::try_from(line).unwrap();
-            table.set(
-                to,
-                input,
-                Some(Route::new(0, 0, amount, line, u32::from(line) + 1)),
-            );
+            let line = u32::try_from(line).unwrap();
+            assert!(table.set(to, input, Some(Route::new(0, 0, amount, line, line + 1)),));
         }
         Command::Cables(Box::new(table))
     };

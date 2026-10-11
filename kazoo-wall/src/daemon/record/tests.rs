@@ -30,7 +30,7 @@ fn tone_at(rate: u32) -> (Engine, EngineControl) {
         });
     }
     let mut table = CableTable::new();
-    table.set(1, 0, Some(Route::new(0, 0, 1.0, 0, 1)));
+    assert!(table.set(1, 0, Some(Route::new(0, 0, 1.0, 0, 1))));
     control.send(Command::Cables(Box::new(table)));
     control.send(Command::Order(Box::new(processing_order(
         &[0, 1],
