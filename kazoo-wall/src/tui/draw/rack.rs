@@ -745,16 +745,16 @@ fn probe_screen(
             plain(STEEL, METER_BG),
         );
     }
-    // `look` carries the first few; the console asks for the rest in view.
-    let found = app
-        .snapshot()
-        .and_then(|snapshot| {
+    // The console reads the scopes in view, and the screens past the few
+    // `look` carries, more often than it looks: theirs is the fresher.
+    let found = app.rack.readings.get(&module.id).or_else(|| {
+        app.snapshot().and_then(|snapshot| {
             snapshot
                 .probes
                 .iter()
                 .find(|probe| probe.module == module.id)
         })
-        .or_else(|| app.rack.readings.get(&module.id));
+    });
     let waiting = |text: &str| {
         let middle = Point {
             y: left.y + u32::from(height - 1) / 2,

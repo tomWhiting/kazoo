@@ -18,6 +18,7 @@
 //! [`saves`]. Every change the console sends counts against its copy of
 //! the wall's flood guard ([`flood`]); turns wait for it.
 
+mod command;
 mod flood;
 mod keys;
 mod mouse;
@@ -25,6 +26,7 @@ mod moves;
 mod rack;
 mod saves;
 
+pub use command::{COMMAND_KEYS, CommandLine, usage};
 #[cfg(test)]
 pub use mouse::dragged_value;
 pub use moves::Shove;
@@ -80,9 +82,10 @@ pub const STATUS_LIFE: Duration = Duration::from_secs(12);
 /// Changes fetched on connecting.
 const LOG_PAGE: u32 = 100;
 
-/// How often the rack view reads the scopes and readouts in view past
-/// those `look` carries: as often as it looks.
-pub const PROBE_EVERY: Duration = Duration::from_millis(100);
+/// How often the rack view reads the scopes in view (and the readouts
+/// past those `look` carries): sixty times a second, as a scope hands on
+/// its traces, so they move smoothly.
+pub const PROBE_EVERY: Duration = Duration::from_millis(16);
 
 /// Changes fetched when the wall's revision runs ahead of the log.
 const CATCH_UP: u32 = 50;
@@ -196,9 +199,11 @@ pub enum Mode {
         /// Lines scrolled.
         scroll: usize,
     },
-    /// Picking a kind to add (the index counts the kinds that match, in
-    /// picker order).
+    /// Picking a kind to add (the index counts the kinds listed, in picker
+    /// order: those of the chosen group, or every match to what is typed).
     Add {
+        /// The group chosen, an index into [`GROUPS`].
+        tab: usize,
         /// The kind under the cursor.
         index: usize,
         /// What has been typed to find a kind.
@@ -274,6 +279,8 @@ pub enum Mode {
         /// Where the list's cursor was, to go back to.
         index: usize,
     },
+    /// The command line (`:`).
+    Command(CommandLine),
     /// Asking before the wall is cleared for an empty one.
     Clear {
         /// Where the list's cursor was, to go back to.
@@ -774,6 +781,22 @@ impl App {
             .collect();
         kinds.sort_by_key(|(group, _)| *group);
         kinds
+    }
+
+    /// The kinds the picker lists: with nothing typed, those of group
+    /// `tab`; else every kind matching `filter`, from every group, in
+    /// picker order.
+    #[must_use]
+    pub fn picker_shown(&self, tab: usize, filter: &str) -> Vec<(usize, &KindInfo)> {
+        let kinds = self.picker_for(filter);
+        if filter.trim().is_empty() {
+            kinds
+                .into_iter()
+                .filter(|(group, _)| *group == tab)
+                .collect()
+        } else {
+            kinds
+        }
     }
 
     // -----------------------------------------------------------------------

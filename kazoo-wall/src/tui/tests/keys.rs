@@ -15,7 +15,7 @@ use super::super::knob::{Step, Travel};
 use super::super::link::LinkState;
 use super::super::worker::{Failure, Job, Reply};
 use super::render::render;
-use super::{change, changed, connected, press, snapshot, type_text};
+use super::{change, changed, connected, ctrl, press, snapshot, type_text};
 
 fn calls(app: &mut App) -> Vec<Request> {
     app.take_jobs()
@@ -420,20 +420,43 @@ fn adding_picks_a_kind_optionally_named_and_selects_it_when_it_arrives() {
     assert_eq!(
         app.mode(),
         &Mode::Add {
+            tab: 0,
             index: 0,
             filter: String::new(),
             place: None
         },
         "the list view leaves the place to the wall"
     );
-    let picker: Vec<String> = app
-        .picker()
-        .iter()
-        .map(|(_, info)| info.kind.clone())
-        .collect();
-    // Sound sources come first.
-    assert_eq!(picker[0], "vco");
-    let lfo = picker
+    let shown = |app: &App, tab: usize| -> Vec<String> {
+        app.picker_shown(tab, "")
+            .iter()
+            .map(|(_, info)| info.kind.clone())
+            .collect()
+    };
+    // Sound sources come first, alone.
+    assert_eq!(shown(&app, 0)[..2], ["vco", "noise"]);
+    // Tab goes on to modulation, Shift-Tab back round to utilities.
+    press(&mut app, KeyCode::BackTab);
+    assert!(matches!(
+        app.mode(),
+        Mode::Add {
+            tab: 5,
+            index: 0,
+            ..
+        }
+    ));
+    assert!(shown(&app, 5).contains(&"out".to_string()));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    assert!(matches!(
+        app.mode(),
+        Mode::Add {
+            tab: 1,
+            index: 0,
+            ..
+        }
+    ));
+    let lfo = shown(&app, 1)
         .iter()
         .position(|kind| kind == "lfo")
         .expect("the catalogue has an lfo");
@@ -451,7 +474,7 @@ fn adding_picks_a_kind_optionally_named_and_selects_it_when_it_arrives() {
     );
 
     press(&mut app, KeyCode::Char('a'));
-    press(&mut app, KeyCode::Tab);
+    ctrl(&mut app, 'n');
     type_text(&mut app, "wob!");
     press(&mut app, KeyCode::Enter);
     assert!(app.take_jobs().is_empty(), "'!' is not allowed in a name");
@@ -1293,7 +1316,7 @@ fn typing_in_the_picker_finds_a_kind() {
     assert!(found.contains(&"lfo".to_string()), "{found:?}");
     assert!(found.len() < app.picker().len());
     let screen = super::render::text(&render(&mut app, 120, 50));
-    assert!(screen.contains("find: LF█"), "{screen}");
+    assert!(screen.contains("find in every group: LF█"), "{screen}");
     // j, k, n and q are letters to find by, not keys.
     press(&mut app, KeyCode::Backspace);
     press(&mut app, KeyCode::Backspace);
@@ -1343,7 +1366,7 @@ fn in_the_rack_view_a_goes_after_the_selected_module_and_says_where() {
         "{screen}"
     );
     type_text(&mut app, "noise");
-    press(&mut app, KeyCode::Tab);
+    ctrl(&mut app, 'n');
     type_text(&mut app, "hiss");
     let screen = super::render::text(&render(&mut app, 160, 60));
     assert!(

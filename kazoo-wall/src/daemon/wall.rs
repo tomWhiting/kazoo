@@ -2050,10 +2050,14 @@ impl Wall {
                 listen: self.listen.clone(),
             })
             .map(read),
-            Request::Probe { module, modules } => self
-                .probe(module.as_deref(), modules, now)
-                .and_then(|result| encode(&result))
-                .map(read),
+            Request::Probe { module, modules } => {
+                // Captures handed on since the last tick, so a console
+                // reading its scopes sixty times a second sees each.
+                self.take_readings(now);
+                self.probe(module.as_deref(), modules, now)
+                    .and_then(|result| encode(&result))
+                    .map(read)
+            }
             Request::Log { before, limit } => encode(&self.log_page(*before, *limit)).map(read),
             Request::Turn {
                 module,

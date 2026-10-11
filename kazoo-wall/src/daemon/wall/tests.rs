@@ -4415,7 +4415,12 @@ fn plugging_b_alone_lets_go_of_b_and_keeps_a() {
         .scope
         .clone()
         .unwrap();
-    assert_eq!(kept.input_a, before.input_a, "a's reading stays");
+    // a's reading stays (newer captures of it may have come in).
+    let (kept_hz, before_hz) = (kept.input_a.hz.unwrap(), before.input_a.hz.unwrap());
+    assert!(
+        kept.input_a.connected && !kept.input_a.waiting && (kept_hz - before_hz).abs() < 1.0,
+        "{kept:?}"
+    );
     assert!(kept.input_b.waiting && kept.b.is_empty(), "{kept:?}");
     // The waiting captures keep a and say nothing of b.
     wall.tick(Instant::now());

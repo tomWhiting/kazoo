@@ -29,6 +29,20 @@ pub fn default_save_name() -> String {
         .to_string()
 }
 
+/// Why `name` cannot name a save made by hand, if it cannot.
+pub(super) fn save_name_problem(name: &str) -> Option<String> {
+    if !valid_save_name(name) {
+        Some(format!(
+            "a save's name is 1 to {MAX_SAVE_NAME} of A-Z a-z 0-9 space _ . -, \
+             starting with a letter or digit"
+        ))
+    } else if is_auto_save(name) {
+        Some("names starting with \"before-\" are the wall's own saves: choose another".to_string())
+    } else {
+        None
+    }
+}
+
 impl App {
     /// The saves, as the saves list knows them.
     #[must_use]
@@ -38,7 +52,7 @@ impl App {
 
     /// The saves the list shows, in its order (see [`SavesList::shown`]):
     /// their names.
-    fn shown_names(&self) -> Vec<String> {
+    pub(super) fn shown_names(&self) -> Vec<String> {
         self.saves
             .shown()
             .into_iter()
@@ -76,7 +90,7 @@ impl App {
     }
 
     /// Ask the wall for the saves.
-    fn fetch_saves(&mut self, now: Instant) {
+    pub(super) fn fetch_saves(&mut self, now: Instant) {
         self.saves.fetching = true;
         self.saves.stale = false;
         self.saves.asked = Some(now);
@@ -134,34 +148,26 @@ impl App {
             }
             KeyCode::Enter => {
                 let name = text.trim();
-                if !valid_save_name(name) {
-                    self.say(
-                        Tone::Trouble,
-                        format!(
-                            "a save's name is 1 to {MAX_SAVE_NAME} of A-Z a-z 0-9 space _ . -, \
-                             starting with a letter or digit"
-                        ),
-                        now,
-                    );
-                } else if is_auto_save(name) {
-                    self.say(
-                        Tone::Trouble,
-                        "names starting with \"before-\" are the wall's own saves: choose another"
-                            .to_string(),
-                        now,
-                    );
+                if let Some(problem) = save_name_problem(name) {
+                    self.say(Tone::Trouble, problem, now);
                 } else {
-                    self.say(Tone::Info, format!("saving the wall as \"{name}\"…"), now);
-                    self.jobs.push(Job::Call(Request::Save {
-                        name: name.to_string(),
-                        overwrite: false,
-                    }));
+                    self.save_as(name, now);
                     return Mode::Normal;
                 }
             }
             _ => {}
         }
         Mode::Save { text }
+    }
+
+    /// Ask the wall to save itself as `name` (a good name), not over a
+    /// save of that name: the wall refuses that, and then the console asks.
+    pub(super) fn save_as(&mut self, name: &str, now: Instant) {
+        self.say(Tone::Info, format!("saving the wall as \"{name}\"…"), now);
+        self.jobs.push(Job::Call(Request::Save {
+            name: name.to_string(),
+            overwrite: false,
+        }));
     }
 
     pub(super) fn confirm_overwrite(&mut self, key: KeyEvent, name: String, now: Instant) -> Mode {

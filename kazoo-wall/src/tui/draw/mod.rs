@@ -81,10 +81,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, now: Instant, unix_now: Option
     match app.mode() {
         Mode::Help { scroll } => overlay::help(buf, area, *scroll),
         Mode::Add {
+            tab,
             index,
             filter,
             place,
-        } => overlay::picker(buf, area, app, (*index, filter, place.as_ref())),
+        } => overlay::picker(buf, area, app, (*tab, *index, filter, place.as_ref())),
         Mode::Remove { module, cables } => overlay::confirm_remove(buf, area, module, *cables),
         Mode::Stop => overlay::confirm_stop(buf, area),
         Mode::Saves { index } => overlay::saves(buf, area, app, *index, unix_now),
@@ -92,6 +93,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, now: Instant, unix_now: Option
         Mode::DeleteSave { name, .. } => overlay::confirm_delete(buf, area, name),
         Mode::Clear { .. } => overlay::confirm_clear(buf, area),
         Mode::Overwrite { name } => overlay::confirm_overwrite(buf, area, name),
+        Mode::Command(line) => overlay::command_line(buf, area, app, line),
         Mode::Normal
         | Mode::Name { .. }
         | Mode::Patch(_)

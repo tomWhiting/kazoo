@@ -186,9 +186,10 @@ pub struct RackState {
 }
 
 impl RackState {
-    /// The scopes and readouts whose faceplates are in view and whose
-    /// readings `snapshot` does not carry (it carries the first
-    /// [`MAX_PROBES`]): at most that many, left to right, top to bottom.
+    /// The screens to read with `probe`: the scopes whose faceplates are
+    /// in view (read faster than `look` carries them), and the readouts in
+    /// view whose readings `snapshot` does not carry (it carries the first
+    /// [`MAX_PROBES`]); at most that many, left to right, top to bottom.
     #[must_use]
     pub fn unread(&self, snapshot: &Snapshot) -> Vec<String> {
         let (area, pan) = (self.area, self.pan);
@@ -201,10 +202,13 @@ impl RackState {
             let Some(module) = snapshot.modules.get(plate.module) else {
                 continue;
             };
-            let carried = snapshot
-                .probes
-                .iter()
-                .any(|probe| probe.module == module.id);
+            // A scope is read sixty times a second, though `look` (ten
+            // times a second) carries it too.
+            let carried = module.kind != "scope"
+                && snapshot
+                    .probes
+                    .iter()
+                    .any(|probe| probe.module == module.id);
             if in_view && plate.screen.is_some() && !carried && ids.len() < MAX_PROBES {
                 ids.push(module.id.clone());
             }

@@ -961,12 +961,15 @@ fn scopes_and_readouts_hand_their_captures_on_without_allocating() {
             other => panic!("a capture from {other:?}"),
         }
     }
-    assert!((20..=26).contains(&scopes), "{scopes}");
+    // A 20 ms sweep waiting on its trigger finishes about 45 times a
+    // second: each is handed on (at most 60 a second), after the first
+    // tenth of a second of readings.
+    assert!((35..=61).contains(&scopes), "{scopes}");
     assert_eq!(readouts, 10);
     assert_eq!(control.shared().probes_dropped(), 0);
     // Nobody takes them: the ring fills, and what does not fit is
     // dropped and counted, never waited for.
-    render(&mut engine, 48_000 * 8, &mut buffer);
+    render(&mut engine, 48_000 * 12, &mut buffer);
     assert_eq!(probes.occupied_len(), PROBE_BACKLOG);
     assert!(control.shared().probes_dropped() > 0);
     // Taken again, they flow again.

@@ -14,9 +14,9 @@ use super::super::knob::{Step, Travel};
 use super::super::rack::geometry::Density;
 use super::super::worker::Job;
 use super::{
-    AMOUNT_FINE, AMOUNT_STEP, App, Exit, Focus, GLIDES, MAX_ENTRY, Mode, PICKER_PAGE, Patching,
-    Shove, Tone, TurnKind, View, glide_words, has_jacks, has_outputs, jack_module, jack_names,
-    next_focus, split_jack, step_cursor,
+    AMOUNT_FINE, AMOUNT_STEP, App, Exit, Focus, GLIDES, GROUPS, MAX_ENTRY, Mode, PICKER_PAGE,
+    Patching, Shove, Tone, TurnKind, View, glide_words, has_jacks, has_outputs, jack_module,
+    jack_names, next_focus, split_jack, step_cursor,
 };
 
 impl App {
@@ -53,10 +53,11 @@ impl App {
                 _ => Mode::Normal,
             },
             Mode::Add {
+                tab,
                 index,
                 filter,
                 place,
-            } => self.add_key(key, (index, filter, place), now),
+            } => self.add_key(key, (tab, index, filter, place), now),
             Mode::Name { kind, text, place } => self.name_key(key, (kind, text, place), now),
             Mode::Remove { module, .. } => self.confirm_remove(key, module, now),
             Mode::Stop => self.confirm_stop(key, now),
@@ -70,6 +71,7 @@ impl App {
             Mode::LoadSave { name, index } => self.confirm_load(key, (name, index), now),
             Mode::DeleteSave { name, index } => self.confirm_delete(key, (name, index), now),
             Mode::Clear { index } => self.confirm_clear(key, index, now),
+            Mode::Command(line) => self.command_key(key, line, now),
         };
     }
 
@@ -85,6 +87,7 @@ impl App {
             KeyCode::Char('q') => self.exit = Some(Exit::Left),
             KeyCode::Char('Q') => self.ask_stop(now),
             KeyCode::Char('?') => self.mode = Mode::Help { scroll: 0 },
+            KeyCode::Char(':') => self.open_command(now),
             KeyCode::Tab => self.cycle_focus(true),
             KeyCode::BackTab => self.cycle_focus(false),
             KeyCode::Char('v') => self.switch_view(now),
@@ -550,12 +553,23 @@ impl App {
     /// Turn `module`'s `knob` to what was typed: a number, or one of the
     /// knob's named positions.
     fn set_value(&mut self, module: &str, knob: &str, text: &str, now: Instant) {
+        match self.typed_value(module, knob, text) {
+            Ok(value) => {
+                self.hold_turn(module, knob, value, TurnKind::Now, None, now);
+                self.tick(now);
+            }
+            Err(why) => self.say(Tone::Trouble, why, now),
+        }
+    }
+
+    /// The value typed for `module`'s `knob`: a number, held to its range,
+    /// or one of its named positions; or why it is not one.
+    pub(super) fn typed_value(&self, module: &str, knob: &str, text: &str) -> Result<f64, String> {
         let Some(view) = self
             .module(module)
             .and_then(|view| view.knobs.iter().find(|candidate| candidate.name == knob))
         else {
-            self.say(Tone::Trouble, format!("{module} {knob} has gone"), now);
-            return;
+            return Err(format!("{module} {knob} has gone"));
         };
         let kind = self
             .module(module)
@@ -570,29 +584,22 @@ impl App {
                 .position(|label| label.eq_ignore_ascii_case(typed))
                 .map(|index| travel.min + index as f64)
         });
-        let value = match (labelled, typed.parse::<f64>()) {
-            (Some(value), _) => value,
-            (None, Ok(value)) if value.is_finite() => travel.clamp(value),
+        match (labelled, typed.parse::<f64>()) {
+            (Some(value), _) => Ok(value),
+            (None, Ok(value)) if value.is_finite() => Ok(travel.clamp(value)),
             (None, Ok(_) | Err(_)) => {
                 let named = info
                     .filter(|info| !info.labels.is_empty())
                     .map_or_else(String::new, |info| {
                         format!(" or one of {}", info.labels.join(", "))
                     });
-                self.say(
-                    Tone::Trouble,
-                    format!(
-                        "'{typed}' is not a value for {module} {knob}: type a number from {} to {}{named}",
-                        format::number(travel.min as f32),
-                        format::number(travel.max as f32)
-                    ),
-                    now,
-                );
-                return;
+                Err(format!(
+                    "'{typed}' is not a value for {module} {knob}: type a number from {} to {}{named}",
+                    format::number(travel.min as f32),
+                    format::number(travel.max as f32)
+                ))
             }
-        };
-        self.hold_turn(module, knob, value, TurnKind::Now, None, now);
-        self.tick(now);
+        }
     }
 
     // Tempo ------------------------------------------------------------------
@@ -648,6 +655,7 @@ impl App {
             );
         } else {
             self.mode = Mode::Add {
+                tab: 0,
                 index: 0,
                 filter: String::new(),
                 place,
@@ -657,7 +665,7 @@ impl App {
 
     /// The place right after the selected module, on a wall that keeps
     /// rows.
-    fn after_selected(&self) -> Option<Place> {
+    pub(super) fn after_selected(&self) -> Option<Place> {
         let id = &self.selected_module()?.id;
         let rows = self.shown_rows()?;
         rows.iter().enumerate().find_map(|(row, ids)| {
@@ -673,14 +681,17 @@ impl App {
     fn add_key(
         &mut self,
         key: KeyEvent,
-        (index, mut filter, place): (usize, String, Option<Place>),
+        (mut tab, index, mut filter, place): (usize, usize, String, Option<Place>),
         now: Instant,
     ) -> Mode {
-        let count = self.picker_for(&filter).len();
-        let kind = self
-            .picker_for(&filter)
-            .get(index)
-            .map(|(_, info)| info.kind.clone());
+        let shown: Vec<(usize, String)> = self
+            .picker_shown(tab, &filter)
+            .iter()
+            .map(|(group, info)| (*group, info.kind.clone()))
+            .collect();
+        let count = shown.len();
+        let kind = shown.get(index).map(|(_, kind)| kind.clone());
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let index = match key.code {
             KeyCode::Esc if filter.is_empty() => return Mode::Normal,
             KeyCode::Esc => {
@@ -691,6 +702,16 @@ impl App {
             KeyCode::Down => step_cursor(index, count, true),
             KeyCode::PageUp => index.saturating_sub(PICKER_PAGE),
             KeyCode::PageDown => (index + PICKER_PAGE).min(count.saturating_sub(1)),
+            KeyCode::Tab | KeyCode::BackTab => {
+                let (next, at) = next_tab(
+                    &shown,
+                    (tab, index),
+                    filter.trim().is_empty(),
+                    key.code == KeyCode::Tab,
+                );
+                tab = next;
+                at
+            }
             KeyCode::Backspace => {
                 filter.pop();
                 0
@@ -705,6 +726,7 @@ impl App {
                         now,
                     );
                     return Mode::Add {
+                        tab,
                         index,
                         filter,
                         place,
@@ -713,9 +735,10 @@ impl App {
                 self.add_module(kind, None, place, now);
                 return Mode::Normal;
             }
-            KeyCode::Tab => {
+            KeyCode::Char('n') if control => {
                 let Some(kind) = kind else {
                     return Mode::Add {
+                        tab,
                         index,
                         filter,
                         place,
@@ -728,9 +751,7 @@ impl App {
                 };
             }
             KeyCode::Char(c)
-                if !c.is_control()
-                    && !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && filter.chars().count() < MAX_ENTRY =>
+                if !c.is_control() && !control && filter.chars().count() < MAX_ENTRY =>
             {
                 filter.push(c);
                 0
@@ -738,7 +759,8 @@ impl App {
             _ => {
                 self.say(
                     Tone::Info,
-                    "type to find a kind · ↑↓ choose · Enter adds it · Tab names it first · Esc cancels"
+                    "Tab / Shift-Tab change group · type to search them all · ↑↓ choose · \
+                     Enter adds it · Ctrl-N names it first · Esc cancels"
                         .to_string(),
                     now,
                 );
@@ -746,6 +768,7 @@ impl App {
             }
         };
         Mode::Add {
+            tab,
             index,
             filter,
             place,
@@ -753,7 +776,7 @@ impl App {
     }
 
     /// Ask the wall for a module of `kind`, named `name`, at `place`.
-    fn add_module(
+    pub(super) fn add_module(
         &mut self,
         kind: String,
         name: Option<String>,
@@ -1120,29 +1143,66 @@ impl App {
     // Undo -------------------------------------------------------------------
 
     fn undo(&mut self, now: Instant) {
-        // A move made here is put back first, while it was the last thing
-        // done: it is not in the log.
-        if self.focus != Focus::Log && self.undo_move(now) {
+        if self.focus != Focus::Log {
+            self.undo_latest(now);
             return;
         }
-        let change = if self.focus == Focus::Log {
-            self.log.get(self.log_cursor).and_then(|line| line.seq)
-        } else {
-            self.log.last_undoable()
-        };
-        match change {
+        match self.log.get(self.log_cursor).and_then(|line| line.seq) {
             Some(change) => self.jobs.push(Job::Call(Request::Undo { change })),
-            None if self.focus == Focus::Log => self.say(
+            None => self.say(
                 Tone::Trouble,
                 "that line is not a change, so it cannot be undone".to_string(),
                 now,
             ),
+        }
+    }
+
+    /// Undo the latest change not yet undone; a move made here is put back
+    /// first, while it was the last thing done: it is not in the log.
+    pub(super) fn undo_latest(&mut self, now: Instant) {
+        if self.undo_move(now) {
+            return;
+        }
+        match self.log.last_undoable() {
+            Some(change) => self.jobs.push(Job::Call(Request::Undo { change })),
             None => self.say(
                 Tone::Trouble,
                 "nothing in the log is left to undo".to_string(),
                 now,
             ),
         }
+    }
+}
+
+/// Where the picker goes on `Tab` (`forward`) or `Shift-Tab` from group
+/// `tab` at `index` of the kinds `shown` (each with its group): with
+/// nothing typed (`browsing`), the next group, at its first kind; while
+/// searching every group, the first match of the next group with one.
+fn next_tab(
+    shown: &[(usize, String)],
+    (tab, index): (usize, usize),
+    browsing: bool,
+    forward: bool,
+) -> (usize, usize) {
+    if browsing {
+        return (step_group(tab, forward), 0);
+    }
+    let mut group = shown.get(index).map_or(tab, |(group, _)| *group);
+    for _ in 0..GROUPS.len() {
+        group = step_group(group, forward);
+        if let Some(at) = shown.iter().position(|(other, _)| *other == group) {
+            return (group, at);
+        }
+    }
+    (tab, index)
+}
+
+/// The group after (or before) group `group`, round the [`GROUPS`].
+const fn step_group(group: usize, forward: bool) -> usize {
+    if forward {
+        (group + 1) % GROUPS.len()
+    } else {
+        (group + GROUPS.len() - 1) % GROUPS.len()
     }
 }
 

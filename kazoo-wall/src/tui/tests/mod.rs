@@ -2,6 +2,7 @@
 //! screen on ratatui's test backend, and the whole console against a real
 //! headless daemon.
 
+mod command;
 mod keys;
 mod live;
 mod mouse;
@@ -248,6 +249,14 @@ pub fn changed(app: &mut App, request: Request, change: Change, module: Option<&
 /// Press `code`.
 pub fn press(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), Instant::now());
+}
+
+/// Press Ctrl and `c`.
+pub fn ctrl(app: &mut App, c: char) {
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+        Instant::now(),
+    );
 }
 
 /// Type `text`, a key per character.

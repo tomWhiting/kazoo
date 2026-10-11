@@ -36,8 +36,9 @@ pub const TRACE_POINTS: usize = 96;
 pub const WINDOW_SECONDS: f32 = 0.1;
 
 /// The shortest time between two captures a scope hands on: it hands on
-/// at most 25 a second, however fast its sweeps.
-pub const PUBLISH_GAP_SECONDS: f32 = 0.04;
+/// at most 60 a second, however fast its sweeps, so a console drawing at
+/// 60 frames a second has a fresh trace for each.
+pub const PUBLISH_GAP_SECONDS: f32 = 1.0 / 60.0;
 
 /// The longest period measured: anything slower does not repeat, as far
 /// as a meter can tell.

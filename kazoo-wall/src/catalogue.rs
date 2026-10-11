@@ -442,9 +442,10 @@ pub enum Signal {
 /// The groups module kinds are sorted into, in order: the console's
 /// picker lists kinds by them, and a rack's first rows are laid out by
 /// them.
-pub const GROUPS: [&str; 5] = [
+pub const GROUPS: [&str; 6] = [
     "sound sources",
     "modulation",
+    "control flow",
     "filters & dynamics",
     "effects",
     "utilities",
@@ -458,24 +459,24 @@ pub const GROUPS: [&str; 5] = [
 #[must_use]
 pub fn group(family: &str, kind: &str, audio_in: bool, audio_out: bool, outputs: bool) -> usize {
     if family == "fx" {
-        return 3;
+        return 4;
     }
     if family == "synth" {
         match kind {
             "vco" | "noise" => return 0,
-            "lfo" | "env" | "clock" | "seq" | "sh" | "slew" | "quant" | "compare" | "logic"
-            | "branch" | "divide" => return 1,
-            "vcf" | "vca" => return 2,
-            "delay" | "reverb" => return 3,
-            "mix" | "out" | "switch" | "select" | "math" | "scope" | "readout" => return 4,
+            "lfo" | "env" | "clock" | "seq" | "sh" | "slew" | "quant" => return 1,
+            "compare" | "logic" | "branch" | "divide" | "switch" | "select" | "math" => return 2,
+            "vcf" | "vca" => return 3,
+            "delay" | "reverb" => return 4,
+            "mix" | "out" | "scope" | "readout" => return 5,
             _ => {}
         }
     }
     match (audio_in, audio_out, outputs) {
-        (true, true, _) => 3,
+        (true, true, _) => 4,
         (false, true, _) => 0,
         (_, false, true) => 1,
-        (_, false, false) => 4,
+        (_, false, false) => 5,
     }
 }
 
@@ -1523,6 +1524,23 @@ mod tests {
             .collect();
         assert_eq!(pitched, ["seq.pitch", "quant.out"]);
         assert!(cv("x", "y").pitched().pitch && !cv("x", "y").pitch);
+    }
+
+    #[test]
+    fn the_decisions_and_routers_sit_in_control_flow() {
+        for kind in [
+            Kind::COMPARE,
+            Kind::LOGIC,
+            Kind::BRANCH,
+            Kind::DIVIDE,
+            Kind::SWITCH,
+            Kind::SELECT,
+            Kind::MATH,
+        ] {
+            assert_eq!(GROUPS[kind.spec().group()], "control flow", "{kind}");
+        }
+        assert_eq!(GROUPS[Kind::CLOCK.spec().group()], "modulation");
+        assert_eq!(GROUPS[Kind::MIX.spec().group()], "utilities");
     }
 
     #[test]

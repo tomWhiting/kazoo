@@ -553,12 +553,12 @@ pub fn status(buf: &mut Buffer, area: Rect, app: &App, now: Instant) {
         (Focus::Wall, View::Rack) => {
             "mouse: drag knobs (shift fine, wheel fine), double-click resets, drag jack→jack \
              patches, right-click unplugs, drag the rack to pan · shift-arrows pan  . centre  \
-             g jump  c density  f log  HJKL/drag a title to move · v list  ? help"
+             g jump  c density  f log  HJKL/drag a title to move · : command  v list  ? help"
         }
         (Focus::Wall, View::List) => {
             "←→ module  ↑↓ knob  = - turn  + _ fine  PgUp/PgDn coarse  [ ] glide  ⏎ type  \
-             p patch  u unplug  a add  x remove  z undo  t tempo  w save  o saves  Tab panes  \
-             ? help  q quit"
+             p patch  u unplug  a add  x remove  z undo  t tempo  w save  o saves  : command  \
+             Tab panes  ? help  q quit"
         }
         (Focus::Cables, _) => "↑↓ cable  u unplug it  z undo  Tab panes  ? help  q quit",
         (Focus::Log, _) => "↑↓ change  z undo it  Tab panes  ? help  q quit",
@@ -669,7 +669,8 @@ fn prompt(app: &App) -> Option<(String, String)> {
         | Mode::Saves { .. }
         | Mode::LoadSave { .. }
         | Mode::DeleteSave { .. }
-        | Mode::Clear { .. } => None,
+        | Mode::Clear { .. }
+        | Mode::Command(_) => None,
     }
 }
 

@@ -323,12 +323,21 @@ fn screens_in_view_past_the_sixteen_look_carries_are_read_with_probe() {
             .is_none_or(|status| !status.text.contains("gone")),
         "no status line for it"
     );
-    // Nothing past the sixteen in view: nothing is asked.
+    // Nothing past the sixteen in view: only the scopes in view are asked
+    // for, faster than `look` carries them.
     let mut app = rack_of(measuring());
     render(&mut app, 260, 120);
     app.take_jobs();
     app.tick(now);
-    assert!(app.take_jobs().is_empty());
+    let jobs = app.take_jobs();
+    assert!(
+        matches!(
+            &jobs[..],
+            [Job::Call(Request::Probe { module: None, modules })]
+                if !modules.is_empty() && modules.iter().all(|id| id.starts_with("scope"))
+        ),
+        "{jobs:?}"
+    );
 }
 
 #[test]

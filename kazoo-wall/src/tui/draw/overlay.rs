@@ -7,12 +7,12 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 
-use kazoo_wall::protocol::Place;
+use kazoo_wall::protocol::{KindInfo, KnobInfo, Place};
 
-use super::super::app::{App, GROUPS, SavesList};
+use super::super::app::{App, COMMAND_KEYS, CommandLine, GROUPS, SavesList, usage};
 use super::super::log::{age, unix_seconds};
 use super::super::theme::{
-    AMBER, BRASS, INK, PANEL, PANEL_FOCUS, RED, TEXT, TEXT_DIM, bold, plain,
+    AMBER, BRASS, INK, PANEL, PANEL_FOCUS, RED, TEXT, TEXT_DIM, bold, jack_glyph, plain,
 };
 use super::truncate;
 
@@ -57,7 +57,14 @@ const HELP: &[(&str, &str)] = &[
     ),
     (
         "a",
-        "add a module: type to find a kind (Tab names it first); in the rack view it goes after the selected one",
+        "add a module: Tab / Shift-Tab change group, ↑↓ choose (what it is shows beside), \
+         type to search every group, Ctrl-N names it first; in the rack view it goes after \
+         the selected one",
+    ),
+    (
+        ":",
+        "the command line: add, remove, patch, unplug, turn, save, load, undo; Tab completes \
+         kinds, modules, jacks, knobs, positions and saves, ↑↓ choose, ⏎ runs, Esc cancels",
     ),
     ("x", "remove the module and its cables (asks first)"),
     (
@@ -217,21 +224,150 @@ pub fn help(buf: &mut Buffer, area: Rect, scroll: usize) {
         .render(rect, buf);
 }
 
-/// The module picker: every kind the catalogue has that matches what has
-/// been typed (`filter`), grouped, the one at `index` chosen; and, with a
-/// `place`, where on the rack the new module goes.
+/// The module picker: a tab for each group across the top, the chosen
+/// one (`tab`) lit; the kinds of that group, or with something typed
+/// (`filter`) every kind that matches, grouped, the one at `index` chosen;
+/// beside them (under them on a narrow screen) what the chosen kind is,
+/// its jacks and its knobs; and, with a `place`, where on the rack the new
+/// module goes.
 pub fn picker(
     buf: &mut Buffer,
     area: Rect,
     app: &App,
-    (index, filter, place): (usize, &str, Option<&Place>),
+    (tab, index, filter, place): (usize, usize, &str, Option<&Place>),
 ) {
-    let kinds = app.picker_for(filter);
+    let kinds = app.picker_shown(tab, filter);
+    let searching = !filter.trim().is_empty();
+    let lit = if searching {
+        kinds.get(index).map(|(group, _)| *group)
+    } else {
+        Some(tab)
+    };
+    let title = place.map_or_else(
+        || "add a module".to_string(),
+        |place| format!("add a module {}", app.place_words(place)),
+    );
+    let rect = popup(buf, area, 118, 34);
+    let block = frame(&title, BRASS);
+    let inner = block.inner(rect);
+    block.render(rect, buf);
+    if inner.height < 4 || inner.width < 10 {
+        return;
+    }
+    let mut counts = [0_usize; GROUPS.len()];
+    for (group, _) in app.picker_for(filter) {
+        if let Some(count) = counts.get_mut(group) {
+            *count += 1;
+        }
+    }
+    Paragraph::new(tab_line(lit, &counts, usize::from(inner.width)))
+        .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+    let find = if searching {
+        Line::from(vec![
+            Span::styled(" find in every group: ", plain(TEXT_DIM, PANEL)),
+            Span::styled(format!("{filter}█"), bold(AMBER, PANEL)),
+        ])
+    } else {
+        Line::from(Span::styled(
+            " type to find a kind in every group█",
+            plain(TEXT_DIM, PANEL),
+        ))
+    };
+    Paragraph::new(find).render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+    Paragraph::new(Line::from(Span::styled(
+        " Tab ⇧Tab group · ↑↓ choose · ⏎ adds it · Ctrl-N names it first · Esc clears, then cancels",
+        plain(TEXT_DIM, PANEL),
+    )))
+    .render(Rect::new(inner.x, inner.bottom() - 1, inner.width, 1), buf);
+    let body = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 3);
+    let (list_area, detail_area) = if body.width >= 90 {
+        let list_width = 40;
+        (
+            Rect::new(body.x, body.y, list_width, body.height),
+            Rect::new(
+                body.x + list_width + 1,
+                body.y,
+                body.width - list_width - 2,
+                body.height,
+            ),
+        )
+    } else {
+        let list_height = (body.height / 2).max(1);
+        (
+            Rect::new(body.x, body.y, body.width, list_height),
+            Rect::new(
+                body.x + 1,
+                body.y + list_height,
+                body.width.saturating_sub(2),
+                body.height - list_height,
+            ),
+        )
+    };
+    picker_list(buf, list_area, &kinds, index, (filter, searching));
+    if let Some((group, info)) = kinds.get(index) {
+        Paragraph::new(kind_detail(info, *group))
+            .wrap(Wrap { trim: false })
+            .render(detail_area, buf);
+    }
+}
+
+/// The picker's tabs: each group, with how many kinds it holds that match,
+/// the `lit` one picked out; scrolled to keep it in `width` columns.
+fn tab_line(lit: Option<usize>, counts: &[usize], width: usize) -> Line<'static> {
+    let labels: Vec<String> = GROUPS
+        .iter()
+        .zip(counts)
+        .map(|(group, count)| format!(" {group} {count} "))
+        .collect();
+    let widths: Vec<usize> = labels
+        .iter()
+        .map(|label| label.chars().count() + 1)
+        .collect();
+    // From the first tab that leaves the lit one in view.
+    let lit_at = lit.unwrap_or(0).min(labels.len().saturating_sub(1));
+    let mut first = 0;
+    while first < lit_at && widths[first..=lit_at].iter().sum::<usize>() + 2 > width {
+        first += 1;
+    }
+    let mut spans = vec![Span::styled(
+        if first > 0 { "‹" } else { " " },
+        plain(TEXT_DIM, PANEL),
+    )];
+    let mut used = 1;
+    for (group, label) in labels.iter().enumerate().skip(first) {
+        let wide = widths[group];
+        if used + wide + 1 > width {
+            spans.push(Span::styled("›", plain(TEXT_DIM, PANEL)));
+            break;
+        }
+        used += wide;
+        let style = if Some(group) == lit {
+            bold(INK, BRASS)
+        } else if counts.get(group).copied().unwrap_or(0) == 0 {
+            plain(TEXT_DIM, PANEL)
+        } else {
+            bold(TEXT, PANEL_FOCUS)
+        };
+        spans.push(Span::styled(label.clone(), style));
+        spans.push(Span::styled(" ", plain(TEXT, PANEL)));
+    }
+    Line::from(spans)
+}
+
+/// The picker's list of `kinds` in `area`, the one at `index` chosen and
+/// kept in view; grouped under headings while `searching`.
+fn picker_list(
+    buf: &mut Buffer,
+    area: Rect,
+    kinds: &[(usize, &KindInfo)],
+    index: usize,
+    (filter, searching): (&str, bool),
+) {
+    let width = usize::from(area.width);
     let mut rows: Vec<(Option<usize>, Line<'_>)> = Vec::new();
     let mut group = None;
-    let inner_width = usize::from(area.width.saturating_sub(8).min(76));
     for (position, (kind_group, info)) in kinds.iter().enumerate() {
-        if group != Some(*kind_group) {
+        if searching && group != Some(*kind_group) {
             group = Some(*kind_group);
             let heading = GROUPS.get(*kind_group).copied().unwrap_or("other");
             rows.push((
@@ -246,7 +382,7 @@ pub fn picker(
         let background = if chosen { PANEL_FOCUS } else { PANEL };
         let lead = if chosen { "▸ " } else { "  " };
         let name = format!("{lead}{:<12}", truncate(&info.kind, 12));
-        let about = truncate(&info.about, inner_width.saturating_sub(15));
+        let about = truncate(&info.about, width.saturating_sub(16));
         rows.push((
             Some(position),
             Line::from(vec![
@@ -263,17 +399,14 @@ pub fn picker(
         ));
     }
     if rows.is_empty() {
-        rows.push((
-            None,
-            Line::from(Span::styled(
-                format!(" no kind of module matches '{filter}'"),
-                plain(AMBER, PANEL),
-            )),
-        ));
+        let words = if searching {
+            format!(" no kind of module matches '{filter}'")
+        } else {
+            " no kinds in this group: Tab for the next".to_string()
+        };
+        rows.push((None, Line::from(Span::styled(words, plain(AMBER, PANEL)))));
     }
-    let wanted = u16::try_from(rows.len()).unwrap_or(u16::MAX - 5) + 4;
-    let rect = popup(buf, area, 80, wanted);
-    let visible = usize::from(rect.height.saturating_sub(4)).max(1);
+    let visible = usize::from(area.height).max(1);
     let chosen_row = rows
         .iter()
         .position(|(position, _)| *position == Some(index))
@@ -282,34 +415,169 @@ pub fn picker(
     let first = (chosen_row + 2)
         .saturating_sub(visible)
         .min(chosen_row.saturating_sub(1));
-    let find = if filter.is_empty() {
+    let lines: Vec<Line<'_>> = rows
+        .into_iter()
+        .skip(first)
+        .take(visible)
+        .map(|(_, line)| line)
+        .collect();
+    Paragraph::new(lines).render(area, buf);
+}
+
+/// What a kind is, for the picker: its name and group, what it does, its
+/// inputs and outputs with what each carries, and its knobs with their
+/// ranges.
+fn kind_detail(info: &KindInfo, group: usize) -> Vec<Line<'static>> {
+    let heading = |text: &str| {
         Line::from(Span::styled(
-            " type to find a kind█",
-            plain(TEXT_DIM, PANEL),
+            text.to_uppercase(),
+            bold(BRASS, PANEL).add_modifier(Modifier::UNDERLINED),
         ))
-    } else {
-        Line::from(vec![
-            Span::styled(" find: ", plain(TEXT_DIM, PANEL)),
-            Span::styled(format!("{filter}█"), bold(AMBER, PANEL)),
-        ])
     };
-    let mut lines: Vec<Line<'_>> = vec![find];
-    lines.extend(
-        rows.into_iter()
-            .skip(first)
-            .take(visible)
-            .map(|(_, line)| line),
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(info.kind.clone(), bold(AMBER, PANEL)),
+            Span::styled(
+                format!(
+                    " · {} · {}",
+                    GROUPS.get(group).copied().unwrap_or("other"),
+                    info.family
+                ),
+                plain(TEXT_DIM, PANEL),
+            ),
+        ]),
+        Line::from(Span::styled(info.about.clone(), plain(TEXT, PANEL))),
+    ];
+    for (title, ports) in [("inputs", &info.inputs), ("outputs", &info.outputs)] {
+        if ports.is_empty() {
+            continue;
+        }
+        lines.push(heading(title));
+        for port in ports {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{} {:<10}", jack_glyph(port.signal, false), port.name),
+                    bold(TEXT, PANEL),
+                ),
+                Span::styled(format!(" {}", port.about), plain(TEXT_DIM, PANEL)),
+            ]));
+        }
+    }
+    if !info.knobs.is_empty() {
+        lines.push(heading("knobs · every knob is also a CV jack"));
+        for knob in &info.knobs {
+            lines.push(Line::from(vec![
+                Span::styled(format!("◆ {:<10}", knob.name), bold(TEXT, PANEL)),
+                Span::styled(format!(" {}", knob_words(knob)), plain(TEXT_DIM, PANEL)),
+            ]));
+        }
+    }
+    lines
+}
+
+/// A knob's travel in words: its named positions, or its range, with
+/// where it starts.
+fn knob_words(knob: &KnobInfo) -> String {
+    let number = |value: f64| {
+        let unit = if knob.unit.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", knob.unit)
+        };
+        format!("{}{unit}", kazoo_wall::format::number(value as f32))
+    };
+    let start = knob
+        .labels
+        .iter()
+        .zip(0_u32..)
+        .find(|(_, at)| (knob.min + f64::from(*at) - knob.default).abs() < 1e-6)
+        .map_or_else(|| number(knob.default), |(label, _)| label.clone());
+    if knob.labels.is_empty() {
+        format!(
+            "{} to {} · starts at {start}",
+            number(knob.min),
+            number(knob.max)
+        )
+    } else {
+        let joiner = if knob.stepped { " · " } else { " → " };
+        format!("{} · starts at {start}", knob.labels.join(joiner))
+    }
+}
+
+/// Most completions shown at once over the command line.
+const COMPLETIONS_SHOWN: usize = 10;
+
+/// The command line, on the status line: what is typed and what the
+/// command takes; over it, why the line could not run and the completions
+/// of the word being typed, the one chosen lit.
+pub fn command_line(buf: &mut Buffer, area: Rect, app: &App, line: &CommandLine) {
+    let row = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+    Clear.render(row, buf);
+    let width = usize::from(row.width);
+    let typed = format!(" :{}█", line.text);
+    let hint = usage(&line.text).unwrap_or_else(|| COMMAND_KEYS.to_string());
+    let room = width.saturating_sub(typed.chars().count() + 3);
+    Paragraph::new(Line::from(vec![
+        Span::styled(truncate(&typed, width), bold(AMBER, PANEL)),
+        Span::styled(
+            format!("   {}", truncate(&hint, room)),
+            plain(TEXT_DIM, PANEL),
+        ),
+    ]))
+    .style(plain(TEXT, PANEL))
+    .render(row, buf);
+    let found = app.completions(line.typed());
+    let chosen = line.chosen();
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    if let Some(error) = &line.error {
+        lines.push(Line::from(Span::styled(
+            format!(" ✗ {error}"),
+            bold(RED, PANEL),
+        )));
+    }
+    let first = chosen.map_or(0, |chosen| (chosen + 1).saturating_sub(COMPLETIONS_SHOWN));
+    let word_width = found
+        .iter()
+        .map(|completion| completion.word.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(28);
+    for (at, completion) in found.iter().enumerate().skip(first).take(COMPLETIONS_SHOWN) {
+        let lit = Some(at) == chosen;
+        let background = if lit { PANEL_FOCUS } else { PANEL };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {:<word_width$} ", truncate(&completion.word, word_width)),
+                if lit {
+                    bold(INK, BRASS)
+                } else {
+                    bold(TEXT, background)
+                },
+            ),
+            Span::styled(format!(" {}", completion.note), plain(TEXT_DIM, background)),
+        ]));
+    }
+    if found.len() > COMPLETIONS_SHOWN {
+        lines.push(Line::from(Span::styled(
+            format!(" {} in all · Tab or ↑↓ for more", found.len()),
+            plain(TEXT_DIM, PANEL),
+        )));
+    }
+    if lines.is_empty() {
+        return;
+    }
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(3));
+    let rect = Rect::new(
+        area.x,
+        row.y.saturating_sub(height),
+        area.width.min(100),
+        height,
     );
-    lines.push(Line::from(Span::styled(
-        " ↑↓ choose · ⏎ adds it · Tab names it first · Esc clears, then cancels",
-        plain(TEXT_DIM, PANEL),
-    )));
-    let title = place.map_or_else(
-        || "add a module".to_string(),
-        |place| format!("add a module {}", app.place_words(place)),
-    );
+    Clear.render(rect, buf);
     Paragraph::new(lines)
-        .block(frame(&title, BRASS))
+        .style(plain(TEXT, PANEL))
         .render(rect, buf);
 }
 

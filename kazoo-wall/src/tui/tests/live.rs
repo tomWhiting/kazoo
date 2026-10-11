@@ -14,8 +14,8 @@ use kazoo_wall::protocol::client::WallClient;
 
 use super::super::app::{App, GLIDES, Mode, Patching, jack_names};
 use super::super::worker::{Config, Connection};
-use super::press;
 use super::render::{render, text};
+use super::{press, type_text};
 
 /// Longest any step may take.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -105,8 +105,9 @@ fn select(app: &mut App, module: &str, knob: &str) {
 fn add_lfo(app: &mut App, connection: &Connection, checker: &mut WallClient) -> String {
     let before = look(checker);
     press(app, KeyCode::Char('a'));
+    type_text(app, "lfo");
     let lfo = app
-        .picker()
+        .picker_for("lfo")
         .iter()
         .position(|(_, info)| info.kind == "lfo")
         .expect("the catalogue has an lfo");

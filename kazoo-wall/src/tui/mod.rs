@@ -54,8 +54,8 @@ pub const CLIENT: &str = concat!("kazoo-wall console ", env!("CARGO_PKG_VERSION"
 /// How often the console looks at the wall (knob motion and meters).
 pub const POLL: Duration = Duration::from_millis(100);
 
-/// Longest wait between frames.
-const FRAME: Duration = Duration::from_millis(50);
+/// Longest wait between frames: sixty a second, for the scopes.
+const FRAME: Duration = Duration::from_millis(16);
 
 /// How long a daemon started from here may take to answer.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);

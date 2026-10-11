@@ -15,7 +15,8 @@
 //! point's), so a cable in its jack never stops a sweep under way.
 //!
 //! It hands the engine a capture when a sweep finishes, at most one every
-//! [`PUBLISH_GAP_SECONDS`]; and while a long sweep is under way (or a long
+//! [`PUBLISH_GAP_SECONDS`] (a sweep finished sooner is kept and handed on
+//! when that has passed, so short sweeps go sixty times a second); and while a long sweep is under way (or a long
 //! wait for a trigger), one every two of those anyway, with the sweep as
 //! far as it has got over what is left of the last, so the screen is drawn
 //! as it goes and the readings never go stale. Both inputs are metered
@@ -118,7 +119,18 @@ pub struct Scope {
     gap: u32,
     knobs: [f32; 4],
     capture: Capture,
-    ready: bool,
+    out: Out,
+}
+
+/// Where the capture stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Out {
+    /// Handed on (or nothing yet).
+    Taken,
+    /// A finished sweep, kept until the gap has passed.
+    Held,
+    /// Ready for the engine to take.
+    Ready,
 }
 
 impl Scope {
@@ -150,7 +162,7 @@ impl Scope {
             gap: (rate * PUBLISH_GAP_SECONDS).round() as u32,
             knobs: [0.0; 4],
             capture: Capture::NONE,
-            ready: false,
+            out: Out::Taken,
         }
     }
 
@@ -227,6 +239,31 @@ impl Scope {
         if self.since < gap || !self.meters.iter().all(Meter::fresh) {
             return;
         }
+        self.take_screen();
+        self.hand_on();
+    }
+
+    /// A sweep (or figure) has finished: keep it to hand on as soon as
+    /// [`Self::gap`] has passed since the last, so a short sweep is handed
+    /// on sixty times a second, never fewer for falling between two.
+    fn finished(&mut self) {
+        self.take_screen();
+        self.out = Out::Held;
+        self.offer();
+    }
+
+    /// Hand on the finished sweep kept, once the gap has passed and both
+    /// inputs have a reading of what is plugged in now.
+    fn offer(&mut self) {
+        if self.out == Out::Held && self.since >= self.gap && self.meters.iter().all(Meter::fresh) {
+            self.hand_on();
+        }
+    }
+
+    /// Copy the screen as it is into the capture: a finished sweep, or one
+    /// under way over what is left of the last; rolling, the points rolled
+    /// in, oldest first.
+    fn take_screen(&mut self) {
         let (first, points) = if self.mode == Some(Mode::Free) {
             let first = (self.point + self.capacity - self.drawn) % self.capacity;
             (first, self.drawn)
@@ -257,9 +294,13 @@ impl Scope {
                 trace.high[channel][index] = self.sweep.high[channel][from];
             }
         }
+    }
+
+    /// Hand the capture on, with fresh readings.
+    const fn hand_on(&mut self) {
         self.capture.inputs = [*self.meters[0].latest(), *self.meters[1].latest()];
         self.capture.knobs = self.knobs;
-        self.ready = true;
+        self.out = Out::Ready;
         self.since = 0;
     }
 
@@ -291,7 +332,7 @@ impl Scope {
         }
         self.point = 0;
         self.drawn = self.capacity;
-        self.publish(self.gap);
+        self.finished();
         self.phase = Phase::Armed;
         self.below = false;
         self.waited = 0;
@@ -335,7 +376,7 @@ impl Scope {
         }
         self.point = 0;
         self.drawn = self.capacity;
-        self.publish(self.gap);
+        self.finished();
     }
 }
 
@@ -371,9 +412,14 @@ impl Module for Scope {
                 Mode::Free => self.rolling((a, b)),
                 Mode::Xy => self.figure((a, b)),
             }
-            // A long sweep, or a long wait for a trigger, still hands on
+            // A finished sweep kept goes once the gap has passed; else a
+            // long sweep, or a long wait for a trigger, still hands on
             // what it has, with fresh readings.
-            self.publish(self.gap.saturating_mul(2));
+            if self.out == Out::Held {
+                self.offer();
+            } else {
+                self.publish(self.gap.saturating_mul(2));
+            }
         }
     }
 
@@ -384,7 +430,7 @@ impl Module for Scope {
         self.mode = None;
         self.since = u32::MAX;
         self.capture = Capture::NONE;
-        self.ready = false;
+        self.out = Out::Taken;
     }
 
     fn rewired(&mut self, moved: [bool; MAX_INPUTS]) {
@@ -402,14 +448,14 @@ impl Module for Scope {
             // the new one is drawn.
             self.b_owed = self.capacity;
         }
-        self.ready = false;
+        self.out = Out::Taken;
     }
 
     fn capture(&mut self) -> Option<&Capture> {
-        if !self.ready {
+        if self.out != Out::Ready {
             return None;
         }
-        self.ready = false;
+        self.out = Out::Taken;
         Some(&self.capture)
     }
 }
@@ -497,8 +543,8 @@ mod tests {
         let wave = sine(220.0, 0.8, 1.0);
         let shots = captures(&mut bench, 48_000, &wave, None);
         assert!(
-            (20..=26).contains(&shots.len()),
-            "at most 25 a second: {}",
+            (50..=61).contains(&shots.len()),
+            "at most 60 a second: {}",
             shots.len()
         );
         let first = &shots[2].trace;
@@ -638,6 +684,14 @@ mod tests {
         let shots = captures(&mut bench, 48_000, |_| 0.25, None);
         assert!(shots.len() >= 10, "{}", shots.len());
         assert!((shots.last().unwrap().inputs[0].mean - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn short_sweeps_hand_on_sixty_captures_a_second() {
+        let mut bench = Bench::new(Kind::SCOPE);
+        bench.knob("time", 0.005);
+        let shots = captures(&mut bench, 48_000, sine(1_000.0, 0.5, 0.0), None);
+        assert!((50..=61).contains(&shots.len()), "{}", shots.len());
     }
 
     #[test]

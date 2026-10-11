@@ -51,11 +51,11 @@ const FAULT_BACKLOG: usize = 64;
 
 /// Captures from scopes and readouts waiting for the control side.
 ///
-/// A scope hands on at most 25 a second and a readout 10, and the control
-/// side takes them every few hundredths of a second: room for a busy
-/// moment with a dozen of them on the wall. Beyond it captures are dropped
-/// (and counted): the next one is as good.
-pub const PROBE_BACKLOG: usize = 128;
+/// A scope hands on at most 60 a second and a readout 10, and the control
+/// side takes them every 20 ms tick (and on every `probe`): 64 scopes
+/// fill it in about 130 ms, room for a busy moment of six missed ticks.
+/// Beyond it captures are dropped (and counted): the next one is as good.
+pub const PROBE_BACKLOG: usize = 512;
 
 /// Seconds of stereo the record ring holds: how far the recording's writer
 /// may fall behind (a slow disk, a busy machine) before samples are lost.
