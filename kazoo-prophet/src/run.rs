@@ -18,7 +18,8 @@ use crossterm::terminal::{
     self, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
-use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
+use kazoo_core::host::link::{LinkSetup, connect_or_direct};
+use kazoo_core::ipc::link::HubLink;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -93,12 +94,12 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let shared = Arc::new(EngineShared::default());
 
     // Plug into the kazoo-mix desk whenever it is running.
-    let (hub, hub_audio) = hub_link(LinkConfig::new(
-        "kazoo-prophet",
-        2,
-        output_info.rate,
-        MAX_CALLBACK_FRAMES as u32,
-    ))?;
+    let (hub, hub_audio) = connect_or_direct(&LinkSetup {
+        name: "kazoo-prophet",
+        channels: 2,
+        rate: output_info.rate,
+        block: MAX_CALLBACK_FRAMES,
+    })?;
 
     let mut engine = AudioEngine::new(
         sample_rate,

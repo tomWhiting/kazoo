@@ -1057,7 +1057,7 @@ impl Engine {
         let Some(hub) = self.hub.as_mut() else {
             return;
         };
-        while let Some(message) = hub.try_recv() {
+        for message in kazoo_core::host::link::take_events(&mut hub.events) {
             match message {
                 HubMessage::TransportSync(sync) => {
                     if self.follower.schedule(&sync).is_err() {

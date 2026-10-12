@@ -3435,12 +3435,13 @@ fn a_desk(
         std::os::unix::net::UnixStream,
     ),
 ) {
-    use kazoo_core::ipc::link::{HubAddress, LinkConfig, hub_link};
+    use kazoo_core::host::link::open;
+    use kazoo_core::ipc::link::{HubAddress, LinkConfig};
     use kazoo_core::ipc::protocol::FrameBuffer;
     use kazoo_core::ipc::types::{MSG_REGISTER, MSG_REGISTERED, RegisteredMsg};
     let path = dir.join("desk.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-    let (link, audio) = hub_link(LinkConfig {
+    let (link, audio) = open(LinkConfig {
         address: HubAddress::Socket(path),
         ..LinkConfig::new("kazoo-wall", 2, 48_000, 256)
     })

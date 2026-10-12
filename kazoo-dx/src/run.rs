@@ -20,7 +20,8 @@ use crate::audio::{
 };
 use crate::phrase::{MAX_BPM, MIN_BPM, Phrase};
 use crate::synth::{ALGORITHMS, OPERATORS, OperatorField, PATCHES, Patch};
-use kazoo_core::ipc::link::{HubLink, LinkConfig, LinkStatus, hub_link};
+use kazoo_core::host::link::{LinkSetup, connect_or_direct};
+use kazoo_core::ipc::link::{HubLink, LinkStatus};
 
 /// Without key-release reporting, a key auto-repeating is released this long
 /// after its last repeat.
@@ -55,12 +56,12 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let (display_tx, display_rx) = crossbeam_channel::bounded::<DisplaySnapshot>(2);
 
     // Plug into the kazoo-mix desk whenever it is running.
-    let (hub, hub_audio) = hub_link(LinkConfig::new(
-        "kazoo-dx",
-        2,
-        sample_rate,
-        MAX_BLOCK_FRAMES as u32,
-    ))?;
+    let (hub, hub_audio) = connect_or_direct(&LinkSetup {
+        name: "kazoo-dx",
+        channels: 2,
+        rate: sample_rate,
+        block: MAX_BLOCK_FRAMES,
+    })?;
     let stats = Arc::new(AudioStats::default());
 
     let mut engine = AudioEngine::new(

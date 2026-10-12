@@ -308,7 +308,7 @@ impl AudioEngine {
     }
 
     fn drain_hub(&mut self) {
-        while let Some(msg) = self.hub.try_recv() {
+        for msg in kazoo_core::host::link::take_events(&mut self.hub.events) {
             match msg {
                 // Lands on its own frame, in `render_chunk`.
                 HubMessage::TransportSync(sync) => {
@@ -384,14 +384,15 @@ impl AudioEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig, hub_link};
+    use kazoo_core::host::link::open;
+    use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig};
 
     fn engine(channels: usize) -> (AudioEngine, CommandSender, Arc<EngineShared>) {
         let mut config = LinkConfig::new("kazoo-808-test", 2, 48_000, MAX_CALLBACK_FRAMES as u32);
         config.address = HubAddress::Socket(
             std::env::temp_dir().join(format!("kazoo-808-no-hub-{}.sock", std::process::id())),
         );
-        let (hub, hub_audio) = hub_link(config).unwrap();
+        let (hub, hub_audio) = open(config).unwrap();
         // The UI half says goodbye on drop; the audio half keeps working
         // unconnected, which is what these tests exercise.
         drop(hub);
@@ -420,7 +421,7 @@ mod tests {
             let mut config =
                 LinkConfig::new("kazoo-808-test", 2, 48_000, MAX_CALLBACK_FRAMES as u32);
             config.address = HubAddress::Socket(path.clone());
-            let (hub, hub_audio) = hub_link(config).unwrap();
+            let (hub, hub_audio) = open(config).unwrap();
             let (mut stream, _) = listener.accept().unwrap();
             let mut buf = kazoo_core::ipc::protocol::FrameBuffer::new();
             assert_eq!(buf.read_frame(&mut stream).unwrap().msg_type, MSG_REGISTER);
