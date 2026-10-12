@@ -12,6 +12,42 @@ pub const RATE: f32 = 48_000.0;
 /// The tempo every test runs at.
 pub const CONTEXT: Context = Context { bpm: 120.0 };
 
+/// Difference RMS relative to a reference, with each model's latency removed.
+pub fn null_db(
+    reference: &mut dyn Effect,
+    candidate: &mut dyn Effect,
+    knobs: &[(usize, f32)],
+) -> f64 {
+    let input = crate::bench::fixture(RATE);
+    let render = |effect: &mut dyn Effect| {
+        effect.prepare(RATE);
+        for &(index, value) in knobs {
+            effect.set_param(index, value);
+        }
+        effect.reset();
+        let mut left = vec![0.0; input.len()];
+        let mut right = vec![0.0; input.len()];
+        for ((block, left), right) in input
+            .chunks(256)
+            .zip(left.chunks_mut(256))
+            .zip(right.chunks_mut(256))
+        {
+            effect.process(&CONTEXT, [block, block], [left, right]);
+        }
+        (left, effect.latency())
+    };
+    let (old, old_latency) = render(reference);
+    let (new, new_latency) = render(candidate);
+    let old = &old[old_latency..];
+    let new = &new[new_latency..];
+    let (mut difference, mut signal) = (0.0, 0.0);
+    for (&old, &new) in old.iter().zip(new) {
+        difference += (f64::from(new) - f64::from(old)).powi(2);
+        signal += f64::from(old).powi(2);
+    }
+    10.0 * (difference / signal).log10()
+}
+
 /// Samples in one aliasing measurement.
 const FFT_SIZE: usize = 8_192;
 
