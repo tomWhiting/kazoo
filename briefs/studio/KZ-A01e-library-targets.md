@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
+Shape the reviews of A01a and A01b enforced (match it from the start; read kazoo-cs80/src/run.rs and kazoo-dx/src/args.rs on main): `-h`/`--help` wins wherever it stands, so `--bogus --help` gives help and `--flag -h` never reads `-h` as the flag's value; USAGE's first line is the name, a colon, then the description joined with commas, with no dash and no second colon; `cli` writes the usage, flushes, and returns any write error; main.rs's doc line follows A01a's wording with no dash.
+
 Split: PLAN.md's A01 is split into A01a to A01g (see KZ-A01a). This is e = kazoo-glass and kazoo-mix. Independent of the other six.
 
 ## Outcome

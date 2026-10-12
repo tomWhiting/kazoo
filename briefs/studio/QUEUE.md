@@ -13,3 +13,4 @@ START KZ-B01 base=b6a1fea branch=lane/kz-B01 df=29GB at 01:05
 START KZ-A01b base=c90f1b7 branch=lane/kz-A01b df=29GB at 01:06
 START KZ-A01c base=c90f1b7 branch=lane/kz-A01c df=47GB at 01:19
 END KZ-A01b head=5c34c65 reviewed=READY merged=5aab8cf at 01:23
+START KZ-A01d base=ba390c3 branch=lane/kz-A01d df=59GB at 01:34

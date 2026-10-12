@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Part of the A01 split (see KZ-A01a); shares no files with A01a–e or A01g. Checks, code quality and the END block as PLAN.md with `-p kazoo-tui -p kazoo-mcp`, plus `cargo test --doc` for both (every public item gains a doc comment).
 
+Shape the reviews of A01a and A01b enforced (match it from the start; read kazoo-cs80/src/run.rs and kazoo-dx/src/args.rs on main): `-h`/`--help` wins wherever it stands, so `--bogus --help` gives help and `--flag -h` never reads `-h` as the flag's value; USAGE's first line is the name, a colon, then the description joined with commas, with no dash and no second colon; `cli` writes the usage, flushes, and returns any write error; main.rs's doc line follows A01a's wording with no dash.
+
 ## Outcome
 
 The mouth synth and the MCP seat can each be started from another crate with one call, `run(Args)`, exactly as they run today from their own binaries. Neither uses `#[tokio::main]` any more: each builds its runtime inside `run`, so the `kazoo` binary (A06) can choose a subcommand first and never carries a runtime it does not need.

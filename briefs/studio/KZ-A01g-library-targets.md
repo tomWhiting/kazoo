@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Part of the A01 split (see KZ-A01a); shares no files with A01a–f. Checks, code quality and the END block as PLAN.md with `-p kazoo-wall`, plus `cargo test --doc -p kazoo-wall`.
 
+Shape the reviews of A01a and A01b enforced (match it from the start; read kazoo-cs80/src/run.rs and kazoo-dx/src/args.rs on main): `-h`/`--help` wins wherever it stands, so `--bogus --help` gives help and `--flag -h` never reads `-h` as the flag's value; USAGE's first line is the name, a colon, then the description joined with commas, with no dash and no second colon; `cli` writes the usage, flushes, and returns any write error; main.rs's doc line follows A01a's wording with no dash.
+
 ## Outcome
 
 `kazoo-wall` is already a library with a binary; after this lane the binary's argument handling (`console` by default, `serve [--no-audio --no-desk --rate <hz>]`, `stop`) lives in the library as `Args` and `run(Args)`, so `kazoo wall serve` (A06) is one call, and the daemon's self-restart no longer assumes the binary is called `kazoo-wall`.
