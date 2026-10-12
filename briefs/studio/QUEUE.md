@@ -58,3 +58,4 @@ START KZ-D07b base=41b4de1 branch=lane/kz-D07b df=49GB at 04:13
 END KZ-A02c head=62fd8ee reviewed=READY(review removed unused OutputRequest::info and resolve_sample_rate; smoke 808 and mini exit 0) merged=0e055e9 at 04:19
 START KZ-A03 base=e16415c branch=lane/kz-A03 df=43GB at 04:24
 START KZ-D10b base=a8390fe branch=lane/kz-D10b df=40GB at 04:26
+REVIEWED KZ-B01 head=6597d95 reviewed=fixed in review (close unparks before join; wake test now at production priority, which fails p50 388-488 us at load ~100); NOT landed until B01b (instrument links run real-time; refusal shown on screen); branch carried as lane/kz-B01b at 04:35
