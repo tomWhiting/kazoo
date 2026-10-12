@@ -278,7 +278,7 @@ impl App {
             View::List => {
                 self.say(
                     Tone::Info,
-                    "rack view: drag a knob up or down, scroll it for fine turns, drag from a \
+                    "rack view: drag a knob up or down, click it then scroll for fine turns, drag from a \
                      jack to a jack to patch, right-click a cable to unplug · v for the list"
                         .to_string(),
                     now,

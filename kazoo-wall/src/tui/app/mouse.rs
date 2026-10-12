@@ -656,9 +656,12 @@ impl App {
     /// with shift, or when the rack is no taller than the screen).
     fn wheel(&mut self, cell: (u16, u16), up: bool, shift: bool, now: Instant) {
         match self.rack.hit(cell) {
-            Some(Hit::Knob { module, knob }) => {
+            // Only the knob already chosen (clicked) turns: a trackpad's
+            // two-finger scroll passing over a knob pans, as anywhere else.
+            Some(Hit::Knob { module, knob })
+                if self.selected_index() == Some(module) && self.knob == knob =>
+            {
                 self.focus = Focus::Wall;
-                self.select(module, Some(knob));
                 self.turn(up, Step::Fine, now);
             }
             Some(_) => {

@@ -436,6 +436,14 @@ fn the_wheel_turns_a_knob_finely_and_pans_the_rack() {
     let mut app = rack_app();
     let cell = knob_at(&app, 2, 0);
     let t0 = Instant::now();
+    // Scrolling over a knob not yet clicked turns nothing.
+    mouse(&mut app, MouseEventKind::ScrollUp, cell, false, t0);
+    app.tick(t0 + Duration::from_millis(200));
+    assert!(calls(&mut app).is_empty());
+    mouse(&mut app, MouseEventKind::Down(LEFT), cell, false, t0);
+    mouse(&mut app, MouseEventKind::Up(LEFT), cell, false, t0);
+    app.tick(t0 + Duration::from_millis(200));
+    assert!(calls(&mut app).is_empty(), "a click alone turns nothing");
     mouse(&mut app, MouseEventKind::ScrollUp, cell, false, t0);
     app.tick(t0 + Duration::from_millis(200));
     let expected = cutoff_travel().turned(800.0, true, Step::Fine);

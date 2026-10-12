@@ -138,7 +138,7 @@ const HELP: &[(&str, &str)] = &[
     ("click", "select a module or a knob"),
     (
         "drag a knob",
-        "up or down turns it (shift: finely); the wheel turns it finely",
+        "up or down turns it (shift: finely); once clicked, the wheel turns it finely",
     ),
     ("double-click", "a knob goes back to its default"),
     (
