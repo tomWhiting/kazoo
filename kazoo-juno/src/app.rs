@@ -134,6 +134,9 @@ impl App {
     #[must_use]
     pub fn hub_badge(&self) -> Option<(String, bool)> {
         let hub = self.hub.as_ref()?;
+        if hub.normal_priority {
+            return Some(("desk link at normal priority".to_owned(), true));
+        }
         if !hub.connected {
             return Some(hub.last_refusal.as_ref().map_or_else(
                 || ("local output (desk not running)".to_owned(), false),
@@ -338,6 +341,7 @@ mod tests {
 
     fn status(connected: bool) -> LinkStatus {
         LinkStatus {
+            normal_priority: false,
             connected,
             strip: connected.then_some(3),
             blocks_sent: 0,

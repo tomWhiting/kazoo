@@ -7,7 +7,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
-use kazoo_core::ipc::link::{HubLink, LinkConfig, LinkStatus, hub_link};
+use kazoo_core::host::link::{LinkSetup, connect_or_direct};
+use kazoo_core::ipc::link::{HubLink, LinkStatus};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -90,12 +91,12 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<AudioCommand>(COMMAND_CAPACITY);
 
     // Plug into the kazoo-mix desk whenever it is running.
-    let (hub, hub_audio) = hub_link(LinkConfig::new(
-        "kazoo-303",
-        2,
-        sample_rate,
-        MAX_BLOCK as u32,
-    ))?;
+    let (hub, hub_audio) = connect_or_direct(&LinkSetup {
+        name: "kazoo-303",
+        channels: 2,
+        rate: sample_rate,
+        block: MAX_BLOCK,
+    })?;
 
     let mut engine = AudioEngine::new(
         sample_rate,
@@ -245,6 +246,9 @@ impl App {
 
     /// Where the 303's sound goes, for the header.
     pub(crate) fn link_label(&self) -> String {
+        if self.hub.as_ref().is_some_and(|hub| hub.normal_priority) {
+            return "desk link at normal priority".to_string();
+        }
         match &self.hub {
             None => String::from("\u{25cf} local"),
             Some(hub) if hub.connected => hub.strip.map_or_else(
@@ -514,6 +518,7 @@ mod tests {
         let mut app = App::new(44_100.0);
         assert_eq!(app.link_label(), "\u{25cf} local");
         let mut status = LinkStatus {
+            normal_priority: false,
             connected: true,
             strip: Some(2),
             blocks_sent: 0,

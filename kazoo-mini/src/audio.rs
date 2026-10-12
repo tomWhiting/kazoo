@@ -190,7 +190,7 @@ pub fn build_audio_stream(
         while let Ok(cmd) = cmd_rx.try_recv() {
             apply_command(&mut voice, cmd);
         }
-        while let Some(msg) = hub_audio.try_recv() {
+        for msg in kazoo_core::host::link::take_events(&mut hub_audio.events) {
             apply_hub_message(&mut voice, &msg);
         }
 

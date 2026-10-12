@@ -74,11 +74,13 @@ fn a_link_is_real_time_only_when_asked_and_only_once_plugged_in() {
         link.real_time().is_some()
     });
     #[cfg(target_os = "macos")]
-    assert_eq!(link.real_time(), Some(true));
+    assert_eq!(link.real_time(), Some(&Ok(())));
     drop(link);
 
     // Not asked: never promoted.
-    let (plain, _audio) = hub_link(config(&path)).unwrap();
+    let mut plain_config = config(&path);
+    plain_config.real_time = false;
+    let (plain, _audio) = hub_link(plain_config).unwrap();
     let (_stream, _buf) = accept(&listener);
     wait("the plain link to connect", || plain.is_connected());
     assert_eq!(plain.real_time(), None);
@@ -519,4 +521,48 @@ fn a_desk_that_stops_reading_is_unplugged() {
     );
     drop(link);
     std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn an_instrument_link_asks_for_real_time_by_default() {
+    assert!(LinkConfig::new("kazoo-808", 2, 48_000, 256).real_time);
+}
+
+#[test]
+fn a_refused_promotion_is_reported_not_printed() {
+    const PROBE: &str = "KZ_LINK_REFUSAL_PROBE";
+    if std::env::var_os(PROBE).is_some() {
+        let (link, audio) =
+            start_link(LinkConfig::new("refusal-test", 2, 48_000, 256), None, false).unwrap();
+        let why = RealTime::promote(Duration::ZERO).unwrap_err();
+        let expected = why.to_string();
+        assert!(priority::promote(&link.state, || Err(why)).is_none());
+        assert_eq!(
+            link.real_time().unwrap().as_ref().unwrap_err().to_string(),
+            expected
+        );
+        assert!(link.status().normal_priority);
+        drop(audio);
+        drop(link);
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "ipc::link::tests::a_refused_promotion_is_reported_not_printed",
+            "--nocapture",
+        ])
+        .env(PROBE, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "link wrote to stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

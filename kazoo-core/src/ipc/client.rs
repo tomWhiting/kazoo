@@ -124,9 +124,17 @@ impl HubIpcClient {
     /// registration: how an instrument that renders on a timer asks the
     /// desk to pace it (see [`RegisterMsg::pace_lead_frames`]).
     pub fn register_at(socket_path: &std::path::Path, reg: &RegisterMsg) -> io::Result<Self> {
+        Self::register_with_timeout(socket_path, reg, REGISTRATION_TIMEOUT)
+    }
+
+    pub(crate) fn register_with_timeout(
+        socket_path: &std::path::Path,
+        reg: &RegisterMsg,
+        timeout: Duration,
+    ) -> io::Result<Self> {
         let stream = UnixStream::connect(socket_path)?;
-        stream.set_read_timeout(Some(REGISTRATION_TIMEOUT))?;
-        stream.set_write_timeout(Some(REGISTRATION_TIMEOUT))?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
 
         let instrument_id = reg.instrument_id;
         let channel_count = reg.channel_count;

@@ -17,7 +17,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendErr
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig, hub_link};
+use kazoo_core::host::link::connect_config_or_direct;
+use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig};
 
 use super::DeskMode;
 use super::audio::headless_lead_frames;
@@ -252,6 +253,7 @@ struct Control {
     awaiting: HashMap<u64, (u64, u64)>,
     /// The audio counts, kept across rebuilds of the audio.
     counts: AudioCounts,
+    told_link_refused: bool,
 }
 
 /// Run the control thread until stopped.
@@ -280,6 +282,7 @@ pub fn run(setup: Setup) {
         last_tick: Instant::now(),
         awaiting: HashMap::new(),
         counts: AudioCounts::new(Instant::now()),
+        told_link_refused: false,
     };
     while !control.stopping {
         match setup.inbox.recv_timeout(TICK) {
@@ -438,7 +441,7 @@ fn link_to_desk(
     if pacing == Pacing::Timer {
         config.pace_lead_frames = headless_lead_frames(rate);
     }
-    match hub_link(config) {
+    match connect_config_or_direct(config) {
         Ok(link) => Some(link),
         Err(err) => {
             eprintln!("kazoo-wall: the desk link could not start: {err}; playing on my own");
@@ -794,6 +797,14 @@ impl Control {
     }
 
     fn housekeeping(&mut self) {
+        if !self.told_link_refused {
+            if let Some(Err(why)) = self.wall.desk_link().and_then(HubLink::real_time) {
+                eprintln!(
+                    "kazoo-wall: the desk link runs at normal priority ({why}); on a busy machine the desk may hear it jump"
+                );
+                self.told_link_refused = true;
+            }
+        }
         let now = Instant::now();
         self.last_tick = now;
         while let Ok(listen) = self.listen_rx.try_recv() {

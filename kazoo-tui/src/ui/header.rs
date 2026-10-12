@@ -457,6 +457,15 @@ fn desk_spans(desk: &DeskView) -> Vec<Span<'static>> {
         )),
     }
     if let DeskView::Link(link) = desk {
+        if link.normal_priority {
+            spans.insert(
+                0,
+                Span::styled(
+                    "desk link at normal priority  ",
+                    Style::default().fg(Color::Yellow),
+                ),
+            );
+        }
         if link.blocks_dropped > 0 || link.messages_dropped > 0 {
             spans.push(Span::styled(
                 format!(
@@ -718,6 +727,7 @@ mod tests {
 
     fn link(connected: bool) -> kazoo_core::ipc::link::LinkStatus {
         kazoo_core::ipc::link::LinkStatus {
+            normal_priority: false,
             connected,
             strip: None,
             blocks_sent: 0,

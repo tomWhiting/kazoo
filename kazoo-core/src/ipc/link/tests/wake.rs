@@ -15,14 +15,18 @@ impl Connection {
     fn new() -> Self {
         let path = socket();
         let listener = UnixListener::bind(&path).unwrap();
-        // The instruments' own setting: only the wall asks for real time, so
-        // the wake is measured at the priority every other instrument has.
+        // Measure the same scheduling request every instrument makes.
         let (link, mut audio) = hub_link(config(&path)).unwrap();
         let (mut stream, mut buffer) = accept(&listener);
         wait("the link to connect", || link.is_connected());
         // A round trip establishes that registration has finished serving.
         assert!(audio.send_audio(256, &[0.0; 512]));
         assert_eq!(buffer.read_frame(&mut stream).unwrap().msg_type, MSG_AUDIO);
+        match link.real_time() {
+            Some(Ok(())) => {}
+            Some(Err(why)) => panic!("production link was refused real-time scheduling: {why}"),
+            None => panic!("production link did not ask for real-time scheduling"),
+        }
         stream.set_nonblocking(true).unwrap();
         Self {
             link,

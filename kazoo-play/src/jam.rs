@@ -22,9 +22,10 @@ use std::thread;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use kazoo_core::host::link::connect_config_or_direct;
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::follow::{TransportFollower, beats_in};
-use kazoo_core::ipc::link::{HubLink, HubLinkAudio, LinkConfig, LinkStatus, hub_link};
+use kazoo_core::ipc::link::{HubLink, HubLinkAudio, LinkConfig, LinkStatus};
 use kazoo_core::ipc::types::{NOTE_OFF, NOTE_ON, NoteEventMsg};
 use kazoo_core::notation::{NotationError, parse_notation};
 use ringbuf::traits::{Consumer, Producer, Split};
@@ -220,7 +221,7 @@ impl JamEngine {
     }
 
     fn drain_hub(&mut self) {
-        while let Some(message) = self.hub.try_recv() {
+        for message in kazoo_core::host::link::take_events(&mut self.hub.events) {
             match message {
                 HubMessage::TransportSync(sync) => {
                     if self.follower.schedule(&sync).is_err() {
@@ -427,7 +428,7 @@ pub fn run_jam(options: &JamOptions) -> Result<(), String> {
     let (device, config, channels) = open_output()?;
     let rate = config.sample_rate;
 
-    let (link, hub_audio) = hub_link(LinkConfig::new(
+    let (link, hub_audio) = connect_config_or_direct(LinkConfig::new(
         &options.name,
         2,
         rate,
@@ -607,21 +608,30 @@ impl Reporter {
     fn report(&mut self, link: &HubLink, stats: &JamStats) {
         let now_linked = link.status();
         let changed = self.last.as_ref().is_none_or(|last| {
-            last.connected != now_linked.connected
+            last.normal_priority != now_linked.normal_priority
+                || last.connected != now_linked.connected
                 || last.strip != now_linked.strip
                 || last.last_refusal != now_linked.last_refusal
         });
         if changed {
+            let priority = if now_linked.normal_priority {
+                "; desk link at normal priority"
+            } else {
+                ""
+            };
             match (
                 now_linked.connected,
                 now_linked.strip,
                 &now_linked.last_refusal,
             ) {
                 (true, Some(strip), _) => {
-                    eprintln!("kazoo-play: on the desk, strip {}", u16::from(strip) + 1);
+                    eprintln!(
+                        "kazoo-play: on the desk, strip {}{priority}",
+                        u16::from(strip) + 1
+                    );
                 }
-                (_, _, Some(why)) => eprintln!("kazoo-play: playing on my own ({why})"),
-                _ => eprintln!("kazoo-play: playing on my own (no desk yet)"),
+                (_, _, Some(why)) => eprintln!("kazoo-play: playing on my own ({why}){priority}"),
+                _ => eprintln!("kazoo-play: playing on my own (no desk yet){priority}"),
             }
             self.last = Some(now_linked);
         }

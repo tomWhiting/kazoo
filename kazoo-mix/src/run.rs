@@ -262,6 +262,12 @@ const fn hub_priority(outcome: Option<&Result<(), NotRealTime>>) -> HubPriority 
 /// What the header says about the built-in demo, and whether it is on the
 /// desk.
 fn demo_line(status: &LinkStatus) -> (String, bool) {
+    if status.normal_priority {
+        return (
+            "808 demo: desk link at normal priority · ".to_string(),
+            status.connected,
+        );
+    }
     if let Some(strip) = status.strip.filter(|_| status.connected) {
         return (
             format!("808 demo on strip {} · ", u16::from(strip) + 1),
