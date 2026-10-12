@@ -47,11 +47,17 @@ impl Drive {
     ) -> Result<(), RequestError> {
         // A queued release must precede every later onset, including a
         // retrigger of the same pitch, so a late release cannot cut it off.
-        if self
+        // It goes first; if the link still refuses it, this event is refused
+        // with the link's own reason.
+        if let Some(off) = self
             .pending
-            .is_some_and(|off| event.on || off.note != event.note)
+            .filter(|off| event.on || off.note != event.note)
         {
-            return Err(RequestError::Full);
+            send(off.message(self.target))?;
+            self.pending = None;
+            if self.active == Some(off.note) {
+                self.active = None;
+            }
         }
         // The legacy message carries MIDI data only. Its enqueue happens
         // on the scheduler's stream frame rather than on the UI's clock.
@@ -365,29 +371,25 @@ mod tests {
             Err(RequestError::Full)
         );
         assert!(drive.release_waiting());
-        let mut attempted = false;
+        let mut attempted = Vec::new();
         assert_eq!(
-            drive.send(on, |_| {
-                attempted = true;
-                Ok(())
+            drive.send(on, |event| {
+                attempted.push(event.event_type);
+                Err(RequestError::NotConnected)
             }),
-            Err(RequestError::Full)
+            Err(RequestError::NotConnected),
+            "the refusal names the real cause"
         );
-        assert!(!attempted);
+        assert_eq!(attempted, [NOTE_OFF], "no onset passes a waiting release");
+        assert!(drive.release_waiting());
         let mut delivered = Vec::new();
-        drive
-            .retry(|event| {
-                delivered.push(event.event_type);
-                Ok(())
-            })
-            .unwrap();
-        assert!(!drive.release_waiting());
         drive
             .send(on, |event| {
                 delivered.push(event.event_type);
                 Ok(())
             })
             .unwrap();
+        assert!(!drive.release_waiting());
         assert_eq!(delivered, [NOTE_OFF, NOTE_ON]);
     }
 
