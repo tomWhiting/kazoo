@@ -25,6 +25,7 @@ mod pair;
 mod ringmod;
 mod screamer;
 mod solve;
+pub(crate) use screamer::Screamer;
 #[cfg(test)]
 mod testkit;
 

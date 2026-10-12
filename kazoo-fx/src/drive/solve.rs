@@ -113,11 +113,12 @@ impl SinhTable {
         along.mul_add(at(low_row + 1) - low, low)
     }
 
-    /// Solve with exactly `steps` Newton updates and bounded exponents.
+    /// Solve with zero, one or two Newton updates and bounded exponents.
     /// A non-finite input or nonpositive `mu` produces silence.
     #[must_use]
     #[inline]
     pub fn solve(&self, xi: f64, mu: f64, steps: u32) -> f64 {
+        assert!(steps <= 2, "the clipper supports at most two Newton steps");
         if !xi.is_finite() || !mu.is_finite() || mu <= 0.0 || self.values.is_empty() {
             return 0.0;
         }
@@ -125,14 +126,14 @@ impl SinhTable {
         // for two steps. Continue the edge slope in log mu, and start
         // beyond the input axis from the exponential's inverse.
         let log_mu = self.log_mu(mu);
-        let mut y = if xi.abs() > 81_377.395_706_429_85 {
+        let y = if xi.abs() > 81_377.395_706_429_85 {
             (xi / mu).asinh().clamp(-Y_MAX, Y_MAX)
         } else if log_mu < self.log_low || log_mu > self.log_high {
             self.seed_at(xi, log_mu).clamp(-Y_MAX, Y_MAX)
         } else {
             self.seed(xi, mu)
         };
-        for _ in 0..steps {
+        let update = |y: f64| {
             let rising = y.exp();
             let falling = 1.0 / rising;
             let sinh = 0.5 * (rising - falling);
@@ -142,9 +143,15 @@ impl SinhTable {
             } else {
                 (mu.mul_add(sinh, y) - xi, mu.mul_add(cosh, 1.0))
             };
-            y = (y - value / slope).clamp(-Y_MAX, Y_MAX);
+            (y - value / slope).clamp(-Y_MAX, Y_MAX)
+        };
+        if steps == 0 {
+            y
+        } else if steps == 1 {
+            update(y)
+        } else {
+            update(update(y))
         }
-        y
     }
 }
 
