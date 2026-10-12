@@ -37,8 +37,11 @@ fn langevin(q: f64) -> (f64, f64) {
         let inverse = 1.0 / q;
         return (q.signum() - inverse, inverse * inverse);
     }
+    // `Magnetic::default` fills the table before any processing, so this
+    // branch is not taken; if it ever were, the audio thread computes the
+    // exact curve instead of panicking or building the table itself.
     let Some(table) = LANGEVIN.get() else {
-        panic!("magnetic construction must prepare the Langevin table");
+        return langevin_exact(q);
     };
     let position = (q + Q_MAX) * LANGEVIN_SCALE;
     let index = (position as usize).min(LANGEVIN_POINTS - 2);
@@ -300,6 +303,21 @@ mod tests {
         }
         for input in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.25] {
             assert!(tape.process(input, 64.0, 1.0).is_finite());
+        }
+    }
+
+    #[test]
+    fn processing_before_the_table_exists_never_panics() {
+        // A literal skips `Default`, so under nextest's one process per
+        // test the table is still empty here: the audio path must fall
+        // back to the exact curve rather than panic.
+        let mut bare = Magnetic { m: 0.0, h: 0.0 };
+        let mut exact = Magnetic { m: 0.0, h: 0.0 };
+        for frame in 0..4_800 {
+            let input = (TAU * 110.0 * frame as f32 / 48_000.0).sin();
+            let value = bare.process(input, 1.5, 0.15);
+            let old = exact.process_with(input, 1.5, 0.15, Langevin::Exact);
+            assert_eq!(value.to_bits(), old.to_bits(), "frame {frame}");
         }
     }
 
