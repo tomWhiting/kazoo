@@ -23,36 +23,89 @@ use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
 
 use crate::ui;
 
-/// What the command line gave: nothing yet for this instrument.
+/// Destination and audition settings for the standalone arpeggiator.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Args;
+pub struct Args {
+    pub target: [u8; 16],
+    pub silent: bool,
+}
 
 /// What `--help` prints.
 pub const USAGE: &str = "kazoo-arp: Jupiter-8 style arpeggiator, note scheduler for any synth
 
-usage: kazoo arp
-       kazoo-arp
+usage: kazoo arp [--target all|UUID] [--silent]
+       kazoo-arp [--target all|UUID] [--silent]
 
 It plugs into the kazoo-mix desk whenever one is running, and plays on its
 own otherwise. Keys are on the panel.
+Notes drive every other instrument by default. --target selects a registered
+instrument UUID; this desk protocol cannot resolve instrument names.
+--silent mutes the audition voice while continuing to drive the desk.
 ";
 
 /// Read the arguments after the program name. `Ok(None)` means help was
 /// asked for; `Err` is one sentence saying what was wrong (the caller adds
 /// the usage).
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, String> {
-    let mut unknown = None;
-    for arg in args {
-        if matches!(arg.as_str(), "-h" | "--help") {
-            return Ok(None);
-        }
-        if unknown.is_none() {
-            unknown = Some(arg);
+    let args: Vec<_> = args.into_iter().collect();
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        return Ok(None);
+    }
+    let mut options = Args::default();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--target" => {
+                let target = args
+                    .next()
+                    .ok_or("--target requires all or an instrument UUID")?;
+                options.target = parse_target(&target)?;
+            }
+            "--silent" => options.silent = true,
+            other => return Err(format!("unknown argument '{other}'")),
         }
     }
-    unknown.map_or(Ok(Some(Args)), |other| {
-        Err(format!("unknown argument '{other}'"))
-    })
+    Ok(Some(options))
+}
+
+fn parse_target(target: &str) -> Result<[u8; 16], String> {
+    if target == "all" {
+        return Ok([0; 16]);
+    }
+    let malformed = || {
+        format!(
+            "invalid target '{target}': use all or a 32-digit instrument UUID; the desk cannot resolve names"
+        )
+    };
+    if target.len() != 32 && target.len() != 36 {
+        return Err(malformed());
+    }
+    let mut digits = target.bytes().enumerate().filter_map(|(index, byte)| {
+        if target.len() == 36 && matches!(index, 8 | 13 | 18 | 23) {
+            (byte != b'-').then_some(byte)
+        } else {
+            Some(byte)
+        }
+    });
+    let mut destination = [0; 16];
+    for byte in &mut destination {
+        let high = digits
+            .next()
+            .and_then(|digit| char::from(digit).to_digit(16))
+            .ok_or_else(&malformed)?;
+        let low = digits
+            .next()
+            .and_then(|digit| char::from(digit).to_digit(16))
+            .ok_or_else(&malformed)?;
+        *byte = ((high << 4) | low) as u8;
+    }
+    if digits.next().is_some() || destination == [0; 16] {
+        return Err(malformed());
+    }
+    Ok(destination)
 }
 
 /// The standalone binary's entry: parse, print the usage on help, run.
@@ -80,8 +133,6 @@ type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 /// (`color_eyre::install`); this never installs them, so one process can
 /// run several instruments one after another.
 pub fn run(args: Args) -> color_eyre::Result<()> {
-    let Args = args;
-
     // -----------------------------------------------------------------------
     // Audio setup
     // -----------------------------------------------------------------------
@@ -121,6 +172,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         display_prod,
         Arc::clone(&shared),
     );
+    engine.configure_output(args);
     let error_shared = Arc::clone(&shared);
     let stream = device.build_output_stream(
         &supported_config.into(),
@@ -278,7 +330,7 @@ mod tests {
     fn help_asks_for_the_usage() {
         assert_eq!(parse_args(["-h".to_owned()]), Ok(None));
         assert_eq!(parse_args(["--help".to_owned()]), Ok(None));
-        assert_eq!(parse_args([]), Ok(Some(Args)));
+        assert_eq!(parse_args([]), Ok(Some(Args::default())));
         assert_eq!(
             parse_args(["--bogus", "--help"].map(String::from)),
             Ok(None)

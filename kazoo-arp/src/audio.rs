@@ -13,6 +13,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+mod drive;
+
 use crate::{ArpClock, ArpCursor, ArpMode, Arpeggiator, ClockDivision, NoteEvent};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use kazoo_core::ipc::client::HubMessage;
@@ -121,6 +123,9 @@ pub struct EngineShared {
     pub stream_errors: AtomicU64,
     /// cpal reported the device gone or the stream invalid: no more audio.
     pub stream_lost: AtomicBool,
+    pub notes_lost: AtomicU64,
+    pub note_failure: AtomicU64,
+    pub releases_waiting: AtomicBool,
 }
 
 impl EngineShared {
@@ -272,6 +277,9 @@ pub struct AudioEngine {
     channels: usize,
     /// Interleaved stereo scratch block for the hub.
     stereo: Vec<f32>,
+    drive: crate::arp::Drive,
+    #[cfg(test)]
+    outgoing: Option<HeapProd<crate::arp::NoteEvent>>,
 }
 
 // HeapProd is !Debug; implement manually.
@@ -314,9 +322,25 @@ impl AudioEngine {
             shared,
             channels: channels.max(1),
             stereo: vec![0.0; MAX_CALLBACK_FRAMES * 2],
+            drive: crate::arp::Drive::default(),
+            #[cfg(test)]
+            outgoing: None,
         };
         engine.publish_transport();
         engine
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_notes(&mut self) -> ringbuf::HeapCons<crate::arp::NoteEvent> {
+        use ringbuf::traits::Split;
+        let (producer, consumer) = ringbuf::HeapRb::new(256).split();
+        self.outgoing = Some(producer);
+        consumer
+    }
+
+    #[cfg(test)]
+    pub(crate) fn schedule_transport(&mut self, sync: &kazoo_core::ipc::types::TransportSyncMsg) {
+        self.follower.schedule(sync).unwrap();
     }
 
     /// Render one device buffer. Real-time safe.
@@ -336,7 +360,18 @@ impl AudioEngine {
 
     fn apply(&mut self, cmd: AudioCommand) {
         match cmd {
-            AudioCommand::Arp(cmd) => apply_command(cmd, &mut self.arp, &mut self.clock),
+            AudioCommand::Arp(cmd) => {
+                let sounding = self.arp.current_sounding_note();
+                apply_command(cmd, &mut self.arp, &mut self.clock);
+                if let Some(note) = sounding.filter(|_| self.arp.current_sounding_note().is_none())
+                {
+                    self.voice.note_off();
+                    self.emit_note(
+                        NoteEvent::NoteOff { midi_note: note },
+                        self.hub.stream_frame(),
+                    );
+                }
+            }
             AudioCommand::Play => self.request_playing(true),
             AudioCommand::Stop => self.request_playing(false),
             AudioCommand::SetBpm(bpm) => self.request_bpm(bpm),
@@ -465,6 +500,7 @@ impl AudioEngine {
 
     /// Render at most [`MAX_CALLBACK_FRAMES`] frames into `chunk`.
     fn render_chunk(&mut self, chunk: &mut [f32]) {
+        self.retry_release();
         let mut frames = 0;
         let first = self.hub.stream_frame();
         for frame in chunk.chunks_mut(self.channels) {
@@ -472,8 +508,9 @@ impl AudioEngine {
                 self.follow(change);
             }
             let events = self.clock.tick(&mut self.arp);
-            if let Some(NoteEvent::NoteOff { .. }) = events.note_off {
+            if let Some(off) = events.note_off {
                 self.voice.note_off();
+                self.emit_note(off, first + frames as u64);
             }
             if let Some(NoteEvent::NoteOn {
                 midi_note,
@@ -481,11 +518,22 @@ impl AudioEngine {
             }) = events.note_on
             {
                 self.voice.note_on(midi_note, velocity);
+                self.emit_note(
+                    NoteEvent::NoteOn {
+                        midi_note,
+                        velocity,
+                    },
+                    first + frames as u64,
+                );
                 let cursor = self.arp.cursor();
                 self.publish(DisplayEvent::Played { midi_note, cursor });
             }
 
-            let sample = kazoo_core::soft_limit(self.voice.tick());
+            let sample = if self.drive.silent {
+                0.0
+            } else {
+                kazoo_core::soft_limit(self.voice.tick())
+            };
             frame.fill(sample);
             self.stereo[frames * 2] = sample;
             self.stereo[frames * 2 + 1] = sample;
