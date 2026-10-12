@@ -8,7 +8,7 @@ pub struct Args {
 }
 
 /// Help text for both ways to start the synthesizer.
-pub const USAGE: &str = "kazoo-string: Plucked-string physical-model synth: Karplus-Strong waveguides with stiffness, pick position and a wooden body
+pub const USAGE: &str = "kazoo-string: plucked-string physical-model synth, Karplus-Strong waveguides with stiffness, pick position and a wooden body
 
 usage: kazoo string [--phrase \"<kazoo-play notation>\"]
        kazoo-string [--phrase \"<kazoo-play notation>\"]
@@ -115,6 +115,13 @@ mod tests {
     fn usage_names_both_ways_to_start_it() {
         assert!(USAGE.contains("kazoo string"));
         assert!(USAGE.contains("kazoo-string"));
+    }
+
+    #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(USAGE.starts_with(
+            "kazoo-string: plucked-string physical-model synth, Karplus-Strong waveguides with stiffness, pick position and a wooden body\n"
+        ));
     }
 
     #[test]

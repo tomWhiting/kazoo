@@ -118,6 +118,11 @@ mod tests {
     }
 
     #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(USAGE.starts_with("kazoo-dx: four-operator FM synth in the DX/TX81Z tradition\n"));
+    }
+
+    #[test]
     fn args_parse() {
         let args = |v: &[&str]| parse_args(v.iter().map(|s| (*s).to_owned()));
         assert_eq!(args(&[]), Ok(Some(Args { phrase: None })));
