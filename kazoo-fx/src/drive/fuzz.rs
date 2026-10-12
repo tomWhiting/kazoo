@@ -535,12 +535,14 @@ mod tests {
             for index in 0..200_000 {
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 let signed = 2.0 * f64::from(state) / f64::from(u32::MAX) - 1.0;
-                let step = if index % 10 == 0 {
-                    signed * TINY_STEP * 0.5
+                // Pulled back towards zero so the walk stays in the bend
+                // around the corner instead of drifting onto the straight
+                // lines far from it.
+                let volts = if index % 10 == 0 {
+                    signed.mul_add(TINY_STEP * 0.5, memory.volts)
                 } else {
-                    signed * 0.5
+                    0.9f64.mul_add(memory.volts, signed * 0.5)
                 };
-                let volts = memory.volts + step;
                 let expected = transistor.smoothed_recomputed(volts, memory.volts);
                 let (actual, next) = transistor.smoothed(volts, memory);
                 assert_eq!(actual.to_bits(), expected.to_bits(), "step {index}");
