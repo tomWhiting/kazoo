@@ -47,3 +47,4 @@ START KZ-D12 base=303fc88 branch=lane/kz-D12 df=71GB at 03:31
 START KZ-D10a base=f5069f1 branch=lane/kz-D10a df=62GB at 03:32
 START KZ-D07a base=f5069f1 branch=lane/kz-D07a df=55GB at 03:33
 END KZ-G01b head=036c50e reviewed=READY(nothing to fix; pin passes on old and new code) merged=a71619a at 03:35
+END KZ-A02b head=50cd375 (A02 e2de947 + A02b) reviewed=READY(review added io/channel_adapt.rs so the tui engine's duplex path adapts to the opened width; open items -> A02c: double probe in run.rs, processing.rs stereo-only render) merged=6aaf7c1 at 03:41
