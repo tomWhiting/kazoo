@@ -38,3 +38,4 @@ START KZ-D07a base=f5069f1 branch=lane/kz-D07a df=116GB at 03:00
 START KZ-D10a base=f5069f1 branch=lane/kz-D10a df=110GB at 03:03
 END KZ-G01 head=56e05be reviewed=READY(reviewer made the halver work in usize with a bit-for-bit pin; open: Resampler::process last= unwrap_or clamp on an impossible length) merged=9668aa2 at 03:07
 REVIEWED KZ-A02 head=e2de947 reviewed=fixed in review (any callback size, Bluetooth fallback, B07 merge); NOT landed until A02b (any channel count, finding 3); branch carried as lane/kz-A02b at 03:11
+START KZ-A02b base=f5069f1 branch=lane/kz-A02b df=102GB at 03:12
