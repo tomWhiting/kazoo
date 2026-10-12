@@ -48,3 +48,5 @@ START KZ-D10a base=f5069f1 branch=lane/kz-D10a df=62GB at 03:32
 START KZ-D07a base=f5069f1 branch=lane/kz-D07a df=55GB at 03:33
 END KZ-G01b head=036c50e reviewed=READY(nothing to fix; pin passes on old and new code) merged=a71619a at 03:35
 END KZ-A02b head=50cd375 (A02 e2de947 + A02b) reviewed=READY(review added io/channel_adapt.rs so the tui engine's duplex path adapts to the opened width; open items -> A02c: double probe in run.rs, processing.rs stereo-only render) merged=6aaf7c1 at 03:41
+INCOMPLETE KZ-D12 head=aca9f89 branch=lane/kz-D12 kept: EQ coefficient bound 7e-4 vs 1e-4 (wrong measure; retry judges response within 0.01 dB), glide bench 5.62->5.59 ms (pan trig per sample found; retry adds it), fx suite interrupted at load at 03:58
+START KZ-A02c base=a7bfad1 branch=lane/kz-A02c df=69GB at 03:58
