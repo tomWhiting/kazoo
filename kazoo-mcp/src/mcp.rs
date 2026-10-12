@@ -9,16 +9,13 @@ mod tests {
         let schema = serde_json::Value::Object(tool.input_schema.as_ref().clone());
         assert!(schema.to_string().contains("\"list\""));
 
-        let log_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/kz-logs");
-        let log_dir = std::fs::canonicalize(log_dir).unwrap();
+        // A short runtime folder keeps the socket path inside its limit,
+        // as the seat tests do; nothing here depends on a build folder.
         let runtime = tempfile::Builder::new()
             .prefix("mc")
-            .tempdir_in(&log_dir)
+            .tempdir_in("/tmp")
             .unwrap();
-        let state = tempfile::Builder::new()
-            .prefix("chains")
-            .tempdir_in(&log_dir)
-            .unwrap();
+        let state = tempfile::tempdir().unwrap();
         let daemon = kazoo_wall::daemon::Daemon::start(kazoo_wall::daemon::DaemonConfig {
             load_guard: false,
             ..kazoo_wall::daemon::DaemonConfig::headless(runtime.path(), state.path())
