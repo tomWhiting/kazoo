@@ -1,4 +1,4 @@
-//! kazoo-dx — four-operator FM synthesizer for the terminal.
+//! kazoo-dx on its own: the same instrument `kazoo dx` runs.
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;

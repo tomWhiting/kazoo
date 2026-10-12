@@ -1,4 +1,4 @@
-//! kazoo-string — plucked-string physical-model synthesizer for the terminal.
+//! kazoo-string on its own: the same instrument `kazoo string` runs.
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
