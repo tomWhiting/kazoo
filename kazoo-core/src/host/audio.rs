@@ -102,16 +102,13 @@ impl StreamHealth {
     }
 
     fn check_fault(&self) -> Result<()> {
-        match self.fault.load(Ordering::Acquire) {
-            0 => Ok(()),
-            1 => Err(Error::Device(format!(
-                "{}: device changed the negotiated callback size",
-                self.context
-            ))),
-            _ => Err(Error::Device(format!(
+        if self.fault.load(Ordering::Acquire) == 0 {
+            Ok(())
+        } else {
+            Err(Error::Device(format!(
                 "{}: stream error queue overflowed",
                 self.context
-            ))),
+            )))
         }
     }
 }
@@ -318,33 +315,55 @@ mod tests {
     }
 
     #[test]
+    fn a_callback_of_another_size_still_plays() {
+        let chosen = configure(&OutputRequest::default(), 48_000, &fake_ranges(), 128).unwrap();
+        let mut output =
+            OutputCallback::<f32, _>::new(chosen.info, |data: &mut [f32], _: &OutputInfo| {
+                data.fill(0.5)
+            });
+        for frames in [64_usize, 128, 300, 1024] {
+            let mut data = vec![0.0_f32; frames * 2];
+            output.process(&mut data);
+            assert!(
+                data.iter()
+                    .all(|sample| (*sample - 0.5).abs() < f32::EPSILON),
+                "{frames} frames came out silent"
+            );
+        }
+        let heard = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&heard);
+        let mut input = super::super::audio_callback::InputCallback::new(
+            chosen.info,
+            move |data: &[f32], _: &OutputInfo| {
+                counted.fetch_add(data.len(), Ordering::Relaxed);
+            },
+        );
+        input.process(&[0.1_f32; 600]);
+        assert_eq!(heard.load(Ordering::Relaxed), 600);
+    }
+
+    #[test]
     fn info_is_built_once_and_matches_the_stream() {
         let chosen = configure(&OutputRequest::default(), 48_000, &fake_ranges(), 128).unwrap();
         let calls = AtomicUsize::new(0);
         let address = AtomicUsize::new(0);
         let expected = chosen.info;
-        let fault = std::sync::Arc::new(AtomicUsize::new(0));
-        let mut callback = OutputCallback::<f32, _>::new(
-            chosen.info,
-            |data, info: &OutputInfo| {
-                assert_eq!(*info, expected);
-                assert_eq!(data.len(), info.frames * usize::from(info.channels));
-                let current = std::ptr::from_ref(info) as usize;
-                if calls.fetch_add(1, Ordering::Relaxed) == 0 {
-                    address.store(current, Ordering::Relaxed);
-                } else {
-                    assert_eq!(address.load(Ordering::Relaxed), current);
-                }
-                data.fill(0.25);
-            },
-            std::sync::Arc::clone(&fault),
-        );
+        let mut callback = OutputCallback::<f32, _>::new(chosen.info, |data, info: &OutputInfo| {
+            assert_eq!(*info, expected);
+            assert_eq!(data.len(), info.frames * usize::from(info.channels));
+            let current = std::ptr::from_ref(info) as usize;
+            if calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                address.store(current, Ordering::Relaxed);
+            } else {
+                assert_eq!(address.load(Ordering::Relaxed), current);
+            }
+            data.fill(0.25);
+        });
         let mut data = [0.0; 256];
         for _ in 0..3 {
             callback.process(&mut data);
         }
         assert_eq!(calls.load(Ordering::Relaxed), 3);
-        assert_eq!(fault.load(Ordering::Relaxed), 0);
         assert!(
             data.iter()
                 .all(|sample| (*sample - 0.25_f32).abs() < f32::EPSILON)

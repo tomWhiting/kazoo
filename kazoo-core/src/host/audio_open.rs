@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use crossbeam_channel::Sender;
 
-use super::audio::{OpenedOutput, OutputInfo, OutputRequest, StreamHealth, prepare};
+use super::audio::{Chosen, OpenedOutput, OutputInfo, OutputRequest, StreamHealth, prepare};
 use super::audio_callback::{InputCallback, OutputCallback};
 use crate::{Error, Result};
 
@@ -30,7 +30,8 @@ pub fn open_output_with_frames<F>(
 where
     F: FnMut(&mut [f32], &OutputInfo) + Send + 'static,
 {
-    let (device, chosen, context) = prepare(request, false, frames)?;
+    let (device, mut chosen, context) = prepare(request, false, frames)?;
+    fall_back_when_fixed_is_refused(&device, &mut chosen, false);
     let (errors, receiver) = crossbeam_channel::bounded(16);
     let fault = Arc::new(AtomicUsize::new(0));
     let stream = match chosen.format {
@@ -87,7 +88,8 @@ pub fn open_input_with_frames<F>(
 where
     F: FnMut(&[f32], &OutputInfo) + Send + 'static,
 {
-    let (device, chosen, context) = prepare(request, true, frames)?;
+    let (device, mut chosen, context) = prepare(request, true, frames)?;
+    fall_back_when_fixed_is_refused(&device, &mut chosen, true);
     let (errors, receiver) = crossbeam_channel::bounded(16);
     let fault = Arc::new(AtomicUsize::new(0));
     let stream = match chosen.format {
@@ -148,7 +150,7 @@ where
     T: cpal::SizedSample + cpal::FromSample<f32> + 'static,
     F: FnMut(&mut [f32], &OutputInfo) + Send + 'static,
 {
-    let mut callback = OutputCallback::<T, _>::new(info, callback, Arc::clone(&fault));
+    let mut callback = OutputCallback::<T, _>::new(info, callback);
     device.build_output_stream(
         config,
         move |data: &mut [T], _| callback.process(data),
@@ -170,7 +172,7 @@ where
     f32: cpal::FromSample<T>,
     F: FnMut(&[f32], &OutputInfo) + Send + 'static,
 {
-    let mut callback = InputCallback::new(info, callback, Arc::clone(&fault));
+    let mut callback = InputCallback::new(info, callback);
     device.build_input_stream(
         config,
         move |data: &[T], _| callback.process(data),
@@ -182,5 +184,38 @@ where
 fn record_error(errors: &Sender<cpal::StreamError>, fault: &AtomicUsize, error: cpal::StreamError) {
     if errors.try_send(error).is_err() {
         fault.store(2, Ordering::Release);
+    }
+}
+
+/// Bluetooth and some aggregate devices refuse a fixed buffer size. Probe
+/// with a silent stream of the chosen format first and use the device's
+/// own buffer size when the fixed one is refused, as the engine did before
+/// the shared host. Any callback length is rendered, so this never changes
+/// what is heard.
+fn fall_back_when_fixed_is_refused(device: &cpal::Device, chosen: &mut Chosen, input: bool) {
+    let refused = match chosen.format {
+        cpal::SampleFormat::F32 => probe::<f32>(device, &chosen.config, input),
+        cpal::SampleFormat::I16 => probe::<i16>(device, &chosen.config, input),
+        cpal::SampleFormat::U16 => probe::<u16>(device, &chosen.config, input),
+        _ => false,
+    };
+    if refused {
+        chosen.config.buffer_size = cpal::BufferSize::Default;
+    }
+}
+
+fn probe<T: cpal::SizedSample + 'static>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    input: bool,
+) -> bool {
+    if input {
+        device
+            .build_input_stream(config, |_: &[T], _| {}, drop, None)
+            .is_err()
+    } else {
+        device
+            .build_output_stream(config, |_: &mut [T], _| {}, drop, None)
+            .is_err()
     }
 }
