@@ -227,3 +227,28 @@ fn chain_add_reports_unknown_save_for_a_missing_chain() {
     assert_eq!(refused.code, ErrorCode::UnknownSave);
     drop(engine);
 }
+
+#[test]
+fn chain_with_a_half_step_on_a_stepped_knob_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut wall, engine) = chain_wall(dir.path());
+    save_chain(&mut wall);
+    let file = dir.path().join("chains/voice.json");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(value["modules"][0]["kind"], "vco");
+    value["modules"][0]["knobs"][0] = serde_json::json!(1.5);
+    std::fs::write(file, serde_json::to_vec(&value).unwrap()).unwrap();
+    let before = wall.patch().clone();
+    let request = crate::protocol::Request::ChainAdd {
+        name: "voice".to_string(),
+    };
+    assert_eq!(
+        wall.request("Tom", &request, Instant::now())
+            .unwrap_err()
+            .code,
+        ErrorCode::BrokenSave
+    );
+    assert_eq!(wall.patch(), &before);
+    drop(engine);
+}

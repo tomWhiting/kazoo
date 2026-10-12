@@ -118,9 +118,9 @@ impl Chain {
                     .knobs
                     .iter()
                     .zip(&kind.spec().knobs)
-                    .any(|(value, knob)| {
-                        !value.is_finite() || *value < knob.min || *value > knob.max
-                    })
+                    // A value its knob would change (out of range, a part
+                    // step on a stepped knob, not a number) is refused.
+                    .any(|(value, knob)| !value.is_finite() || knob.clamp(*value) != *value)
             {
                 return Err(bad("the chain has invalid knob values"));
             }
