@@ -354,6 +354,10 @@ impl Effect for Screamer {
         // The leading delay error of backward Euler is half a step.
         // At two times the host rate its excess over the finely stepped
         // circuit exceeds the latency tolerance, so the pad absorbs it.
+        // At higher factors the excess is inside the tolerance, and the
+        // frozen reference steps with the same backward Euler delay, so
+        // padding there would move this circuit away from the reference
+        // and break the null (measured: default -38.82 dB, hot -35.99 dB).
         let extra = if matches!(self.solve, Solve::Table) && factor == 2 {
             0.5 * (1.0 - f64::from(base) * factor as f64 / f64::from(4.0 * TARGET_RATE))
         } else {
