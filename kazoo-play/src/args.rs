@@ -66,7 +66,7 @@ pub enum Mode {
 }
 
 /// What `--help` prints.
-pub const USAGE: &str = "usage: kazoo play [--play|--events|--jam] [--bpm N] [--sample-rate HZ] [--channel 0-15] [--format lines|tsv] [--name NAME] [--velocity 0-127] [--drive] [NOTATION...]\n       kazoo-play [--play|--events|--jam] [--bpm N] [--sample-rate HZ] [--channel 0-15] [--format lines|tsv] [--name NAME] [--velocity 0-127] [--drive] [NOTATION...]\n\n--jam plugs into the kazoo-mix desk and loops the phrase on the song, locked to the desk's play/stop and tempo; each line on stdin is a new phrase, taking over at the next loop. --drive sends the notes to the other instruments instead of sounding.\n\nexamples:\n  kazoo-play --jam --name bass 'c2/8 c2/8 r/4 eb2/8 g2/8 r/4'\n  echo 'c4/8 d4/8 e4/8 [g4 b4 d5]/4 r/8' | kazoo-play --play\n  kazoo-play --bpm 96 --channel 2 'c3/4 [g3 bb3]/4 r/8 c4/8'\n";
+pub const USAGE: &str = "kazoo-play: pipe text notation into timestamped musical events or sound\n\nusage: kazoo play [--play|--events|--jam] [--bpm N] [--sample-rate HZ] [--channel 0-15] [--format lines|tsv] [--name NAME] [--velocity 0-127] [--drive] [NOTATION...]\n       kazoo-play [--play|--events|--jam] [--bpm N] [--sample-rate HZ] [--channel 0-15] [--format lines|tsv] [--name NAME] [--velocity 0-127] [--drive] [NOTATION...]\n\n--jam plugs into the kazoo-mix desk and loops the phrase on the song, locked to the desk's play/stop and tempo; each line on stdin is a new phrase, taking over at the next loop. --drive sends the notes to the other instruments instead of sounding.\n\nexamples:\n  kazoo-play --jam --name bass 'c2/8 c2/8 r/4 eb2/8 g2/8 r/4'\n  echo 'c4/8 d4/8 e4/8 [g4 b4 d5]/4 r/8' | kazoo-play --play\n  kazoo-play --bpm 96 --channel 2 'c3/4 [g3 bb3]/4 r/8 c4/8'\n";
 
 /// Why a run did not deliver, and the exit code a shell should see.
 #[derive(Debug)]
@@ -305,6 +305,19 @@ mod tests {
                 ..Args::default()
             }))
         );
+    }
+
+    #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(USAGE.starts_with(
+            "kazoo-play: pipe text notation into timestamped musical events or sound\n\n"
+        ));
+    }
+
+    #[test]
+    fn usage_names_both_ways_to_start_it() {
+        assert!(USAGE.contains("usage: kazoo play "));
+        assert!(USAGE.contains("\n       kazoo-play "));
     }
 
     #[test]
