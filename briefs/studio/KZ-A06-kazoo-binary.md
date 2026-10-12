@@ -6,6 +6,14 @@ From A01g's review: `kazoo_wall::run(Args::Console)` builds its `ServeCommand` f
 
 Depends on A01a to A01g (every crate exposes `run(Args)`), A02, A03, A04 (`kazoo_host::reports::install` installs error reports once), A05.
 
+## Running before A04 and A05 (Cassio, 13 Oct 07:35; Tom wants the one binary now)
+
+A04 and A05 have not landed: there is no `kazoo-host` crate yet. Build A06 without them:
+- Leave `kazoo-host` out of `kazoo-cli/Cargo.toml`. In `main`, call `color_eyre::install()` with the same handling the brief gives `kazoo_host::reports::install()` (print `kazoo: {err}` to stderr and return `ExitCode::FAILURE`). Add a one-line comment saying A04 replaces this with `kazoo_host::reports::install`.
+- Nothing in A06 uses A05's keyboard map; ignore it.
+- Everything else in this brief stands as written.
+
+
 ## Outcome
 
 `kazoo mix`, `kazoo wall` (the console), `kazoo wall serve`, `kazoo wall stop`, `kazoo mcp --seat Cassio`, `kazoo 808`, `kazoo 303`, `kazoo cs80`, `kazoo mini`, `kazoo juno`, `kazoo prophet`, `kazoo dx --phrase "..."`, `kazoo string`, `kazoo glass --demo x.wav`, `kazoo arp`, `kazoo play ...` and `kazoo mouth` (the voice synth, kazoo-tui) all run from one binary, `target/release/kazoo`, with `kazoo --help` listing them and `kazoo <name> --help` giving each one's flags. The wall's console restarts a missing daemon as `kazoo wall serve`. The fourteen per-crate binaries still build (the mcp tests spawn `kazoo-mcp` as a child process, `kazoo-mcp/tests/seat.rs:115`), but every usage text and README now names the `kazoo` form first. `kazoo studio` is A07's.
