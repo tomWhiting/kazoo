@@ -120,7 +120,7 @@ impl Chain {
                     .zip(&kind.spec().knobs)
                     // A value its knob would change (out of range, a part
                     // step on a stepped knob, not a number) is refused.
-                    .any(|(value, knob)| !value.is_finite() || knob.clamp(*value) != *value)
+                    .any(|(value, knob)| !value.is_finite() || knob.clamp(*value).to_bits() != value.to_bits())
             {
                 return Err(bad("the chain has invalid knob values"));
             }
