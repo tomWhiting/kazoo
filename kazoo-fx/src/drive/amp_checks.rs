@@ -45,6 +45,11 @@ fn switching_the_voice_does_not_click() {
     }
 }
 
+/// Flat out, the grids conduct and charge the input coupling capacitor,
+/// which then drains through the one megohm grid leak: a time constant of
+/// 0.1 s, the same in the reference. One second of silence leaves that
+/// recovery near 2.5e-4 RMS, so the amp gets two seconds, and every half
+/// second of it must be quieter than the last: a decay, not a hum.
 #[test]
 fn flat_out_square_wave_stays_bounded_and_the_tail_dies() {
     let mut amp = Amp::new();
@@ -58,7 +63,7 @@ fn flat_out_square_wave_stays_bounded_and_the_tail_dies() {
     let mut input: Vec<f32> = (0..48_000)
         .map(|frame| if frame % 960 < 480 { 16.0 } else { -16.0 })
         .collect();
-    input.resize(96_000, 0.0);
+    input.resize(144_000, 0.0);
     let outputs: [Vec<f32>; 2] = render(&mut amp, &input, &input).into();
     for output in outputs {
         assert!(
@@ -66,7 +71,15 @@ fn flat_out_square_wave_stays_bounded_and_the_tail_dies() {
                 .iter()
                 .all(|sample| sample.is_finite() && sample.abs() <= 2.0)
         );
-        let tail = rms(&output[91_200..]);
+        let windows: Vec<f64> = [67_200, 91_200, 115_200, 139_200]
+            .iter()
+            .map(|&start| rms(&output[start..start + 4_800]))
+            .collect();
+        assert!(
+            windows.windows(2).all(|pair| pair[1] < pair[0]),
+            "the tail does not decay: {windows:?}"
+        );
+        let tail = rms(&output[139_200..]);
         assert!(tail < 1e-7, "tail RMS {tail}");
     }
 }
