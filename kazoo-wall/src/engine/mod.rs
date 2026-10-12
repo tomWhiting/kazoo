@@ -526,6 +526,7 @@ pub struct Engine {
     min_glide: u32,
     inputs: [Block; MAX_INPUTS],
     knob_cv: [Block; MAX_KNOBS],
+    filled: u32,
     cables: Box<CableTable>,
     order: Box<Order>,
     commands: HeapCons<Command>,
@@ -662,6 +663,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         min_glide: ((rate * MIN_GLIDE_SECONDS).round() as u32).max(1),
         inputs: [[0.0; SUB_BLOCK]; MAX_INPUTS],
         knob_cv: [[0.0; SUB_BLOCK]; MAX_KNOBS],
+        filled: 0,
         cables: Box::new(CableTable::new()),
         order: Box::new(Order::default()),
         commands: command_rx,
@@ -977,6 +979,7 @@ impl Engine {
         page.tags[at] = tag;
         page.kinds[at] = Some(kind);
         page.outputs[at] = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
+        page.gliding[at] = 0;
         for (index, value) in knobs.iter().enumerate() {
             let value = kazoo_core::sanitize_sample(*value);
             page.glides[at][index] = Glide::resting(value, kind.spec().knobs.get(index));
@@ -1039,6 +1042,8 @@ impl Engine {
             *glide = Glide::at(target, 0.0);
         }
         let value = glide.value;
+        page.gliding[at] =
+            (page.gliding[at] & !(1 << knob)) | (u32::from(glide.remaining > 0) << knob);
         page.knobs[at][knob] = value;
         page.publish(at, knob, value);
     }
@@ -1104,10 +1109,10 @@ impl Engine {
         }
         let mut left = [0.0; SUB_BLOCK];
         let mut right = [0.0; SUB_BLOCK];
-        for page in self.room.pages().iter().flatten() {
-            let slots = page.kinds.iter().zip(&page.modules).zip(&page.outputs);
-            for ((kind, module), outputs) in slots {
-                if *kind == Some(Kind::OUT) && module.is_some() {
+        for &slot in self.order.outs() {
+            if let Some((page, at)) = self.room.page(slot as usize) {
+                if page.kinds[at] == Some(Kind::OUT) && page.modules[at].is_some() {
+                    let outputs = &page.outputs[at];
                     for frame in 0..SUB_BLOCK {
                         left[frame] += outputs[crate::dsp::FEED_LEFT][frame];
                         right[frame] += outputs[crate::dsp::FEED_RIGHT][frame];
@@ -1141,43 +1146,34 @@ impl Engine {
         let Some((page, at)) = self.room.page_mut(slot) else {
             return;
         };
-        let Some(kind) = page.kinds[at] else {
+        let Some(kind) = page.kinds[at].filter(|_| page.modules[at].is_some()) else {
             return;
         };
-        let knob_state = page.glides[at]
-            .iter_mut()
-            .zip(page.knobs[at].iter_mut())
-            .zip(page.published[at].iter());
-        for (knob, ((glide, value), cell)) in knob_state.enumerate() {
-            let sweep = glide.advance(kind.spec().knobs.get(knob));
-            self.sweeps[knob] = sweep;
-            if sweep.frames > 0 {
-                *value = glide.value;
-                cell.store(value.to_bits(), Ordering::Relaxed);
-            }
-        }
-        let mut connected = [false; MAX_INPUTS];
-        for (input, plugged) in connected.iter_mut().enumerate() {
-            *plugged = gather(
+        let gliding = page.advance_glides(at, kind, &mut self.sweeps);
+        let mask = self.cables.plugged(slot);
+        tables::clear_jacks(self.filled & !mask, &mut self.inputs, &mut self.knob_cv);
+        self.filled = mask;
+        let mut pending = mask;
+        while pending != 0 {
+            let jack = pending.trailing_zeros() as usize;
+            let buffer = if jack < MAX_INPUTS {
+                &mut self.inputs[jack]
+            } else {
+                &mut self.knob_cv[jack - MAX_INPUTS]
+            };
+            gather(
                 &self.cables,
                 &self.room,
                 &mut self.lines,
                 slot,
-                input,
-                &mut self.inputs[input],
+                jack,
+                buffer,
             );
+            pending &= pending - 1;
         }
-        let mut knob_patched = [false; MAX_KNOBS];
-        for (knob, plugged) in knob_patched.iter_mut().enumerate() {
-            *plugged = gather(
-                &self.cables,
-                &self.room,
-                &mut self.lines,
-                slot,
-                MAX_INPUTS + knob,
-                &mut self.knob_cv[knob],
-            );
-        }
+        let connected = std::array::from_fn(|input| mask & (1 << input) != 0);
+        let knob_patched = std::array::from_fn(|knob| mask & (1 << (MAX_INPUTS + knob)) != 0);
+        let fed = std::array::from_fn(|port| self.cables.feeds(slot, port));
         let Some((page, at)) = self.room.page_mut(slot) else {
             return;
         };
@@ -1199,13 +1195,17 @@ impl Engine {
                 knob_patched,
                 inputs: &self.inputs,
                 connected,
-                fed: std::array::from_fn(|port| self.cables.feeds(slot, port)),
+                fed,
                 outputs: &mut *outputs,
             },
         );
-        let healthy = outputs
-            .iter()
-            .all(|port| port.iter().all(|sample| sample.is_finite()));
+        room::rest_sweeps(gliding, &mut self.sweeps);
+        let healthy = outputs.iter().enumerate().all(|(port, samples)| {
+            !(fed[port]
+                || kind == Kind::OUT
+                    && (port == crate::dsp::FEED_LEFT || port == crate::dsp::FEED_RIGHT))
+                || samples.iter().all(|sample| sample.is_finite())
+        });
         if !healthy {
             *outputs = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
             module.reset();

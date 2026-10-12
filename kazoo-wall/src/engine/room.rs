@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::{Glide, slice_of};
 use crate::catalogue::Kind;
-use crate::dsp::{Block, Module};
+use crate::dsp::{Block, Module, Sweep};
 use crate::{MAX_KNOBS, MAX_OUTPUTS, SUB_BLOCK};
 
 /// Slots in a page: the unit the room grows by.
@@ -45,6 +45,7 @@ pub struct Page {
     pub(super) tags: Box<[u32]>,
     pub(super) kinds: Box<[Option<Kind>]>,
     pub(super) glides: Box<[[Glide; MAX_KNOBS]]>,
+    pub(super) gliding: Box<[u32]>,
     pub(super) knobs: Box<[[f32; MAX_KNOBS]]>,
     pub(super) outputs: Box<[[Block; MAX_OUTPUTS]]>,
     /// Shared with the control side, which reads the values the engine
@@ -79,6 +80,7 @@ impl Page {
             tags: slice_of(SLOTS_PER_PAGE, || 0)?,
             kinds: slice_of(SLOTS_PER_PAGE, || None)?,
             glides: slice_of(SLOTS_PER_PAGE, || [Glide::at(0.0, 0.0); MAX_KNOBS])?,
+            gliding: slice_of(SLOTS_PER_PAGE, || 0)?,
             knobs: slice_of(SLOTS_PER_PAGE, || [0.0; MAX_KNOBS])?,
             outputs: slice_of(SLOTS_PER_PAGE, || [[0.0; SUB_BLOCK]; MAX_OUTPUTS])?,
             published: Arc::new(cells),
@@ -90,6 +92,37 @@ impl Page {
         if let Some(cell) = self.published.get(at).and_then(|knobs| knobs.get(knob)) {
             cell.store(value.to_bits(), Ordering::Relaxed);
         }
+    }
+
+    pub(super) fn advance_glides(
+        &mut self,
+        at: usize,
+        kind: Kind,
+        sweeps: &mut [Sweep; MAX_KNOBS],
+    ) -> u32 {
+        let moving = self.gliding[at];
+        let mut mask = moving;
+        while mask != 0 {
+            let knob = mask.trailing_zeros() as usize;
+            let glide = &mut self.glides[at][knob];
+            sweeps[knob] = glide.advance(kind.spec().knobs.get(knob));
+            if sweeps[knob].frames > 0 {
+                self.knobs[at][knob] = glide.value;
+                self.published[at][knob].store(glide.value.to_bits(), Ordering::Relaxed);
+            }
+            if glide.remaining == 0 {
+                self.gliding[at] &= !(1 << knob);
+            }
+            mask &= mask - 1;
+        }
+        moving
+    }
+}
+
+pub(super) const fn rest_sweeps(mut mask: u32, sweeps: &mut [Sweep; MAX_KNOBS]) {
+    while mask != 0 {
+        sweeps[mask.trailing_zeros() as usize] = Sweep::REST;
+        mask &= mask - 1;
     }
 }
 
@@ -155,11 +188,6 @@ impl Room {
         for (mine, theirs) in self.pages.iter_mut().zip(old.pages.iter_mut()) {
             std::mem::swap(mine, theirs);
         }
-    }
-
-    /// Every page, in order.
-    pub(super) fn pages(&self) -> &[Option<Box<Page>>] {
-        &self.pages
     }
 
     /// The page holding `slot`, and the slot's place in it.

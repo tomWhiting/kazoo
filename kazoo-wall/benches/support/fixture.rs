@@ -90,11 +90,17 @@ impl Fixture {
             })
             .sum();
         let slots: Vec<usize> = self.slots.iter().map(|(slot, _)| *slot).collect();
+        let outs: Vec<usize> = self
+            .slots
+            .iter()
+            .filter_map(|(slot, kind)| (*kind == Kind::OUT).then_some(*slot))
+            .collect();
         let edges: Vec<(usize, usize)> =
             self.cables.iter().map(|cable| (cable.0, cable.2)).collect();
         self.control.send(Command::Cables(Box::new(table)));
-        self.control
-            .send(Command::Order(Box::new(processing_order(&slots, &edges))));
+        self.control.send(Command::Order(Box::new(processing_order(
+            &slots, &edges, &outs,
+        ))));
         let mut buffer = [0.0; 512 * 2];
         // Large fixtures outgrow the command ring before the first callback.
         loop {

@@ -7,7 +7,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::{MAX_JACKS, MAX_OUTPUTS};
+use crate::dsp::Block;
+use crate::{MAX_INPUTS, MAX_JACKS, MAX_KNOBS, MAX_OUTPUTS};
 
 /// The longest delay a cable carries to keep its signal in step with the
 /// others arriving at the same module, in frames (about 21 ms at 48 kHz).
@@ -60,6 +61,7 @@ pub struct CableTable {
     /// By slot, then jack: as long as the highest slot anything was
     /// plugged into.
     routes: Vec<[Option<Route>; MAX_JACKS]>,
+    plugged: Vec<u32>,
     /// By slot, then output: the cables reading it. Kept by [`Self::set`];
     /// as long as the highest slot a cable came from.
     feeds: Vec<[u32; MAX_OUTPUTS]>,
@@ -81,6 +83,7 @@ impl CableTable {
     pub const fn new() -> Self {
         Self {
             routes: Vec::new(),
+            plugged: Vec::new(),
             feeds: Vec::new(),
             lines: 0,
         }
@@ -94,11 +97,13 @@ impl CableTable {
     pub fn with_slots(slots: usize) -> Option<Self> {
         let mut table = Self::new();
         let sized = table.routes.try_reserve_exact(slots).is_ok()
+            && table.plugged.try_reserve_exact(slots).is_ok()
             && table.feeds.try_reserve_exact(slots).is_ok();
         if !sized {
             return None;
         }
         table.routes.resize(slots, [None; MAX_JACKS]);
+        table.plugged.resize(slots, 0);
         table.feeds.resize(slots, [0; MAX_OUTPUTS]);
         Some(table)
     }
@@ -128,11 +133,15 @@ impl CableTable {
                 slot.saturating_add(1),
                 (new.slot as usize).saturating_add(1),
             );
-            if !(room_for(&mut self.routes, routes) && room_for(&mut self.feeds, feeds)) {
+            if !(room_for(&mut self.routes, routes)
+                && room_for(&mut self.plugged, routes)
+                && room_for(&mut self.feeds, feeds))
+            {
                 return false;
             }
             if self.routes.len() < routes {
                 self.routes.resize(routes, [None; MAX_JACKS]);
+                self.plugged.resize(routes, 0);
             }
             if self.feeds.len() < feeds {
                 self.feeds.resize(feeds, [0; MAX_OUTPUTS]);
@@ -143,6 +152,11 @@ impl CableTable {
             return true;
         };
         let old = std::mem::replace(&mut jacks[jack], new);
+        if new.is_some() {
+            self.plugged[slot] |= 1 << jack;
+        } else {
+            self.plugged[slot] &= !(1 << jack);
+        }
         if let Some(old) = old {
             // u32 into usize: lossless; the old cable was counted when it
             // went in, so its source's count is there.
@@ -165,6 +179,12 @@ impl CableTable {
             self.lines = self.lines.max(new.line as usize + 1);
         }
         true
+    }
+
+    /// One bit per plugged jack in `slot`; zero past the table.
+    #[must_use]
+    pub fn plugged(&self, slot: usize) -> u32 {
+        self.plugged.get(slot).copied().unwrap_or(0)
     }
 
     /// Whether `slot`'s output `port` feeds any cable.
@@ -204,13 +224,15 @@ impl CableTable {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Order {
     slots: Box<[u32]>,
+    outs: Box<[u32]>,
 }
 
 impl Order {
     /// Render `slots` in this order (this allocates: build orders on the
     /// control side). Repeats, and slots past `u32::MAX`, are left out.
+    /// Keep only `outs` present in the order, in render order.
     #[must_use]
-    pub fn new(slots: &[usize]) -> Self {
+    pub fn new(slots: &[usize], outs: &[usize]) -> Self {
         let mut seen = HashSet::with_capacity(slots.len());
         let mut kept = Vec::with_capacity(slots.len());
         for &slot in slots {
@@ -221,8 +243,16 @@ impl Order {
                 kept.push(slot);
             }
         }
+        let outs: HashSet<usize> = outs.iter().copied().collect();
+        let outs = kept
+            .iter()
+            .copied()
+            .filter(|slot| outs.contains(&(*slot as usize)))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Self {
             slots: kept.into_boxed_slice(),
+            outs,
         }
     }
 
@@ -230,6 +260,12 @@ impl Order {
     #[must_use]
     pub const fn slots(&self) -> &[u32] {
         &self.slots
+    }
+
+    /// The out slots, in render order.
+    #[must_use]
+    pub const fn outs(&self) -> &[u32] {
+        &self.outs
     }
 }
 
@@ -248,7 +284,7 @@ impl Order {
 /// count and then by when they were added, so the next one to render is
 /// always at its front: O((V + E) log V) for V modules and E cables.
 #[must_use]
-pub fn processing_order(slots: &[usize], edges: &[(usize, usize)]) -> Order {
+pub fn processing_order(slots: &[usize], edges: &[(usize, usize)], outs: &[usize]) -> Order {
     // Each slot's place in `pending`; repeats and slots an order cannot
     // hold are left out.
     let mut index: HashMap<usize, usize> = HashMap::with_capacity(slots.len());
@@ -291,7 +327,24 @@ pub fn processing_order(slots: &[usize], edges: &[(usize, usize)]) -> Order {
         }
         order.push(pending[chosen]);
     }
-    Order::new(&order)
+    Order::new(&order, outs)
+}
+
+// Unplugged buffers retain zero until a gather writes them again.
+pub(super) fn clear_jacks(
+    mut mask: u32,
+    inputs: &mut [Block; MAX_INPUTS],
+    knob_cv: &mut [Block; MAX_KNOBS],
+) {
+    while mask != 0 {
+        let jack = mask.trailing_zeros() as usize;
+        if jack < MAX_INPUTS {
+            inputs[jack].fill(0.0);
+        } else {
+            knob_cv[jack - MAX_INPUTS].fill(0.0);
+        }
+        mask &= mask - 1;
+    }
 }
 
 #[cfg(test)]
@@ -312,14 +365,14 @@ mod tests {
     #[test]
     fn sources_render_before_what_they_feed() {
         // 3 → 1 → 2, added in the order 1, 2, 3.
-        let order = processing_order(&[1, 2, 3], &[(3, 1), (1, 2)]);
+        let order = processing_order(&[1, 2, 3], &[(3, 1), (1, 2)], &[]);
         assert_eq!(order.slots(), &[3, 1, 2]);
     }
 
     #[test]
     fn cycles_are_broken_and_everything_renders_once() {
         // 0 → 1 → 2 → 0, and 3 feeding 1.
-        let order = processing_order(&[0, 1, 2, 3], &[(0, 1), (1, 2), (2, 0), (3, 1)]);
+        let order = processing_order(&[0, 1, 2, 3], &[(0, 1), (1, 2), (2, 0), (3, 1)], &[]);
         assert_eq!(order.slots().len(), 4);
         // Within the cycle, the earliest added module goes first: 0 then 1
         // (once 3 has rendered) then 2.
@@ -330,11 +383,11 @@ mod tests {
 
     #[test]
     fn self_patches_and_nonsense_are_harmless() {
-        let order = processing_order(&[5, 5, BEYOND, 6], &[(5, 5), (6, 5), (BEYOND, 5)]);
+        let order = processing_order(&[5, 5, BEYOND, 6], &[(5, 5), (6, 5), (BEYOND, 5)], &[]);
         assert_eq!(order.slots(), &[6, 5]);
-        assert_eq!(Order::new(&[1, 1, BEYOND, 2]).slots(), &[1, 2]);
+        assert_eq!(Order::new(&[1, 1, BEYOND, 2], &[]).slots(), &[1, 2]);
         // A source that is not on the wall holds nothing back.
-        let order = processing_order(&[5, 6], &[(99, 5), (6, 5)]);
+        let order = processing_order(&[5, 6], &[(99, 5), (6, 5)], &[]);
         assert_eq!(order.slots(), &[6, 5]);
     }
 
@@ -344,7 +397,7 @@ mod tests {
         // after the one feeding it, whatever its slot.
         let slots: Vec<usize> = (0..1_000).rev().collect();
         let edges: Vec<(usize, usize)> = (0..999).map(|slot| (slot, slot + 1)).collect();
-        let order = processing_order(&slots, &edges);
+        let order = processing_order(&slots, &edges, &[]);
         let expected: Vec<u32> = (0..1_000).collect();
         assert_eq!(order.slots(), expected.as_slice());
     }
