@@ -371,7 +371,10 @@ impl AudioEngine {
                 self.synth.note_on(event.note, event.accent, event.slide);
             }
             let sample = kazoo_core::soft_limit(self.synth.process() * OUTPUT_GAIN);
-            frame.fill(sample);
+            frame.fill(0.0);
+            for channel in frame.iter_mut().take(2) {
+                *channel = sample;
+            }
             self.stereo[frames * 2] = sample;
             self.stereo[frames * 2 + 1] = sample;
             frames += 1;

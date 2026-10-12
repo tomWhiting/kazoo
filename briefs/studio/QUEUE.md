@@ -34,3 +34,20 @@ END KZ-E02 head=a83b934 reviewed=READY(live-wall fold check for Tom) merged=d738
 START KZ-E01 base=ef2a040 branch=lane/kz-E01 df=127GB at 02:45
 END KZ-B07 head=4130696 reviewed=READY(brief's hand check must use --target all or a UUID) merged=7f56fe8 at 02:49
 PARKED KZ-D02 head=b9dbd6f reviewed=code correct, NOT READY until bench on a quiet machine (interleaved run at load ~200: base unplugged/1000 33.0/21.7 ms, lane 14.3/23.8 ms; noise ~2x, no clear 5x) at 02:59
+START KZ-D07a base=f5069f1 branch=lane/kz-D07a df=116GB at 03:00
+START KZ-D10a base=f5069f1 branch=lane/kz-D10a df=110GB at 03:03
+END KZ-G01 head=56e05be reviewed=READY(reviewer made the halver work in usize with a bit-for-bit pin; open: Resampler::process last= unwrap_or clamp on an impossible length) merged=9668aa2 at 03:07
+REVIEWED KZ-A02 head=e2de947 reviewed=fixed in review (any callback size, Bluetooth fallback, B07 merge); NOT landed until A02b (any channel count, finding 3); branch carried as lane/kz-A02b at 03:11
+START KZ-A02b base=f5069f1 branch=lane/kz-A02b df=102GB at 03:12
+INCOMPLETE KZ-D07a head=9fa8a35 branch=lane/kz-D07a kept: cost 0.40 default / 0.30 hot (needs 0.25), no_subharmonics -66.4 vs -80 dBc, latency 0.097 vs 0.05 samples at 192k; builder made a new 'models' bench + src/bench.rs instead of using D01's circuit_models (undo on retry) at 03:26
+START KZ-G01b base=b632e4d branch=lane/kz-G01b df=76GB at 03:27
+END KZ-E01 head=e546fed reviewed=READY(review fixed stepped-knob check, console overwrite now asks via :chain replace, mcp test folder; Tom's by-hand check: save beat as a chain, add it, hear two kicks) merged=f711c65 at 03:29
+INCOMPLETE KZ-D10a head=76d23ae branch=lane/kz-D10a kept: sinc table -66.2 dB vs -70 (brief error: 1024 phases, retry at 2048), spring/two 0.82 vs 0.6 at load 240, two spring tests interrupted; hall 0.26-0.29, plate 0.12-0.24 at 03:31
+START KZ-D12 base=303fc88 branch=lane/kz-D12 df=71GB at 03:31
+START KZ-D10a base=f5069f1 branch=lane/kz-D10a df=62GB at 03:32
+START KZ-D07a base=f5069f1 branch=lane/kz-D07a df=55GB at 03:33
+END KZ-G01b head=036c50e reviewed=READY(nothing to fix; pin passes on old and new code) merged=a71619a at 03:35
+END KZ-A02b head=50cd375 (A02 e2de947 + A02b) reviewed=READY(review added io/channel_adapt.rs so the tui engine's duplex path adapts to the opened width; open items -> A02c: double probe in run.rs, processing.rs stereo-only render) merged=6aaf7c1 at 03:41
+INCOMPLETE KZ-D12 head=aca9f89 branch=lane/kz-D12 kept: EQ coefficient bound 7e-4 vs 1e-4 (wrong measure; retry judges response within 0.01 dB), glide bench 5.62->5.59 ms (pan trig per sample found; retry adds it), fx suite interrupted at load at 03:58
+START KZ-A02c base=a7bfad1 branch=lane/kz-A02c df=69GB at 03:58
+START KZ-D12 base=303fc88 branch=lane/kz-D12 df=68GB at 04:00

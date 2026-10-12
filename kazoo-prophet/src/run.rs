@@ -8,8 +8,6 @@ use crate::audio::{
     AudioCommand, AudioEngine, COMMAND_CAPACITY, DISPLAY_CAPACITY, DisplaySnapshot, EngineShared,
     MAX_CALLBACK_FRAMES,
 };
-use color_eyre::eyre::WrapErr;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::TrySendError;
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
@@ -19,6 +17,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     self, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
 use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -83,18 +82,11 @@ type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 pub fn run(args: Args) -> color_eyre::Result<()> {
     let Args = args;
 
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| color_eyre::eyre::eyre!("no audio output device found"))?;
-    let supported_config = device.default_output_config()?;
-    let sample_rate = supported_config.sample_rate() as f32;
-    let channels = usize::from(supported_config.channels());
-    if channels == 0 {
-        return Err(color_eyre::eyre::eyre!(
-            "output device reports zero channels"
-        ));
-    }
+    let mut request = OutputRequest::default();
+    let output_info = request.info()?;
+    request.rate = RateChoice::Hz(output_info.rate);
+    let sample_rate = output_info.rate as f32;
+    let channels = usize::from(output_info.channels);
 
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<AudioCommand>(COMMAND_CAPACITY);
     let (display_tx, display_rx) = crossbeam_channel::bounded::<DisplaySnapshot>(DISPLAY_CAPACITY);
@@ -104,7 +96,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let (hub, hub_audio) = hub_link(LinkConfig::new(
         "kazoo-prophet",
         2,
-        supported_config.sample_rate(),
+        output_info.rate,
         MAX_CALLBACK_FRAMES as u32,
     ))?;
 
@@ -116,21 +108,22 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         hub_audio,
         Arc::clone(&shared),
     );
-    let error_shared = Arc::clone(&shared);
-    let stream = device.build_output_stream(
-        &supported_config.into(),
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| engine.render(data),
-        move |err| error_shared.record_stream_error(&err),
-        None,
-    )?;
-    stream.play().wrap_err("failed to start audio stream")?;
+    let stream = open_output(&request, move |data, _| engine.render(data))?;
 
     let (mut terminal, keyboard) = setup_terminal()?;
     let release_events = matches!(keyboard, KeyReleases::Reported);
 
     let mut app = App::new(sample_rate as u32);
     app.key_release_note = keyboard.note();
-    let result = run_event_loop(&mut terminal, &mut app, &cmd_tx, &display_rx, &shared, &hub);
+    let result = run_event_loop(
+        &mut terminal,
+        &mut app,
+        &cmd_tx,
+        &display_rx,
+        &shared,
+        &hub,
+        &stream,
+    );
 
     // Always restore the terminal, even if the loop failed. Dropping the
     // stream silences every voice; the desk is left once audio has stopped.
@@ -157,9 +150,11 @@ fn run_event_loop(
     display_rx: &crossbeam_channel::Receiver<DisplaySnapshot>,
     shared: &EngineShared,
     hub: &HubLink,
+    stream: &OpenedOutput,
 ) -> color_eyre::Result<()> {
     let frame_duration = Duration::from_millis(1000 / TARGET_FPS);
     loop {
+        stream.check_error_with_handler(|error| shared.record_stream_error(&error))?;
         let frame_start = Instant::now();
 
         while let Ok(snapshot) = display_rx.try_recv() {

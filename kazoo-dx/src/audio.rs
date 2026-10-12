@@ -329,7 +329,10 @@ impl AudioEngine {
             .send_audio(frames as u32, &self.stereo[..frames * 2]);
         for (frame, &sample) in chunk.chunks_mut(self.channels).zip(&self.mono[..frames]) {
             // While the desk plays this instrument, it is not played twice.
-            frame.fill(if routed { 0.0 } else { sample });
+            frame.fill(0.0);
+            for channel in frame.iter_mut().take(2) {
+                *channel = if routed { 0.0 } else { sample };
+            }
         }
         // A trailing partial frame (never expected) is silenced.
         chunk[frames * self.channels..].fill(0.0);

@@ -12,13 +12,13 @@ use super::Overwrite;
 use crate::{Error, Result, SampleName};
 
 /// Suffix of every temporary file the store writes.
-pub(crate) const TEMP_SUFFIX: &str = ".tmp";
+pub const TEMP_SUFFIX: &str = ".tmp";
 
 /// A counter that keeps temporary names unique within this process.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The format every sample is saved in: stereo 32-bit float.
-pub(crate) const fn stereo_float(rate: u32) -> WavSpec {
+pub const fn stereo_float(rate: u32) -> WavSpec {
     WavSpec {
         channels: 2,
         sample_rate: rate,
@@ -30,7 +30,7 @@ pub(crate) const fn stereo_float(rate: u32) -> WavSpec {
 /// A WAV being written under a hidden temporary name in the store. It only
 /// takes its real name in [`Self::commit`], after everything is on disk;
 /// dropped uncommitted, the temporary file is removed.
-pub(crate) struct TempWav {
+pub struct TempWav {
     path: PathBuf,
     file: File,
     writer: Option<WavWriter<BufWriter<File>>>,
@@ -86,10 +86,7 @@ impl TempWav {
                 break;
             }
         }
-        match failure {
-            Some(e) => Err(self.wav_error(e)),
-            None => Ok(()),
-        }
+        failure.map_or(Ok(()), |e| Err(self.wav_error(e)))
     }
 
     /// Where the temporary file is.
@@ -173,7 +170,7 @@ impl Drop for TempWav {
 }
 
 /// Fsync a directory so a rename in it survives a crash.
-pub(crate) fn sync_dir(dir: &Path, context: &str) -> Result<()> {
+pub fn sync_dir(dir: &Path, context: &str) -> Result<()> {
     File::open(dir)
         .and_then(|handle| handle.sync_all())
         .map_err(|e| Error::io(context.to_owned(), e))
@@ -185,10 +182,10 @@ const fn finite(sample: f32) -> f32 {
 }
 
 /// An open WAV file and its header, for reading.
-pub(crate) type Reader = WavReader<BufReader<File>>;
+pub type Reader = WavReader<BufReader<File>>;
 
 /// Open `path` as a WAV and check the header makes sense.
-pub(crate) fn open(path: &Path, name: &SampleName) -> Result<Reader> {
+pub fn open(path: &Path, name: &SampleName) -> Result<Reader> {
     let reader = WavReader::open(path).map_err(|e| hound_error(e, name, "opening"))?;
     let spec = reader.spec();
     if spec.channels == 0 {
@@ -210,7 +207,7 @@ pub(crate) fn open(path: &Path, name: &SampleName) -> Result<Reader> {
 /// into both channels, and a file with more than two channels gives its
 /// first two (front left and right). Integer formats are scaled by their
 /// full-scale value.
-pub(crate) fn decode(mut reader: Reader, name: &SampleName) -> Result<(Vec<f32>, Vec<f32>)> {
+pub fn decode(mut reader: Reader, name: &SampleName) -> Result<(Vec<f32>, Vec<f32>)> {
     let spec = reader.spec();
     let channels = usize::from(spec.channels);
     let frames = reader.duration() as usize;

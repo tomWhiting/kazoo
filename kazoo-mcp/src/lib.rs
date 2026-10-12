@@ -10,3 +10,6 @@ mod run;
 mod tools;
 
 pub use run::{Args, USAGE, cli, parse_args, run};
+
+#[cfg(test)]
+mod mcp;

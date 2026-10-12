@@ -5,13 +5,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -32,18 +32,11 @@ const DEFAULT_REPEAT_DELAY: Duration = Duration::from_millis(250);
 pub fn run(args: Args) -> color_eyre::Result<()> {
     let phrase_text = args.phrase;
 
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| color_eyre::eyre::eyre!("no audio output device found"))?;
-    let config = device.default_output_config()?;
-    let sample_rate = config.sample_rate();
-    let channels = usize::from(config.channels());
-    if channels == 0 {
-        return Err(color_eyre::eyre::eyre!(
-            "output device reports zero channels"
-        ));
-    }
+    let mut request = OutputRequest::default();
+    let output_info = request.info()?;
+    request.rate = RateChoice::Hz(output_info.rate);
+    let sample_rate = output_info.rate;
+    let channels = usize::from(output_info.channels);
 
     // The phrase is parsed and allocated here, before the audio thread starts.
     let phrase = match &phrase_text {
@@ -79,20 +72,13 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         phrase,
         Arc::clone(&stats),
     );
-    let error_stats = Arc::clone(&stats);
-    let stream = device.build_output_stream(
-        &config.into(),
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| engine.render(data),
-        move |err| error_stats.record_stream_error(&err),
-        None,
-    )?;
-    stream.play()?;
+    let stream = open_output(&request, move |data, _| engine.render(data))?;
 
     let (mut terminal, keyboard) = setup_terminal()?;
     let release_events = matches!(keyboard, KeyReleases::Reported);
 
     let mut app = App::new(&keyboard, has_phrase, hub.status(), Arc::clone(&stats));
-    let result = run_event_loop(&mut terminal, &mut app, &hub, &cmd_tx, &display_rx);
+    let result = run_event_loop(&mut terminal, &mut app, &hub, &cmd_tx, &display_rx, &stream);
 
     // Always restore the terminal, even if the loop failed.
     let restored = restore_terminal(&mut terminal, release_events);
@@ -615,8 +601,10 @@ fn run_event_loop(
     hub: &HubLink,
     cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
     display_rx: &crossbeam_channel::Receiver<DisplaySnapshot>,
+    stream: &OpenedOutput,
 ) -> color_eyre::Result<()> {
     loop {
+        stream.check_error_with_handler(|error| app.stats.record_stream_error(&error))?;
         while let Ok(snapshot) = display_rx.try_recv() {
             app.display = snapshot;
         }

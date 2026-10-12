@@ -8,19 +8,19 @@ use ringbuf::HeapProd;
 use ringbuf::traits::{Observer, Producer};
 
 /// Bit 0 of [`Shared::request`]: the control side wants this take recorded.
-pub(crate) const WANT: u64 = 1;
+pub const WANT: u64 = 1;
 
 /// Bit 1 of [`Shared::request`]: the tap has claimed the take and is
 /// recording it (or has recorded it).
-pub(crate) const CLAIMED: u64 = 2;
+pub const CLAIMED: u64 = 2;
 
 /// The take number in [`Shared::request`] sits above the two flag bits.
-pub(crate) const GEN_SHIFT: u32 = 2;
+pub const GEN_SHIFT: u32 = 2;
 
 /// State the control side, the tap and the writer share. Every field is an
 /// atomic, so the tap never waits on anyone.
 #[derive(Debug)]
-pub(crate) struct Shared {
+pub struct Shared {
     /// `take << GEN_SHIFT | CLAIMED? | WANT?`. The control side stores a new
     /// take with `WANT`; the tap claims it by compare-and-swap; stopping
     /// clears `WANT` and keeps `CLAIMED`, so a take can never be claimed

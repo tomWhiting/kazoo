@@ -295,7 +295,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         // ProcessingState and ProcessingIO are owned by this closure.
         processing::process_block(&mut proc_state, &mut proc_io, data);
     })?;
-    let (stream_holder_handle, stream_shutdown) = hold_streams(streams)?;
+    let (stream_holder_handle, stream_shutdown) = hold_streams(streams, &stats)?;
 
     // -----------------------------------------------------------------------
     // 5. Connect MIDI input (auto-discover first available device)
@@ -339,7 +339,11 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
 /// `cpal::Stream` is `!Send` on some platforms, so the streams cannot be
 /// stored in the [`EngineHandle`]; the flag lets the thread exit cleanly
 /// when the handle is dropped.
-fn hold_streams(streams: crate::io::AudioStreams) -> Result<(JoinHandle<()>, Arc<AtomicBool>)> {
+fn hold_streams(
+    streams: crate::io::AudioStreams,
+    stats: &EngineStats,
+) -> Result<(JoinHandle<()>, Arc<AtomicBool>)> {
+    stats.set_audio_health([streams.input.health(), streams.output.health()])?;
     let stream_shutdown = Arc::new(AtomicBool::new(false));
     let shutdown = Arc::clone(&stream_shutdown);
     let holder = std::thread::Builder::new()
