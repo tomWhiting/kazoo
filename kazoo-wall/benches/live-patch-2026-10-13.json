@@ -1,0 +1,1054 @@
+{
+  "version": 2,
+  "tempo": 135.0,
+  "last_seq": 5717,
+  "wall": 3217,
+  "next_ids": {
+    "bbd": 2,
+    "burst": 2,
+    "clock": 5,
+    "crush": 3,
+    "digital": 2,
+    "env": 3,
+    "euclid": 4,
+    "fuzz": 5,
+    "grids": 2,
+    "hall": 2,
+    "kick": 3,
+    "klon": 3,
+    "lfo": 6,
+    "metal": 2,
+    "mix": 5,
+    "out": 7,
+    "pitch": 4,
+    "plate": 3,
+    "quant": 2,
+    "radio": 3,
+    "readout": 3,
+    "scope": 5,
+    "seq": 3,
+    "tape": 3,
+    "vca": 5,
+    "vcf": 3,
+    "vco": 9
+  },
+  "next_cable": 141,
+  "modules": [
+    {
+      "id": "out1",
+      "kind": "out",
+      "knobs": {
+        "level": 0.625,
+        "pan": -0.45
+      }
+    },
+    {
+      "id": "lfo1",
+      "kind": "lfo",
+      "knobs": {
+        "depth": 0.85,
+        "offset": 0.3,
+        "rate": 1.4900498,
+        "shape": 0.0,
+        "sync": 0.0
+      }
+    },
+    {
+      "id": "klon1",
+      "kind": "klon",
+      "knobs": {
+        "gain": 100.0,
+        "level": 8.4,
+        "treble": 77.5
+      }
+    },
+    {
+      "id": "kick2",
+      "kind": "kick",
+      "knobs": {
+        "click": 0.175,
+        "decay": 0.7363068,
+        "drive": 0.15,
+        "model": 0.0,
+        "sweep": 0.525,
+        "tune": 37.892914
+      }
+    },
+    {
+      "id": "clock1",
+      "kind": "clock",
+      "knobs": {
+        "division": 2.0,
+        "swing": 0.0,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "tape1",
+      "kind": "tape",
+      "knobs": {
+        "drive": 0.8,
+        "feedback": 0.5425,
+        "flutter": 0.475,
+        "heads": 1.0,
+        "hiss": 0.15,
+        "mix": 0.35,
+        "sync": 0.0,
+        "time": 0.35,
+        "wear": 0.3,
+        "wow": 0.25
+      }
+    },
+    {
+      "id": "readout1",
+      "kind": "readout",
+      "knobs": {
+        "mode": 0.0
+      }
+    },
+    {
+      "id": "scope1",
+      "kind": "scope",
+      "knobs": {
+        "mode": 0.0,
+        "time": 0.02,
+        "trigger": 0.0,
+        "zoom": 1.0
+      }
+    },
+    {
+      "id": "clock3",
+      "kind": "clock",
+      "name": "nin 16ths",
+      "knobs": {
+        "division": 0.0,
+        "swing": 0.0,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "seq2",
+      "kind": "seq",
+      "name": "bass riff",
+      "knobs": {
+        "chance": 1.0,
+        "gate": 0.5,
+        "step1": 0.0,
+        "step10": 0.0,
+        "step11": 12.0,
+        "step12": 0.0,
+        "step13": 3.0,
+        "step14": 1.0,
+        "step15": 0.0,
+        "step16": -5.0,
+        "step2": 0.0,
+        "step3": 12.0,
+        "step4": 0.0,
+        "step5": 1.0,
+        "step6": 0.0,
+        "step7": 0.0,
+        "step8": -2.0,
+        "step9": 0.0,
+        "steps": 16.0
+      }
+    },
+    {
+      "id": "vco5",
+      "kind": "vco",
+      "name": "bass saw",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": -2.0,
+        "shape": 2.0,
+        "tune": 3.0,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "env1",
+      "kind": "env",
+      "name": "bass pluck",
+      "knobs": {
+        "attack": 0.002,
+        "decay": 0.12,
+        "release": 0.08,
+        "sustain": 0.2
+      }
+    },
+    {
+      "id": "vcf1",
+      "kind": "vcf",
+      "name": "bass filter",
+      "knobs": {
+        "cutoff": 400.0,
+        "drive": 0.4,
+        "mode": 0.0,
+        "resonance": 0.55
+      }
+    },
+    {
+      "id": "vca3",
+      "kind": "vca",
+      "name": "bass amp",
+      "knobs": {
+        "bias": 0.0,
+        "gain": 0.8
+      }
+    },
+    {
+      "id": "fuzz2",
+      "kind": "fuzz",
+      "name": "nin fuzz",
+      "knobs": {
+        "bias": 50.0,
+        "fuzz": 45.0,
+        "input": 100.0,
+        "level": -8.0,
+        "octave": 0.0
+      }
+    },
+    {
+      "id": "crush2",
+      "kind": "crush",
+      "name": "nin crush",
+      "knobs": {
+        "aa": 0.0,
+        "bits": 9.0,
+        "dither": 0.0,
+        "jitter": 0.0,
+        "level": 0.0,
+        "mix": 63.5,
+        "rate": 12000.0
+      }
+    },
+    {
+      "id": "lfo4",
+      "kind": "lfo",
+      "name": "16 bar build",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 0.5,
+        "shape": 2.0,
+        "sync": 9.0
+      }
+    },
+    {
+      "id": "readout2",
+      "kind": "readout",
+      "name": "build level",
+      "knobs": {
+        "mode": 0.0
+      }
+    },
+    {
+      "id": "euclid2",
+      "kind": "euclid",
+      "name": "metal pattern",
+      "knobs": {
+        "accents": 2.0,
+        "pulses": 7.0,
+        "rotate": 2.0,
+        "steps": 16.0
+      }
+    },
+    {
+      "id": "metal1",
+      "kind": "metal",
+      "name": "clang",
+      "knobs": {
+        "bloom": 0.2,
+        "decay": 0.35,
+        "index": 6.5,
+        "ratio": 1.41,
+        "ring": 0.55,
+        "tune": 311.0
+      }
+    },
+    {
+      "id": "mix2",
+      "kind": "mix",
+      "name": "nin mix",
+      "knobs": {
+        "level_a": 0.7,
+        "level_b": 0.25,
+        "level_c": 0.5,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "out5",
+      "kind": "out",
+      "name": "nin out",
+      "knobs": {
+        "level": 0.45,
+        "pan": 0.35
+      }
+    },
+    {
+      "id": "vco6",
+      "kind": "vco",
+      "name": "scream saw 1",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 1.0,
+        "shape": 3.0,
+        "tune": 11.0,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "vco7",
+      "kind": "vco",
+      "name": "scream saw 2",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 1.0,
+        "shape": 2.0,
+        "tune": 11.15,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "mix3",
+      "kind": "mix",
+      "name": "scream mix",
+      "knobs": {
+        "level_a": 0.5,
+        "level_b": 0.5,
+        "level_c": 0.6,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "vcf2",
+      "kind": "vcf",
+      "name": "scream filter",
+      "knobs": {
+        "cutoff": 5000.0,
+        "drive": 0.7,
+        "mode": 0.0,
+        "resonance": 0.3
+      }
+    },
+    {
+      "id": "fuzz3",
+      "kind": "fuzz",
+      "name": "scream fuzz",
+      "knobs": {
+        "bias": 32.0,
+        "fuzz": 100.0,
+        "input": 100.0,
+        "level": -12.0,
+        "octave": 0.0
+      }
+    },
+    {
+      "id": "vca4",
+      "kind": "vca",
+      "name": "scream chop",
+      "knobs": {
+        "bias": 0.0,
+        "gain": 0.75
+      }
+    },
+    {
+      "id": "euclid3",
+      "kind": "euclid",
+      "name": "chop pattern",
+      "knobs": {
+        "accents": 2.0,
+        "pulses": 3.0,
+        "rotate": 0.0,
+        "steps": 8.0
+      }
+    },
+    {
+      "id": "env2",
+      "kind": "env",
+      "name": "chop env",
+      "knobs": {
+        "attack": 0.001,
+        "decay": 0.06,
+        "release": 0.04,
+        "sustain": 1.0
+      }
+    },
+    {
+      "id": "out6",
+      "kind": "out",
+      "name": "scream out",
+      "knobs": {
+        "level": 0.3,
+        "pan": 0.0
+      }
+    },
+    {
+      "id": "lfo5",
+      "kind": "lfo",
+      "name": "siren wail",
+      "knobs": {
+        "depth": 0.5,
+        "offset": 0.5,
+        "rate": 0.5,
+        "shape": 2.0,
+        "sync": 9.0
+      }
+    },
+    {
+      "id": "radio2",
+      "kind": "radio",
+      "name": "megaphone",
+      "knobs": {
+        "drift": 20.0,
+        "drive": 92.0,
+        "mix": 100.0,
+        "model": 3.0,
+        "noise": 8.0,
+        "output": 0.0,
+        "tune": 0.0
+      }
+    },
+    {
+      "id": "digital1",
+      "kind": "digital",
+      "name": "siren echo",
+      "knobs": {
+        "cross": 0.7,
+        "duck": 0.0,
+        "feedback": 0.6,
+        "freeze": 0.0,
+        "highcut": 2200.0,
+        "lowcut": 250.0,
+        "lsync": 0.0,
+        "ltime": 0.143,
+        "mix": 0.55,
+        "routing": 0.0,
+        "rsync": 0.0,
+        "rtime": 0.229
+      }
+    },
+    {
+      "id": "clock4",
+      "kind": "clock",
+      "name": "siren chop clock",
+      "knobs": {
+        "division": 4.0,
+        "swing": 0.0,
+        "width": 0.8
+      }
+    },
+    {
+      "id": "pitch2",
+      "kind": "pitch",
+      "name": "fifth up",
+      "knobs": {
+        "fine": 38.0,
+        "formant": 0.0,
+        "mix": 0.5,
+        "shift": 0.0
+      }
+    },
+    {
+      "id": "mix4",
+      "kind": "mix",
+      "name": "siren harmony",
+      "knobs": {
+        "level_a": 0.6,
+        "level_b": 0.25,
+        "level_c": 0.2,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "bbd1",
+      "kind": "bbd",
+      "name": "warble",
+      "knobs": {
+        "depth": 0.4,
+        "feedback": 0.25,
+        "level": 0.0,
+        "mix": 0.5,
+        "rate": 0.7,
+        "time": 0.035
+      }
+    },
+    {
+      "id": "hall1",
+      "kind": "hall",
+      "name": "city",
+      "knobs": {
+        "decay": 6.0,
+        "diffusion": 0.5,
+        "early": 0.9,
+        "freeze": 0.0,
+        "high": 0.6,
+        "low": 3.6,
+        "mix": 0.55,
+        "mod": 0.3,
+        "predelay": 0.08,
+        "size": 1.4
+      }
+    },
+    {
+      "id": "fuzz4",
+      "kind": "fuzz",
+      "name": "end fuzz",
+      "knobs": {
+        "bias": 50.0,
+        "fuzz": 85.0,
+        "input": 100.0,
+        "level": -12.0,
+        "octave": 0.0
+      }
+    },
+    {
+      "id": "vco8",
+      "kind": "vco",
+      "name": "octave down",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 0.0,
+        "shape": 2.0,
+        "tune": 11.0,
+        "width": 0.5
+      }
+    }
+  ],
+  "cables": [
+    {
+      "id": 18,
+      "from": "clock1.out",
+      "to": "kick2.trigger",
+      "amount": 1.0
+    },
+    {
+      "id": 22,
+      "from": "kick2.out",
+      "to": "klon1.left",
+      "amount": 1.0
+    },
+    {
+      "id": 27,
+      "from": "klon1.left",
+      "to": "tape1.left",
+      "amount": 1.0
+    },
+    {
+      "id": 29,
+      "from": "lfo1.out",
+      "to": "tape1.heads",
+      "amount": 1.0
+    },
+    {
+      "id": 36,
+      "from": "tape1.left",
+      "to": "scope1.a",
+      "amount": 1.0
+    },
+    {
+      "id": 37,
+      "from": "scope1.a",
+      "to": "readout1.in",
+      "amount": 1.0
+    },
+    {
+      "id": 38,
+      "from": "readout1.out",
+      "to": "out1.left",
+      "amount": 1.0
+    },
+    {
+      "id": 85,
+      "from": "clock3.out",
+      "to": "seq2.clock",
+      "amount": 1.0
+    },
+    {
+      "id": 86,
+      "from": "seq2.pitch",
+      "to": "vco5.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 87,
+      "from": "seq2.gate",
+      "to": "env1.gate",
+      "amount": 1.0
+    },
+    {
+      "id": 88,
+      "from": "vco5.out",
+      "to": "vcf1.in",
+      "amount": 1.0
+    },
+    {
+      "id": 89,
+      "from": "vcf1.out",
+      "to": "vca3.in",
+      "amount": 1.0
+    },
+    {
+      "id": 90,
+      "from": "env1.out",
+      "to": "vca3.cv",
+      "amount": 1.0
+    },
+    {
+      "id": 91,
+      "from": "vca3.out",
+      "to": "fuzz2.left",
+      "amount": 1.0
+    },
+    {
+      "id": 92,
+      "from": "fuzz2.left",
+      "to": "crush2.left",
+      "amount": 1.0
+    },
+    {
+      "id": 93,
+      "from": "crush2.left",
+      "to": "mix2.a",
+      "amount": 1.0
+    },
+    {
+      "id": 94,
+      "from": "clock3.out",
+      "to": "euclid2.clock",
+      "amount": 1.0
+    },
+    {
+      "id": 95,
+      "from": "euclid2.gate",
+      "to": "metal1.trigger",
+      "amount": 1.0
+    },
+    {
+      "id": 96,
+      "from": "euclid2.accent",
+      "to": "metal1.accent",
+      "amount": 1.0
+    },
+    {
+      "id": 97,
+      "from": "metal1.out",
+      "to": "mix2.b",
+      "amount": 1.0
+    },
+    {
+      "id": 98,
+      "from": "lfo4.out",
+      "to": "readout2.in",
+      "amount": 1.0
+    },
+    {
+      "id": 99,
+      "from": "readout2.out",
+      "to": "vcf1.cutoff",
+      "amount": 0.5
+    },
+    {
+      "id": 100,
+      "from": "readout2.out",
+      "to": "fuzz2.fuzz",
+      "amount": 0.5
+    },
+    {
+      "id": 101,
+      "from": "readout2.out",
+      "to": "crush2.bits",
+      "amount": -0.4
+    },
+    {
+      "id": 102,
+      "from": "readout2.out",
+      "to": "euclid2.pulses",
+      "amount": 0.5
+    },
+    {
+      "id": 103,
+      "from": "mix2.out",
+      "to": "out5.left",
+      "amount": 1.0
+    },
+    {
+      "id": 104,
+      "from": "vco6.out",
+      "to": "mix3.a",
+      "amount": 1.0
+    },
+    {
+      "id": 105,
+      "from": "vco7.out",
+      "to": "mix3.b",
+      "amount": 1.0
+    },
+    {
+      "id": 106,
+      "from": "mix3.out",
+      "to": "vcf2.in",
+      "amount": 1.0
+    },
+    {
+      "id": 107,
+      "from": "vcf2.out",
+      "to": "fuzz3.left",
+      "amount": 1.0
+    },
+    {
+      "id": 108,
+      "from": "fuzz3.left",
+      "to": "vca4.in",
+      "amount": 1.0
+    },
+    {
+      "id": 110,
+      "from": "euclid3.gate",
+      "to": "env2.gate",
+      "amount": 1.0
+    },
+    {
+      "id": 111,
+      "from": "env2.out",
+      "to": "vca4.cv",
+      "amount": 1.0
+    },
+    {
+      "id": 112,
+      "from": "readout2.out",
+      "to": "vca4.gain",
+      "amount": 1.0
+    },
+    {
+      "id": 117,
+      "from": "lfo5.out",
+      "to": "vco6.pitch",
+      "amount": 0.75
+    },
+    {
+      "id": 118,
+      "from": "lfo5.out",
+      "to": "vco7.pitch",
+      "amount": 0.75
+    },
+    {
+      "id": 119,
+      "from": "vca4.out",
+      "to": "radio2.left",
+      "amount": 1.0
+    },
+    {
+      "id": 123,
+      "from": "clock4.out",
+      "to": "euclid3.clock",
+      "amount": 1.0
+    },
+    {
+      "id": 124,
+      "from": "radio2.left",
+      "to": "pitch2.left",
+      "amount": 1.0
+    },
+    {
+      "id": 126,
+      "from": "radio2.left",
+      "to": "mix4.a",
+      "amount": 1.0
+    },
+    {
+      "id": 127,
+      "from": "pitch2.wet_left",
+      "to": "mix4.b",
+      "amount": 1.0
+    },
+    {
+      "id": 129,
+      "from": "mix4.out",
+      "to": "bbd1.left",
+      "amount": 1.0
+    },
+    {
+      "id": 130,
+      "from": "bbd1.left",
+      "to": "digital1.left",
+      "amount": 1.0
+    },
+    {
+      "id": 131,
+      "from": "digital1.left",
+      "to": "hall1.left",
+      "amount": 1.0
+    },
+    {
+      "id": 134,
+      "from": "digital1.right",
+      "to": "hall1.right",
+      "amount": 1.0
+    },
+    {
+      "id": 135,
+      "from": "hall1.left",
+      "to": "fuzz4.left",
+      "amount": 1.0
+    },
+    {
+      "id": 136,
+      "from": "fuzz4.left",
+      "to": "out6.left",
+      "amount": 1.0
+    },
+    {
+      "id": 137,
+      "from": "fuzz4.right",
+      "to": "out6.right",
+      "amount": 1.0
+    },
+    {
+      "id": 138,
+      "from": "hall1.right",
+      "to": "fuzz4.right",
+      "amount": 1.0
+    },
+    {
+      "id": 139,
+      "from": "lfo5.out",
+      "to": "vco8.pitch",
+      "amount": 0.75
+    },
+    {
+      "id": 140,
+      "from": "vco8.out",
+      "to": "mix3.c",
+      "amount": 1.0
+    }
+  ],
+  "dye": {
+    "bbd1": {
+      "Cassio": 3.6873169245128743
+    },
+    "clock1": {
+      "Tom": 2.4999999999999996
+    },
+    "clock3": {
+      "Cassio": 1.1666666666666667
+    },
+    "clock4": {
+      "Cassio": 2.166666676048879
+    },
+    "crush2": {
+      "Cassio": 3.0101739735560193,
+      "Tom": 0.43500000000000016
+    },
+    "digital1": {
+      "Cassio": 8.923177327639857
+    },
+    "env1": {
+      "Cassio": 2.3398029302406607
+    },
+    "env2": {
+      "Cassio": 2.5489036903092037
+    },
+    "euclid2": {
+      "Cassio": 2.627016129032258
+    },
+    "euclid3": {
+      "Cassio": 3.9536290322580645
+    },
+    "fuzz2": {
+      "Cassio": 2.9722222222222223
+    },
+    "fuzz3": {
+      "Cassio": 5.113333333333333
+    },
+    "fuzz4": {
+      "Cassio": 3.4833333333333334
+    },
+    "hall1": {
+      "Cassio": 4.512147221976609
+    },
+    "kick2": {
+      "Tom": 9.2395915190965
+    },
+    "klon1": {
+      "Tom": 10.658333333333346
+    },
+    "lfo1": {
+      "Tom": 10.727571316322884
+    },
+    "lfo4": {
+      "Cassio": 2.4
+    },
+    "lfo5": {
+      "Cassio": 3.1500000000000004
+    },
+    "metal1": {
+      "Cassio": 3.8747195325109294
+    },
+    "mix2": {
+      "Cassio": 3.45
+    },
+    "mix3": {
+      "Cassio": 4.1
+    },
+    "mix4": {
+      "Cassio": 5.290000000000001
+    },
+    "out1": {
+      "Tom": 22.149999999999952
+    },
+    "out5": {
+      "Cassio": 2.425
+    },
+    "out6": {
+      "Cassio": 8.6
+    },
+    "pitch2": {
+      "Cassio": 2.4400000000000004
+    },
+    "radio2": {
+      "Cassio": 3.74
+    },
+    "readout1": {
+      "Tom": 7.0
+    },
+    "readout2": {
+      "Cassio": 2.0
+    },
+    "scope1": {
+      "Tom": 11.034810761116278
+    },
+    "seq2": {
+      "Cassio": 3.283333333333333
+    },
+    "tape1": {
+      "Tom": 9.448684255997541
+    },
+    "vca3": {
+      "Cassio": 3.2
+    },
+    "vca4": {
+      "Cassio": 4.75
+    },
+    "vcf1": {
+      "Cassio": 3.301791468823063
+    },
+    "vcf2": {
+      "Cassio": 5.119837843396601
+    },
+    "vco5": {
+      "Cassio": 2.375
+    },
+    "vco6": {
+      "Cassio": 3.1666666666666665
+    },
+    "vco7": {
+      "Cassio": 2.8395833333333336
+    },
+    "vco8": {
+      "Cassio": 2.208333333333333
+    }
+  },
+  "rack": [
+    [
+      "out1",
+      "kick2",
+      "clock1",
+      "readout1",
+      "scope1",
+      "clock3",
+      "seq2",
+      "vco5",
+      "env1",
+      "lfo4",
+      "readout2",
+      "euclid2",
+      "metal1",
+      "mix2",
+      "out5",
+      "vco6",
+      "vco7",
+      "mix3",
+      "euclid3",
+      "env2",
+      "out6",
+      "lfo5",
+      "clock4",
+      "mix4",
+      "vco8"
+    ],
+    [
+      "lfo1",
+      "klon1",
+      "tape1",
+      "fuzz2",
+      "crush2",
+      "fuzz3",
+      "radio2",
+      "digital1",
+      "pitch2",
+      "bbd1",
+      "hall1",
+      "fuzz4"
+    ],
+    [
+      "vcf1",
+      "vca3",
+      "vcf2",
+      "vca4"
+    ]
+  ],
+  "groups": {
+    "beat": [
+      "clock1",
+      "kick2",
+      "klon1",
+      "tape1",
+      "lfo1",
+      "scope1",
+      "readout1",
+      "out1"
+    ],
+    "nin": [
+      "clock3",
+      "seq2",
+      "vco5",
+      "env1",
+      "vcf1",
+      "vca3",
+      "fuzz2",
+      "crush2",
+      "lfo4",
+      "readout2",
+      "euclid2",
+      "metal1",
+      "mix2",
+      "out5"
+    ],
+    "scream": [
+      "vco6",
+      "vco7",
+      "mix3",
+      "vcf2",
+      "fuzz3",
+      "vca4",
+      "euclid3",
+      "env2",
+      "out6",
+      "lfo5",
+      "radio2",
+      "digital1",
+      "clock4",
+      "pitch2",
+      "mix4",
+      "bbd1",
+      "hall1",
+      "fuzz4",
+      "vco8"
+    ]
+  }
+}
