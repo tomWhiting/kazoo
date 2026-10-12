@@ -167,23 +167,23 @@ impl Halver {
     /// Half as many samples, band-limited: output `m` sits at input `2m`.
     /// Allocates the output.
     pub(crate) fn process(&self, input: &[f32]) -> Vec<f32> {
-        let reach = i64::try_from(HALVER_REACH).unwrap_or(i64::MAX);
-        // Frame counts fit signed indices under the slice byte-length bound.
-        let last = i64::try_from(input.len()).unwrap_or(i64::MAX) - 1;
+        // Every index stays unsigned, so nothing needs converting. An output
+        // `m` exists only while `2m < input.len()`, so `last` is read only
+        // for a non-empty input, and `first >= centre - HALVER_REACH` keeps
+        // every tap offset `index + HALVER_REACH - centre` at least 0.
+        let last = input.len().saturating_sub(1);
         (0..input.len().div_ceil(2))
             .map(|m| {
-                // Every output centre is at or before the last input frame.
-                let centre = i64::try_from(2 * m).unwrap_or(last);
-                let first = (centre - reach).max(0);
-                let end = (centre + reach).min(last);
-                let mut acc = 0.0f32;
-                let mut index = first;
-                while index <= end {
-                    let tap = self.taps[(index - centre + reach) as usize];
-                    acc = tap.mul_add(input[index as usize], acc);
-                    index += 1;
-                }
-                acc
+                let centre = 2 * m;
+                let first = centre.saturating_sub(HALVER_REACH);
+                let end = (centre + HALVER_REACH).min(last);
+                // `end <= centre + HALVER_REACH`, so the taps from this
+                // offset are at least as many as the samples, so the zip reads every sample.
+                let taps = &self.taps[first + HALVER_REACH - centre..];
+                input[first..=end]
+                    .iter()
+                    .zip(taps)
+                    .fold(0.0f32, |acc, (sample, tap)| tap.mul_add(*sample, acc))
             })
             .collect()
     }
