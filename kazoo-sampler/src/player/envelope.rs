@@ -15,7 +15,7 @@ enum Stage {
 
 /// Attack, decay, sustain, release.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Envelope {
+pub struct Envelope {
     stage: Stage,
     level: f32,
 }
@@ -42,7 +42,7 @@ impl Envelope {
     }
 
     /// Whether the envelope has finished.
-    pub(crate) fn is_idle(&self) -> bool {
+    pub(crate) fn is_idle(self) -> bool {
         self.stage == Stage::Idle
     }
 

@@ -38,6 +38,7 @@
 
 mod envelope;
 mod params;
+mod playback;
 mod voice;
 
 use std::fmt;
@@ -74,10 +75,11 @@ const HANN_POINTS: usize = 1024;
 /// How long level and pan take to follow their knobs, in seconds.
 const SMOOTH_SECONDS: f32 = 0.01;
 
-/// The player's audio-rate inputs for one block. An empty slice is an
-/// unplugged input: gate low, pitch 0, velocity 1. A slice shorter than
-/// the block holds its last value past its end; a NaN or infinite value
-/// reads as unplugged.
+/// The player's audio-rate inputs for one block.
+///
+/// An empty slice is an unplugged input: gate low, pitch 0, velocity 1.
+/// A slice shorter than the block holds its last value past its end;
+/// a NaN or infinite value reads as unplugged.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlayerInputs<'a> {
     /// Gate or trigger: high above 0.5.
@@ -487,7 +489,7 @@ impl Bank {
             key,
             follows_cv: key.is_none(),
             note,
-            gain: (1.0 - settings.velocity) + settings.velocity * velocity,
+            gain: settings.velocity.mul_add(velocity, 1.0 - settings.velocity),
             mode: settings.mode,
             reverse: settings.reverse,
             slice,

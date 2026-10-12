@@ -18,6 +18,7 @@
 //! [`saves`]. Every change the console sends counts against its copy of
 //! the wall's flood guard ([`flood`]); turns wait for it.
 
+mod chains;
 mod command;
 mod flood;
 mod folds;
@@ -394,6 +395,7 @@ pub struct App {
     focus: Focus,
     mode: Mode,
     selected: Option<String>,
+    chain_names: Vec<String>,
     /// The group shown alone (`:group`), if one is.
     group: Option<String>,
     look: folds::Look,
@@ -446,6 +448,7 @@ impl App {
             focus: Focus::Wall,
             mode: Mode::Normal,
             selected: None,
+            chain_names: Vec::new(),
             group: None,
             look: folds::Look::default(),
             shown: None,
@@ -1004,6 +1007,7 @@ impl App {
                 }
                 self.rows_seen();
             }
+            Event::Chains { names } => self.chain_names = names,
             Event::Groups { groups } => {
                 if let Some(snapshot) = self.snapshot.as_mut() {
                     snapshot.groups = groups;
@@ -1140,6 +1144,7 @@ impl App {
 
     fn on_result(&mut self, request: &Request, value: serde_json::Value, now: Instant) {
         match request {
+            Request::ChainSave { .. } | Request::Chains => self.chain_result(request, value, now),
             Request::Probe { .. } => self.probed(request, value, now),
             Request::Group { group, .. } => self.grouped(request, group, value, now),
             Request::Catalogue => {
@@ -1160,6 +1165,7 @@ impl App {
             | Request::Patch { .. }
             | Request::Unpatch { .. }
             | Request::Add { .. }
+            | Request::ChainAdd { .. }
             | Request::Remove { .. }
             | Request::Undo { .. } => {
                 if let Some(result) = self.parse::<ChangeResult>(request, value, now) {
@@ -1593,6 +1599,9 @@ pub fn describe(request: &Request) -> String {
         } => format!("unplug cable {cable}"),
         Request::Unpatch { to: Some(to), .. } => format!("unplug {to}"),
         Request::Unpatch { .. } => "unplug".to_string(),
+        Request::ChainSave { name, .. } => format!("save chain {name}"),
+        Request::ChainAdd { name } => format!("add chain {name}"),
+        Request::Chains => "list chains".to_string(),
         Request::Add { kind, .. } => format!("add {kind}"),
         Request::Remove { module } => format!("remove {module}"),
         Request::Arrange { module, .. } => format!("move {module}"),

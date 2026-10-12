@@ -47,6 +47,14 @@ pub fn describe(what: &What) -> String {
 /// load that brought a wall back from one that cleared it).
 fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind>) -> String {
     match what {
+        What::Chain { name, changes } => format!(
+            "changed chain {name}: {}",
+            changes
+                .iter()
+                .map(|change| describe_with(change, undo, kind_of))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
         What::Turn {
             module,
             knob,

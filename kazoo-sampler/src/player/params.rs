@@ -186,7 +186,7 @@ pub fn param_index(name: &str) -> Option<usize> {
 }
 
 /// Every knob at its default.
-pub(crate) fn defaults() -> [f32; PARAM_COUNT] {
+pub fn defaults() -> [f32; PARAM_COUNT] {
     let mut values = [0.0; PARAM_COUNT];
     for (value, spec) in values.iter_mut().zip(PARAMS) {
         *value = spec.default;
@@ -196,7 +196,7 @@ pub(crate) fn defaults() -> [f32; PARAM_COUNT] {
 
 /// The envelope's per-sample rates.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct EnvRates {
+pub struct EnvRates {
     /// Level added per sample while attacking.
     pub(crate) attack_step: f32,
     /// Per-sample factor toward sustain (60 dB over the decay time).
@@ -208,7 +208,7 @@ pub(crate) struct EnvRates {
 
 /// Grain settings, in frames at the engine rate.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct GrainSettings {
+pub struct GrainSettings {
     pub(crate) position: f64,
     pub(crate) size: f64,
     pub(crate) interval: f64,
@@ -221,7 +221,7 @@ pub(crate) struct GrainSettings {
 
 /// The knobs worked out for one block.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Settings {
+pub struct Settings {
     pub(crate) mode: Mode,
     pub(crate) reverse: bool,
     /// Knob transposition in octaves.

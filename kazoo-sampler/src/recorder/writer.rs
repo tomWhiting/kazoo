@@ -30,7 +30,7 @@ const STOP_GRACE: Duration = Duration::from_millis(250);
 
 /// Orders for the writer thread.
 #[derive(Debug)]
-pub(crate) enum Command {
+pub enum Command {
     /// A take has been requested.
     Begin(Job),
     /// Finish whatever is running and exit.
@@ -39,13 +39,13 @@ pub(crate) enum Command {
 
 /// One take to write.
 #[derive(Debug)]
-pub(crate) struct Job {
+pub struct Job {
     pub(crate) id: TakeId,
     pub(crate) request: TakeRequest,
 }
 
 /// Everything the thread owns.
-pub(crate) struct Writer {
+pub struct Writer {
     pub(crate) shared: Arc<Shared>,
     pub(crate) consumer: HeapCons<f32>,
     pub(crate) commands: Receiver<Command>,
@@ -100,10 +100,10 @@ impl Writer {
             // Everything the tap pushed before it said the take was over is
             // visible now; drain it all, skipping anything older than the
             // take's start.
-            let moved = match self.shared.start_of(take) {
-                Some(start) => self.drain(start, chunk, &mut sink, take),
-                None => 0,
-            };
+            let moved = self
+                .shared
+                .start_of(take)
+                .map_or(0, |start| self.drain(start, chunk, &mut sink, take));
             if over {
                 break;
             }
@@ -223,8 +223,7 @@ impl Sink {
     fn open(store: &SampleStore, request: &TakeRequest, rate: u32) -> Self {
         let preroll = (PREROLL_SECONDS * f64::from(rate)).round() as usize;
         Self {
-            temp: store
-                .refuse_non_file(&request.name, &store.path_of(&request.name))
+            temp: SampleStore::refuse_non_file(&request.name, &store.path_of(&request.name))
                 .and_then(|()| TempWav::create(store.dir(), &request.name, rate)),
             waiting: VecDeque::with_capacity(preroll + 1),
             threshold: request.trim_db.map(db_to_gain),
