@@ -17,7 +17,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendErr
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig, hub_link};
+use kazoo_core::host::link::connect_config_or_direct;
+use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig};
 
 use super::DeskMode;
 use super::audio::headless_lead_frames;
@@ -438,7 +439,7 @@ fn link_to_desk(
     if pacing == Pacing::Timer {
         config.pace_lead_frames = headless_lead_frames(rate);
     }
-    match hub_link(config) {
+    match connect_config_or_direct(config) {
         Ok(link) => Some(link),
         Err(err) => {
             eprintln!("kazoo-wall: the desk link could not start: {err}; playing on my own");

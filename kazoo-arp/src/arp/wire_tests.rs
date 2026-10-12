@@ -3,7 +3,8 @@ use crate::audio::{
     ArpCommand, AudioCommand, AudioEngine, COMMAND_CAPACITY, DISPLAY_CAPACITY, EngineShared,
     MAX_CALLBACK_FRAMES,
 };
-use kazoo_core::ipc::link::{HubAddress, LinkConfig, hub_link};
+use kazoo_core::host::link::open;
+use kazoo_core::ipc::link::{HubAddress, LinkConfig};
 use kazoo_core::ipc::protocol::FrameBuffer;
 use kazoo_core::ipc::types::{
     MSG_NOTE_EVENT, MSG_REGISTER, MSG_REGISTERED, NOTE_OFF, NOTE_ON, NoteEventMsg, RegisterMsg,
@@ -52,7 +53,7 @@ fn scheduled_notes_reach_the_real_link_with_the_selected_destination() {
     });
     let mut config = LinkConfig::new("kazoo-arp-test", 2, 48_000, MAX_CALLBACK_FRAMES as u32);
     config.address = HubAddress::Socket(path.clone());
-    let (hub, audio) = hub_link(config).unwrap();
+    let (hub, audio) = open(config).unwrap();
     let (tx, rx) = crossbeam_channel::bounded(COMMAND_CAPACITY);
     let (display, consumer) = ringbuf::HeapRb::new(DISPLAY_CAPACITY).split();
     drop(consumer);

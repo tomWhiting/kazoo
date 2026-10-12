@@ -376,12 +376,13 @@ pub struct HubLink {
     requests: SyncSender<Request>,
     running: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
+    finished: Receiver<()>,
 }
 
 /// The audio-callback half of the link.
 pub struct HubLinkAudio {
     audio: AudioBlockProducer,
-    messages: ringbuf::HeapCons<HubMessage>,
+    pub events: crate::host::link::EventRx,
     requests: ringbuf::HeapProd<Request>,
     state: Arc<LinkState>,
     channels: u16,
@@ -407,6 +408,14 @@ impl fmt::Debug for HubLinkAudio {
 /// Fails only if the link thread cannot be started. Not finding a hub is not
 /// an error: the link keeps looking.
 pub fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)> {
+    start_link(config, None, true)
+}
+
+pub(crate) fn start_link(
+    config: LinkConfig,
+    client: Option<HubIpcClient>,
+    start: bool,
+) -> io::Result<(HubLink, HubLinkAudio)> {
     let channels = u16::from(config.channels.clamp(1, 2));
     let block_frames = config.max_block_frames.clamp(1, MAX_LINK_BLOCK_FRAMES);
     let (audio_tx, audio_rx) = audio_block_ring(AudioRingConfig::new(
@@ -448,20 +457,37 @@ pub fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)> {
         health_before: DeskHealthMsg::default(),
         health_now: DeskHealthMsg::default(),
     };
+    if let Some(client) = client {
+        worker.plug_in(client);
+    }
+    let (finished_tx, finished) = mpsc::sync_channel(1);
     let thread_running = Arc::clone(&running);
-    let join = thread::Builder::new()
-        .name("kazoo-hub-link".to_string())
-        .spawn(move || worker.run(&thread_running))?;
+    let join = if start {
+        Some(
+            thread::Builder::new()
+                .name("kazoo-hub-link".to_string())
+                .spawn(move || {
+                    worker.run(&thread_running);
+                    if let Err(err) = finished_tx.send(()) {
+                        eprintln!("desk link completion could not be delivered: {err}");
+                    }
+                })?,
+        )
+    } else {
+        running.store(false, Ordering::Release);
+        None
+    };
     Ok((
         HubLink {
             state: Arc::clone(&state),
             requests: ui_tx,
             running,
-            join: Some(join),
+            join,
+            finished,
         },
         HubLinkAudio {
             audio: audio_tx,
-            messages: message_rx,
+            events: crate::host::link::EventRx::new(message_rx),
             requests: callback_tx,
             state,
             channels,
@@ -578,16 +604,29 @@ impl HubLink {
     }
 }
 
-impl Drop for HubLink {
-    fn drop(&mut self) {
+impl HubLink {
+    pub(crate) fn shutdown(&mut self) {
         self.running.store(false, Ordering::Release);
         if let Some(join) = self.join.take() {
+            join.thread().unpark();
+            if self.finished.recv_timeout(Duration::from_millis(500))
+                == Err(mpsc::RecvTimeoutError::Timeout)
+            {
+                eprintln!("desk link did not stop within 500 ms");
+                return;
+            }
             if let Err(payload) = join.join() {
                 if !thread::panicking() {
                     std::panic::resume_unwind(payload);
                 }
             }
         }
+    }
+}
+
+impl Drop for HubLink {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -690,7 +729,7 @@ impl HubLinkAudio {
 
     /// The next message from the hub, if one has arrived. Real-time safe.
     pub fn try_recv(&mut self) -> Option<HubMessage> {
-        self.messages.try_pop()
+        self.events.try_recv()
     }
 
     /// Ask the desk to change its transport. Real-time safe. See
@@ -771,7 +810,11 @@ impl LinkWorker {
         // and take the refusal lock the UI shares, so all of that happens at
         // the thread's normal priority. Serving allocates only on the way
         // to a disconnection (the reason), after which it demotes.
-        let mut priority: Option<RealTime> = None;
+        let mut priority: Option<RealTime> = if self.client.is_some() {
+            self.promote()
+        } else {
+            None
+        };
         let mut next_attempt = Instant::now();
         while running.load(Ordering::Acquire) {
             if self.client.is_none() {
@@ -851,7 +894,7 @@ impl LinkWorker {
             self.config.max_block_frames.min(MAX_LINK_BLOCK_FRAMES),
         );
         register.pace_lead_frames = self.config.pace_lead_frames;
-        match HubIpcClient::register_at(&socket, &register) {
+        match HubIpcClient::register_with_timeout(&socket, &register, Duration::from_millis(250)) {
             Ok(client) => {
                 self.plug_in(client);
                 RETRY_INTERVAL

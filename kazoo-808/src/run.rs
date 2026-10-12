@@ -15,7 +15,8 @@ use crate::audio::{
     AudioEngine, COMMAND_CAPACITY, CommandSender, EngineShared, MAX_CALLBACK_FRAMES,
 };
 use crate::ui;
-use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
+use kazoo_core::host::link::{LinkSetup, connect_or_direct};
+use kazoo_core::ipc::link::HubLink;
 
 /// What the command line gave: nothing yet for this instrument.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -72,12 +73,12 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(COMMAND_CAPACITY);
 
     // Plug into the kazoo-mix desk whenever it is running.
-    let (hub, hub_audio) = hub_link(LinkConfig::new(
-        "kazoo-808",
-        2,
-        output_info.rate,
-        MAX_CALLBACK_FRAMES as u32,
-    ))?;
+    let (hub, hub_audio) = connect_or_direct(&LinkSetup {
+        name: "kazoo-808",
+        channels: 2,
+        rate: output_info.rate,
+        block: MAX_CALLBACK_FRAMES,
+    })?;
 
     // Build and start the audio stream.
     let mut engine = AudioEngine::new(

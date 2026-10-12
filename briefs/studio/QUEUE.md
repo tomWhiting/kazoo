@@ -62,3 +62,8 @@ REVIEWED KZ-B01 head=6597d95 reviewed=fixed in review (close unparks before join
 INCOMPLETE KZ-D12 head=e287d13 branch=lane/kz-D12 kept: reviewed NOT READY, callback slower (flat +4.2%, gliding +7.3% instructions); causes and second retry decisions in the brief at 04:48
 START KZ-D09a base=611fced branch=lane/kz-D09a df=46GB at 04:51
 END KZ-D07b head=7a7ee28 reviewed=READY(screamer padding back to factor 2 only with reason; amp tail is the input coupling cap draining, test waits 2 s at 1e-7 and asserts decay; amp null -42.7/-33.4 dB; bench ratios need a quiet machine) merged=137c80a at 04:53
+INCOMPLETE KZ-D10b head=ec921b7 branch=lane/kz-D10b kept: the bounded alignment search misses the period (shimmer 63/200, pitch 14/200 within a sample), shimmer contract 2.10 dB at 192 kHz vs 1.5, bench slower at load 167; the design's search budget needs rethinking before a retry. The carried spring item (third coil skipped when silent) is done and green in this branch at 04:54
+START KZ-D09b base=06aba3a branch=lane/kz-D09b df=44GB at 04:57
+END KZ-A03 head=2229dd7 reviewed=READY(review fixed: a link with no desk keeps looking; a refusing desk leaves the instrument playing direct; live desk showed 'kazoo-808 plugged into strip 1'; open items -> A03b) merged=64db48b at 05:01
+START KZ-B01b base=a8390fe branch=lane/kz-B01b df=54GB at 05:01
+END KZ-D09a head=c48cd72 reviewed=READY(refresh proven by mutant; caching walk strengthened; open: octave on-off-on test, written into the D09 brief; bench needs a quiet machine) merged=a79c79c at 05:25
