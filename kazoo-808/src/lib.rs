@@ -1,7 +1,11 @@
-//! Library surface for the procedural TR-808 engine.
-//!
-//! The binary keeps its standalone TUI/audio path, while `kazoo-mix` can reuse
-//! the synthesis and sequencer modules through this library surface.
+//! Reusable TR-808 drum machine: procedural synthesis, sequencer, and standalone TUI.
+
+mod app;
+mod audio;
+mod run;
+mod ui;
 
 pub mod sequencer;
 pub mod synth;
+
+pub use run::{Args, USAGE, cli, parse_args, run};

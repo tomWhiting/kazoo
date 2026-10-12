@@ -8,9 +8,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use crate::sequencer::Sequencer;
+use crate::synth::{DrumMachine, VoiceIndex, VoiceParam};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
-use kazoo_808::sequencer::Sequencer;
-use kazoo_808::synth::{DrumMachine, VoiceIndex, VoiceParam};
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::follow::{TransportChange, TransportFollower};
 use kazoo_core::ipc::link::{HubLinkAudio, RequestError};

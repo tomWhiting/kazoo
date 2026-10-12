@@ -10,8 +10,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
 use crate::app::{App, Focus};
-use kazoo_808::sequencer::{STEPS_PER_PATTERN, Step};
-use kazoo_808::synth::{VOICE_COUNT, VoiceIndex};
+use crate::sequencer::{STEPS_PER_PATTERN, Step};
+use crate::synth::{VOICE_COUNT, VoiceIndex};
 
 /// Width of the voice label column.
 const LABEL_WIDTH: u16 = 5;
