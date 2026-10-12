@@ -360,6 +360,29 @@ mod tests {
     }
 
     #[test]
+    fn halving_matches_the_tap_by_tap_sum_bit_for_bit() {
+        let halver = Halver::new();
+        let source: Vec<f32> = (0..1_000u16)
+            .map(|n| (f32::from(n) * 0.37).sin() * 0.8)
+            .collect();
+        for len in (0..=2 * HALVER_REACH + 8).chain([999, 1_000]) {
+            let input = &source[..len];
+            let output = halver.process(input);
+            assert_eq!(output.len(), len.div_ceil(2));
+            for (m, got) in output.iter().enumerate() {
+                let mut wanted = 0.0f32;
+                for (k, tap) in halver.taps.iter().enumerate() {
+                    let at = (2 * m + k).checked_sub(HALVER_REACH);
+                    wanted = at
+                        .and_then(|i| input.get(i))
+                        .map_or(wanted, |sample| tap.mul_add(*sample, wanted));
+                }
+                assert_eq!(got.to_bits(), wanted.to_bits(), "length {len}, output {m}");
+            }
+        }
+    }
+
+    #[test]
     fn the_kernel_is_a_proper_low_pass() {
         let table = kernel_table();
         assert!((table[0] - 1.0).abs() < 1e-6);
