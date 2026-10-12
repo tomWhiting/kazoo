@@ -47,6 +47,12 @@
 //! the collector sits on its floor and the integral runs on in a straight
 //! line.
 //!
+//! Each stage keeps its last antiderivative, so an ordinary step evaluates
+//! only the new endpoint. The quotient divides differences of integrals
+//! of order ten by steps as small as 1e-7 V. It needs f64's sixteen digits;
+//! f32's seven would turn that cancellation into full scale noise. The
+//! shared filters and the internal oversampling rate also stay unchanged.
+//!
 //! Sources: R. G. Keen, "The Technology of the Fuzz Face" (geofex.com);
 //! Electrosmash, "Fuzz Face Analysis"; Ebers and Moll's transistor model.
 
@@ -54,7 +60,8 @@ use std::f64::consts::TAU;
 
 use super::filter::{Analogue, Iir3};
 use super::kit::{
-    DEFAULT_RATE, Knobs, audio_taper, ceiling, for_each_frame, fraction, gain as db_gain, weight,
+    DEFAULT_RATE, Knobs, Retune, audio_taper, ceiling, for_each_frame, fraction, gain as db_gain,
+    weight,
 };
 use super::oversample::TARGET_RATE;
 use super::pair::{self, Pair};
@@ -185,6 +192,20 @@ struct Transistor {
     at_corner: f64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct Memory {
+    volts: f64,
+    integral: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+enum Cache {
+    #[default]
+    On,
+    #[cfg(test)]
+    Off,
+}
+
 impl Transistor {
     fn new(rest: f64, ve: f64) -> Self {
         let corner = ve * ((SUPPLY - SATURATION) / rest).ln();
@@ -216,12 +237,24 @@ impl Transistor {
     }
 
     /// The stage's mean swing over the step from `last` to `volts`.
-    fn smoothed(&self, volts: f64, last: f64) -> f64 {
-        let step = volts - last;
-        if step.abs() > TINY_STEP {
-            (self.integral(volts) - self.integral(last)) / step
+    fn smoothed(&self, volts: f64, last: Memory) -> (f64, Memory) {
+        let integral = self.integral(volts);
+        let step = volts - last.volts;
+        let out = if step.abs() > TINY_STEP {
+            (integral - last.integral) / step
         } else {
-            self.swing(0.5 * (volts + last))
+            self.swing(0.5 * (volts + last.volts))
+        };
+        (out, Memory { volts, integral })
+    }
+
+    #[cfg(test)]
+    fn smoothed_recomputed(&self, volts: f64, last_volts: f64) -> f64 {
+        let step = volts - last_volts;
+        if step.abs() > TINY_STEP {
+            (self.integral(volts) - self.integral(last_volts)) / step
+        } else {
+            self.swing(0.5 * (volts + last_volts))
         }
     }
 }
@@ -234,6 +267,13 @@ struct Settings {
     first: Transistor,
     second: Transistor,
     anti_alias: bool,
+    cache: Cache,
+}
+
+fn second_transistor(fuzz: f32, bias: f32) -> Transistor {
+    let rest = (A2_HOT - A2_STARVED).mul_add(fraction(bias), A2_STARVED);
+    let degeneration = rest / RC2 * RE2 * (1.0 - fraction(fuzz));
+    Transistor::new(rest, THERMAL_VOLTAGE + degeneration)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -242,8 +282,10 @@ struct Circuit {
     octave_block: Iir3,
     recovery: Iir3,
     output: Iir3,
-    /// The last base voltage into each stage.
-    last: [f64; 2],
+    /// The last base voltage and its antiderivative for each stage.
+    last: [Memory; 2],
+    fresh: bool,
+    octave_stale: bool,
 }
 
 impl pair::Circuit for Circuit {
@@ -252,7 +294,9 @@ impl pair::Circuit for Circuit {
         self.octave_block.reset();
         self.recovery.reset();
         self.output.reset();
-        self.last = [0.0; 2];
+        self.last = [Memory::default(); 2];
+        self.fresh = true;
+        self.octave_stale = false;
     }
 }
 
@@ -264,25 +308,65 @@ impl Circuit {
         transistor: &Transistor,
         volts: f64,
         anti_alias: bool,
+        cache: Cache,
     ) -> f64 {
-        let out = if anti_alias {
-            transistor.smoothed(volts, self.last[index])
+        if anti_alias {
+            match cache {
+                Cache::On => {
+                    let (out, memory) = transistor.smoothed(volts, self.last[index]);
+                    self.last[index] = memory;
+                    out
+                }
+                #[cfg(test)]
+                Cache::Off => {
+                    let out = transistor.smoothed_recomputed(volts, self.last[index].volts);
+                    self.last[index].volts = volts;
+                    out
+                }
+            }
         } else {
+            self.last[index].volts = volts;
             transistor.swing(volts)
-        };
-        self.last[index] = volts;
-        out
+        }
     }
 
-    fn tick(&mut self, sample: f32, settings: &Settings) -> f32 {
+    fn tick(&mut self, sample: f32, settings: &Settings, run_octave: bool) -> f32 {
+        if self.fresh {
+            if settings.anti_alias {
+                self.last[0].integral = settings.first.integral(0.0);
+                self.last[1].integral = settings.second.integral(0.0);
+            }
+            self.fresh = false;
+        }
         let volts = self
             .coupling
             .process(f64::from(sample) * INPUT_VOLTS * settings.input);
-        let doubled = self.octave_block.process(volts.abs() * OCTAVE_GAIN);
-        let base = settings.octave.mul_add(doubled - volts, volts);
-        let first = self.stage(0, &settings.first, base, settings.anti_alias);
+        let base = if run_octave {
+            if self.octave_stale {
+                self.octave_block.reset();
+                self.octave_stale = false;
+            }
+            let doubled = self.octave_block.process(volts.abs() * OCTAVE_GAIN);
+            settings.octave.mul_add(doubled - volts, volts)
+        } else {
+            self.octave_stale = true;
+            volts
+        };
+        let first = self.stage(
+            0,
+            &settings.first,
+            base,
+            settings.anti_alias,
+            settings.cache,
+        );
         let first = self.recovery.process(first);
-        let second = self.stage(1, &settings.second, first, settings.anti_alias);
+        let second = self.stage(
+            1,
+            &settings.second,
+            first,
+            settings.anti_alias,
+            settings.cache,
+        );
         self.output.process(second) as f32
     }
 
@@ -304,7 +388,10 @@ pub struct Fuzz {
     knobs: Knobs<5>,
     /// The first transistor, whose operating point never changes.
     first: Transistor,
+    second: Transistor,
     pair: Pair<Circuit>,
+    retune: Retune<2>,
+    cache: Cache,
 }
 
 impl Default for Fuzz {
@@ -328,11 +415,23 @@ impl Fuzz {
         Self::build(false)
     }
 
+    /// The original antiderivatives and continuously running octave path.
+    #[cfg(test)]
+    #[must_use]
+    pub fn reference() -> Self {
+        let mut fuzz = Self::build(true);
+        fuzz.cache = Cache::Off;
+        fuzz
+    }
+
     fn build(anti_alias: bool) -> Self {
         let mut fuzz = Self {
             knobs: Knobs::new(&PARAMS),
             first: Transistor::new(A1, VE1),
+            second: second_transistor(PARAMS[FUZZ].default, PARAMS[BIAS].default),
             pair: Pair::new(anti_alias),
+            retune: Retune::new([PARAMS[FUZZ].default, PARAMS[BIAS].default]),
+            cache: Cache::On,
         };
         fuzz.prepare(DEFAULT_RATE);
         fuzz
@@ -340,18 +439,33 @@ impl Fuzz {
 
     fn frame(&mut self, left: f32, right: f32) -> [f32; 2] {
         let knob = self.knobs.step();
-        let rest = (A2_HOT - A2_STARVED).mul_add(fraction(knob[BIAS]), A2_STARVED);
-        let degeneration = rest / RC2 * RE2 * (1.0 - fraction(knob[FUZZ]));
+        if self.retune.due([knob[FUZZ], knob[BIAS]]) {
+            self.second = second_transistor(knob[FUZZ], knob[BIAS]);
+            // A moving operating point changes the integral at both ends.
+            if self.pair.anti_alias() {
+                for circuit in self.pair.circuits() {
+                    circuit.last[1].integral = self.second.integral(circuit.last[1].volts);
+                }
+            }
+        }
         let settings = Settings {
             input: guitar_volume(fraction(knob[INPUT])),
             octave: f64::from(weight(knob[OCTAVE], 1.0)),
             first: self.first,
-            second: Transistor::new(rest, THERMAL_VOLTAGE + degeneration),
+            second: self.second,
             anti_alias: self.pair.anti_alias(),
+            cache: self.cache,
+        };
+        let run_octave = match self.cache {
+            Cache::On => settings.octave > 0.0,
+            #[cfg(test)]
+            Cache::Off => true,
         };
         let out_gain = db_gain(knob[LEVEL]) * OUTPUT_SCALE;
         self.pair
-            .process([left, right], |_, circuit, x| circuit.tick(x, &settings))
+            .process([left, right], |_, circuit, x| {
+                circuit.tick(x, &settings, run_octave)
+            })
             .map(|out| ceiling((f64::from(out) * out_gain) as f32))
     }
 }
@@ -387,7 +501,8 @@ impl Effect for Fuzz {
 #[cfg(test)]
 mod tests {
     use super::super::testkit::{
-        Limits, aliasing_db, built, conformance, db, power_near, render_mono, rms, sine, spectrum,
+        Limits, RATE, aliasing_db, built, conformance, db, null_db, power_near, render_mono, rms,
+        sine, spectrum,
     };
     use super::*;
 
@@ -405,6 +520,150 @@ mod tests {
             latency_knobs: &[],
         }
     );
+
+    #[test]
+    fn caching_the_integral_changes_nothing() {
+        for transistor in [
+            Transistor::new(A1, VE1),
+            Transistor::new(A2_HOT, THERMAL_VOLTAGE),
+        ] {
+            let mut memory = Memory {
+                volts: 0.0,
+                integral: transistor.integral(0.0),
+            };
+            let mut state = 0x5eed_090a_u32;
+            for index in 0..200_000 {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let signed = 2.0 * f64::from(state) / f64::from(u32::MAX) - 1.0;
+                // Pulled back towards zero so the walk stays in the bend
+                // around the corner instead of drifting onto the straight
+                // lines far from it.
+                let volts = if index % 10 == 0 {
+                    signed.mul_add(TINY_STEP * 0.5, memory.volts)
+                } else {
+                    0.9f64.mul_add(memory.volts, signed * 0.5)
+                };
+                let expected = transistor.smoothed_recomputed(volts, memory.volts);
+                let (actual, next) = transistor.smoothed(volts, memory);
+                assert_eq!(actual.to_bits(), expected.to_bits(), "step {index}");
+                assert_eq!(next.volts.to_bits(), volts.to_bits());
+                assert_eq!(
+                    next.integral.to_bits(),
+                    transistor.integral(volts).to_bits()
+                );
+                memory = next;
+            }
+        }
+    }
+
+    fn circuit_settings(octave: f64) -> Settings {
+        Settings {
+            input: 1.0,
+            octave,
+            first: Transistor::new(A1, VE1),
+            second: Transistor::new(A2_HOT, THERMAL_VOLTAGE),
+            anti_alias: true,
+            cache: Cache::On,
+        }
+    }
+
+    #[test]
+    fn the_doubler_skipped_is_the_doubler_at_zero() {
+        let mut running = Circuit::default();
+        running.design(2.0 * 352_800.0);
+        pair::Circuit::reset(&mut running);
+        let mut skipped = running;
+        let pristine = format!("{:?}", skipped.octave_block);
+        let input = crate::bench::fixture(352_800.0);
+        let settings = circuit_settings(0.0);
+        for &sample in &input {
+            assert_eq!(
+                running.tick(sample, &settings, true).to_bits(),
+                skipped.tick(sample, &settings, false).to_bits()
+            );
+        }
+        assert_eq!(format!("{:?}", skipped.octave_block), pristine);
+        assert!(skipped.octave_stale);
+        // Restart both filters from the same discharged capacitor state.
+        running.octave_stale = true;
+        let settings = circuit_settings(1.0);
+        for &sample in &input {
+            assert_eq!(
+                running.tick(sample, &settings, true).to_bits(),
+                skipped.tick(sample, &settings, true).to_bits()
+            );
+        }
+        assert!(!skipped.octave_stale);
+    }
+
+    #[test]
+    fn the_octave_coming_back_does_not_click() {
+        let mut fuzz = Fuzz::new();
+        fuzz.prepare(RATE);
+        let input = sine(110.0, 10.0f32.powf(-12.0 / 20.0), 2.03);
+        let switch = 96_000;
+        let before = render_mono(&mut fuzz, &input[..switch]);
+        fuzz.set_param(OCTAVE, 1.0);
+        let after = render_mono(&mut fuzz, &input[switch..]);
+        let largest = |samples: &[f32]| {
+            samples
+                .windows(2)
+                .map(|pair| (pair[1] - pair[0]).abs())
+                .fold(0.0f32, f32::max)
+        };
+        let resting = largest(&before[switch - 4_801..]);
+        let during = largest(&after).max((after[0] - before[switch - 1]).abs());
+        assert!(during <= 3.0 * resting, "step {during}, resting {resting}");
+    }
+
+    #[test]
+    fn the_null_against_the_old_model_holds() {
+        for knobs in [&[][..], &[(FUZZ, 100.0), (BIAS, 100.0), (OCTAVE, 1.0)][..]] {
+            let null = null_db(&mut Fuzz::reference(), &mut Fuzz::new(), knobs);
+            assert!(null < -120.0, "null {null} dB, knobs {knobs:?}");
+        }
+    }
+
+    #[test]
+    fn flat_out_square_wave_stays_bounded_and_the_tail_dies() {
+        let mut fuzz = Fuzz::new();
+        fuzz.prepare(RATE);
+        for (index, value) in [(FUZZ, 100.0), (BIAS, 100.0), (LEVEL, PARAMS[LEVEL].max)] {
+            fuzz.set_param(index, value);
+        }
+        fuzz.reset();
+        let input: Vec<f32> = (0..48_000)
+            .map(|index| if index % 960 < 480 { 16.0 } else { -16.0 })
+            .collect();
+        let loud = render_mono(&mut fuzz, &input);
+        assert!(
+            loud.iter()
+                .all(|sample| sample.is_finite() && sample.abs() <= 2.0)
+        );
+        let tail = render_mono(&mut fuzz, &vec![0.0; 48_000]);
+        let residual = rms(&tail[43_200..]);
+        assert!(residual < 1e-7, "tail RMS {residual}");
+    }
+
+    #[test]
+    fn changing_the_transistor_refreshes_its_integral() {
+        let mut reference = Fuzz::reference();
+        let mut cached = Fuzz::new();
+        let input = crate::bench::fixture(RATE);
+        for block in input.chunks(256) {
+            for &(index, value) in &[(FUZZ, 100.0), (BIAS, 0.0)] {
+                reference.set_param(index, value);
+                cached.set_param(index, value);
+            }
+            let old = render_mono(&mut reference, block);
+            let new = render_mono(&mut cached, block);
+            assert!(
+                old.iter()
+                    .zip(&new)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+        }
+    }
 
     #[test]
     fn oversampling_cuts_the_aliasing() {
