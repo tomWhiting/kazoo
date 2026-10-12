@@ -9,8 +9,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 
-use kazoo_wall::catalogue::Signal;
-use kazoo_wall::protocol::{
+use crate::catalogue::Signal;
+use crate::protocol::{
     KnobView, MAX_PROBES, ModuleView, Probe, ReadoutReading, ScopeReading, Snapshot,
 };
 

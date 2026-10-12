@@ -33,13 +33,13 @@ mod worker;
 mod tests;
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use ratatui::DefaultTerminal;
 
-use kazoo_wall::{daemon, paths};
+use crate::daemon::{self, ServeCommand};
+use crate::paths;
 
 use app::{App, Exit, unix_now};
 use terminal::TerminalGuard;
@@ -65,21 +65,13 @@ const DAEMON_LOG: &str = "daemon.log";
 
 /// Open the console: start the daemon if it is not playing, show the wall,
 /// and give the terminal back however it ends.
-pub fn run() -> ExitCode {
+pub fn run(serve: ServeCommand) -> color_eyre::Result<()> {
     let socket = paths::socket_path();
-    let launch = match launcher() {
-        Ok(launch) => launch,
-        Err(err) => {
-            eprintln!("kazoo-wall: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let launch = launcher(serve).map_err(|err| color_eyre::eyre::eyre!("{err}"))?;
     if !daemon::is_running(&socket) {
         eprintln!("kazoo-wall: the wall is not playing; starting it…");
-        if let Err(err) = daemon::launch_detached(&launch.0, &socket, &launch.1, LAUNCH_TIMEOUT) {
-            eprintln!("kazoo-wall: the wall could not start: {err}");
-            return ExitCode::FAILURE;
-        }
+        daemon::launch_detached(&launch.0, &socket, &launch.1, LAUNCH_TIMEOUT)
+            .map_err(|err| color_eyre::eyre::eyre!("the wall could not start: {err}"))?;
     }
     let config = Config {
         socket: socket.clone(),
@@ -89,13 +81,9 @@ pub fn run() -> ExitCode {
         poll: POLL,
         launch: Some(launch),
     };
-    let connection = match Connection::start(&config) {
-        Ok(connection) => connection,
-        Err(err) => {
-            eprintln!("kazoo-wall: the console could not start its connection: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let connection = Connection::start(&config).map_err(|err| {
+        color_eyre::eyre::eyre!("the console could not start its connection: {err}")
+    })?;
     let mut app = App::new(SEAT, socket.display().to_string());
     // A settings file that cannot be read is said in the log, and the
     // console starts with the defaults (and does not write over it unless
@@ -113,13 +101,8 @@ pub fn run() -> ExitCode {
         }
         Err(why) => (None, Some(why)),
     };
-    let mut guard = match TerminalGuard::enter() {
-        Ok(guard) => guard,
-        Err(err) => {
-            eprintln!("kazoo-wall: the terminal could not be used: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let mut guard = TerminalGuard::enter()
+        .map_err(|err| color_eyre::eyre::eyre!("the terminal could not be used: {err}"))?;
     if let Some(why) = guard.mouse_refused() {
         app.mouse_refused(why, Instant::now());
     }
@@ -132,35 +115,32 @@ pub fn run() -> ExitCode {
     );
     let restored = guard.restore();
     drop(connection);
-    if let Err(err) = restored {
-        eprintln!("kazoo-wall: could not restore the terminal: {err}");
-    }
-    match result {
-        Ok(Exit::Left) => {
-            eprintln!(
-                "kazoo-wall: the console is closed and the wall keeps playing \
-                 (`kazoo-wall` opens it again, `kazoo-wall stop` stops it)"
-            );
-            ExitCode::SUCCESS
-        }
-        Ok(Exit::Stopped) => {
-            eprintln!("kazoo-wall: the wall has stopped; its patch is saved");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("kazoo-wall: {err}");
-            ExitCode::FAILURE
+    match (result, restored) {
+        (Err(err), Err(restore)) => Err(color_eyre::eyre::eyre!(
+            "{err}; could not restore the terminal: {restore}"
+        )),
+        (Err(err), Ok(())) => Err(color_eyre::eyre::eyre!("{err}")),
+        (Ok(_), Err(err)) => Err(color_eyre::eyre::eyre!(
+            "could not restore the terminal: {err}"
+        )),
+        (Ok(exit), Ok(())) => {
+            match exit {
+                Exit::Left => eprintln!(
+                    "kazoo-wall: the console is closed and the wall keeps playing \
+                     (`kazoo-wall` opens it again, `kazoo-wall stop` stops it)"
+                ),
+                Exit::Stopped => eprintln!("kazoo-wall: the wall has stopped; its patch is saved"),
+            }
+            Ok(())
         }
     }
 }
 
-/// This program and the file a daemon started from here writes to.
-fn launcher() -> Result<(PathBuf, PathBuf), String> {
-    let exe = std::env::current_exe()
-        .map_err(|err| format!("cannot find this program to start the wall with: {err}"))?;
+/// The supplied command and the file a daemon started from here writes to.
+fn launcher(serve: ServeCommand) -> Result<(ServeCommand, PathBuf), String> {
     let state =
         paths::state_dir().map_err(|err| format!("no place for the wall's state: {err}"))?;
-    Ok((exe, daemon_log(&state)))
+    Ok((serve, daemon_log(&state)))
 }
 
 fn daemon_log(state: &Path) -> PathBuf {

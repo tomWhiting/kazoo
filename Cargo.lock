@@ -1511,6 +1511,7 @@ dependencies = [
 name = "kazoo-mcp"
 version = "0.1.0"
 dependencies = [
+ "color-eyre",
  "kazoo-wall",
  "rmcp",
  "schemars",
@@ -1628,6 +1629,7 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "chrono",
+ "color-eyre",
  "cpal",
  "criterion",
  "crossterm",

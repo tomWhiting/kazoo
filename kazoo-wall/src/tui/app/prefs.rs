@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use kazoo_wall::paths;
+use crate::paths;
 
 use super::super::rack::geometry::Density;
 use super::{App, Tone, View};

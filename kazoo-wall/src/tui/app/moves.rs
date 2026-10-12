@@ -10,8 +10,8 @@
 
 use std::time::Instant;
 
-use kazoo_wall::patch::{arrange_rows, place_for};
-use kazoo_wall::protocol::{Place, Request};
+use crate::patch::{arrange_rows, place_for};
+use crate::protocol::{Place, Request};
 
 use super::super::worker::Job;
 use super::rack::{Due, MOVE_LONGEST, Move};

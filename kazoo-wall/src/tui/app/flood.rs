@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 
-use kazoo_wall::daemon::wall::{FLOOD_BURST, FLOOD_REFILL_PER_SECOND};
+use crate::daemon::wall::{FLOOD_BURST, FLOOD_REFILL_PER_SECOND};
 
 /// Changes the console may send now, refilling over time.
 #[derive(Debug, Clone, PartialEq)]

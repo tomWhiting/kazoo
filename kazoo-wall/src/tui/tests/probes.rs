@@ -8,7 +8,7 @@ use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 
-use kazoo_wall::protocol::{
+use crate::protocol::{
     ErrorCode, GateMeasured, MAX_PROBES, Measured, Probe, ProbeResult, ReadoutReading, Request,
     Rhythm, ScopeReading, Snapshot,
 };

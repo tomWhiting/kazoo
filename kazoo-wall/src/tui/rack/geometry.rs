@@ -20,7 +20,7 @@
 
 use std::collections::BTreeMap;
 
-use kazoo_wall::protocol::{CableRecord, ModuleView};
+use crate::protocol::{CableRecord, ModuleView};
 
 use super::dial;
 
@@ -51,7 +51,7 @@ pub const SCOPE_W: u16 = 34;
 
 /// Width of a `readout`'s screen, a column either side included: room for
 /// its longest line.
-pub const READOUT_W: u16 = kazoo_wall::probe::READOUT_COLUMNS as u16 + 2;
+pub const READOUT_W: u16 = crate::probe::READOUT_COLUMNS as u16 + 2;
 
 /// Narrowest faceplate inside.
 pub const MIN_INNER: u16 = 12;

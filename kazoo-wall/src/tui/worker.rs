@@ -17,9 +17,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use kazoo_wall::daemon;
-use kazoo_wall::protocol::client::{ClientError, Subscription, WallClient};
-use kazoo_wall::protocol::{ErrorCode, Event, Request, Snapshot};
+use crate::daemon::{self, ServeCommand};
+use crate::protocol::client::{ClientError, Subscription, WallClient};
+use crate::protocol::{ErrorCode, Event, Request, Snapshot};
 
 use super::link::{LinkState, Reconnect};
 
@@ -48,9 +48,9 @@ pub struct Config {
     pub console: bool,
     /// How often to `look`.
     pub poll: Duration,
-    /// How to start the daemon: this program, and the file its output goes
+    /// How to start the daemon: the command, and the file its output goes
     /// to. `None` when the console cannot start one.
-    pub launch: Option<(PathBuf, PathBuf)>,
+    pub launch: Option<(ServeCommand, PathBuf)>,
 }
 
 /// Something for the worker to do.
@@ -61,7 +61,7 @@ pub enum Job {
     /// Start the daemon, detached, and report how it went.
     Launch,
     /// The console now shows wall `n` (see
-    /// [`kazoo_wall::protocol::Snapshot::wall`]): every request after this
+    /// [`crate::protocol::Snapshot::wall`]): every request after this
     /// carries it, so one meant for an older wall is refused.
     Wall(u64),
 }
@@ -337,12 +337,12 @@ fn look(client: &mut Option<WallClient>, link: &mut Reconnect) -> Vec<Reply> {
 
 /// Start the daemon and try to connect straight after.
 fn launch(config: &Config, link: &mut Reconnect) -> Vec<Reply> {
-    let Some((exe, log)) = &config.launch else {
+    let Some((serve, log)) = &config.launch else {
         return vec![Reply::Launched(Err(
             "this console cannot start the wall; run `kazoo-wall serve`".to_string(),
         ))];
     };
-    let result = daemon::launch_detached(exe, &config.socket, log, LAUNCH_TIMEOUT)
+    let result = daemon::launch_detached(serve, &config.socket, log, LAUNCH_TIMEOUT)
         .map_err(|err| format!("the wall did not start: {err}"));
     if result.is_ok() {
         link.retry_now(Instant::now());

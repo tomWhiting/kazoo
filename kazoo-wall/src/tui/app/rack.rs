@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
 
-use kazoo_wall::protocol::{MAX_PROBES, ModuleView, Probe, Snapshot};
+use crate::protocol::{MAX_PROBES, ModuleView, Probe, Snapshot};
 
 use super::super::knob::Travel;
 use super::super::rack::fold::{self, Tile};

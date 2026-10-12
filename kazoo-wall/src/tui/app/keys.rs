@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use kazoo_wall::format;
-use kazoo_wall::protocol::{KnobView, ModuleView, Place, Request, valid_name};
+use crate::format;
+use crate::protocol::{KnobView, ModuleView, Place, Request, valid_name};
 
 use super::super::knob::{Step, Travel};
 use super::super::rack::geometry::Density;
@@ -855,7 +855,7 @@ impl App {
                 text.pop();
             }
             KeyCode::Char(c) if c.is_ascii() && !c.is_ascii_control() => {
-                if text.len() < kazoo_wall::protocol::MAX_NAME {
+                if text.len() < crate::protocol::MAX_NAME {
                     text.push(c);
                 }
             }

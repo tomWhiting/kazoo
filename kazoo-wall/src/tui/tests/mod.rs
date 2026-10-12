@@ -16,9 +16,9 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use kazoo_wall::daemon::wall::catalogue;
-use kazoo_wall::fingerprints::Fingerprints;
-use kazoo_wall::protocol::{
+use crate::daemon::wall::catalogue;
+use crate::fingerprints::Fingerprints;
+use crate::protocol::{
     CableRecord, Change, ChangeResult, ClockSource, Faults, KnobView, Levels, Listen, LogPage,
     ModuleView, Request, Snapshot, What,
 };
@@ -133,12 +133,12 @@ pub fn snapshot() -> Snapshot {
             )]),
             cables: BTreeMap::new(),
         },
-        timing: kazoo_wall::protocol::Timings::default(),
+        timing: crate::protocol::Timings::default(),
         recording: None,
         rack: None,
         groups: std::collections::BTreeMap::new(),
         save: None,
-        log: kazoo_wall::protocol::LogHealth::default(),
+        log: crate::protocol::LogHealth::default(),
         probes: Vec::new(),
         engine: None,
     }
