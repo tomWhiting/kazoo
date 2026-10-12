@@ -109,7 +109,7 @@ fn an_idle_link_still_reads_the_hubs_messages_within_a_tick() {
             start.elapsed() < 2 * LINK_TICK,
             "no sync within two link ticks"
         );
-        thread::yield_now();
+        std::hint::spin_loop();
     }
     assert!(
         start.elapsed() < 2 * LINK_TICK,
