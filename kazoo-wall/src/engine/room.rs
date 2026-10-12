@@ -119,7 +119,7 @@ impl Page {
     }
 }
 
-pub(super) fn rest_sweeps(mut mask: u32, sweeps: &mut [Sweep; MAX_KNOBS]) {
+pub(super) const fn rest_sweeps(mut mask: u32, sweeps: &mut [Sweep; MAX_KNOBS]) {
     while mask != 0 {
         sweeps[mask.trailing_zeros() as usize] = Sweep::REST;
         mask &= mask - 1;

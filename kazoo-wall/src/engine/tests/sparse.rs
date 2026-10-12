@@ -94,13 +94,13 @@ fn an_unplugged_jack_reads_silence_and_the_table_knows_it() {
     control.send(Command::Cables(Box::new(table.clone())));
     render(&mut engine, SUB_BLOCK, &mut Vec::new());
     assert_eq!(mask.load(Ordering::Relaxed), 1);
-    assert_ne!(f32::from_bits(signal.load(Ordering::Relaxed)), 0.0);
+    assert_ne!(signal.load(Ordering::Relaxed), 0.0_f32.to_bits());
     assert!(table.set(1, 0, None));
     assert_eq!(table.plugged(1), 0);
     control.send(Command::Cables(Box::new(table.clone())));
     render(&mut engine, SUB_BLOCK, &mut Vec::new());
     assert_eq!(mask.load(Ordering::Relaxed), 0);
-    assert_eq!(f32::from_bits(signal.load(Ordering::Relaxed)), 0.0);
+    assert_eq!(signal.load(Ordering::Relaxed), 0.0_f32.to_bits());
     let jack = MAX_INPUTS + MAX_KNOBS - 1;
     assert!(table.set(1, jack, Some(Route::new(0, 0, 1.0, 0, 2))));
     assert_eq!(table.plugged(1), 1 << jack);
@@ -125,7 +125,7 @@ fn a_resting_knob_is_not_advanced() {
     assert_eq!(page.gliding[at], 0);
     let resting = control.knob(3, 0).unwrap();
     render(&mut engine, SUB_BLOCK, &mut Vec::new());
-    assert_eq!(control.knob(3, 0).unwrap(), resting);
+    assert_eq!(control.knob(3, 0).unwrap().to_bits(), resting.to_bits());
     control.send(Command::Knob {
         slot: 3,
         knob: 0,
@@ -137,15 +137,15 @@ fn a_resting_knob_is_not_advanced() {
     assert_eq!(page.gliding[at], 1);
     render(&mut engine, SUB_BLOCK, &mut Vec::new());
     let moving = control.knob(3, 0).unwrap();
-    assert_ne!(moving, resting);
-    assert_ne!(moving, 200.0);
+    assert_ne!(moving.to_bits(), resting.to_bits());
+    assert_ne!(moving.to_bits(), 200.0_f32.to_bits());
     render(&mut engine, SUB_BLOCK * 32, &mut Vec::new());
     let (page, at) = engine.room.page(3).unwrap();
     assert_eq!(page.gliding[at], 0);
     assert_eq!(page.glides[at][0].remaining, 0);
-    assert_eq!(control.knob(3, 0).unwrap(), 200.0);
+    assert_eq!(control.knob(3, 0).unwrap().to_bits(), 200.0_f32.to_bits());
     render(&mut engine, SUB_BLOCK, &mut Vec::new());
-    assert_eq!(control.knob(3, 0).unwrap(), 200.0);
+    assert_eq!(control.knob(3, 0).unwrap().to_bits(), 200.0_f32.to_bits());
     control.send(Command::Knob {
         slot: 3,
         knob: 0,
@@ -267,7 +267,14 @@ fn an_unfed_output_is_not_scanned_and_a_fed_one_is() {
             assert_eq!(control.shared().faults(), (0, 0));
             assert_eq!(resets.load(Ordering::Relaxed), 0);
             assert!(control.pump().is_empty());
-            assert!(engine.room.output(0, 0).unwrap().iter().all(|s| *s == 0.5));
+            assert!(
+                engine
+                    .room
+                    .output(0, 0)
+                    .unwrap()
+                    .iter()
+                    .all(|s| s.to_bits() == 0.5_f32.to_bits())
+            );
             assert!(engine.room.output(0, 3).unwrap().iter().all(|s| s.is_nan()));
         } else {
             assert_eq!(control.shared().faults(), (1, 0));
