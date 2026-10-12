@@ -6,7 +6,7 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -62,9 +62,9 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let Args = args;
 
     // Set up audio output.
-    let mut request = OutputRequest::default();
-    let output_info = request.info()?;
-    request.rate = RateChoice::Hz(output_info.rate);
+    let request = OutputRequest::default();
+    let prepared = request.prepare_output()?;
+    let output_info = prepared.info();
     let sample_rate = output_info.rate as f32;
     let channels = usize::from(output_info.channels);
 
@@ -87,7 +87,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         hub_audio,
         Arc::clone(&shared),
     );
-    let stream = open_output(&request, move |data, _| engine.render(data))?;
+    let stream = prepared.open(move |data, _| engine.render(data))?;
 
     let mut terminal = setup_terminal()?;
 

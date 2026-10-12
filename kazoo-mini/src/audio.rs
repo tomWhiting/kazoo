@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError};
-use kazoo_core::host::audio::{OpenedOutput, OutputRequest, open_output};
+use kazoo_core::host::audio::{OpenedOutput, PreparedOutput};
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::link::HubLinkAudio;
 use kazoo_core::ipc::types::{NOTE_OFF, NOTE_ON};
@@ -160,7 +160,7 @@ fn apply_hub_message(voice: &mut MiniVoice, msg: &HubMessage) {
 /// The `MiniVoice` is owned entirely by this callback closure. While plugged
 /// into the desk, audio goes to kazoo-mix instead of the local output.
 pub fn build_audio_stream(
-    request: &OutputRequest,
+    prepared: PreparedOutput,
     setup: AudioSetup,
 ) -> color_eyre::Result<OpenedOutput> {
     let AudioSetup {
@@ -186,7 +186,7 @@ pub fn build_audio_stream(
 
     let mut display_counter: u32 = 0;
 
-    let stream = open_output(request, move |data: &mut [f32], _| {
+    let stream = prepared.open(move |data: &mut [f32], _| {
         while let Ok(cmd) = cmd_rx.try_recv() {
             apply_command(&mut voice, cmd);
         }

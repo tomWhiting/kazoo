@@ -1,7 +1,7 @@
 //! Fit a stream callback written for one channel count to a device opened
 //! with another. The shared host opens the nearest count a device offers
-//! (wider, or narrower on a mono device), so the engine's callbacks, which
-//! are written for the configured count, are adapted here. Scratch space
+//! (wider, or narrower on a mono device), so the engine's stereo output and
+//! configured input width are adapted here. Scratch space
 //! is allocated once, when the adapter is built; the callback path does
 //! not allocate.
 

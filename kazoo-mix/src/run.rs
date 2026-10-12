@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use crossterm::event::{self, Event, MouseEventKind};
-use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 
 use crate::callback::AudioCallback;
 use crate::desk::Desk;
@@ -287,9 +287,9 @@ impl MixerAudio {
     /// Open the default output device and start the desk's callback. Returns
     /// the hub's end of the patchbay the callback listens on.
     fn start() -> Result<(Self, PatchbayHub)> {
-        let mut request = OutputRequest::default();
-        let info = request.info()?;
-        request.rate = RateChoice::Hz(info.rate);
+        let request = OutputRequest::default();
+        let prepared = request.prepare_output()?;
+        let info = prepared.info();
 
         let shared = Arc::new(SharedState::new());
         let engine = MixerEngine::new(DESK_CHANNELS, info.rate)
@@ -297,7 +297,7 @@ impl MixerAudio {
         let (patchbay_hub, patchbay_callback) = patchbay(PATCH_CAPACITY);
         let mut callback = AudioCallback::new(engine, Arc::clone(&shared), info.channels)
             .with_patchbay(patchbay_callback);
-        let stream = open_output(&request, move |data, _| callback.process(data))?;
+        let stream = prepared.open(move |data, _| callback.process(data))?;
 
         Ok((
             Self {

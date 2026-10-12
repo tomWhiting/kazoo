@@ -29,7 +29,8 @@ pub struct StreamConfig {
     pub output_device: Option<String>,
     /// Number of input channels (default 1 -- mono microphone).
     pub input_channels: u16,
-    /// Number of output channels (default 2 -- stereo).
+    /// Requested device output channels (default 2). The engine renders
+    /// stereo, which is adapted to the opened device's channel count.
     pub output_channels: u16,
 }
 
@@ -211,18 +212,21 @@ fn output_caps(device: &cpal::Device) -> (u16, Vec<u32>) {
 // Stream construction
 // ---------------------------------------------------------------------------
 
-/// The sample rate [`build_streams`] runs `config` at: the requested rate,
-/// or else the output device's native rate. An unreadable native rate is an error.
+/// Probe the requested sample rate, or the output device's native rate,
+/// without opening a stream. An unreadable native rate is an error.
 ///
-/// Callers that size or tune anything by sample rate before the streams
-/// exist (the engine's processing state, an instrument's hub link) must use
-/// this, then pass the result back as `config.sample_rate`, so everything
-/// agrees with the rate the device actually runs at.
+/// Callers sizing processing state before opening output must instead keep
+/// a [`crate::host::audio::PreparedOutput`] and use its reported configuration,
+/// so the selected device cannot change between preparation and opening.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Device`] if the device or requested configuration is unavailable.
 pub fn resolve_sample_rate(config: &StreamConfig) -> Result<u32> {
+    output_request(config).info().map(|info| info.rate)
+}
+
+fn output_request(config: &StreamConfig) -> crate::host::audio::OutputRequest {
     use crate::host::audio::{DeviceChoice, OutputRequest, RateChoice};
     OutputRequest {
         device: config
@@ -234,8 +238,11 @@ pub fn resolve_sample_rate(config: &StreamConfig) -> Result<u32> {
             .sample_rate
             .map_or(RateChoice::Native, RateChoice::Hz),
     }
-    .info()
-    .map(|info| info.rate)
+}
+
+pub(crate) fn prepare_output(config: &StreamConfig) -> Result<crate::host::audio::PreparedOutput> {
+    output_request(config)
+        .prepare_output_with_frames(config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE))
 }
 
 /// The output device's native sample rate. Running at it avoids Core Audio
@@ -254,7 +261,7 @@ pub(crate) fn native_output_rate(device: &cpal::Device) -> Result<u32> {
 /// supplies two callbacks:
 ///
 /// - `input_callback` receives captured audio data as `&[f32]`.
-/// - `output_callback` fills the playback buffer via `&mut [f32]`.
+/// - `output_callback` fills an interleaved stereo buffer via `&mut [f32]`.
 ///
 /// # Errors
 ///
@@ -263,22 +270,23 @@ pub(crate) fn native_output_rate(device: &cpal::Device) -> Result<u32> {
 /// fails.
 pub fn build_streams(
     config: &StreamConfig,
+    input_callback: impl FnMut(&[f32]) + Send + 'static,
+    output_callback: impl FnMut(&mut [f32]) + Send + 'static,
+) -> Result<AudioStreams> {
+    let prepared = prepare_output(config)?;
+    build_streams_with_output(config, prepared, input_callback, output_callback)
+}
+
+pub(crate) fn build_streams_with_output(
+    config: &StreamConfig,
+    prepared: crate::host::audio::PreparedOutput,
     mut input_callback: impl FnMut(&[f32]) + Send + 'static,
     mut output_callback: impl FnMut(&mut [f32]) + Send + 'static,
 ) -> Result<AudioStreams> {
-    use crate::host::audio::{
-        DeviceChoice, OutputRequest, RateChoice, open_input_with_frames, open_output_with_frames,
-    };
-    let sample_rate = resolve_sample_rate(config)?;
-    let frames = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
-    let output_request = OutputRequest {
-        device: config
-            .output_device
-            .clone()
-            .map_or(DeviceChoice::Default, DeviceChoice::Named),
-        channels: config.output_channels,
-        rate: RateChoice::Hz(sample_rate),
-    };
+    use crate::host::audio::{DeviceChoice, OutputRequest, RateChoice, open_input_with_frames};
+    let info = prepared.info();
+    let sample_rate = info.rate;
+    let frames = info.frames;
     let input_request = OutputRequest {
         device: config
             .input_device
@@ -287,16 +295,14 @@ pub fn build_streams(
         channels: config.input_channels,
         rate: RateChoice::Hz(sample_rate),
     };
-    // The host opens the nearest channel count each device offers, which
-    // may differ from the configured one. The engine's callbacks are
-    // written for the configured counts, so each is adapted to the width
-    // the device was opened with.
+    // Input follows the configured width; the engine always renders stereo.
+    // Both are adapted to the actual device widths chosen by the host.
     let mut input_adapter = InputAdapter::new(config.input_channels, frames);
-    let mut output_adapter = OutputAdapter::new(config.output_channels, frames);
+    let mut output_adapter = output_adapter(frames);
     let input = open_input_with_frames(&input_request, frames, move |data, info| {
         input_adapter.process(data, info.channels, &mut input_callback);
     })?;
-    let output = open_output_with_frames(&output_request, frames, move |data, info| {
+    let output = prepared.open(move |data, info| {
         output_adapter.process(data, info.channels, &mut output_callback);
     })?;
     let buffer_size = output.buffer_frames();
@@ -306,6 +312,10 @@ pub fn build_streams(
         sample_rate,
         buffer_size,
     })
+}
+
+fn output_adapter(frames: usize) -> OutputAdapter {
+    OutputAdapter::new(2, frames)
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +369,26 @@ pub(crate) fn resolve_output_device(host: &cpal::Host, name: Option<&str>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mono_output_config_gets_a_mono_mix_of_the_stereo_render() {
+        let config = StreamConfig {
+            output_channels: 1,
+            ..StreamConfig::default()
+        };
+        let mut adapter = output_adapter(2);
+        let mut data = [0.0; 5];
+        adapter.process(&mut data, config.output_channels, &mut |stereo| {
+            for frame in stereo.chunks_exact_mut(2) {
+                frame[0] = 0.75;
+                frame[1] = -0.25;
+            }
+        });
+        assert!(
+            data.iter()
+                .all(|sample| (*sample - 0.25).abs() < f32::EPSILON)
+        );
+    }
 
     #[test]
     fn stream_config_default_values() {
