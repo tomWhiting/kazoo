@@ -440,3 +440,30 @@ fn fold_state_survives_a_restart() {
         "old preferences migrate to unfolded"
     );
 }
+
+#[test]
+fn a_fold_whose_group_is_gone_is_ignored_and_can_be_unfolded() {
+    let mut app = fold_fixture();
+    fold_command(&mut app, "fold beat");
+    let mut wall = app.snapshot().expect("wall seen").clone();
+    wall.groups.remove("beat");
+    app.on_reply(Reply::Snapshot(Box::new(wall)), Instant::now());
+    render::render(&mut app, 240, 80);
+    assert_eq!(
+        app.rack.layout.plates.len(),
+        4,
+        "a gone group shows no tile"
+    );
+    assert!(app.rack.tiles.is_empty(), "no dangling tile");
+    assert_eq!(app.prefs().folded.len(), 1, "kept until unfolded");
+    fold_command(&mut app, "unfold BEAT");
+    assert!(
+        app.prefs().folded.is_empty(),
+        "a gone group's fold can still be opened"
+    );
+    fold_command(&mut app, "fold beat");
+    assert!(
+        app.prefs().folded.is_empty(),
+        "a gone group cannot be folded"
+    );
+}

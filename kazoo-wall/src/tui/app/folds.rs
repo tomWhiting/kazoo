@@ -75,8 +75,21 @@ impl App {
         now: Instant,
     ) -> Result<(), String> {
         let group = if let Some(name) = name {
+            // A fold kept from before the group went away can still be
+            // opened, so a gone group never stays in the settings for good.
+            let gone = || {
+                (!fold)
+                    .then(|| {
+                        self.look
+                            .folded
+                            .iter()
+                            .find(|group| group.eq_ignore_ascii_case(name))
+                    })
+                    .flatten()
+            };
             self.groups()
                 .and_then(|groups| groups.keys().find(|group| group.eq_ignore_ascii_case(name)))
+                .or_else(gone)
                 .cloned()
                 .ok_or_else(|| format!("there is no group called '{name}' (:groups says them)"))?
         } else {
