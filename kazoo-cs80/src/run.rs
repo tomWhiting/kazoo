@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
-use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
+use kazoo_core::host::link::{LinkSetup, connect_or_direct};
+use kazoo_core::ipc::link::HubLink;
 
 use crate::app::App;
 use crate::audio::{AudioSetup, AudioStats, DisplaySnapshot, MAX_CALLBACK_FRAMES};
@@ -108,12 +109,12 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let stats = Arc::new(AudioStats::default());
 
     // Plug into the kazoo-mix desk whenever it is running.
-    let (hub, hub_audio) = hub_link(LinkConfig::new(
-        "kazoo-cs80",
-        2,
-        output_info.rate,
-        MAX_CALLBACK_FRAMES as u32,
-    ))?;
+    let (hub, hub_audio) = connect_or_direct(&LinkSetup {
+        name: "kazoo-cs80",
+        channels: 2,
+        rate: output_info.rate,
+        block: MAX_CALLBACK_FRAMES,
+    })?;
 
     let stream = audio::build_audio_stream(
         prepared,

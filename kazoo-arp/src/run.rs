@@ -19,7 +19,8 @@ use crate::audio::{
     AudioEngine, COMMAND_CAPACITY, CommandSender, DISPLAY_CAPACITY, EngineShared,
     MAX_CALLBACK_FRAMES,
 };
-use kazoo_core::ipc::link::{HubLink, LinkConfig, RequestError, hub_link};
+use kazoo_core::host::link::{LinkSetup, connect_or_direct};
+use kazoo_core::ipc::link::{HubLink, RequestError};
 
 use crate::ui;
 
@@ -149,12 +150,12 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let shared = Arc::new(EngineShared::default());
 
     // Plug into the kazoo-mix desk whenever it is running.
-    let (hub, hub_audio) = hub_link(LinkConfig::new(
-        "kazoo-arp",
-        2,
-        sample_rate,
-        MAX_CALLBACK_FRAMES as u32,
-    ))?;
+    let (hub, hub_audio) = connect_or_direct(&LinkSetup {
+        name: "kazoo-arp",
+        channels: 2,
+        rate: sample_rate,
+        block: MAX_CALLBACK_FRAMES,
+    })?;
 
     // Build audio stream with arp engine + audition voice.
     let mut engine = AudioEngine::new(
