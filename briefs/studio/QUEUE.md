@@ -69,3 +69,5 @@ START KZ-B01b base=a8390fe branch=lane/kz-B01b df=54GB at 05:01
 END KZ-D09a head=c48cd72 reviewed=READY(refresh proven by mutant; caching walk strengthened; open: octave on-off-on test, written into the D09 brief; bench needs a quiet machine) merged=a79c79c at 05:25
 END KZ-D09b head=e5a92a6 reviewed=code READY(review fixed: missing table falls back to the exact curve instead of panicking; null -147 dB; VHS 0.7 target withdrawn by Cassio, VHS hi-fi path and parts.rs size written into the D09 brief) merged=2255bda at 05:31
 END KZ-B01b head=0520853 (B01 6597d95 + B01b) reviewed=READY(real merge with main kept every A03 fix; review fixed five instrument badges and the desk's 808 line hiding the connection state; wake p50 158.6 us real-time at load 125; open items appended to the A03b brief) merged=e58e857 at 05:39
+START KZ-G02 base=26c6ab0 branch=lane/kz-G02 df=34GB at 05:47
+END KZ-G02 head=65bf7b3 reviewed=READY(review fixed: each test names its log folder once, socket-length message gives path and length; speech test EmptyRender under load is unrelated, needs its own kazoo-speech brief) merged=faa48c9 at 06:10
