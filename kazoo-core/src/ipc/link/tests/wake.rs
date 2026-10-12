@@ -1,4 +1,5 @@
 use super::*;
+use crate::ipc::protocol::FrameHeader;
 
 const BLOCKS: usize = 10_000;
 
@@ -14,18 +15,38 @@ impl Connection {
     fn new() -> Self {
         let path = socket();
         let listener = UnixListener::bind(&path).unwrap();
-        let (link, mut audio) = hub_link(config(&path)).unwrap();
+        let (link, mut audio) = hub_link(LinkConfig {
+            real_time: true,
+            ..config(&path)
+        })
+        .unwrap();
         let (mut stream, mut buffer) = accept(&listener);
         wait("the link to connect", || link.is_connected());
         // A round trip establishes that registration has finished serving.
         assert!(audio.send_audio(256, &[0.0; 512]));
         assert_eq!(buffer.read_frame(&mut stream).unwrap().msg_type, MSG_AUDIO);
+        stream.set_nonblocking(true).unwrap();
         Self {
             link,
             audio,
             stream,
             buffer,
             path,
+        }
+    }
+
+    fn read_frame(&mut self) -> FrameHeader {
+        let start = Instant::now();
+        loop {
+            if let Some(header) = self.buffer.try_read_frame(&mut self.stream).unwrap() {
+                return header;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "no frame received"
+            );
+            // Measure bytes arriving, without a second thread's scheduling delay.
+            std::hint::spin_loop();
         }
     }
 }
@@ -44,10 +65,7 @@ fn a_queued_block_wakes_the_link_thread_at_once() {
     for _ in 0..BLOCKS {
         let start = Instant::now();
         assert!(connection.audio.send_audio(256, &block));
-        let header = connection
-            .buffer
-            .read_frame(&mut connection.stream)
-            .unwrap();
+        let header = connection.read_frame();
         elapsed.push(start.elapsed());
         assert_eq!(header.msg_type, MSG_AUDIO);
         assert_eq!(header.payload_len as usize, AUDIO_PAYLOAD_HEADER + 512 * 4);
@@ -56,9 +74,10 @@ fn a_queued_block_wakes_the_link_thread_at_once() {
     let p50 = elapsed[BLOCKS / 2];
     let p99 = elapsed[BLOCKS * 99 / 100];
     eprintln!(
-        "BENCH instrument blocks={BLOCKS} p50_us={:.3} p99_us={:.3}",
+        "BENCH instrument blocks={BLOCKS} p50_us={:.3} p99_us={:.3} real_time={:?}",
         p50.as_secs_f64() * 1_000_000.0,
-        p99.as_secs_f64() * 1_000_000.0
+        p99.as_secs_f64() * 1_000_000.0,
+        connection.link.real_time()
     );
     assert!(p50 < Duration::from_micros(200), "p50={p50:?}, p99={p99:?}");
 }
@@ -69,10 +88,7 @@ fn a_ui_request_is_carried_without_waiting_for_the_tick() {
     for _ in 0..10 {
         let start = Instant::now();
         connection.link.request_tempo(100.0).unwrap();
-        let header = connection
-            .buffer
-            .read_frame(&mut connection.stream)
-            .unwrap();
+        let header = connection.read_frame();
         let elapsed = start.elapsed();
         assert_eq!(header.msg_type, MSG_TRANSPORT_REQUEST);
         assert!(elapsed < Duration::from_millis(1), "elapsed={elapsed:?}");
