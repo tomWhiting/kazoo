@@ -10,6 +10,12 @@ pub fn screamer_reference() -> Box<dyn crate::Effect> {
     Box::new(crate::drive::Screamer::reference_model())
 }
 
+/// The frozen high rate Amp with both tone stacks for cost measurements.
+#[must_use]
+pub fn amp_reference() -> Box<dyn crate::Effect> {
+    Box::new(crate::drive::Amp::reference_model())
+}
+
 /// Two seconds of a logarithmic sweep, a tone burst and seeded noise.
 /// The signal has a half scale peak and includes silence after the burst.
 #[must_use]
