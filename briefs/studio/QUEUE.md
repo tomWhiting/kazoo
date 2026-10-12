@@ -33,3 +33,4 @@ START KZ-G01 base=24c4415 branch=lane/kz-G01 df=124GB at 02:44
 END KZ-E02 head=a83b934 reviewed=READY(live-wall fold check for Tom) merged=d7384a5 at 02:45
 START KZ-E01 base=ef2a040 branch=lane/kz-E01 df=127GB at 02:45
 END KZ-B07 head=4130696 reviewed=READY(brief's hand check must use --target all or a UUID) merged=7f56fe8 at 02:49
+PARKED KZ-D02 head=b9dbd6f reviewed=code correct, NOT READY until bench on a quiet machine (interleaved run at load ~200: base unplugged/1000 33.0/21.7 ms, lane 14.3/23.8 ms; noise ~2x, no clear 5x) at 02:59
