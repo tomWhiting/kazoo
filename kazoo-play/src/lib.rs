@@ -1,4 +1,4 @@
-//! kazoo-play — pipe text notation into timestamped musical events or sound.
+//! kazoo-play: pipe text notation into timestamped musical events or sound.
 //!
 //! `kazoo-play` is the first terminal-native musical primitive: humans and
 //! agents can write compact notation, pipe it around, print timestamped events,
