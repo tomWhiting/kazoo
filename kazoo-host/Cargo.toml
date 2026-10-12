@@ -1,0 +1,14 @@
+[package]
+name = "kazoo-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "What every kazoo terminal program shares: error reports installed once, and a terminal entered and always restored"
+
+[lints]
+workspace = true
+
+[dependencies]
+color-eyre = "0.6.5"
+crossterm = "0.29.0"
+ratatui = "0.30.0"

@@ -21,6 +21,7 @@ members = [
     "kazoo-sampler",
     "kazoo-speech",
     "kazoo-mcp",
+    "kazoo-host",
 ]
 resolver = "2"
 
