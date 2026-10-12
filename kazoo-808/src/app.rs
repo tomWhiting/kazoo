@@ -3,8 +3,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::audio::{AudioCommand, CommandSender};
-use kazoo_808::sequencer::{MAX_PATTERNS, STEPS_PER_PATTERN, Sequencer};
-use kazoo_808::synth::{MAX_PARAMS_PER_VOICE, VOICE_COUNT, VoiceIndex, VoiceParam};
+use crate::sequencer::{MAX_PATTERNS, STEPS_PER_PATTERN, Sequencer};
+use crate::synth::{MAX_PARAMS_PER_VOICE, VOICE_COUNT, VoiceIndex, VoiceParam};
 use kazoo_core::ipc::link::LinkStatus;
 
 /// BPM change per `+`/`-` press.

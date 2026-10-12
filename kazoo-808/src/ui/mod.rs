@@ -13,7 +13,7 @@ use self::grid::GridWidget;
 use self::params::ParamsWidget;
 use crate::app::{App, Focus};
 use crate::audio::SendFailure;
-use kazoo_808::synth::VOICE_COUNT;
+use crate::synth::VOICE_COUNT;
 
 /// Static voice labels — avoids per-frame allocation.
 const VOICE_LABELS: [&str; VOICE_COUNT] = [

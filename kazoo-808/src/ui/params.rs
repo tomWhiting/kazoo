@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
 use crate::app::{App, Focus};
-use kazoo_808::synth::VoiceParam;
+use crate::synth::VoiceParam;
 
 /// Voice parameter panel widget.
 pub struct ParamsWidget<'a> {
