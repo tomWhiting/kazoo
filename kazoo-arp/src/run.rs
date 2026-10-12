@@ -3,13 +3,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{
     self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ringbuf::traits::Split;
@@ -86,18 +86,11 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Audio setup
     // -----------------------------------------------------------------------
 
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| color_eyre::eyre::eyre!("no audio output device found"))?;
-    let supported_config = device.default_output_config()?;
-    let sample_rate = supported_config.sample_rate();
-    let channels = usize::from(supported_config.channels());
-    if channels == 0 {
-        return Err(color_eyre::eyre::eyre!(
-            "audio output device reports zero channels"
-        ));
-    }
+    let mut request = OutputRequest::default();
+    let output_info = request.info()?;
+    request.rate = RateChoice::Hz(output_info.rate);
+    let sample_rate = output_info.rate;
+    let channels = usize::from(output_info.channels);
 
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(COMMAND_CAPACITY);
     // Display events: Audio -> UI (lock-free SPSC).
@@ -121,14 +114,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         display_prod,
         Arc::clone(&shared),
     );
-    let error_shared = Arc::clone(&shared);
-    let stream = device.build_output_stream(
-        &supported_config.into(),
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| engine.render(data),
-        move |err| error_shared.record_stream_error(&err),
-        None,
-    )?;
-    stream.play()?;
+    let stream = open_output(&request, move |data, _| engine.render(data))?;
 
     // -----------------------------------------------------------------------
     // Terminal setup
@@ -143,7 +129,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         key_mode,
     );
     app.key_mode_reason = key_mode_reason;
-    let result = run_event_loop(&mut terminal, &mut app, &shared, &hub);
+    let result = run_event_loop(&mut terminal, &mut app, &shared, &hub, &stream);
 
     // Cleanup.
     drop(stream);
@@ -240,10 +226,12 @@ fn run_event_loop(
     app: &mut App,
     shared: &EngineShared,
     hub: &HubLink,
+    stream: &OpenedOutput,
 ) -> color_eyre::Result<()> {
     let frame_duration = Duration::from_millis(1000 / FPS);
 
     while !app.should_quit {
+        stream.check_error_with_handler(|error| shared.record_stream_error(&error))?;
         let frame_start = Instant::now();
 
         // Follow the audio thread and the desk link.

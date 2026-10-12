@@ -6,8 +6,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cpal::traits::DeviceTrait;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest, open_output};
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::link::HubLinkAudio;
 use kazoo_core::ipc::types::{NOTE_OFF, NOTE_ON};
@@ -73,7 +73,7 @@ impl AudioStats {
         self.display_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn record_stream_error(&self, message_queued: bool) {
+    pub(super) fn record_stream_error(&self, message_queued: bool) {
         self.stream_errors.fetch_add(1, Ordering::Relaxed);
         if !message_queued {
             self.stream_errors_unreported
@@ -127,7 +127,6 @@ pub struct AudioSetup {
     pub display_tx: Sender<DisplaySnapshot>,
     /// Receiver clone used only to evict stale snapshots.
     pub display_evict: Receiver<DisplaySnapshot>,
-    pub stream_error_tx: Sender<cpal::StreamError>,
     pub hub_audio: HubLinkAudio,
     pub stats: Arc<AudioStats>,
 }
@@ -161,17 +160,15 @@ fn apply_hub_message(voice: &mut MiniVoice, msg: &HubMessage) {
 /// The `MiniVoice` is owned entirely by this callback closure. While plugged
 /// into the desk, audio goes to kazoo-mix instead of the local output.
 pub fn build_audio_stream(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
+    request: &OutputRequest,
     setup: AudioSetup,
-) -> color_eyre::Result<cpal::Stream> {
+) -> color_eyre::Result<OpenedOutput> {
     let AudioSetup {
         sample_rate,
         channels,
         cmd_rx,
         display_tx,
         display_evict,
-        stream_error_tx,
         mut hub_audio,
         stats,
     } = setup;
@@ -188,66 +185,56 @@ pub fn build_audio_stream(
     let mut stereo_buf = vec![0.0_f32; MAX_CALLBACK_FRAMES * 2];
 
     let mut display_counter: u32 = 0;
-    let error_stats = Arc::clone(&stats);
 
-    let stream = device.build_output_stream(
-        config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                apply_command(&mut voice, cmd);
-            }
-            while let Some(msg) = hub_audio.try_recv() {
-                apply_hub_message(&mut voice, &msg);
-            }
+    let stream = open_output(request, move |data: &mut [f32], _| {
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            apply_command(&mut voice, cmd);
+        }
+        while let Some(msg) = hub_audio.try_recv() {
+            apply_hub_message(&mut voice, &msg);
+        }
 
-            for chunk in data.chunks_mut(MAX_CALLBACK_FRAMES * channels) {
-                let frames = chunk.len() / channels;
-                // MiniVoice applies soft_limit + sanitize_sample per sample.
-                voice.process_block(&mut mono_buf[..frames]);
-                for (frame, &sample) in chunk.chunks_exact_mut(channels).zip(&mono_buf[..frames]) {
-                    frame.fill(sample);
+        for chunk in data.chunks_mut(MAX_CALLBACK_FRAMES * channels) {
+            let frames = chunk.len() / channels;
+            // MiniVoice applies soft_limit + sanitize_sample per sample.
+            voice.process_block(&mut mono_buf[..frames]);
+            for (frame, &sample) in chunk.chunks_exact_mut(channels).zip(&mono_buf[..frames]) {
+                frame.fill(sample);
+            }
+            // A trailing partial frame (never expected) is silenced.
+            chunk[frames * channels..].fill(0.0);
+
+            // Send audio to the hub for mixing (if connected).
+            if hub_audio.is_connected() {
+                for (idx, &sample) in mono_buf[..frames].iter().enumerate() {
+                    stereo_buf[idx * 2] = sample;
+                    stereo_buf[idx * 2 + 1] = sample;
                 }
-                // A trailing partial frame (never expected) is silenced.
-                chunk[frames * channels..].fill(0.0);
-
-                // Send audio to the hub for mixing (if connected).
-                if hub_audio.is_connected() {
-                    for (idx, &sample) in mono_buf[..frames].iter().enumerate() {
-                        stereo_buf[idx * 2] = sample;
-                        stereo_buf[idx * 2 + 1] = sample;
-                    }
-                    if hub_audio.send_audio(frames as u32, &stereo_buf[..frames * 2]) {
-                        // The desk is playing this instrument: don't play it
-                        // twice.
-                        chunk.fill(0.0);
-                    }
+                if hub_audio.send_audio(frames as u32, &stereo_buf[..frames * 2]) {
+                    // The desk is playing this instrument: don't play it
+                    // twice.
+                    chunk.fill(0.0);
                 }
             }
+        }
 
-            display_counter += 1;
-            if display_counter >= DISPLAY_INTERVAL {
-                display_counter = 0;
-                let mut snapshot = DisplaySnapshot {
-                    current_note: voice.current_note(),
-                    waveform: [0.0; DISPLAY_BUF_SIZE],
-                    write_pos: voice.display_write_pos(),
-                };
-                let src = voice.display_samples();
-                let copy_len = src.len().min(DISPLAY_BUF_SIZE);
-                snapshot.waveform[..copy_len].copy_from_slice(&src[..copy_len]);
-                match publish_latest(&display_tx, &display_evict, snapshot) {
-                    Publish::Delivered | Publish::ReplacedStale => {}
-                    Publish::Dropped => stats.record_display_dropped(),
-                }
+        display_counter += 1;
+        if display_counter >= DISPLAY_INTERVAL {
+            display_counter = 0;
+            let mut snapshot = DisplaySnapshot {
+                current_note: voice.current_note(),
+                waveform: [0.0; DISPLAY_BUF_SIZE],
+                write_pos: voice.display_write_pos(),
+            };
+            let src = voice.display_samples();
+            let copy_len = src.len().min(DISPLAY_BUF_SIZE);
+            snapshot.waveform[..copy_len].copy_from_slice(&src[..copy_len]);
+            match publish_latest(&display_tx, &display_evict, snapshot) {
+                Publish::Delivered | Publish::ReplacedStale => {}
+                Publish::Dropped => stats.record_display_dropped(),
             }
-        },
-        move |err| {
-            // Queue the error for the UI; the count is kept either way.
-            let queued = stream_error_tx.try_send(err).is_ok();
-            error_stats.record_stream_error(queued);
-        },
-        None,
-    )?;
+        }
+    })?;
 
     Ok(stream)
 }

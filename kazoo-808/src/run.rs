@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -62,18 +62,11 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let Args = args;
 
     // Set up audio output.
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| color_eyre::eyre::eyre!("no audio output device found"))?;
-    let config = device.default_output_config()?;
-    let sample_rate = config.sample_rate() as f32;
-    let channels = usize::from(config.channels());
-    if channels == 0 {
-        return Err(color_eyre::eyre::eyre!(
-            "audio output device reports zero channels"
-        ));
-    }
+    let mut request = OutputRequest::default();
+    let output_info = request.info()?;
+    request.rate = RateChoice::Hz(output_info.rate);
+    let sample_rate = output_info.rate as f32;
+    let channels = usize::from(output_info.channels);
 
     let shared = Arc::new(EngineShared::default());
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(COMMAND_CAPACITY);
@@ -82,7 +75,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let (hub, hub_audio) = hub_link(LinkConfig::new(
         "kazoo-808",
         2,
-        config.sample_rate(),
+        output_info.rate,
         MAX_CALLBACK_FRAMES as u32,
     ))?;
 
@@ -94,20 +87,13 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         hub_audio,
         Arc::clone(&shared),
     );
-    let error_shared = Arc::clone(&shared);
-    let stream = device.build_output_stream(
-        &config.into(),
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| engine.render(data),
-        move |err| error_shared.record_stream_error(&err),
-        None,
-    )?;
-    stream.play()?;
+    let stream = open_output(&request, move |data, _| engine.render(data))?;
 
     let mut terminal = setup_terminal()?;
 
     // Run the TUI event loop.
     let mut app = App::new(sample_rate, CommandSender::new(cmd_tx));
-    let result = run_event_loop(&mut terminal, &mut app, &shared, &hub);
+    let result = run_event_loop(&mut terminal, &mut app, &shared, &hub, &stream);
     let restored = restore_terminal(&mut terminal);
 
     // Stop audio, then leave the desk.
@@ -170,8 +156,10 @@ fn run_event_loop(
     app: &mut App,
     shared: &EngineShared,
     hub: &HubLink,
+    stream: &OpenedOutput,
 ) -> color_eyre::Result<()> {
     while !app.should_quit {
+        stream.check_error_with_handler(|error| shared.record_stream_error(&error))?;
         // Update display state from the audio thread and the desk link.
         app.playback_step = shared.playback_step.load(Ordering::Acquire);
         app.sequencer.playing = shared.playing.load(Ordering::Acquire);
