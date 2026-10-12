@@ -1,6 +1,8 @@
 //! End-to-end hub tests: real sockets, the client instruments use, and the
 //! real audio callback path (patchbay, engine, shared state).
 
+mod wake;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};

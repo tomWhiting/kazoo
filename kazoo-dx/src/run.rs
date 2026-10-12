@@ -718,6 +718,7 @@ mod tests {
 
     fn standalone() -> LinkStatus {
         LinkStatus {
+            normal_priority: false,
             connected: false,
             strip: None,
             blocks_sent: 0,

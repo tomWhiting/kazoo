@@ -608,21 +608,30 @@ impl Reporter {
     fn report(&mut self, link: &HubLink, stats: &JamStats) {
         let now_linked = link.status();
         let changed = self.last.as_ref().is_none_or(|last| {
-            last.connected != now_linked.connected
+            last.normal_priority != now_linked.normal_priority
+                || last.connected != now_linked.connected
                 || last.strip != now_linked.strip
                 || last.last_refusal != now_linked.last_refusal
         });
         if changed {
+            let priority = if now_linked.normal_priority {
+                "; desk link at normal priority"
+            } else {
+                ""
+            };
             match (
                 now_linked.connected,
                 now_linked.strip,
                 &now_linked.last_refusal,
             ) {
                 (true, Some(strip), _) => {
-                    eprintln!("kazoo-play: on the desk, strip {}", u16::from(strip) + 1);
+                    eprintln!(
+                        "kazoo-play: on the desk, strip {}{priority}",
+                        u16::from(strip) + 1
+                    );
                 }
-                (_, _, Some(why)) => eprintln!("kazoo-play: playing on my own ({why})"),
-                _ => eprintln!("kazoo-play: playing on my own (no desk yet)"),
+                (_, _, Some(why)) => eprintln!("kazoo-play: playing on my own ({why}){priority}"),
+                _ => eprintln!("kazoo-play: playing on my own (no desk yet){priority}"),
             }
             self.last = Some(now_linked);
         }

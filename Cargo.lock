@@ -1545,6 +1545,7 @@ dependencies = [
  "kazoo-core",
  "ratatui",
  "ringbuf",
+ "rustix",
 ]
 
 [[package]]

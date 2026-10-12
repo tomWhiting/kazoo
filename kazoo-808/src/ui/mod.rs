@@ -264,6 +264,12 @@ fn draw_alert_line(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::with_capacity(4);
 
     if let Some(hub) = &app.hub {
+        if hub.normal_priority {
+            spans.push(Span::styled(
+                " desk link at normal priority  ",
+                Style::new().fg(Color::Yellow),
+            ));
+        }
         if let Some(strip) = hub.strip.filter(|_| hub.connected) {
             spans.push(Span::styled(
                 format!(" \u{2192} kazoo-mix strip {}", u16::from(strip) + 1),
@@ -385,3 +391,6 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: false });
     frame.render_widget(para, popup_area);
 }
+
+#[cfg(test)]
+mod priority_tests;

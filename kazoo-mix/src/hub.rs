@@ -13,7 +13,9 @@
 //! arpeggiator, say) are routed to their target, or to every other instrument
 //! when untargeted.
 //!
-//! Everything here runs on one polling thread. It never touches the audio
+//! Everything here runs on one thread that sleeps in `poll(2)` on its sockets
+//! and wakes when bytes arrive, or every [`HUB_TICK`] for what has no socket.
+//! It never touches the audio
 //! callback except through the patchbay's lock-free queues and the shared
 //! state's atomics. The thread stamps each block onto the studio clock as it
 //! reads it, so a block it reads late is placed afresh (heard as a jump):
@@ -40,6 +42,9 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::io::Errno;
+
 use kazoo_core::audio_transport::{AudioRingConfig, audio_block_ring};
 use kazoo_core::ipc::discovery;
 use kazoo_core::ipc::protocol::{FrameBuffer, MAX_PAYLOAD_SIZE};
@@ -61,9 +66,13 @@ use crate::worker::join_worker;
 use instrument::{ConnectionError, Inbound, Instrument, NoteMessage, Registration};
 use kazoo_core::ipc::outbox::OutboxError;
 
-/// Time between polls of the sockets. It is also the period the scheduler
-/// is told when the thread is real-time: one short pass per poll.
-const POLL_INTERVAL: Duration = Duration::from_micros(500);
+/// Longest wait for work without socket readiness.
+///
+/// Patchbay answers, song anchors, shared transport, pace and health are served
+/// every two milliseconds: a tenth of the studio scheduling slack. This keeps
+/// anchors inside it, with four times fewer idle wakes than the old interval.
+/// Also the real-time scheduling period.
+const HUB_TICK: Duration = Duration::from_millis(2);
 
 /// How long a new connection has to register.
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(2);
@@ -357,9 +366,9 @@ impl Hub {
         let join = thread::Builder::new()
             .name("kazoo-mix-hub".to_string())
             .spawn(move || {
-                // Kept on this thread's stack for its whole life: the hub
-                // never blocks, so it never needs to step down.
-                let (priority, outcome) = match RealTime::promote(POLL_INTERVAL) {
+                // Kept on this thread's stack for its whole life, including
+                // socket readiness waits between serving passes.
+                let (priority, outcome) = match RealTime::promote(HUB_TICK) {
                     Ok(priority) => (Some(priority), Ok(())),
                     // Kept for the desk to show, with why (see
                     // `Hub::real_time`).
@@ -489,6 +498,9 @@ struct Server {
     leaving: Vec<(usize, LeaveReason)>,
 }
 
+/// Space for the listener, every instrument, and twice as many pending streams.
+const MAX_POLLED: usize = 1 + DESK_CHANNELS + 2 * DESK_CHANNELS;
+
 impl Server {
     fn new(
         listener: UnixListener,
@@ -526,11 +538,40 @@ impl Server {
     }
 
     fn run(&mut self, running: &AtomicBool) {
+        let mut poll_fault_reported = false;
         while running.load(Ordering::Acquire) {
             self.poll_once();
-            thread::sleep(POLL_INTERVAL);
+            if let Err(error) = self.wait() {
+                if !poll_fault_reported {
+                    self.notify(HubNotice::Fault(format!(
+                        "waiting on hub sockets failed: {error}"
+                    )));
+                    poll_fault_reported = true;
+                }
+                thread::park_timeout(HUB_TICK);
+            }
         }
         self.shut_down();
+    }
+
+    /// Borrow live sockets for one readiness wait, without allocating.
+    fn wait(&self) -> Result<(), Errno> {
+        let mut fds: [PollFd<'_>; MAX_POLLED] =
+            std::array::from_fn(|_| PollFd::new(&self.listener, PollFlags::IN));
+        let mut n = 1;
+        for instrument in &self.instruments {
+            fds[n] = PollFd::new(&instrument.stream, PollFlags::IN);
+            n += 1;
+        }
+        for pending in self.pending.iter().take(MAX_POLLED - n) {
+            fds[n] = PollFd::new(&pending.stream, PollFlags::IN);
+            n += 1;
+        }
+        let timeout = Timespec::try_from(HUB_TICK).map_err(|_| Errno::INVAL)?;
+        match poll(&mut fds[..n], Some(&timeout)) {
+            Ok(_) | Err(Errno::INTR) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     /// One pass over everything the hub serves.
@@ -1019,7 +1060,7 @@ impl Server {
                     *told && instrument.flush().is_ok() && instrument.outbox.waiting() > 0
                 })
         {
-            thread::sleep(POLL_INTERVAL);
+            thread::park_timeout(Duration::from_millis(1));
         }
         self.instruments.clear();
         if let Err(err) = std::fs::remove_file(&self.config.socket) {

@@ -246,6 +246,15 @@ impl App {
 
     /// Where the 303's sound goes, for the header.
     pub(crate) fn link_label(&self) -> String {
+        let label = self.connection_label();
+        if self.hub.as_ref().is_some_and(|hub| hub.normal_priority) {
+            return format!("{label} \u{b7} desk link at normal priority");
+        }
+        label
+    }
+
+    /// Where the 303's sound goes, before any word about the link's priority.
+    fn connection_label(&self) -> String {
         match &self.hub {
             None => String::from("\u{25cf} local"),
             Some(hub) if hub.connected => hub.strip.map_or_else(
@@ -515,6 +524,7 @@ mod tests {
         let mut app = App::new(44_100.0);
         assert_eq!(app.link_label(), "\u{25cf} local");
         let mut status = LinkStatus {
+            normal_priority: false,
             connected: true,
             strip: Some(2),
             blocks_sent: 0,
@@ -574,5 +584,24 @@ mod tests {
         assert!(USAGE.starts_with(
             "kazoo-303: TB-303 inspired acid bassline synth, all procedural synthesis, no samples\n"
         ));
+    }
+
+    #[test]
+    fn a_link_at_normal_priority_still_says_where_the_sound_goes() {
+        let mut app = App::new(44_100.0);
+        app.hub = Some(LinkStatus {
+            normal_priority: true,
+            connected: true,
+            strip: Some(2),
+            blocks_sent: 0,
+            blocks_dropped: 0,
+            messages_dropped: 0,
+            connections: 1,
+            last_refusal: None,
+        });
+        assert_eq!(
+            app.link_label(),
+            "\u{2192} kazoo-mix strip 3 \u{b7} desk link at normal priority"
+        );
     }
 }

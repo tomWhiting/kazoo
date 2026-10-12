@@ -136,6 +136,12 @@ fn phrase_spans(app: &App) -> Vec<Span<'static>> {
 fn link_spans(link: &LinkStatus) -> Vec<Span<'static>> {
     let mut spans = Vec::with_capacity(3);
     spans.push(Span::raw("  "));
+    if link.normal_priority {
+        spans.push(Span::styled(
+            "desk link at normal priority  ",
+            Style::new().fg(ACCENT),
+        ));
+    }
     if link.connected {
         spans.push(Span::styled(
             link.strip.map_or_else(
@@ -608,6 +614,7 @@ mod tests {
 
     fn status() -> LinkStatus {
         LinkStatus {
+            normal_priority: false,
             connected: false,
             strip: None,
             blocks_sent: 0,
@@ -621,6 +628,7 @@ mod tests {
     #[test]
     fn connected_link_names_the_strip() {
         let link = LinkStatus {
+            normal_priority: false,
             connected: true,
             strip: Some(2),
             ..status()
@@ -641,6 +649,7 @@ mod tests {
     #[test]
     fn lost_blocks_are_reported() {
         let link = LinkStatus {
+            normal_priority: false,
             connected: true,
             blocks_dropped: 4,
             ..status()

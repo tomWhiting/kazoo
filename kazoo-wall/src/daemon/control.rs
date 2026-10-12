@@ -253,6 +253,7 @@ struct Control {
     awaiting: HashMap<u64, (u64, u64)>,
     /// The audio counts, kept across rebuilds of the audio.
     counts: AudioCounts,
+    told_link_refused: bool,
 }
 
 /// Run the control thread until stopped.
@@ -281,6 +282,7 @@ pub fn run(setup: Setup) {
         last_tick: Instant::now(),
         awaiting: HashMap::new(),
         counts: AudioCounts::new(Instant::now()),
+        told_link_refused: false,
     };
     while !control.stopping {
         match setup.inbox.recv_timeout(TICK) {
@@ -795,6 +797,14 @@ impl Control {
     }
 
     fn housekeeping(&mut self) {
+        if !self.told_link_refused {
+            if let Some(Err(why)) = self.wall.desk_link().and_then(HubLink::real_time) {
+                eprintln!(
+                    "kazoo-wall: the desk link runs at normal priority ({why}); on a busy machine the desk may hear it jump"
+                );
+                self.told_link_refused = true;
+            }
+        }
         let now = Instant::now();
         self.last_tick = now;
         while let Ok(listen) = self.listen_rx.try_recv() {

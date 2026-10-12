@@ -183,17 +183,18 @@ pub fn connect_config_or_direct(config: LinkConfig) -> Result<(HubLink, HubLinkA
     match connect_config(config.clone()) {
         Ok(linked) => linked.into_parts(),
         Err(Error::NoDesk) => {
-            eprintln!("{}: no desk; playing direct", config.name);
-            start_link(config, None, true).map_err(Error::Io)
+            let (link, audio) = start_link(config, None, true)?;
+            link.report_start_refusal("no desk; playing direct".to_string());
+            Ok((link, audio))
         }
         // A desk that refuses the name, or answers badly, is retried by the
         // link with its own backoff and shown as the link's status.
         Err(Error::Io(err)) => {
-            eprintln!(
-                "{}: the desk did not take the link ({err}); playing direct",
-                config.name
-            );
-            start_link(config, None, true).map_err(Error::Io)
+            let (link, audio) = start_link(config, None, true)?;
+            link.report_start_refusal(format!(
+                "the desk did not take the link ({err}); playing direct"
+            ));
+            Ok((link, audio))
         }
         Err(err) => Err(err),
     }

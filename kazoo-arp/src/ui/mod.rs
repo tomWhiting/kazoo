@@ -165,6 +165,12 @@ fn draw_header(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     // Target / desk link status.
     spans.push(Span::styled("   ", Style::new().fg(DIM)));
     spans.push(Span::styled("Target ", Style::new().fg(SILVER)));
+    if app.hub.as_ref().is_some_and(|hub| hub.normal_priority) {
+        spans.push(Span::styled(
+            "desk link at normal priority  ",
+            Style::new().fg(AMBER),
+        ));
+    }
     let strip = app
         .hub
         .as_ref()
