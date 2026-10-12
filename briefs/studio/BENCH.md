@@ -51,7 +51,12 @@ Not measured at all (no number exists for these rows):
 all `wall/kind/*`; wall chains 10 and 100; unplugged 100 and 1000; cables 10,
 100 and 1000; culled 1000; the remaining 20 FX catalogue entries; desk callback
 8, 64 and 512; link encode and decode 512; control build 1000 and look 100,
-1000 and 10000. Look byte sizes were not measured.
+1000 and 10000.
+
+The look's size is a count of bytes, not a timing, so load does not move it.
+The review's one-pass run of the control bench (`-- --test`, at 3ab9adb)
+printed the serialised `look` result as 90,133 bytes for 100 vcos, 900,837
+bytes for 1000 and 9,043,841 bytes for 10000.
 
 The tree's mix has four named inputs and four knobs, not 28 named jacks.
 The fixture uses those eight jacks, `ceil(C / 8)` leaves, and counts the
