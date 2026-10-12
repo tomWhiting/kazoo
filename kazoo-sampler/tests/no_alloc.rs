@@ -19,7 +19,11 @@ const BLOCK: usize = 128;
 
 fn sample(name: &str, frames: usize) -> Arc<SampleData> {
     let left: Vec<f32> = (0..frames)
-        .map(|n| (n as f32 * 0.031).sin() * 0.5 + if n % 9_000 < 40 { 0.4 } else { 0.0 })
+        .map(|n| {
+            (n as f32 * 0.031)
+                .sin()
+                .mul_add(0.5, if n % 9_000 < 40 { 0.4 } else { 0.0 })
+        })
         .collect();
     let right: Vec<f32> = left.iter().map(|x| x * 0.7).collect();
     Arc::new(SampleData::new(SampleName::new(name).unwrap(), RATE, left, right).unwrap())
