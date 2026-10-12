@@ -262,21 +262,20 @@ const fn hub_priority(outcome: Option<&Result<(), NotRealTime>>) -> HubPriority 
 /// What the header says about the built-in demo, and whether it is on the
 /// desk.
 fn demo_line(status: &LinkStatus) -> (String, bool) {
-    if status.normal_priority {
-        return (
-            "808 demo: desk link at normal priority · ".to_string(),
-            status.connected,
-        );
-    }
+    let priority = if status.normal_priority {
+        ", desk link at normal priority"
+    } else {
+        ""
+    };
     if let Some(strip) = status.strip.filter(|_| status.connected) {
         return (
-            format!("808 demo on strip {} · ", u16::from(strip) + 1),
+            format!("808 demo on strip {}{priority} · ", u16::from(strip) + 1),
             true,
         );
     }
     let line = status.last_refusal.as_deref().map_or_else(
-        || "808 demo plugging in · ".to_string(),
-        |why| format!("808 demo not plugged in: {why} · "),
+        || format!("808 demo plugging in{priority} · "),
+        |why| format!("808 demo not plugged in: {why}{priority} · "),
     );
     (line, false)
 }
@@ -359,5 +358,26 @@ mod tests {
             .map(drop)
             .expect_err("a zero period is refused");
         assert_eq!(hub_priority(Some(&Err(refused))), HubPriority::Normal);
+    }
+
+    #[test]
+    fn the_demo_line_keeps_its_strip_at_normal_priority() {
+        let status = LinkStatus {
+            normal_priority: true,
+            connected: true,
+            strip: Some(2),
+            blocks_sent: 0,
+            blocks_dropped: 0,
+            messages_dropped: 0,
+            connections: 1,
+            last_refusal: None,
+        };
+        assert_eq!(
+            demo_line(&status),
+            (
+                "808 demo on strip 3, desk link at normal priority \u{b7} ".to_string(),
+                true
+            )
+        );
     }
 }

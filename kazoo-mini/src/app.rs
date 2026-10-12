@@ -201,26 +201,13 @@ impl App {
     #[must_use]
     pub fn hub_badge(&self) -> Option<(String, bool)> {
         let hub = self.hub.as_ref()?;
-        if hub.normal_priority {
-            return Some(("desk link at normal priority".to_owned(), true));
+        let badge = connection_badge(hub);
+        if !hub.normal_priority {
+            return badge;
         }
-        if !hub.connected {
-            return hub
-                .last_refusal
-                .as_ref()
-                .map(|why| (format!("desk: {why}"), true));
-        }
-        let strip = hub.strip.map_or_else(String::new, |strip| {
-            format!(" strip {}", u16::from(strip) + 1)
-        });
-        let dropped = if hub.blocks_dropped > 0 {
-            format!(" ({} blocks dropped)", hub.blocks_dropped)
-        } else {
-            String::new()
-        };
-        Some((
-            format!("\u{2192} kazoo-mix{strip}{dropped}"),
-            hub.blocks_dropped > 0,
+        Some(badge.map_or_else(
+            || ("desk link at normal priority".to_owned(), true),
+            |(text, _)| (format!("{text} \u{b7} desk link at normal priority"), true),
         ))
     }
 
@@ -468,3 +455,71 @@ impl App {
 }
 
 use crate::synth::ladder::MoogLadder;
+
+/// Desk link badge for the connection alone: where the sound goes, or why
+/// it does not reach the desk, and whether that is a warning.
+fn connection_badge(hub: &LinkStatus) -> Option<(String, bool)> {
+    if !hub.connected {
+        return hub
+            .last_refusal
+            .as_ref()
+            .map(|why| (format!("desk: {why}"), true));
+    }
+    let strip = hub.strip.map_or_else(String::new, |strip| {
+        format!(" strip {}", u16::from(strip) + 1)
+    });
+    let dropped = if hub.blocks_dropped > 0 {
+        format!(" ({} blocks dropped)", hub.blocks_dropped)
+    } else {
+        String::new()
+    };
+    Some((
+        format!("\u{2192} kazoo-mix{strip}{dropped}"),
+        hub.blocks_dropped > 0,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_link_at_normal_priority_still_shows_where_the_sound_goes() {
+        let mut app = App::new(48_000);
+        app.hub = Some(LinkStatus {
+            normal_priority: true,
+            connected: false,
+            strip: None,
+            blocks_sent: 0,
+            blocks_dropped: 0,
+            messages_dropped: 0,
+            connections: 0,
+            last_refusal: Some("every strip is taken".to_owned()),
+        });
+        assert_eq!(
+            app.hub_badge(),
+            Some((
+                "desk: every strip is taken \u{b7} desk link at normal priority".to_owned(),
+                true
+            ))
+        );
+        app.hub = Some(LinkStatus {
+            normal_priority: true,
+            connected: true,
+            strip: Some(3),
+            blocks_sent: 0,
+            blocks_dropped: 7,
+            messages_dropped: 0,
+            connections: 1,
+            last_refusal: None,
+        });
+        assert_eq!(
+            app.hub_badge(),
+            Some((
+                "\u{2192} kazoo-mix strip 4 (7 blocks dropped) \u{b7} desk link at normal priority"
+                    .to_owned(),
+                true
+            ))
+        );
+    }
+}
