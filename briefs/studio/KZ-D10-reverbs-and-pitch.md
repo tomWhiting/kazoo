@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
+Bench names: D01's brief builds `kazoo-fx/benches/circuit_models.rs` with ids `fx/<id>` at defaults. Read what D01 actually landed. If the `models` bench ids this brief names (`model/<id>/default|hot` and the named variants) or the fixture `kazoo_fx::bench::fixture(rate)` do not exist, this lane's first commit adds the ids and the fixture it needs beside D01's bench, without renaming D01's rows, and says so under FOUND.
+
 Split: two lanes in this file. **KZ-D10a** is the reverb lines (`lane/kz-d10a`: `space/line.rs`, `space/hall.rs`, `space/plate.rs`, `space/spring.rs`, `space/kit.rs`); **KZ-D10b** is the alignment searches (`lane/kz-d10b`: `space/shimmer.rs`, `time/pitch/taps.rs`). They touch different files and may run beside each other. Each is one mechanism, about 30 minutes of a builder's work. Crates: kazoo-fx only. Depends: KZ-D01 (benches and fixture) landed on main.
 
 ## Outcome

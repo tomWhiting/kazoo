@@ -56,7 +56,7 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> std::process::ExitCode;
 ### kazoo-808 (three files: `lib.rs`, `run.rs` new, `main.rs`)
 
 - `kazoo-808/src/lib.rs` (exists: `pub mod sequencer; pub mod synth;`) gains `mod app; mod audio; mod run; mod ui;` and `pub use run::{Args, USAGE, cli, parse_args, run};`. Nothing under `app.rs`, `audio.rs`, `ui/` names a crate-root item from `main.rs` (they reach `crate::app::…`, `crate::audio::…`, `crate::synth::…`), so no re-export is needed.
-- `kazoo-808/src/run.rs`: `main.rs:11-172` except `fn main`: `FRAME_POLL` (:28), `main`'s body (:31-93, line 31 left out) as `pub fn run(args: Args)` with `let Args = args;` first, `Tui` (:96), `setup_terminal`/`enter_screen`/`restore_terminal` (:100-134, untouched; A04b replaces them), `run_event_loop` (:137-172). Plus the uniform `Args` (unit), `USAGE`, `parse_args`, `cli` exactly as KZ-A01a specifies, with the usage text:
+- `kazoo-808/src/run.rs`: `main.rs:11-172` except `fn main`: `FRAME_POLL` (:28), `main`'s body (:31-93, line 31 left out) as `pub fn run(args: Args)` with `let Args = args;` first, `Tui` (:96), `setup_terminal`/`enter_screen`/`restore_terminal` (:100-134, untouched; A04 replaces them), `run_event_loop` (:137-172). Plus the uniform `Args` (unit), `USAGE`, `parse_args`, `cli` exactly as KZ-A01a specifies, with the usage text:
 
 ```
 kazoo-808: TR-808 drum machine, all synthesis, no samples

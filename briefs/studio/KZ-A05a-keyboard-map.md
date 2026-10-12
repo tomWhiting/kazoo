@@ -2,7 +2,7 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
-Split: PLAN.md's A05 ("one keyboard map") is split into A05a (the shared module plus the three crates that already use this layout), A05b (cs80, mini, arp) and A05c (juno, prophet). b and c depend on a; they share no files with each other. Depends on A04 (the `kazoo-host` crate exists; if it is not there when this lane starts, create `kazoo-host` as KZ-A04a describes: a library crate with `crossterm = "0.29.0"`, `ratatui = "0.30.0"`, `color-eyre = "0.6.5"`, `[lints] workspace = true`, added to the workspace members).
+Split: PLAN.md's A05 ("one keyboard map") is split into A05a (the shared module plus the three crates that already use this layout), A05b (cs80, mini, arp) and A05c (juno, prophet). b and c depend on a; they share no files with each other. Depends on A04 (the `kazoo-host` crate exists; if it is not there when this lane starts, create `kazoo-host` as KZ-A04 describes: a library crate with `crossterm = "0.29.0"`, `ratatui = "0.30.0"`, `color-eyre = "0.6.5"`, `[lints] workspace = true`, added to the workspace members).
 
 ## Outcome
 

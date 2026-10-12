@@ -10,7 +10,7 @@ Line numbers are from the sweep that wrote this brief and may have moved; find e
 
 - `kazoo-wall/src/run.rs` (new) with the A01a shape. `pub enum Args { Console, Serve(ServeArgs), Stop }`, `pub struct ServeArgs { pub audio: bool, pub desk: bool, pub rate: Option<u32> }` with today's defaults (audio on, desk on, rate native). `parse_args` accepts exactly what `kazoo-wall/src/main.rs` accepts today (read its loop; keep every error sentence) and refuses anything else by name.
 - `run(Args::Console)`, `run(Args::Serve(..))`, `run(Args::Stop)` call the functions `main.rs` calls today, moved into `run.rs` if they live in `main.rs`, otherwise called where they are.
-- The daemon's self-restart (`kazoo-wall/src/daemon/mod.rs`, the `current_exe()` call followed by `serve`, about line 649): the arguments it passes become a value the library owns: `pub fn serve_command() -> Vec<OsString>`, which returns `["serve", ...]` when the running executable's file name is `kazoo-wall` and `["wall", "serve", ...]` otherwise (decided: the executable's name is the only thing that tells the two apart, and A06 keeps the file name `kazoo`). The restart passes the running serve's `--no-audio`, `--no-desk` and `--rate` through, as today.
+- The daemon's self-restart (`kazoo-wall/src/daemon/mod.rs`, the `current_exe()` call followed by `serve`, about line 649, and the console's launch at `kazoo-wall/src/tui/mod.rs`, about line 159): the launch becomes a value the caller supplies, `pub struct ServeCommand { pub program: PathBuf, pub args: Vec<OsString> }` in `kazoo_wall::daemon`, which `launch_detached` spawns as `program args…` with the running serve's `--no-audio`, `--no-desk` and `--rate` appended as today. `kazoo_wall::tui::run(serve: ServeCommand)` takes it; this crate's own `cli` builds `ServeCommand { program: std::env::current_exe()?, args: ["serve"] }`, and the `kazoo` binary (A06) builds `["wall", "serve"]`. No sniffing of the executable's name.
 - `main.rs` becomes the crate doc line, `color_eyre::install()?` and `kazoo_wall::cli(std::env::args().skip(1))`.
 
 ## Not this lane
@@ -20,11 +20,11 @@ The `kazoo` binary and the MCP config (A06). The console's commands, the daemon,
 ## Red tests first
 
 - `parse_args` tests: `no_arguments_is_the_console`, `serve_flags_are_parsed_with_their_defaults`, `stop_is_stop`, `an_unknown_argument_is_refused_by_name`, `help_asks_for_the_usage`.
-- `serve_command_depends_on_the_executable_name` (pure: a function taking the file name as a parameter, called with `kazoo-wall` and `kazoo`).
+- `launch_detached_spawns_the_serve_command_as_given` (a `ServeCommand` whose program is `/bin/echo`; the spawned output is the args in order).
 - Every existing kazoo-wall test still green (753 at the sweep).
 
 ## Definition of done
 
-- [ ] `kazoo-wall/src/lib.rs` exports `Args`, `ServeArgs`, `USAGE`, `parse_args`, `cli`, `run`, `serve_command` with doc comments; `main.rs` is three lines of logic.
+- [ ] `kazoo-wall/src/lib.rs` exports `Args`, `ServeArgs`, `USAGE`, `parse_args`, `cli`, `run`, and `daemon::ServeCommand` with doc comments; `main.rs` is three lines of logic.
 - [ ] The live restart path still works: `kazoo-wall serve --no-audio` under `timeout 5`, then the console's restart command (find it) relaunches it (paste the daemon log lines).
 - [ ] All red tests then green; checks green.

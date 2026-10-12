@@ -75,7 +75,7 @@ fn main() -> color_eyre::Result<()> {
 ### kazoo-303
 
 - New `kazoo-303/src/lib.rs`: crate doc from `kazoo-303/src/main.rs:1-5`; `mod audio; mod sequencer; mod synth; mod ui; mod run;`; `pub use run::{Args, USAGE, cli, parse_args, run};` and `pub(crate) use run::App;` because `kazoo-303/src/ui.rs` names `crate::App` (one reference).
-- New `kazoo-303/src/run.rs`: `main.rs:12-506` except `fn main`: `FRAME_POLL` (:32), `SWING_STEP` (:35), `main`'s body (:38-98, line 38 left out) as `pub fn run(args: Args)`, `setup_terminal`/`undo_setup`/`restore_terminal` (:103-136, untouched here; A04a replaces them), `StreamHealth` (:140), `App` (make it `pub(crate) struct App`), `run_event_loop` (:246), every other private function, and the tests (:361-506). `App::new` and the handlers keep their names.
+- New `kazoo-303/src/run.rs`: `main.rs:12-506` except `fn main`: `FRAME_POLL` (:32), `SWING_STEP` (:35), `main`'s body (:38-98, line 38 left out) as `pub fn run(args: Args)`, `setup_terminal`/`undo_setup`/`restore_terminal` (:103-136, untouched here; A04 replaces them), `StreamHealth` (:140), `App` (make it `pub(crate) struct App`), `run_event_loop` (:246), every other private function, and the tests (:361-506). `App::new` and the handlers keep their names.
 
 ### What stays as it is
 

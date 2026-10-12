@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
+Bench names: D01's brief builds `kazoo-fx/benches/circuit_models.rs` with ids `fx/<id>` at defaults. Read what D01 actually landed. If the `models` bench ids this brief names (`model/<id>/default|hot` and the named variants) or the fixture `kazoo_fx::bench::fixture(rate)` do not exist, this lane's first commit adds the ids and the fixture it needs beside D01's bench, without renaming D01's rows, and says so under FOUND.
+
 Split: this file is two lanes, run in this order, each on its own branch with its own END block. **KZ-D07a** is the screamer (`lane/kz-d07a`); **KZ-D07b** is the amp (`lane/kz-d07b`, cut from main after D07a lands). Each is one mechanism, about 30 minutes of a builder's work. Crates: kazoo-fx only. Depends: KZ-D01 (the `models` bench and the fixture it publishes) landed on main. D07b depends on D07a only because D07a adds the null-test helper both use.
 
 ## Outcome
