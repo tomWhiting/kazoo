@@ -542,4 +542,13 @@ mod tests {
         assert!(USAGE.contains("kazoo prophet"));
         assert!(USAGE.contains("kazoo-prophet"));
     }
+
+    #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(
+            USAGE.starts_with(
+                "kazoo-prophet: Sequential Prophet-5 inspired polyphonic analog synth\n"
+            )
+        );
+    }
 }

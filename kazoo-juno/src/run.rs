@@ -548,4 +548,13 @@ mod tests {
         assert!(USAGE.contains("kazoo juno"));
         assert!(USAGE.contains("kazoo-juno"));
     }
+
+    #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(
+            USAGE.starts_with(
+                "kazoo-juno: Roland Juno inspired procedural polyphonic chorus synth\n"
+            )
+        );
+    }
 }
