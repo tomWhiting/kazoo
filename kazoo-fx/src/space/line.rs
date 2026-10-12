@@ -17,7 +17,7 @@
 //! The kernel is as long as the rate needs: thirty-two points at 44.1 or
 //! 48 kHz, sixteen at 88.2 or 96 kHz, eight above (where 20 kHz sits low in
 //! the band), so the cost in real time stays about the same at every rate.
-//! It is tabulated at 1024 fractions and reads the nearest row, with one
+//! It is tabulated at 2048 fractions and reads the nearest row, with one
 //! fused multiply-add per tap. The table is built once in `prepare` and
 //! shared by every line of an effect. Static positions use whole samples;
 //! only control glides use Hermite between their neighboring samples.
@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// The most samples either side of the read point any kernel uses.
 const MOST_HALF: usize = 16;
 /// Fractions tabulated between one sample and the next.
-const PHASES: usize = 1024;
+const PHASES: usize = 2048;
 /// The kernel window's beta.
 const BETA: f64 = 7.0;
 /// A delay this close to a whole sample reads that sample exactly.
@@ -270,7 +270,7 @@ mod tests {
         let db = 10.0 * (error / power).log10();
         eprintln!("exact sinc error: {db} dB, phases: {PHASES}");
         assert!(db < -70.0, "{db} dB");
-        assert_eq!(PHASES, 1024);
+        assert_eq!(PHASES, 2048);
     }
 
     #[test]
