@@ -129,10 +129,11 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> ExitCode {
     }
 }
 
-/// Read arguments after the program name. `Ok(None)` requests help, wherever
-/// `-h` or `--help` stands before `--`, even after a bad argument or where a
-/// flag's value would be; an error is one sentence describing the invalid
-/// argument.
+/// Read arguments after the program name.
+///
+/// `Ok(None)` requests help, wherever `-h` or `--help` stands before `--`,
+/// even after a bad argument or where a flag's value would be; an error is
+/// one sentence describing the invalid argument.
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, String> {
     let args: Vec<String> = args.into_iter().collect();
     if args
