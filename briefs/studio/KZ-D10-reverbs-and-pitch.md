@@ -14,13 +14,13 @@ After this lane: a read at a whole-sample position costs one load; a read at a s
 
 ## The design (decided; build exactly this)
 
-##RETRY NOTE for KZ-D10a (Cassio, 13 Oct 03:40). The first run (branch lane/kz-D10a, head kept on origin) built read_at / Hermite, the handovers, the spring cascades, the `models` bench and `src/bench.rs`, and measured at a machine load near 240: hall 0.26-0.29, plate 0.12-0.24, spring default 0.68, hot 0.54, two 0.82 of before. Decisions for the retry:
+RETRY NOTE for KZ-D10a (Cassio, 13 Oct 03:40). The first run (branch lane/kz-D10a, head kept on origin) built read_at / Hermite, the handovers, the spring cascades, the `models` bench and `src/bench.rs`, and measured at a machine load near 240: hall 0.26-0.29, plate 0.12-0.24, spring default 0.68, hot 0.54, two 0.82 of before. Decisions for the retry:
 - The sinc table is 2048 phases, not 1024. A nearest-row table at 1024 phases measures -66.2 dB against the exact sinc; the phase error halves at 2048 (about -72 dB), still one fma per tap, the table twice the memory. The -70 dB limit in `the_nearest_row_matches_the_exact_sinc` stays. The brief's 1024 was my error.
 - Cost ratios: a bench at load 200+ is noise of about 2x (see D02). Record before and after interleaved (before, after, before, after) from the same build with the load average next to each; the reviewer judges the ratios on a quiet machine. Do not spend the time box chasing `spring/two`.
 - Finish what was interrupted: `no_steady_tone_rings_more_than_six_decibels_over_the_dry` and `the_spring_keeps_the_contract` must run to completion and pass; run them alone first.
 - The amp leak report (`drive::amp::tests::conformance::odd_blocks_are_handled`) is not this lane's; leave it.
 
-# KZ-D10a: the lines
+### KZ-D10a: the lines
 
 **Why not Hermite in the loops.** A four-point Hermite read loses about a decibel at half Nyquist on every pass (`line.rs:6-10`), and a tank passes its reads dozens of times a second, so the tail would darken dozens of decibels faster at 44.1 kHz than at 192 kHz; `the_hall_is_the_same_at_every_rate_with_long_even_decays` (`hall.rs:561`) and `the_plate_is_the_same_at_every_rate_with_the_treble_open` (`plate.rs:502`) exist to forbid exactly that. So Hermite is used only where a read is already changing every sample for a reason the ear accepts: a size or predelay glide, which bends pitch by up to a third of a semitone (`hall.rs:52-55`) and lasts as long as the knob moves. The modulated reads keep the sinc, made three times cheaper.
 
