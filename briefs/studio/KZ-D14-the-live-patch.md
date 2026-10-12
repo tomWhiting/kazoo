@@ -11,3 +11,21 @@ Crates: kazoo-wall, plus kazoo-fx where the cost lives. Tom's words at 07:50 on 
 ## Rules
 
 The time box is 25 minutes. Measure first, so the table exists even if a fix runs out of time. No `#[allow]`, `#[expect]`, `.ok()` or `let _ =`, and nothing in the system temp folder. Run nextest for the crates you touch, clippy with `-D warnings`, `cargo fmt --all --check` and ast-grep.
+
+## Measured by the first D14 run (13 Oct 08:09, before its fix; machine load 80 to 340, so shares, not absolute times)
+
+| module | kind | before share % |
+|---|---|---:|
+| klon1 | klon | 22.697 |
+| tape1 | tape | 8.049 |
+| vcf1 | vcf | 1.587 |
+| fuzz2 | fuzz | 14.453 |
+| crush2 | crush | 5.062 |
+| vcf2 | vcf | 2.491 |
+| fuzz3 | fuzz | 11.171 |
+| radio2 | radio | 1.562 |
+| pitch2 | pitch | 3.636 |
+| hall1 | hall | 7.002 |
+| fuzz4 | fuzz | 12.052 |
+
+Next run: klon1 is 23% and the three fuzzes 38% together; D08b (klon) and the shared Fuzz implementation are the two fixes. The first run had started on `kazoo-fx/src/drive/fuzz.rs` and `pair.rs`; it was cancelled at 08:10 so the install build could run alone.

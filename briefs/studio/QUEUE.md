@@ -71,3 +71,11 @@ END KZ-D09b head=e5a92a6 reviewed=code READY(review fixed: missing table falls b
 END KZ-B01b head=0520853 (B01 6597d95 + B01b) reviewed=READY(real merge with main kept every A03 fix; review fixed five instrument badges and the desk's 808 line hiding the connection state; wake p50 158.6 us real-time at load 125; open items appended to the A03b brief) merged=e58e857 at 05:39
 START KZ-G02 base=26c6ab0 branch=lane/kz-G02 df=34GB at 05:47
 END KZ-G02 head=65bf7b3 reviewed=READY(review fixed: each test names its log folder once, socket-length message gives path and length; speech test EmptyRender under load is unrelated, needs its own kazoo-speech brief) merged=faa48c9 at 06:10
+START KZ-A06 base=a38d9dd branch=lane/kz-A06 df=37GB at 07:41
+START KZ-A04 base=4335ad1 branch=lane/kz-A04 df=26GB at 07:48
+START KZ-A05 base=4335ad1 branch=lane/kz-A05 df=24GB at 07:49
+START KZ-A08 base=4335ad1 branch=lane/kz-A08 df=26GB at 07:49
+START KZ-D08b base=f8b38a8 branch=lane/kz-D08b df=36GB at 07:51
+START KZ-D14 base=f8b38a8 branch=lane/kz-D14 df=36GB at 07:51
+START KZ-D12 base=c8702ba branch=lane/kz-D12 df=36GB at 07:52
+START KZ-D10b (third run, resume) branch=lane/kz-D10b df=35GB at 07:52
