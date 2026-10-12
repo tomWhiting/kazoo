@@ -54,3 +54,4 @@ START KZ-D12 base=303fc88 branch=lane/kz-D12 df=68GB at 04:00
 START KZ-B01 base=b6a1fea branch=lane/kz-B01 df=66GB at 04:01
 END KZ-D07a head=72b512e reviewed=READY(review made the step count a compile-time const; carried into D07b: latency correction at every factor, name sinh(T_MAX); cost target 0.25 withdrawn, design gives ~0.5) merged=c4c0454 at 04:07
 END KZ-D10a head=2452a90 reviewed=READY after hand merge with D07a's bench files (review fixed hall diffusers jumping on a size glide; spring default target withdrawn, spring items carried into D10b; merged-lane checks: clippy 0, fmt 0, ast-grep 0, 66 space/drive tests pass) merged=49848a6 at 04:12
+START KZ-D07b base=41b4de1 branch=lane/kz-D07b df=49GB at 04:13
