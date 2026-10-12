@@ -9,11 +9,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use crate::{JunoSynth, NUM_VOICES, SynthParams, VoiceStatus};
 use crossbeam_channel::{Receiver, Sender};
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::link::HubLinkAudio;
 use kazoo_core::ipc::types::{NOTE_OFF, NOTE_ON};
-use kazoo_juno::{JunoSynth, NUM_VOICES, SynthParams, VoiceStatus};
 
 use crate::app::WAVEFORM_BUF_SIZE;
 
@@ -168,7 +168,10 @@ impl AudioEngine {
         let mut frames = 0;
         for frame in chunk.chunks_exact_mut(self.channels) {
             let sample = kazoo_core::sanitize_sample(self.synth.process_sample());
-            frame.fill(sample);
+            frame.fill(0.0);
+            for channel in frame.iter_mut().take(2) {
+                *channel = sample;
+            }
             self.waveform[self.waveform_pos] = sample;
             self.waveform_pos = (self.waveform_pos + 1) % WAVEFORM_BUF_SIZE;
             self.stereo[frames * 2] = sample;
@@ -339,6 +342,8 @@ mod tests {
             data.iter().all(|s| s.is_finite()),
             "no sample left unwritten"
         );
+        assert!(data.chunks_exact(3).any(|frame| frame[0].abs() > 0.01));
+        assert!(data.chunks_exact(3).all(|frame| frame[2] == 0.0));
         assert!(data[3000].abs() < f32::EPSILON, "a partial frame is silent");
         assert_eq!(rig.engine.hub.stream_frame(), 1000);
     }

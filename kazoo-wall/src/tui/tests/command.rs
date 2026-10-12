@@ -2,7 +2,7 @@
 
 use crossterm::event::KeyCode;
 
-use kazoo_wall::protocol::Request;
+use crate::protocol::Request;
 
 use super::super::app::{App, Mode, load_prefs, save_prefs};
 use super::super::worker::Job;
@@ -317,7 +317,7 @@ fn settings_survive_a_round_trip_and_a_missing_file_is_the_defaults() {
     press(&mut app, KeyCode::Char('c'));
     let prefs = app.prefs();
     assert!(prefs.rack);
-    save_prefs(&file, prefs).expect("saved");
+    save_prefs(&file, &prefs).expect("saved");
     let mut fresh = App::new("Tom", String::new());
     fresh.apply_prefs(load_prefs(&file).expect("loaded"));
     assert_eq!(fresh.prefs(), prefs);
@@ -333,7 +333,7 @@ fn group_shows_only_its_modules_and_cables_until_group_alone() {
         vec!["vco1".to_string(), "vcf1".to_string()],
     )]);
     app.on_reply(
-        super::super::worker::Reply::Event(kazoo_wall::protocol::Event::Groups { groups }),
+        super::super::worker::Reply::Event(crate::protocol::Event::Groups { groups }),
         std::time::Instant::now(),
     );
     open(&mut app);
@@ -370,3 +370,5 @@ fn tag_sends_a_group_request_for_the_named_modules() {
         }]
     );
 }
+
+include!("chain_command_tests.rs");

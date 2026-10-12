@@ -18,8 +18,10 @@
 //! [`saves`]. Every change the console sends counts against its copy of
 //! the wall's flood guard ([`flood`]); turns wait for it.
 
+mod chains;
 mod command;
 mod flood;
+mod folds;
 mod keys;
 mod mouse;
 mod moves;
@@ -42,10 +44,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 
-use kazoo_wall::catalogue::Signal;
-use kazoo_wall::fingerprints::Shares;
-use kazoo_wall::format;
-use kazoo_wall::protocol::{
+use crate::catalogue::Signal;
+use crate::fingerprints::Shares;
+use crate::format;
+use crate::protocol::{
     ArrangeResult, CableRecord, CatalogueResult, ChangeResult, DeleteSaveResult, ErrorCode, Event,
     GroupsResult, KindInfo, KnobInfo, LoadResult, LogPage, ModuleView, MonitorResult, Place,
     ProbeResult, RecordResult, Request, SaveResult, SavesResult, Snapshot, TempoResult,
@@ -106,7 +108,7 @@ const MAX_ENTRY: usize = 24;
 const PICKER_PAGE: usize = 10;
 
 /// The picker's groups, in order.
-pub use kazoo_wall::catalogue::GROUPS;
+pub use crate::catalogue::GROUPS;
 
 /// How the wall is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,7 +315,7 @@ impl SavesList {
     /// first, then (when shown) the wall's own, newest first. The wall's
     /// own are many, one before every load, and would bury the others.
     #[must_use]
-    pub fn shown(&self) -> Vec<&kazoo_wall::protocol::SaveInfo> {
+    pub fn shown(&self) -> Vec<&crate::protocol::SaveInfo> {
         let saves = self
             .result
             .as_ref()
@@ -393,8 +395,10 @@ pub struct App {
     focus: Focus,
     mode: Mode,
     selected: Option<String>,
+    chain_names: Vec<String>,
     /// The group shown alone (`:group`), if one is.
     group: Option<String>,
+    look: folds::Look,
     /// The wall as shown: [`Self::snapshot`] cut down to [`Self::group`].
     shown: Option<Snapshot>,
     selected_hint: usize,
@@ -444,7 +448,9 @@ impl App {
             focus: Focus::Wall,
             mode: Mode::Normal,
             selected: None,
+            chain_names: Vec::new(),
             group: None,
+            look: folds::Look::default(),
             shown: None,
             selected_hint: 0,
             knob: 0,
@@ -728,8 +734,14 @@ impl App {
     pub fn lay_out_rack(&mut self, view: (u16, u16)) -> bool {
         match self.shown.as_ref().or(self.snapshot.as_ref()) {
             Some(snapshot) if !snapshot.modules.is_empty() => {
-                self.rack
-                    .lay_out(&snapshot.modules, snapshot.rack.as_deref(), view);
+                self.rack.lay_out(
+                    &snapshot.modules,
+                    snapshot.rack.as_deref(),
+                    view,
+                    &snapshot.groups,
+                    &self.look.folded,
+                );
+                self.normalize_fold_selection();
                 true
             }
             _ => {
@@ -905,6 +917,10 @@ impl App {
         if self.group.is_some() {
             self.refilter();
         }
+        if self.view == View::Rack && !self.look.folded.is_empty() {
+            let area = self.rack.area;
+            self.lay_out_rack((area.width, area.height));
+        }
     }
 
     fn on_link(&mut self, state: LinkState, now: Instant) {
@@ -991,6 +1007,7 @@ impl App {
                 }
                 self.rows_seen();
             }
+            Event::Chains { names } => self.chain_names = names,
             Event::Groups { groups } => {
                 if let Some(snapshot) = self.snapshot.as_mut() {
                     snapshot.groups = groups;
@@ -1127,6 +1144,7 @@ impl App {
 
     fn on_result(&mut self, request: &Request, value: serde_json::Value, now: Instant) {
         match request {
+            Request::ChainSave { .. } | Request::Chains => self.chain_result(request, value, now),
             Request::Probe { .. } => self.probed(request, value, now),
             Request::Group { group, .. } => self.grouped(request, group, value, now),
             Request::Catalogue => {
@@ -1147,6 +1165,7 @@ impl App {
             | Request::Patch { .. }
             | Request::Unpatch { .. }
             | Request::Add { .. }
+            | Request::ChainAdd { .. }
             | Request::Remove { .. }
             | Request::Undo { .. } => {
                 if let Some(result) = self.parse::<ChangeResult>(request, value, now) {
@@ -1249,7 +1268,7 @@ impl App {
         };
         if let Some(snapshot) = self.snapshot.as_mut() {
             snapshot.recording = match (result.on, &result.path) {
-                (true, Some(path)) => Some(kazoo_wall::protocol::Recording {
+                (true, Some(path)) => Some(crate::protocol::Recording {
                     path: path.clone(),
                     seat: self.seat.clone(),
                     seconds: result.seconds,
@@ -1580,6 +1599,9 @@ pub fn describe(request: &Request) -> String {
         } => format!("unplug cable {cable}"),
         Request::Unpatch { to: Some(to), .. } => format!("unplug {to}"),
         Request::Unpatch { .. } => "unplug".to_string(),
+        Request::ChainSave { name, .. } => format!("save chain {name}"),
+        Request::ChainAdd { name } => format!("add chain {name}"),
+        Request::Chains => "list chains".to_string(),
         Request::Add { kind, .. } => format!("add {kind}"),
         Request::Remove { module } => format!("remove {module}"),
         Request::Arrange { module, .. } => format!("move {module}"),

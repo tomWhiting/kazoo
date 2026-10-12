@@ -10,6 +10,7 @@
 //! Everything is drawn from [`App`] alone, so the same frame can be drawn
 //! into ratatui's test backend.
 
+mod folded;
 mod overlay;
 mod panes;
 mod rack;
@@ -22,7 +23,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use kazoo_wall::protocol::Snapshot;
+use crate::protocol::Snapshot;
 
 use super::app::{App, Mode, View};
 use super::theme::{AMBER, RACK, TEXT, TEXT_DIM};

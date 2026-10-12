@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use kazoo_wall::protocol::{
+use crate::protocol::{
     ErrorCode, MonitorResult, RecordResult, Request, ShutdownResult, TempoResult,
 };
 
@@ -61,7 +61,7 @@ fn travel_of(module: &str, knob: &str) -> Travel {
         .find(|view| view.id == module)
         .and_then(|view| view.knobs.iter().find(|view| view.name == knob))
         .expect("the knob exists");
-    let catalogue = kazoo_wall::daemon::wall::catalogue();
+    let catalogue = crate::daemon::wall::catalogue();
     let kind = &snapshot
         .modules
         .iter()
@@ -612,7 +612,7 @@ fn a_restarted_daemon_is_noticed_and_caught_up() {
             before: None,
             limit: Some(100),
         },
-        &kazoo_wall::protocol::LogPage {
+        &crate::protocol::LogPage {
             changes: Vec::new(),
             more: false,
         },
@@ -635,13 +635,13 @@ fn a_restarted_daemon_is_noticed_and_caught_up() {
 fn other_seats_changes_arrive_as_events() {
     let mut app = connected();
     app.on_reply(
-        Reply::Event(kazoo_wall::protocol::Event::Change {
+        Reply::Event(crate::protocol::Event::Change {
             change: Box::new(change(60, "Vesper", "Vesper turned vcf1 drive", None)),
         }),
         Instant::now(),
     );
     app.on_reply(
-        Reply::Event(kazoo_wall::protocol::Event::Seat {
+        Reply::Event(crate::protocol::Event::Seat {
             seat: "Vesper".to_string(),
             joined: true,
             seq: None,
@@ -657,15 +657,15 @@ fn other_seats_changes_arrive_as_events() {
 #[test]
 fn a_patch_set_aside_at_the_start_shows_in_the_log() {
     let mut app = connected();
-    let what = kazoo_wall::protocol::What::SetAside {
+    let what = crate::protocol::What::SetAside {
         reason: "it is not JSON".to_string(),
         moved_to: "patch.broken-1760000000.json".to_string(),
     };
-    let summary = kazoo_wall::change::summarise("kazoo-wall", &what, None);
+    let summary = crate::change::summarise("kazoo-wall", &what, None);
     let mut set_aside = change(1, "kazoo-wall", &summary, None);
     set_aside.what = what;
     app.on_reply(
-        Reply::Event(kazoo_wall::protocol::Event::Change {
+        Reply::Event(crate::protocol::Event::Change {
             change: Box::new(set_aside),
         }),
         Instant::now(),
@@ -714,7 +714,7 @@ fn fingerprints_arrive_at_once_and_empty_shares_clear_them() {
     use std::collections::BTreeMap;
     let mut app = connected();
     let event = |modules: BTreeMap<String, BTreeMap<String, f64>>| {
-        Reply::Event(kazoo_wall::protocol::Event::Fingerprints {
+        Reply::Event(crate::protocol::Event::Fingerprints {
             seq: 59,
             modules,
             cables: BTreeMap::new(),
@@ -831,7 +831,7 @@ fn r_with_no_wall_says_there_is_nothing_to_record() {
 }
 
 /// A wall of `count` modules of every sort.
-fn many(count: usize) -> kazoo_wall::protocol::Snapshot {
+fn many(count: usize) -> crate::protocol::Snapshot {
     const KINDS: [&str; 6] = ["vco", "lfo", "vcf", "seq", "env", "out"];
     let mut wall = snapshot();
     wall.modules = (0..count)
@@ -1226,7 +1226,7 @@ fn z_puts_the_latest_move_back_then_undoes_from_the_log() {
     let moved = rows(&[&["lfo1", "vco1"], &["vcf1", "out1"]]);
     assert_eq!(calls(&mut app).len(), 1);
     app.on_reply(
-        Reply::Event(kazoo_wall::protocol::Event::Rack { rows: moved }),
+        Reply::Event(crate::protocol::Event::Rack { rows: moved }),
         t0,
     );
     press(&mut app, KeyCode::Char('z'));
@@ -1392,7 +1392,7 @@ fn in_the_rack_view_a_goes_after_the_selected_module_and_says_where() {
     let Mode::Add { place, .. } = app.mode().clone() else {
         panic!("no picker");
     };
-    assert_eq!(place, Some(kazoo_wall::protocol::Place::end_of(0)));
+    assert_eq!(place, Some(crate::protocol::Place::end_of(0)));
     press(&mut app, KeyCode::Esc);
     let mut old = connected();
     press(&mut old, KeyCode::Char('v'));

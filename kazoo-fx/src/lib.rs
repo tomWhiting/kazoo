@@ -24,6 +24,7 @@
 //! infinite input or parameter comes out as silence or is ignored, and the
 //! effect's state is never left poisoned by one.
 
+pub mod bench;
 pub mod drive;
 pub mod dsp;
 pub mod lofi;

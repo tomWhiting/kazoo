@@ -1,7 +1,7 @@
 //! Application state for the Juno TUI.
 
+use crate::{NUM_VOICES, SynthParams, VoiceStatus};
 use kazoo_core::ipc::link::LinkStatus;
-use kazoo_juno::{NUM_VOICES, SynthParams, VoiceStatus};
 
 pub const WAVEFORM_BUF_SIZE: usize = 1024;
 

@@ -5,6 +5,13 @@
 //! DCO mixer -> static HPF -> resonant LPF -> VCA -> noisy stereo chorus.
 //! No sample playback or captured waveforms are used.
 
+mod app;
+mod audio;
+mod input;
+mod run;
 pub mod synth;
+mod ui;
 
 pub use synth::{JunoSynth, NUM_VOICES, SynthParams, VoiceStatus};
+
+pub use run::{Args, USAGE, cli, parse_args, run};

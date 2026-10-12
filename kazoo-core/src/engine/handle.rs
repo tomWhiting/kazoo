@@ -3,6 +3,9 @@
 //! [`EngineHandle`] provides methods to send commands and poll display state.
 //! It is the sole interface between any frontend and the engine subsystem.
 
+#[path = "host_health.rs"]
+mod host_health;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};

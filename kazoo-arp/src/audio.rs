@@ -11,10 +11,12 @@
 //! starts; rendering never allocates, locks or blocks.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
+mod drive;
+
+use crate::{ArpClock, ArpCursor, ArpMode, Arpeggiator, ClockDivision, NoteEvent};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
-use kazoo_arp::{ArpClock, ArpCursor, ArpMode, Arpeggiator, ClockDivision, NoteEvent};
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::follow::{TransportChange, TransportFollower};
 use kazoo_core::ipc::link::{HubLinkAudio, RequestError};
@@ -121,6 +123,12 @@ pub struct EngineShared {
     pub stream_errors: AtomicU64,
     /// cpal reported the device gone or the stream invalid: no more audio.
     pub stream_lost: AtomicBool,
+    pub notes_lost: AtomicU64,
+    pub note_failure: AtomicU64,
+    pub releases_waiting: AtomicBool,
+    /// The note the driven synth still holds, plus one; 0 when none. Read
+    /// on quit so that note is released.
+    pub driven_note: AtomicU16,
 }
 
 impl EngineShared {
@@ -272,6 +280,9 @@ pub struct AudioEngine {
     channels: usize,
     /// Interleaved stereo scratch block for the hub.
     stereo: Vec<f32>,
+    drive: crate::arp::Drive,
+    #[cfg(test)]
+    outgoing: Option<HeapProd<crate::arp::NoteEvent>>,
 }
 
 // HeapProd is !Debug; implement manually.
@@ -314,9 +325,25 @@ impl AudioEngine {
             shared,
             channels: channels.max(1),
             stereo: vec![0.0; MAX_CALLBACK_FRAMES * 2],
+            drive: crate::arp::Drive::default(),
+            #[cfg(test)]
+            outgoing: None,
         };
         engine.publish_transport();
         engine
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_notes(&mut self) -> ringbuf::HeapCons<crate::arp::NoteEvent> {
+        use ringbuf::traits::Split;
+        let (producer, consumer) = ringbuf::HeapRb::new(256).split();
+        self.outgoing = Some(producer);
+        consumer
+    }
+
+    #[cfg(test)]
+    pub(crate) fn schedule_transport(&mut self, sync: &kazoo_core::ipc::types::TransportSyncMsg) {
+        self.follower.schedule(sync).unwrap();
     }
 
     /// Render one device buffer. Real-time safe.
@@ -336,7 +363,18 @@ impl AudioEngine {
 
     fn apply(&mut self, cmd: AudioCommand) {
         match cmd {
-            AudioCommand::Arp(cmd) => apply_command(cmd, &mut self.arp, &mut self.clock),
+            AudioCommand::Arp(cmd) => {
+                let sounding = self.arp.current_sounding_note();
+                apply_command(cmd, &mut self.arp, &mut self.clock);
+                if let Some(note) = sounding.filter(|_| self.arp.current_sounding_note().is_none())
+                {
+                    self.voice.note_off();
+                    self.emit_note(
+                        NoteEvent::NoteOff { midi_note: note },
+                        self.hub.stream_frame(),
+                    );
+                }
+            }
             AudioCommand::Play => self.request_playing(true),
             AudioCommand::Stop => self.request_playing(false),
             AudioCommand::SetBpm(bpm) => self.request_bpm(bpm),
@@ -364,7 +402,7 @@ impl AudioEngine {
     fn request_bpm(&mut self, bpm: f64) {
         // The desk's range and the clock's are the same; a NaN stays NaN
         // and is refused by the link, or ignored by the clock.
-        let bpm = bpm.clamp(kazoo_arp::MIN_BPM, kazoo_arp::MAX_BPM);
+        let bpm = bpm.clamp(crate::MIN_BPM, crate::MAX_BPM);
         // Only the tempo: the desk keeps its own play state, which this
         // instrument may not have heard yet.
         // Tempos are tens to hundreds of BPM: f32 holds them closely enough.
@@ -465,6 +503,7 @@ impl AudioEngine {
 
     /// Render at most [`MAX_CALLBACK_FRAMES`] frames into `chunk`.
     fn render_chunk(&mut self, chunk: &mut [f32]) {
+        self.retry_release();
         let mut frames = 0;
         let first = self.hub.stream_frame();
         for frame in chunk.chunks_mut(self.channels) {
@@ -472,8 +511,9 @@ impl AudioEngine {
                 self.follow(change);
             }
             let events = self.clock.tick(&mut self.arp);
-            if let Some(NoteEvent::NoteOff { .. }) = events.note_off {
+            if let Some(off) = events.note_off {
                 self.voice.note_off();
+                self.emit_note(off, first + frames as u64);
             }
             if let Some(NoteEvent::NoteOn {
                 midi_note,
@@ -481,12 +521,26 @@ impl AudioEngine {
             }) = events.note_on
             {
                 self.voice.note_on(midi_note, velocity);
+                self.emit_note(
+                    NoteEvent::NoteOn {
+                        midi_note,
+                        velocity,
+                    },
+                    first + frames as u64,
+                );
                 let cursor = self.arp.cursor();
                 self.publish(DisplayEvent::Played { midi_note, cursor });
             }
 
-            let sample = kazoo_core::soft_limit(self.voice.tick());
-            frame.fill(sample);
+            let sample = if self.drive.silent {
+                0.0
+            } else {
+                kazoo_core::soft_limit(self.voice.tick())
+            };
+            frame.fill(0.0);
+            for channel in frame.iter_mut().take(2) {
+                *channel = sample;
+            }
             self.stereo[frames * 2] = sample;
             self.stereo[frames * 2 + 1] = sample;
             frames += 1;
@@ -645,7 +699,7 @@ mod tests {
         assert!((bpm(&rig.shared) - 90.0).abs() < 1e-9);
         assert!(rig.tx.send(AudioCommand::SetBpm(1_000.0)));
         rig.engine.render(&mut [0.0; 64]);
-        assert!((bpm(&rig.shared) - kazoo_arp::MAX_BPM).abs() < 1e-9);
+        assert!((bpm(&rig.shared) - crate::MAX_BPM).abs() < 1e-9);
 
         // Playing again starts from the top: the downbeat is the next frame.
         assert!(rig.tx.send(note_on(60)));

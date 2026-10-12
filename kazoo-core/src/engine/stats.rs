@@ -6,6 +6,8 @@
 //! any frontend) reads a consistent-enough [`EngineStatsSnapshot`] through
 //! [`super::EngineHandle::stats`] and can surface non-zero values to the user.
 
+use crate::host::audio::StreamHealth;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Shared, lock-free engine health counters.
@@ -15,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// [`super::EngineHandle`].
 #[derive(Debug, Default)]
 pub struct EngineStats {
+    audio_health: OnceLock<[StreamHealth; 2]>,
     mic_samples_dropped: AtomicU64,
     analysis_samples_dropped: AtomicU64,
     analysis_results_dropped: AtomicU64,
@@ -126,6 +129,21 @@ fn count(samples: usize) -> u64 {
 }
 
 impl EngineStats {
+    pub(super) fn set_audio_health(&self, health: [StreamHealth; 2]) -> crate::Result<()> {
+        self.audio_health
+            .set(health)
+            .map_err(|_| crate::Error::Config("audio health already initialized".into()))
+    }
+
+    pub(super) fn check_audio(&self) -> crate::Result<()> {
+        if let Some(health) = self.audio_health.get() {
+            for stream in health {
+                stream.check()?;
+            }
+        }
+        Ok(())
+    }
+
     /// Create a zeroed set of counters.
     #[must_use]
     pub fn new() -> Self {

@@ -7,7 +7,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 
-use kazoo_wall::protocol::{KindInfo, KnobInfo, Place};
+use crate::protocol::{KindInfo, KnobInfo, Place};
 
 use super::super::app::{App, COMMAND_KEYS, CommandLine, GROUPS, SavesList, usage};
 use super::super::log::{age, unix_seconds};
@@ -474,7 +474,7 @@ fn knob_words(knob: &KnobInfo) -> String {
         } else {
             format!(" {}", knob.unit)
         };
-        format!("{}{unit}", kazoo_wall::format::number(value as f32))
+        format!("{}{unit}", crate::format::number(value as f32))
     };
     let start = knob
         .labels
@@ -665,7 +665,7 @@ pub fn saves(buf: &mut Buffer, area: Rect, app: &App, index: usize, now: Option<
 /// One save's row in the list: its name, when it was saved, its tempo,
 /// modules and cables; `chosen` under the cursor.
 fn save_row(
-    save: &kazoo_wall::protocol::SaveInfo,
+    save: &crate::protocol::SaveInfo,
     chosen: bool,
     now: Option<i64>,
     inner_width: usize,
@@ -677,7 +677,7 @@ fn save_row(
     let detail = format!(
         " {:<26} {:>8}  {} · {}",
         truncate(&saved_when(&save.saved_at, now), 26),
-        kazoo_wall::format::bpm(save.tempo),
+        crate::format::bpm(save.tempo),
         save.modules,
         save.cables
     );

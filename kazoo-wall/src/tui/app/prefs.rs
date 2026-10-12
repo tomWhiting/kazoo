@@ -3,13 +3,14 @@
 //! It lives in `console.json` in the wall's state folder, and is written
 //! whenever one of them changes.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use kazoo_wall::paths;
+use crate::paths;
 
 use super::super::rack::geometry::Density;
 use super::{App, Tone, View};
@@ -27,7 +28,7 @@ pub const PICKER_MAX: u8 = 100;
 pub const PICKER_STEP: u8 = 10;
 
 /// The remembered settings, as written.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
     /// The rack view rather than the list.
@@ -38,6 +39,7 @@ pub struct Prefs {
     pub log_hidden: bool,
     /// The picker's size, a percentage of the screen.
     pub picker_percent: u8,
+    pub folded: BTreeSet<String>,
 }
 
 /// [`Density`] as written.
@@ -60,6 +62,7 @@ impl Default for Prefs {
             density: Dense::Full,
             log_hidden: false,
             picker_percent: PICKER_MAX,
+            folded: BTreeSet::new(),
         }
     }
 }
@@ -94,7 +97,7 @@ pub fn load(file: &Path) -> Result<Prefs, String> {
 /// # Errors
 ///
 /// When the folder cannot be made or the file cannot be written.
-pub fn save(file: &Path, prefs: Prefs) -> Result<(), String> {
+pub fn save(file: &Path, prefs: &Prefs) -> Result<(), String> {
     let fail = |err: &dyn std::fmt::Display| {
         format!(
             "could not remember the console's settings in {}: {err}",
@@ -104,7 +107,7 @@ pub fn save(file: &Path, prefs: Prefs) -> Result<(), String> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir).map_err(|err| fail(&err))?;
     }
-    let text = serde_json::to_string_pretty(&prefs).map_err(|err| fail(&err))?;
+    let text = serde_json::to_string_pretty(prefs).map_err(|err| fail(&err))?;
     let temp = file.with_extension("json.new");
     fs::write(&temp, text).map_err(|err| fail(&err))?;
     fs::rename(&temp, file).map_err(|err| fail(&err))
@@ -123,6 +126,7 @@ impl App {
             },
             log_hidden: self.log_hidden,
             picker_percent: self.picker_percent,
+            folded: self.look.folded.clone(),
         }
     }
 
@@ -136,6 +140,9 @@ impl App {
         });
         self.log_hidden = prefs.log_hidden;
         self.picker_percent = prefs.picker_percent.clamp(PICKER_MIN, PICKER_MAX);
+        self.look.folded = prefs.folded;
+        let area = self.rack.area;
+        self.lay_out_rack((area.width, area.height));
     }
 
     /// Say the settings could not be read or remembered.

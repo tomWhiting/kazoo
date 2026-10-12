@@ -16,9 +16,9 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use kazoo_wall::daemon::wall::catalogue;
-use kazoo_wall::fingerprints::Fingerprints;
-use kazoo_wall::protocol::{
+use crate::daemon::wall::catalogue;
+use crate::fingerprints::Fingerprints;
+use crate::protocol::{
     CableRecord, Change, ChangeResult, ClockSource, Faults, KnobView, Levels, Listen, LogPage,
     ModuleView, Request, Snapshot, What,
 };
@@ -133,12 +133,12 @@ pub fn snapshot() -> Snapshot {
             )]),
             cables: BTreeMap::new(),
         },
-        timing: kazoo_wall::protocol::Timings::default(),
+        timing: crate::protocol::Timings::default(),
         recording: None,
         rack: None,
         groups: std::collections::BTreeMap::new(),
         save: None,
-        log: kazoo_wall::protocol::LogHealth::default(),
+        log: crate::protocol::LogHealth::default(),
         probes: Vec::new(),
         engine: None,
     }
@@ -266,4 +266,204 @@ pub fn type_text(app: &mut App, text: &str) {
     for c in text.chars() {
         press(app, KeyCode::Char(c));
     }
+}
+
+fn fold_fixture() -> App {
+    let mut app = connected();
+    let mut wall = snapshot();
+    wall.groups.insert(
+        "beat".to_string(),
+        vec!["vco1".to_string(), "vcf1".to_string()],
+    );
+    wall.rack = Some(vec![vec![
+        "lfo1".to_string(),
+        "vcf1".to_string(),
+        "vco1".to_string(),
+        "out1".to_string(),
+    ]]);
+    app.on_reply(Reply::Snapshot(Box::new(wall)), Instant::now());
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('f'));
+    app
+}
+
+fn fold_command(app: &mut App, command: &str) {
+    press(app, KeyCode::Char(':'));
+    type_text(app, command);
+    press(app, KeyCode::Enter);
+    press(app, KeyCode::Esc);
+}
+
+#[test]
+fn folded_group_renders_one_tile_with_count() {
+    let mut app = fold_fixture();
+    let before = serde_json::to_value(app.snapshot()).expect("snapshot encodes");
+    fold_command(&mut app, "fold beat");
+    let screen = render::text(&render::render(&mut app, 240, 80));
+    assert!(
+        screen.contains("beat") && screen.contains("2 modules"),
+        "missing group tile: {screen}"
+    );
+    assert!(
+        !screen.contains("vco1") && !screen.contains("vcf1"),
+        "members still drawn: {screen}"
+    );
+    assert_eq!(app.rack.layout.plates.len(), 3);
+    for density in 0..3 {
+        let screen = render::text(&render::render(&mut app, 240, 80));
+        assert!(
+            screen.contains("beat") && screen.contains("2 modules"),
+            "density {density}"
+        );
+        assert!(!screen.contains("vco1") && !screen.contains("vcf1"));
+        press(&mut app, KeyCode::Char('c'));
+    }
+    assert_eq!(
+        serde_json::to_value(app.snapshot()).expect("snapshot encodes"),
+        before
+    );
+    fold_command(&mut app, "unfold beat");
+    let screen = render::text(&render::render(&mut app, 240, 80));
+    assert!(screen.contains("vco1") && screen.contains("vcf1"));
+    assert_eq!(
+        serde_json::to_value(app.snapshot()).expect("snapshot encodes"),
+        before
+    );
+}
+
+#[test]
+fn outside_cables_land_on_the_tile() {
+    let mut app = fold_fixture();
+    fold_command(&mut app, "fold beat");
+    render::render(&mut app, 240, 80);
+    assert!(
+        !app.rack.paths.keys().any(|(id, ..)| *id == 1),
+        "internal cable still drawn"
+    );
+    let tile = app
+        .rack
+        .layout
+        .plate(2)
+        .expect("tile at first member in rack order");
+    for (id, from, to) in app.rack.paths.keys() {
+        if *id == 2 {
+            assert_eq!(to.x, tile.at.x);
+            assert!(tile.contains(*to));
+        } else if *id == 3 {
+            assert_eq!(from.x, tile.at.x + u32::from(tile.width) - 1);
+            assert!(tile.contains(*from));
+        }
+    }
+    assert_eq!(app.rack.paths.len(), 2, "both outside cables drawn");
+}
+
+#[test]
+fn cursor_skips_folded_members() {
+    let mut app = fold_fixture();
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    fold_command(&mut app, "fold beat");
+    render::render(&mut app, 240, 80);
+    assert_eq!(
+        app.selected_index(),
+        Some(2),
+        "cursor maps to the first member in rack order"
+    );
+    assert_eq!(app.knob_index(), 0, "a tile has no hidden knob cursor");
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.selected_index(), Some(3), "right skips hidden vco1");
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.selected_index(), Some(2));
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus(), super::app::Focus::Wall);
+    render::render(&mut app, 240, 80);
+    assert_eq!(app.rack.layout.plates.len(), 4, "Tab unfolds the tile");
+    fold_command(&mut app, "fold");
+    assert_eq!(
+        app.rack.layout.plates.len(),
+        3,
+        "unnamed fold uses the cursor group"
+    );
+    assert!(
+        app.take_jobs()
+            .iter()
+            .all(|job| matches!(job, Job::Call(Request::Saves)))
+    );
+    let before = serde_json::to_value(app.snapshot()).expect("snapshot encodes");
+    for key in ['H', 'J', 'K', 'L', '=', 'x', 'p', 'u'] {
+        press(&mut app, KeyCode::Char(key));
+    }
+    assert!(
+        app.take_jobs().is_empty(),
+        "a tile never edits a hidden member"
+    );
+    assert!(
+        app.rack.moving.is_none(),
+        "group moves are explicitly blocked"
+    );
+    assert_eq!(
+        serde_json::to_value(app.snapshot()).expect("snapshot encodes"),
+        before
+    );
+}
+
+#[test]
+fn fold_state_survives_a_restart() {
+    let dir = tempfile::tempdir_in(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/kz-logs"))
+        .expect("test folder");
+    let file = dir.path().join("console.json");
+    let mut app = fold_fixture();
+    fold_command(&mut app, "fold beat");
+    super::app::save_prefs(&file, &app.prefs()).expect("prefs saved");
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("prefs read"))
+            .expect("valid prefs");
+    assert_eq!(saved["folded"], serde_json::json!(["beat"]));
+    let mut fresh = App::new("Tom", String::new());
+    fresh.apply_prefs(super::app::load_prefs(&file).expect("prefs loaded"));
+    fresh.on_reply(
+        Reply::Snapshot(Box::new(app.snapshot().expect("wall seen").clone())),
+        Instant::now(),
+    );
+    render::render(&mut fresh, 240, 80);
+    assert_eq!(fresh.rack.layout.plates.len(), 3);
+    std::fs::write(
+        &file,
+        r#"{"rack":true,"density":"full","log_hidden":true,"picker_percent":100}"#,
+    )
+    .expect("old prefs");
+    fresh.apply_prefs(super::app::load_prefs(&file).expect("old install loaded"));
+    render::render(&mut fresh, 240, 80);
+    assert_eq!(
+        fresh.rack.layout.plates.len(),
+        4,
+        "old preferences migrate to unfolded"
+    );
+}
+
+#[test]
+fn a_fold_whose_group_is_gone_is_ignored_and_can_be_unfolded() {
+    let mut app = fold_fixture();
+    fold_command(&mut app, "fold beat");
+    let mut wall = app.snapshot().expect("wall seen").clone();
+    wall.groups.remove("beat");
+    app.on_reply(Reply::Snapshot(Box::new(wall)), Instant::now());
+    render::render(&mut app, 240, 80);
+    assert_eq!(
+        app.rack.layout.plates.len(),
+        4,
+        "a gone group shows no tile"
+    );
+    assert!(app.rack.tiles.is_empty(), "no dangling tile");
+    assert_eq!(app.prefs().folded.len(), 1, "kept until unfolded");
+    fold_command(&mut app, "unfold BEAT");
+    assert!(
+        app.prefs().folded.is_empty(),
+        "a gone group's fold can still be opened"
+    );
+    fold_command(&mut app, "fold beat");
+    assert!(
+        app.prefs().folded.is_empty(),
+        "a gone group cannot be folded"
+    );
 }

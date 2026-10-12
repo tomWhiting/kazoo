@@ -15,14 +15,14 @@ The uniform surface of KZ-A01a (`Args` unit struct, `USAGE`, `parse_args`, `run`
 ### kazoo-arp (three files: `lib.rs`, `run.rs` new, `main.rs`)
 
 - `kazoo-arp/src/lib.rs` (exists; keeps its doc, `pub mod clock; pub mod engine;` and the `pub use` lines) gains `mod app; mod audio; mod run; mod ui;` and `pub use run::{Args, USAGE, cli, parse_args, run};`. `app.rs`, `audio.rs`, `ui/` reach `crate::app::…`, `crate::audio::…`, `crate::engine::…` only: no re-export needed.
-- `kazoo-arp/src/run.rs`: `main.rs:11-228` except `fn main`: the `use` lines (:11-32; `use kazoo_core::ipc::link::…` and `ringbuf::traits::Split` included), `main`'s body (:40-118, line 40 left out) as `pub fn run(args: Args)` with `let Args = args;`, `setup_terminal`/`enter_screen`/`restore_terminal` (:123-193, untouched; A04b replaces them), `run_event_loop` (:195-228). Note `main.rs:27` imports `crate::app::{App, KeyMode, StreamHealth}`: keep it.
+- `kazoo-arp/src/run.rs`: `main.rs:11-228` except `fn main`: the `use` lines (:11-32; `use kazoo_core::ipc::link::…` and `ringbuf::traits::Split` included), `main`'s body (:40-118, line 40 left out) as `pub fn run(args: Args)` with `let Args = args;`, `setup_terminal`/`enter_screen`/`restore_terminal` (:123-193, untouched; A04 replaces them), `run_event_loop` (:195-228). Note `main.rs:27` imports `crate::app::{App, KeyMode, StreamHealth}`: keep it.
 
 ### kazoo-juno and kazoo-prophet (three files each)
 
 The two `main.rs` files differ in 20 lines (name strings and juno's `key_note_map` bookkeeping, `diff` shows it); do the same move in both.
 
 - `kazoo-juno/src/lib.rs` (exists: `pub mod synth; pub use synth::{…}`) gains `mod app; mod audio; mod input; mod run; mod ui;` and the `pub use run::{…}` line. `ui.rs` reaches `crate::app::WAVEFORM_BUF_SIZE` and `crate::app::…` only.
-- `kazoo-juno/src/run.rs`: `main.rs:8-479` except `fn main`: the `use` lines (:8-31), `main`'s body (:38-105, line 38 left out) as `pub fn run(args: Args)`, `run_event_loop` (:107), `StreamHealth`/`KeyReleases` and its `note()` method (around :150-168), `setup_terminal`/`undo_setup`/`restore_terminal` (:171-231, untouched; A04b replaces them), `process_event` (:233), `handle_key_press` (around :292), `key_index` (:357), `is_quit_key`, `update_param`, `send_command` and every other private function, and the tests (:382-479).
+- `kazoo-juno/src/run.rs`: `main.rs:8-479` except `fn main`: the `use` lines (:8-31), `main`'s body (:38-105, line 38 left out) as `pub fn run(args: Args)`, `run_event_loop` (:107), `StreamHealth`/`KeyReleases` and its `note()` method (around :150-168), `setup_terminal`/`undo_setup`/`restore_terminal` (:171-231, untouched; A04 replaces them), `process_event` (:233), `handle_key_press` (around :292), `key_index` (:357), `is_quit_key`, `update_param`, `send_command` and every other private function, and the tests (:382-479).
 - `kazoo-prophet/src/lib.rs` and `kazoo-prophet/src/run.rs`: the same, from `kazoo-prophet/src/main.rs` (tests at :364-473).
 - `main.rs` of both: the three-line form.
 

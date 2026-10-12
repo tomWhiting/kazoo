@@ -11,4 +11,13 @@ workspace = true
 [dependencies]
 
 [dev-dependencies]
+criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
 assert_no_alloc = "1.1.2"
+
+[[bench]]
+name = "circuit_models"
+harness = false
+
+[[bench]]
+name = "models"
+harness = false

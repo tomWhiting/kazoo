@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
+Bench names: D01's brief builds `kazoo-fx/benches/circuit_models.rs` with ids `fx/<id>` at defaults. Read what D01 actually landed. If the `models` bench ids this brief names (`model/<id>/default|hot` and the named variants) or the fixture `kazoo_fx::bench::fixture(rate)` do not exist, this lane's first commit adds the ids and the fixture it needs beside D01's bench, without renaming D01's rows, and says so under FOUND.
+
 Split: this file is two lanes, run in this order, each on its own branch with its own END block. **KZ-D07a** is the screamer (`lane/kz-d07a`); **KZ-D07b** is the amp (`lane/kz-d07b`, cut from main after D07a lands). Each is one mechanism, about 30 minutes of a builder's work. Crates: kazoo-fx only. Depends: KZ-D01 (the `models` bench and the fixture it publishes) landed on main. D07b depends on D07a only because D07a adds the null-test helper both use.
 
 ## Outcome
@@ -11,6 +13,14 @@ Today the screamer (`kazoo-fx/src/drive/screamer.rs`) runs its clipping stage at
 After this lane the screamer runs at 352.8 kHz (eight times) and solves each sample with a table seed and two fixed Newton steps; the amp runs at 352.8 kHz with its cubics precomputed and only the tone stack that is heard. Measured by D01's benches: `model/screamer/default` and `model/screamer/hot` cost no more than a quarter of what they cost at the lane's base; `model/amp/default` and `model/amp/hot` no more than half. A null test renders D01's two-second fixture through the old model (kept as a reference constructor) and the new one and holds the difference under -40 dB at the default knobs and -30 dB flat out. Tom accepts the tone cost of the lower rate (the screamer's own doc at `screamer.rs:55-62` gives it: the worst fold on a -6 dBFS 5 kHz note goes from -93 dBc to -65 dBc; the amp's, `amp.rs:188-192`, from -65 to about -47 dBc flat out). Nothing clicks, nothing goes non-finite, nothing rings on.
 
 ## The design (decided; build exactly this)
+
+Bench names: D01 landed `kazoo-fx/benches/circuit_models.rs` with ids `fx/<id>` at defaults (512-frame blocks). If the `models` bench ids this brief names (`model/<id>/default|hot`) or the fixture `kazoo_fx::bench::fixture(rate)` do not exist on the lane's base, the lane's first commit adds them beside D01's bench, without renaming D01's rows, and says so under FOUND. If another D lane (D10a) has already landed them, use those and add only the rows this lane needs.
+
+RETRY NOTE for KZ-D07a (Cassio, 13 Oct 03:35). The first run (branch lane/kz-D07a, head 9fa8a35) built the table, the solve, the reference and the null helper, and got these after figures at a machine load near 240: cost 0.40 (default) and 0.30 (hot) of before; `no_subharmonics` -66.4 dBc against -80; conformance latency error 0.097 samples at 192 kHz against 0.05; worst spur -65.2 dBc at 44.1 kHz. Decisions for the retry:
+- Cost: a bench at load 200+ is noise of about 2x (see D02). Record before and after in BENCH with the load average next to each, interleaved (before, after, before, after) from the same build; the 0.25 ratio is judged by the reviewer on a quiet machine, not by this run. Do not spend the time box chasing the ratio.
+- `no_subharmonics`: the 12 dB relaxation cap is raised to 15 dB for this test only; if the measured figure is -66.4 dBc the limit becomes -66.0 and the commit names the number. Reason: the old -80 was set for 16x; the fuzz, already at 8x, is accepted at -70 spurs, and -66 dBc of subharmonic under full drive is 40 dB below the drive's own distortion products.
+- Latency at 192 kHz (factor 2x): find why the measured delay is 0.097 samples off the reported whole-sample `latency()` at 2x and not at 4x or 8x (read `oversample.rs` where the padding to whole samples is computed for each factor). Fix the padding for the 2x case so the reported latency matches; never relax this limit. The first run's half-sample compensation broke the null and must not be repeated.
+- `solve` must have no loop: write the two steps out (or a `const` step count unrolled by hand), as the brief says.
 
 ### KZ-D07a: the screamer
 
@@ -32,6 +42,12 @@ After this lane the screamer runs at 352.8 kHz (eight times) and solves each sam
 **Conformance.** `worst_spur_db` in the screamer's `conformance!` (`screamer.rs:340-350`) goes from `-80.0` to `-70.0`, the fuzz's figure (`fuzz.rs:397`), since the fuzz already runs at this rate; `hot_spur_db` stays `-48.0`. If any conformance or `no_subharmonics` limit still fails at 8x, the measured figure goes under FOUND and the limit is set to that figure rounded down to the next multiple of 3 dB, by at most 12 dB in all, with the commit message naming the number; the lane never goes back to 16x, and the reviewer judges the number.
 
 ### KZ-D07b: the amp
+
+**Carried into D07b from the D07a review (Cassio, 13 Oct 04:10; do these first, each its own commit).**
+- The screamer's latency correction (`screamer.rs`, `Screamer::prepare`, the `extra` passed to `Pair::prepare`) applies only at factor 2 (`&& factor == 2`). Backward Euler's half-step delay exists at every factor; at 96 kHz the predicted error is about 0.048 samples against the 0.05 tolerance. Drop the factor condition so the correction applies at every factor, then re-run `latency_is_declared` at every rate and the null tests; both must stay green.
+- Name the constant `81_377.395_706_429_85` in `solve.rs` (it is `sinh(T_MAX)`): a `const SINH_T_MAX: f64` with a test that it equals `T_MAX.sinh()` to the last bit.
+- The screamer's cost target of 0.25 is withdrawn: the review showed the solve costs about the same per sample as the old warm-started Newton, so the saving is the halved rate and one fewer halfband stage, about 0.45 to 0.55, which is what was measured. The amp's own targets stay as written.
+
 
 **Rate.** `INTERNAL_RATE` (`amp.rs:193`) becomes `2.0 * TARGET_RATE`; the doc at `amp.rs:188-192` is rewritten with its own -47 dBc figure for 352.8 kHz. `HOT_SUBHARMONIC_DB` (`amp.rs:866`) becomes `-45.0` (the doc's -47 dBc measured at this rate, with 2 dB of margin); `worst_spur_db` (`amp.rs:871`) becomes `-70.0`. The same relaxation rule as D07a applies if a limit still fails.
 

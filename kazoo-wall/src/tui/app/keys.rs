@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use kazoo_wall::format;
-use kazoo_wall::protocol::{KnobView, ModuleView, Place, Request, valid_name};
+use crate::format;
+use crate::protocol::{KnobView, ModuleView, Place, Request, valid_name};
 
 use super::super::knob::{Step, Travel};
 use super::super::rack::geometry::Density;
@@ -77,6 +77,9 @@ impl App {
 
     fn normal_key(&mut self, key: KeyEvent, now: Instant) {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        if self.folded_key(key.code, now) {
+            return;
+        }
         if self.view == View::Rack
             && key.modifiers.contains(KeyModifiers::SHIFT)
             && self.pan_key(key.code)
@@ -88,7 +91,11 @@ impl App {
             KeyCode::Char('Q') => self.ask_stop(now),
             KeyCode::Char('?') => self.mode = Mode::Help { scroll: 0 },
             KeyCode::Char(':') => self.open_command(now),
-            KeyCode::Tab => self.cycle_focus(true),
+            KeyCode::Tab => {
+                if !self.unfold_selected(now) {
+                    self.cycle_focus(true);
+                }
+            }
             KeyCode::BackTab => self.cycle_focus(false),
             KeyCode::Char('v') => self.switch_view(now),
             KeyCode::Char('f') => self.toggle_log(now),
@@ -426,7 +433,11 @@ impl App {
         let Some(index) = self.selected_index() else {
             return;
         };
-        let knobs = self.modules()[index].knobs.len();
+        let knobs = if self.folded_tile(index).is_some() {
+            0
+        } else {
+            self.modules()[index].knobs.len()
+        };
         if down && self.knob + 1 < knobs {
             self.knob += 1;
         } else if !down && self.knob > 0 {
@@ -459,12 +470,17 @@ impl App {
     /// Select module `index`, at knob `knob` (or the same row, held to its
     /// knobs).
     pub(super) fn select(&mut self, index: usize, knob: Option<usize>) {
+        let index = self.fold_representative(index);
         let Some(module) = self.modules().get(index) else {
             return;
         };
         let last = module.knobs.len().saturating_sub(1);
         let id = module.id.clone();
-        self.knob = knob.unwrap_or(self.knob).min(last);
+        self.knob = if self.folded_tile(index).is_some() {
+            0
+        } else {
+            knob.unwrap_or(self.knob).min(last)
+        };
         self.selected = Some(id);
         self.selected_hint = index;
     }
@@ -474,6 +490,12 @@ impl App {
     }
 
     pub(super) fn selected_knob(&self) -> Option<(&ModuleView, &KnobView)> {
+        if self
+            .selected_index()
+            .is_some_and(|index| self.folded_tile(index).is_some())
+        {
+            return None;
+        }
         let module = self.selected_module()?;
         Some((module, module.knobs.get(self.knob)?))
     }
@@ -833,7 +855,7 @@ impl App {
                 text.pop();
             }
             KeyCode::Char(c) if c.is_ascii() && !c.is_ascii_control() => {
-                if text.len() < kazoo_wall::protocol::MAX_NAME {
+                if text.len() < crate::protocol::MAX_NAME {
                     text.push(c);
                 }
             }

@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
+Bench names: D01's brief builds `kazoo-fx/benches/circuit_models.rs` with ids `fx/<id>` at defaults. Read what D01 actually landed. If the `models` bench ids this brief names (`model/<id>/default|hot` and the named variants) or the fixture `kazoo_fx::bench::fixture(rate)` do not exist, this lane's first commit adds the ids and the fixture it needs beside D01's bench, without renaming D01's rows, and says so under FOUND.
+
 Split: two lanes in this file. **KZ-D09a** is the fuzz (`lane/kz-d09a`); **KZ-D09b** is the tape magnetics (`lane/kz-d09b`). They touch different files (`drive/fuzz.rs`; `lofi/parts.rs` and the bench) and may run beside each other. Each is one mechanism, about 30 minutes of a builder's work. Crates: kazoo-fx only. Depends: KZ-D01 (benches and fixture) landed on main; D09a also uses `null_db` from KZ-D07a's `drive/testkit.rs`.
 
 ## Outcome

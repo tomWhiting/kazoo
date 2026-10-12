@@ -28,7 +28,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use kazoo_arp::ArpMode;
+use crate::ArpMode;
 
 use crate::app::{App, KeyMode, Param};
 use crate::audio::SendFailure;
@@ -360,6 +360,25 @@ fn alert_line(app: &App) -> Line<'static> {
         spans.push(Span::styled(
             format!(" {} transport messages lost to/from desk", app.desk_lost),
             Style::new().fg(ALERT),
+        ));
+    }
+
+    if app.notes_lost > 0 {
+        let why = match app.note_failure {
+            1 => "desk disconnected",
+            2 => "desk queue full",
+            3 => "invalid note",
+            _ => "unknown delivery error",
+        };
+        spans.push(Span::styled(
+            format!(" {} note sends failed ({why})", app.notes_lost),
+            Style::new().fg(ALERT),
+        ));
+    }
+    if app.release_waiting {
+        spans.push(Span::styled(
+            " note release waiting",
+            Style::new().fg(AMBER),
         ));
     }
 

@@ -871,3 +871,5 @@ fn groups_join_leave_follow_removals_and_round_trip() {
     assert!(patch.group("kick", &kick(&["vcf1"]), false).unwrap());
     assert!(patch.groups().is_empty());
 }
+
+include!("chain_tests.rs");

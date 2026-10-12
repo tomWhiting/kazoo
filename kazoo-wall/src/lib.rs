@@ -40,6 +40,11 @@ pub mod probe;
 pub mod protocol;
 pub mod seed;
 pub mod store;
+pub mod tui;
+
+mod run;
+
+pub use run::{Args, ServeArgs, USAGE, cli, parse_args, run};
 
 /// In tests, every allocation and free goes through an allocator that can be
 /// told a region must not allocate (`assert_no_alloc`): the engine's tests

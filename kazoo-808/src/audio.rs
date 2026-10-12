@@ -8,9 +8,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use crate::sequencer::Sequencer;
+use crate::synth::{DrumMachine, VoiceIndex, VoiceParam};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
-use kazoo_808::sequencer::Sequencer;
-use kazoo_808::synth::{DrumMachine, VoiceIndex, VoiceParam};
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::follow::{TransportChange, TransportFollower};
 use kazoo_core::ipc::link::{HubLinkAudio, RequestError};
@@ -361,7 +361,10 @@ impl AudioEngine {
                 self.shared.playback_step.store(step, Ordering::Release);
             }
             let sample = kazoo_core::soft_limit(self.drum_machine.process());
-            frame.fill(sample);
+            frame.fill(0.0);
+            for channel in frame.iter_mut().take(2) {
+                *channel = sample;
+            }
             self.stereo[frames * 2] = sample;
             self.stereo[frames * 2 + 1] = sample;
             frames += 1;
@@ -555,6 +558,43 @@ mod tests {
         assert!(data.iter().any(|s| s.abs() > 0.01), "kick must be audible");
         for frame in data.chunks(2) {
             assert!((frame[0] - frame[1]).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn stereo_lands_on_the_first_two_of_eight_channels() {
+        let (mut engine, mut tx, _) = engine(8);
+        assert!(tx.send(AudioCommand::TriggerVoice {
+            voice: VoiceIndex::Kick as usize,
+            velocity: 1.0,
+        }));
+        let mut data = [1.0_f32; 512 * 8];
+        engine.render(&mut data);
+        assert!(data.chunks_exact(8).any(|frame| frame[0].abs() > 0.01));
+        for frame in data.chunks_exact(8) {
+            assert!((frame[0] - frame[1]).abs() < f32::EPSILON);
+            assert!(frame[2..].iter().all(|sample| *sample == 0.0));
+        }
+    }
+
+    #[test]
+    fn mono_output_gets_the_mean_of_left_and_right() {
+        let (mut mono, mut mono_tx, _) = engine(1);
+        let (mut stereo, mut stereo_tx, _) = engine(2);
+        let trigger = AudioCommand::TriggerVoice {
+            voice: VoiceIndex::Kick as usize,
+            velocity: 1.0,
+        };
+        assert!(mono_tx.send(trigger));
+        assert!(stereo_tx.send(trigger));
+        let mut mono_data = [1.0_f32; 512];
+        let mut stereo_data = [1.0_f32; 1024];
+        mono.render(&mut mono_data);
+        stereo.render(&mut stereo_data);
+        assert!(mono_data.iter().any(|sample| sample.abs() > 0.01));
+        for (sample, pair) in mono_data.iter().zip(stereo_data.chunks_exact(2)) {
+            let mean = (pair[0] + pair[1]) * 0.5;
+            assert!((*sample - mean).abs() < f32::EPSILON);
         }
     }
 

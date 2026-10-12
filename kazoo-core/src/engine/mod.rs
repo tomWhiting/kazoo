@@ -50,7 +50,7 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 
 use crate::analysis::{FormantData, PitchDetector, PitchDetectorConfig, PitchEstimate};
 use crate::io::StreamConfig;
-use crate::{DEFAULT_BUFFER_SIZE, Result, SPECTRUM_FFT_SIZE};
+use crate::{Result, SPECTRUM_FFT_SIZE};
 
 use analysis_thread::AnalysisConfig;
 use handle::{DisplayLink, ThreadHandles};
@@ -169,24 +169,13 @@ impl RingBufferCapacities {
 /// or [`crate::Error::Config`] for invalid configuration values (including
 /// an invalid pitch detector configuration).
 pub fn start(config: EngineConfig) -> Result<EngineHandle> {
-    // Determine effective sample rate and buffer size. The rate is resolved
-    // exactly as `build_streams` would (the device's native rate unless one
-    // was requested), then pinned in the stream config, so the processing
-    // state, the analysis and disk threads, the desk link and the device all
-    // run at the same rate.
-    let sample_rate = crate::io::resolve_sample_rate(&config.stream)?;
-    let stream_config = &crate::io::StreamConfig {
-        sample_rate: Some(sample_rate),
-        ..config.stream.clone()
-    };
-    let buffer_size = stream_config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
-
-    if sample_rate == 0 {
-        return Err(crate::Error::Config("sample rate must be > 0".into()));
-    }
-    if buffer_size == 0 {
-        return Err(crate::Error::Config("buffer size must be > 0".into()));
-    }
+    // Keep the selected device and configuration until the streams open, so
+    // processing and the device use the same rate and buffer size.
+    let prepared = crate::io::device::prepare_output(&config.stream)?;
+    let output_info = prepared.info();
+    let sample_rate = output_info.rate;
+    let stream_config = &config.stream;
+    let buffer_size = output_info.frames;
 
     // Validate the pitch configuration up front: an invalid config is a
     // caller error, not something to discover later on the analysis thread.
@@ -290,12 +279,17 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     )?;
     let disk_handle = spawn_disk_thread(disk_cons, disk_cmd_rx, sample_rate, Arc::clone(&stats))?;
 
-    let streams = crate::io::build_streams(stream_config, input_callback, move |data| {
-        // Output callback: run the entire audio processing pipeline.
-        // ProcessingState and ProcessingIO are owned by this closure.
-        processing::process_block(&mut proc_state, &mut proc_io, data);
-    })?;
-    let (stream_holder_handle, stream_shutdown) = hold_streams(streams)?;
+    let streams = crate::io::device::build_streams_with_output(
+        stream_config,
+        prepared,
+        input_callback,
+        move |data| {
+            // Output callback: run the entire audio processing pipeline.
+            // ProcessingState and ProcessingIO are owned by this closure.
+            processing::process_block(&mut proc_state, &mut proc_io, data);
+        },
+    )?;
+    let (stream_holder_handle, stream_shutdown) = hold_streams(streams, &stats)?;
 
     // -----------------------------------------------------------------------
     // 5. Connect MIDI input (auto-discover first available device)
@@ -339,7 +333,11 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
 /// `cpal::Stream` is `!Send` on some platforms, so the streams cannot be
 /// stored in the [`EngineHandle`]; the flag lets the thread exit cleanly
 /// when the handle is dropped.
-fn hold_streams(streams: crate::io::AudioStreams) -> Result<(JoinHandle<()>, Arc<AtomicBool>)> {
+fn hold_streams(
+    streams: crate::io::AudioStreams,
+    stats: &EngineStats,
+) -> Result<(JoinHandle<()>, Arc<AtomicBool>)> {
+    stats.set_audio_health([streams.input.health(), streams.output.health()])?;
     let stream_shutdown = Arc::new(AtomicBool::new(false));
     let shutdown = Arc::clone(&stream_shutdown);
     let holder = std::thread::Builder::new()

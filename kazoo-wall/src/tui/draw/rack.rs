@@ -9,8 +9,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 
-use kazoo_wall::catalogue::Signal;
-use kazoo_wall::protocol::{
+use crate::catalogue::Signal;
+use crate::protocol::{
     KnobView, MAX_PROBES, ModuleView, Probe, ReadoutReading, ScopeReading, Snapshot,
 };
 
@@ -212,7 +212,16 @@ fn scene(
         if !window.shows(plate.at, u32::from(plate.width), u32::from(plate.height)) {
             continue;
         }
-        if let Some(module) = snapshot.modules.get(plate.module) {
+        if let Some(tile) = app.folded_tile(plate.module) {
+            super::folded::tile(
+                buf,
+                window.area,
+                window.pan,
+                plate,
+                tile,
+                app.selected_index() == Some(plate.module),
+            );
+        } else if let Some(module) = snapshot.modules.get(plate.module) {
             faceplate(buf, scene, module, plate);
         }
     }
@@ -969,7 +978,12 @@ fn cables(
         plugs,
         ..
     } = scene;
-    let mut ends = geometry::cable_ends(layout, &snapshot.modules, &snapshot.cables);
+    let mut ends = super::super::rack::fold::cable_ends(
+        layout,
+        &snapshot.modules,
+        &snapshot.cables,
+        &app.rack.tiles,
+    );
     ends.sort_by_key(|(id, ..)| *id);
     let mut before = std::mem::take(paths);
     let mut made = 0;

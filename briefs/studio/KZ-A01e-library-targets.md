@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
+Shape the reviews of A01a and A01b enforced (match it from the start; read kazoo-cs80/src/run.rs and kazoo-dx/src/args.rs on main): `-h`/`--help` wins wherever it stands, so `--bogus --help` gives help and `--flag -h` never reads `-h` as the flag's value; USAGE's first line is the name, a colon, then the description joined with commas, with no dash and no second colon; `cli` writes the usage, flushes, and returns any write error; main.rs's doc line follows A01a's wording with no dash.
+
 Split: PLAN.md's A01 is split into A01a to A01g (see KZ-A01a). This is e = kazoo-glass and kazoo-mix. Independent of the other six.
 
 ## Outcome
@@ -40,7 +42,7 @@ own otherwise. --demo renders a preview and exits. Press ? inside for keys.
 - `kazoo-glass/src/lib.rs` (exists: doc, `pub mod patch; pub mod synth;`, the test allocator) gains `mod args; mod audio; mod demo; mod phrase; mod run; mod ui;`, the `pub use args::{Args, USAGE, cli, parse_args}; pub use run::run;` lines, and `pub(crate) use run::{…}` for what `ui.rs` names via `crate::` (it names `crate::KeyReleases::Reported`, `crate::audio::AudioStats::default` and one bare `crate::` import: list the exact items). The duplicate `#[global_allocator]` in `main.rs:15-17` goes (the one in `lib.rs:9-11` covers the crate's tests; a binary cannot have two).
 - `kazoo-glass/src/demo.rs` and `main.rs`'s `use kazoo_glass::patch; use kazoo_glass::synth;` (:10, :12): inside the library a crate cannot name itself, so `kazoo_glass::` becomes `crate::` in `demo.rs:3-4` and in `run.rs`.
 - `kazoo-glass/src/args.rs`: `Args`, `USAGE`, `parse_args`, `cli`, its tests (including the moved `args_parse` from `main.rs`'s tests, adapted).
-- `kazoo-glass/src/run.rs`: `main.rs:19-1032` except `fn main`, `parse_args` and the allocator: constants (:43, :45), `run`, `KeyReleases`, the terminal functions (:~138-216, untouched; A04c), `App` and its impl, `system_repeat_delay` (:581), `piano_offset` (:610), `run_event_loop` (:633), `handle_key`, the tests (:748-1032 minus `args_parse`). About 950 lines; under 1000.
+- `kazoo-glass/src/run.rs`: `main.rs:19-1032` except `fn main`, `parse_args` and the allocator: constants (:43, :45), `run`, `KeyReleases`, the terminal functions (:~138-216, untouched; A04), `App` and its impl, `system_repeat_delay` (:581), `piano_offset` (:610), `run_event_loop` (:633), `handle_key`, the tests (:748-1032 minus `args_parse`). About 950 lines; under 1000.
 - `main.rs`: the three-line form.
 
 ### kazoo-mix (three files: `lib.rs`, `run.rs` new, `main.rs`)

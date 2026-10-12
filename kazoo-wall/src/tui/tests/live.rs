@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
 
-use kazoo_wall::daemon::{Daemon, DaemonConfig};
-use kazoo_wall::protocol::Snapshot;
-use kazoo_wall::protocol::client::WallClient;
+use crate::daemon::{Daemon, DaemonConfig};
+use crate::protocol::Snapshot;
+use crate::protocol::client::WallClient;
 
 use super::super::app::{App, GLIDES, Mode, Patching, jack_names};
 use super::super::worker::{Config, Connection};

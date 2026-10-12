@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
+Bench names: D01's brief builds `kazoo-fx/benches/circuit_models.rs` with ids `fx/<id>` at defaults. Read what D01 actually landed. If the `models` bench ids this brief names (`model/<id>/default|hot` and the named variants) or the fixture `kazoo_fx::bench::fixture(rate)` do not exist, this lane's first commit adds the ids and the fixture it needs beside D01's bench, without renaming D01's rows, and says so under FOUND.
+
 Split: two lanes in this file. **KZ-D10a** is the reverb lines (`lane/kz-d10a`: `space/line.rs`, `space/hall.rs`, `space/plate.rs`, `space/spring.rs`, `space/kit.rs`); **KZ-D10b** is the alignment searches (`lane/kz-d10b`: `space/shimmer.rs`, `time/pitch/taps.rs`). They touch different files and may run beside each other. Each is one mechanism, about 30 minutes of a builder's work. Crates: kazoo-fx only. Depends: KZ-D01 (benches and fixture) landed on main.
 
 ## Outcome
@@ -11,6 +13,12 @@ Today every read a reverb tank makes between samples goes through a 32-point Kai
 After this lane: a read at a whole-sample position costs one load; a read at a static fractional position is rounded to a whole sample when it is designed; a read whose position is gliding (size or predelay moving) is four-point Hermite for the length of the glide; a modulated read (the hall's swept tank lines, the plate's two swept allpasses, the spring's wandering coils, the shimmer's grains) uses a 1024-phase nearest-row sinc at one fma per tap. The spring runs two cascades when two springs are on. Each alignment search is at most `COARSE_LAGS` coarse positions over `SPAN_POINTS` samples, then two narrowing passes, under 11,000 reads per splice at any rate, and at most one splice lands in a block. Measured by D01's benches: `model/hall/default` and `model/plate/default` at or under 0.45 of the lane's base, `model/spring/default` at or under 0.8 and `model/spring/two` at or under 0.6, `model/shimmer/default` and `model/pitch/up7` at or under 0.8. The reverbs' same-at-every-rate tests stay green (they are why the sinc stays in the loops); nothing clicks at a handover; nothing goes non-finite.
 
 ## The design (decided; build exactly this)
+
+RETRY NOTE for KZ-D10a (Cassio, 13 Oct 03:40). The first run (branch lane/kz-D10a, head kept on origin) built read_at / Hermite, the handovers, the spring cascades, the `models` bench and `src/bench.rs`, and measured at a machine load near 240: hall 0.26-0.29, plate 0.12-0.24, spring default 0.68, hot 0.54, two 0.82 of before. Decisions for the retry:
+- The sinc table is 2048 phases, not 1024. A nearest-row table at 1024 phases measures -66.2 dB against the exact sinc; the phase error halves at 2048 (about -72 dB), still one fma per tap, the table twice the memory. The -70 dB limit in `the_nearest_row_matches_the_exact_sinc` stays. The brief's 1024 was my error.
+- Cost ratios: a bench at load 200+ is noise of about 2x (see D02). Record before and after interleaved (before, after, before, after) from the same build with the load average next to each; the reviewer judges the ratios on a quiet machine. Do not spend the time box chasing `spring/two`.
+- Finish what was interrupted: `no_steady_tone_rings_more_than_six_decibels_over_the_dry` and `the_spring_keeps_the_contract` must run to completion and pass; run them alone first.
+- The amp leak report (`drive::amp::tests::conformance::odd_blocks_are_handled`) is not this lane's; leave it.
 
 ### KZ-D10a: the lines
 
@@ -30,6 +38,12 @@ After this lane: a read at a whole-sample position costs one load; a read at a s
 **Spring cascades.** `Chains` (`spring.rs:207`) gains `live: usize` (2 or 3). `Chains::process` runs only the first `live` cascades (the interleaved loop iterates `cells[..live]`; keep the three-wide interleave for the `live == 3` case by writing the inner loop over a slice, not a fixed array). `Spring::update` (`spring.rs:756`) sets `live = 3` while `self.third.value() > 0.0 || self.third.target() > 0.0` and, on the block where the third ramp settles at zero, clears the third cascade's history and Thiran state in both `lows` and `highs` and sets `live = 2`; coming back, the ramp fades the third coil in from exact silence (`spring.rs:784-788`, 50 ms), so nothing clicks. `LOW_STAGES` and `HIGH_STAGES` stay 80 and 24; their doc comments gain the reason the count is what it is and that it is fixed at every rate: Parker's interpolated stretched allpass spring (2011) needs about a hundred stages for a real spring's dispersion, 80 keeps the drip's chirp at this stretch, 24 lightly stretched stages give the splash; the stretch `K` carries the rate, so the cost is `(80 + 24) * live` stages per sample at any rate, 312 with three springs, 208 with two. That is the bound.
 
 ### KZ-D10b: the searches
+
+**Carried into D10b from the D10a review (Cassio, 13 Oct 04:25; do these first, each its own commit).**
+- With two springs on, the third coil still runs `feed` and `pick_up` (four sinc reads and its filters) on silence once its ramp has reached zero. Skip them while the third cascade is not live, with the same zeroed-history rule `set_live(2)` uses, and extend the two-against-three test to cover it.
+- The spring default target (0.8) is withdrawn: the `springs` knob runs 2 to 3 and defaults to 3, so the default always ran three cascades and still does; the only saving there is the cheaper reads. `spring/two` keeps its 0.6 target, judged on a quiet machine.
+- `shimmer.rs` already carries D10a's plain-read change near `Reading { stride }`; merge with it, do not undo it.
+
 
 **One budget, two places.** Both `align`s get the same three-pass search with the same named constants (declared in each file with the same values and the same doc; the two modules share no code today and the lane does not create a shared module for four constants):
 

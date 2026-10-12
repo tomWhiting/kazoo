@@ -1,7 +1,7 @@
 //! Deterministic audio preview, rendered without an audio device or hub.
 
-use kazoo_glass::patch::PATCHES;
-use kazoo_glass::synth::GlassSynth;
+use crate::patch::PATCHES;
+use crate::synth::GlassSynth;
 use std::path::Path;
 
 /// Six four-second vignettes, one per factory patch, as stereo float WAV.

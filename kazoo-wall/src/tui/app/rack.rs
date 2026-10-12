@@ -7,14 +7,17 @@
 //! [`MOVE_LONGEST`] has passed, or the wall refuses it). Moves made with keys are gathered, like turns, and go to
 //! the wall as one when the keys rest.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
 
-use kazoo_wall::protocol::{MAX_PROBES, ModuleView, Probe, Snapshot};
+use crate::protocol::{MAX_PROBES, ModuleView, Probe, Snapshot};
 
 use super::super::knob::Travel;
+use super::super::rack::fold::{self, Tile};
+
+type FoldKey = (BTreeSet<String>, BTreeMap<String, Vec<String>>);
 use super::super::rack::geometry::{self, Density, Hanging, Hit, LayoutKey, Point, Rack};
 
 /// How close to the rack's edge (in cells) a carried cable pans the rack.
@@ -174,6 +177,8 @@ pub struct RackState {
     pub builds: Builds,
     /// What the layout was made from.
     key: Option<LayoutKey>,
+    fold_key: Option<FoldKey>,
+    pub tiles: BTreeMap<usize, Tile>,
     pub(super) last_click: Option<(Hit, Instant)>,
     /// Since when a carried cable has been panning the rack at its edge.
     edge_since: Option<Instant>,
@@ -262,6 +267,8 @@ impl RackState {
         modules: &[ModuleView],
         rows: Option<&[Vec<String>]>,
         view: (u16, u16),
+        groups: &BTreeMap<String, Vec<String>>,
+        folded: &BTreeSet<String>,
     ) {
         let density = self.density;
         let shown = self.rows(rows);
@@ -269,12 +276,25 @@ impl RackState {
             .key
             .as_ref()
             .is_some_and(|key| key.fits(modules, density, view, shown))
+            && self
+                .fold_key
+                .as_ref()
+                .is_some_and(|(old_folded, old_groups)| {
+                    old_folded == folded && old_groups == groups
+                })
         {
             return;
         }
-        let layout = geometry::rack(modules, density, view, shown);
+        let tiles = fold::tiles(modules, shown, groups, folded);
+        let layout = if tiles.is_empty() {
+            geometry::rack(modules, density, view, shown)
+        } else {
+            fold::layout(modules, density, view, shown, &tiles)
+        };
         let key = LayoutKey::of(modules, density, view, shown);
         self.layout = layout;
+        self.tiles = tiles;
+        self.fold_key = Some((folded.clone(), groups.clone()));
         self.key = Some(key);
         self.builds.layouts += 1;
     }
@@ -341,6 +361,8 @@ impl RackState {
     pub fn clear(&mut self) {
         self.layout = Rack::default();
         self.key = None;
+        self.fold_key = None;
+        self.tiles.clear();
         self.cables.clear();
         self.paths.clear();
     }

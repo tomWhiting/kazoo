@@ -10,7 +10,7 @@ use crate::audio::{
     ArpCommand, AudioCommand, CommandSender, DEFAULT_BPM, DisplayEvent, EngineShared, SendFailure,
     apply_command,
 };
-use kazoo_arp::{ArpClock, ArpMode, Arpeggiator, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING};
+use crate::{ArpClock, ArpMode, Arpeggiator, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING};
 use kazoo_core::ipc::link::LinkStatus;
 
 /// Velocity of notes played on the computer keyboard.
@@ -124,6 +124,9 @@ pub struct App {
     pub beat: f64,
     /// Transport messages lost between the engine and the desk.
     pub desk_lost: u64,
+    pub notes_lost: u64,
+    pub note_failure: u64,
+    pub release_waiting: bool,
     /// Keyboard notes currently pressed.
     held: [bool; 128],
     /// Note-offs the engine has not received yet (its queue was full);
@@ -177,6 +180,9 @@ impl App {
             playing: true,
             beat: 0.0,
             desk_lost: 0,
+            notes_lost: 0,
+            note_failure: 0,
+            release_waiting: false,
             held: [false; 128],
             pending_off: [false; 128],
             display_cons,
@@ -191,6 +197,9 @@ impl App {
             .set_bpm(f64::from_bits(shared.bpm.load(Ordering::Acquire)));
         self.beat = f64::from_bits(shared.beat.load(Ordering::Acquire));
         self.desk_lost = shared.desk_lost.load(Ordering::Relaxed);
+        self.notes_lost = shared.notes_lost.load(Ordering::Relaxed);
+        self.note_failure = shared.note_failure.load(Ordering::Relaxed);
+        self.release_waiting = shared.releases_waiting.load(Ordering::Acquire);
     }
 
     /// Drain display events from the audio thread's ring buffer.
@@ -457,8 +466,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ArpCursor;
     use crossbeam_channel::Receiver;
-    use kazoo_arp::ArpCursor;
     use ringbuf::HeapProd;
     use ringbuf::traits::{Producer, Split};
 
@@ -586,7 +595,7 @@ mod tests {
         let mut engine = rig.app.arp.clone();
         let mut last: Option<(u8, ArpCursor)> = None;
         for _ in 0..2 {
-            if let Some(kazoo_arp::NoteEvent::NoteOn { midi_note, .. }) = engine.step() {
+            if let Some(crate::NoteEvent::NoteOn { midi_note, .. }) = engine.step() {
                 last = Some((midi_note, engine.cursor()));
                 rig.display
                     .try_push(DisplayEvent::Played {

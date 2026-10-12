@@ -11,10 +11,17 @@
 //!   audio sample — it handles step timing, swing, and gate duration.
 //! - [`ClockDivision`]: Clock rate from 1/1 (whole) through 1/32 plus triplets.
 
+mod app;
+mod arp;
+mod audio;
 pub mod clock;
 pub mod engine;
+mod run;
+mod ui;
 
 pub use clock::{
     ArpClock, ClockDivision, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING, TickEvents, step_beat,
 };
 pub use engine::{ArpCursor, ArpMode, Arpeggiator, HeldNote, MAX_HELD_NOTES, NoteEvent};
+
+pub use run::{Args, USAGE, cli, parse_args, run};

@@ -2,6 +2,8 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
+From A01g's review: `kazoo_wall::run(Args::Console)` builds its `ServeCommand` from the current executable with `serve`, so the single `kazoo` binary must not call it for the console (the daemon would start as `kazoo serve`). Call `kazoo_wall::tui::run` with `ServeCommand { program: current_exe, args: ["wall", "serve"] }` as this brief says, and add a doc sentence on `kazoo_wall::run` saying so.
+
 Depends on A01a to A01g (every crate exposes `run(Args)`), A02, A03, A04 (`kazoo_host::reports::install` installs error reports once), A05.
 
 ## Outcome

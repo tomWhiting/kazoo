@@ -10,8 +10,8 @@
 //! right. In `xy` mode input a goes across and b up, on square axes so a
 //! circle is round. Values beyond the screen are drawn on its edge.
 
-use kazoo_wall::format::{hertz, number, seconds};
-use kazoo_wall::protocol::ScopeReading;
+use crate::format::{hertz, number, seconds};
+use crate::protocol::ScopeReading;
 
 use super::dial::{braille, braille_bit};
 
@@ -266,7 +266,7 @@ pub fn label(reading: &ScopeReading) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kazoo_wall::protocol::{GateMeasured, Measured, Rhythm};
+    use crate::protocol::{GateMeasured, Measured, Rhythm};
 
     fn quiet() -> Measured {
         Measured {
