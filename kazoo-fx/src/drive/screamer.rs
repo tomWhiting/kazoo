@@ -352,9 +352,9 @@ impl Effect for Screamer {
         let base = sane_rate(sample_rate);
         let factor = factor_for(base, self.internal);
         // The leading delay error of backward Euler is half a step.
-        // At two times the host rate its excess over the finely stepped
-        // circuit exceeds the latency tolerance, so the pad absorbs it.
-        let extra = if matches!(self.solve, Solve::Table) && factor == 2 {
+        // The pad absorbs its excess over the finely stepped circuit
+        // at every oversampling factor.
+        let extra = if matches!(self.solve, Solve::Table) {
             0.5 * (1.0 - f64::from(base) * factor as f64 / f64::from(4.0 * TARGET_RATE))
         } else {
             0.0
@@ -417,6 +417,29 @@ mod tests {
     );
 
     #[test]
+    fn backward_euler_padding_is_applied_at_every_factor() {
+        for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let mut effect = Screamer::new();
+            effect.prepare(rate);
+            let factor = factor_for(rate, INTERNAL_RATE);
+            let extra =
+                0.5 * (1.0 - f64::from(rate) * factor as f64 / f64::from(4.0 * TARGET_RATE));
+            let mut expected = Pair::<Circuit>::new(true);
+            expected.prepare(rate, INTERNAL_RATE, extra);
+            for frame in 0..256 {
+                let input = if frame == 0 { [1.0; 2] } else { [0.0; 2] };
+                let actual = effect.pair.process(input, |_, _, x| x);
+                let wanted = expected.process(input, |_, _, x| x);
+                assert_eq!(
+                    actual.map(f32::to_bits),
+                    wanted.map(f32::to_bits),
+                    "padding at {rate} Hz, frame {frame}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn flat_out_square_wave_stays_bounded_and_the_tail_dies() {
         let mut effect = Screamer::new();
         effect.prepare(48_000.0);
@@ -442,13 +465,13 @@ mod tests {
         let defaults =
             super::super::testkit::null_db(&mut Screamer::reference(), &mut Screamer::new(), &[]);
         println!("default null {defaults:.2} dB");
-        assert!(defaults < -40.0, "default null {defaults:.2} dB");
         let hot = super::super::testkit::null_db(
             &mut Screamer::reference(),
             &mut Screamer::new(),
             &[(DRIVE, 100.0), (TONE, 100.0)],
         );
         println!("hot null {hot:.2} dB");
+        assert!(defaults < -40.0, "default null {defaults:.2} dB");
         assert!(hot < -30.0, "hot null {hot:.2} dB");
     }
 
