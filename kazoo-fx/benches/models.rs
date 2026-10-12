@@ -3,7 +3,7 @@ use std::{process::Command, time::Duration};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use kazoo_fx::{
     Context,
-    bench::{amp_reference, fixture, screamer_reference},
+    bench::{amp_reference, fixture, magnetic_step, screamer_reference},
 };
 
 fn report_load(id: &str) {
@@ -165,5 +165,51 @@ fn amps(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, models, amps, reverbs);
+fn tapes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("model");
+    group
+        .sample_size(50)
+        .measurement_time(Duration::from_secs(3));
+    let input = fixture(48_000.0);
+    let context = Context { bpm: 120.0 };
+    for id in ["cassette", "reel", "vhs"] {
+        let Some(kind) = kazoo_fx::find(id) else {
+            panic!("the catalogue has no {id}");
+        };
+        let mut effect = (kind.build)();
+        effect.prepare(48_000.0);
+        effect.reset();
+        let mut left = [0.0; 256];
+        let mut right = [0.0; 256];
+        let blocks = input.len() / 256;
+        let mut cursor = 0;
+        let name = format!("model/{id}/default");
+        report_load(&name);
+        group.bench_function(BenchmarkId::new(id, "default"), |b| {
+            b.iter(|| {
+                let start = cursor * 256;
+                let block = &input[start..start + 256];
+                effect.process(&context, [block, block], [&mut left, &mut right]);
+                cursor = (cursor + 1) % blocks;
+            });
+        });
+        report_load(&name);
+    }
+    let mut step = magnetic_step();
+    let blocks = input.len() / 256;
+    let mut cursor = 0;
+    report_load("model/magnetic/step");
+    group.bench_function(BenchmarkId::new("magnetic", "step"), |b| {
+        b.iter(|| {
+            let start = cursor * 256;
+            let output = step(&input[start..start + 256]);
+            cursor = (cursor + 1) % blocks;
+            std::hint::black_box(output)
+        });
+    });
+    report_load("model/magnetic/step");
+    group.finish();
+}
+
+criterion_group!(benches, models, amps, reverbs, tapes);
 criterion_main!(benches);
