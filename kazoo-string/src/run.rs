@@ -11,7 +11,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -32,9 +32,9 @@ const DEFAULT_REPEAT_DELAY: Duration = Duration::from_millis(250);
 pub fn run(args: Args) -> color_eyre::Result<()> {
     let phrase_text = args.phrase;
 
-    let mut request = OutputRequest::default();
-    let output_info = request.info()?;
-    request.rate = RateChoice::Hz(output_info.rate);
+    let request = OutputRequest::default();
+    let prepared = request.prepare_output()?;
+    let output_info = prepared.info();
     let sample_rate = output_info.rate;
     let channels = usize::from(output_info.channels);
 
@@ -72,7 +72,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         phrase,
         Arc::clone(&stats),
     );
-    let stream = open_output(&request, move |data, _| engine.render(data))?;
+    let stream = prepared.open(move |data, _| engine.render(data))?;
 
     let (mut terminal, keyboard) = setup_terminal()?;
     let release_events = matches!(keyboard, KeyReleases::Reported);

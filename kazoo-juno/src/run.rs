@@ -17,7 +17,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     self, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -82,9 +82,9 @@ type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 pub fn run(args: Args) -> color_eyre::Result<()> {
     let Args = args;
 
-    let mut request = OutputRequest::default();
-    let output_info = request.info()?;
-    request.rate = RateChoice::Hz(output_info.rate);
+    let request = OutputRequest::default();
+    let prepared = request.prepare_output()?;
+    let output_info = prepared.info();
     let sample_rate = output_info.rate as f32;
     let channels = usize::from(output_info.channels);
 
@@ -108,7 +108,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         hub_audio,
         Arc::clone(&shared),
     );
-    let stream = open_output(&request, move |data, _| engine.render(data))?;
+    let stream = prepared.open(move |data, _| engine.render(data))?;
 
     let (mut terminal, keyboard) = setup_terminal()?;
     let release_events = matches!(keyboard, KeyReleases::Reported);

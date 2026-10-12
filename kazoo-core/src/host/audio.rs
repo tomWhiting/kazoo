@@ -11,8 +11,8 @@ use crate::io::device::{
 };
 use crate::{Error, Result};
 
+pub(crate) use super::audio_open::open_input_with_frames;
 pub use super::audio_open::{open_input, open_output};
-pub(crate) use super::audio_open::{open_input_with_frames, open_output_with_frames};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DeviceChoice {
@@ -49,8 +49,37 @@ impl Default for OutputRequest {
 }
 
 impl OutputRequest {
-    pub fn info(&self) -> Result<OutputInfo> {
-        prepare(self, false, crate::DEFAULT_BUFFER_SIZE).map(|(_, chosen, _)| chosen.info)
+    pub fn prepare_output(&self) -> Result<PreparedOutput> {
+        self.prepare_output_with_frames(crate::DEFAULT_BUFFER_SIZE)
+    }
+
+    pub(crate) fn prepare_output_with_frames(&self, frames: usize) -> Result<PreparedOutput> {
+        self.prepare_output_using(|request| prepare(request, false, frames))
+    }
+
+    fn prepare_output_using<D>(
+        &self,
+        probe: impl FnOnce(&Self) -> Result<(D, Chosen, String)>,
+    ) -> Result<PreparedOutput<D>> {
+        let (device, chosen, context) = probe(self)?;
+        Ok(PreparedOutput {
+            device,
+            chosen,
+            context,
+        })
+    }
+
+    pub fn prepare_input(&self) -> Result<PreparedInput> {
+        self.prepare_input_with_frames(crate::DEFAULT_BUFFER_SIZE)
+    }
+
+    pub(crate) fn prepare_input_with_frames(&self, frames: usize) -> Result<PreparedInput> {
+        let (device, chosen, context) = prepare(self, true, frames)?;
+        Ok(PreparedInput {
+            device,
+            chosen,
+            context,
+        })
     }
 
     fn context(&self, input: bool) -> String {
@@ -77,6 +106,59 @@ pub struct OutputInfo {
 pub type InputRequest = OutputRequest;
 pub type InputInfo = OutputInfo;
 pub type OpenedInput = OpenedOutput;
+
+pub struct PreparedOutput<D = cpal::Device> {
+    pub(super) device: D,
+    pub(super) chosen: Chosen,
+    pub(super) context: String,
+}
+
+impl<D> PreparedOutput<D> {
+    #[must_use]
+    pub const fn info(&self) -> OutputInfo {
+        self.chosen.info
+    }
+
+    pub(super) fn open_using<S>(
+        self,
+        build: impl FnOnce(D, Chosen, String) -> Result<S>,
+    ) -> Result<S> {
+        build(self.device, self.chosen, self.context)
+    }
+}
+
+impl<D> std::fmt::Debug for PreparedOutput<D> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedOutput")
+            .field("info", &self.info())
+            .field("context", &self.context)
+            .finish_non_exhaustive()
+    }
+}
+
+pub struct PreparedInput {
+    pub(super) device: cpal::Device,
+    pub(super) chosen: Chosen,
+    pub(super) context: String,
+}
+
+impl PreparedInput {
+    #[must_use]
+    pub const fn info(&self) -> InputInfo {
+        self.chosen.info
+    }
+}
+
+impl std::fmt::Debug for PreparedInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedInput")
+            .field("info", &self.info())
+            .field("context", &self.context)
+            .finish_non_exhaustive()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct StreamHealth {
@@ -304,6 +386,34 @@ mod tests {
             cpal::SupportedBufferSize::Range { min: 64, max: 1024 },
             cpal::SampleFormat::F32,
         )]
+    }
+
+    #[test]
+    fn prepared_output_opens_the_configuration_it_reported() {
+        let request = OutputRequest::default();
+        let probes = AtomicUsize::new(0);
+        let prepared = request
+            .prepare_output_using(|request| {
+                probes.fetch_add(1, Ordering::Relaxed);
+                let chosen = configure(request, 48_000, &[channel_range(8)], 128)?;
+                Ok(("original device", chosen, "fake output".to_owned()))
+            })
+            .unwrap();
+        let reported = prepared.info();
+        let replacement = configure(&request, 96_000, &[channel_range(1)], 512).unwrap();
+        assert_ne!(reported, replacement.info);
+        let opened = prepared
+            .open_using(|device, chosen, context| {
+                assert_eq!(device, "original device");
+                assert_eq!(context, "fake output");
+                Ok(chosen.config)
+            })
+            .unwrap();
+        assert_eq!(opened.channels, reported.channels);
+        assert_eq!(opened.sample_rate, reported.rate);
+        assert_eq!(opened.buffer_size, cpal::BufferSize::Fixed(128));
+        assert_eq!(reported.frames, 128);
+        assert_eq!(probes.load(Ordering::Relaxed), 1);
     }
 
     #[test]
