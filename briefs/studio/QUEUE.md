@@ -28,3 +28,4 @@ START KZ-D02 base=62622ce branch=lane/kz-D02 df=146GB at 02:06
 START KZ-E02 base=62622ce branch=lane/kz-E02 df=143GB at 02:12
 START KZ-B07 base=62622ce branch=lane/kz-B07 df=135GB at 02:20
 END KZ-A01f head=a755c72 reviewed=READY merged=4103423 at 02:26
+END KZ-A01g head=f8aae5a reviewed=READY(daemon timing tests to confirm on quiet machine) merged=e2934d0 at 02:33
