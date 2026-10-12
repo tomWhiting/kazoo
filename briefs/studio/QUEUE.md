@@ -36,3 +36,4 @@ END KZ-B07 head=4130696 reviewed=READY(brief's hand check must use --target all 
 PARKED KZ-D02 head=b9dbd6f reviewed=code correct, NOT READY until bench on a quiet machine (interleaved run at load ~200: base unplugged/1000 33.0/21.7 ms, lane 14.3/23.8 ms; noise ~2x, no clear 5x) at 02:59
 START KZ-D07a base=f5069f1 branch=lane/kz-D07a df=116GB at 03:00
 START KZ-D10a base=f5069f1 branch=lane/kz-D10a df=110GB at 03:03
+END KZ-G01 head=56e05be reviewed=READY(reviewer made the halver work in usize with a bit-for-bit pin; open: Resampler::process last= unwrap_or clamp on an impossible length) merged=9668aa2 at 03:07
