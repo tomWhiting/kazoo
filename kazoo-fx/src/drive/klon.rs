@@ -314,6 +314,11 @@ impl Default for Circuit {
 }
 
 impl pair::Circuit for Circuit {
+    /// Zero in through every stage is zero out: the filters start at rest,
+    /// each stage's swing and antiderivative memory are zero at zero, and a
+    /// fresh stage's first step reads its antiderivative at zero either way.
+    const QUIET_AT_REST: bool = true;
+
     fn reset(&mut self) {
         self.coupling.reset();
         self.front.reset();
@@ -500,6 +505,16 @@ impl Klon {
     #[must_use]
     pub fn new() -> Self {
         Self::build(true, true)
+    }
+
+    /// The same model with every channel run even while it hears nothing,
+    /// for the check that skipping idle channels changes nothing.
+    #[cfg(test)]
+    #[must_use]
+    pub fn running_idle() -> Self {
+        let mut model = Self::new();
+        model.pair = model.pair.running_idle();
+        model
     }
 
     /// The same circuit with the bracketed diode solver, for the null test
@@ -732,5 +747,16 @@ mod tests {
         };
         let change = db(at(-12.0) / at(0.0));
         assert!((change + 12.0).abs() < 0.1, "{change:.2} dB");
+    }
+
+    /// A side that is silent until halfway is skipped while silent, and
+    /// both sides come out bit for bit as they do with it running.
+    #[test]
+    fn an_idle_side_is_skipped_without_a_bit_of_difference() {
+        let played = super::super::testkit::guitar(1.0, 0.5);
+        let skipped = super::super::testkit::render_right_late(&mut Klon::new(), &played);
+        let running = super::super::testkit::render_right_late(&mut Klon::running_idle(), &played);
+        assert_eq!(skipped, running);
+        assert!(skipped.iter().any(|[_, right]| *right != 0));
     }
 }

@@ -12,6 +12,13 @@ use super::oversample::{MAX_FACTOR, Oversampler, factor_for};
 
 /// A circuit one channel runs.
 pub trait Circuit: Copy + Default + std::fmt::Debug {
+    /// Whether the circuit, from reset, turns input that is exactly zero
+    /// into output that is exactly zero with its state left as reset left
+    /// it. A pair whose circuit says so skips a channel that has heard
+    /// nothing but zeros since reset: an unplugged side costs nothing, and
+    /// the output is bit for bit what running it would give.
+    const QUIET_AT_REST: bool = false;
+
     /// Forget all state: capacitors discharged, solvers at rest.
     fn reset(&mut self);
 }
@@ -35,6 +42,11 @@ pub struct Pair<C> {
     /// Whether the wet decimators ran on the last frame: one that starts
     /// again starts silent, never from audio it last heard long ago.
     wet_live: bool,
+    /// Per channel, whether it has heard only zeros since reset.
+    idle: [bool; 2],
+    /// Whether idle channels of a quiet-at-rest circuit are skipped; off
+    /// only for the test that proves skipping changes nothing.
+    skip_idle: bool,
 }
 
 impl<C: Circuit> Pair<C> {
@@ -48,7 +60,32 @@ impl<C: Circuit> Pair<C> {
             anti_alias,
             rate: 0.0,
             wet_live: false,
+            idle: [true; 2],
+            skip_idle: true,
         }
+    }
+
+    /// The same pair, but every channel runs even while it hears nothing:
+    /// what the skip is checked against.
+    #[cfg(test)]
+    #[must_use]
+    pub const fn running_idle(mut self) -> Self {
+        self.skip_idle = false;
+        self
+    }
+
+    /// Whether channel `index` may be skipped for input `sample`: its
+    /// circuit is quiet at rest and it has heard only zeros since reset.
+    /// The first sample that is not zero wakes it for good, until reset.
+    fn skips(&mut self, index: usize, sample: f32) -> bool {
+        if !(C::QUIET_AT_REST && self.skip_idle && self.idle[index]) {
+            return false;
+        }
+        if sample == 0.0 {
+            return true;
+        }
+        self.idle[index] = false;
+        false
     }
 
     /// Whether this pair anti-aliases.
@@ -103,6 +140,7 @@ impl<C: Circuit> Pair<C> {
             channel.wet.reset();
             channel.circuit.reset();
         }
+        self.idle = [true; 2];
     }
 
     /// One frame: `tick` is called for every oversampled sample of the left
@@ -114,7 +152,11 @@ impl<C: Circuit> Pair<C> {
         mut tick: impl FnMut(usize, &mut C, f32) -> f32,
     ) -> [f32; 2] {
         let mut out = [0.0; 2];
+        let skipped = [self.skips(0, frame[0]), self.skips(1, frame[1])];
         for (index, (channel, sample)) in self.channels.iter_mut().zip(frame).enumerate() {
+            if skipped[index] {
+                continue;
+            }
             let circuit = &mut channel.circuit;
             out[index] = channel
                 .oversampler
@@ -142,7 +184,11 @@ impl<C: Circuit> Pair<C> {
         }
         self.wet_live = wanted;
         let mut out = [[0.0; 2]; 2];
+        let skipped = [self.skips(0, frame[0]), self.skips(1, frame[1])];
         for (index, (channel, sample)) in self.channels.iter_mut().zip(frame).enumerate() {
+            if skipped[index] {
+                continue;
+            }
             let factor = channel.oversampler.factor();
             let mut mixed = channel.oversampler.expand(sample);
             let mut alone = [0.0f32; MAX_FACTOR];

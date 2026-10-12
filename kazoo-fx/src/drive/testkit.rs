@@ -908,3 +908,35 @@ pub fn latency_is_declared(kind: &EffectKind, knobs: &[(usize, f32)]) {
         );
     }
 }
+
+/// Render `effect` with the left channel playing `played` from the start
+/// and the right silent for the first half, then playing it too: the
+/// output of both channels, for the skip's bit-for-bit check.
+#[must_use]
+pub fn render_right_late(effect: &mut dyn Effect, played: &[f32]) -> Vec<[u32; 2]> {
+    effect.prepare(RATE);
+    effect.reset();
+    let half = played.len() / 2;
+    let right: Vec<f32> = played
+        .iter()
+        .enumerate()
+        .map(|(at, &x)| if at < half { 0.0 } else { x })
+        .collect();
+    let mut left_out = vec![0.0; played.len()];
+    let mut right_out = vec![0.0; played.len()];
+    let mut start = 0;
+    while start < played.len() {
+        let end = (start + 256).min(played.len());
+        effect.process(
+            &CONTEXT,
+            [&played[start..end], &right[start..end]],
+            [&mut left_out[start..end], &mut right_out[start..end]],
+        );
+        start = end;
+    }
+    left_out
+        .iter()
+        .zip(&right_out)
+        .map(|(l, r)| [l.to_bits(), r.to_bits()])
+        .collect()
+}
