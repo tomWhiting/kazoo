@@ -43,6 +43,12 @@ RETRY NOTE for KZ-D07a (Cassio, 13 Oct 03:35). The first run (branch lane/kz-D07
 
 ### KZ-D07b: the amp
 
+**Carried into D07b from the D07a review (Cassio, 13 Oct 04:10; do these first, each its own commit).**
+- The screamer's latency correction (`screamer.rs`, `Screamer::prepare`, the `extra` passed to `Pair::prepare`) applies only at factor 2 (`&& factor == 2`). Backward Euler's half-step delay exists at every factor; at 96 kHz the predicted error is about 0.048 samples against the 0.05 tolerance. Drop the factor condition so the correction applies at every factor, then re-run `latency_is_declared` at every rate and the null tests; both must stay green.
+- Name the constant `81_377.395_706_429_85` in `solve.rs` (it is `sinh(T_MAX)`): a `const SINH_T_MAX: f64` with a test that it equals `T_MAX.sinh()` to the last bit.
+- The screamer's cost target of 0.25 is withdrawn: the review showed the solve costs about the same per sample as the old warm-started Newton, so the saving is the halved rate and one fewer halfband stage, about 0.45 to 0.55, which is what was measured. The amp's own targets stay as written.
+
+
 **Rate.** `INTERNAL_RATE` (`amp.rs:193`) becomes `2.0 * TARGET_RATE`; the doc at `amp.rs:188-192` is rewritten with its own -47 dBc figure for 352.8 kHz. `HOT_SUBHARMONIC_DB` (`amp.rs:866`) becomes `-45.0` (the doc's -47 dBc measured at this rate, with 2 dB of margin); `worst_spur_db` (`amp.rs:871`) becomes `-70.0`. The same relaxation rule as D07a applies if a limit still fails.
 
 **Precomputed cubics.** `Triode` (`amp.rs:351`) gains `segments: Vec<[f64; 4]>` of `TABLE_SIZE - 1` entries, built once in `Triode::new` by the existing `segment` (`amp.rs:339`) through the existing `coefficients` logic; `plate` (`amp.rs:425`) and `integral` (`amp.rs:440`) read `self.segments[index]` instead of calling `coefficients`. `coefficients` stays only as the builder's helper. The numbers are bit-identical to today's.
