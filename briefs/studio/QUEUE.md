@@ -56,3 +56,8 @@ END KZ-D07a head=72b512e reviewed=READY(review made the step count a compile-tim
 END KZ-D10a head=2452a90 reviewed=READY after hand merge with D07a's bench files (review fixed hall diffusers jumping on a size glide; spring default target withdrawn, spring items carried into D10b; merged-lane checks: clippy 0, fmt 0, ast-grep 0, 66 space/drive tests pass) merged=49848a6 at 04:12
 START KZ-D07b base=41b4de1 branch=lane/kz-D07b df=49GB at 04:13
 END KZ-A02c head=62fd8ee reviewed=READY(review removed unused OutputRequest::info and resolve_sample_rate; smoke 808 and mini exit 0) merged=0e055e9 at 04:19
+START KZ-A03 base=e16415c branch=lane/kz-A03 df=43GB at 04:24
+START KZ-D10b base=a8390fe branch=lane/kz-D10b df=40GB at 04:26
+REVIEWED KZ-B01 head=6597d95 reviewed=fixed in review (close unparks before join; wake test now at production priority, which fails p50 388-488 us at load ~100); NOT landed until B01b (instrument links run real-time; refusal shown on screen); branch carried as lane/kz-B01b at 04:35
+INCOMPLETE KZ-D12 head=e287d13 branch=lane/kz-D12 kept: reviewed NOT READY, callback slower (flat +4.2%, gliding +7.3% instructions); causes and second retry decisions in the brief at 04:48
+START KZ-D09a base=611fced branch=lane/kz-D09a df=46GB at 04:51
