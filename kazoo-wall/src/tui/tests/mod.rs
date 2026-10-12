@@ -409,6 +409,8 @@ fn cursor_skips_folded_members() {
 
 #[test]
 fn fold_state_survives_a_restart() {
+    std::fs::create_dir_all(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/kz-logs"))
+        .expect("test folder");
     let dir = tempfile::tempdir_in(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/kz-logs"))
         .expect("test folder");
     let file = dir.path().join("console.json");
