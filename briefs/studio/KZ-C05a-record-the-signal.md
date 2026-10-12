@@ -1,6 +1,6 @@
 # KZ-C05a: every note and parameter event that passes through the hub while a take rolls is written beside the audio take, stamped with the studio frame and the instrument's own stream frame
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 This is the first half of KZ-C05 (record the signal). It is split because the event file and the replay are two mechanisms; this half writes, KZ-C05b replays. Nothing from the plan's C05 row is dropped: between the two files every outcome is here.
 

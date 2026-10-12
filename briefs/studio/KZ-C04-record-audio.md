@@ -1,6 +1,6 @@
 # KZ-C04: arm a strip, press record, and its post-fader audio and the master are written as WAV takes by a disk thread, starting on the very transport frame the desk starts on
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Time: about 30 minutes of a builder's work. One mechanism: a tape deck thread fed by pre-allocated block rings from the callback, started and stopped on scheduled studio frames. Crates: kazoo-mix (the deck, the keys, the session folder), kazoo-core (only if a WAV helper is missing; `DiskRecorder` at `kazoo-core/src/io/recorder.rs:27` is expected to serve as is). Depends: KZ-C01.
 

@@ -1,6 +1,6 @@
 # KZ-D06: the wall renders its graph on a pool of real-time threads
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-wall`; benches from KZ-D01 before and after. Depends: KZ-D05 (and KZ-D04 for the line rules).
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-wall`; benches from KZ-D01 before and after. Depends: KZ-D05 (and KZ-D04 for the line rules).
 
 ## Outcome
 

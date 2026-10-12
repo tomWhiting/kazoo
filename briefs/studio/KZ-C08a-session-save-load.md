@@ -1,6 +1,6 @@
 # KZ-C08a: the whole desk is saved in `session.json`, written atomically on every change and restored on start, so a session reopens as it was left
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 This is the first half of KZ-C08 (session save, load, undo). It is split because saving and undoing are two mechanisms; this half saves and loads, KZ-C08b undoes. Between the two files every outcome of the plan's C08 row is delivered.
 

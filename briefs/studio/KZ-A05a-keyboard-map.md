@@ -1,6 +1,6 @@
 # KZ-A05a: one typing-keyboard piano in `kazoo_host::keys` (layout, octave, the macOS repeat probe), used by dx, glass and string
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: PLAN.md's A05 ("one keyboard map") is split into A05a (the shared module plus the three crates that already use this layout), A05b (cs80, mini, arp) and A05c (juno, prophet). b and c depend on a; they share no files with each other. Depends on A04 (the `kazoo-host` crate exists; if it is not there when this lane starts, create `kazoo-host` as KZ-A04a describes: a library crate with `crossterm = "0.29.0"`, `ratatui = "0.30.0"`, `color-eyre = "0.6.5"`, `[lints] workspace = true`, added to the workspace members).
 
@@ -70,7 +70,7 @@ pub const DEFAULT_REPEAT_DELAY: Duration = Duration::from_millis(250);
 
 `semitone`, `note`, `Octave` and `piano_key` are pure; the probe runs a process and is never called on an audio thread.
 
-### Callers in this lane: kazoo-dx, kazoo-glass, kazoo-string (their `run.rs` after A01; at e0de0c0 their `main.rs`)
+### Callers in this lane: kazoo-dx, kazoo-glass, kazoo-string (their `run.rs` after A01;  their `main.rs`)
 
 In each:
 

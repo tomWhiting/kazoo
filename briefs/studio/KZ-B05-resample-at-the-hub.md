@@ -1,6 +1,6 @@
 # KZ-B05: an instrument at another sample rate is taken and resampled on the hub thread
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Depends: KZ-B03b landed (streams on the hub; this lane resamples per stream).
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Depends: KZ-B03b landed (streams on the hub; this lane resamples per stream).
 
 ## Outcome
 

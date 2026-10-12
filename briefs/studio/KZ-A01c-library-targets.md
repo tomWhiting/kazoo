@@ -1,6 +1,6 @@
 # KZ-A01c: play and 808 become libraries with `run(Args)`; play's output is a value a caller can read, not only stdout
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: PLAN.md's A01 is split into A01a to A01g (see KZ-A01a). This is c = kazoo-play and kazoo-808. Independent of the other six.
 
@@ -90,7 +90,7 @@ A01a, b, d to g; A02 (the device code in `play_events`, `jam::open_output` and 8
 
 `kazoo-808/src/run.rs`: the three uniform tests of KZ-A01a (`help_asks_for_the_usage`, `an_unknown_argument_is_refused_by_name`, `usage_names_both_ways_to_start_it`, with `kazoo 808` and `kazoo-808`).
 
-All of play's existing tests keep running (10 at e0de0c0), 808's 57 too.
+All of play's existing tests keep running (10 ), 808's 57 too.
 
 ## Checks
 

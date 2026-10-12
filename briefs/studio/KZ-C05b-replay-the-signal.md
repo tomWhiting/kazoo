@@ -1,6 +1,6 @@
 # KZ-C05b: a strip's recorded notes and parameter changes are sent back to the instrument on it, each on the same frame of the instrument's own stream it was played on
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 This is the second half of KZ-C05 (record the signal); KZ-C05a writes the file, this half replays it. Between the two files every outcome of the plan's C05 row is delivered.
 

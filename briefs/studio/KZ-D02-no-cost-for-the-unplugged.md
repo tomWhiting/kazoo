@@ -1,6 +1,6 @@
 # KZ-D02: an unplugged jack, a resting knob and an empty slot cost the render nothing
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Time: about 30 minutes of a builder's work. Crate: kazoo-wall. Depends: D01 (the baseline rows `wall/unplugged/1000` and `wall/chains/1000`).
 
@@ -20,7 +20,7 @@ Today every module pays the same fixed price every sub-block whether or not anyt
 
 **5. The out sum walks a list, not the room (`engine/tables.rs`, `mod.rs:1105–1117`, `daemon/wall.rs:1495–1579`).** `Order` (`tables.rs:205–234`) gains `outs: Box<[u32]>`: the slots of the `out` modules, in render order. `Order::new(slots, outs)` takes both (repeats and overflow dropped as for `slots`); `processing_order(slots, edges, outs: &[usize])` passes them through, keeping only outs that are in the order. `send_tables` passes the slots of `patch.modules()` whose `kind == Kind::OUT`; the test `Model` in `engine/tests.rs:63–86` passes the slots whose kind is `OUT`; D01's bench support does the same. The engine's sum becomes `for &slot in self.order.outs() { if let Some((page, at)) = self.room.page(slot) { if page.kinds[at] == Some(Kind::OUT) && page.modules[at].is_some() { add outputs[FEED_LEFT], [FEED_RIGHT] } } }`: the kind check stays, so an order that names a slot the control side has since re-used for another kind adds nothing. Between an `Insert` of an out and the `Order` that lists it there is no block: both go in one change (`apply`, `wall.rs:1818–1825`: insert then `send_tables`) and the engine drains them in one `drain_commands`.
 
-**6. The stale comment.** `daemon/wall.rs:91–94` says the load is wall-clock time. Since e0de0c0 it is the thread's CPU time (`engine/mod.rs:757–762`). Rewrite those four lines: "The load is the audio thread's CPU time, not the time that passes: a render the machine preempts is the machine's load, not the wall's, and is not counted."
+**6. The stale comment.** `daemon/wall.rs:91–94` says the load is wall-clock time. Since the render-load fix it is the thread's CPU time (`engine/mod.rs:757–762`). Rewrite those four lines: "The load is the audio thread's CPU time, not the time that passes: a render the machine preempts is the machine's load, not the wall's, and is not counted."
 
 **What is not touched.** `Io` (`dsp/mod.rs:118–145`) keeps its shape: modules still receive `connected`, `knob_patched`, `fed`, `inputs`, `knob_cv`, `sweeps`; nothing in `dsp/` or `adapters/` changes. `render_sub_block`'s other work (transport, master, hush, publish) is unchanged. The capture call stays per module (a scope must hand its sweep on whether or not it moved).
 
@@ -36,7 +36,7 @@ In `kazoo-wall/src/engine/tests.rs`, under `on_audio_thread` where a render is i
 
 1. `an_unplugged_jack_reads_silence_and_the_table_knows_it`: a test module (as `Probe` at `tests.rs:231–248`) that records `connected` and `knob_patched` and asserts every unplugged input buffer and knob-CV buffer it is given reads all zeros, after a cable into input 0 is plugged, rendered, unplugged and rendered again (the stale-buffer case, which only the zero-on-transition keeps right once gathers are skipped); and that `CableTable::plugged(slot)` has exactly bit 0 set while the cable is in and is 0 after. Red: `plugged` does not exist, so the test does not compile; the zero-buffer assertion is the guard for step 2 once it does.
 2. `a_resting_knob_is_not_advanced`: `Page::gliding` word is 0 after insert, has bit `k` set after `Command::Knob { knob: k, glide_frames: 1_000 }`, and is 0 again after enough renders; the published cell moves only while the bit is set. Red: no `gliding` field.
-3. `a_sweep_never_leaks_to_the_next_module`: two modules in order, a glide on the first's knob 3; the second (a test module) asserts `io.sweeps[3].frames == 0`. Red on e0de0c0 only if sweeps leak today: they do not (each module overwrites all 24), so this test guards the new reset path; it must be green before and after, and is listed under NOT CONFIRMED as "not red".
+3. `a_sweep_never_leaks_to_the_next_module`: two modules in order, a glide on the first's knob 3; the second (a test module) asserts `io.sweeps[3].frames == 0`. Red on the base only if sweeps leak today: they do not (each module overwrites all 24), so this test guards the new reset path; it must be green before and after, and is listed under NOT CONFIRMED as "not red".
 4. `the_out_sum_follows_the_order_s_list`: an `out` inserted into slot 70 (second page) and listed in `Order::outs` is heard; the same out with an `Order` whose `outs` is empty is not. Red: `Order::outs` does not exist.
 5. `an_unfed_output_is_not_scanned_and_a_fed_one_is`: a test module that writes NaN to output 3 (unfed) and 0.5 to output 0 (fed): no fault; the same module with NaN on output 0: one fault, silence, reset. Red: today both fault.
 
@@ -61,7 +61,7 @@ nice -n 10 env CARGO_BUILD_JOBS=4 cargo bench -p kazoo-wall --bench wall_render 
 
 ## Code quality
 
-Tree rules. Nothing allocates, locks, formats or does I/O on the render thread: the masks are words in pre-allocated pages and tables; the outs list is a boxed slice built on the control side. Unsafe forbidden: no `std::arch`, no raw pointers. NaN/Inf defence: the fed-only scan still silences and resets a faulting module; `gather` still passes everything through `finite`. Files under 1000 lines: `engine/mod.rs` is 1513 lines on e0de0c0 and already over; do not add to its length net of what this lane removes, and put nothing new in it that can live in `tables.rs` or `room.rs` (the mask walks are small; the `outs` accessor is on `Order`). One behaviour per commit, red before green.
+Tree rules. Nothing allocates, locks, formats or does I/O on the render thread: the masks are words in pre-allocated pages and tables; the outs list is a boxed slice built on the control side. Unsafe forbidden: no `std::arch`, no raw pointers. NaN/Inf defence: the fed-only scan still silences and resets a faulting module; `gather` still passes everything through `finite`. Files under 1000 lines: `engine/mod.rs` is about 1513 lines at the sweep and already over; do not add to its length net of what this lane removes, and put nothing new in it that can live in `tables.rs` or `room.rs` (the mask walks are small; the `outs` accessor is on `Order`). One behaviour per commit, red before green.
 
 ## END
 

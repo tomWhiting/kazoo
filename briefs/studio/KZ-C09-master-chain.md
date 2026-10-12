@@ -1,6 +1,6 @@
 # KZ-C09: a master chain on the desk, and `kazoo master <session>` renders a session offline
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-mix -p kazoo-fx`. Depends: KZ-C02 (insert chains), KZ-C08 (sessions).
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-mix -p kazoo-fx`. Depends: KZ-C02 (insert chains), KZ-C08 (sessions).
 
 ## Outcome
 

@@ -1,6 +1,6 @@
 # KZ-A05b: cs80, mini and arp play the shared piano from `kazoo_host::keys`
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: PLAN.md's A05 is split into A05a (the module; dx, glass, string), A05b (this: cs80, mini, arp) and A05c (juno, prophet). Depends on A05a.
 
@@ -16,14 +16,14 @@ Each crate depends on `kazoo-host` (`Cargo.toml`), and in each the key handler a
 
 - `input.rs`: delete `key_to_note` and its tests (`key_mapping_middle_c`, `key_mapping_upper_octave`, the rest at `input.rs:62-102`); keep `DEFAULT_VELOCITY` (`:64`) and whatever else lives there (aftertouch, mouse zones).
 - `app.rs`: `pub octave: i8` (`:116`, default 0 at `:158`, `octave_up`/`octave_down` clamped to +-4 at `:331-338`) becomes `pub octave: kazoo_host::keys::Octave` with `Octave::DEFAULT`; `octave_up`/`octave_down` become `self.octave = self.octave.up()` / `.down()` and, first, `self.release_all_notes()` (the function at `run.rs`/`main.rs:190` is on `App`: find it by what it does) so a key held through the move cannot stick; `key_note_map` (`:121`) stays, since it already maps the release to the note that was pressed.
-- `run.rs` (`main.rs` at e0de0c0): the `[`/`]` octave arms (`:231-232`) go; the `KeyCode::Char(ch)` arm (`:235-251`) first matches `piano_key(ch, app.octave)`: `Some(OctaveDown)` / `Some(OctaveUp)` call the app's octave methods and also send `commands.all_notes_off()` (the release went to the app; the engine must hear it too); `Some(Note(note))` is today's note-on path (`key_slot`, `key_note_map`, `note_on`, `commands.note_on`); `None` falls through. `handle_key_release` (`:300`) is unchanged. The cs80 panel help, if it names `[` `]` for the octave, says `z` `x`.
+- `run.rs` (`main.rs` ): the `[`/`]` octave arms (`:231-232`) go; the `KeyCode::Char(ch)` arm (`:235-251`) first matches `piano_key(ch, app.octave)`: `Some(OctaveDown)` / `Some(OctaveUp)` call the app's octave methods and also send `commands.all_notes_off()` (the release went to the app; the engine must hear it too); `Some(Note(note))` is today's note-on path (`key_slot`, `key_note_map`, `note_on`, `commands.note_on`); `None` falls through. `handle_key_release` (`:300`) is unchanged. The cs80 panel help, if it names `[` `]` for the octave, says `z` `x`.
 - Tests in `run.rs` (`key_press_and_release_send_note_on_and_off` etc.) use `a` instead of `z` for the note where they press a letter; add `octave_moves_release_held_notes_and_change_the_note` as in KZ-A05a (`a` is 48; after `x`, `a` is 60; the held 48 got a note-off and an all-notes-off command).
 
 ### kazoo-mini (`input.rs`, `app.rs`, `run.rs`)
 
 - `input.rs`: delete `key_to_midi_note` (`:14-54`) and its tests; keep `handle_key` (`:60`) and the rest. Mini's `q` quit needs Ctrl (`:64`), so nothing else collides.
 - `app.rs`: add `pub octave: kazoo_host::keys::Octave` (default `DEFAULT`) next to `held_notes`.
-- `run.rs` (`main.rs:174-206` at e0de0c0, `handle_key_event`): on a `Press` with `KeyCode::Char(ch)`, `piano_key(ch, app.octave)` first: `Note(note)` is today's held/`note_on` path; `OctaveDown`/`OctaveUp` call `app.release_all_notes()`, `commands.all_notes_off()`, then move `app.octave`; `None` falls through to Backspace and `input::handle_key`. On a `Release`, `keys::note(ch, app.octave)` finds the note to release; because every held note is released on an octave move, a release after a move finds nothing held and does nothing. The mini's panel draws the octave (`ui/`) next to the keyboard hint if it has one; otherwise add nothing.
+- `run.rs` (`main.rs:174-206` , `handle_key_event`): on a `Press` with `KeyCode::Char(ch)`, `piano_key(ch, app.octave)` first: `Note(note)` is today's held/`note_on` path; `OctaveDown`/`OctaveUp` call `app.release_all_notes()`, `commands.all_notes_off()`, then move `app.octave`; `None` falls through to Backspace and `input::handle_key`. On a `Release`, `keys::note(ch, app.octave)` finds the note to release; because every held note is released on an octave move, a release after a move finds nothing held and does nothing. The mini's panel draws the octave (`ui/`) next to the keyboard hint if it has one; otherwise add nothing.
 - Tests: `note_key_press_and_release` with `a` (48); add the octave test.
 
 ### kazoo-arp (`app.rs`)
@@ -37,7 +37,7 @@ A05a, A05c; the engines; A06.
 
 ## Red tests first
 
-Per crate, as named above: cs80 `run.rs` `octave_moves_release_held_notes_and_change_the_note`; mini `run.rs` the same; arp `app.rs` `octave_moves_release_held_notes_and_change_the_note`. They are red because `Octave`/`piano_key` are not wired (the field does not exist). Every existing test keeps running with its note letters moved to the shared layout (cs80 120, mini 64, arp 79 at e0de0c0, minus the deleted layout tests).
+Per crate, as named above: cs80 `run.rs` `octave_moves_release_held_notes_and_change_the_note`; mini `run.rs` the same; arp `app.rs` `octave_moves_release_held_notes_and_change_the_note`. They are red because `Octave`/`piano_key` are not wired (the field does not exist). Every existing test keeps running with its note letters moved to the shared layout (cs80 120, mini 64, arp 79 , minus the deleted layout tests).
 
 ## Checks
 

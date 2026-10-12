@@ -1,6 +1,6 @@
 # KZ-C07b: on the timeline a clip can be selected, moved by a beat or a bar, trimmed at either end, split at the playhead, muted, duplicated and removed, every edit sample-exact through the engine
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 This is the second half of KZ-C07 (timeline view); KZ-C07a draws, this half edits. Between the two files every outcome of the plan's C07 row is delivered.
 

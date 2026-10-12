@@ -1,6 +1,6 @@
 # KZ-A05c: juno and prophet play the shared piano from `kazoo_host::keys`; their byte-identical `input.rs` files go
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: PLAN.md's A05 is split into A05a, A05b and A05c (see KZ-A05a). This is c = kazoo-juno and kazoo-prophet. Depends on A05a.
 
@@ -15,7 +15,7 @@ Both crates depend on `kazoo-host`. In both, `lib.rs` drops `mod input;` and `in
 ### kazoo-juno (`lib.rs`, `app.rs`, `run.rs`, delete `input.rs`)
 
 - `app.rs`: add `pub octave: kazoo_host::keys::Octave` (default `DEFAULT`) to `App` (fields at `:96-126`); `key_note_map: [Option<u8>; 128]` (`:96`) stays: it maps the pressed key to the note it sounded, so a release after an octave move still finds the right note (that is exactly what cs80 does, and why juno's release path at `main.rs:346-352` is already correct).
-- `run.rs` (`main.rs` at e0de0c0): in `handle_key_press` (`:292-335`), after `is_quit_key`, a `KeyCode::Char(ch)` is classified with `kazoo_host::keys::piano_key(ch, app.octave)`: `Note(note)` is today's path from `:303-320` (the `key_index` repeat guard, velocity 1.0 with Shift else 0.82, `send_command(NoteOn)`, `key_note_map`, `add_held_note`); `OctaveDown`/`OctaveUp` send `AudioCommand::AllNotesOff` and, when accepted, clear `key_note_map` and `held_notes` (the Space arm at `:329-332` does exactly this: share the code) and then move `app.octave`; `None` falls to the `match code` with the `h j k l` aliases removed (`:325-328` keep only the arrow arms). The release path (`:340-355`) is unchanged.
+- `run.rs` (`main.rs` ): in `handle_key_press` (`:292-335`), after `is_quit_key`, a `KeyCode::Char(ch)` is classified with `kazoo_host::keys::piano_key(ch, app.octave)`: `Note(note)` is today's path from `:303-320` (the `key_index` repeat guard, velocity 1.0 with Shift else 0.82, `send_command(NoteOn)`, `key_note_map`, `add_held_note`); `OctaveDown`/`OctaveUp` send `AudioCommand::AllNotesOff` and, when accepted, clear `key_note_map` and `held_notes` (the Space arm at `:329-332` does exactly this: share the code) and then move `app.octave`; `None` falls to the `match code` with the `h j k l` aliases removed (`:325-328` keep only the arrow arms). The release path (`:340-355`) is unchanged.
 - The panel (`ui.rs`) shows the octave number next to the keyboard hint it already draws (find the hint; if there is none, draw `oct 3` in the footer).
 - Tests (`:382-479`): `press` helpers that use `z` for C3 use `a`; add `octave_moves_release_held_notes_and_change_the_note` (press `a`: NoteOn 48; press `x`: AllNotesOff, maps cleared, `app.octave == Octave::new(4)`; press `a`: NoteOn 60).
 
@@ -31,7 +31,7 @@ A05a, A05b; the engines; A06.
 
 `kazoo-juno/src/run.rs` and `kazoo-prophet/src/run.rs`: `octave_moves_release_held_notes_and_change_the_note` as above; `the_piano_is_the_shared_one`: pressing `;` sends NoteOn 64 and pressing `q` sends nothing (under the old layout `q` was C4 and `;` was D#4). Red because the handlers still call `input::key_to_note`.
 
-Every existing test keeps running (juno 22, prophet 24 at e0de0c0).
+Every existing test keeps running (juno 22, prophet 24 ).
 
 ## Checks
 

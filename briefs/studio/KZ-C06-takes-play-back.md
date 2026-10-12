@@ -1,6 +1,6 @@
 # KZ-C06: every strip plays its recorded takes back through itself on the transport, the song can be located to a bar, and a loop plays round sample-exactly with every instrument following
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Time: about 30 minutes of a builder's work. One mechanism: a take player per strip reading pre-loaded audio at song positions, plus a song clock that can start anywhere and wrap. Crates: kazoo-mix only (kazoo-core's clip model is used as is). Depends: KZ-C04 (and uses KZ-C05b's `HubCommand::Replay` when present).
 

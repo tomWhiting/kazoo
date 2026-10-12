@@ -1,6 +1,6 @@
 # KZ-D12: the desk callback stops doing trig, idle reverb and denormal maths
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-mix -p kazoo-fx`; benches from KZ-D01 before and after. Depends: KZ-D01.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-mix -p kazoo-fx`; benches from KZ-D01 before and after. Depends: KZ-D01.
 
 ## Outcome
 

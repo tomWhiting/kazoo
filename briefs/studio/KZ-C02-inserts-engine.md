@@ -1,6 +1,6 @@
 # KZ-C02: every strip and group bus has an insert chain of kazoo-fx effects, pre-allocated, bypassable, with the whole desk kept in time by latency compensation
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Time: about 30 minutes of a builder's work. One mechanism: the engine runs a chain of `kazoo_fx::Effect`s on each strip and bus, and delays everything else to match. Crates: kazoo-mix, kazoo-fx (read only, unless an `Effect` contract gap is found; then the smallest fix, under FOUND). Depends: KZ-C01.
 

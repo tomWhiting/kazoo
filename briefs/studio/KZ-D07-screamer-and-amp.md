@@ -1,6 +1,6 @@
 # KZ-D07: one screamer costs under a quarter of what it costs today and one amp under half, and a null test against the old model holds under a stated level
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: this file is two lanes, run in this order, each on its own branch with its own END block. **KZ-D07a** is the screamer (`lane/kz-d07a`); **KZ-D07b** is the amp (`lane/kz-d07b`, cut from main after D07a lands). Each is one mechanism, about 30 minutes of a builder's work. Crates: kazoo-fx only. Depends: KZ-D01 (the `models` bench and the fixture it publishes) landed on main. D07b depends on D07a only because D07a adds the null-test helper both use.
 

@@ -1,6 +1,6 @@
 # KZ-D05: a change costs the control thread what it touches, not the whole wall
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 **This file holds two lanes, dispatched one after the other: D05a (the patch's indexes and route deltas to the engine) and D05b (the order, timing and latencies kept incrementally). D05b depends on D05a. Nothing is dropped: together they are PLAN.md's D05.** Depends: D04 (lines live in pages; `Route` has no line number). Baselines: D01's `control/build/1000` and `control/look/10000`.
 

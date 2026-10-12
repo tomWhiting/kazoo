@@ -1,6 +1,6 @@
 # KZ-B03a: one link carries named streams: the wire and the instrument side
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Depends: KZ-B02 landed.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Depends: KZ-B02 landed.
 
 Split: PLAN.md's B03 ("named streams on one link") is two builders' work. This file is the wire format and `kazoo-core`'s link (B03a); `KZ-B03b-named-streams-hub.md` is the desk seating the streams on strips (B03b). B03b depends on B03a. Nothing is dropped between them.
 

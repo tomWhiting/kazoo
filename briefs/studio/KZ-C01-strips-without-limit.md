@@ -1,6 +1,6 @@
 # KZ-C01: the desk grows a strip for every stream that arrives, keeps it when the stream leaves, and has four group buses with their own fader, pan, mute and solo
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Time: about 30 minutes of a builder's work. One mechanism: the strip table stops being a fixed array of eight. Crates: kazoo-mix only. Depends: KZ-B03 (named streams on one link) landed on main.
 

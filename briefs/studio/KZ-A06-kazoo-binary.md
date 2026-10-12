@@ -1,6 +1,6 @@
 # KZ-A06: one `kazoo` binary with clap subcommands for the desk, the wall, the seat and every instrument
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Depends on A01a to A01g (every crate exposes `run(Args)`), A02, A03, A04 (`kazoo_host::reports::install` installs error reports once), A05.
 
@@ -148,7 +148,7 @@ fn main() -> ExitCode {
 }
 ```
 
-Each arm calls the crate's `run` and maps its result: a `color_eyre::Result<()>` error prints `kazoo: {report:?}` to stderr and returns `ExitCode::FAILURE`; `kazoo_play::Error` prints as `kazoo-play` does and returns `ExitCode::from(err.exit_code())`; `kazoo_mcp::run`'s `String` error prints `kazoo: {why}` and returns `FAILURE`; `kazoo_wall::daemon::serve` and `stop_daemon` map as `kazoo-wall/src/main.rs:96-116` do; `Wall { command: None | Some(Console) }` calls `kazoo_wall::tui::run(serve)` with `serve = ServeCommand { program: std::env::current_exe()?, args: ["wall", "serve"] }` (the console's launch value from A01g: `kazoo_wall::daemon::ServeCommand`, which `launch_detached` spawns as `program args…`; at e0de0c0 the console ran `current_exe() serve` at `kazoo-wall/src/daemon/mod.rs:649` and `kazoo-wall/src/tui/mod.rs:159`). The tokio runtimes start inside `kazoo_tui::run` (mouth) and `kazoo_mcp::run` (mcp) only (A01f); `main` is synchronous and never builds one, so the two cannot nest.
+Each arm calls the crate's `run` and maps its result: a `color_eyre::Result<()>` error prints `kazoo: {report:?}` to stderr and returns `ExitCode::FAILURE`; `kazoo_play::Error` prints as `kazoo-play` does and returns `ExitCode::from(err.exit_code())`; `kazoo_mcp::run`'s `String` error prints `kazoo: {why}` and returns `FAILURE`; `kazoo_wall::daemon::serve` and `stop_daemon` map as `kazoo-wall/src/main.rs:96-116` do; `Wall { command: None | Some(Console) }` calls `kazoo_wall::tui::run(serve)` with `serve = ServeCommand { program: std::env::current_exe()?, args: ["wall", "serve"] }` (the console's launch value from A01g: `kazoo_wall::daemon::ServeCommand`, which `launch_detached` spawns as `program args…`;  the console ran `current_exe() serve` at `kazoo-wall/src/daemon/mod.rs:649` and `kazoo-wall/src/tui/mod.rs:159`). The tokio runtimes start inside `kazoo_tui::run` (mouth) and `kazoo_mcp::run` (mcp) only (A01f); `main` is synchronous and never builds one, so the two cannot nest.
 
 Stdout discipline: `kazoo mcp` speaks MCP on stdout, so the dispatcher prints nothing to stdout itself (clap's help and version go to stdout only when asked for).
 

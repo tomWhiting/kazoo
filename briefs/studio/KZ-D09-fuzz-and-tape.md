@@ -1,6 +1,6 @@
 # KZ-D09: the fuzz spends one exponential per stage instead of two and skips its idle octave path, and the tape models read the Langevin curve from a table, so a fuzz costs under 0.6 of today and a tape stage under half, bit-for-bit or under -80 dB against the old code
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: two lanes in this file. **KZ-D09a** is the fuzz (`lane/kz-d09a`); **KZ-D09b** is the tape magnetics (`lane/kz-d09b`). They touch different files (`drive/fuzz.rs`; `lofi/parts.rs` and the bench) and may run beside each other. Each is one mechanism, about 30 minutes of a builder's work. Crates: kazoo-fx only. Depends: KZ-D01 (benches and fixture) landed on main; D09a also uses `null_db` from KZ-D07a's `drive/testkit.rs`.
 

@@ -1,6 +1,6 @@
 # KZ-C07a: a timeline view with one lane per strip, clips drawn from peak files the disk thread computes, a real time scale in bars and seconds, zoom, scroll and a playhead
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 This is the first half of KZ-C07 (timeline view). It is split because drawing the timeline and editing clips on it are two mechanisms; this half draws, KZ-C07b edits. Between the two files every outcome of the plan's C07 row is delivered.
 

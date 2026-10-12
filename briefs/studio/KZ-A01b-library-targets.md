@@ -1,6 +1,6 @@
 # KZ-A01b: dx and string become libraries with `run(Args)`, `--help` no longer kills the process, and each main.rs is the install and one call
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: PLAN.md's A01 is split into A01a to A01g (see KZ-A01a for the list). This is b = kazoo-dx and kazoo-string. Independent of the other six.
 

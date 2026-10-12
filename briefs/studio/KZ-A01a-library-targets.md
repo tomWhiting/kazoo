@@ -1,6 +1,6 @@
 # KZ-A01a: cs80, mini and 303 become libraries with `run(Args)`, and each main.rs is the install and one call
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: PLAN.md's A01 ("library targets") is split into A01a to A01g because every crate with a run loop needs a `run(Args)` for the `kazoo` binary (A06), not only the six without a `lib.rs`: a = cs80, mini, 303; b = dx, string; c = play, 808; d = arp, juno, prophet; e = glass, mix; f = tui, mcp; g = the wall's console. The seven share no files and may run two at a time. A02 to A05 depend on all seven.
 
@@ -114,7 +114,7 @@ nice -n 10 env CARGO_BUILD_JOBS=4 cargo test --doc -p kazoo-cs80 -p kazoo-mini -
 - [ ] `kazoo-cs80/src/lib.rs`, `kazoo-mini/src/lib.rs`, `kazoo-303/src/lib.rs` exist and export `Args`, `USAGE`, `parse_args`, `cli`, `run` with the signatures above.
 - [ ] Each `main.rs` is the crate doc line, `color_eyre::install()?` and one `cli` call: no `mod`, no `use`, no other function.
 - [ ] `nice -n 10 env CARGO_BUILD_JOBS=4 cargo run -p kazoo-303 -- --help` prints the usage and exits 0; `-- --bogus` exits non-zero and the output contains `unknown argument '--bogus'` and the usage (paste both in DONE).
-- [ ] nextest counts: cs80 at least 120 + 3, mini at least 64 + 3, 303 at least 33 + 3 (the survey's counts at e0de0c0 plus the new tests; paste the real numbers).
+- [ ] nextest counts: cs80 at least 120 + 3, mini at least 64 + 3, 303 at least 33 + 3 (the survey's counts  plus the new tests; paste the real numbers).
 - [ ] Every check above green, each with its own exit code read from the tool.
 - [ ] No file over 1000 lines (`wc -l` of the three `run.rs` files in DONE).
 

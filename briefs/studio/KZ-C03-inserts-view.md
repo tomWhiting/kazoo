@@ -1,6 +1,6 @@
 # KZ-C03: from any strip or group, open its inserts, add an effect by its catalogue name, remove, reorder, bypass and turn its knobs, with the keyboard and the mouse
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Time: about 30 minutes of a builder's work. One mechanism: an inserts panel on the desk driving KZ-C02's `InsertBay`. Crates: kazoo-mix only. Depends: KZ-C02.
 

@@ -1,6 +1,6 @@
 # KZ-D10: the reverbs read their lines at whole samples where nothing moves, through a nearest-phase sinc a third the cost where something does, and Hermite only while a knob glides; the spring runs only the springs that are on; the shifters' alignment searches are bounded to a fixed budget per splice at every rate
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: two lanes in this file. **KZ-D10a** is the reverb lines (`lane/kz-d10a`: `space/line.rs`, `space/hall.rs`, `space/plate.rs`, `space/spring.rs`, `space/kit.rs`); **KZ-D10b** is the alignment searches (`lane/kz-d10b`: `space/shimmer.rs`, `time/pitch/taps.rs`). They touch different files and may run beside each other. Each is one mechanism, about 30 minutes of a builder's work. Crates: kazoo-fx only. Depends: KZ-D01 (benches and fixture) landed on main.
 

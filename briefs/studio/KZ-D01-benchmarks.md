@@ -1,6 +1,6 @@
 # KZ-D01: every later number is measured against a baseline that exists first
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Time: about 30 minutes of a builder's work. Crates: kazoo-wall, kazoo-mix, kazoo-fx, kazoo-core (the link path lives there, so its bench does too). Depends: nothing. Runs beside A01.
 

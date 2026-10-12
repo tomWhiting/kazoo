@@ -1,6 +1,6 @@
 # KZ-B04: every `out` on the wall is its own strip on the desk
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Depends: KZ-B03b landed (streams on the wire, the link and the hub).
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Depends: KZ-B03b landed (streams on the wire, the link and the hub).
 
 ## Outcome
 

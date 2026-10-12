@@ -1,6 +1,6 @@
 # KZ-D11: block maths through the `wide` crate
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-wall -p kazoo-mix`; benches from KZ-D01 before and after. Depends: KZ-D02.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-wall -p kazoo-mix`; benches from KZ-D01 before and after. Depends: KZ-D02.
 
 ## Outcome
 

@@ -1,6 +1,6 @@
 # KZ-A01d: arp, juno and prophet become libraries with `run(Args)`, and each main.rs is the install and one call
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: PLAN.md's A01 is split into A01a to A01g (see KZ-A01a). This is d = kazoo-arp, kazoo-juno, kazoo-prophet. Independent of the other six.
 
@@ -32,7 +32,7 @@ A01a, b, c, e, f, g; A02; A03; A04 (the terminal functions and the three `KeyRel
 
 ## Red tests first
 
-In each crate's `run.rs` tests: the three uniform tests of KZ-A01a (`help_asks_for_the_usage`, `an_unknown_argument_is_refused_by_name`, `usage_names_both_ways_to_start_it` with `kazoo arp`/`kazoo-arp` etc.). Every existing test keeps running: arp 79, juno 22, prophet 24 at e0de0c0 (juno's 8 and prophet's 8 `main.rs` tests among them).
+In each crate's `run.rs` tests: the three uniform tests of KZ-A01a (`help_asks_for_the_usage`, `an_unknown_argument_is_refused_by_name`, `usage_names_both_ways_to_start_it` with `kazoo arp`/`kazoo-arp` etc.). Every existing test keeps running: arp 79, juno 22, prophet 24  (juno's 8 and prophet's 8 `main.rs` tests among them).
 
 ## Checks
 

@@ -1,6 +1,6 @@
 # KZ-B01: audio reaches the desk when it is rendered, not when a sleep ends
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 ## Outcome
 

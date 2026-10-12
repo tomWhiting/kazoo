@@ -1,6 +1,6 @@
 # KZ-D03: a module nobody can hear or read is left out of the render
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Time: about 30 minutes of a builder's work. Crates: kazoo-wall, kazoo-mcp (one sentence in `render.rs`). Depends: D02 (the `Order` carries `outs`; `wall/culled/1000` baseline from D01).
 

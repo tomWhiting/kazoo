@@ -1,6 +1,6 @@
 # KZ-D08: the folder's Lambert W comes from a table and the Klon's diode from the shared table, so a Serge fold costs under a third of today and a Klon under two thirds, with null tests against the old models
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: two lanes in this file, run in this order. **KZ-D08a** is the fold (`lane/kz-d08a`); **KZ-D08b** is the klon (`lane/kz-d08b`, cut from main after D08a lands). Each is one mechanism, about 30 minutes of a builder's work. Crates: kazoo-fx only. Depends: KZ-D01 (benches and fixture) and KZ-D07a (`SinhTable`, `Diode::clip_volts` and `null_db` in `drive/testkit.rs`) landed on main.
 

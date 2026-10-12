@@ -1,6 +1,6 @@
 # KZ-B02: a block is copied twice on its way to the desk, not six times, and a frame may be a mebibyte
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Depends: KZ-B01 landed (this lane builds on `LINK_TICK`, the unpark, and the hub's `poll`).
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Depends: KZ-B01 landed (this lane builds on `LINK_TICK`, the unpark, and the hub's `poll`).
 
 ## Outcome
 

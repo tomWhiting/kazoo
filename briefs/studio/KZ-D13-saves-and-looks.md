@@ -1,6 +1,6 @@
 # KZ-D13: the wall saves only on change, and `look` and the console paginate
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-wall -p kazoo-mcp`. Depends: KZ-D05.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-wall -p kazoo-mcp`. Depends: KZ-D05.
 
 ## Outcome
 

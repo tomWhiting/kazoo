@@ -1,6 +1,6 @@
 # KZ-D04: a cable with nothing to delay passes its signal by index; only a delayed cable owns a line
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Time: about 30 minutes of a builder's work. Crate: kazoo-wall. Depends: D02 (gathers by mask; `wall/cables/10000` baseline from D01).
 
@@ -32,7 +32,7 @@ No change to `timing.rs` (what delays are) or to `latencies()`. No incremental t
 
 1. `engine::tests::a_cable_at_delay_zero_reads_its_source_directly_and_owns_no_line`: `vco → out`, no line placed: `Shared::lines() == 0`, the out is heard, and the signal equals the vco's output block scaled by `amount` bit for bit (a test module as the source writing a known ramp). Red: `Route::new` still takes a line; `Shared::lines()` reads 256.
 2. `engine::tests::a_line_placed_at_a_jack_delays_and_a_removed_module_takes_it_with_it`: `Command::Line` at `(slot, 0)` then a route with `delay: 100`: the signal arrives 100 frames late; `Shared::lines() == 1`; `Command::Remove { slot }` retires the line over the retire ring (`Retired::Line`) and the count is 0. Red: no commands.
-3. `engine::tests::a_feedback_cable_hears_the_previous_sub_block_without_a_line`: `a → b → a` where `a` adds its input to a constant: the value grows by one sub-block's step per sub-block, exactly as the same test with lines did on e0de0c0 (write the expectation from a run on e0de0c0 first, in a comment with the numbers). Red: compile.
+3. `engine::tests::a_feedback_cable_hears_the_previous_sub_block_without_a_line`: `a → b → a` where `a` adds its input to a constant: the value grows by one sub-block's step per sub-block, exactly as the same test with lines does before this lane (write the expectation from a run on the base first, in a comment with the numbers). Red: compile.
 4. `daemon::wall::tests::only_a_delayed_cable_gets_a_line_and_keeps_it`: the seed wall (its delay and reverb carry latency): after start, `Shared::lines()` equals the number of cables with `timing.delays > 0`; a plain `lfo → vcf.cutoff` cable adds no line; removing the reverb unlines its cables (`look`'s engine `lines` falls). Red: field names.
 5. `engine::tests::random_patching_never_allocates_on_the_audio_thread` extended: random `Line`/`Unline` commands in the mix; still no allocation.
 

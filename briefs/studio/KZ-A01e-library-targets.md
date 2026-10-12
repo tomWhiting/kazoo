@@ -1,6 +1,6 @@
 # KZ-A01e: glass and mix become libraries with `run(Args)`; glass's `--help` no longer kills the process
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 Split: PLAN.md's A01 is split into A01a to A01g (see KZ-A01a). This is e = kazoo-glass and kazoo-mix. Independent of the other six.
 
@@ -69,7 +69,7 @@ A01a to d, f, g; A02 (`MixerAudio::start` and glass's device code stay); A03; A0
 
 - `arguments_choose_the_demo_or_help` adapted to `Args` and the `String` error; `usage_names_the_desk` (`USAGE` contains `kazoo-mix`).
 
-Every existing test keeps running: glass 54, mix 181 at e0de0c0.
+Every existing test keeps running: glass 54, mix 181 .
 
 ## Checks
 

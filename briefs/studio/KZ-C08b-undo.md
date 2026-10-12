@@ -1,6 +1,6 @@
 # KZ-C08b: every change made on the desk can be taken back with `u` and put back with `U`, a fader ride as one step, with the words of what was undone in the footer
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename.
 
 This is the second half of KZ-C08 (session save, load, undo); KZ-C08a saves and loads, this half undoes. Between the two files every outcome of the plan's C08 row is delivered.
 

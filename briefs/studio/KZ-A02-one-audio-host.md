@@ -1,6 +1,6 @@
 # KZ-A02: one audio host opens the device for every instrument
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-core` plus every crate touched.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-core` plus every crate touched.
 
 ## Outcome
 

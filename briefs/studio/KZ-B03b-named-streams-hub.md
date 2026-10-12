@@ -1,6 +1,6 @@
 # KZ-B03b: the desk gives every stream its own strip, named `<instrument>/<stream>`
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Depends: KZ-B03a landed (the wire, the client and the link); KZ-B02 before it.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Depends: KZ-B03a landed (the wire, the client and the link); KZ-B02 before it.
 
 Split: this is the second half of PLAN.md's B03. B03a built the wire and the instrument side; this file is `kazoo-mix`'s hub seating streams on strips, naming them, adding and removing them live, and refusing what it cannot seat without dropping the instrument.
 

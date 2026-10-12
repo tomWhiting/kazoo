@@ -1,6 +1,6 @@
 # KZ-B06: ParameterChange is real: every instrument applies it, the wall maps it to a knob, the desk can send one
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-core -p kazoo-mix` plus every instrument crate touched. Depends: KZ-A03.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-core -p kazoo-mix` plus every instrument crate touched. Depends: KZ-A03.
 
 ## Outcome
 

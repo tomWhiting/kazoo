@@ -1,6 +1,6 @@
 # KZ-A08: a Justfile for the gate, and the docs tell the truth
 
-Sweep: e0de0c0. Lines may have moved; find each item by what it does, never rename. Checks: `just gate` must pass once at the end (this lane is the one allowed to run it, since it creates it). END block as PLAN.md. Depends: KZ-A06.
+Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Checks: `just gate` must pass once at the end (this lane is the one allowed to run it, since it creates it). END block as PLAN.md. Depends: KZ-A06.
 
 ## Outcome
 
