@@ -593,6 +593,9 @@ impl Drop for HubLink {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
         if let Some(join) = self.join.take() {
+            // The link thread may be parked for a whole tick; wake it so it
+            // sees `running` and says goodbye now.
+            join.thread().unpark();
             if let Err(payload) = join.join() {
                 if !thread::panicking() {
                     std::panic::resume_unwind(payload);

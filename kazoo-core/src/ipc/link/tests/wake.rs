@@ -132,3 +132,29 @@ fn an_idle_link_still_reads_the_hubs_messages_within_a_tick() {
         "sync exceeded two link ticks"
     );
 }
+
+#[test]
+fn closing_a_connected_link_does_not_wait_for_the_tick() {
+    const CLOSES: usize = 21;
+    let mut elapsed = Vec::with_capacity(CLOSES);
+    for _ in 0..CLOSES {
+        let path = socket();
+        let listener = UnixListener::bind(&path).unwrap();
+        let (link, audio) = hub_link(config(&path)).unwrap();
+        let (_stream, _buffer) = accept(&listener);
+        wait("the link to connect", || link.is_connected());
+        // Long enough for the link thread to finish serving and park.
+        thread::sleep(Duration::from_millis(1));
+        let start = Instant::now();
+        drop(link);
+        elapsed.push(start.elapsed());
+        drop(audio);
+        std::fs::remove_file(&path).unwrap();
+    }
+    elapsed.sort_unstable();
+    let median = elapsed[CLOSES / 2];
+    assert!(
+        median < LINK_TICK / 4,
+        "median close took {median:?}; the link thread was left parked for its tick"
+    );
+}
