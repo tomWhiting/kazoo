@@ -80,3 +80,7 @@ START KZ-D14 base=f8b38a8 branch=lane/kz-D14 df=36GB at 07:51
 START KZ-D12 base=c8702ba branch=lane/kz-D12 df=36GB at 07:52
 START KZ-D10b (third run, resume) branch=lane/kz-D10b df=35GB at 07:52
 END KZ-A06 head=1941fe7 reviewed=READY(review fixed: kazoo arp keeps --target and --silent; built before A04/A05 with color_eyre::install; kazoo-arp plugged_in_the_arp_asks_the_desk test flaky at load 236, passes alone) merged=bb06923 at 08:09
+START KZ-A04 base=3d82ea1 branch=lane/kz-A04 df=28GB at 08:22
+START KZ-A05 base=3d82ea1 branch=lane/kz-A05 df=28GB at 08:22
+START KZ-D08b base=3d82ea1 branch=lane/kz-D08b df=28GB at 08:22
+START KZ-D14 base=3d82ea1 branch=lane/kz-D14 df=28GB at 08:22

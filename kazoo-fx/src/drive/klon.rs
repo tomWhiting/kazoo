@@ -94,7 +94,7 @@ use super::kit::{
 use super::network::{End, Network, Part};
 use super::oversample::TARGET_RATE;
 use super::pair::{self, Pair};
-use super::solve::{Diode, rising_root_within};
+use super::solve::{Diode, SinhTable, rising_root_within};
 use crate::dsp::sane_rate;
 use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
 
@@ -168,6 +168,13 @@ const SUM_BELOW: f64 = 13.1;
 const GERMANIUM: Diode = Diode::new(2.0e-6, 1.5);
 /// The diode node is solved to this, in volts.
 const CLIP_TOLERANCE: f64 = 1e-13;
+/// Newton steps after the table's seed: from a seed within a thousandth,
+/// three reach `CLIP_TOLERANCE` in the diode region, and a fourth would be
+/// below f64's resolution.
+const KLON_STEPS: u32 = 3;
+/// Gain positions sampled, evenly over the knob, for the range of feedback
+/// strengths the clipper table must cover.
+const GAIN_POINTS: usize = 17;
 /// Steps closer than this are evaluated directly, not by antiderivative.
 const TINY_STEP: f64 = 1e-6;
 const TREBLE_HZ: f64 = 408.0;
@@ -323,7 +330,7 @@ impl pair::Circuit for Circuit {
 }
 
 impl Circuit {
-    fn tick(&mut self, sample: f32, anti_alias: bool) -> f32 {
+    fn tick(&mut self, sample: f32, anti_alias: bool, table: Option<&SinhTable>) -> f32 {
         let buffer = self.coupling.process(f64::from(sample) * INPUT_VOLTS);
         let front = self.front.open([buffer]);
         let low_end = self.front.sum_current(&front, [buffer]);
@@ -333,7 +340,7 @@ impl Circuit {
         let mut back = self.back.open(sources);
         let linear = low_end + self.back.sum_current(&back, sources);
         let open = back[DIODES];
-        let drawn = self.clip(open, anti_alias);
+        let drawn = self.clip(open, anti_alias, table);
         let exact = (open - self.diode) / self.reach;
         for (node, volt) in back.iter_mut().enumerate() {
             *volt = self.back.impedance(node, DIODES).mul_add(-exact, *volt);
@@ -357,16 +364,24 @@ impl Circuit {
     /// Solve the diodes for the open voltage `open` at their node and
     /// return the current they draw: the exact one, or its mean over the
     /// step from the last open voltage to this one when anti-aliased. The
-    /// exact voltage is kept in `diode` either way.
-    fn clip(&mut self, open: f64, anti_alias: bool) -> f64 {
+    /// exact voltage is kept in `diode` either way. With a table the root
+    /// comes from its seed and a fixed number of Newton steps; without one,
+    /// from the bracketed solver, as the reference model does.
+    fn clip(&mut self, open: f64, anti_alias: bool, table: Option<&SinhTable>) -> f64 {
         let reach = self.reach;
         let previous = self.diode;
         let bound = open.abs();
-        let guess = 2.0f64.mul_add(previous, -self.before);
-        let volts = rising_root_within(-bound, bound, guess, CLIP_TOLERANCE, |v| {
-            let (current, slope) = GERMANIUM.pair(v);
-            (current + (v - open) / reach, slope + 1.0 / reach)
-        });
+        let volts = if let Some(table) = table {
+            GERMANIUM
+                .clip_volts::<KLON_STEPS>(table, reach, open)
+                .clamp(-bound, bound)
+        } else {
+            let guess = 2.0f64.mul_add(previous, -self.before);
+            rising_root_within(-bound, bound, guess, CLIP_TOLERANCE, |v| {
+                let (current, slope) = GERMANIUM.pair(v);
+                (current + (v - open) / reach, slope + 1.0 / reach)
+            })
+        };
         self.before = previous;
         self.diode = volts;
         if !anti_alias {
@@ -437,6 +452,31 @@ impl Circuit {
     }
 }
 
+/// The diode solve's table for the circuit discretised with `c` (twice the
+/// oversampled rate): it covers the feedback strength the diodes see at
+/// every gain position, read from a scratch back network per position.
+fn clipper_table(c: f64) -> SinhTable {
+    let mut low = f64::INFINITY;
+    let mut high = 0.0f64;
+    for point in 0..GAIN_POINTS {
+        let gain = point as f64 / (GAIN_POINTS - 1) as f64;
+        let mut back = Network::<8, 16, 2>::new(BACK, c);
+        back.set_resistance(BACK_POT_UPPER, (GAIN_POT * gain).max(WIPER));
+        back.set_resistance(BACK_POT_LOWER, (GAIN_POT * (1.0 - gain)).max(WIPER));
+        back.design(c);
+        let mu = GERMANIUM.clip_mu(back.impedance(DIODES, DIODES));
+        low = low.min(mu);
+        high = high.max(mu);
+    }
+    // The table needs a range with distinct ends; a gain pot that moved
+    // nothing would leave one point, so widen it by a hair either way.
+    if high <= low {
+        high = low * 1.01;
+        low *= 0.99;
+    }
+    SinhTable::new(low, high)
+}
+
 /// A Klon-style overdrive. See the module documentation for the circuit.
 #[derive(Debug)]
 pub struct Klon {
@@ -444,6 +484,9 @@ pub struct Klon {
     /// The gain and treble the filters were last designed for.
     retune: Retune<2>,
     pair: Pair<Circuit>,
+    /// Seeds for the diode solve, built for the oversampled rate in
+    /// `prepare`; `None` runs the bracketed solver (the reference model).
+    table: Option<SinhTable>,
 }
 
 impl Default for Klon {
@@ -456,7 +499,15 @@ impl Klon {
     /// A Klon at its default settings, ready for 48 kHz until prepared.
     #[must_use]
     pub fn new() -> Self {
-        Self::build(true)
+        Self::build(true, true)
+    }
+
+    /// The same circuit with the bracketed diode solver, for the null test
+    /// against the table solve.
+    #[cfg(test)]
+    #[must_use]
+    pub fn reference() -> Self {
+        Self::build(true, false)
     }
 
     /// The same circuit run at the base rate with a plain clipper, for the
@@ -464,14 +515,15 @@ impl Klon {
     #[cfg(test)]
     #[must_use]
     pub fn naive() -> Self {
-        Self::build(false)
+        Self::build(false, true)
     }
 
-    fn build(anti_alias: bool) -> Self {
+    fn build(anti_alias: bool, tabled: bool) -> Self {
         let mut klon = Self {
             knobs: Knobs::new(&PARAMS),
             retune: Retune::new([PARAMS[GAIN].default, PARAMS[TREBLE].default]),
             pair: Pair::new(anti_alias),
+            table: tabled.then(SinhTable::default),
         };
         klon.prepare(DEFAULT_RATE);
         klon
@@ -501,8 +553,11 @@ impl Klon {
         }
         let out_gain = db_gain(knob[LEVEL]) * OUTPUT_SCALE;
         let anti_alias = self.pair.anti_alias();
+        let table = self.table.as_ref();
         self.pair
-            .process([left, right], |_, circuit, x| circuit.tick(x, anti_alias))
+            .process([left, right], |_, circuit, x| {
+                circuit.tick(x, anti_alias, table)
+            })
             .map(|out| ceiling((f64::from(out) * out_gain) as f32))
     }
 }
@@ -511,6 +566,9 @@ impl Effect for Klon {
     fn prepare(&mut self, sample_rate: f32) {
         let base = sane_rate(sample_rate);
         self.pair.prepare(base, TARGET_RATE, ADAA_DELAY);
+        if self.table.is_some() {
+            self.table = Some(clipper_table(2.0 * self.pair.rate()));
+        }
         self.knobs.prepare(base);
         self.retune_now();
     }
@@ -553,6 +611,23 @@ mod tests {
             latency_knobs: &[],
         }
     );
+
+    /// The table solve nulls against the bracketed solver at the default
+    /// settings and with gain and treble full.
+    #[test]
+    fn the_null_against_the_bracketed_solve_holds() {
+        let defaults =
+            super::super::testkit::null_db(&mut Klon::reference(), &mut Klon::new(), &[]);
+        println!("default null {defaults:.2} dB");
+        assert!(defaults < -80.0, "default null {defaults:.2} dB");
+        let hot = super::super::testkit::null_db(
+            &mut Klon::reference(),
+            &mut Klon::new(),
+            &[(GAIN, 100.0), (TREBLE, 100.0)],
+        );
+        println!("hot null {hot:.2} dB");
+        assert!(hot < -60.0, "hot null {hot:.2} dB");
+    }
 
     #[test]
     fn oversampling_cuts_the_aliasing() {

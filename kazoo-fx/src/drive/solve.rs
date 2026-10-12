@@ -116,14 +116,15 @@ impl SinhTable {
 
     /// Solve with exactly `STEPS` Newton updates and bounded exponents.
     /// The steps are written out, not looped, so the cost is fixed: a
-    /// count of 0, 1 or 2 compiles, and any other count is refused when
-    /// the code is compiled rather than quietly doing fewer steps.
+    /// count of 0 to 3 compiles, and any other count is refused when
+    /// the code is compiled rather than quietly doing fewer steps. Three
+    /// serves a clipper whose antiderivative needs the root to 1e-13.
     /// A non-finite input or nonpositive `mu` produces silence.
     #[must_use]
     #[inline]
     pub fn solve<const STEPS: u32>(&self, xi: f64, mu: f64) -> f64 {
         const {
-            assert!(STEPS <= 2, "the clipper solve has 0, 1 or 2 Newton steps");
+            assert!(STEPS <= 3, "the clipper solve has 0 to 3 Newton steps");
         }
         if !xi.is_finite() || !mu.is_finite() || mu <= 0.0 || self.values.is_empty() {
             return 0.0;
@@ -154,7 +155,8 @@ impl SinhTable {
         match STEPS {
             0 => y,
             1 => update(y),
-            _ => update(update(y)),
+            2 => update(update(y)),
+            _ => update(update(update(y))),
         }
     }
 }
