@@ -1,0 +1,351 @@
+nice: setpriority: Operation not permitted
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.84s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6, proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+────────────
+ Nextest run ID ac7114a8-28b6-41e7-a9aa-6b2a8e3e566f with nextest profile: default
+    Starting 2385 tests across 14 binaries
+        PASS [   0.022s] (   1/2385) kazoo-core analysis::envelope::tests::inf_input_treated_as_zero
+        PASS [   0.024s] (   2/2385) kazoo-core analysis::envelope::tests::attack_faster_than_release
+        PASS [   0.024s] (   3/2385) kazoo-core analysis::envelope::tests::step_response_falls
+        PASS [   0.025s] (   4/2385) kazoo-core analysis::envelope::tests::process_block_empty_is_noop
+        PASS [   0.025s] (   5/2385) kazoo-core analysis::envelope::tests::set_times_keeps_level_and_changes_speed
+        PASS [   0.026s] (   6/2385) kazoo-core analysis::envelope::tests::reset_clears_state
+        PASS [   0.029s] (   7/2385) kazoo-core analysis::envelope::tests::bad_constructor_params
+        PASS [   0.029s] (   8/2385) kazoo-core analysis::envelope::tests::nan_input_treated_as_zero
+        PASS [   0.029s] (   9/2385) kazoo-core analysis::envelope::tests::process_block_returns_final
+        PASS [   0.033s] (  10/2385) kazoo-core analysis::envelope::tests::sine_tracking
+        PASS [   0.017s] (  11/2385) kazoo-core analysis::envelope::tests::step_response_rises
+        PASS [   0.019s] (  12/2385) kazoo-core analysis::formant::tests::polynomial_root_finding_basic
+        PASS [   0.019s] (  13/2385) kazoo-core analysis::formant::tests::polynomial_root_finding_complex_roots
+        PASS [   0.020s] (  14/2385) kazoo-core analysis::formant::tests::nan_inf_handled
+        PASS [   0.016s] (  15/2385) kazoo-core analysis::formant::tests::reset_clears_state
+        PASS [   0.024s] (  16/2385) kazoo-core analysis::formant::tests::formants_sorted_ascending
+        PASS [   0.025s] (  17/2385) kazoo-core analysis::formant::tests::bad_constructor_params
+        PASS [   0.022s] (  18/2385) kazoo-core analysis::formant::tests::synthetic_vowel_ah_detects_formants
+        PASS [   0.024s] (  19/2385) kazoo-core analysis::formant::tests::silence_yields_no_formants
+        PASS [   0.029s] (  20/2385) kazoo-core analysis::onset::tests::bad_constructor_params
+        PASS [   0.018s] (  21/2385) kazoo-core analysis::onset::tests::nan_inf_handled
+        PASS [   0.018s] (  22/2385) kazoo-core analysis::onset::tests::reset_clears_state
+        PASS [   0.024s] (  23/2385) kazoo-core analysis::onset::tests::click_in_silence_detected
+        PASS [   0.014s] (  24/2385) kazoo-core analysis::onset::tests::spectral_centroid_is_reasonable
+        PASS [   0.016s] (  25/2385) kazoo-core analysis::onset::tests::spectral_centroid_empty
+        PASS [   0.020s] (  26/2385) kazoo-core analysis::onset::tests::silence_no_onsets
+        PASS [   0.020s] (  27/2385) kazoo-core analysis::pitch::tests::invalid_config_returns_error
+        PASS [   0.017s] (  28/2385) kazoo-core analysis::spectrum::tests::bad_constructor_params
+        PASS [   0.017s] (  29/2385) kazoo-core analysis::spectrum::tests::bin_frequencies_correct
+        PASS [   0.015s] (  30/2385) kazoo-core analysis::spectrum::tests::empty_input_returns_none
+        PASS [   0.018s] (  31/2385) kazoo-core analysis::spectrum::tests::dc_input_peak_at_bin_zero
+        PASS [   0.016s] (  32/2385) kazoo-core analysis::spectrum::tests::nan_inf_input_handled
+        PASS [   0.053s] (  33/2385) kazoo-core analysis::onset::tests::continuous_tone_minimal_onsets
+        PASS [   0.018s] (  34/2385) kazoo-core analysis::spectrum::tests::reset_clears_state
+        PASS [   0.018s] (  35/2385) kazoo-core analysis::spectrum::tests::smoothing_reduces_frame_variance
+        PASS [   0.023s] (  36/2385) kazoo-core analysis::spectrum::tests::sine_1khz_peak_at_correct_bin
+        PASS [   0.018s] (  37/2385) kazoo-core audio_transport::tests::config_clamps_zero_values
+        PASS [   0.017s] (  38/2385) kazoo-core audio_transport::tests::empty_pop_counts_underrun_and_silences_output
+        PASS [   0.016s] (  39/2385) kazoo-core audio_transport::tests::output_too_small_does_not_consume_block
+        PASS [   0.016s] (  40/2385) kazoo-core audio_transport::tests::pushes_and_pops_frame_indexed_block
+        PASS [   0.017s] (  41/2385) kazoo-core audio_transport::tests::rejects_invalid_sample_count
+        PASS [   0.016s] (  42/2385) kazoo-core audio_transport::tests::sanitizes_non_finite_samples
+        PASS [   0.016s] (  43/2385) kazoo-core effects::chorus::tests::chorus_all_param_info_names
+        PASS [   0.014s] (  44/2385) kazoo-core effects::chorus::tests::chorus_fully_dry_passes_input
+        PASS [   0.015s] (  45/2385) kazoo-core effects::chorus::tests::chorus_handles_nan
+        PASS [   0.014s] (  46/2385) kazoo-core effects::chorus::tests::chorus_invalid_param_index
+        PASS [   0.017s] (  47/2385) kazoo-core effects::chorus::tests::chorus_empty_buffers
+        PASS [   0.016s] (  48/2385) kazoo-core effects::chorus::tests::chorus_lfo_phase_continuity
+        PASS [   0.017s] (  49/2385) kazoo-core effects::chorus::tests::chorus_max_feedback_stays_bounded
+        PASS [   0.016s] (  50/2385) kazoo-core effects::chorus::tests::chorus_max_rate_and_depth_stable
+        PASS [   0.015s] (  51/2385) kazoo-core effects::chorus::tests::chorus_min_depth
+        PASS [   0.015s] (  52/2385) kazoo-core effects::chorus::tests::chorus_modifies_sine
+        PASS [   0.015s] (  53/2385) kazoo-core effects::chorus::tests::chorus_name
+        PASS [   0.018s] (  54/2385) kazoo-core effects::chorus::tests::chorus_param_clamping
+        PASS [   0.015s] (  55/2385) kazoo-core effects::chorus::tests::chorus_param_count
+        PASS [   0.018s] (  56/2385) kazoo-core effects::chorus::tests::chorus_reset
+        PASS [   0.019s] (  57/2385) kazoo-core effects::chorus::tests::chorus_stability_with_noise
+        PASS [   0.019s] (  58/2385) kazoo-core effects::delay::tests::delay_all_param_info_names
+        PASS [   0.021s] (  59/2385) kazoo-core effects::chorus::tests::chorus_sample_rate_change
+        PASS [   0.018s] (  60/2385) kazoo-core effects::delay::tests::delay_empty_buffers_no_panic
+        PASS [   0.019s] (  61/2385) kazoo-core effects::delay::tests::delay_fully_dry_passes_input
+        PASS [   0.015s] (  62/2385) kazoo-core effects::delay::tests::delay_latency_reports_correct_value
+        PASS [   0.018s] (  63/2385) kazoo-core effects::delay::tests::delay_handles_nan_input
+        PASS [   0.015s] (  64/2385) kazoo-core effects::delay::tests::delay_invalid_param_index
+        PASS [   0.016s] (  65/2385) kazoo-core effects::delay::tests::delay_long_sustained_processing
+        PASS [   0.014s] (  66/2385) kazoo-core effects::delay::tests::delay_name
+        PASS [   0.017s] (  67/2385) kazoo-core effects::delay::tests::delay_max_feedback_stays_bounded
+        PASS [   0.016s] (  68/2385) kazoo-core effects::delay::tests::delay_reset_clears_buffer
+        PASS [   0.018s] (  69/2385) kazoo-core effects::delay::tests::delay_sample_rate_change
+        PASS [   0.020s] (  70/2385) kazoo-core effects::delay::tests::delay_param_clamping
+        PASS [   0.015s] (  71/2385) kazoo-core effects::delay::tests::delay_zero_time_is_passthrough
+        PASS [   0.025s] (  72/2385) kazoo-core effects::delay::tests::delay_param_count
+        PASS [   0.018s] (  73/2385) kazoo-core effects::delay::tests::delay_stability_with_noise
+        PASS [   0.147s] (  74/2385) kazoo-core analysis::pitch::tests::reset_clears_buffer
+        PASS [   0.015s] (  75/2385) kazoo-core effects::delay::tests::feedback_creates_repeated_echoes
+        PASS [   0.013s] (  76/2385) kazoo-core effects::distortion::tests::distortion_all_mode_names_not_empty
+        PASS [   0.014s] (  77/2385) kazoo-core effects::distortion::tests::distortion_all_param_info_names
+        PASS [   0.021s] (  78/2385) kazoo-core effects::distortion::tests::bitcrush_quantizes
+        PASS [   0.022s] (  79/2385) kazoo-core effects::delay::tests::impulse_appears_at_correct_delay
+        PASS [   0.018s] (  80/2385) kazoo-core effects::distortion::tests::distortion_empty_buffers
+        PASS [   0.015s] (  81/2385) kazoo-core effects::distortion::tests::distortion_fully_dry_passes_input
+        PASS [   0.018s] (  82/2385) kazoo-core effects::distortion::tests::distortion_handles_nan
+        PASS [   0.016s] (  83/2385) kazoo-core effects::distortion::tests::distortion_invalid_param_index
+        PASS [   0.017s] (  84/2385) kazoo-core effects::distortion::tests::distortion_max_drive_all_modes_bounded
+        PASS [   0.015s] (  85/2385) kazoo-core effects::distortion::tests::distortion_param_count
+        PASS [   0.017s] (  86/2385) kazoo-core effects::distortion::tests::distortion_param_clamping
+        PASS [   0.017s] (  87/2385) kazoo-core effects::distortion::tests::distortion_param_values_roundtrip
+        PASS [   0.018s] (  88/2385) kazoo-core effects::distortion::tests::distortion_reset_clears_tone_state
+        PASS [   0.015s] (  89/2385) kazoo-core effects::distortion::tests::distortion_sample_rate_change
+        PASS [   0.015s] (  90/2385) kazoo-core effects::distortion::tests::distortion_stability_with_noise_all_modes
+        PASS [   0.018s] (  91/2385) kazoo-core effects::distortion::tests::distortion_tone_dark_vs_bright
+        PASS [   0.019s] (  92/2385) kazoo-core effects::distortion::tests::distortion_zero_drive_soft_clip_near_unity
+        PASS [   0.015s] (  93/2385) kazoo-core effects::filter::tests::all_filter_types_handle_nan_input
+        PASS [   0.020s] (  94/2385) kazoo-core effects::distortion::tests::soft_clip_reduces_peaks
+        PASS [   0.024s] (  95/2385) kazoo-core effects::distortion::tests::hard_clip_clamps
+        PASS [   0.019s] (  96/2385) kazoo-core effects::distortion::tests::waveshape_modifies_signal
+        PASS [   0.016s] (  97/2385) kazoo-core effects::filter::tests::bandpass_passes_center_attenuates_edges
+        PASS [   0.023s] (  98/2385) kazoo-core effects::filter::tests::all_filter_types_name_not_empty
+        PASS [   0.019s] (  99/2385) kazoo-core effects::filter::tests::all_filter_types_stable_with_noise
+        PASS [   0.017s] ( 100/2385) kazoo-core effects::filter::tests::denormal_flushing_after_silence
+        PASS [   0.020s] ( 101/2385) kazoo-core effects::filter::tests::filter_empty_buffers_no_panic
+        PASS [   0.019s] ( 102/2385) kazoo-core effects::filter::tests::filter_handles_nan_input
+        PASS [   0.019s] ( 103/2385) kazoo-core effects::filter::tests::filter_param_count_and_info
+        PASS [   0.014s] ( 104/2385) kazoo-core effects::filter::tests::filter_reset_clears_state
+        PASS [   0.017s] ( 105/2385) kazoo-core effects::filter::tests::filter_sample_rate_change
+        PASS [   0.018s] ( 106/2385) kazoo-core effects::filter::tests::filter_set_param_clamps
+        PASS [   0.025s] ( 107/2385) kazoo-core effects::filter::tests::frequency_at_nyquist_boundary
+        PASS [   0.021s] ( 108/2385) kazoo-core effects::filter::tests::low_sample_rate_stability
+        PASS [   0.022s] ( 109/2385) kazoo-core effects::filter::tests::highpass_attenuates_low_frequencies
+        PASS [   0.021s] ( 110/2385) kazoo-core effects::filter::tests::highshelf_boosts_above_frequency
+        PASS [   0.018s] ( 111/2385) kazoo-core effects::filter::tests::lowpass_attenuates_high_frequencies
+        PASS [   0.033s] ( 112/2385) kazoo-core effects::filter::tests::lowshelf_boosts_below_frequency
+        PASS [   0.017s] ( 113/2385) kazoo-core effects::filter::tests::peak_cuts_center_frequency
+        PASS [   0.019s] ( 114/2385) kazoo-core effects::filter::tests::param_value_returns_correct_values
+        PASS [   0.018s] ( 115/2385) kazoo-core effects::filter::tests::set_param_invalid_index_returns_error
+        PASS [   0.020s] ( 116/2385) kazoo-core effects::filter::tests::q_at_extremes
+        PASS [   0.029s] ( 117/2385) kazoo-core effects::filter::tests::notch_rejects_center_passes_edges
+        PASS [   0.015s] ( 118/2385) kazoo-core effects::filter::tests::very_low_sample_rate_clamps_frequency
+        PASS [   0.031s] ( 119/2385) kazoo-core effects::filter::tests::peak_boosts_center_frequency
+        PASS [   0.019s] ( 120/2385) kazoo-core effects::formant_shift::tests::formant_shift_empty_buffers
+        PASS [   0.019s] ( 121/2385) kazoo-core effects::filter::tests::zero_gain_peak_is_unity
+        PASS [   0.018s] ( 122/2385) kazoo-core effects::formant_shift::tests::formant_shift_handles_nan
+        PASS [   0.016s] ( 123/2385) kazoo-core effects::formant_shift::tests::formant_shift_param_count
+        PASS [   0.017s] ( 124/2385) kazoo-core effects::reverb::tests::reverb_empty_buffers
+        PASS [   0.017s] ( 125/2385) kazoo-core effects::reverb::tests::reverb_all_param_info_names
+        PASS [   0.022s] ( 126/2385) kazoo-core effects::formant_shift::tests::formant_shift_reset
+        PASS [   0.020s] ( 127/2385) kazoo-core effects::reverb::tests::reverb_fully_dry_passes_input
+        PASS [   0.025s] ( 128/2385) kazoo-core effects::reverb::tests::reverb_damping_extremes
+        PASS [   0.042s] ( 129/2385) kazoo-core effects::formant_shift::tests::formant_shift_modifies_signal
+        PASS [   0.037s] ( 130/2385) kazoo-core effects::formant_shift::tests::formant_shift_zero_shift_preserves
+        PASS [   0.020s] ( 131/2385) kazoo-core effects::reverb::tests::reverb_impulse_has_tail
+        PASS [   0.021s] ( 132/2385) kazoo-core effects::reverb::tests::reverb_handles_nan
+        PASS [   0.025s] ( 133/2385) kazoo-core effects::reverb::tests::reverb_invalid_param_index
+        PASS [   0.016s] ( 134/2385) kazoo-core effects::reverb::tests::reverb_name
+        PASS [   0.020s] ( 135/2385) kazoo-core effects::reverb::tests::reverb_low_sample_rate
+        PASS [   0.023s] ( 136/2385) kazoo-core effects::reverb::tests::reverb_long_sustained_processing
+        PASS [   0.018s] ( 137/2385) kazoo-core effects::reverb::tests::reverb_param_clamping
+        PASS [   0.016s] ( 138/2385) kazoo-core effects::reverb::tests::reverb_param_values_roundtrip
+        PASS [   0.017s] ( 139/2385) kazoo-core effects::reverb::tests::reverb_param_count
+        PASS [   0.016s] ( 140/2385) kazoo-core effects::reverb::tests::reverb_sample_rate_change
+        PASS [   0.017s] ( 141/2385) kazoo-core effects::reverb::tests::reverb_reset_silences_tail
+        PASS [   0.020s] ( 142/2385) kazoo-core effects::reverb::tests::reverb_room_size_extremes
+        PASS [   0.015s] ( 143/2385) kazoo-core effects::tests::chain_bypass_skips_effect
+        PASS [   0.021s] ( 144/2385) kazoo-core effects::reverb::tests::reverb_stability_with_noise
+        PASS [   0.017s] ( 145/2385) kazoo-core effects::tests::chain_handles_empty_buffers
+        PASS [   0.017s] ( 146/2385) kazoo-core effects::tests::chain_empty_passes_through
+        PASS [   0.015s] ( 147/2385) kazoo-core effects::tests::chain_len_and_is_empty
+        PASS [   0.017s] ( 148/2385) kazoo-core effects::tests::chain_new_with_capacity_preallocates
+        PASS [   0.018s] ( 149/2385) kazoo-core effects::tests::chain_processes_blocks_longer_than_its_scratch_without_growing
+        PASS [   0.015s] ( 150/2385) kazoo-core effects::tests::chain_remove
+        PASS [   0.019s] ( 151/2385) kazoo-core effects::tests::chain_never_reallocates_up_to_the_limit
+        PASS [   0.019s] ( 152/2385) kazoo-core effects::tests::chain_prepare_resizes_scratch
+        PASS [   0.021s] ( 153/2385) kazoo-core effects::tests::chain_refuses_effects_beyond_the_limit_and_hands_them_back
+        PASS [   0.014s] ( 154/2385) kazoo-core effects::tests::chain_single_effect
+        PASS [   0.015s] ( 155/2385) kazoo-core effects::tests::chain_two_effects_compose
+        PASS [   0.015s] ( 156/2385) kazoo-core effects::tests::set_effect_param_applies_valid_value
+        PASS [   0.014s] ( 157/2385) kazoo-core engine::analysis_thread::tests::analysis_config_clone
+        PASS [   0.017s] ( 158/2385) kazoo-core effects::tests::chain_with_real_effects
+        PASS [   0.017s] ( 159/2385) kazoo-core effects::tests::set_effect_param_rejects_missing_effect_and_bad_param
+        PASS [   0.015s] ( 160/2385) kazoo-core engine::analysis_thread::tests::analysis_config_debug_format
+        PASS [   0.020s] ( 161/2385) kazoo-core engine::analysis_thread::tests::analysis_config_construction
+        PASS [   0.015s] ( 162/2385) kazoo-core engine::command::tests::add_track_command_debug
+        PASS [   0.018s] ( 163/2385) kazoo-core engine::command::tests::add_synth_layer_debug
+        PASS [   0.015s] ( 164/2385) kazoo-core engine::command::tests::duplicate_clip_debug
+        PASS [   0.019s] ( 165/2385) kazoo-core engine::command::tests::add_clip_debug
+        PASS [   0.015s] ( 166/2385) kazoo-core engine::command::tests::remove_clip_debug
+        PASS [   0.022s] ( 167/2385) kazoo-core engine::command::tests::move_clip_debug
+        PASS [   0.017s] ( 168/2385) kazoo-core engine::command::tests::remove_effect_debug
+        PASS [   0.016s] ( 169/2385) kazoo-core engine::command::tests::remove_synth_layer_debug
+        PASS [   0.016s] ( 170/2385) kazoo-core engine::command::tests::set_clip_gain_debug
+        PASS [   0.018s] ( 171/2385) kazoo-core engine::command::tests::remove_track_debug
+        PASS [   0.015s] ( 172/2385) kazoo-core engine::command::tests::set_effect_parameter_debug
+        PASS [   0.021s] ( 173/2385) kazoo-core engine::command::tests::set_clip_mute_debug
+        PASS [   0.017s] ( 174/2385) kazoo-core engine::command::tests::set_effect_bypass_debug
+        PASS [   0.017s] ( 175/2385) kazoo-core engine::command::tests::set_master_volume_command_debug
+        PASS [   0.014s] ( 176/2385) kazoo-core engine::command::tests::set_synth_layer_gain_debug
+        PASS [   0.016s] ( 177/2385) kazoo-core engine::command::tests::set_synth_layer_enabled_debug
+        PASS [   0.016s] ( 178/2385) kazoo-core engine::command::tests::set_synth_parameter_debug
+        PASS [   0.014s] ( 179/2385) kazoo-core engine::command::tests::set_track_solo_debug
+        PASS [   0.019s] ( 180/2385) kazoo-core engine::command::tests::set_synth_layer_parameter_debug
+        PASS [   0.016s] ( 181/2385) kazoo-core engine::command::tests::set_track_pan_debug
+        PASS [   0.018s] ( 182/2385) kazoo-core engine::command::tests::set_track_arm_debug
+        PASS [   0.022s] ( 183/2385) kazoo-core engine::command::tests::set_track_mute_debug
+        PASS [   0.015s] ( 184/2385) kazoo-core engine::command::tests::set_track_volume_debug
+        PASS [   0.015s] ( 185/2385) kazoo-core engine::command::tests::split_clip_debug
+        PASS [   0.014s] ( 186/2385) kazoo-core engine::command::tests::start_recording_command_debug
+        PASS [   0.023s] ( 187/2385) kazoo-core engine::command::tests::set_track_synthesis_mode_debug
+        PASS [   0.021s] ( 188/2385) kazoo-core engine::command::tests::shutdown_command_debug
+        PASS [   0.019s] ( 189/2385) kazoo-core engine::command::tests::stop_recording_debug
+        PASS [   0.018s] ( 190/2385) kazoo-core engine::command::tests::transport_command_debug
+        PASS [   0.019s] ( 191/2385) kazoo-core engine::command::tests::trim_clip_end_debug
+        PASS [   0.019s] ( 192/2385) kazoo-core engine::command::tests::trim_clip_start_debug
+        PASS [   0.017s] ( 193/2385) kazoo-core engine::disk::tests::disk_command_shutdown_debug
+        PASS [   0.019s] ( 194/2385) kazoo-core engine::disk::tests::back_to_back_takes_split_exactly_at_boundaries
+        PASS [   0.017s] ( 195/2385) kazoo-core engine::disk::tests::disk_command_start_debug
+        PASS [   0.017s] ( 196/2385) kazoo-core engine::disk::tests::disk_command_stop_debug
+        PASS [   0.017s] ( 197/2385) kazoo-core engine::disk::tests::disk_thread_shutdown_via_channel_disconnect
+        PASS [   0.018s] ( 198/2385) kazoo-core engine::disk::tests::disk_thread_records_samples_to_file
+        PASS [   0.015s] ( 199/2385) kazoo-core engine::disk::tests::disk_thread_shutdown_via_command
+        PASS [   0.015s] ( 200/2385) kazoo-core engine::disk::tests::failed_start_is_counted_and_its_audio_discarded
+        PASS [   0.014s] ( 201/2385) kazoo-core engine::display::tests::clip_snapshot_debug
+        PASS [   0.015s] ( 202/2385) kazoo-core engine::display::tests::display_state_initial_has_empty_timeline
+        PASS [   0.016s] ( 203/2385) kazoo-core engine::display::tests::display_state_is_clone
+        PASS [   0.017s] ( 204/2385) kazoo-core engine::display::tests::display_state_debug_does_not_panic
+        PASS [   0.014s] ( 205/2385) kazoo-core engine::display::tests::initial_cpu_load_is_zero
+        PASS [   0.014s] ( 206/2385) kazoo-core engine::display::tests::initial_display_state_has_sensible_defaults
+        PASS [   0.014s] ( 207/2385) kazoo-core engine::display::tests::initial_formants_are_empty
+        PASS [   0.013s] ( 208/2385) kazoo-core engine::display::tests::initial_input_level_is_silence
+        PASS [   0.014s] ( 209/2385) kazoo-core engine::display::tests::initial_pitch_is_unvoiced
+        PASS [   0.017s] ( 210/2385) kazoo-core engine::display::tests::initial_mixer_is_silent
+        PASS [   0.017s] ( 211/2385) kazoo-core engine::display::tests::initial_recording_is_off
+        PASS [   0.016s] ( 212/2385) kazoo-core engine::display::tests::recording_on_finds_the_track
+        PASS [   0.018s] ( 213/2385) kazoo-core engine::display::tests::initial_spectrum_and_waveform_empty
+        PASS [   0.013s] ( 214/2385) kazoo-core engine::display::tests::timeline_snapshot_debug
+        PASS [   0.014s] ( 215/2385) kazoo-core engine::display::tests::timeline_snapshot_empty
+        PASS [   0.014s] ( 216/2385) kazoo-core engine::display::tests::track_clip_snapshot_debug
+        PASS [   0.014s] ( 217/2385) kazoo-core engine::display::tests::with_capacity_sizes_every_buffer_the_callback_writes
+        PASS [   0.014s] ( 218/2385) kazoo-core engine::handle::tests::add_track_ids_count_up_and_the_limit_is_enforced
+        PASS [   0.018s] ( 219/2385) kazoo-core engine::handle::tests::a_refused_add_track_takes_no_place
+        PASS [   0.017s] ( 220/2385) kazoo-core engine::handle::tests::buffer_size_accessor
+        PASS [   0.019s] ( 221/2385) kazoo-core engine::handle::tests::convenience_add_synth_layer_builds_the_layer
+        PASS [   0.015s] ( 222/2385) kazoo-core engine::handle::tests::convenience_add_track
+        PASS [   0.015s] ( 223/2385) kazoo-core engine::handle::tests::convenience_move_clip
+        PASS [   0.016s] ( 224/2385) kazoo-core engine::handle::tests::convenience_duplicate_clip
+        PASS [   0.014s] ( 225/2385) kazoo-core engine::handle::tests::convenience_pause_sends_transport_pause
+        PASS [   0.017s] ( 226/2385) kazoo-core engine::handle::tests::convenience_play_sends_transport_play
+        PASS [   0.015s] ( 227/2385) kazoo-core engine::handle::tests::convenience_remove_clip
+        PASS [   0.016s] ( 228/2385) kazoo-core engine::handle::tests::convenience_record_sends_transport_record
+        PASS [   0.018s] ( 229/2385) kazoo-core engine::handle::tests::convenience_set_clip_gain
+        PASS [   0.019s] ( 230/2385) kazoo-core engine::handle::tests::convenience_set_clip_mute
+        PASS [   0.016s] ( 231/2385) kazoo-core engine::handle::tests::convenience_set_clip_mute_false
+        PASS [   0.016s] ( 232/2385) kazoo-core engine::handle::tests::convenience_set_tempo
+        PASS [   0.019s] ( 233/2385) kazoo-core engine::handle::tests::convenience_set_track_mute
+        PASS [   0.025s] ( 234/2385) kazoo-core engine::handle::tests::convenience_set_master_volume
+        PASS [   0.019s] ( 235/2385) kazoo-core engine::handle::tests::convenience_set_track_synthesis_mode_builds_the_synth
+        PASS [   0.020s] ( 236/2385) kazoo-core engine::handle::tests::convenience_set_track_pan
+        PASS [   0.020s] ( 237/2385) kazoo-core engine::handle::tests::convenience_set_track_solo
+        PASS [   0.023s] ( 238/2385) kazoo-core engine::handle::tests::convenience_set_track_volume
+        PASS [   0.017s] ( 239/2385) kazoo-core engine::handle::tests::convenience_split_clip
+        PASS [   0.016s] ( 240/2385) kazoo-core engine::handle::tests::convenience_stop_recording
+        PASS [   0.021s] ( 241/2385) kazoo-core engine::handle::tests::convenience_shutdown
+        PASS [   0.017s] ( 242/2385) kazoo-core engine::handle::tests::convenience_start_recording
+        PASS [   0.017s] ( 243/2385) kazoo-core engine::handle::tests::convenience_stop_sends_transport_stop
+        PASS [   0.022s] ( 244/2385) kazoo-core engine::handle::tests::poll_display_carries_the_timeline_onto_new_frames
+        PASS [   0.022s] ( 245/2385) kazoo-core engine::handle::tests::debug_format_does_not_panic
+        PASS [   0.022s] ( 246/2385) kazoo-core engine::handle::tests::poll_display_returns_initial_when_empty
+        PASS [   0.026s] ( 247/2385) kazoo-core engine::handle::tests::drop_sends_shutdown
+        PASS [   0.026s] ( 248/2385) kazoo-core engine::handle::tests::poll_display_marks_recordings_on_their_tracks
+        PASS [   0.027s] ( 249/2385) kazoo-core engine::handle::tests::poll_display_hands_replaced_frames_back_to_the_engine
+        PASS [   0.017s] ( 250/2385) kazoo-core engine::handle::tests::poll_display_returns_latest_snapshot
+        PASS [   0.017s] ( 251/2385) kazoo-core engine::handle::tests::sample_rate_accessor
+        PASS [   0.017s] ( 252/2385) kazoo-core engine::handle::tests::send_command_after_receiver_dropped_returns_error
+        PASS [   0.016s] ( 253/2385) kazoo-core engine::handle::tests::send_command_on_full_queue_reports_and_counts_the_drop
+        PASS [   0.015s] ( 254/2385) kazoo-core engine::midi::tests::high_bits_masked_to_7bit
+        PASS [   0.018s] ( 255/2385) kazoo-core engine::handle::tests::send_command_is_received
+        PASS [   0.015s] ( 256/2385) kazoo-core engine::midi::tests::parse_control_change
+        PASS [   0.018s] ( 257/2385) kazoo-core engine::midi::tests::parse_clock_returns_none
+        PASS [   0.015s] ( 258/2385) kazoo-core engine::midi::tests::parse_empty_returns_none
+        PASS [   0.016s] ( 259/2385) kazoo-core engine::midi::tests::parse_note_off
+        PASS [   0.016s] ( 260/2385) kazoo-core engine::midi::tests::parse_note_on
+        PASS [   0.015s] ( 261/2385) kazoo-core engine::midi::tests::parse_note_on_channel_5
+        PASS [   0.032s] ( 262/2385) kazoo-core engine::midi::tests::list_input_ports_returns_vec
+        PASS [   0.017s] ( 263/2385) kazoo-core engine::midi::tests::parse_note_on_velocity_zero_is_note_off
+        PASS [   0.017s] ( 264/2385) kazoo-core engine::midi::tests::parse_pitch_bend_center
+        PASS [   0.017s] ( 265/2385) kazoo-core engine::midi::tests::parse_pitch_bend_max
+        PASS [   0.019s] ( 266/2385) kazoo-core engine::midi::tests::parse_pitch_bend_min
+        PASS [   0.022s] ( 267/2385) kazoo-core engine::midi::tests::parse_short_message_returns_none
+        PASS [   0.022s] ( 268/2385) kazoo-core engine::midi::tests::parse_sysex_returns_none
+        PASS [   0.027s] ( 269/2385) kazoo-core engine::processing::block_tests::a_long_callback_is_rendered_in_blocks
+        PASS [   0.025s] ( 270/2385) kazoo-core engine::processing::block_tests::a_loop_wrap_while_recording_starts_a_new_take_on_the_loop_start
+        PASS [   0.031s] ( 271/2385) kazoo-core engine::processing::block_tests::a_desk_request_that_could_not_be_queued_is_made_locally_once_the_desk_is_gone
+        PASS [   0.029s] ( 272/2385) kazoo-core engine::processing::block_tests::a_recording_round_trips_through_the_reclaim_thread
+        FAIL [   0.020s] ( 273/2385) kazoo-core engine::processing::block_tests::plugged_in_the_desk_gets_the_audio_and_the_speakers_are_silent
+  stdout ───
+
+    running 1 test
+    test engine::processing::block_tests::plugged_in_the_desk_gets_the_audio_and_the_speakers_are_silent ... FAILED
+
+    failures:
+
+    failures:
+        engine::processing::block_tests::plugged_in_the_desk_gets_the_audio_and_the_speakers_are_silent
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 885 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'engine::processing::block_tests::plugged_in_the_desk_gets_the_audio_and_the_speakers_are_silent' (21348858) panicked at kazoo-core/src/engine/processing/block_tests.rs:102:70:
+    called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 9 tests still running
+        PASS [   0.033s] ( 274/2385) kazoo-core engine::processing::block_tests::display_snapshots_are_paced_not_pushed_every_block
+        FAIL [   0.017s] ( 275/2385) kazoo-core engine::processing::block_tests::plugged_in_the_desk_transport_lands_on_its_frame
+  stdout ───
+
+    running 1 test
+    test engine::processing::block_tests::plugged_in_the_desk_transport_lands_on_its_frame ... FAILED
+
+    failures:
+
+    failures:
+        engine::processing::block_tests::plugged_in_the_desk_transport_lands_on_its_frame
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 885 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'engine::processing::block_tests::plugged_in_the_desk_transport_lands_on_its_frame' (21348862) panicked at kazoo-core/src/engine/processing/block_tests.rs:102:70:
+    called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.020s] ( 276/2385) kazoo-core engine::processing::block_tests::plugged_in_play_asks_the_desk_instead_of_playing_alone
+  stdout ───
+
+    running 1 test
+    test engine::processing::block_tests::plugged_in_play_asks_the_desk_instead_of_playing_alone ... FAILED
+
+    failures:
+
+    failures:
+        engine::processing::block_tests::plugged_in_play_asks_the_desk_instead_of_playing_alone
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 885 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'engine::processing::block_tests::plugged_in_play_asks_the_desk_instead_of_playing_alone' (21348859) panicked at kazoo-core/src/engine/processing/block_tests.rs:102:70:
+    called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.021s] ( 277/2385) kazoo-core engine::processing::block_tests::standalone_the_mic_reaches_the_speakers
+        PASS [   0.270s] ( 278/2385) kazoo-core engine::processing::block_tests::a_busy_session_never_allocates_or_frees_on_the_audio_thread
+        PASS [   7.621s] ( 279/2385) kazoo-core analysis::pitch::tests::nan_samples_are_sanitized
+        PASS [  10.595s] ( 280/2385) kazoo-core analysis::pitch::tests::silence_is_unvoiced
+        PASS [  10.686s] ( 281/2385) kazoo-core analysis::pitch::tests::detects_440hz_sine
+        PASS [  10.602s] ( 282/2385) kazoo-core engine::analysis_thread::tests::run_drains_input_and_exits_when_producer_dropped
+────────────
+     Summary [  11.055s] 282/2385 tests run: 279 passed, 3 failed, 0 skipped
+        FAIL [   0.020s] ( 273/2385) kazoo-core engine::processing::block_tests::plugged_in_the_desk_gets_the_audio_and_the_speakers_are_silent
+        FAIL [   0.017s] ( 275/2385) kazoo-core engine::processing::block_tests::plugged_in_the_desk_transport_lands_on_its_frame
+        FAIL [   0.020s] ( 276/2385) kazoo-core engine::processing::block_tests::plugged_in_play_asks_the_desk_instead_of_playing_alone
+warning: 2103/2385 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+error: test run failed
