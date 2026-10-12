@@ -41,3 +41,4 @@ REVIEWED KZ-A02 head=e2de947 reviewed=fixed in review (any callback size, Blueto
 START KZ-A02b base=f5069f1 branch=lane/kz-A02b df=102GB at 03:12
 INCOMPLETE KZ-D07a head=9fa8a35 branch=lane/kz-D07a kept: cost 0.40 default / 0.30 hot (needs 0.25), no_subharmonics -66.4 vs -80 dBc, latency 0.097 vs 0.05 samples at 192k; builder made a new 'models' bench + src/bench.rs instead of using D01's circuit_models (undo on retry) at 03:26
 START KZ-G01b base=b632e4d branch=lane/kz-G01b df=76GB at 03:27
+END KZ-E01 head=e546fed reviewed=READY(review fixed stepped-knob check, console overwrite now asks via :chain replace, mcp test folder; Tom's by-hand check: save beat as a chain, add it, hear two kicks) merged=f711c65 at 03:29
