@@ -72,7 +72,13 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>
     Ok(Some(options))
 }
 
-fn parse_target(target: &str) -> Result<[u8; 16], String> {
+/// Read a `--target`: `all` (every instrument) or a 32-digit instrument UUID,
+/// with or without hyphens. The error is one sentence naming the refused value.
+///
+/// # Errors
+///
+/// Refuses anything else, including the all-zero UUID.
+pub fn parse_target(target: &str) -> Result<[u8; 16], String> {
     if target == "all" {
         return Ok([0; 16]);
     }

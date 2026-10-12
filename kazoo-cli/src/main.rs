@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         Command::Dx(args) => finish(kazoo_dx::run(args.into())),
         Command::String(args) => finish(kazoo_string::run(args.into())),
         Command::Glass(args) => finish(kazoo_glass::run(args.into())),
-        Command::Arp => finish(kazoo_arp::run(kazoo_arp::Args::default())),
+        Command::Arp(args) => finish(kazoo_arp::run(args.into())),
         Command::Play(args) => match kazoo_play::run(args.into()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(kazoo_play::Error::Output(err)) if err.kind() == std::io::ErrorKind::BrokenPipe => {
@@ -52,7 +52,9 @@ fn finish(result: color_eyre::Result<()>) -> ExitCode {
 fn wall(command: Option<WallCommand>) -> color_eyre::Result<()> {
     match command {
         None | Some(WallCommand::Console) => {
-            kazoo_wall::tui::run(console_serve(std::env::current_exe()?))
+            kazoo_wall::tui::run(console_serve(std::env::current_exe().map_err(|err| {
+                color_eyre::eyre::eyre!("cannot find this program to start the wall with: {err}")
+            })?))
         }
         Some(WallCommand::Serve(args)) => {
             kazoo_wall::daemon::serve(args.try_into()?)?;

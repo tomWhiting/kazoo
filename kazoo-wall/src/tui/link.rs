@@ -2,7 +2,7 @@
 //! again when it is not.
 //!
 //! The daemon can restart under the console at any time (someone ran
-//! `kazoo-wall stop` and started it again, or it crashed). [`Reconnect`]
+//! `kazoo wall stop` and started it again, or it crashed). [`Reconnect`]
 //! keeps the state the console shows and paces the attempts: quickly at
 //! first, so a restart is picked up within a second, then once a second
 //! for as long as it takes.

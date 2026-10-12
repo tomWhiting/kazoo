@@ -2,7 +2,7 @@
 //!
 //! [`Daemon::start`] loads the patch (or seeds one), claims the control
 //! socket and starts the control thread, which starts the audio. It runs in
-//! any process: `kazoo-wall serve` runs one until it is stopped, and tests
+//! any process: `kazoo wall serve` runs one until it is stopped, and tests
 //! run one headless in a temporary directory:
 //!
 //! ```no_run

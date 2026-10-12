@@ -47,7 +47,7 @@ pub enum Command {
     /// Modal bell and glass synth.
     Glass(GlassArgs),
     /// Jupiter-8 style arpeggiator.
-    Arp,
+    Arp(ArpArgs),
     /// Text notation to events or sound.
     Play(PlayArgs),
     /// The mouth: the voice-driven synth (kazoo-tui).
@@ -118,6 +118,17 @@ pub struct GlassArgs {
     /// A looped kazoo-play phrase, as notation.
     #[arg(long)]
     pub phrase: Option<String>,
+}
+
+/// Arpeggiator destination and audition options.
+#[derive(Debug, Args, PartialEq, Eq)]
+pub struct ArpArgs {
+    /// Drive every instrument (all) or one registered instrument UUID.
+    #[arg(long, default_value = "all", value_parser = kazoo_arp::parse_target)]
+    pub target: [u8; 16],
+    /// Mute the audition voice while still driving the desk.
+    #[arg(long)]
+    pub silent: bool,
 }
 
 /// Mutually exclusive event listing, playback and jam modes.
@@ -223,6 +234,15 @@ impl From<GlassArgs> for kazoo_glass::Args {
         Self {
             demo: args.demo,
             phrase: args.phrase,
+        }
+    }
+}
+
+impl From<ArpArgs> for kazoo_arp::Args {
+    fn from(args: ArpArgs) -> Self {
+        Self {
+            target: args.target,
+            silent: args.silent,
         }
     }
 }

@@ -29,7 +29,7 @@ fn every_instrument_is_a_subcommand() {
             Command::Dx(_) => name == "dx",
             Command::String(_) => name == "string",
             Command::Glass(_) => name == "glass",
-            Command::Arp => name == "arp",
+            Command::Arp(_) => name == "arp",
             Command::Play(_) => name == "play",
             Command::Mouth => name == "mouth",
             Command::Mix(args) => name == "mix" && !args.demo,
@@ -234,4 +234,33 @@ fn the_console_restarts_the_wall_as_kazoo_wall_serve() {
     let serve = super::console_serve(program.clone());
     assert_eq!(serve.program, program);
     assert_eq!(serve.args, ["wall", "serve"]);
+}
+
+#[test]
+fn arp_keeps_its_target_and_silent_flags() {
+    let Command::Arp(args) = Cli::try_parse_from(["kazoo", "arp", "--silent"])
+        .unwrap()
+        .command
+    else {
+        panic!("expected arp");
+    };
+    assert_eq!(
+        kazoo_arp::Args::from(args),
+        kazoo_arp::Args {
+            target: [0; 16],
+            silent: true
+        }
+    );
+    let uuid = "0123456789abcdef0123456789abcdef";
+    let Command::Arp(args) = Cli::try_parse_from(["kazoo", "arp", "--target", uuid])
+        .unwrap()
+        .command
+    else {
+        panic!("expected arp");
+    };
+    let expected = kazoo_arp::parse_args(["--target".to_owned(), uuid.to_owned()])
+        .unwrap()
+        .unwrap();
+    assert_eq!(kazoo_arp::Args::from(args), expected);
+    assert!(Cli::try_parse_from(["kazoo", "arp", "--target", "bogus"]).is_err());
 }
