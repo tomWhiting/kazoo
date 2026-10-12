@@ -16,16 +16,16 @@ use std::sync::Arc;
 
 #[test]
 fn scheduled_notes_reach_the_real_link_with_the_selected_destination() {
-    std::fs::create_dir_all(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/kz-logs")).unwrap();
-    let logs = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/kz-logs")
-        .canonicalize()
-        .unwrap();
+    let logs = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/kz-logs"));
+    std::fs::create_dir_all(logs).unwrap();
+    let logs = logs.canonicalize().unwrap();
     let dir = tempfile::tempdir_in(logs).unwrap();
     let path = dir.path().join("w.sock");
     assert!(
         path.as_os_str().len() < 104,
-        "test socket path must be shorter than the 104-byte Unix socket limit"
+        "test socket path is {} bytes; macOS sun_path holds 104 including the closing NUL: {}",
+        path.as_os_str().len(),
+        path.display()
     );
     let listener = UnixListener::bind(&path).unwrap();
     let peer = std::thread::spawn(move || {
@@ -113,5 +113,6 @@ fn scheduled_notes_reach_the_real_link_with_the_selected_destination() {
     drop(engine);
     drop(hub);
     dir.close().unwrap();
+    // The brief's evidence that no socket is left behind.
     assert!(!path.exists(), "test socket removed with its folder");
 }
