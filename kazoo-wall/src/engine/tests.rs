@@ -4,6 +4,8 @@
 use super::*;
 use crate::dsp::{Rng, build};
 
+mod sparse;
+
 const RATE: u32 = 48_000;
 
 /// Run `f` as audio-thread code, failing the test if it allocates or frees.
@@ -80,8 +82,15 @@ impl Model {
         }
         let slots: Vec<usize> = self.slots.iter().map(|(s, _)| *s).collect();
         let edges: Vec<(usize, usize)> = self.cables.iter().map(|c| (c.0, c.2)).collect();
+        let outs: Vec<usize> = self
+            .slots
+            .iter()
+            .filter_map(|(slot, kind)| (*kind == Kind::OUT).then_some(*slot))
+            .collect();
         control.send(Command::Cables(Box::new(table)));
-        control.send(Command::Order(Box::new(processing_order(&slots, &edges))));
+        control.send(Command::Order(Box::new(processing_order(
+            &slots, &edges, &outs,
+        ))));
     }
 }
 
@@ -270,7 +279,7 @@ fn a_module_producing_nan_is_silenced_reset_and_reported() {
     let mut table = CableTable::new();
     assert!(table.set(8, 0, Some(Route::new(7, 0, 1.0, 0, 1))));
     control.send(Command::Cables(Box::new(table)));
-    control.send(Command::Order(Box::new(Order::new(&[7, 8]))));
+    control.send(Command::Order(Box::new(Order::new(&[7, 8], &[8]))));
     let mut buffer = Vec::new();
     render(&mut engine, SUB_BLOCK * 4, &mut buffer);
     assert!(buffer.iter().all(|s| s.is_finite()));
@@ -345,12 +354,10 @@ fn a_glide_reaches_the_module_frame_by_frame() {
         target: 1.0,
         glide_frames: 4_800,
     });
+    let [frames, step] = sparse::watch_sweep(&mut control);
     render(&mut engine, 64, &mut buffer);
-    let sweep = engine.sweeps[0];
-    assert!(
-        sweep.frames == SUB_BLOCK as u32 && sweep.step > 0.0,
-        "{sweep:?}"
-    );
+    assert_eq!(frames.load(Ordering::Relaxed), SUB_BLOCK as u32);
+    assert!(f32::from_bits(step.load(Ordering::Relaxed)) > 0.0);
 }
 
 #[test]

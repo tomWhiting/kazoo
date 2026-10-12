@@ -66,3 +66,21 @@ route count and makes every leaf audible. It differs from the brief's fixture.
 The Criterion logs these rows came from were under `target/`, which was
 deleted outside the lane at about 01:23 on 13 Oct; they no longer exist, so
 the rows above cannot be checked against their source.
+
+## KZ-D02
+
+Before: unchanged 62622ce on lane/kz-D02. The prescribed wall_render filter
+exited 0. Values are Criterion interval midpoints for 512 frames at 48 kHz.
+Isolation from other machine work was not verified. The release build took
+10m 24s; the first filtered nextest build took 8m 03s.
+
+| bench | before ns per block | before % real time | after ns per block | after % real time |
+|---|---:|---:|---:|---:|
+| wall/unplugged/100 | 2,925,000 | 27.421875 | not measured | not measured |
+| wall/unplugged/1000 | 31,766,000 | 297.806250 | not measured | not measured |
+| wall/chains/1000 | 256,210,000 | 2401.968750 | not measured | not measured |
+
+Before log: target/kz-logs/bench-before.txt. After log:
+target/kz-logs/bench-after.txt. The after run did not finish inside the
+25-minute time box. The 5x speedup, below 25% real time, and chains within
+3% requirements are not verified.

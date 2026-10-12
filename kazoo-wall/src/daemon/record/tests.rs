@@ -35,6 +35,7 @@ fn tone_at(rate: u32) -> (Engine, EngineControl) {
     control.send(Command::Order(Box::new(processing_order(
         &[0, 1],
         &[(0, 1)],
+        &[1],
     ))));
     let mut settle = vec![0.0; 480 * 2];
     engine.render(&mut settle, 2);

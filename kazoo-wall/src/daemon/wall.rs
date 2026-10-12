@@ -88,10 +88,9 @@ pub const FLOOD_REFILL_PER_SECOND: f64 = 3.0;
 /// until its load has been measured for [`ABSORBED_WINDOWS`] windows, then
 /// nothing more while past the guard.
 ///
-/// The load is wall-clock time: a render the machine preempts counts the
-/// time it was held off the processor. That errs towards refusing early,
-/// and it is what the device lives with: a preempted render is late all
-/// the same.
+/// The load is the audio thread's CPU time, not the time that passes: a
+/// render the machine preempts is the machine's load, not the wall's, and
+/// is not counted.
 pub const LOAD_GUARD: f32 = 0.8;
 
 /// Once refusing, the wall takes more only below this share of the guard
@@ -1508,7 +1507,14 @@ impl Wall {
             .iter()
             .filter_map(|module| self.rack.slot_of(&module.id))
             .collect();
-        let order: Order = processing_order(&slots, &edges);
+        let outs: Vec<usize> = self
+            .patch
+            .modules()
+            .iter()
+            .filter(|module| module.kind == Kind::OUT)
+            .filter_map(|module| self.rack.slot_of(&module.id))
+            .collect();
+        let order: Order = processing_order(&slots, &edges, &outs);
         let rendered: Vec<String> = order
             .slots()
             .iter()
