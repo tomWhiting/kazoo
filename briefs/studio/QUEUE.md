@@ -57,3 +57,4 @@ END KZ-D10a head=2452a90 reviewed=READY after hand merge with D07a's bench files
 START KZ-D07b base=41b4de1 branch=lane/kz-D07b df=49GB at 04:13
 END KZ-A02c head=62fd8ee reviewed=READY(review removed unused OutputRequest::info and resolve_sample_rate; smoke 808 and mini exit 0) merged=0e055e9 at 04:19
 START KZ-A03 base=e16415c branch=lane/kz-A03 df=43GB at 04:24
+START KZ-D10b base=a8390fe branch=lane/kz-D10b df=40GB at 04:26
