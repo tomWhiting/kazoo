@@ -19,6 +19,10 @@
 pub mod client;
 pub mod codec;
 
+mod chains;
+
+pub use chains::{ChainSaveResult, ChainsResult};
+
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -258,6 +262,14 @@ pub enum Request {
         #[serde(default = "joins")]
         join: bool,
     },
+    ChainSave {
+        name: String,
+        modules: Vec<String>,
+    },
+    ChainAdd {
+        name: String,
+    },
+    Chains,
     /// Apply the inverse of a change, as a new change.
     Undo {
         /// The change's sequence number.
@@ -376,6 +388,9 @@ impl Request {
             Self::Remove { .. } => "remove",
             Self::Arrange { .. } => "arrange",
             Self::Group { .. } => "group",
+            Self::ChainSave { .. } => "chain_save",
+            Self::ChainAdd { .. } => "chain_add",
+            Self::Chains => "chains",
             Self::Undo { .. } => "undo",
             Self::Speak { .. } => "speak",
             Self::Log { .. } => "log",
@@ -409,6 +424,8 @@ impl Request {
                 | Self::Remove { .. }
                 | Self::Arrange { .. }
                 | Self::Group { .. }
+                | Self::ChainSave { .. }
+                | Self::ChainAdd { .. }
                 | Self::Speak { .. }
         )
     }
@@ -426,6 +443,8 @@ impl Request {
                 | Self::Remove { .. }
                 | Self::Arrange { .. }
                 | Self::Group { .. }
+                | Self::ChainSave { .. }
+                | Self::ChainAdd { .. }
                 | Self::Undo { .. }
                 | Self::Tempo { .. }
                 | Self::Speak { .. }
@@ -646,6 +665,10 @@ pub struct Change {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum What {
+    Chain {
+        name: String,
+        changes: Vec<Self>,
+    },
     /// A knob turned from one target to another.
     Turn {
         /// Module id.
@@ -931,6 +954,9 @@ pub enum Event {
     Groups {
         /// Every group now, by name: its module ids.
         groups: BTreeMap<String, Vec<String>>,
+    },
+    Chains {
+        names: Vec<String>,
     },
     /// The whole wall was replaced (a save loaded, a new wall, or a load
     /// undone): sent to every subscriber, the loader included, right after

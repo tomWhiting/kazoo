@@ -145,6 +145,26 @@ pub struct RemoveArgs {
     pub module: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChainAction {
+    Save,
+    Add,
+    List,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChainArgs {
+    pub action: ChainAction,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub modules: Vec<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
 /// `wall_group`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -427,6 +447,77 @@ impl Seat {
     }
 
     #[tool(
+        name = "wall_chain",
+        description = "Save selected modules and their internal cables as a reusable named chain, add a saved copy on a fresh rack row as one undo step, or list saved chains. action is save, add or list. save takes name and either modules or group; add takes name; list takes no other arguments. Cables to outside modules are left off and counted."
+    )]
+    pub(crate) async fn wall_chain(
+        &self,
+        Parameters(args): Parameters<ChainArgs>,
+    ) -> CallToolResult {
+        match args.action {
+            ChainAction::List
+                if args.name.is_none() && args.modules.is_empty() && args.group.is_none() =>
+            {
+                self.read::<kazoo_wall::protocol::ChainsResult>(Request::Chains, |result| {
+                    Ok(if result.names.is_empty() {
+                        "No saved chains.".to_string()
+                    } else {
+                        format!("Chains: {}.", result.names.join(", "))
+                    })
+                })
+                .await
+            }
+            ChainAction::Add if args.modules.is_empty() && args.group.is_none() => {
+                match args.name {
+                    Some(name) => self.change(Request::ChainAdd { name }).await,
+                    None => bad("chain add requires a name"),
+                }
+            }
+            ChainAction::Save => {
+                let Some(name) = args.name else {
+                    return bad("chain save requires a name");
+                };
+                let modules = match (args.group, args.modules.is_empty()) {
+                    (Some(group), true) => match self.wall.ask::<Snapshot>(Request::Look).await {
+                        Ok(Answer::Read(snapshot)) => match snapshot
+                            .groups
+                            .into_iter()
+                            .find(|(name, _)| name.eq_ignore_ascii_case(&group))
+                        {
+                            Some((_, modules)) => modules,
+                            None => return bad(format!("no group called '{group}'")),
+                        },
+                        Ok(Answer::Unread(why, value)) => return bad(render::unread(&why, &value)),
+                        Err(err) => return bad(err.to_string()),
+                    },
+                    (None, false) => args.modules,
+                    _ => return bad("chain save requires either modules or a group"),
+                };
+                self.read::<kazoo_wall::protocol::ChainSaveResult>(
+                    Request::ChainSave { name, modules },
+                    |result| {
+                        Ok(format!(
+                            "Saved {} modules, {} cables, {} {} to the outside left off.",
+                            result.modules,
+                            result.cables,
+                            result.outside,
+                            if result.outside == 1 {
+                                "cable"
+                            } else {
+                                "cables"
+                            }
+                        ))
+                    },
+                )
+                .await
+            }
+            ChainAction::List | ChainAction::Add => {
+                bad("chain list takes no other arguments; chain add takes only a name")
+            }
+        }
+    }
+
+    #[tool(
         name = "wall_group",
         description = "Put modules in a named group (a tag, e.g. a kick chain), or take them out with leave: true. A group is made by its first module and goes with its last; a removed module leaves its groups. Grouping is not logged and is not undone with wall_undo. wall_look lists the groups; consoles can show one group alone."
     )]
@@ -649,9 +740,10 @@ mod tests {
     use super::*;
 
     /// Every tool, in the router's order.
-    const TOOLS: [&str; 18] = [
+    const TOOLS: [&str; 19] = [
         "wall_add",
         "wall_catalogue",
+        "wall_chain",
         "wall_group",
         "wall_listen",
         "wall_load",

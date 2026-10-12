@@ -4,6 +4,8 @@
 //! Sockets live elsewhere ([`super::control`]); this is plain state with
 //! methods, so it can be tested without any.
 
+mod chains;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -429,6 +431,7 @@ pub struct Outcome {
 /// The daemon's state.
 #[derive(Debug)]
 pub struct Wall {
+    chain_batch: Option<Vec<What>>,
     patch: Patch,
     rack: Rack,
     engine: EngineControl,
@@ -1174,6 +1177,7 @@ impl Wall {
         let recorder = Recorder::new(recordings, &mut engine);
         let probe_ring = engine.take_probes().map(ProbeRing);
         let mut wall = Self {
+            chain_batch: None,
             speech: Speech::new(speech_cache),
             recorder,
             told: Vec::new(),
@@ -1776,6 +1780,7 @@ impl Wall {
     /// Mirror a change into the engine.
     fn mirror(&mut self, what: &What) {
         match what {
+            What::Chain { changes, .. } => self.mirror_chain(changes),
             What::Turn {
                 module,
                 knob,
@@ -2259,7 +2264,8 @@ impl Wall {
             Request::Patch { .. }
             | Request::Unpatch { .. }
             | Request::Add { .. }
-            | Request::Remove { .. } => Before::Whole(Box::new(self.patch.clone())),
+            | Request::Remove { .. }
+            | Request::ChainAdd { .. } => Before::Whole(Box::new(self.patch.clone())),
             Request::Undo { change } => {
                 match self.log.iter().find(|logged| logged.seq == *change) {
                     Some(Change {
@@ -2272,7 +2278,8 @@ impl Wall {
                             | What::Unpatch { .. }
                             | What::Add { .. }
                             | What::Remove { .. }
-                            | What::Restore { .. },
+                            | What::Restore { .. }
+                            | What::Chain { .. },
                         ..
                     }) => Before::Whole(Box::new(self.patch.clone())),
                     // A tempo, a load and words touch nothing before they
@@ -2306,7 +2313,10 @@ impl Wall {
     /// written; the dye is held to its seats.)
     fn grows(&self, request: &Request) -> bool {
         match request {
-            Request::Add { .. } | Request::Patch { .. } | Request::Speak { .. } => true,
+            Request::Add { .. }
+            | Request::Patch { .. }
+            | Request::Speak { .. }
+            | Request::ChainAdd { .. } => true,
             Request::Group { join, .. } => *join,
             Request::Undo { change } => self.log.iter().any(|logged| {
                 logged.seq == *change
@@ -2406,6 +2416,9 @@ impl Wall {
                 modules,
                 join,
             } => self.group(group, modules, *join),
+            Request::ChainSave { name, modules } => self.chain_save(name, modules, console),
+            Request::ChainAdd { name } => self.chain_add(seat, name, now),
+            Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change),
             Request::Tempo { bpm } => self.tempo(seat, *bpm, None),
             Request::Speak {
@@ -2492,7 +2505,8 @@ impl Wall {
     /// [`Self::set_load_guard`]), or when there is no memory for the room;
     /// `slow_down` while the wall settles after the last addition.
     fn room_to_grow(&mut self, growth: Growth) -> Result<(), WallError> {
-        if growth == Growth::NONE {
+        // Chain capacity is reserved for the whole batch before its first add.
+        if growth == Growth::NONE || self.chain_batch.is_some() {
             return Ok(());
         }
         self.file_room(growth.bytes())?;
@@ -2711,6 +2725,9 @@ impl Wall {
         module: Option<String>,
         cable: Option<u32>,
     ) -> Result<Outcome, WallError> {
+        if self.chain_batch.is_some() {
+            return self.collect_chain_change(what, module.as_deref(), cable);
+        }
         let module = module.or_else(|| match &what {
             What::Restore { module, .. } => Some(module.id.clone()),
             _ => None,
@@ -2826,6 +2843,7 @@ impl Wall {
         // and undoing an unplugging brings a cable back: more work, like
         // any other addition. Every other undo adds nothing.
         let growth = match &what {
+            What::Chain { changes, .. } => chains::undo_growth(changes),
             What::Remove { cables, .. } => Growth {
                 modules: 1,
                 cables: cables.len(),
