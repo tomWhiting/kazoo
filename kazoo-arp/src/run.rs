@@ -9,7 +9,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ringbuf::traits::Split;
@@ -137,9 +137,9 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Audio setup
     // -----------------------------------------------------------------------
 
-    let mut request = OutputRequest::default();
-    let output_info = request.info()?;
-    request.rate = RateChoice::Hz(output_info.rate);
+    let request = OutputRequest::default();
+    let prepared = request.prepare_output()?;
+    let output_info = prepared.info();
     let sample_rate = output_info.rate;
     let channels = usize::from(output_info.channels);
 
@@ -166,7 +166,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         Arc::clone(&shared),
     );
     engine.configure_output(args);
-    let stream = open_output(&request, move |data, _| engine.render(data))?;
+    let stream = prepared.open(move |data, _| engine.render(data))?;
 
     // -----------------------------------------------------------------------
     // Terminal setup

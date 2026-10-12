@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
 
 use crate::app::App;
@@ -93,9 +93,9 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Audio setup — direct cpal output, no input stream needed
     // -----------------------------------------------------------------------
 
-    let mut request = OutputRequest::default();
-    let output_info = request.info()?;
-    request.rate = RateChoice::Hz(output_info.rate);
+    let request = OutputRequest::default();
+    let prepared = request.prepare_output()?;
+    let output_info = prepared.info();
     let sample_rate = output_info.rate;
     let channels = usize::from(output_info.channels);
 
@@ -119,7 +119,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     ))?;
 
     let stream = audio::build_audio_stream(
-        &request,
+        prepared,
         AudioSetup {
             sample_rate: sample_rate as f32,
             channels,

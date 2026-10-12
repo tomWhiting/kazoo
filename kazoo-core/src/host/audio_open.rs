@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use crossbeam_channel::Sender;
 
-use super::audio::{Chosen, OpenedOutput, OutputInfo, OutputRequest, StreamHealth, prepare};
+use super::audio::{
+    Chosen, OpenedOutput, OutputInfo, OutputRequest, PreparedInput, PreparedOutput, StreamHealth,
+};
 use super::audio_callback::{InputCallback, OutputCallback};
 use crate::{Error, Result};
 
@@ -30,13 +32,35 @@ pub fn open_output_with_frames<F>(
 where
     F: FnMut(&mut [f32], &OutputInfo) + Send + 'static,
 {
-    let (device, mut chosen, context) = prepare(request, false, frames)?;
-    fall_back_when_fixed_is_refused(&device, &mut chosen, false);
+    request.prepare_output_with_frames(frames)?.open(callback)
+}
+
+impl PreparedOutput {
+    pub fn open<F>(self, callback: F) -> Result<OpenedOutput>
+    where
+        F: FnMut(&mut [f32], &OutputInfo) + Send + 'static,
+    {
+        self.open_using(|device, chosen, context| {
+            open_prepared_output(&device, chosen, context, callback)
+        })
+    }
+}
+
+fn open_prepared_output<F>(
+    device: &cpal::Device,
+    mut chosen: Chosen,
+    context: String,
+    callback: F,
+) -> Result<OpenedOutput>
+where
+    F: FnMut(&mut [f32], &OutputInfo) + Send + 'static,
+{
+    fall_back_when_fixed_is_refused(device, &mut chosen, false);
     let (errors, receiver) = crossbeam_channel::bounded(16);
     let fault = Arc::new(AtomicUsize::new(0));
     let stream = match chosen.format {
         cpal::SampleFormat::F32 => output_stream::<f32, _>(
-            &device,
+            device,
             &chosen.config,
             chosen.info,
             callback,
@@ -44,7 +68,7 @@ where
             Arc::clone(&fault),
         ),
         cpal::SampleFormat::I16 => output_stream::<i16, _>(
-            &device,
+            device,
             &chosen.config,
             chosen.info,
             callback,
@@ -52,7 +76,7 @@ where
             Arc::clone(&fault),
         ),
         cpal::SampleFormat::U16 => output_stream::<u16, _>(
-            &device,
+            device,
             &chosen.config,
             chosen.info,
             callback,
@@ -65,10 +89,16 @@ where
             )));
         }
     }
-    .map_err(|error| Error::Device(format!("{context}: {error}")))?;
-    stream
-        .play()
-        .map_err(|error| Error::Device(format!("{context}: {error}")))?;
+    .map_err(|error| {
+        Error::Device(format!(
+            "{context}: prepared device changed or refused its configuration: {error}"
+        ))
+    })?;
+    stream.play().map_err(|error| {
+        Error::Device(format!(
+            "{context}: prepared device changed or refused its configuration: {error}"
+        ))
+    })?;
     Ok(OpenedOutput {
         stream,
         info: chosen.info,
@@ -88,13 +118,33 @@ pub fn open_input_with_frames<F>(
 where
     F: FnMut(&[f32], &OutputInfo) + Send + 'static,
 {
-    let (device, mut chosen, context) = prepare(request, true, frames)?;
-    fall_back_when_fixed_is_refused(&device, &mut chosen, true);
+    request.prepare_input_with_frames(frames)?.open(callback)
+}
+
+impl PreparedInput {
+    pub fn open<F>(self, callback: F) -> Result<OpenedOutput>
+    where
+        F: FnMut(&[f32], &OutputInfo) + Send + 'static,
+    {
+        open_prepared_input(&self.device, self.chosen, self.context, callback)
+    }
+}
+
+fn open_prepared_input<F>(
+    device: &cpal::Device,
+    mut chosen: Chosen,
+    context: String,
+    callback: F,
+) -> Result<OpenedOutput>
+where
+    F: FnMut(&[f32], &OutputInfo) + Send + 'static,
+{
+    fall_back_when_fixed_is_refused(device, &mut chosen, true);
     let (errors, receiver) = crossbeam_channel::bounded(16);
     let fault = Arc::new(AtomicUsize::new(0));
     let stream = match chosen.format {
         cpal::SampleFormat::F32 => input_stream::<f32, _>(
-            &device,
+            device,
             &chosen.config,
             chosen.info,
             callback,
@@ -102,7 +152,7 @@ where
             Arc::clone(&fault),
         ),
         cpal::SampleFormat::I16 => input_stream::<i16, _>(
-            &device,
+            device,
             &chosen.config,
             chosen.info,
             callback,
@@ -110,7 +160,7 @@ where
             Arc::clone(&fault),
         ),
         cpal::SampleFormat::U16 => input_stream::<u16, _>(
-            &device,
+            device,
             &chosen.config,
             chosen.info,
             callback,
@@ -123,10 +173,16 @@ where
             )));
         }
     }
-    .map_err(|error| Error::Device(format!("{context}: {error}")))?;
-    stream
-        .play()
-        .map_err(|error| Error::Device(format!("{context}: {error}")))?;
+    .map_err(|error| {
+        Error::Device(format!(
+            "{context}: prepared device changed or refused its configuration: {error}"
+        ))
+    })?;
+    stream.play().map_err(|error| {
+        Error::Device(format!(
+            "{context}: prepared device changed or refused its configuration: {error}"
+        ))
+    })?;
     Ok(OpenedOutput {
         stream,
         info: chosen.info,
