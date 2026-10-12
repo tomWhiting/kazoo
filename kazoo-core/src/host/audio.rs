@@ -49,10 +49,6 @@ impl Default for OutputRequest {
 }
 
 impl OutputRequest {
-    pub fn info(&self) -> Result<OutputInfo> {
-        prepare(self, false, crate::DEFAULT_BUFFER_SIZE).map(|(_, chosen, _)| chosen.info)
-    }
-
     pub fn prepare_output(&self) -> Result<PreparedOutput> {
         self.prepare_output_with_frames(crate::DEFAULT_BUFFER_SIZE)
     }

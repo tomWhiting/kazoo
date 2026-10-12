@@ -212,20 +212,6 @@ fn output_caps(device: &cpal::Device) -> (u16, Vec<u32>) {
 // Stream construction
 // ---------------------------------------------------------------------------
 
-/// Probe the requested sample rate, or the output device's native rate,
-/// without opening a stream. An unreadable native rate is an error.
-///
-/// Callers sizing processing state before opening output must instead keep
-/// a [`crate::host::audio::PreparedOutput`] and use its reported configuration,
-/// so the selected device cannot change between preparation and opening.
-///
-/// # Errors
-///
-/// Returns [`Error::Device`] if the device or requested configuration is unavailable.
-pub fn resolve_sample_rate(config: &StreamConfig) -> Result<u32> {
-    output_request(config).info().map(|info| info.rate)
-}
-
 fn output_request(config: &StreamConfig) -> crate::host::audio::OutputRequest {
     use crate::host::audio::{DeviceChoice, OutputRequest, RateChoice};
     OutputRequest {
