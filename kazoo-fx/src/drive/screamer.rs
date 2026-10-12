@@ -6,8 +6,8 @@
 //! the mids and treble are amplified into the diodes; the bass passes at
 //! unity, clean. That, and the lowpass after it, is the famous hump.
 //!
-//! The model runs at four times the family's usual internal rate, at
-//! least 705.6 kHz (`INTERNAL_RATE`; lower only below 44.1 kHz, where the
+//! The model runs at twice the family's usual internal rate, at
+//! least 352.8 kHz (`INTERNAL_RATE`; lower only below 22.05 kHz, where the
 //! 16x cap bites):
 //!
 //! 1. Input coupling (20 Hz).
@@ -23,9 +23,9 @@
 //!    `dVout/dt = wt (Vin - V-)`, which rounds the fastest edges as the
 //!    real part does. Op-amp, leg capacitor and feedback network are all
 //!    stepped together with the backward Euler rule (which stays stable
-//!    however hard the diodes conduct) and solved each sample by bracketed
-//!    Newton. The stage's output is close to `Vin + Vf`: the clean input
-//!    plus the clipped mids, soft-limited by the op-amp's 4.5 V of
+//!    however hard the diodes conduct) and solved each sample with a table
+//!    seed and two Newton steps. The stage's output is close to `Vin + Vf`:
+//!    the clean input plus the clipped mids, soft-limited by the op-amp's 4.5 V of
 //!    headroom.
 //! 3. The tone stage: the fixed 1 kΩ / 220 nF lowpass at 723 Hz, and the
 //!    active tone control, whose pot slides a zero across it. With the
@@ -46,21 +46,28 @@ use super::kit::{
     DEFAULT_RATE, Knobs, Retune, audio_taper, ceiling, flush64, for_each_frame, fraction,
     gain as db_gain, rail,
 };
-use super::oversample::TARGET_RATE;
+use super::oversample::{TARGET_RATE, factor_for};
 use super::pair::{self, Pair};
-use super::solve::{Diode, rising_root};
+use super::solve::{Diode, SinhTable, rising_root};
 use crate::dsp::sane_rate;
 use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
 
-/// The rate the clipping stage runs at: four times the family's usual
+/// The rate the clipping stage runs at: twice the family's usual
 /// target. Its feedback voltage slews through zero in well under a
 /// microsecond on a loud note, as the real circuit's does, and the
 /// harmonics of edges that fast are still strong far past 176.4 kHz: run
 /// there, a -6 dBFS tone at 4987 Hz (a 38.5th of 192 kHz) folds its 38th
 /// and 39th harmonics onto half its own pitch at -51 dBc, which sounds like
-/// period doubling. From 352.8 kHz the worst fold is still -65 dBc (the
-/// 71st harmonic, at 44.1 kHz); from 705.6 kHz it is -93 dBc.
-const INTERNAL_RATE: f32 = 4.0 * TARGET_RATE;
+/// period doubling. At 352.8 kHz the worst fold is -65 dBc (the
+/// 71st harmonic, at 44.1 kHz).
+const INTERNAL_RATE: f32 = 2.0 * TARGET_RATE;
+const SCREAMER_STEPS: u32 = 2;
+
+#[derive(Debug, Clone, Copy)]
+enum Solve {
+    Table,
+    Loop,
+}
 
 const DRIVE: usize = 0;
 const TONE: usize = 1;
@@ -127,12 +134,15 @@ const T2: f64 = 220.0 * 220e-9;
 /// The clipping stage's constants this sample.
 #[derive(Debug, Clone, Copy)]
 struct Stage {
+    solve: Solve,
     /// The sample period.
     period: f64,
     /// The sample period over C4.
     step: f64,
-    /// The feedback resistance: R6 plus the drive pot.
-    rf: f64,
+    /// The linear part of the feedback equation, shared across the frame.
+    linear: f64,
+    /// Resistance seen by the dimensionless diode solve.
+    reach: f64,
     /// The gain leg's backward Euler conductance, `1 / (R4 + T / C3)`.
     leg: f64,
     /// The op-amp's gain-bandwidth over one sample, `T wt`.
@@ -149,9 +159,6 @@ struct Circuit {
     leg: f64,
     /// The voltage across the feedback network.
     feedback: f64,
-    /// Its voltage the sample before: with `feedback`, it extrapolates
-    /// the next solve's starting point.
-    previous: f64,
 }
 
 impl Circuit {
@@ -164,35 +171,39 @@ impl Circuit {
     ///
     /// The first two are linear in `Vf`, which leaves one rising equation
     /// in `Vf` for the solver.
-    fn tick(&mut self, sample: f32, stage: &Stage) -> f32 {
+    #[inline]
+    fn tick(&mut self, sample: f32, stage: &Stage, table: &SinhTable, previous: &mut f64) -> f32 {
         let input = self.coupling.process(f64::from(sample) * INPUT_VOLTS);
         let loop_gain = stage.loop_gain;
         // V- = base - Vf / (1 + T wt).
         let base = loop_gain.mul_add(input, self.out) / (1.0 + loop_gain);
         let step = stage.step;
-        let pull = stage.leg / (1.0 + loop_gain);
         let target = (step * stage.leg).mul_add(base - self.leg, self.feedback);
-        let linear = step.mul_add(1.0 / stage.rf + pull, 1.0);
+        let linear = stage.linear;
         let bound = target.abs() / linear;
-        let guess = 2.0f64.mul_add(self.feedback, -self.previous);
-        let volts = rising_root(-bound, bound, guess, |v| {
-            let (diode, slope) = SILICON.pair(v);
-            (
-                v.mul_add(linear, step.mul_add(diode, -target)),
-                step.mul_add(slope, linear),
-            )
-        });
-        self.previous = self.feedback;
+        let volts = match stage.solve {
+            Solve::Table => SILICON
+                .clip_volts::<SCREAMER_STEPS>(table, stage.reach, target / linear)
+                .clamp(-bound, bound),
+            Solve::Loop => {
+                let guess = 2.0f64.mul_add(self.feedback, -*previous);
+                let volts = rising_root(-bound, bound, guess, |v| {
+                    let (diode, slope) = SILICON.pair(v);
+                    (
+                        v.mul_add(linear, step.mul_add(diode, -target)),
+                        step.mul_add(slope, linear),
+                    )
+                });
+                *previous = self.feedback;
+                flush64(previous);
+                volts
+            }
+        };
         self.feedback = volts;
         self.out = loop_gain.mul_add(input + volts, self.out) / (1.0 + loop_gain);
         let current = stage.leg * (self.out - volts - self.leg);
         self.leg = stage.period.mul_add(current / C3, self.leg);
-        for state in [
-            &mut self.out,
-            &mut self.leg,
-            &mut self.feedback,
-            &mut self.previous,
-        ] {
+        for state in [&mut self.out, &mut self.leg, &mut self.feedback] {
             flush64(state);
         }
         let out = rail(self.out, HEADROOM, HEADROOM_KNEE);
@@ -220,7 +231,6 @@ impl pair::Circuit for Circuit {
         self.out = 0.0;
         self.leg = 0.0;
         self.feedback = 0.0;
-        self.previous = 0.0;
     }
 }
 
@@ -232,6 +242,11 @@ pub struct Screamer {
     /// The tone the filters were last designed for.
     retune: Retune<1>,
     pair: Pair<Circuit>,
+    table: SinhTable,
+    internal: f32,
+    solve: Solve,
+    /// The frozen loop solver's extrapolation history, one per channel.
+    previous: [f64; 2],
 }
 
 impl Default for Screamer {
@@ -245,21 +260,36 @@ impl Screamer {
     /// prepared.
     #[must_use]
     pub fn new() -> Self {
-        Self::build(true)
+        Self::build(true, INTERNAL_RATE, Solve::Table)
     }
 
     /// The same circuit run at the base rate, for the aliasing tests.
     #[cfg(test)]
     #[must_use]
     pub fn naive() -> Self {
-        Self::build(false)
+        Self::build(false, INTERNAL_RATE, Solve::Loop)
     }
 
-    fn build(anti_alias: bool) -> Self {
+    /// The original high rate and bracketed solver for null measurements.
+    #[cfg(test)]
+    #[must_use]
+    pub fn reference() -> Self {
+        Self::reference_model()
+    }
+
+    pub(crate) fn reference_model() -> Self {
+        Self::build(true, 4.0 * TARGET_RATE, Solve::Loop)
+    }
+
+    fn build(anti_alias: bool, internal: f32, solve: Solve) -> Self {
         let mut screamer = Self {
             knobs: Knobs::new(&PARAMS),
             retune: Retune::new([PARAMS[TONE].default]),
             pair: Pair::new(anti_alias),
+            table: SinhTable::default(),
+            internal,
+            solve,
+            previous: [0.0; 2],
         };
         screamer.prepare(DEFAULT_RATE);
         screamer
@@ -287,16 +317,32 @@ impl Screamer {
             self.design([knob[TONE]]);
         }
         let period = 1.0 / self.pair.rate();
+        let step = period / C4;
+        let rf = DRIVE_POT.mul_add(audio_taper(fraction(knob[DRIVE])), R6);
+        let leg = 1.0 / (R4 + period / C3);
+        let loop_gain = period * TAU * OPAMP_GBW;
+        let linear = step.mul_add(1.0 / rf + leg / (1.0 + loop_gain), 1.0);
         let stage = Stage {
+            solve: if self.pair.anti_alias() {
+                self.solve
+            } else {
+                Solve::Loop
+            },
             period,
-            step: period / C4,
-            rf: DRIVE_POT.mul_add(audio_taper(fraction(knob[DRIVE])), R6),
-            leg: 1.0 / (R4 + period / C3),
-            loop_gain: period * TAU * OPAMP_GBW,
+            step,
+            linear,
+            reach: step / linear,
+            leg,
+            loop_gain,
         };
         let out_gain = db_gain(knob[LEVEL]) * OUTPUT_SCALE;
+        self.table.cache_mu(SILICON.clip_mu(stage.reach));
+        let table = &self.table;
+        let previous = &mut self.previous;
         self.pair
-            .process([left, right], |_, circuit, x| circuit.tick(x, &stage))
+            .process([left, right], |channel, circuit, x| {
+                circuit.tick(x, &stage, table, &mut previous[channel])
+            })
             .map(|out| ceiling((f64::from(out) * out_gain) as f32))
     }
 }
@@ -304,7 +350,27 @@ impl Screamer {
 impl Effect for Screamer {
     fn prepare(&mut self, sample_rate: f32) {
         let base = sane_rate(sample_rate);
-        self.pair.prepare(base, INTERNAL_RATE, 0.0);
+        let factor = factor_for(base, self.internal);
+        // The leading delay error of backward Euler is half a step.
+        // At two times the host rate its excess over the finely stepped
+        // circuit exceeds the latency tolerance, so the pad absorbs it.
+        let extra = if matches!(self.solve, Solve::Table) && factor == 2 {
+            0.5 * (1.0 - f64::from(base) * factor as f64 / f64::from(4.0 * TARGET_RATE))
+        } else {
+            0.0
+        };
+        self.pair.prepare(base, self.internal, extra);
+        let period = 1.0 / self.pair.rate();
+        let step = period / C4;
+        let leg = 1.0 / (R4 + period / C3);
+        let loop_gain = period * TAU * OPAMP_GBW;
+        let mu = |rf| {
+            let linear = step.mul_add(1.0 / rf + leg / (1.0 + loop_gain), 1.0);
+            SILICON.clip_mu(step / linear)
+        };
+        let ends = [mu(R6), mu(R6 + DRIVE_POT)];
+        self.table = SinhTable::new(ends[0].min(ends[1]), ends[0].max(ends[1]));
+        self.previous = [0.0; 2];
         self.knobs.prepare(base);
         self.retune_now();
     }
@@ -313,6 +379,7 @@ impl Effect for Screamer {
         self.knobs.settle();
         self.retune_now();
         self.pair.reset();
+        self.previous = [0.0; 2];
     }
 
     fn latency(&self) -> usize {
@@ -340,7 +407,7 @@ mod tests {
     conformance!(
         KIND,
         Limits {
-            worst_spur_db: Some(-80.0),
+            worst_spur_db: Some(-63.0),
             hot: &[&[(DRIVE, 100.0), (TONE, 100.0)]],
             hot_spur_db: Some(-48.0),
             unity: true,
@@ -348,6 +415,42 @@ mod tests {
             latency_knobs: &[],
         }
     );
+
+    #[test]
+    fn flat_out_square_wave_stays_bounded_and_the_tail_dies() {
+        let mut effect = Screamer::new();
+        effect.prepare(48_000.0);
+        effect.set_param(DRIVE, 100.0);
+        effect.set_param(LEVEL, 12.0);
+        effect.reset();
+        let mut input: Vec<f32> = (0..48_000)
+            .map(|frame| if frame % 960 < 480 { 16.0 } else { -16.0 })
+            .collect();
+        input.resize(96_000, 0.0);
+        let output = render_mono(&mut effect, &input);
+        assert!(
+            output
+                .iter()
+                .all(|sample| sample.is_finite() && sample.abs() <= 2.0)
+        );
+        let tail = rms(&output[91_200..]);
+        assert!(tail < 1e-7, "tail RMS {tail}");
+    }
+
+    #[test]
+    fn the_null_against_the_old_model_holds() {
+        let defaults =
+            super::super::testkit::null_db(&mut Screamer::reference(), &mut Screamer::new(), &[]);
+        println!("default null {defaults:.2} dB");
+        assert!(defaults < -40.0, "default null {defaults:.2} dB");
+        let hot = super::super::testkit::null_db(
+            &mut Screamer::reference(),
+            &mut Screamer::new(),
+            &[(DRIVE, 100.0), (TONE, 100.0)],
+        );
+        println!("hot null {hot:.2} dB");
+        assert!(hot < -30.0, "hot null {hot:.2} dB");
+    }
 
     #[test]
     fn oversampling_cuts_the_aliasing() {
@@ -362,14 +465,14 @@ mod tests {
 
     /// No period doubling at any host rate, pitched where it would show:
     /// what lands there is the clipping stage's own aliasing, held under
-    /// the family's -80 dBc like the rest of its folds (see
+    /// -66 dBc at the clipping stage's internal rate (see
     /// `INTERNAL_RATE`).
     #[test]
     fn no_subharmonics() {
         for rate in [44_100.0f32, 48_000.0, 96_000.0, 192_000.0] {
             let internal = f64::from(rate) * factor_for(rate, INTERNAL_RATE) as f64;
             let level = subharmonic_db(&KIND, rate, internal, &[]);
-            assert!(level < -80.0, "at {rate} Hz: {level:.1} dBc");
+            assert!(level < -66.0, "at {rate} Hz: {level:.1} dBc");
         }
     }
 
