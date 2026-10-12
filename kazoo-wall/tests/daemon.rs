@@ -1077,6 +1077,7 @@ fn a_move_is_told_to_every_console_the_mover_too_and_logs_nothing() {
                     panic!("a move touched the saves")
                 }
                 Event::Seat { .. }
+                | Event::Chains { .. }
                 | Event::Groups { .. }
                 | Event::Fingerprints { .. }
                 | Event::Fault { .. }

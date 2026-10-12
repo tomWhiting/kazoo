@@ -14,6 +14,8 @@
 //! first time a wall with saves starts, the copies Tom made by hand beside
 //! `patch.json` (`patch.<label>.json`) are copied in as saves, once.
 
+mod chains;
+
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::fs::{self, DirBuilder, File, OpenOptions};

@@ -370,3 +370,5 @@ fn tag_sends_a_group_request_for_the_named_modules() {
         }]
     );
 }
+
+include!("chain_command_tests.rs");

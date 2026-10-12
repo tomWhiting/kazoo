@@ -11,6 +11,10 @@
 //! no row is empty. Moving a module ([`Patch::arrange`]) is not a change to
 //! the sound and returns no [`What`].
 
+mod chains;
+
+pub use chains::{Chain, ChainCable, ChainModule};
+
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 
@@ -249,6 +253,7 @@ pub fn never_undone(what: &What) -> Option<WallError> {
         What::Unknown => refused(
             "that change was made by a newer wall and cannot be undone by this one".to_string(),
         ),
+        What::Chain { changes, .. } => changes.iter().find_map(never_undone),
         What::Turn { .. }
         | What::Patch { .. }
         | What::Unpatch { .. }
@@ -1099,6 +1104,7 @@ impl Patch {
     /// cable already back.
     pub fn undo(&mut self, what: &What) -> Result<What, WallError> {
         match what {
+            What::Chain { name, changes } => self.undo_chain(name, changes),
             What::Turn {
                 module,
                 knob,
