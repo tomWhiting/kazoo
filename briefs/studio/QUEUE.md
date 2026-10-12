@@ -22,3 +22,4 @@ START KZ-A01f base=df857ac branch=lane/kz-A01f df=164GB at 01:44
 END KZ-A01d head=0ac4585 reviewed=READY merged=a7cd574 at 01:47
 START KZ-A01g base=7838f6d branch=lane/kz-A01g df=151GB at 01:52
 END KZ-A01e head=bf65c50 reviewed=READY merged=7e951b9 at 01:55
+END KZ-D01 head=b724197 reviewed=READY(harness; numbers under load, re-take) merged=7f4b334 at 02:00
