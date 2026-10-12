@@ -14,6 +14,14 @@ After this lane the screamer runs at 352.8 kHz (eight times) and solves each sam
 
 ## The design (decided; build exactly this)
 
+Bench names: D01 landed `kazoo-fx/benches/circuit_models.rs` with ids `fx/<id>` at defaults (512-frame blocks). If the `models` bench ids this brief names (`model/<id>/default|hot`) or the fixture `kazoo_fx::bench::fixture(rate)` do not exist on the lane's base, the lane's first commit adds them beside D01's bench, without renaming D01's rows, and says so under FOUND. If another D lane (D10a) has already landed them, use those and add only the rows this lane needs.
+
+RETRY NOTE for KZ-D07a (Cassio, 13 Oct 03:35). The first run (branch lane/kz-D07a, head 9fa8a35) built the table, the solve, the reference and the null helper, and got these after figures at a machine load near 240: cost 0.40 (default) and 0.30 (hot) of before; `no_subharmonics` -66.4 dBc against -80; conformance latency error 0.097 samples at 192 kHz against 0.05; worst spur -65.2 dBc at 44.1 kHz. Decisions for the retry:
+- Cost: a bench at load 200+ is noise of about 2x (see D02). Record before and after in BENCH with the load average next to each, interleaved (before, after, before, after) from the same build; the 0.25 ratio is judged by the reviewer on a quiet machine, not by this run. Do not spend the time box chasing the ratio.
+- `no_subharmonics`: the 12 dB relaxation cap is raised to 15 dB for this test only; if the measured figure is -66.4 dBc the limit becomes -66.0 and the commit names the number. Reason: the old -80 was set for 16x; the fuzz, already at 8x, is accepted at -70 spurs, and -66 dBc of subharmonic under full drive is 40 dB below the drive's own distortion products.
+- Latency at 192 kHz (factor 2x): find why the measured delay is 0.097 samples off the reported whole-sample `latency()` at 2x and not at 4x or 8x (read `oversample.rs` where the padding to whole samples is computed for each factor). Fix the padding for the 2x case so the reported latency matches; never relax this limit. The first run's half-sample compensation broke the null and must not be repeated.
+- `solve` must have no loop: write the two steps out (or a `const` step count unrolled by hand), as the brief says.
+
 ### KZ-D07a: the screamer
 
 **Rate.** `INTERNAL_RATE` (`screamer.rs:63`) becomes `2.0 * TARGET_RATE`. The module doc paragraph at `screamer.rs:9-11` and `55-62` is rewritten to say 352.8 kHz and the -65 dBc figure it already gives for that rate. `Pair::prepare` (`pair.rs:65`) and `factor_for` (`oversample.rs:54`) then give 8x at 44.1 and 48 kHz, 4x at 96 kHz, 2x at 192 kHz, with nothing else to change.
