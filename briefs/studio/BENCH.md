@@ -7,20 +7,21 @@ Numbers from Tom's Mac unless a row says otherwise. A block is 512 frames at
 nice -n 10 env CARGO_BUILD_JOBS=4 cargo bench -p <crate> --bench <name> -- '<filter>'
 ```
 
-## 2026-10-13 at c391124 (lane KZ-D01, partial baseline)
+## 2026-10-13 at c391124 (lane KZ-D01, taken under load, not the baseline)
+
+Every number in this section was taken on 13 Oct 2026 while the machine ran
+other builds with a load average near 100. These numbers are not the
+baseline: no later lane measures against them. The baseline is to be taken
+again on a quiet machine and written as its own section; until then no row
+of this file is a baseline.
 
 Machine: MacBook Pro (MacBookPro18,2), Apple M1 Max, 10 cores, macOS 26.6.2,
 rustc 1.97.1 (8bab26f4f 2026-07-14).
 
-Measured with uncommitted bench lint fixes and large wall fixtures measured
-first. Source base: b6a1fea. The sandbox required a worktree-local Cargo cache:
-`CARGO_HOME="$PWD/target/kz-cargo-home"`. Cargo commands also set
-`NEXTEST_STATE_DIR="$PWD/target/kz-logs/nextest"`.
-
-These are Criterion console interval midpoints. Bench commands ran concurrently;
-these numbers include shared machine load and do not establish isolated costs.
-The first release build and its logs were lost when `target/` disappeared;
-the cause is not verified. The recovery wall run used the filter
+Source base: b6a1fea, with the bench lint fixes then uncommitted. The values
+are Criterion console interval midpoints. Several bench commands ran at the
+same time as each other and as the other builds, so they include that load
+and do not establish isolated costs. The wall run used the filter
 `wall/(chains/1000|cables/10000)` and exited 0.
 
 | bench | N | ns per block | blocks per second | % of real time |
@@ -46,7 +47,7 @@ second; the look's size in bytes in the last column):
 |---|---|---|---|---|
 | control/build/100 | 100 | 421,750,000 | 2.371 | |
 
-The 25-minute recovery did not establish every required row. Unmeasured rows:
+Not measured at all (no number exists for these rows):
 all `wall/kind/*`; wall chains 10 and 100; unplugged 100 and 1000; cables 10,
 100 and 1000; culled 1000; the remaining 20 FX catalogue entries; desk callback
 8, 64 and 512; link encode and decode 512; control build 1000 and look 100,
@@ -57,6 +58,6 @@ The fixture uses those eight jacks, `ceil(C / 8)` leaves, and counts the
 summing-tree routes within C. This preserves the support test's exact total
 route count and makes every leaf audible. It differs from the brief's fixture.
 
-Recovered logs are under `target/kz-logs/bench-*.txt`. The complete four-crate
-Nextest check is not verified. Clippy exited 0 before the target loss;
-formatter/check and ast-grep exited 0 again after it.
+The Criterion logs these rows came from were under `target/`, which was
+deleted outside the lane at about 01:23 on 13 Oct; they no longer exist, so
+the rows above cannot be checked against their source.
