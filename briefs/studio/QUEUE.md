@@ -48,3 +48,10 @@ START KZ-D10a base=f5069f1 branch=lane/kz-D10a df=62GB at 03:32
 START KZ-D07a base=f5069f1 branch=lane/kz-D07a df=55GB at 03:33
 END KZ-G01b head=036c50e reviewed=READY(nothing to fix; pin passes on old and new code) merged=a71619a at 03:35
 END KZ-A02b head=50cd375 (A02 e2de947 + A02b) reviewed=READY(review added io/channel_adapt.rs so the tui engine's duplex path adapts to the opened width; open items -> A02c: double probe in run.rs, processing.rs stereo-only render) merged=6aaf7c1 at 03:41
+INCOMPLETE KZ-D12 head=aca9f89 branch=lane/kz-D12 kept: EQ coefficient bound 7e-4 vs 1e-4 (wrong measure; retry judges response within 0.01 dB), glide bench 5.62->5.59 ms (pan trig per sample found; retry adds it), fx suite interrupted at load at 03:58
+START KZ-A02c base=a7bfad1 branch=lane/kz-A02c df=69GB at 03:58
+START KZ-D12 base=303fc88 branch=lane/kz-D12 df=68GB at 04:00
+START KZ-B01 base=b6a1fea branch=lane/kz-B01 df=66GB at 04:01
+END KZ-D07a head=72b512e reviewed=READY(review made the step count a compile-time const; carried into D07b: latency correction at every factor, name sinh(T_MAX); cost target 0.25 withdrawn, design gives ~0.5) merged=c4c0454 at 04:07
+END KZ-D10a head=2452a90 reviewed=READY after hand merge with D07a's bench files (review fixed hall diffusers jumping on a size glide; spring default target withdrawn, spring items carried into D10b; merged-lane checks: clippy 0, fmt 0, ast-grep 0, 66 space/drive tests pass) merged=49848a6 at 04:12
+START KZ-D07b base=41b4de1 branch=lane/kz-D07b df=49GB at 04:13

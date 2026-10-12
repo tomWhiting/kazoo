@@ -241,6 +241,9 @@ pub struct Hall {
     predelay_time: Slew,
     diffusers: [[TapAllpass; 4]; 2],
     early_tone: [FirstOrder; 2],
+    early_at: [[f32; 8]; 2],
+    diffuser_at: [[f32; 4]; 2],
+    gliding: bool,
     lines: [TankLine; 8],
     freeze: Ramp,
     /// The size the tank uses: follows the knob no faster than
@@ -281,6 +284,9 @@ impl Hall {
             diffusers: Default::default(),
             predelay_time: Slew::new(MIN_SINC_READ, MAX_SLEW),
             early_tone: [FirstOrder::default(); 2],
+            early_at: [[0.0; 8]; 2],
+            diffuser_at: [[0.0; 4]; 2],
+            gliding: false,
             lines: Default::default(),
             freeze: Ramp::new(0.0),
             size: Slew::new(1.0, 0.0),
@@ -293,6 +299,31 @@ impl Hall {
     /// A line's length in samples at the tank's size, before sweeping.
     fn length(&self, line: usize) -> f32 {
         LINES_MS[line] * 0.001 * self.size.value() * self.rate
+    }
+
+    fn positions(&mut self, gliding: bool) {
+        let ms = 0.001 * self.size.value() * self.rate;
+        let predelay = self.predelay_time.value();
+        let hold = |at: f32| if gliding { at } else { at.round() };
+        self.early_at = EARLY.map(|taps| taps.map(|(at, _, _)| hold(at.mul_add(ms, predelay))));
+        // The diffusers' lengths follow the rate alone, never the size, so
+        // they stay on whole samples through a glide.
+        self.diffuser_at = DIFFUSERS_MS.map(|side| side.map(|at| (at * 0.001 * self.rate).round()));
+        self.gliding = gliding;
+    }
+
+    fn advance_positions(&mut self) -> (f32, bool) {
+        self.predelay_time.set(
+            (self.knobs.get(PREDELAY) * self.rate)
+                .max(MIN_SINC_READ)
+                .round(),
+        );
+        let predelay = self.predelay_time.next();
+        let gliding = !(self.size.settled() && self.predelay_time.settled());
+        if self.countdown == 0 || gliding || self.gliding != gliding {
+            self.positions(gliding);
+        }
+        (predelay, gliding)
     }
 
     /// Design every line's gain and shelves for the knobs and the freeze.
@@ -341,6 +372,7 @@ impl Hall {
             self.size.set(self.knobs.get(SIZE));
             self.size.next();
         }
+        let (predelay, gliding) = self.advance_positions();
         if self.countdown == 0 {
             let on = self.knobs.target(FREEZE) >= 0.5;
             let target = if on { 1.0 } else { 0.0 };
@@ -357,22 +389,21 @@ impl Hall {
         for (line, &sample) in self.predelay.iter_mut().zip(&input) {
             line.push(sample);
         }
-        self.predelay_time
-            .set((self.knobs.get(PREDELAY) * self.rate).max(MIN_SINC_READ));
-        let predelay = self.predelay_time.next();
         let delayed = [
-            self.predelay[0].read(predelay),
-            self.predelay[1].read(predelay),
+            self.predelay[0].read_at(predelay, gliding),
+            self.predelay[1].read_at(predelay, gliding),
         ];
 
         // Early reflections.
-        let ms = 0.001 * self.size.value() * self.rate;
         let mut early = [0.0f32; 2];
         for (side, taps) in EARLY.iter().enumerate() {
-            let sum = taps.iter().fold(0.0, |sum, &(at, gain, across)| {
-                let source = if across { 1 - side } else { side };
-                gain.mul_add(self.predelay[source].read(at.mul_add(ms, predelay)), sum)
-            });
+            let sum = taps.iter().zip(&self.early_at[side]).fold(
+                0.0,
+                |sum, (&(_, gain, across), &at)| {
+                    let source = if across { 1 - side } else { side };
+                    gain.mul_add(self.predelay[source].read_at(at, gliding), sum)
+                },
+            );
             early[side] = self.early_tone[side].process(f64::from(0.65 * sum)) as f32;
         }
 
@@ -382,8 +413,7 @@ impl Hall {
         for (side, sample) in diffused.iter_mut().enumerate() {
             for (stage, allpass) in self.diffusers[side].iter_mut().enumerate() {
                 let gain = if stage < 2 { 0.7 } else { 0.6 } * spread;
-                *sample =
-                    allpass.process(*sample, DIFFUSERS_MS[side][stage] * 0.001 * self.rate, gain);
+                *sample = allpass.process(*sample, self.diffuser_at[side][stage], gain, false);
             }
         }
 
@@ -397,7 +427,12 @@ impl Hall {
             let line = &mut self.lines[index];
             let swept = depth.mul_add(sine(line.sweep.next(SWEEP_HZ[index], self.rate)), length);
             let delay = frozen.mul_add(length.round(), keep * swept);
-            *out = line.delay.read(delay);
+            *out = if depth == 0.0 {
+                line.delay
+                    .read_at(if gliding { delay } else { delay.round() }, gliding)
+            } else {
+                line.delay.read(delay)
+            };
         }
         let mut feedback = outs;
         for (value, line) in feedback.iter_mut().zip(&mut self.lines) {
@@ -486,7 +521,7 @@ impl Effect for Hall {
         self.size.set_speed(MAX_SLEW / (longest * 0.001 * rate));
         self.size.snap(self.knobs.get(SIZE));
         self.predelay_time
-            .snap((self.knobs.get(PREDELAY) * rate).max(MIN_SINC_READ));
+            .snap((self.knobs.get(PREDELAY) * rate).max(MIN_SINC_READ).round());
         let frozen = if self.knobs.target(FREEZE) >= 0.5 {
             1.0
         } else {
@@ -550,6 +585,80 @@ mod tests {
         let mut hall = build("hall", &all);
         let (left, right) = run_mono(hall.as_mut(), &impulse(seconds));
         left.iter().zip(&right).map(|(l, r)| l + r).collect()
+    }
+
+    #[test]
+    fn settling_the_size_does_not_click() {
+        use crate::Effect;
+        let mut hall = super::Hall::new();
+        hall.set_param(super::MIX, 1.0);
+        hall.prepare(RATE);
+        let mut samples = Vec::new();
+        let mut settled_at = None;
+        for n in 0..(5.0 * RATE) as usize {
+            if n >= (0.5 * RATE) as usize && n < RATE as usize {
+                let progress = 0.5f32.mul_add(-RATE, n as f32) / (0.5 * RATE);
+                hall.set_param(super::SIZE, progress.mul_add(0.4, 1.0));
+            } else if n == RATE as usize {
+                hall.set_param(super::SIZE, 1.4);
+            }
+            let was_moving = !hall.size.settled();
+            let input = 10.0f32.powf(-12.0 / 20.0)
+                * (std::f32::consts::TAU * 440.0 * n as f32 / RATE).sin();
+            samples.push(hall.frame(input, input)[1][0]);
+            if n > RATE as usize && was_moving && hall.size.settled() {
+                settled_at = Some(n);
+            }
+            if let Some(at) = settled_at {
+                if n >= at + (0.01 * RATE) as usize + super::CONTROL {
+                    break;
+                }
+            }
+        }
+        let at = settled_at.expect("size reaches the target");
+        let peak_step = |values: &[f32]| {
+            values
+                .windows(2)
+                .fold(0.0f32, |peak, pair| peak.max((pair[1] - pair[0]).abs()))
+        };
+        let before = peak_step(&samples[at - (0.1 * RATE) as usize..at]);
+        let after = peak_step(&samples[at - 1..]);
+        assert!(
+            after <= 3.0 * before,
+            "handover step {after}, before {before}"
+        );
+        assert!(
+            hall.early_at
+                .iter()
+                .flatten()
+                .chain(hall.diffuser_at.iter().flatten())
+                .all(|at| at.fract() == 0.0)
+        );
+    }
+
+    /// The diffusers' lengths are set by the rate alone, so a size glide
+    /// must leave them on whole samples: moving them to an exact fraction
+    /// for the glide would jump each allpass by up to half a sample as the
+    /// glide starts and again as it ends.
+    #[test]
+    fn a_size_glide_leaves_the_diffusers_on_whole_samples() {
+        use crate::Effect;
+        let mut hall = super::Hall::new();
+        hall.prepare(44_100.0);
+        hall.frame(0.0, 0.0);
+        let settled = hall.diffuser_at;
+        hall.set_param(super::SIZE, 1.4);
+        for _ in 0..64 {
+            hall.frame(0.0, 0.0);
+        }
+        assert!(!hall.size.settled(), "the size is still gliding");
+        assert_eq!(hall.diffuser_at, settled);
+        assert!(
+            hall.diffuser_at
+                .iter()
+                .flatten()
+                .all(|at| at.fract() == 0.0)
+        );
     }
 
     #[test]
