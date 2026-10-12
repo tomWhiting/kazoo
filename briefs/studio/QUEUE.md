@@ -45,3 +45,4 @@ END KZ-E01 head=e546fed reviewed=READY(review fixed stepped-knob check, console 
 INCOMPLETE KZ-D10a head=76d23ae branch=lane/kz-D10a kept: sinc table -66.2 dB vs -70 (brief error: 1024 phases, retry at 2048), spring/two 0.82 vs 0.6 at load 240, two spring tests interrupted; hall 0.26-0.29, plate 0.12-0.24 at 03:31
 START KZ-D12 base=303fc88 branch=lane/kz-D12 df=71GB at 03:31
 START KZ-D10a base=f5069f1 branch=lane/kz-D10a df=62GB at 03:32
+START KZ-D07a base=f5069f1 branch=lane/kz-D07a df=55GB at 03:33
