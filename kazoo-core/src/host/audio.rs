@@ -319,7 +319,7 @@ mod tests {
         let chosen = configure(&OutputRequest::default(), 48_000, &fake_ranges(), 128).unwrap();
         let mut output =
             OutputCallback::<f32, _>::new(chosen.info, |data: &mut [f32], _: &OutputInfo| {
-                data.fill(0.5)
+                data.fill(0.5);
             });
         for frames in [64_usize, 128, 300, 1024] {
             let mut data = vec![0.0_f32; frames * 2];
