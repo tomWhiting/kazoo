@@ -52,3 +52,4 @@ INCOMPLETE KZ-D12 head=aca9f89 branch=lane/kz-D12 kept: EQ coefficient bound 7e-
 START KZ-A02c base=a7bfad1 branch=lane/kz-A02c df=69GB at 03:58
 START KZ-D12 base=303fc88 branch=lane/kz-D12 df=68GB at 04:00
 START KZ-B01 base=b6a1fea branch=lane/kz-B01 df=66GB at 04:01
+END KZ-D07a head=72b512e reviewed=READY(review made the step count a compile-time const; carried into D07b: latency correction at every factor, name sinh(T_MAX); cost target 0.25 withdrawn, design gives ~0.5) merged=c4c0454 at 04:07
