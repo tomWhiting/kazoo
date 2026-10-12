@@ -33,7 +33,7 @@ fn add(kind: &str) -> Request {
     }
 }
 
-fn patch(from: String, to: String) -> Request {
+const fn patch(from: String, to: String) -> Request {
     Request::Patch {
         from,
         to,

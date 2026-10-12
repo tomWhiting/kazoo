@@ -23,13 +23,6 @@ fn wall_render(c: &mut Criterion) {
     group
         .sample_size(50)
         .measurement_time(Duration::from_secs(3));
-    for kind in Kind::all().filter(|kind| kind.name() != "speak") {
-        measure(
-            &mut group,
-            &format!("kind/{}", kind.name()),
-            module_kind(kind),
-        );
-    }
     for count in [10, 100, 1000] {
         measure(&mut group, &format!("chains/{count}"), chains(count));
     }
@@ -40,6 +33,13 @@ fn wall_render(c: &mut Criterion) {
         measure(&mut group, &format!("cables/{count}"), cables(count));
     }
     measure(&mut group, "culled/1000", culled(1000));
+    for kind in Kind::all().filter(|kind| kind.name() != "speak") {
+        measure(
+            &mut group,
+            &format!("kind/{}", kind.name()),
+            module_kind(kind),
+        );
+    }
     group.finish();
 }
 

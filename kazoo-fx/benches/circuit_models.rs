@@ -21,7 +21,7 @@ fn circuit_models(c: &mut Criterion) {
         for (index, param) in kind.params.iter().enumerate() {
             let value = match param.name {
                 "mix" => param.max,
-                "drive" | "gain" => param.min + 0.9 * (param.max - param.min),
+                "drive" | "gain" => 0.9_f32.mul_add(param.max - param.min, param.min),
                 _ => param.default,
             };
             effect.set_param(index, value);
