@@ -49,7 +49,9 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>
 pub fn cli(args: impl IntoIterator<Item = String>) -> color_eyre::Result<()> {
     match parse_args(args) {
         Ok(None) => {
-            std::io::stdout().lock().write_all(USAGE.as_bytes())?;
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(USAGE.as_bytes())?;
+            stdout.flush()?;
             Ok(())
         }
         Ok(Some(args)) => crate::run(args),
