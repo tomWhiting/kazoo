@@ -940,3 +940,39 @@ pub fn render_right_late(effect: &mut dyn Effect, played: &[f32]) -> Vec<[u32; 2
         .map(|(l, r)| [l.to_bits(), r.to_bits()])
         .collect()
 }
+
+/// Render `effect` with both sides playing `played` for the first half and
+/// the right side playing it at `later` times its level after that: the
+/// output of both channels, for the twin skip's bit-for-bit check.
+#[must_use]
+pub fn render_mono_then_stereo(
+    effect: &mut dyn Effect,
+    played: &[f32],
+    later: f32,
+) -> Vec<[u32; 2]> {
+    effect.prepare(RATE);
+    effect.reset();
+    let half = played.len() / 2;
+    let right: Vec<f32> = played
+        .iter()
+        .enumerate()
+        .map(|(at, &x)| if at < half { x } else { later * x })
+        .collect();
+    let mut left_out = vec![0.0; played.len()];
+    let mut right_out = vec![0.0; played.len()];
+    let mut start = 0;
+    while start < played.len() {
+        let end = (start + 256).min(played.len());
+        effect.process(
+            &CONTEXT,
+            [&played[start..end], &right[start..end]],
+            [&mut left_out[start..end], &mut right_out[start..end]],
+        );
+        start = end;
+    }
+    left_out
+        .iter()
+        .zip(&right_out)
+        .map(|(l, r)| [l.to_bits(), r.to_bits()])
+        .collect()
+}

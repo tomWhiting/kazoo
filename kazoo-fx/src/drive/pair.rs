@@ -19,6 +19,15 @@ pub trait Circuit: Copy + Default + std::fmt::Debug {
     /// the output is bit for bit what running it would give.
     const QUIET_AT_REST: bool = false;
 
+    /// Whether the model's tick treats both channels alike, so two
+    /// channels in the same state given the same input give the same
+    /// output and end in the same state. A pair whose circuit says so runs
+    /// one channel and copies it while both hear the same samples (a mono
+    /// signal on both sides): the second channel takes the first's state
+    /// when the sides first differ, which is exactly the state it would
+    /// have reached running itself.
+    const SIDES_ALIKE: bool = false;
+
     /// Forget all state: capacitors discharged, solvers at rest.
     fn reset(&mut self);
 }
@@ -44,9 +53,23 @@ pub struct Pair<C> {
     wet_live: bool,
     /// Per channel, whether it has heard only zeros since reset.
     idle: [bool; 2],
-    /// Whether idle channels of a quiet-at-rest circuit are skipped; off
-    /// only for the test that proves skipping changes nothing.
-    skip_idle: bool,
+    /// Whether channels are skipped, and whether the right is the left.
+    sharing: Sharing,
+}
+
+/// How a pair may save work across its channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sharing {
+    /// Both channels have heard the same samples since reset, so the
+    /// right channel's state is the left's.
+    Twinned,
+    /// The channels have heard different samples; each runs itself
+    /// (an idle one may still be skipped).
+    Apart,
+    /// Every channel runs, always: only for the tests that prove the
+    /// skips change nothing.
+    #[cfg(test)]
+    Off,
 }
 
 impl<C: Circuit> Pair<C> {
@@ -61,16 +84,17 @@ impl<C: Circuit> Pair<C> {
             rate: 0.0,
             wet_live: false,
             idle: [true; 2],
-            skip_idle: true,
+            sharing: Sharing::Twinned,
         }
     }
 
-    /// The same pair, but every channel runs even while it hears nothing:
-    /// what the skip is checked against.
+    /// The same pair, but every channel runs itself, even while it hears
+    /// nothing or the same as the other: what the skips are checked
+    /// against.
     #[cfg(test)]
     #[must_use]
     pub const fn running_idle(mut self) -> Self {
-        self.skip_idle = false;
+        self.sharing = Sharing::Off;
         self
     }
 
@@ -78,7 +102,11 @@ impl<C: Circuit> Pair<C> {
     /// circuit is quiet at rest and it has heard only zeros since reset.
     /// The first sample that is not zero wakes it for good, until reset.
     fn skips(&mut self, index: usize, sample: f32) -> bool {
-        if !(C::QUIET_AT_REST && self.skip_idle && self.idle[index]) {
+        #[cfg(test)]
+        if self.sharing == Sharing::Off {
+            return false;
+        }
+        if !(C::QUIET_AT_REST && self.idle[index]) {
             return false;
         }
         if sample == 0.0 {
@@ -141,6 +169,31 @@ impl<C: Circuit> Pair<C> {
             channel.circuit.reset();
         }
         self.idle = [true; 2];
+        #[cfg(test)]
+        if self.sharing == Sharing::Off {
+            return;
+        }
+        self.sharing = Sharing::Twinned;
+    }
+
+    /// Whether this frame's right channel is the left's: both have heard
+    /// the same samples since reset and hear the same now. When the sides
+    /// first differ, the right channel takes the left's state, the one it
+    /// would have reached running itself, and runs on its own until reset.
+    fn twins(&mut self, frame: [f32; 2]) -> bool {
+        if !(C::SIDES_ALIKE && self.sharing == Sharing::Twinned) {
+            return false;
+        }
+        if frame[0].to_bits() == frame[1].to_bits() {
+            if frame[0] != 0.0 {
+                self.idle = [false; 2];
+            }
+            return true;
+        }
+        self.sharing = Sharing::Apart;
+        self.channels[1] = self.channels[0];
+        self.idle[1] = self.idle[0];
+        false
     }
 
     /// One frame: `tick` is called for every oversampled sample of the left
@@ -152,6 +205,14 @@ impl<C: Circuit> Pair<C> {
         mut tick: impl FnMut(usize, &mut C, f32) -> f32,
     ) -> [f32; 2] {
         let mut out = [0.0; 2];
+        if self.twins(frame) {
+            let channel = &mut self.channels[0];
+            let circuit = &mut channel.circuit;
+            let both = channel
+                .oversampler
+                .process(frame[0], |x| tick(0, circuit, x));
+            return [both, both];
+        }
         let skipped = [self.skips(0, frame[0]), self.skips(1, frame[1])];
         for (index, (channel, sample)) in self.channels.iter_mut().zip(frame).enumerate() {
             if skipped[index] {

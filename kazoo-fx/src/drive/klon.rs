@@ -318,6 +318,8 @@ impl pair::Circuit for Circuit {
     /// each stage's swing and antiderivative memory are zero at zero, and a
     /// fresh stage's first step reads its antiderivative at zero either way.
     const QUIET_AT_REST: bool = true;
+    /// The tick ignores which side it is on.
+    const SIDES_ALIKE: bool = true;
 
     fn reset(&mut self) {
         self.coupling.reset();
@@ -758,5 +760,28 @@ mod tests {
         let running = super::super::testkit::render_right_late(&mut Klon::running_idle(), &played);
         assert_eq!(skipped, running);
         assert!(skipped.iter().any(|[_, right]| *right != 0));
+    }
+
+    /// A mono signal on both sides runs one side and copies it; when the
+    /// sides part, both come out bit for bit as they do running each side.
+    #[test]
+    fn a_mono_signal_runs_once_without_a_bit_of_difference() {
+        let played = super::super::testkit::guitar(1.0, 0.5);
+        let half = played.len() / 2;
+        for later in [0.5, 0.0] {
+            let twinned =
+                super::super::testkit::render_mono_then_stereo(&mut Klon::new(), &played, later);
+            let running = super::super::testkit::render_mono_then_stereo(
+                &mut Klon::running_idle(),
+                &played,
+                later,
+            );
+            assert_eq!(twinned, running, "right at {later} after halfway");
+            assert!(
+                twinned[half + 4_800..]
+                    .iter()
+                    .any(|[left, right]| left != right)
+            );
+        }
     }
 }
