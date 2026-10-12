@@ -111,3 +111,7 @@ If this code were used in a hospital, the worst credible failure is ___, and it 
 ```
 
 The same block, with `KZ-D09b`, ends the second lane.
+
+## Open from the D09a review (Cassio, 13 Oct 05:30)
+
+`the_octave_coming_back_does_not_click` (`kazoo-fx/src/drive/fuzz.rs`) starts with the octave off, so its filter is already clean when it comes back; the reset of a stale octave filter (octave on, then off, then on again) is never exercised. Next fuzz work adds `the_octave_on_off_on_does_not_click`: octave on at full weight through a loud passage, off for one block, on again; the switch-on step under the same bound as the existing test. Red first if the stale filter clicks.

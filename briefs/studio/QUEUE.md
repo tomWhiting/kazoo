@@ -66,3 +66,4 @@ INCOMPLETE KZ-D10b head=ec921b7 branch=lane/kz-D10b kept: the bounded alignment 
 START KZ-D09b base=06aba3a branch=lane/kz-D09b df=44GB at 04:57
 END KZ-A03 head=2229dd7 reviewed=READY(review fixed: a link with no desk keeps looking; a refusing desk leaves the instrument playing direct; live desk showed 'kazoo-808 plugged into strip 1'; open items -> A03b) merged=64db48b at 05:01
 START KZ-B01b base=a8390fe branch=lane/kz-B01b df=54GB at 05:01
+END KZ-D09a head=c48cd72 reviewed=READY(refresh proven by mutant; caching walk strengthened; open: octave on-off-on test, written into the D09 brief; bench needs a quiet machine) merged=a79c79c at 05:25
