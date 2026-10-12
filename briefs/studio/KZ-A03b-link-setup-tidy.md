@@ -32,3 +32,10 @@ ast-grep scan
 - [ ] No public `open`; the tui engine uses `connect_or_direct`.
 - [ ] Two sleeps for three tries.
 - [ ] Red tests then green; no lint suppression; new files under 1000 lines; no existing file split.
+
+## Also from the B01b review (Cassio, 13 Oct 05:50)
+
+5. `kazoo-core/src/ipc/link.rs` near 619: "desk link did not stop within 500 ms" is written into the status of the link being dropped, which nobody can read after the drop (before B01b it went to stderr). Make a link thread left running past shutdown visible: a process-wide count (`kazoo_core::ipc::link::stuck_shutdowns()`) that the wall daemon logs and an instrument shows in its hub badge, with a test that forces a wedged worker.
+6. Same file near 469: "desk link completion could not be delivered" has the same reach problem; count it the same way.
+7. `kazoo-wall/src/daemon/control.rs` near 800: the once-only refusal log has no test and `told_link_refused` has no doc comment; add both.
+8. Only the 808 has a test that renders the "desk link at normal priority" words; add one each for arp, dx, glass, string and the tui header.
