@@ -115,3 +115,9 @@ The same block, with `KZ-D09b`, ends the second lane.
 ## Open from the D09a review (Cassio, 13 Oct 05:30)
 
 `the_octave_coming_back_does_not_click` (`kazoo-fx/src/drive/fuzz.rs`) starts with the octave off, so its filter is already clean when it comes back; the reset of a stale octave filter (octave on, then off, then on again) is never exercised. Next fuzz work adds `the_octave_on_off_on_does_not_click`: octave on at full weight through a loud passage, off for one block, on again; the switch-on step under the same bound as the existing test. Red first if the stale filter clicks.
+
+## Open from the D09b review (Cassio, 13 Oct 05:40)
+
+- The VHS cost target (0.7) is withdrawn for this design: VHS runs one `Magnetic` at 2x (two steps per frame), so the magnetics are about 20% of its cost and even free magnetics leave it near 0.8. The magnetic step's 0.51 against 0.5 was measured at varying load; judge it on a quiet machine.
+- VHS always runs both stereo hi-fi channels and four fractional delay reads per frame (`lofi/vhs.rs` near 462 to 474), even in linear mode where the hi-fi output is not heard. Next tape work skips the hi-fi path while linear mode is selected (with a handover test that switching modes does not click), which is where VHS's cost actually is.
+- `lofi/parts.rs` is 1409 lines, over the 1000-line rule, from before this run; the next lane that touches it moves one named mechanism out and names it in its brief.
