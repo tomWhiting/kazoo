@@ -17,8 +17,17 @@ It plugs into the kazoo-mix desk whenever one is running, and plays on its
 own otherwise. A phrase loops on the transport. Press ? inside for the keys.
 ";
 
-/// Parse the phrase flags, returning `None` when help is requested.
+/// Read the arguments after the program name. `Ok(None)` means help was
+/// asked for, wherever it stands; `Err` is one sentence saying what was wrong
+/// (the caller adds the usage).
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, String> {
+    let args: Vec<String> = args.into_iter().collect();
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        return Ok(None);
+    }
     let mut args = args.into_iter();
     let mut phrase = None;
     while let Some(arg) = args.next() {
@@ -29,8 +38,6 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>
             phrase = Some(text);
         } else if let Some(text) = arg.strip_prefix("--phrase=") {
             phrase = Some(text.to_owned());
-        } else if arg == "-h" || arg == "--help" {
-            return Ok(None);
         } else {
             return Err(format!("unknown argument '{arg}'"));
         }
@@ -61,6 +68,16 @@ mod tests {
             parse_args(["--phrase", "c4/4", "-h"].map(str::to_owned)),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn help_wins_wherever_it_stands() {
+        assert_eq!(
+            parse_args(["--bogus", "--help"].map(str::to_owned)),
+            Ok(None)
+        );
+        assert_eq!(parse_args(["--phrase", "-h"].map(str::to_owned)), Ok(None));
+        assert_eq!(parse_args(["-h", "--phrase"].map(str::to_owned)), Ok(None));
     }
 
     #[test]
