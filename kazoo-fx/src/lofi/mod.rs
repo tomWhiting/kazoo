@@ -13,12 +13,15 @@
 
 mod cassette;
 mod genloss;
+mod magnetic;
 mod parts;
 mod radio;
 mod reel;
 mod sampler12;
 mod vhs;
 mod vinyl;
+
+pub(crate) use magnetic::Magnetic;
 
 use crate::EffectKind;
 

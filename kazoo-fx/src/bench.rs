@@ -43,3 +43,14 @@ pub fn fixture(rate: f32) -> Vec<f32> {
         })
         .collect()
 }
+
+/// A tape stage recording each block with gentle saturation and residual hysteresis.
+/// Construction prepares all shared data before measurement starts.
+pub fn magnetic_step() -> impl FnMut(&[f32]) -> f32 {
+    let mut tape = crate::lofi::Magnetic::default();
+    move |block| {
+        block
+            .iter()
+            .fold(0.0, |sum, &input| sum + tape.process(input, 1.5, 0.15))
+    }
+}
