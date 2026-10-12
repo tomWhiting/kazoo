@@ -113,12 +113,17 @@ impl SinhTable {
         along.mul_add(at(low_row + 1) - low, low)
     }
 
-    /// Solve with zero, one or two Newton updates and bounded exponents.
+    /// Solve with exactly `STEPS` Newton updates and bounded exponents.
+    /// The steps are written out, not looped, so the cost is fixed: a
+    /// count of 0, 1 or 2 compiles, and any other count is refused when
+    /// the code is compiled rather than quietly doing fewer steps.
     /// A non-finite input or nonpositive `mu` produces silence.
     #[must_use]
     #[inline]
-    pub fn solve(&self, xi: f64, mu: f64, steps: u32) -> f64 {
-        assert!(steps <= 2, "the clipper supports at most two Newton steps");
+    pub fn solve<const STEPS: u32>(&self, xi: f64, mu: f64) -> f64 {
+        const {
+            assert!(STEPS <= 2, "the clipper solve has 0, 1 or 2 Newton steps");
+        }
         if !xi.is_finite() || !mu.is_finite() || mu <= 0.0 || self.values.is_empty() {
             return 0.0;
         }
@@ -145,12 +150,10 @@ impl SinhTable {
             };
             (y - value / slope).clamp(-Y_MAX, Y_MAX)
         };
-        if steps == 0 {
-            y
-        } else if steps == 1 {
-            update(y)
-        } else {
-            update(update(y))
+        match STEPS {
+            0 => y,
+            1 => update(y),
+            _ => update(update(y)),
         }
     }
 }
@@ -245,8 +248,8 @@ impl Diode {
     /// Voltage satisfying `v + reach I(v) = open` for the antiparallel pair.
     #[must_use]
     #[inline]
-    pub fn clip_volts(&self, table: &SinhTable, reach: f64, open: f64, steps: u32) -> f64 {
-        self.thermal * table.solve(open / self.thermal, self.clip_mu(reach), steps)
+    pub fn clip_volts<const STEPS: u32>(&self, table: &SinhTable, reach: f64, open: f64) -> f64 {
+        self.thermal * table.solve::<STEPS>(open / self.thermal, self.clip_mu(reach))
     }
 
     /// The current through two of these back to back (antiparallel) at
@@ -322,17 +325,17 @@ mod tests {
     fn two_newton_steps_reach_the_loop() {
         let table = SinhTable::new(MU_LOW, MU_HIGH);
         grid(|xi, mu| {
-            let error = (table.solve(xi, mu, 2) - loop_solution(xi, mu)).abs();
+            let error = (table.solve::<2>(xi, mu) - loop_solution(xi, mu)).abs();
             assert!(error <= 2e-8, "xi {xi}, mu {mu}, error {error}");
             for outside in [MU_LOW / 2.0, MU_HIGH * 2.0] {
-                let error = (table.solve(xi, outside, 2) - loop_solution(xi, outside)).abs();
+                let error = (table.solve::<2>(xi, outside) - loop_solution(xi, outside)).abs();
                 assert!(error <= 1e-6, "xi {xi}, mu {outside}, error {error}");
             }
         });
         for mu in [MU_LOW / 2.0, MU_LOW, MU_HIGH, MU_HIGH * 2.0] {
             for t in [-14.0f64, -12.0, -6.0, 0.0, 6.0, 12.0, 14.0] {
                 let xi = t.sinh();
-                let value = table.solve(xi, mu, 2);
+                let value = table.solve::<2>(xi, mu);
                 let error = (value - loop_solution(xi, mu)).abs();
                 assert!(
                     value.is_finite() && error <= 1e-6,
@@ -350,11 +353,11 @@ mod tests {
             (1.0, f64::INFINITY),
             (f64::INFINITY, MU_LOW),
         ] {
-            assert_eq!(table.solve(xi, mu, 2).to_bits(), 0.0f64.to_bits());
+            assert_eq!(table.solve::<2>(xi, mu).to_bits(), 0.0f64.to_bits());
         }
         for xi in [f64::MIN, -1.0, 0.0, 1.0, f64::MAX] {
             for mu in [f64::MIN_POSITIVE, MU_LOW, f64::MAX] {
-                assert!(table.solve(xi, mu, 2).is_finite());
+                assert!(table.solve::<2>(xi, mu).is_finite());
             }
         }
     }

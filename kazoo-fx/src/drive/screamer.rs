@@ -183,7 +183,7 @@ impl Circuit {
         let bound = target.abs() / linear;
         let volts = match stage.solve {
             Solve::Table => SILICON
-                .clip_volts(table, stage.reach, target / linear, SCREAMER_STEPS)
+                .clip_volts::<SCREAMER_STEPS>(table, stage.reach, target / linear)
                 .clamp(-bound, bound),
             Solve::Loop => {
                 let guess = 2.0f64.mul_add(self.feedback, -*previous);
