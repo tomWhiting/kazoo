@@ -579,12 +579,26 @@ fn the_render_load_is_measured_and_averaged() {
     // A block that took no time at all pulls the average down, and never
     // below nothing.
     let before = control.shared().render_load();
-    engine.measure(Instant::now() + std::time::Duration::from_secs(1), 48_000);
+    engine.measure(thread_cpu() + std::time::Duration::from_secs(1), 48_000);
     let after = control.shared().render_load();
     assert!(after < before && after >= 0.0, "{before} then {after}");
     // Nothing rendered measures nothing.
-    engine.measure(Instant::now(), 0);
+    engine.measure(thread_cpu(), 0);
     assert!((control.shared().render_load() - after).abs() < f32::EPSILON);
+}
+
+#[test]
+fn time_the_audio_thread_is_set_aside_is_not_the_wall_s_load() {
+    let (mut engine, control) = tone(true);
+    // A block whose thread waited (as the scheduler makes it wait on a busy
+    // machine) instead of working: the wait is not load.
+    for _ in 0..20 {
+        let started = thread_cpu();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        engine.measure(started, 480);
+    }
+    let load = control.shared().render_load();
+    assert!(load < 0.2, "waiting counted as load: {load}");
 }
 
 #[test]

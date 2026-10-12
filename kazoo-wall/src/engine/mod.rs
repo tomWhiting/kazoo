@@ -38,7 +38,7 @@ pub mod tables;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::Duration;
 
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::follow::{TransportChange, TransportFollower};
@@ -726,6 +726,15 @@ const fn doubled(have: usize, need: usize) -> usize {
     if twice > need { twice } else { need }
 }
 
+/// The CPU time the calling thread has used.
+fn thread_cpu() -> Duration {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    Duration::new(
+        u64::try_from(time.tv_sec).unwrap_or(0),
+        u32::try_from(time.tv_nsec).unwrap_or(0),
+    )
+}
+
 /// A tempo held to the wall's range; not a number gives 120.
 #[must_use]
 pub const fn clamp_bpm(bpm: f64) -> f64 {
@@ -745,9 +754,12 @@ impl Engine {
     /// desk alike, fades to silence; the meters and the listening still
     /// hear it.
     pub fn render(&mut self, data: &mut [f32], channels: usize) {
-        // Reading the monotonic clock takes no allocation, lock or system
-        // call on the platforms the wall runs on.
-        let started = Instant::now();
+        // The load is the CPU time this thread spends rendering, not the
+        // time that passes: on a busy machine the scheduler sets the audio
+        // thread aside now and then, and that waiting is the machine's
+        // load, not the wall's. Reading the thread's CPU clock allocates
+        // nothing and takes no lock.
+        let started = thread_cpu();
         self.drain_commands();
         self.drain_hub();
         let channels = channels.max(1);
@@ -757,13 +769,13 @@ impl Engine {
 
     /// Fold how long rendering `frames` frames took, since `started`, into
     /// the render load.
-    fn measure(&mut self, started: Instant, frames: usize) {
+    fn measure(&mut self, started: Duration, frames: usize) {
         if frames == 0 {
             return;
         }
         // Blocks are at most a few seconds: close enough in f32.
         let lasted = frames as f32 / self.sample_rate;
-        let load = started.elapsed().as_secs_f32() / lasted;
+        let load = thread_cpu().saturating_sub(started).as_secs_f32() / lasted;
         // An average over about LOAD_SECONDS, whatever the block size.
         let weight = 1.0 - (-lasted / LOAD_SECONDS).exp();
         let averaged = weight.mul_add(load - self.load, self.load);
