@@ -9,11 +9,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use crate::{JunoSynth, NUM_VOICES, SynthParams, VoiceStatus};
 use crossbeam_channel::{Receiver, Sender};
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::link::HubLinkAudio;
 use kazoo_core::ipc::types::{NOTE_OFF, NOTE_ON};
-use kazoo_juno::{JunoSynth, NUM_VOICES, SynthParams, VoiceStatus};
 
 use crate::app::WAVEFORM_BUF_SIZE;
 

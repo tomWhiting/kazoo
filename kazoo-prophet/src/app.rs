@@ -1,8 +1,8 @@
 //! Application state for the Prophet TUI.
 
+use crate::synth::oscillator::{OctaveRange, Waveform};
+use crate::{NUM_VOICES, SynthParams, VoiceStatus};
 use kazoo_core::ipc::link::LinkStatus;
-use kazoo_prophet::synth::oscillator::{OctaveRange, Waveform};
-use kazoo_prophet::{NUM_VOICES, SynthParams, VoiceStatus};
 
 /// Waveform buffer length copied from the audio callback.
 pub const WAVEFORM_BUF_SIZE: usize = 1024;
