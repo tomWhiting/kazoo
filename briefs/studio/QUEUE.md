@@ -14,3 +14,5 @@ START KZ-A01b base=c90f1b7 branch=lane/kz-A01b df=29GB at 01:06
 START KZ-A01c base=c90f1b7 branch=lane/kz-A01c df=47GB at 01:19
 END KZ-A01b head=5c34c65 reviewed=READY merged=5aab8cf at 01:23
 START KZ-A01d base=ba390c3 branch=lane/kz-A01d df=59GB at 01:34
+START KZ-A01e base=4a96a6a branch=lane/kz-A01e df=68GB at 01:35
+TIMEOUT KZ-B01 branch=lane/kz-B01 kept at 81af833 (5 of 6 new tests green; instrument wake latency not met under load) at 01:38
