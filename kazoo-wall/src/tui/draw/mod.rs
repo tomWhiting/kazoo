@@ -22,7 +22,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use kazoo_wall::protocol::Snapshot;
+use crate::protocol::Snapshot;
 
 use super::app::{App, Mode, View};
 use super::theme::{AMBER, RACK, TEXT, TEXT_DIM};

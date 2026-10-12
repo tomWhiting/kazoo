@@ -9,7 +9,7 @@
 
 use ratatui::style::Color;
 
-use kazoo_wall::fingerprints::Shares;
+use crate::fingerprints::Shares;
 
 /// Saturation of a seat's dye.
 const SATURATION: f64 = 0.62;

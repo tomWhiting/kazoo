@@ -1,7 +1,7 @@
 //! The rack view's layout maths: faceplate sizes, wrapping into rows, what
 //! is under the mouse, where cables run, and panning.
 
-use kazoo_wall::protocol::ModuleView;
+use crate::protocol::ModuleView;
 
 use super::super::rack::geometry::{
     self, Density, GAP_X, Hit, JACK_H, JACK_W, KNOB_H, KNOB_ROWS, KNOB_W, METER_W, MIN_INNER,

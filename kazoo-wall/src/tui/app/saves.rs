@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use kazoo_wall::protocol::{
+use crate::protocol::{
     DeleteSaveResult, LoadResult, MAX_SAVE_NAME, Request, SaveResult, SavesResult, is_auto_save,
     valid_save_name,
 };
@@ -344,7 +344,7 @@ impl App {
             self.note(note.clone(), LogTone::Fault);
         }
         if let Some(snapshot) = self.snapshot.as_mut() {
-            snapshot.save = Some(kazoo_wall::protocol::SaveMark {
+            snapshot.save = Some(crate::protocol::SaveMark {
                 name: name.clone(),
                 revision: snapshot.revision,
                 changed: false,
@@ -364,7 +364,7 @@ impl App {
         }
         let backup = &result.backup;
         let words = match &result.change.what {
-            kazoo_wall::protocol::What::Load {
+            crate::protocol::What::Load {
                 save: Some(save), ..
             } => format!(
                 "loaded \"{save}\" · the wall as it was is saved as \"{backup}\" · z undoes it"

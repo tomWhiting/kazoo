@@ -7,11 +7,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 
-use kazoo_wall::daemon::wall::SETTLE_SHARE;
-use kazoo_wall::format;
-use kazoo_wall::protocol::{
-    CableRecord, ClockSource, EngineHealth, LogHealth, Recording, Snapshot,
-};
+use crate::daemon::wall::SETTLE_SHARE;
+use crate::format;
+use crate::protocol::{CableRecord, ClockSource, EngineHealth, LogHealth, Recording, Snapshot};
 
 use super::super::app::{App, Focus, Mode, Patching, Tone, View, glide_words};
 use super::super::knob::{Travel, show};
@@ -702,7 +700,7 @@ fn prompt(app: &App) -> Option<(String, String)> {
             format!("save the wall as: {text}█"),
             format!(
                 "   1 to {} of A-Z a-z 0-9 space _ . - · ⏎ saves it (it plays on) · Esc cancels",
-                kazoo_wall::protocol::MAX_SAVE_NAME
+                crate::protocol::MAX_SAVE_NAME
             ),
         )),
         Mode::Normal

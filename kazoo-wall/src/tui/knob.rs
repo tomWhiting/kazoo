@@ -6,9 +6,9 @@
 //! in even ratios, and a log range starting at zero is logarithmic from a
 //! thousandth of its top, with zero at the very bottom.
 
-use kazoo_wall::catalogue::Curve;
-use kazoo_wall::format;
-use kazoo_wall::protocol::{KnobInfo, KnobView};
+use crate::catalogue::Curve;
+use crate::format;
+use crate::protocol::{KnobInfo, KnobView};
 
 /// How far one press turns a knob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

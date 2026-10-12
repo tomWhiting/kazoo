@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use kazoo_wall::protocol::{CableRecord, KnobView, ModuleView};
+use crate::protocol::{CableRecord, KnobView, ModuleView};
 
 use super::super::app::{App, Focus, JackRef};
 use super::super::knob::{Travel, show};
@@ -456,7 +456,7 @@ fn knob_row(
         row,
         row.x + 1,
         y,
-        &jack_glyph(kazoo_wall::catalogue::Signal::Cv, plugged).to_string(),
+        &jack_glyph(crate::catalogue::Signal::Cv, plugged).to_string(),
         jack_style,
     );
     let label_style = if chosen {

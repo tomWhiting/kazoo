@@ -26,6 +26,7 @@ pub mod speech;
 pub mod timing;
 pub mod wall;
 
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io;
@@ -630,7 +631,16 @@ pub fn is_running(socket: &Path) -> bool {
     matches!(discovery::hub_listening(socket), Ok(true))
 }
 
-/// Start `exe serve` as a detached daemon (its own process group, output to
+/// The executable and complete argument prefix used to start a wall daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServeCommand {
+    /// The program to spawn, independent of its file name.
+    pub program: PathBuf,
+    /// Arguments in order, including the command and any serve flags.
+    pub args: Vec<OsString>,
+}
+
+/// Start `serve` as a detached daemon (its own process group, output to
 /// `log`), unless one is already answering on `socket`, and wait up to
 /// `timeout` for it to answer.
 ///
@@ -638,7 +648,12 @@ pub fn is_running(socket: &Path) -> bool {
 ///
 /// Fails if the log cannot be opened, the process cannot start, or it is
 /// not answering after `timeout`.
-pub fn launch_detached(exe: &Path, socket: &Path, log: &Path, timeout: Duration) -> io::Result<()> {
+pub fn launch_detached(
+    serve: &ServeCommand,
+    socket: &Path,
+    log: &Path,
+    timeout: Duration,
+) -> io::Result<()> {
     if is_running(socket) {
         return Ok(());
     }
@@ -646,8 +661,8 @@ pub fn launch_detached(exe: &Path, socket: &Path, log: &Path, timeout: Duration)
         DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     }
     let output = OpenOptions::new().create(true).append(true).open(log)?;
-    let mut child = Command::new(exe)
-        .arg("serve")
+    let mut child = Command::new(&serve.program)
+        .args(&serve.args)
         .stdin(Stdio::null())
         .stdout(output.try_clone()?)
         .stderr(output)

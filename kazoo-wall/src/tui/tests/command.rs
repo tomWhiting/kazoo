@@ -2,7 +2,7 @@
 
 use crossterm::event::KeyCode;
 
-use kazoo_wall::protocol::Request;
+use crate::protocol::Request;
 
 use super::super::app::{App, Mode, load_prefs, save_prefs};
 use super::super::worker::Job;
@@ -333,7 +333,7 @@ fn group_shows_only_its_modules_and_cables_until_group_alone() {
         vec!["vco1".to_string(), "vcf1".to_string()],
     )]);
     app.on_reply(
-        super::super::worker::Reply::Event(kazoo_wall::protocol::Event::Groups { groups }),
+        super::super::worker::Reply::Event(crate::protocol::Event::Groups { groups }),
         std::time::Instant::now(),
     );
     open(&mut app);

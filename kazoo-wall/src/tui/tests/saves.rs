@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
 
-use kazoo_wall::protocol::{
+use crate::protocol::{
     BrokenSave, Change, DeleteSaveResult, ErrorCode, Event, LoadResult, Request, SaveInfo,
     SaveMark, SaveResult, SavesResult, What,
 };
