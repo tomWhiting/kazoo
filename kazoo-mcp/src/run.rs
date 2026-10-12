@@ -219,6 +219,13 @@ mod tests {
     }
 
     #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(
+            USAGE.starts_with("kazoo-mcp: the wall for a Claude seat, an MCP server on stdio\n")
+        );
+    }
+
+    #[test]
     fn run_builds_its_own_runtime() -> color_eyre::Result<()> {
         STAND_IN.set(true);
         let args = Args {

@@ -160,6 +160,11 @@ mod tests {
     }
 
     #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(USAGE.starts_with("kazoo-tui: mouth synth, tracking views, mixing desk\n"));
+    }
+
+    #[test]
     fn run_builds_its_own_runtime() -> color_eyre::Result<()> {
         STAND_IN.set(true);
         run(Args)?;
