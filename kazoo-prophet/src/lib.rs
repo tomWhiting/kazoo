@@ -5,6 +5,13 @@
 //! drift. The implementation is original and intentionally models the
 //! instrument architecture rather than a circuit clone.
 
+mod app;
+mod audio;
+mod input;
+mod run;
 pub mod synth;
+mod ui;
 
 pub use synth::{NUM_VOICES, ProphetSynth, SynthParams, VoiceStatus};
+
+pub use run::{Args, USAGE, cli, parse_args, run};

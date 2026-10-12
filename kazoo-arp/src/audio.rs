@@ -13,8 +13,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use crate::{ArpClock, ArpCursor, ArpMode, Arpeggiator, ClockDivision, NoteEvent};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
-use kazoo_arp::{ArpClock, ArpCursor, ArpMode, Arpeggiator, ClockDivision, NoteEvent};
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::follow::{TransportChange, TransportFollower};
 use kazoo_core::ipc::link::{HubLinkAudio, RequestError};
@@ -364,7 +364,7 @@ impl AudioEngine {
     fn request_bpm(&mut self, bpm: f64) {
         // The desk's range and the clock's are the same; a NaN stays NaN
         // and is refused by the link, or ignored by the clock.
-        let bpm = bpm.clamp(kazoo_arp::MIN_BPM, kazoo_arp::MAX_BPM);
+        let bpm = bpm.clamp(crate::MIN_BPM, crate::MAX_BPM);
         // Only the tempo: the desk keeps its own play state, which this
         // instrument may not have heard yet.
         // Tempos are tens to hundreds of BPM: f32 holds them closely enough.
@@ -645,7 +645,7 @@ mod tests {
         assert!((bpm(&rig.shared) - 90.0).abs() < 1e-9);
         assert!(rig.tx.send(AudioCommand::SetBpm(1_000.0)));
         rig.engine.render(&mut [0.0; 64]);
-        assert!((bpm(&rig.shared) - kazoo_arp::MAX_BPM).abs() < 1e-9);
+        assert!((bpm(&rig.shared) - crate::MAX_BPM).abs() < 1e-9);
 
         // Playing again starts from the top: the downbeat is the next frame.
         assert!(rig.tx.send(note_on(60)));

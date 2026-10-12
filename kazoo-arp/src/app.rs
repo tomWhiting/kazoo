@@ -10,7 +10,7 @@ use crate::audio::{
     ArpCommand, AudioCommand, CommandSender, DEFAULT_BPM, DisplayEvent, EngineShared, SendFailure,
     apply_command,
 };
-use kazoo_arp::{ArpClock, ArpMode, Arpeggiator, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING};
+use crate::{ArpClock, ArpMode, Arpeggiator, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING};
 use kazoo_core::ipc::link::LinkStatus;
 
 /// Velocity of notes played on the computer keyboard.
@@ -457,8 +457,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ArpCursor;
     use crossbeam_channel::Receiver;
-    use kazoo_arp::ArpCursor;
     use ringbuf::HeapProd;
     use ringbuf::traits::{Producer, Split};
 
@@ -586,7 +586,7 @@ mod tests {
         let mut engine = rig.app.arp.clone();
         let mut last: Option<(u8, ArpCursor)> = None;
         for _ in 0..2 {
-            if let Some(kazoo_arp::NoteEvent::NoteOn { midi_note, .. }) = engine.step() {
+            if let Some(crate::NoteEvent::NoteOn { midi_note, .. }) = engine.step() {
                 last = Some((midi_note, engine.cursor()));
                 rig.display
                     .try_push(DisplayEvent::Played {

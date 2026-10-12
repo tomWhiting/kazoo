@@ -28,7 +28,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use kazoo_arp::ArpMode;
+use crate::ArpMode;
 
 use crate::app::{App, KeyMode, Param};
 use crate::audio::SendFailure;
