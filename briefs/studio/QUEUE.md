@@ -65,3 +65,4 @@ END KZ-D07b head=7a7ee28 reviewed=READY(screamer padding back to factor 2 only w
 INCOMPLETE KZ-D10b head=ec921b7 branch=lane/kz-D10b kept: the bounded alignment search misses the period (shimmer 63/200, pitch 14/200 within a sample), shimmer contract 2.10 dB at 192 kHz vs 1.5, bench slower at load 167; the design's search budget needs rethinking before a retry. The carried spring item (third coil skipped when silent) is done and green in this branch at 04:54
 START KZ-D09b base=06aba3a branch=lane/kz-D09b df=44GB at 04:57
 END KZ-A03 head=2229dd7 reviewed=READY(review fixed: a link with no desk keeps looking; a refusing desk leaves the instrument playing direct; live desk showed 'kazoo-808 plugged into strip 1'; open items -> A03b) merged=64db48b at 05:01
+START KZ-B01b base=a8390fe branch=lane/kz-B01b df=54GB at 05:01
