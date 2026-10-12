@@ -39,6 +39,12 @@ RETRY NOTE for KZ-D10a (Cassio, 13 Oct 03:40). The first run (branch lane/kz-D10
 
 ### KZ-D10b: the searches
 
+**Carried into D10b from the D10a review (Cassio, 13 Oct 04:25; do these first, each its own commit).**
+- With two springs on, the third coil still runs `feed` and `pick_up` (four sinc reads and its filters) on silence once its ramp has reached zero. Skip them while the third cascade is not live, with the same zeroed-history rule `set_live(2)` uses, and extend the two-against-three test to cover it.
+- The spring default target (0.8) is withdrawn: the `springs` knob runs 2 to 3 and defaults to 3, so the default always ran three cascades and still does; the only saving there is the cheaper reads. `spring/two` keeps its 0.6 target, judged on a quiet machine.
+- `shimmer.rs` already carries D10a's plain-read change near `Reading { stride }`; merge with it, do not undo it.
+
+
 **One budget, two places.** Both `align`s get the same three-pass search with the same named constants (declared in each file with the same values and the same doc; the two modules share no code today and the lane does not create a shared module for four constants):
 
 ```
