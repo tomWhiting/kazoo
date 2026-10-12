@@ -25,7 +25,7 @@ pub struct Args;
 
 /// What `--help` prints.
 pub const USAGE: &str =
-    "kazoo-303: TB-303 inspired acid bassline synth — all procedural synthesis, no samples
+    "kazoo-303: TB-303 inspired acid bassline synth, all procedural synthesis, no samples
 
 usage: kazoo 303
        kazoo-303
@@ -578,5 +578,12 @@ mod tests {
     fn usage_names_both_ways_to_start_it() {
         assert!(USAGE.contains("kazoo 303"));
         assert!(USAGE.contains("kazoo-303"));
+    }
+
+    #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(USAGE.starts_with(
+            "kazoo-303: TB-303 inspired acid bassline synth, all procedural synthesis, no samples\n"
+        ));
     }
 }

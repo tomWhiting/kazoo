@@ -23,7 +23,7 @@ pub struct Args;
 
 /// What `--help` prints.
 pub const USAGE: &str =
-    "kazoo-mini: Moog Minimoog inspired bass/lead synth — monophonic, ladder filter
+    "kazoo-mini: Moog Minimoog inspired bass/lead synth, monophonic, ladder filter
 
 usage: kazoo mini
        kazoo-mini
@@ -362,5 +362,12 @@ mod tests {
     fn usage_names_both_ways_to_start_it() {
         assert!(USAGE.contains("kazoo mini"));
         assert!(USAGE.contains("kazoo-mini"));
+    }
+
+    #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(USAGE.starts_with(
+            "kazoo-mini: Moog Minimoog inspired bass/lead synth, monophonic, ladder filter\n"
+        ));
     }
 }

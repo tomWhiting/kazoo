@@ -20,7 +20,7 @@ pub struct Args;
 
 /// What `--help` prints.
 pub const USAGE: &str =
-    "kazoo-cs80: Yamaha CS-80 inspired pad synth — 8-voice polyphonic, dual-layer
+    "kazoo-cs80: Yamaha CS-80 inspired pad synth, 8-voice polyphonic, dual-layer
 
 usage: kazoo cs80
        kazoo-cs80
@@ -471,5 +471,12 @@ mod tests {
     fn usage_names_both_ways_to_start_it() {
         assert!(USAGE.contains("kazoo cs80"));
         assert!(USAGE.contains("kazoo-cs80"));
+    }
+
+    #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(USAGE.starts_with(
+            "kazoo-cs80: Yamaha CS-80 inspired pad synth, 8-voice polyphonic, dual-layer\n"
+        ));
     }
 }
