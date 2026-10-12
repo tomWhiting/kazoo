@@ -72,8 +72,8 @@ pub const COMMANDS: [(&str, &str, &str); 17] = [
     ("groups", "", "say every group and its modules"),
     (
         "chain",
-        "save|add <name>",
-        "save the selected chain or add a saved copy",
+        "save|replace|add <name>",
+        "save the selected chain (replace saves over one), or add a saved copy",
     ),
     ("chains", "", "list saved chains"),
     (
@@ -216,7 +216,7 @@ impl App {
             return Vec::new();
         };
         match (name, position) {
-            ("chain", 1) => ["save", "add"]
+            ("chain", 1) => ["save", "replace", "add"]
                 .into_iter()
                 .filter(|action| action.starts_with(&lower))
                 .map(|action| Completion {
@@ -225,7 +225,7 @@ impl App {
                     open: false,
                 })
                 .collect(),
-            ("chain", 2) if words.get(1) == Some(&"add") => self
+            ("chain", 2) if matches!(words.get(1), Some(&("add" | "replace"))) => self
                 .chain_names
                 .iter()
                 .filter(|name| name.to_lowercase().starts_with(&lower))

@@ -494,7 +494,11 @@ impl Seat {
                     _ => return bad("chain save requires either modules or a group"),
                 };
                 self.read::<kazoo_wall::protocol::ChainSaveResult>(
-                    Request::ChainSave { name, modules },
+                    Request::ChainSave {
+                        name,
+                        modules,
+                        overwrite: false,
+                    },
                     |result| {
                         Ok(format!(
                             "Saved {} modules, {} cables, {} {} to the outside left off.",

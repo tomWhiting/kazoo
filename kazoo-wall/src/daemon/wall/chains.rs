@@ -6,6 +6,15 @@ use crate::protocol::{ErrorCode, Event, Request, WallError, What};
 use crate::store::SaveError;
 
 fn chain_error(err: &SaveError) -> WallError {
+    if let SaveError::Exists(name) = err {
+        return error(
+            ErrorCode::SaveExists,
+            format!(
+                "a chain named \"{name}\" is kept already; a console saves over it with \
+                 :chain replace {name}, anyone can choose another name"
+            ),
+        );
+    }
     let code = match err {
         SaveError::Unknown(_) => ErrorCode::UnknownSave,
         SaveError::Exists(_) => ErrorCode::SaveExists,

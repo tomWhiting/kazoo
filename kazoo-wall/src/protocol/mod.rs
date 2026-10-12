@@ -265,6 +265,9 @@ pub enum Request {
     ChainSave {
         name: String,
         modules: Vec<String>,
+        /// Save over a chain of that name (a console only, as for saves).
+        #[serde(default)]
+        overwrite: bool,
     },
     ChainAdd {
         name: String,

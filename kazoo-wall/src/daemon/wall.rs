@@ -2416,7 +2416,11 @@ impl Wall {
                 modules,
                 join,
             } => self.group(group, modules, *join),
-            Request::ChainSave { name, modules } => self.chain_save(name, modules, console),
+            Request::ChainSave {
+                name,
+                modules,
+                overwrite,
+            } => self.chain_save(name, modules, console && *overwrite),
             Request::ChainAdd { name } => self.chain_add(seat, name, now),
             Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change),

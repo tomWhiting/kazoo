@@ -30,20 +30,23 @@ impl App {
 
     pub(super) fn run_chain(&mut self, args: &[&str]) -> Result<(), String> {
         let [action, name] = args else {
-            return Err("type :chain save <name> or :chain add <name>".to_string());
+            return Err(
+                "type :chain save <name>, :chain replace <name> or :chain add <name>".to_string(),
+            );
         };
         if !valid_save_name(name) {
             return Err("give the chain a valid save name".to_string());
         }
         let request = match *action {
-            "save" => Request::ChainSave {
+            "save" | "replace" => Request::ChainSave {
                 name: (*name).to_string(),
                 modules: self.chain_selection()?,
+                overwrite: *action == "replace",
             },
             "add" => Request::ChainAdd {
                 name: (*name).to_string(),
             },
-            _ => return Err("chain takes save or add".to_string()),
+            _ => return Err("chain takes save, replace or add".to_string()),
         };
         self.jobs.push(Job::Call(request));
         Ok(())

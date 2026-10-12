@@ -208,6 +208,7 @@ fn chain_save_refuses_an_mcp_overwrite_with_save_exists() {
     let request = crate::protocol::Request::ChainSave {
         name: "voice".to_string(),
         modules: vec!["vco1".to_string()],
+        overwrite: true,
     };
     let refused = wall
         .request_as("Seat", false, &request, Instant::now())
@@ -250,5 +251,34 @@ fn chain_with_a_half_step_on_a_stepped_knob_is_refused() {
         ErrorCode::BrokenSave
     );
     assert_eq!(wall.patch(), &before);
+    drop(engine);
+}
+
+#[test]
+fn a_console_chain_save_over_a_kept_chain_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut wall, engine) = chain_wall(dir.path());
+    save_chain(&mut wall);
+    let kept = std::fs::read(dir.path().join("chains/voice.json")).unwrap();
+    let refused = wall
+        .request(
+            "Tom",
+            &serde_json::from_value(
+                serde_json::json!({"op":"chain_save", "name":"Voice", "modules":["vco1"]}),
+            )
+            .unwrap(),
+            Instant::now(),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::SaveExists);
+    assert_eq!(
+        std::fs::read(dir.path().join("chains/voice.json")).unwrap(),
+        kept
+    );
+    let replaced = chain_request(
+        &mut wall,
+        serde_json::json!({"op":"chain_save", "name":"voice", "modules":["vco1"], "overwrite":true}),
+    );
+    assert_eq!(replaced["modules"], 1);
     drop(engine);
 }

@@ -20,7 +20,8 @@ fn chain_commands_save_the_cursor_group_add_and_list() {
         requests,
         vec![Request::ChainSave {
             name: "beatchain".to_string(),
-            modules: vec!["vco1".to_string(), "vcf1".to_string()]
+            modules: vec!["vco1".to_string(), "vcf1".to_string()],
+            overwrite: false,
         }]
     );
     press(&mut app, KeyCode::Char(':'));
