@@ -20,6 +20,7 @@
 
 mod command;
 mod flood;
+mod folds;
 mod keys;
 mod mouse;
 mod moves;
@@ -395,6 +396,7 @@ pub struct App {
     selected: Option<String>,
     /// The group shown alone (`:group`), if one is.
     group: Option<String>,
+    look: folds::Look,
     /// The wall as shown: [`Self::snapshot`] cut down to [`Self::group`].
     shown: Option<Snapshot>,
     selected_hint: usize,
@@ -445,6 +447,7 @@ impl App {
             mode: Mode::Normal,
             selected: None,
             group: None,
+            look: folds::Look::default(),
             shown: None,
             selected_hint: 0,
             knob: 0,
@@ -728,8 +731,14 @@ impl App {
     pub fn lay_out_rack(&mut self, view: (u16, u16)) -> bool {
         match self.shown.as_ref().or(self.snapshot.as_ref()) {
             Some(snapshot) if !snapshot.modules.is_empty() => {
-                self.rack
-                    .lay_out(&snapshot.modules, snapshot.rack.as_deref(), view);
+                self.rack.lay_out(
+                    &snapshot.modules,
+                    snapshot.rack.as_deref(),
+                    view,
+                    &snapshot.groups,
+                    &self.look.folded,
+                );
+                self.normalize_fold_selection();
                 true
             }
             _ => {
@@ -904,6 +913,10 @@ impl App {
         }
         if self.group.is_some() {
             self.refilter();
+        }
+        if self.view == View::Rack && !self.look.folded.is_empty() {
+            let area = self.rack.area;
+            self.lay_out_rack((area.width, area.height));
         }
     }
 

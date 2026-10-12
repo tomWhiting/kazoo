@@ -10,6 +10,7 @@
 //! Everything is drawn from [`App`] alone, so the same frame can be drawn
 //! into ratatui's test backend.
 
+mod folded;
 mod overlay;
 mod panes;
 mod rack;
