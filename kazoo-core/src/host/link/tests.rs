@@ -73,3 +73,40 @@ fn drop_sends_shutdown() {
     drop(linked);
     hub.join().unwrap();
 }
+
+fn accept_within(listener: &UnixListener, limit: Duration) -> std::os::unix::net::UnixStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the link stopped looking for the desk"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("accept failed: {err}"),
+        }
+    }
+}
+
+#[test]
+fn a_link_that_found_no_desk_joins_a_desk_that_starts_later() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("late.sock");
+    let (link, audio) = connect_config_or_direct(config(&socket)).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut stream = accept_within(&listener, Duration::from_secs(5));
+    let mut buffer = FrameBuffer::new();
+    assert_eq!(
+        buffer.read_frame(&mut stream).unwrap().msg_type,
+        MSG_REGISTER
+    );
+    drop(audio);
+    drop(link);
+}

@@ -174,22 +174,17 @@ fn connect_with(config: LinkConfig, mut sleep: impl FnMut(Duration)) -> Result<L
 }
 
 pub fn connect_or_direct(setup: &LinkSetup) -> Result<(HubLink, HubLinkAudio), Error> {
-    match connect(setup) {
-        Ok(linked) => linked.into_parts(),
-        Err(Error::NoDesk) => {
-            eprintln!("{}: no desk; playing direct", setup.name);
-            start_link(config(setup)?, None, false).map_err(Error::Io)
-        }
-        Err(err) => Err(err),
-    }
+    connect_config_or_direct(config(setup)?)
 }
 
+// Playing direct keeps the link thread looking, so a desk started after the
+// instrument still picks it up, as the link always has.
 pub fn connect_config_or_direct(config: LinkConfig) -> Result<(HubLink, HubLinkAudio), Error> {
     match connect_config(config.clone()) {
         Ok(linked) => linked.into_parts(),
         Err(Error::NoDesk) => {
             eprintln!("{}: no desk; playing direct", config.name);
-            start_link(config, None, false).map_err(Error::Io)
+            start_link(config, None, true).map_err(Error::Io)
         }
         Err(err) => Err(err),
     }
