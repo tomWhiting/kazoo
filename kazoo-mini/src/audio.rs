@@ -199,7 +199,10 @@ pub fn build_audio_stream(
             // MiniVoice applies soft_limit + sanitize_sample per sample.
             voice.process_block(&mut mono_buf[..frames]);
             for (frame, &sample) in chunk.chunks_exact_mut(channels).zip(&mono_buf[..frames]) {
-                frame.fill(sample);
+                frame.fill(0.0);
+                for channel in frame.iter_mut().take(2) {
+                    *channel = sample;
+                }
             }
             // A trailing partial frame (never expected) is silenced.
             chunk[frames * channels..].fill(0.0);

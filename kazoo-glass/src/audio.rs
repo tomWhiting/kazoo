@@ -107,10 +107,10 @@ impl AudioStats {
 }
 
 /// Write one stereo frame to a device frame of any width: a mono device gets
-/// the centre, a stereo one left and right, and extra channels the centre.
+/// the centre, a stereo one left and right, and extra channels silence.
 fn write_frame(frame: &mut [f32], left: f32, right: f32) {
     let centre = 0.5 * (left + right);
-    frame.fill(centre);
+    frame.fill(if frame.len() == 1 { centre } else { 0.0 });
     if frame.len() >= 2 {
         frame[0] = left;
         frame[1] = right;
@@ -395,7 +395,7 @@ mod tests {
         let mut surround = [9.0; 6];
         write_frame(&mut surround, 0.2, 0.6);
         assert!((surround[0] - 0.2).abs() < 1.0e-6 && (surround[1] - 0.6).abs() < 1.0e-6);
-        assert!(surround[2..].iter().all(|s| (s - 0.4).abs() < 1.0e-6));
+        assert!(surround[2..].iter().all(|s| *s == 0.0));
     }
     use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig, hub_link};
     use kazoo_core::ipc::protocol::FrameBuffer;

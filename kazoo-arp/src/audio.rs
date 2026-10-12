@@ -537,7 +537,10 @@ impl AudioEngine {
             } else {
                 kazoo_core::soft_limit(self.voice.tick())
             };
-            frame.fill(sample);
+            frame.fill(0.0);
+            for channel in frame.iter_mut().take(2) {
+                *channel = sample;
+            }
             self.stereo[frames * 2] = sample;
             self.stereo[frames * 2 + 1] = sample;
             frames += 1;

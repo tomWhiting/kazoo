@@ -31,6 +31,9 @@ pub enum RateChoice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputRequest {
     pub device: DeviceChoice,
+    /// Channel count the instrument wants to write. The device may open
+    /// wider or narrower; callbacks receive the actual count in
+    /// [`OutputInfo::channels`].
     pub channels: u16,
     pub rate: RateChoice,
 }
@@ -66,6 +69,7 @@ impl OutputRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputInfo {
     pub rate: u32,
+    /// Actual device channel count supplied to the callback.
     pub channels: u16,
     pub frames: usize,
 }
@@ -181,45 +185,61 @@ fn configure(
     }
     let frames =
         u32::try_from(frames).map_err(|error| Error::Device(format!("buffer size: {error}")))?;
-    for format in [
+    let formats = [
         cpal::SampleFormat::F32,
         cpal::SampleFormat::I16,
         cpal::SampleFormat::U16,
-    ] {
-        for range in ranges {
-            if range.sample_format() != format
-                || range.channels() != request.channels
-                || rate < range.min_sample_rate()
-                || rate > range.max_sample_rate()
-            {
-                continue;
+    ];
+    let chosen = ranges
+        .iter()
+        .filter_map(|range| {
+            let channels = range.channels();
+            let format_order = formats
+                .iter()
+                .position(|format| *format == range.sample_format())?;
+            if channels == 0 || rate < range.min_sample_rate() || rate > range.max_sample_rate() {
+                return None;
             }
             let frames = match *range.buffer_size() {
                 cpal::SupportedBufferSize::Range { min, max } => {
                     if min == 0 || max < min {
-                        continue;
+                        return None;
                     }
                     frames.clamp(min, max)
                 }
                 cpal::SupportedBufferSize::Unknown => frames,
             };
-            return Ok(Chosen {
-                config: cpal::StreamConfig {
-                    channels: request.channels,
-                    sample_rate: rate,
-                    buffer_size: cpal::BufferSize::Fixed(frames),
-                },
-                format,
-                info: OutputInfo {
-                    rate,
-                    channels: request.channels,
-                    frames: frames as usize,
-                },
-            });
-        }
+            let (step, distance) = match channels.cmp(&request.channels) {
+                std::cmp::Ordering::Equal => (0, 0),
+                std::cmp::Ordering::Greater => (1, channels - request.channels),
+                std::cmp::Ordering::Less => (2, request.channels - channels),
+            };
+            Some(((step, distance, format_order), range, frames))
+        })
+        .min_by_key(|(priority, _, _)| *priority);
+    if let Some((_, range, frames)) = chosen {
+        return Ok(Chosen {
+            config: cpal::StreamConfig {
+                channels: range.channels(),
+                sample_rate: rate,
+                buffer_size: cpal::BufferSize::Fixed(frames),
+            },
+            format: range.sample_format(),
+            info: OutputInfo {
+                rate,
+                channels: range.channels(),
+                frames: frames as usize,
+            },
+        });
     }
+    let mut offered: Vec<_> = ranges
+        .iter()
+        .map(cpal::SupportedStreamConfigRange::channels)
+        .collect();
+    offered.sort_unstable();
+    offered.dedup();
     Err(Error::Device(format!(
-        "no supported f32, i16 or u16 configuration for {} channels at {rate} Hz",
+        "no supported f32, i16 or u16 configuration for {} channels at {rate} Hz; device offers channel counts {offered:?}",
         request.channels
     )))
 }
@@ -295,6 +315,128 @@ mod tests {
         assert_eq!(chosen.config.sample_rate, 48_000);
         assert_eq!(chosen.config.channels, 2);
         assert_eq!(chosen.info.frames, 128);
+    }
+
+    fn channel_range(channels: u16) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(
+            channels,
+            44_100,
+            96_000,
+            cpal::SupportedBufferSize::Range { min: 64, max: 1024 },
+            cpal::SampleFormat::F32,
+        )
+    }
+
+    #[test]
+    fn an_eight_channel_device_opens_with_eight_channels() {
+        let chosen =
+            configure(&OutputRequest::default(), 48_000, &[channel_range(8)], 128).unwrap();
+        assert_eq!(chosen.config.channels, 8);
+        assert_eq!(chosen.info.channels, 8);
+    }
+
+    #[test]
+    fn a_mono_device_opens_with_one_channel() {
+        let chosen =
+            configure(&OutputRequest::default(), 48_000, &[channel_range(1)], 128).unwrap();
+        assert_eq!(chosen.config.channels, 1);
+        assert_eq!(chosen.info.channels, 1);
+    }
+
+    #[test]
+    fn an_exact_match_is_preferred_over_a_wider_range() {
+        let chosen = configure(
+            &OutputRequest::default(),
+            48_000,
+            &[channel_range(8), channel_range(2)],
+            128,
+        )
+        .unwrap();
+        assert_eq!(chosen.config.channels, 2);
+        assert_eq!(chosen.info.channels, 2);
+    }
+
+    #[test]
+    fn the_smallest_wider_range_is_preferred_over_a_narrower_range() {
+        let chosen = configure(
+            &OutputRequest::default(),
+            48_000,
+            &[channel_range(8), channel_range(1), channel_range(4)],
+            128,
+        )
+        .unwrap();
+        assert_eq!(chosen.info.channels, 4);
+    }
+
+    #[test]
+    fn the_largest_narrower_range_is_chosen_when_none_is_wide_enough() {
+        let request = OutputRequest {
+            channels: 8,
+            ..OutputRequest::default()
+        };
+        let chosen = configure(
+            &request,
+            48_000,
+            &[channel_range(1), channel_range(4), channel_range(2)],
+            128,
+        )
+        .unwrap();
+        assert_eq!(chosen.info.channels, 4);
+    }
+
+    #[test]
+    fn channel_preference_keeps_format_rate_and_buffer_checks() {
+        let ranges = [
+            cpal::SupportedStreamConfigRange::new(
+                2,
+                44_100,
+                44_100,
+                cpal::SupportedBufferSize::Unknown,
+                cpal::SampleFormat::F32,
+            ),
+            cpal::SupportedStreamConfigRange::new(
+                4,
+                48_000,
+                48_000,
+                cpal::SupportedBufferSize::Range { min: 0, max: 1024 },
+                cpal::SampleFormat::F32,
+            ),
+            cpal::SupportedStreamConfigRange::new(
+                8,
+                48_000,
+                48_000,
+                cpal::SupportedBufferSize::Range { min: 256, max: 512 },
+                cpal::SampleFormat::I16,
+            ),
+            channel_range(8),
+        ];
+        let chosen = configure(&OutputRequest::default(), 48_000, &ranges, 128).unwrap();
+        assert_eq!(chosen.info.channels, 8);
+        assert_eq!(chosen.format, cpal::SampleFormat::F32);
+        assert_eq!(chosen.info.frames, 128);
+        let chosen = configure(&OutputRequest::default(), 48_000, &ranges[..3], 128).unwrap();
+        assert_eq!(chosen.format, cpal::SampleFormat::I16);
+        assert_eq!(chosen.info.frames, 256);
+        assert_eq!(chosen.config.buffer_size, cpal::BufferSize::Fixed(256));
+        assert_eq!(chosen.info.rate, 48_000);
+    }
+
+    #[test]
+    fn an_unavailable_rate_reports_the_device_channel_counts() {
+        let request = OutputRequest {
+            rate: RateChoice::Hz(192_000),
+            ..OutputRequest::default()
+        };
+        let message = match configure(
+            &request,
+            48_000,
+            &[channel_range(8), channel_range(1), channel_range(8)],
+            128,
+        ) {
+            Ok(_) => panic!("unsupported rate opened"),
+            Err(error) => error.to_string(),
+        };
+        assert!(message.contains("channel counts [1, 8]"), "{message}");
     }
 
     #[test]
