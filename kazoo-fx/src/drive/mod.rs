@@ -25,6 +25,8 @@ mod pair;
 mod ringmod;
 mod screamer;
 mod solve;
+mod triode;
+pub(crate) use amp::Amp;
 pub(crate) use screamer::Screamer;
 #[cfg(test)]
 mod testkit;

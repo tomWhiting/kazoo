@@ -2,6 +2,8 @@
 
 Crates: kazoo-core (`src/ipc/link.rs`, `src/realtime.rs`), every program that calls `hub_link(LinkConfig::new(..))` (grep: kazoo-303, 808, arp, cs80, dx, glass, juno, mini, prophet, play, mix's `source.rs`, and any other), kazoo-wall (`src/daemon/control.rs`). Depends: B01. This lane continues branch lane/kz-B01b, which starts at B01's reviewed head 6597d95: everything B01 and its review did is already there. Line numbers move; find each item by what it does.
 
+FIRST: merge origin/main into the lane. Since B01's head, main gained A03 (kazoo-core/src/host/link.rs: one shared hub-link setup that every instrument, the arp, kazoo-play's jam, kazoo-mix's source.rs and the wall daemon now use through `connect_or_direct`; it edited kazoo-core/src/ipc/link.rs, ipc/client.rs and every run.rs and audio.rs) and A02c. Resolve conflicts keeping both sides' intent: B01's park/unpark link thread and poll(2) hub, A03's shared setup. Then the real-time default goes where A03 now builds the `LinkConfig` (one place instead of eleven), and the refusal status reaches each instrument through what A03's setup returns.
+
 ## Outcome
 
 B01 wakes the link thread the moment the audio callback queues a block. Its review measured the wake at the priority instruments really run at (ordinary): p50 388 to 488 us at load about 100, against the brief's p50 < 200 us. With the link thread real-time it measured 141 us at the same load. The difference is the thread's priority, not the mechanism. Today only the wall's daemon asks for real-time (`config.real_time = true`), because a refusal is printed with `eprintln!`, which would scribble over an instrument's terminal screen.

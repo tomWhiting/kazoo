@@ -16,9 +16,10 @@ use std::time::Duration;
 use kazoo_808::sequencer::Sequencer;
 use kazoo_808::synth::{DrumMachine, VoiceIndex};
 use kazoo_core::audio_transport::{AudioBlock, AudioBlockProducer, AudioRingPushError};
+use kazoo_core::host::link::connect_config_or_direct;
 use kazoo_core::ipc::client::HubMessage;
 use kazoo_core::ipc::follow::TransportFollower;
-use kazoo_core::ipc::link::{HubAddress, HubLink, HubLinkAudio, LinkConfig, LinkStatus, hub_link};
+use kazoo_core::ipc::link::{HubAddress, HubLink, HubLinkAudio, LinkConfig, LinkStatus};
 use kazoo_core::protocol::{AudioBlockHeader, BlockFlags};
 
 use crate::shared::SharedState;
@@ -54,7 +55,7 @@ impl DemoEightOhEight {
             address: HubAddress::Socket(socket),
             ..LinkConfig::new(DEMO_NAME, 2, sample_rate, DEMO_BLOCK_FRAMES)
         };
-        let (link, audio) = hub_link(config)?;
+        let (link, audio) = connect_config_or_direct(config).map_err(io::Error::other)?;
         let running = Arc::new(AtomicBool::new(true));
         let thread_running = Arc::clone(&running);
         let join = thread::Builder::new()
@@ -154,7 +155,7 @@ impl DemoRender {
     }
 
     fn drain_hub(&mut self) {
-        while let Some(message) = self.audio.try_recv() {
+        for message in kazoo_core::host::link::take_events(&mut self.audio.events) {
             match message {
                 HubMessage::TransportSync(sync) => {
                     if self.follower.schedule(&sync).is_err() {

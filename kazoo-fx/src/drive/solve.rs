@@ -23,6 +23,7 @@ const MAX_EXPONENT: f64 = 80.0;
 const T_POINTS: usize = 1025;
 const MU_POINTS: usize = 17;
 const T_MAX: f64 = 12.0;
+const SINH_T_MAX: f64 = 81_377.395_706_429_86;
 const Y_MAX: f64 = 40.0;
 
 /// Seeds for `y + mu sinh(y) = xi`, refined with a fixed Newton budget.
@@ -131,7 +132,7 @@ impl SinhTable {
         // for two steps. Continue the edge slope in log mu, and start
         // beyond the input axis from the exponential's inverse.
         let log_mu = self.log_mu(mu);
-        let y = if xi.abs() > 81_377.395_706_429_85 {
+        let y = if xi.abs() > SINH_T_MAX {
             (xi / mu).asinh().clamp(-Y_MAX, Y_MAX)
         } else if log_mu < self.log_low || log_mu > self.log_high {
             self.seed_at(xi, log_mu).clamp(-Y_MAX, Y_MAX)
@@ -286,6 +287,11 @@ pub fn safe_exp(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_input_axis_bound_matches_its_transform() {
+        assert_eq!(SINH_T_MAX.to_bits(), T_MAX.sinh().to_bits());
+    }
 
     const MU_LOW: f64 = 1.5e-3;
     const MU_HIGH: f64 = 2.6e-3;

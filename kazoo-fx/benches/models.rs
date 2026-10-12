@@ -3,7 +3,7 @@ use std::{process::Command, time::Duration};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use kazoo_fx::{
     Context,
-    bench::{fixture, screamer_reference},
+    bench::{amp_reference, fixture, screamer_reference},
 };
 
 fn report_load(id: &str) {
@@ -153,5 +153,54 @@ fn fuzz(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, models, reverbs, fuzz);
+fn amps(c: &mut Criterion) {
+    let mut group = c.benchmark_group("model");
+    group
+        .sample_size(50)
+        .measurement_time(Duration::from_secs(3));
+    let input = fixture(48_000.0);
+    let context = Context { bpm: 120.0 };
+    let Some(kind) = kazoo_fx::find("amp") else {
+        panic!("the catalogue has no amp");
+    };
+    for (variant, hot) in [("default", false), ("hot", true)] {
+        for (suffix, reference) in [
+            ("/before-1", true),
+            ("", false),
+            ("/before-2", true),
+            ("/after-2", false),
+        ] {
+            let mut effect = if reference {
+                amp_reference()
+            } else {
+                (kind.build)()
+            };
+            effect.prepare(48_000.0);
+            if hot {
+                effect.set_param(0, 100.0);
+                effect.set_param(4, 100.0);
+                effect.set_param(7, 0.0);
+            }
+            effect.reset();
+            let mut left = [0.0; 256];
+            let mut right = [0.0; 256];
+            let blocks = input.len() / 256;
+            let mut cursor = 0;
+            let id = format!("model/amp/{variant}{suffix}");
+            report_load(&id);
+            group.bench_function(BenchmarkId::new("amp", format!("{variant}{suffix}")), |b| {
+                b.iter(|| {
+                    let start = cursor * 256;
+                    let block = &input[start..start + 256];
+                    effect.process(&context, [block, block], [&mut left, &mut right]);
+                    cursor = (cursor + 1) % blocks;
+                });
+            });
+            report_load(&id);
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, models, amps, reverbs, fuzz);
 criterion_main!(benches);
