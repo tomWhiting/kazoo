@@ -1,0 +1,32 @@
+[package]
+name = "kazoo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "The kazoo studio in one command: the desk, the wall, the seat and every instrument"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "kazoo"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "env"] }
+color-eyre = "0.6.5"
+kazoo-mix = { path = "../kazoo-mix" }
+kazoo-wall = { path = "../kazoo-wall" }
+kazoo-mcp = { path = "../kazoo-mcp" }
+kazoo-808 = { path = "../kazoo-808" }
+kazoo-303 = { path = "../kazoo-303" }
+kazoo-cs80 = { path = "../kazoo-cs80" }
+kazoo-mini = { path = "../kazoo-mini" }
+kazoo-juno = { path = "../kazoo-juno" }
+kazoo-prophet = { path = "../kazoo-prophet" }
+kazoo-dx = { path = "../kazoo-dx" }
+kazoo-string = { path = "../kazoo-string" }
+kazoo-glass = { path = "../kazoo-glass" }
+kazoo-arp = { path = "../kazoo-arp" }
+kazoo-play = { path = "../kazoo-play" }
+kazoo-tui = { path = "../kazoo-tui" }

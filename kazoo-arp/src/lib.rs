@@ -24,4 +24,4 @@ pub use clock::{
 };
 pub use engine::{ArpCursor, ArpMode, Arpeggiator, HeldNote, MAX_HELD_NOTES, NoteEvent};
 
-pub use run::{Args, USAGE, cli, parse_args, run};
+pub use run::{Args, USAGE, cli, parse_args, parse_target, run};

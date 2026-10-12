@@ -12,7 +12,7 @@ pub struct Args;
 /// Help text for both ways to start the application.
 pub const USAGE: &str = "kazoo-tui: mouth synth, tracking views, mixing desk
 
-usage: kazoo tui
+usage: kazoo mouth
        kazoo-tui
 
 It plugs into the kazoo-mix desk whenever one is running, and plays on its
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn usage_names_both_ways_to_start_it() {
-        assert!(USAGE.contains("kazoo tui"));
+        assert!(USAGE.contains("kazoo mouth"));
         assert!(USAGE.contains("kazoo-tui"));
         assert!(USAGE.starts_with("kazoo-tui: "));
     }

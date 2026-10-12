@@ -33,7 +33,7 @@ usage: kazoo mcp --seat <Name> [--notify-every <secs>] [--socket <path>]
   -h, --help             this text
   --version              the version
 
-It never starts the wall: run `kazoo-wall` for that.
+It never starts the wall: run `kazoo wall` for that.
 ";
 
 /// How this run was asked for.
