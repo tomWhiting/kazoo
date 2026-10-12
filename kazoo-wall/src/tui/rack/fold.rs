@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use kazoo_wall::protocol::{CableRecord, ModuleView};
+use crate::protocol::{CableRecord, ModuleView};
 
 use super::geometry::{self, Density, Point, Rack};
 
