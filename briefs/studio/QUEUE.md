@@ -39,3 +39,5 @@ START KZ-D10a base=f5069f1 branch=lane/kz-D10a df=110GB at 03:03
 END KZ-G01 head=56e05be reviewed=READY(reviewer made the halver work in usize with a bit-for-bit pin; open: Resampler::process last= unwrap_or clamp on an impossible length) merged=9668aa2 at 03:07
 REVIEWED KZ-A02 head=e2de947 reviewed=fixed in review (any callback size, Bluetooth fallback, B07 merge); NOT landed until A02b (any channel count, finding 3); branch carried as lane/kz-A02b at 03:11
 START KZ-A02b base=f5069f1 branch=lane/kz-A02b df=102GB at 03:12
+INCOMPLETE KZ-D07a head=9fa8a35 branch=lane/kz-D07a kept: cost 0.40 default / 0.30 hot (needs 0.25), no_subharmonics -66.4 vs -80 dBc, latency 0.097 vs 0.05 samples at 192k; builder made a new 'models' bench + src/bench.rs instead of using D01's circuit_models (undo on retry) at 03:26
+START KZ-G01b base=b632e4d branch=lane/kz-G01b df=76GB at 03:27
