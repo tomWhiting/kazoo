@@ -317,7 +317,7 @@ fn settings_survive_a_round_trip_and_a_missing_file_is_the_defaults() {
     press(&mut app, KeyCode::Char('c'));
     let prefs = app.prefs();
     assert!(prefs.rack);
-    save_prefs(&file, prefs).expect("saved");
+    save_prefs(&file, &prefs).expect("saved");
     let mut fresh = App::new("Tom", String::new());
     fresh.apply_prefs(load_prefs(&file).expect("loaded"));
     assert_eq!(fresh.prefs(), prefs);

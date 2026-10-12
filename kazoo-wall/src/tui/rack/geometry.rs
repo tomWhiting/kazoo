@@ -421,6 +421,9 @@ fn strip_len(module: &ModuleView) -> u16 {
 /// needs.
 #[must_use]
 pub fn plate_size(module: &ModuleView, density: Density) -> (u16, u16) {
+    if let Some(size) = super::fold::tile_size(module) {
+        return size;
+    }
     let scale = density.scale();
     if density == Density::Overview {
         let inner = strip_len(module).max(scale.min_inner);

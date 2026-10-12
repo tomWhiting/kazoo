@@ -252,6 +252,9 @@ impl App {
 
     /// Pick module `module`'s faceplate up by its title bar, at `cell`.
     fn pick_up(&mut self, module: usize, cell: (u16, u16)) {
+        if self.folded_tile(module).is_some() {
+            return;
+        }
         let Some(id) = self.modules().get(module).map(|view| view.id.clone()) else {
             return;
         };

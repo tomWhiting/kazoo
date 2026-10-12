@@ -181,7 +181,7 @@ fn console(
             let prefs = app.prefs();
             if prefs != remembered {
                 remembered = prefs;
-                if let Err(why) = app::save_prefs(file, prefs) {
+                if let Err(why) = app::save_prefs(file, &remembered) {
                     app.prefs_trouble(why, Instant::now());
                 }
             }
