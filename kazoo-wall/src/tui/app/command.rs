@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use kazoo_wall::protocol::{ModuleView, Request, valid_name};
+use crate::protocol::{ModuleView, Request, valid_name};
 
 use super::super::worker::Job;
 use super::saves::save_name_problem;

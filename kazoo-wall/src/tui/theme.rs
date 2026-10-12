@@ -4,7 +4,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-use kazoo_wall::catalogue::Signal;
+use crate::catalogue::Signal;
 
 /// The rack the panels hang on.
 pub const RACK: Color = Color::Rgb(0x17, 0x14, 0x12);

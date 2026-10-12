@@ -28,8 +28,8 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use super::super::knob::{Step, Travel};
 use super::super::rack::geometry::{self, Density, Hit};
 use super::super::worker::Job;
-use kazoo_wall::patch::arrange_rows;
-use kazoo_wall::protocol::{Place, Request};
+use crate::patch::arrange_rows;
+use crate::protocol::{Place, Request};
 
 use super::rack::{Drag, Due};
 use super::{App, DRAG_GLIDE, Focus, Mode, Tone, TurnKind, View};

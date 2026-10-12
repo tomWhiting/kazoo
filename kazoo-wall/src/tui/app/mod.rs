@@ -42,10 +42,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 
-use kazoo_wall::catalogue::Signal;
-use kazoo_wall::fingerprints::Shares;
-use kazoo_wall::format;
-use kazoo_wall::protocol::{
+use crate::catalogue::Signal;
+use crate::fingerprints::Shares;
+use crate::format;
+use crate::protocol::{
     ArrangeResult, CableRecord, CatalogueResult, ChangeResult, DeleteSaveResult, ErrorCode, Event,
     GroupsResult, KindInfo, KnobInfo, LoadResult, LogPage, ModuleView, MonitorResult, Place,
     ProbeResult, RecordResult, Request, SaveResult, SavesResult, Snapshot, TempoResult,
@@ -106,7 +106,7 @@ const MAX_ENTRY: usize = 24;
 const PICKER_PAGE: usize = 10;
 
 /// The picker's groups, in order.
-pub use kazoo_wall::catalogue::GROUPS;
+pub use crate::catalogue::GROUPS;
 
 /// How the wall is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,7 +313,7 @@ impl SavesList {
     /// first, then (when shown) the wall's own, newest first. The wall's
     /// own are many, one before every load, and would bury the others.
     #[must_use]
-    pub fn shown(&self) -> Vec<&kazoo_wall::protocol::SaveInfo> {
+    pub fn shown(&self) -> Vec<&crate::protocol::SaveInfo> {
         let saves = self
             .result
             .as_ref()
@@ -1249,7 +1249,7 @@ impl App {
         };
         if let Some(snapshot) = self.snapshot.as_mut() {
             snapshot.recording = match (result.on, &result.path) {
-                (true, Some(path)) => Some(kazoo_wall::protocol::Recording {
+                (true, Some(path)) => Some(crate::protocol::Recording {
                     path: path.clone(),
                     seat: self.seat.clone(),
                     seconds: result.seconds,

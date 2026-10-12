@@ -5,7 +5,7 @@
 //! The grid is laid out on a virtual sheet as tall as the wall needs; the
 //! screen shows a window onto it, `scroll` lines down.
 
-use kazoo_wall::protocol::ModuleView;
+use crate::protocol::ModuleView;
 
 /// Columns between panels (and rows between rows of panels).
 pub const GAP: u16 = 1;
@@ -153,7 +153,7 @@ pub fn scroll_to(current: u32, view: u16, total: u32, panel: &Placed, line: u32)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kazoo_wall::protocol::KnobView;
+    use crate::protocol::KnobView;
 
     fn module(knobs: usize, inputs: &[&str], outputs: &[&str]) -> ModuleView {
         ModuleView {

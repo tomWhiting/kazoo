@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use kazoo_wall::protocol::Change;
+use crate::protocol::Change;
 
 /// Most lines the log keeps.
 pub const CAPACITY: usize = 500;
@@ -218,7 +218,7 @@ pub fn age(at: i64, now: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kazoo_wall::protocol::What;
+    use crate::protocol::What;
 
     fn change(seq: u64, seat: &str, undoes: Option<u64>) -> Change {
         Change {

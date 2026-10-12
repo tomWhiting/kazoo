@@ -1493,6 +1493,7 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "chrono",
+ "color-eyre",
  "cpal",
  "crossterm",
  "hound",

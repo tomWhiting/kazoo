@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use kazoo_wall::daemon::wall::{FLOOD_BURST, FLOOD_REFILL_PER_SECOND};
-use kazoo_wall::protocol::{Place, Request};
+use crate::daemon::wall::{FLOOD_BURST, FLOOD_REFILL_PER_SECOND};
+use crate::protocol::{Place, Request};
 
 use super::super::app::{
     App, DRAG_GLIDE, DRAG_INTERVAL, EDGE_COLUMNS, EDGE_STEP, Focus, Mode, Tone, View, dragged_value,
@@ -101,7 +101,7 @@ fn jack_at(app: &App, module: usize, name: &str, output: bool) -> (u16, u16) {
 }
 
 fn cutoff_travel() -> Travel {
-    let catalogue = kazoo_wall::daemon::wall::catalogue();
+    let catalogue = crate::daemon::wall::catalogue();
     let info = catalogue
         .kinds
         .iter()
@@ -291,7 +291,7 @@ fn a_double_click_sends_a_knob_home() {
     assert!(app.take_jobs().is_empty(), "a click turns nothing");
     let again = t0 + Duration::from_millis(200);
     mouse(&mut app, MouseEventKind::Down(LEFT), cell, false, again);
-    let default = kazoo_wall::daemon::wall::catalogue()
+    let default = crate::daemon::wall::catalogue()
         .kinds
         .iter()
         .find(|kind| kind.kind == "vcf")
@@ -807,7 +807,7 @@ fn dragging_a_title_moves_the_faceplate_with_one_arrange() {
     render(&mut app, 160, 90);
     assert_eq!(app.rack.layout.plate(2).expect("vcf1").at.y, vco.y);
     app.on_reply(
-        Reply::Event(kazoo_wall::protocol::Event::Rack {
+        Reply::Event(crate::protocol::Event::Rack {
             rows: preview.clone(),
         }),
         t0,
@@ -924,7 +924,7 @@ fn a_faceplate_s_body_still_pans_and_a_refused_move_goes_back() {
         Reply::Answer {
             request: sent[0].clone(),
             outcome: Err(super::super::worker::Failure {
-                code: Some(kazoo_wall::protocol::ErrorCode::SlowDown),
+                code: Some(crate::protocol::ErrorCode::SlowDown),
                 message: "slow down".to_string(),
             }),
         },

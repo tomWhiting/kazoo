@@ -340,7 +340,7 @@ fn the_header_shows_a_recording_under_way() {
     let mut app = connected();
     let mut recording = snapshot();
     recording.heard = false;
-    recording.recording = Some(kazoo_wall::protocol::Recording {
+    recording.recording = Some(crate::protocol::Recording {
         path: "/m/wall-2026-09-27-203001.wav".to_string(),
         seat: "Tom".to_string(),
         seconds: 200.5,
@@ -365,12 +365,12 @@ fn the_header_says_when_the_change_log_takes_no_changes() {
     let screen = text(&render(&mut app, 160, 30));
     assert!(!screen.contains("LOG STOPPED"), "{screen}");
     let now = Instant::now();
-    let trouble = kazoo_wall::protocol::LogHealth {
+    let trouble = crate::protocol::LogHealth {
         owed: 1,
         error: Some("No space left on device".to_string()),
     };
     app.on_reply(
-        Reply::Event(kazoo_wall::protocol::Event::Log {
+        Reply::Event(crate::protocol::Event::Log {
             log: trouble.clone(),
         }),
         now,
@@ -387,8 +387,8 @@ fn the_header_says_when_the_change_log_takes_no_changes() {
     app.on_reply(Reply::Snapshot(Box::new(stopped)), now);
     assert!(text(&render(&mut app, 160, 30)).contains("LOG STOPPED"));
     app.on_reply(
-        Reply::Event(kazoo_wall::protocol::Event::Log {
-            log: kazoo_wall::protocol::LogHealth::default(),
+        Reply::Event(crate::protocol::Event::Log {
+            log: crate::protocol::LogHealth::default(),
         }),
         now,
     );
@@ -397,8 +397,8 @@ fn the_header_says_when_the_change_log_takes_no_changes() {
     assert!(screen.contains("the change log is well again"), "{screen}");
     // Owing nothing but not synced: changes still go, and it says so.
     app.on_reply(
-        Reply::Event(kazoo_wall::protocol::Event::Log {
-            log: kazoo_wall::protocol::LogHealth {
+        Reply::Event(crate::protocol::Event::Log {
+            log: crate::protocol::LogHealth {
                 owed: 0,
                 error: Some("I/O error".to_string()),
             },
@@ -418,7 +418,7 @@ const BIG_MODULES: usize = 192;
 const BIG_CABLES: usize = 640;
 
 /// A big wall: modules of every sort, and cables each into its own knob.
-fn full_wall() -> kazoo_wall::protocol::Snapshot {
+fn full_wall() -> crate::protocol::Snapshot {
     const KINDS: [&str; 19] = [
         "vco", "lfo", "vcf", "vca", "env", "seq", "mix", "noise", "sh", "slew", "clock", "out",
         "compare", "logic", "branch", "switch", "select", "divide", "math",
