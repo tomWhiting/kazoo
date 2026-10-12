@@ -6,14 +6,6 @@ From A01g's review: `kazoo_wall::run(Args::Console)` builds its `ServeCommand` f
 
 Depends on A01a to A01g (every crate exposes `run(Args)`), A02, A03, A04 (`kazoo_host::reports::install` installs error reports once), A05.
 
-## Running before A04 and A05 (Cassio, 13 Oct 07:35; Tom wants the one binary now)
-
-A04 and A05 have not landed: there is no `kazoo-host` crate yet. Build A06 without them:
-- Leave `kazoo-host` out of `kazoo-cli/Cargo.toml`. In `main`, call `color_eyre::install()` with the same handling the brief gives `kazoo_host::reports::install()` (print `kazoo: {err}` to stderr and return `ExitCode::FAILURE`). Add a one-line comment saying A04 replaces this with `kazoo_host::reports::install`.
-- Nothing in A06 uses A05's keyboard map; ignore it.
-- Everything else in this brief stands as written.
-
-
 ## Running before A04 and A05 (Cassio, 13 Oct 07:35; Tom wants the one binary now, 20-minute box)
 
 A04 and A05 have not landed, so there is no `kazoo-host` crate yet. Build A06 without them:
