@@ -306,7 +306,9 @@ impl Hall {
         let predelay = self.predelay_time.value();
         let hold = |at: f32| if gliding { at } else { at.round() };
         self.early_at = EARLY.map(|taps| taps.map(|(at, _, _)| hold(at.mul_add(ms, predelay))));
-        self.diffuser_at = DIFFUSERS_MS.map(|side| side.map(|at| hold(at * 0.001 * self.rate)));
+        // The diffusers' lengths follow the rate alone, never the size, so
+        // they stay on whole samples through a glide.
+        self.diffuser_at = DIFFUSERS_MS.map(|side| side.map(|at| (at * 0.001 * self.rate).round()));
         self.gliding = gliding;
     }
 
@@ -411,7 +413,7 @@ impl Hall {
         for (side, sample) in diffused.iter_mut().enumerate() {
             for (stage, allpass) in self.diffusers[side].iter_mut().enumerate() {
                 let gain = if stage < 2 { 0.7 } else { 0.6 } * spread;
-                *sample = allpass.process(*sample, self.diffuser_at[side][stage], gain, gliding);
+                *sample = allpass.process(*sample, self.diffuser_at[side][stage], gain, false);
             }
         }
 
@@ -630,6 +632,31 @@ mod tests {
                 .iter()
                 .flatten()
                 .chain(hall.diffuser_at.iter().flatten())
+                .all(|at| at.fract() == 0.0)
+        );
+    }
+
+    /// The diffusers' lengths are set by the rate alone, so a size glide
+    /// must leave them on whole samples: moving them to an exact fraction
+    /// for the glide would jump each allpass by up to half a sample as the
+    /// glide starts and again as it ends.
+    #[test]
+    fn a_size_glide_leaves_the_diffusers_on_whole_samples() {
+        use crate::Effect;
+        let mut hall = super::Hall::new();
+        hall.prepare(44_100.0);
+        hall.frame(0.0, 0.0);
+        let settled = hall.diffuser_at;
+        hall.set_param(super::SIZE, 1.4);
+        for _ in 0..64 {
+            hall.frame(0.0, 0.0);
+        }
+        assert!(!hall.size.settled(), "the size is still gliding");
+        assert_eq!(hall.diffuser_at, settled);
+        assert!(
+            hall.diffuser_at
+                .iter()
+                .flatten()
                 .all(|at| at.fract() == 0.0)
         );
     }
