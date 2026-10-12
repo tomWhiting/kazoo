@@ -363,6 +363,25 @@ fn alert_line(app: &App) -> Line<'static> {
         ));
     }
 
+    if app.notes_lost > 0 {
+        let why = match app.note_failure {
+            1 => "desk disconnected",
+            2 => "desk queue full",
+            3 => "invalid note",
+            _ => "unknown delivery error",
+        };
+        spans.push(Span::styled(
+            format!(" {} note sends failed ({why})", app.notes_lost),
+            Style::new().fg(ALERT),
+        ));
+    }
+    if app.release_waiting {
+        spans.push(Span::styled(
+            " note release waiting",
+            Style::new().fg(AMBER),
+        ));
+    }
+
     if let Some(hub) = app.hub.as_ref().filter(|hub| hub.messages_dropped > 0) {
         spans.push(Span::styled(
             format!(" {} desk messages dropped", hub.messages_dropped),

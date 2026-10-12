@@ -4,5 +4,6 @@
 //! [`super::draw`]; what the mouse does, in [`super::app`].
 
 pub mod dial;
+pub mod fold;
 pub mod geometry;
 pub mod screen;

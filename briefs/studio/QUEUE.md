@@ -16,7 +16,6 @@ END KZ-A01b head=5c34c65 reviewed=READY merged=5aab8cf at 01:23
 START KZ-A01d base=ba390c3 branch=lane/kz-A01d df=59GB at 01:34
 START KZ-A01e base=4a96a6a branch=lane/kz-A01e df=68GB at 01:35
 TIMEOUT KZ-B01 branch=lane/kz-B01 kept at 81af833 (5 of 6 new tests green; instrument wake latency not met under load) at 01:38
-START KZ-E01 base=4a96a6a branch=lane/kz-E01 df=106GB at 01:38
 END KZ-A01c head=4f59f35 reviewed=READY merged=3918c54 at 01:41
 START KZ-A01f base=df857ac branch=lane/kz-A01f df=164GB at 01:44
 END KZ-A01d head=0ac4585 reviewed=READY merged=a7cd574 at 01:47
@@ -29,3 +28,9 @@ START KZ-E02 base=62622ce branch=lane/kz-E02 df=143GB at 02:12
 START KZ-B07 base=62622ce branch=lane/kz-B07 df=135GB at 02:20
 END KZ-A01f head=a755c72 reviewed=READY merged=4103423 at 02:26
 END KZ-A01g head=f8aae5a reviewed=READY(daemon timing tests to confirm on quiet machine) merged=e2934d0 at 02:33
+START KZ-A02 base=b8f0d7d branch=lane/kz-A02 df=136GB at 02:35
+START KZ-G01 base=24c4415 branch=lane/kz-G01 df=124GB at 02:44
+END KZ-E02 head=a83b934 reviewed=READY(live-wall fold check for Tom) merged=d7384a5 at 02:45
+START KZ-E01 base=ef2a040 branch=lane/kz-E01 df=127GB at 02:45
+END KZ-B07 head=4130696 reviewed=READY(brief's hand check must use --target all or a UUID) merged=7f56fe8 at 02:49
+PARKED KZ-D02 head=b9dbd6f reviewed=code correct, NOT READY until bench on a quiet machine (interleaved run at load ~200: base unplugged/1000 33.0/21.7 ms, lane 14.3/23.8 ms; noise ~2x, no clear 5x) at 02:59

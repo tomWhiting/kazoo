@@ -24,7 +24,7 @@ use super::{App, MAX_ENTRY, Mode, Tone, TurnKind, View, jack_names};
 const MAX_LINE: usize = 4 * MAX_ENTRY;
 
 /// Every command: its name, what it takes and what it does.
-pub const COMMANDS: [(&str, &str, &str); 13] = [
+pub const COMMANDS: [(&str, &str, &str); 15] = [
     (
         "add",
         "[kind] [name]",
@@ -70,6 +70,12 @@ pub const COMMANDS: [(&str, &str, &str); 13] = [
         "show only that group; alone, the whole wall",
     ),
     ("groups", "", "say every group and its modules"),
+    (
+        "fold",
+        "[group]",
+        "fold a group to one rack tile; alone, the group under the cursor",
+    ),
+    ("unfold", "<group>", "open a folded group on the rack"),
 ];
 
 /// The command line, as typed.
@@ -214,7 +220,7 @@ impl App {
                     open: false,
                 })
                 .collect(),
-            ("tag" | "untag" | "group", 1) => self
+            ("tag" | "untag" | "group" | "fold" | "unfold", 1) => self
                 .groups()
                 .into_iter()
                 .flatten()
@@ -439,15 +445,15 @@ impl App {
         let Some(first) = words.first() else {
             return Err("type a command: Tab shows them".to_string());
         };
-        let name = command(first).ok_or_else(|| {
-            format!(
-                "'{first}' is not a command: add, remove, patch, unplug, turn, save, load or undo"
-            )
-        })?;
+        let name =
+            command(first).ok_or_else(|| format!("'{first}' is not a command: Tab lists them"))?;
+        let args = &words[1..];
+        if matches!(name, "fold" | "unfold") {
+            return self.run_fold(name, args, now);
+        }
         if !self.link.is_up() {
             return Err("the wall is not answering".to_string());
         }
-        let args = &words[1..];
         let rest = text
             .split_once(char::is_whitespace)
             .map_or("", |(_, rest)| rest.trim());

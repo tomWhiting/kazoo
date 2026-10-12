@@ -12,6 +12,7 @@
 //! - [`ClockDivision`]: Clock rate from 1/1 (whole) through 1/32 plus triplets.
 
 mod app;
+mod arp;
 mod audio;
 pub mod clock;
 pub mod engine;
