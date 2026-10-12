@@ -24,3 +24,7 @@ START KZ-A01g base=7838f6d branch=lane/kz-A01g df=151GB at 01:52
 END KZ-A01e head=bf65c50 reviewed=READY merged=7e951b9 at 01:55
 END KZ-D01 head=b724197 reviewed=READY(harness; numbers under load, re-take) merged=7f4b334 at 02:00
 REJECTED KZ-E01 head=8f54d24: builder split five existing kazoo-wall files into numbered parts (~13k lines churn); header now forbids splitting existing files; E01 to re-run fresh at 02:06
+START KZ-D02 base=62622ce branch=lane/kz-D02 df=146GB at 02:06
+START KZ-E02 base=62622ce branch=lane/kz-E02 df=143GB at 02:12
+START KZ-B07 base=62622ce branch=lane/kz-B07 df=135GB at 02:20
+END KZ-A01f head=a755c72 reviewed=READY merged=4103423 at 02:26
