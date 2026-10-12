@@ -249,16 +249,22 @@ impl Half {
 
     /// Run one sample round this half; returns what it hands to the other.
     fn process(&mut self, input: f32, lengths: [f32; 4], sweep: f32, tank: Tank) -> f32 {
-        let mut a = self
-            .allpass1
-            .process(input, lengths[0] + sweep, DECAY_DIFFUSION_1);
+        let mut a = if tank.modulated {
+            self.allpass1
+                .process_modulated(input, lengths[0] + sweep, DECAY_DIFFUSION_1)
+        } else {
+            self.allpass1
+                .process(input, lengths[0], DECAY_DIFFUSION_1, tank.gliding)
+        };
         flush(&mut a);
-        let b = self.delay1.read(lengths[1]);
+        let b = self.delay1.read_at(lengths[1], tank.gliding);
         self.delay1.push(a);
         let b = self.damping.process(f64::from(b)) as f32 * tank.decay;
-        let mut c = self.allpass2.process(b, lengths[2], tank.diffusion);
+        let mut c = self
+            .allpass2
+            .process(b, lengths[2], tank.diffusion, tank.gliding);
         flush(&mut c);
-        let mut d = self.delay2.read(lengths[3]) * tank.decay;
+        let mut d = self.delay2.read_at(lengths[3], tank.gliding) * tank.decay;
         self.delay2.push(c);
         flush(&mut d);
         d
@@ -268,6 +274,8 @@ impl Half {
 /// The tank's derived coefficients.
 #[derive(Debug, Clone, Copy)]
 struct Tank {
+    gliding: bool,
+    modulated: bool,
     decay: f32,
     diffusion: f32,
 }
@@ -284,6 +292,10 @@ pub struct Plate {
     bandwidth: FirstOrder,
     low_cut: Biquad,
     diffusers: [TapAllpass; 4],
+    diffuser_at: [f32; 4],
+    output_at: [[f32; 7]; 2],
+    tank_at: [[f32; 4]; 2],
+    gliding: bool,
     halves: [Half; 2],
     handoff: [f32; 2],
     lfo: Phasor,
@@ -311,10 +323,16 @@ impl Plate {
             bandwidth: FirstOrder::default(),
             low_cut: Biquad::default(),
             diffusers: Default::default(),
+            diffuser_at: [0.0; 4],
+            output_at: [[0.0; 7]; 2],
+            tank_at: [[0.0; 4]; 2],
+            gliding: false,
             halves: Default::default(),
             handoff: [0.0; 2],
             lfo: Phasor::default(),
             tank: Tank {
+                gliding: false,
+                modulated: true,
                 decay: 0.5,
                 diffusion: 0.5,
             },
@@ -327,12 +345,29 @@ impl Plate {
         size * self.rate / DATTORRO_RATE
     }
 
+    fn positions(&mut self, gliding: bool) {
+        let scale = self.scale(self.size.value());
+        let hold = |at: f32| {
+            if gliding {
+                at * scale
+            } else {
+                (at * scale).round()
+            }
+        };
+        self.diffuser_at = DIFFUSER_LENGTHS.map(hold);
+        self.output_at = [LEFT_TAPS, RIGHT_TAPS].map(|taps| taps.map(|(_, at, _)| hold(at)));
+        self.tank_at = TANK.map(|lengths| lengths.map(hold));
+        self.gliding = gliding;
+    }
+
     /// Recompute the tank's gains and the filters from the gliding knobs.
     fn update(&mut self) {
         let scale = self.scale(self.size.value());
         let loop_seconds = TANK_LOOP * scale / self.rate;
         let decay = decay_gain(0.25 * loop_seconds, self.knobs.get(DECAY));
         self.tank = Tank {
+            gliding: !self.size.settled(),
+            modulated: self.knobs.get(MOD) > 0.0,
             decay,
             diffusion: (decay + 0.15).clamp(0.25, 0.5),
         };
@@ -350,59 +385,75 @@ impl Plate {
     }
 
     /// Sum one side's taps.
-    fn taps(&self, taps: &[(Element, f32, f32); 7], scale: f32) -> f32 {
-        taps.iter().fold(0.0, |sum, &(element, at, sign)| {
-            let at = at * scale;
-            let value = match element {
-                Element::Delay1(h) => self.halves[h].delay1.read(at),
-                Element::Allpass2(h) => self.halves[h].allpass2.tap(at),
-                Element::Delay2(h) => self.halves[h].delay2.read(at),
-            };
-            sign.mul_add(value, sum)
-        })
+    fn taps(&self, taps: &[(Element, f32, f32); 7], positions: &[f32; 7], gliding: bool) -> f32 {
+        taps.iter()
+            .zip(positions)
+            .fold(0.0, |sum, (&(element, _, sign), &at)| {
+                let value = match element {
+                    Element::Delay1(h) => self.halves[h].delay1.read_at(at, gliding),
+                    Element::Allpass2(h) => self.halves[h].allpass2.tap(at, gliding),
+                    Element::Delay2(h) => self.halves[h].delay2.read_at(at, gliding),
+                };
+                sign.mul_add(value, sum)
+            })
     }
 
     /// One stereo frame: the mixed frame, then the wet frame alone.
     fn frame(&mut self, left: f32, right: f32) -> [[f32; 2]; 2] {
         self.knobs.step();
+        self.size.set(self.knobs.get(SIZE));
+        self.size.next();
+        let gliding = !self.size.settled();
+        if self.countdown == 0 || gliding || self.gliding != gliding {
+            self.positions(gliding);
+        }
         if self.countdown == 0 {
             self.update();
             self.countdown = CONTROL;
         }
         self.countdown -= 1;
-        self.size.set(self.knobs.get(SIZE));
-        let size = self.size.next();
-        let scale = self.scale(size);
-        self.predelay_time
-            .set((self.knobs.get(PREDELAY) * self.rate).max(MIN_SINC_READ));
+        self.predelay_time.set(
+            (self.knobs.get(PREDELAY) * self.rate)
+                .max(MIN_SINC_READ)
+                .round(),
+        );
         let predelay = self.predelay_time.next();
 
         let (left, right) = (clean(left), clean(right));
         self.predelay.push(0.5 * (left + right));
-        let delayed = self.predelay.read(predelay);
+        let delayed = self
+            .predelay
+            .read_at(predelay, !self.predelay_time.settled());
         let mut x = self.bandwidth.process(f64::from(delayed)) as f32;
         x = self.low_cut.process(f64::from(x)) as f32;
         for (diffuser, (&length, &gain)) in self
             .diffusers
             .iter_mut()
-            .zip(DIFFUSER_LENGTHS.iter().zip(&DIFFUSER_GAINS))
+            .zip(self.diffuser_at.iter().zip(&DIFFUSER_GAINS))
         {
-            x = diffuser.process(x, length * scale, gain);
+            x = diffuser.process(x, length, gain, gliding);
         }
 
         let phase = self.lfo.next(self.knobs.get(RATE), self.rate);
         let amount = self.knobs.get(MOD);
         let depth = EXCURSION * amount * amount * self.rate / DATTORRO_RATE;
         let sweeps = [depth * sine(phase), depth * sine(phase + 0.25)];
-        let tank = self.tank;
+        let mut tank = self.tank;
+        tank.gliding = gliding;
+        tank.modulated = depth > 0.0;
         let [into_left, into_right] = [x + self.handoff[1], x + self.handoff[0]];
-        let lengths = |half: usize| TANK[half].map(|length| length * scale);
-        let out_left = self.halves[0].process(into_left, lengths(0), sweeps[0], tank);
-        let out_right = self.halves[1].process(into_right, lengths(1), sweeps[1], tank);
+        let mut lengths = self.tank_at;
+        if depth > 0.0 {
+            for (at, reference) in lengths.iter_mut().zip(TANK) {
+                at[0] = reference[0] * self.scale(self.size.value());
+            }
+        }
+        let out_left = self.halves[0].process(into_left, lengths[0], sweeps[0], tank);
+        let out_right = self.halves[1].process(into_right, lengths[1], sweeps[1], tank);
         self.handoff = [out_left, out_right];
 
-        let wet_left = OUTPUT_LEVEL * self.taps(&LEFT_TAPS, scale);
-        let wet_right = OUTPUT_LEVEL * self.taps(&RIGHT_TAPS, scale);
+        let wet_left = OUTPUT_LEVEL * self.taps(&LEFT_TAPS, &self.output_at[0], gliding);
+        let wet_right = OUTPUT_LEVEL * self.taps(&RIGHT_TAPS, &self.output_at[1], gliding);
         let (wet_left, wet_right) = widen(wet_left, wet_right, self.knobs.get(WIDTH));
         let (dry, wet) = equal_power(self.knobs.get(MIX));
         let alone = [ceiling(wet_left), ceiling(wet_right)];
@@ -448,7 +499,7 @@ impl Effect for Plate {
             .set_speed(MAX_SLEW * DATTORRO_RATE / (LONGEST * rate));
         self.size.snap(self.knobs.get(SIZE));
         self.predelay_time
-            .snap((self.knobs.get(PREDELAY) * rate).max(MIN_SINC_READ));
+            .snap((self.knobs.get(PREDELAY) * rate).max(MIN_SINC_READ).round());
         self.prepared = true;
         self.reset();
     }
@@ -492,6 +543,56 @@ mod tests {
     use super::super::testing::{
         self, RATE as TEST_RATE, build, impulse, lowpassed, rms, rt60, run_mono,
     };
+
+    #[test]
+    fn settling_the_size_does_not_click() {
+        use crate::Effect;
+        let mut plate = super::Plate::new();
+        plate.set_param(super::MIX, 1.0);
+        plate.prepare(TEST_RATE);
+        let mut samples = Vec::new();
+        let mut settled_at = None;
+        for n in 0..(5.0 * TEST_RATE) as usize {
+            if n >= (0.5 * TEST_RATE) as usize && n < TEST_RATE as usize {
+                let progress = 0.5f32.mul_add(-TEST_RATE, n as f32) / (0.5 * TEST_RATE);
+                plate.set_param(super::SIZE, progress.mul_add(0.4, 1.0));
+            } else if n == TEST_RATE as usize {
+                plate.set_param(super::SIZE, 1.4);
+            }
+            let was_moving = !plate.size.settled();
+            let input = 10.0f32.powf(-12.0 / 20.0)
+                * (std::f32::consts::TAU * 440.0 * n as f32 / TEST_RATE).sin();
+            samples.push(plate.frame(input, input)[1][0]);
+            if n > TEST_RATE as usize && was_moving && plate.size.settled() {
+                settled_at = Some(n);
+            }
+            if let Some(at) = settled_at {
+                if n >= at + (0.01 * TEST_RATE) as usize + super::CONTROL {
+                    break;
+                }
+            }
+        }
+        let at = settled_at.expect("size reaches the target");
+        let peak_step = |values: &[f32]| {
+            values
+                .windows(2)
+                .fold(0.0f32, |peak, pair| peak.max((pair[1] - pair[0]).abs()))
+        };
+        let before = peak_step(&samples[at - (0.1 * TEST_RATE) as usize..at]);
+        let after = peak_step(&samples[at - 1..]);
+        assert!(
+            after <= 3.0 * before,
+            "handover step {after}, before {before}"
+        );
+        assert!(
+            plate
+                .output_at
+                .iter()
+                .flatten()
+                .chain(plate.diffuser_at.iter())
+                .all(|at| at.fract() == 0.0)
+        );
+    }
 
     #[test]
     fn the_plate_keeps_the_contract() {

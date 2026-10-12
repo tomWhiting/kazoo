@@ -17,17 +17,21 @@
 //! The kernel is as long as the rate needs: thirty-two points at 44.1 or
 //! 48 kHz, sixteen at 88.2 or 96 kHz, eight above (where 20 kHz sits low in
 //! the band), so the cost in real time stays about the same at every rate.
-//! It is tabulated at 256 fractions and blended linearly between them; the
-//! table is built once in `prepare` and shared by every line of an effect.
+//! It is tabulated at 1024 fractions and reads the nearest row, with one
+//! fused multiply-add per tap. The table is built once in `prepare` and
+//! shared by every line of an effect. Static positions use whole samples;
+//! only control glides use Hermite between their neighboring samples.
 
 use std::sync::Arc;
 
 /// The most samples either side of the read point any kernel uses.
 const MOST_HALF: usize = 16;
 /// Fractions tabulated between one sample and the next.
-const PHASES: usize = 256;
+const PHASES: usize = 1024;
 /// The kernel window's beta.
 const BETA: f64 = 7.0;
+/// A delay this close to a whole sample reads that sample exactly.
+const WHOLE_EPSILON: f32 = 1.0 / 4096.0;
 
 /// The shortest delay a [`Line`] reads at: the longest kernel's newest tap
 /// must be one already written.
@@ -164,19 +168,50 @@ impl Line {
         };
         let whole = delay.floor();
         let position = (delay - whole) * PHASES as f32;
-        let phase = (position as usize).min(PHASES - 1);
-        let blend = position - phase as f32;
+        let phase = ((position + 0.5) as usize).min(PHASES);
         let taps = 2 * kernel.half;
-        let early = &kernel.weights[phase * taps..(phase + 1) * taps];
-        let late = &kernel.weights[(phase + 1) * taps..(phase + 2) * taps];
+        let row = &kernel.weights[phase * taps..(phase + 1) * taps];
         // The newest tap is half - 1 samples newer than the whole delay.
         let newest = self.write.wrapping_sub(whole as usize - (kernel.half - 1));
         let mut sum = 0.0f32;
-        for (k, (&early, &late)) in early.iter().zip(late).enumerate() {
+        for (k, &weight) in row.iter().enumerate() {
             let sample = self.buffer[newest.wrapping_sub(k) & self.mask];
-            sum = sample.mul_add(blend.mul_add(late - early, early), sum);
+            sum = sample.mul_add(weight, sum);
         }
         sum
+    }
+
+    /// Read a fixed position exactly, or use Hermite while its control glides.
+    #[must_use]
+    pub fn read_at(&self, delay: f32, gliding: bool) -> f32 {
+        if (delay - delay.round()).abs() < WHOLE_EPSILON {
+            self.tap(delay.round() as usize)
+        } else if gliding {
+            self.read_hermite(delay)
+        } else {
+            self.read(delay)
+        }
+    }
+
+    /// Four neighboring samples interpolated while a control moves the position.
+    #[must_use]
+    pub fn read_hermite(&self, delay: f32) -> f32 {
+        if self.buffer.is_empty() {
+            return 0.0;
+        }
+        let delay = if delay.is_finite() {
+            delay.clamp(MIN_SINC_READ, self.max_delay().max(MIN_SINC_READ))
+        } else {
+            MIN_SINC_READ
+        };
+        let whole = delay.floor() as usize;
+        crate::dsp::hermite(
+            self.tap(whole - 1),
+            self.tap(whole),
+            self.tap(whole + 1),
+            self.tap(whole + 2),
+            delay - whole as f32,
+        )
     }
 
     /// Silence the line.
@@ -188,6 +223,80 @@ impl Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exact(line: &Line, delay: f32) -> f32 {
+        let kernel = line.kernel.as_ref().expect("prepared line");
+        let whole = delay.floor();
+        let fraction = f64::from(delay - whole);
+        let mut sum = 0.0;
+        let mut norm = 0.0;
+        for k in 0..2 * kernel.half {
+            let x = k as f64 - (kernel.half - 1) as f64 - fraction;
+            let angle = std::f64::consts::PI * x;
+            let sinc = if x.abs() < 1e-12 {
+                1.0
+            } else {
+                angle.sin() / angle
+            };
+            let ratio = x / kernel.half as f64;
+            let weight = sinc * bessel_i0(BETA * (1.0 - ratio * ratio).max(0.0).sqrt());
+            norm += weight;
+            sum += weight * f64::from(line.tap(whole as usize + k - (kernel.half - 1)));
+        }
+        (sum / norm) as f32
+    }
+
+    #[test]
+    fn the_nearest_row_matches_the_exact_sinc() {
+        let kernel = Kernel::new(48_000.0);
+        let mut line = Line::new(4096, &kernel);
+        let mut seed = 7u32;
+        let mut noise = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / 16_777_216.0
+        };
+        for _ in 0..4096 {
+            line.push(2.0f32.mul_add(noise(), -1.0));
+        }
+        let mut error = 0.0f64;
+        let mut power = 0.0f64;
+        for _ in 0..2000 {
+            let delay = noise().mul_add(2000.0 - MIN_SINC_READ - 1.0, MIN_SINC_READ + 1.0);
+            let reference = f64::from(exact(&line, delay));
+            let difference = f64::from(line.read(delay)) - reference;
+            error += difference * difference;
+            power += reference * reference;
+        }
+        let db = 10.0 * (error / power).log10();
+        eprintln!("exact sinc error: {db} dB, phases: {PHASES}");
+        assert!(db < -70.0, "{db} dB");
+        assert_eq!(PHASES, 1024);
+    }
+
+    #[test]
+    fn read_at_taps_whole_samples_and_hermite_only_while_gliding() {
+        let kernel = Kernel::new(48_000.0);
+        let mut line = Line::new(64, &kernel);
+        for n in 0..54 {
+            line.push(n as f32);
+        }
+        assert_eq!(line.read_at(20.0, false).to_bits(), line.tap(20).to_bits());
+        assert_eq!(
+            line.read_at(20.0001, false).to_bits(),
+            line.tap(20).to_bits()
+        );
+        assert_eq!(
+            line.read_at(20.5, false).to_bits(),
+            line.read(20.5).to_bits()
+        );
+        assert_eq!(
+            line.read_at(20.5, true).to_bits(),
+            line.read_hermite(20.5).to_bits()
+        );
+        assert_eq!(line.read_hermite(20.5).to_bits(), 33.5f32.to_bits());
+        assert!(line.read_at(f32::NAN, true).is_finite());
+        assert!(line.read_hermite(1e9).is_finite());
+    }
 
     #[test]
     fn a_read_on_a_whole_sample_is_that_sample() {

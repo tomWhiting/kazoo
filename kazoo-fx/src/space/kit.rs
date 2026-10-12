@@ -314,7 +314,6 @@ impl Slew {
     }
 
     /// Whether it has arrived.
-    #[cfg(test)]
     #[must_use]
     pub const fn settled(&self) -> bool {
         self.value.to_bits() == self.target.to_bits()
@@ -408,9 +407,19 @@ impl TapAllpass {
 
     /// One sample through, delayed by `delay` samples with coefficient
     /// `gain` (held within ±0.99).
-    pub fn process(&mut self, input: f32, delay: f32, gain: f32) -> f32 {
-        let gain = gain.clamp(-0.99, 0.99);
+    pub fn process(&mut self, input: f32, delay: f32, gain: f32, gliding: bool) -> f32 {
+        let delayed = self.line.read_at(delay, gliding);
+        self.finish(input, delayed, gain)
+    }
+
+    /// A swept feedback read retains the sinc response at every rate.
+    pub fn process_modulated(&mut self, input: f32, delay: f32, gain: f32) -> f32 {
         let delayed = self.line.read(delay);
+        self.finish(input, delayed, gain)
+    }
+
+    fn finish(&mut self, input: f32, delayed: f32, gain: f32) -> f32 {
+        let gain = gain.clamp(-0.99, 0.99);
         let mut into = gain.mul_add(delayed, input);
         crate::dsp::flush(&mut into);
         self.line.push(into);
@@ -419,8 +428,8 @@ impl TapAllpass {
 
     /// The inside of the allpass `delay` samples back.
     #[must_use]
-    pub fn tap(&self, delay: f32) -> f32 {
-        self.line.read(delay)
+    pub fn tap(&self, delay: f32, gliding: bool) -> f32 {
+        self.line.read_at(delay, gliding)
     }
 
     /// Silence it.
