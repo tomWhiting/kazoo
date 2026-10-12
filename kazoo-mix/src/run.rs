@@ -4,14 +4,14 @@ use std::time::{Duration, Instant};
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{self, Event, MouseEventKind};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
 
 use crate::callback::AudioCallback;
 use crate::desk::Desk;
 use crate::engine::MixerEngine;
 use crate::hub::{Hub, HubConfig, HubNotice, HubStopped, LeaveReason, PATCH_CAPACITY};
-use crate::patchbay::{PatchbayCallback, PatchbayHub, patchbay};
+use crate::patchbay::{PatchbayHub, patchbay};
 use crate::shared::{DESK_CHANNELS, SharedState};
 use crate::source::DemoEightOhEight;
 use crate::terminal::{MixTerminal, TerminalGuard};
@@ -134,6 +134,7 @@ fn run_desk(
     let mut redraw = true;
 
     while !desk.should_quit {
+        audio.stream.check_error()?;
         let now = Instant::now();
         let since_tick = now.duration_since(last_tick);
         if since_tick >= UI_TICK {
@@ -276,7 +277,7 @@ fn demo_line(status: &LinkStatus) -> (String, bool) {
 
 /// The running audio device and shared desk state.
 struct MixerAudio {
-    _stream: cpal::Stream,
+    stream: OpenedOutput,
     shared: Arc<SharedState>,
     sample_rate: u32,
     channels: u16,
@@ -286,71 +287,28 @@ impl MixerAudio {
     /// Open the default output device and start the desk's callback. Returns
     /// the hub's end of the patchbay the callback listens on.
     fn start() -> Result<(Self, PatchbayHub)> {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| eyre!("no default output audio device found"))?;
-        let supported = device.default_output_config()?;
-        let sample_format = supported.sample_format();
-        let config: cpal::StreamConfig = supported.into();
+        let mut request = OutputRequest::default();
+        let info = request.info()?;
+        request.rate = RateChoice::Hz(info.rate);
 
         let shared = Arc::new(SharedState::new());
-        let engine = MixerEngine::new(DESK_CHANNELS, config.sample_rate)
+        let engine = MixerEngine::new(DESK_CHANNELS, info.rate)
             .map_err(|err| eyre!("failed to build the mixer engine: {err:?}"))?;
         let (patchbay_hub, patchbay_callback) = patchbay(PATCH_CAPACITY);
-        let stream = match sample_format {
-            cpal::SampleFormat::F32 => {
-                build_output_stream::<f32>(&device, &config, &shared, engine, patchbay_callback)?
-            }
-            cpal::SampleFormat::I16 => {
-                build_output_stream::<i16>(&device, &config, &shared, engine, patchbay_callback)?
-            }
-            cpal::SampleFormat::U16 => {
-                build_output_stream::<u16>(&device, &config, &shared, engine, patchbay_callback)?
-            }
-            other => return Err(eyre!("unsupported output sample format: {other:?}")),
-        };
-        stream.play()?;
+        let mut callback = AudioCallback::new(engine, Arc::clone(&shared), info.channels)
+            .with_patchbay(patchbay_callback);
+        let stream = open_output(&request, move |data, _| callback.process(data))?;
 
         Ok((
             Self {
-                _stream: stream,
+                stream,
                 shared,
-                sample_rate: config.sample_rate,
-                channels: config.channels,
+                sample_rate: info.rate,
+                channels: info.channels,
             },
             patchbay_hub,
         ))
     }
-}
-
-fn build_output_stream<T>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    shared: &Arc<SharedState>,
-    engine: MixerEngine,
-    patchbay: PatchbayCallback,
-) -> Result<cpal::Stream>
-where
-    T: cpal::SizedSample + cpal::FromSample<f32>,
-{
-    // Everything the callback touches is allocated here, before the stream
-    // starts.
-    let mut callback =
-        AudioCallback::new(engine, Arc::clone(shared), config.channels).with_patchbay(patchbay);
-    let error_shared = Arc::clone(shared);
-
-    let stream = device.build_output_stream(
-        config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| callback.process(data),
-        move |_err| {
-            // Printing here would corrupt the desk; the header shows the count.
-            error_shared.note_stream_error();
-        },
-        None,
-    )?;
-
-    Ok(stream)
 }
 
 #[cfg(test)]

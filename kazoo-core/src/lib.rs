@@ -8,6 +8,7 @@ pub mod analysis;
 pub mod audio_transport;
 pub mod effects;
 pub mod engine;
+pub mod host;
 pub mod io;
 pub mod ipc;
 pub mod mixer;
@@ -33,6 +34,9 @@ use std::f32::consts::PI;
 /// All fallible operations in kazoo-core return this error type.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Device error: {0}")]
+    Device(String),
+
     #[error("Audio device error: {0}")]
     AudioDevice(String),
 

@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice, open_output};
 use kazoo_core::ipc::link::{HubLink, LinkConfig, LinkStatus, hub_link};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -80,18 +80,11 @@ const SWING_STEP: f64 = 0.01;
 pub fn run(args: Args) -> color_eyre::Result<()> {
     let Args = args;
 
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| color_eyre::eyre::eyre!("no audio output device found"))?;
-    let config = device.default_output_config()?;
-    let sample_rate = config.sample_rate();
-    let channels = usize::from(config.channels());
-    if channels == 0 {
-        return Err(color_eyre::eyre::eyre!(
-            "output device reports zero channels"
-        ));
-    }
+    let mut request = OutputRequest::default();
+    let output_info = request.info()?;
+    request.rate = RateChoice::Hz(output_info.rate);
+    let sample_rate = output_info.rate;
+    let channels = usize::from(output_info.channels);
 
     let shared = Arc::new(EngineShared::default());
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<AudioCommand>(COMMAND_CAPACITY);
@@ -111,20 +104,13 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         hub_audio,
         Arc::clone(&shared),
     );
-    let error_shared = Arc::clone(&shared);
-    let stream = device.build_output_stream(
-        &config.into(),
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| engine.render(data),
-        move |err| error_shared.record_stream_error(&err),
-        None,
-    )?;
-    stream.play()?;
+    let stream = open_output(&request, move |data, _| engine.render(data))?;
 
     let mut terminal = setup_terminal()?;
 
     // Device rates are whole numbers of Hz, well inside f32's exact range.
     let mut app = App::new(sample_rate as f32);
-    let result = run_event_loop(&mut terminal, &mut app, &cmd_tx, &shared, &hub);
+    let result = run_event_loop(&mut terminal, &mut app, &cmd_tx, &shared, &hub, &stream);
 
     // Always restore the terminal, even if the loop failed.
     let restored = restore_terminal(&mut terminal);
@@ -299,8 +285,10 @@ fn run_event_loop(
     cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
     shared: &EngineShared,
     hub: &HubLink,
+    stream: &OpenedOutput,
 ) -> color_eyre::Result<()> {
     loop {
+        stream.check_error_with_handler(|error| shared.record_stream_error(&error))?;
         app.follow_engine(shared);
         app.hub = Some(hub.status());
         terminal.draw(|frame| ui::draw(frame, app))?;

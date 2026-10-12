@@ -2,9 +2,9 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::Receiver;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use kazoo_core::host::audio::{OpenedOutput, OutputRequest, RateChoice};
 use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
 
 use crate::app::App;
@@ -76,6 +76,7 @@ struct UiChannels<'a> {
     commands: CommandLink,
     display_rx: Receiver<DisplaySnapshot>,
     stream_error_rx: Receiver<cpal::StreamError>,
+    stream_error_tx: crossbeam_channel::Sender<cpal::StreamError>,
     stats: Arc<AudioStats>,
     hub: &'a HubLink,
 }
@@ -92,13 +93,11 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Audio setup — direct cpal output, no input stream needed
     // -----------------------------------------------------------------------
 
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| color_eyre::eyre::eyre!("no audio output device found"))?;
-    let supported_config = device.default_output_config()?;
-    let sample_rate = supported_config.sample_rate();
-    let channels = usize::from(supported_config.channels());
+    let mut request = OutputRequest::default();
+    let output_info = request.info()?;
+    request.rate = RateChoice::Hz(output_info.rate);
+    let sample_rate = output_info.rate;
+    let channels = usize::from(output_info.channels);
 
     // Command channel: UI -> Audio (lock-free bounded MPSC).
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(256);
@@ -120,20 +119,17 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     ))?;
 
     let stream = audio::build_audio_stream(
-        &device,
-        &supported_config.into(),
+        &request,
         AudioSetup {
             sample_rate: sample_rate as f32,
             channels,
             cmd_rx,
             display_tx,
             display_evict: display_rx.clone(),
-            stream_error_tx,
             hub_audio,
             stats: Arc::clone(&stats),
         },
     )?;
-    stream.play()?;
 
     // -----------------------------------------------------------------------
     // Terminal + event loop
@@ -147,10 +143,11 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         commands: CommandLink::new(cmd_tx),
         display_rx,
         stream_error_rx,
+        stream_error_tx,
         stats,
         hub: &hub,
     };
-    let result = event_loop(&mut tui, &mut app, &mut channels);
+    let result = event_loop(&mut tui, &mut app, &mut channels, &stream);
 
     // -----------------------------------------------------------------------
     // Cleanup: stop audio, then always restore the terminal.
@@ -168,8 +165,13 @@ fn event_loop(
     tui: &mut Tui,
     app: &mut App,
     channels: &mut UiChannels<'_>,
+    stream: &OpenedOutput,
 ) -> color_eyre::Result<()> {
     loop {
+        stream.check_error_with_handler(|error| {
+            let queued = channels.stream_error_tx.try_send(error).is_ok();
+            channels.stats.record_stream_error(queued);
+        })?;
         poll_audio(app, channels);
 
         tui.draw(|f| ui::draw(f, app))?;
