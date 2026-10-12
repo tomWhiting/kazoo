@@ -5,6 +5,7 @@
 //! - [`recorder`] -- streaming disk recorder for capturing audio to WAV files.
 //! - [`resample`] -- sample rate conversion and channel format utilities.
 
+mod channel_adapt;
 pub mod device;
 pub mod file;
 pub mod recorder;

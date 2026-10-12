@@ -2,6 +2,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
+use super::channel_adapt::{InputAdapter, OutputAdapter};
 use crate::{DEFAULT_BUFFER_SIZE, Error, Result};
 
 /// Get the human-readable name of a device via `description()`.
@@ -286,10 +287,17 @@ pub fn build_streams(
         channels: config.input_channels,
         rate: RateChoice::Hz(sample_rate),
     };
-    let input =
-        open_input_with_frames(&input_request, frames, move |data, _| input_callback(data))?;
-    let output = open_output_with_frames(&output_request, frames, move |data, _| {
-        output_callback(data);
+    // The host opens the nearest channel count each device offers, which
+    // may differ from the configured one. The engine's callbacks are
+    // written for the configured counts, so each is adapted to the width
+    // the device was opened with.
+    let mut input_adapter = InputAdapter::new(config.input_channels, frames);
+    let mut output_adapter = OutputAdapter::new(config.output_channels, frames);
+    let input = open_input_with_frames(&input_request, frames, move |data, info| {
+        input_adapter.process(data, info.channels, &mut input_callback);
+    })?;
+    let output = open_output_with_frames(&output_request, frames, move |data, info| {
+        output_adapter.process(data, info.channels, &mut output_callback);
     })?;
     let buffer_size = output.buffer_frames();
     Ok(AudioStreams {
