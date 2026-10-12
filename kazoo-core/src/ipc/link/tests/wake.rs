@@ -15,11 +15,9 @@ impl Connection {
     fn new() -> Self {
         let path = socket();
         let listener = UnixListener::bind(&path).unwrap();
-        let (link, mut audio) = hub_link(LinkConfig {
-            real_time: true,
-            ..config(&path)
-        })
-        .unwrap();
+        // The instruments' own setting: only the wall asks for real time, so
+        // the wake is measured at the priority every other instrument has.
+        let (link, mut audio) = hub_link(config(&path)).unwrap();
         let (mut stream, mut buffer) = accept(&listener);
         wait("the link to connect", || link.is_connected());
         // A round trip establishes that registration has finished serving.
