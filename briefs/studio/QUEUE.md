@@ -61,3 +61,4 @@ START KZ-D10b base=a8390fe branch=lane/kz-D10b df=40GB at 04:26
 REVIEWED KZ-B01 head=6597d95 reviewed=fixed in review (close unparks before join; wake test now at production priority, which fails p50 388-488 us at load ~100); NOT landed until B01b (instrument links run real-time; refusal shown on screen); branch carried as lane/kz-B01b at 04:35
 INCOMPLETE KZ-D12 head=e287d13 branch=lane/kz-D12 kept: reviewed NOT READY, callback slower (flat +4.2%, gliding +7.3% instructions); causes and second retry decisions in the brief at 04:48
 START KZ-D09a base=611fced branch=lane/kz-D09a df=46GB at 04:51
+END KZ-D07b head=7a7ee28 reviewed=READY(screamer padding back to factor 2 only with reason; amp tail is the input coupling cap draining, test waits 2 s at 1e-7 and asserts decay; amp null -42.7/-33.4 dB; bench ratios need a quiet machine) merged=137c80a at 04:53
