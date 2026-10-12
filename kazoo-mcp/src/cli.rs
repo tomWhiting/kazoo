@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use kazoo_wall::protocol::valid_name;
 
+use crate::run::Args;
+
 /// The environment variable naming the seat when `--seat` is not given.
 pub const SEAT_ENV: &str = "KAZOO_SEAT";
 
@@ -17,9 +19,10 @@ pub const MAX_NOTIFY_EVERY: u64 = 3_600;
 
 /// What `--help` prints.
 pub const USAGE: &str = "\
-kazoo-mcp: the wall for a Claude seat (an MCP server on stdio)
+kazoo-mcp: the wall for a Claude seat, an MCP server on stdio
 
-usage: kazoo-mcp --seat <Name> [--notify-every <secs>] [--socket <path>]
+usage: kazoo mcp --seat <Name> [--notify-every <secs>] [--socket <path>]
+       kazoo-mcp --seat <Name> [--notify-every <secs>] [--socket <path>]
 
   --seat <Name>          who this seat is on the wall: 1 to 24 of
                          A-Z a-z 0-9 space _ . - (or set KAZOO_SEAT)
@@ -27,16 +30,17 @@ usage: kazoo-mcp --seat <Name> [--notify-every <secs>] [--socket <path>]
                          per this many seconds (default 20, 1 to 3600)
   --socket <path>        the wall's control socket (default: kazoo-wall.sock
                          in kazoo's runtime directory)
-  --help                 this text
+  -h, --help             this text
   --version              the version
 
-It never starts the wall: run `kazoo-wall` for that.";
+It never starts the wall: run `kazoo-wall` for that.
+";
 
 /// How this run was asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
     /// Serve a seat.
-    Serve(Options),
+    Serve(Args),
     /// Print the usage.
     Help,
     /// Print the version.
@@ -55,7 +59,7 @@ pub struct Options {
 }
 
 /// Read the command line (`args` without the program name). `env_seat` is
-/// `$KAZOO_SEAT`, and `default_socket` the socket used when none is named.
+/// `$KAZOO_SEAT`. Defaults are applied when the seat starts.
 ///
 /// # Errors
 ///
@@ -65,8 +69,14 @@ pub struct Options {
 pub fn parse(
     args: impl IntoIterator<Item = String>,
     env_seat: Option<String>,
-    default_socket: impl FnOnce() -> PathBuf,
 ) -> Result<Invocation, String> {
+    let args: Vec<String> = args.into_iter().collect();
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        return Ok(Invocation::Help);
+    }
     let mut seat = None;
     let mut notify_every = None;
     let mut socket = None;
@@ -103,15 +113,48 @@ pub fn parse(
             seat.escape_default()
         ));
     }
-    let notify_every = notify_every.map_or(Ok(DEFAULT_NOTIFY_EVERY), |text| seconds(&text))?;
+    let notify_every = notify_every
+        .map(|text| seconds(&text).map(Duration::from_secs))
+        .transpose()?;
     if socket.as_deref().is_some_and(str::is_empty) {
         return Err("--socket needs a path".to_string());
     }
-    Ok(Invocation::Serve(Options {
+    Ok(Invocation::Serve(Args {
         seat,
-        notify_every: Duration::from_secs(notify_every),
-        socket: socket.map_or_else(default_socket, PathBuf::from),
+        notify_every,
+        socket: socket.map(PathBuf::from),
     }))
+}
+
+/// Apply defaults and validate settings supplied by another crate.
+pub fn resolve(args: Args) -> Result<Options, String> {
+    resolve_with(args, kazoo_wall::paths::socket_path)
+}
+
+fn resolve_with(args: Args, default_socket: impl FnOnce() -> PathBuf) -> Result<Options, String> {
+    if !valid_name(&args.seat) {
+        return Err(format!(
+            "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
+            args.seat.escape_default()
+        ));
+    }
+    let notify_every = args
+        .notify_every
+        .map_or(Ok(DEFAULT_NOTIFY_EVERY), |window| {
+            seconds(&window.as_secs_f64().to_string())
+        })?;
+    if args
+        .socket
+        .as_ref()
+        .is_some_and(|path| path.as_os_str().is_empty())
+    {
+        return Err("--socket needs a path".to_owned());
+    }
+    Ok(Options {
+        seat: args.seat,
+        notify_every: Duration::from_secs(notify_every),
+        socket: args.socket.unwrap_or_else(default_socket),
+    })
 }
 
 /// The value of `flag`: after its `=`, or the next argument.
@@ -150,13 +193,14 @@ mod tests {
         parse(
             args.iter().map(|arg| (*arg).to_string()),
             env.map(str::to_string),
-            || PathBuf::from("/run/kazoo-wall.sock"),
         )
     }
 
     fn serve(args: &[&str], env: Option<&str>) -> Options {
         match run(args, env) {
-            Ok(Invocation::Serve(options)) => options,
+            Ok(Invocation::Serve(options)) => {
+                resolve_with(options, || PathBuf::from("/run/kazoo-wall.sock")).unwrap()
+            }
             other => panic!("not a seat: {other:?}"),
         }
     }

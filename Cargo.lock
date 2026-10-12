@@ -1377,6 +1377,7 @@ dependencies = [
 name = "kazoo-mcp"
 version = "0.1.0"
 dependencies = [
+ "color-eyre",
  "kazoo-wall",
  "rmcp",
  "schemars",
