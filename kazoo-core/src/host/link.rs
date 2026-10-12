@@ -186,6 +186,15 @@ pub fn connect_config_or_direct(config: LinkConfig) -> Result<(HubLink, HubLinkA
             eprintln!("{}: no desk; playing direct", config.name);
             start_link(config, None, true).map_err(Error::Io)
         }
+        // A desk that refuses the name, or answers badly, is retried by the
+        // link with its own backoff and shown as the link's status.
+        Err(Error::Io(err)) => {
+            eprintln!(
+                "{}: the desk did not take the link ({err}); playing direct",
+                config.name
+            );
+            start_link(config, None, true).map_err(Error::Io)
+        }
         Err(err) => Err(err),
     }
 }

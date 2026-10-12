@@ -1,6 +1,6 @@
 use super::*;
 use crate::ipc::protocol::FrameBuffer;
-use crate::ipc::types::{MSG_REGISTER, MSG_REGISTERED, MSG_SHUTDOWN, RegisteredMsg};
+use crate::ipc::types::{MSG_REFUSED, MSG_REGISTER, MSG_REGISTERED, MSG_SHUTDOWN, RegisteredMsg};
 use ringbuf::traits::{Producer, Split};
 use std::os::unix::net::UnixListener;
 use std::time::Duration;
@@ -109,4 +109,30 @@ fn a_link_that_found_no_desk_joins_a_desk_that_starts_later() {
     );
     drop(audio);
     drop(link);
+}
+
+#[test]
+fn a_desk_that_refuses_the_name_leaves_the_instrument_playing_direct() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("refusing.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let hub = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = FrameBuffer::new();
+        assert_eq!(
+            buffer.read_frame(&mut stream).unwrap().msg_type,
+            MSG_REGISTER
+        );
+        let reason = b"kazoo-test is already on the desk";
+        buffer.payload_mut()[..reason.len()].copy_from_slice(reason);
+        buffer
+            .write_frame(MSG_REFUSED, 0, reason.len(), &mut stream)
+            .unwrap();
+        listener
+    });
+    let parts = connect_config_or_direct(config(&socket));
+    let listener = hub.join().unwrap();
+    assert!(parts.is_ok(), "a refusal must not stop the instrument");
+    drop(parts);
+    drop(listener);
 }
