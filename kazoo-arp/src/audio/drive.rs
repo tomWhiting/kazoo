@@ -51,8 +51,6 @@ impl AudioEngine {
             };
             self.shared.note_failure.store(failure, Ordering::Relaxed);
         }
-        self.shared
-            .releases_waiting
-            .store(self.drive.release_waiting(), Ordering::Release);
+        self.drive.publish(&self.shared);
     }
 }

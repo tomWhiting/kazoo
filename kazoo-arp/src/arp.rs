@@ -1,5 +1,8 @@
 use kazoo_core::ipc::link::RequestError;
 use kazoo_core::ipc::types::{NOTE_OFF, NOTE_ON, NoteEventMsg};
+use std::sync::atomic::Ordering;
+
+use crate::audio::EngineShared;
 
 #[cfg(test)]
 mod wire_tests;
@@ -81,6 +84,45 @@ impl Drive {
     pub const fn release_waiting(&self) -> bool {
         self.pending.is_some()
     }
+
+    /// Tell the UI which note the driven synth still holds (0 for none,
+    /// otherwise the note plus one) and whether its release is waiting.
+    pub fn publish(&self, shared: &EngineShared) {
+        shared.driven_note.store(
+            self.active.map_or(0, |note| u16::from(note) + 1),
+            Ordering::Release,
+        );
+        shared
+            .releases_waiting
+            .store(self.release_waiting(), Ordering::Release);
+    }
+}
+
+/// Release the note the driven synth may still hold, once the audio stream
+/// has stopped and no new note can start. `Ok(true)` when a release was
+/// handed to the link, `Ok(false)` when nothing was held.
+///
+/// # Errors
+///
+/// The link's refusal of the release: the driven synth may still hold it.
+pub fn release_on_quit(
+    shared: &EngineShared,
+    target: [u8; 16],
+    send: impl FnOnce(NoteEventMsg) -> Result<(), RequestError>,
+) -> Result<bool, RequestError> {
+    let Some(note) = shared.driven_note.load(Ordering::Acquire).checked_sub(1) else {
+        return Ok(false);
+    };
+    let note = u8::try_from(note).map_err(|_| RequestError::Invalid)?;
+    let release = NoteEvent {
+        note,
+        velocity: 0,
+        on: false,
+        at: StreamFrame(0),
+    };
+    send(release.message(target))?;
+    shared.driven_note.store(0, Ordering::Release);
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -347,6 +389,48 @@ mod tests {
             })
             .unwrap();
         assert_eq!(delivered, [NOTE_OFF, NOTE_ON]);
+    }
+
+    #[test]
+    fn quitting_releases_the_note_the_synth_still_holds() {
+        let shared = EngineShared::default();
+        let mut drive = Drive::default();
+        let on = NoteEvent {
+            note: 60,
+            velocity: 100,
+            on: true,
+            at: StreamFrame(500),
+        };
+        let off = NoteEvent {
+            velocity: 0,
+            on: false,
+            ..on
+        };
+        drive.send(on, |_| Ok(())).unwrap();
+        assert_eq!(
+            drive.send(off, |_| Err(RequestError::Full)),
+            Err(RequestError::Full)
+        );
+        drive.publish(&shared);
+        let mut sent = Vec::new();
+        assert_eq!(
+            release_on_quit(&shared, [7; 16], |message| {
+                sent.push(message);
+                Ok(())
+            }),
+            Ok(true)
+        );
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].event_type, NOTE_OFF);
+        assert_eq!((sent[0].note, sent[0].velocity), (60, 0));
+        assert_eq!(sent[0].target, [7; 16]);
+
+        drive.retry(|_| Ok(())).unwrap();
+        drive.publish(&shared);
+        assert_eq!(
+            release_on_quit(&shared, [7; 16], |_| unreachable!("nothing is held")),
+            Ok(false)
+        );
     }
 
     #[test]

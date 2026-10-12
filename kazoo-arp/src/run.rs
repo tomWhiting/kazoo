@@ -19,7 +19,7 @@ use crate::audio::{
     AudioEngine, COMMAND_CAPACITY, CommandSender, DISPLAY_CAPACITY, EngineShared,
     MAX_CALLBACK_FRAMES,
 };
-use kazoo_core::ipc::link::{HubLink, LinkConfig, hub_link};
+use kazoo_core::ipc::link::{HubLink, LinkConfig, RequestError, hub_link};
 
 use crate::ui;
 
@@ -197,10 +197,13 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     app.key_mode_reason = key_mode_reason;
     let result = run_event_loop(&mut terminal, &mut app, &shared, &hub);
 
-    // Cleanup.
+    // Cleanup. With the stream stopped no new note can start, so the note
+    // the driven synth still holds is released before the link closes.
     drop(stream);
+    let released = release_driven(&shared, args.target, &hub);
     drop(hub);
     let restored = restore_terminal(&mut terminal, key_mode);
+    let result = result.and_then(|()| released.map_err(|why| color_eyre::eyre::eyre!(why)));
 
     match (result, restored) {
         (Ok(()), Ok(())) => Ok(()),
@@ -209,6 +212,29 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
         (Err(err), Err(restore_err)) => {
             Err(err.wrap_err(format!("restoring the terminal also failed: {restore_err}")))
         }
+    }
+}
+
+/// How long the link is given to deliver the last release before it closes:
+/// forty of its half millisecond polls.
+const LINK_DRAIN: Duration = Duration::from_millis(20);
+
+/// Release the note the driven synth still holds, and give the link time to
+/// deliver it (and any release the engine queued last) before it closes.
+fn release_driven(shared: &EngineShared, target: [u8; 16], hub: &HubLink) -> Result<(), String> {
+    let connected = hub.is_connected();
+    let outcome = crate::arp::release_on_quit(shared, target, |message| hub.send_note(message));
+    if connected {
+        std::thread::sleep(LINK_DRAIN);
+    }
+    match outcome {
+        Ok(_) | Err(RequestError::NotConnected) => Ok(()),
+        Err(RequestError::Full) => Err(
+            "the last driven note could not be released: the desk queue was full, so the target synth may still hold it".to_owned(),
+        ),
+        Err(RequestError::Invalid) => Err(
+            "the last driven note could not be released: the link refused it as invalid".to_owned(),
+        ),
     }
 }
 

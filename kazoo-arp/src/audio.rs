@@ -11,7 +11,7 @@
 //! starts; rendering never allocates, locks or blocks.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 mod drive;
 
@@ -126,6 +126,9 @@ pub struct EngineShared {
     pub notes_lost: AtomicU64,
     pub note_failure: AtomicU64,
     pub releases_waiting: AtomicBool,
+    /// The note the driven synth still holds, plus one; 0 when none. Read
+    /// on quit so that note is released.
+    pub driven_note: AtomicU16,
 }
 
 impl EngineShared {
