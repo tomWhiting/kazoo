@@ -28,7 +28,7 @@ use crate::ui;
 pub struct Args;
 
 /// What `--help` prints.
-pub const USAGE: &str = "kazoo-arp: Jupiter-8 style arpeggiator — note scheduler for any synth
+pub const USAGE: &str = "kazoo-arp: Jupiter-8 style arpeggiator, note scheduler for any synth
 
 usage: kazoo arp
        kazoo-arp
@@ -298,5 +298,14 @@ mod tests {
     fn usage_names_both_ways_to_start_it() {
         assert!(USAGE.contains("kazoo arp"));
         assert!(USAGE.contains("kazoo-arp"));
+    }
+
+    #[test]
+    fn usage_opens_with_the_name_and_description() {
+        assert!(
+            USAGE.starts_with(
+                "kazoo-arp: Jupiter-8 style arpeggiator, note scheduler for any synth\n"
+            )
+        );
     }
 }
