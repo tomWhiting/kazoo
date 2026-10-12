@@ -43,7 +43,7 @@ pub const ANSWER_WITHIN: Duration = Duration::from_secs(10);
 pub const SPEECH_WITHIN: Duration = Duration::from_secs(75);
 
 /// What every tool answers while the daemon is down.
-pub const NOT_RUNNING: &str = "the wall is not running (start it with `kazoo-wall`)";
+pub const NOT_RUNNING: &str = "the wall is not running (start it with `kazoo wall`)";
 
 /// This software, as it introduces itself to the daemon.
 pub const CLIENT: &str = concat!("kazoo-mcp ", env!("CARGO_PKG_VERSION"));

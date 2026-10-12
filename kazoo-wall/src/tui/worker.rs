@@ -339,7 +339,7 @@ fn look(client: &mut Option<WallClient>, link: &mut Reconnect) -> Vec<Reply> {
 fn launch(config: &Config, link: &mut Reconnect) -> Vec<Reply> {
     let Some((serve, log)) = &config.launch else {
         return vec![Reply::Launched(Err(
-            "this console cannot start the wall; run `kazoo-wall serve`".to_string(),
+            "this console cannot start the wall; run `kazoo wall serve`".to_string(),
         ))];
     };
     let result = daemon::launch_detached(serve, &config.socket, log, LAUNCH_TIMEOUT)

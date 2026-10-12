@@ -1,4 +1,4 @@
-//! The console: `kazoo-wall` with no argument.
+//! The console: `kazoo wall` with no argument.
 //!
 //! It starts a detached daemon when none is playing, then shows the wall
 //! live (knobs moving, cables, meters, who is doing what) and lets Tom
@@ -127,7 +127,7 @@ pub fn run(serve: ServeCommand) -> color_eyre::Result<()> {
             match exit {
                 Exit::Left => eprintln!(
                     "kazoo-wall: the console is closed and the wall keeps playing \
-                     (`kazoo-wall` opens it again, `kazoo-wall stop` stops it)"
+                     (`kazoo wall` opens it again, `kazoo wall stop` stops it)"
                 ),
                 Exit::Stopped => eprintln!("kazoo-wall: the wall has stopped; its patch is saved"),
             }

@@ -25,7 +25,7 @@ use rmcp::{ClientHandler, RoleClient, ServiceExt as _};
 use tokio::sync::mpsc;
 
 /// What every tool answers while the daemon is down.
-const NOT_RUNNING: &str = "the wall is not running (start it with `kazoo-wall`)";
+const NOT_RUNNING: &str = "the wall is not running (start it with `kazoo wall`)";
 
 /// Every tool.
 const TOOLS: [&str; 19] = [

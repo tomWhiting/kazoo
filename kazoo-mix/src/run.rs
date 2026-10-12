@@ -29,10 +29,11 @@ const NEWS_SECONDS: u64 = 8;
 pub const USAGE: &str = "\
 kazoo-mix: the kazoo studio desk
 
-Usage: kazoo-mix [--demo]
+Usage: kazoo mix [--demo]
+       kazoo-mix [--demo]
 
-Start kazoo-mix, then start instruments (kazoo-808, kazoo-mini, kazoo-cs80,
-kazoo-dx, kazoo-arp) in other terminals: each plugs into the next free strip
+Start kazoo mix, then start instruments (kazoo 808, kazoo mini, kazoo cs80,
+kazoo dx, kazoo arp, kazoo mouth) in other terminals: each plugs into the next free strip
 and follows the desk's tempo and play/stop.
 
 Options:
@@ -240,8 +241,8 @@ impl HubNews {
             .saturating_sub(u64::from(demo_connected));
         let line = match others {
             0 => format!(
-                "{demo}no instruments yet: run kazoo-tui, kazoo-808, kazoo-mini, kazoo-cs80, \
-                 kazoo-dx or another kazoo instrument in another terminal"
+                "{demo}no instruments yet: run kazoo mouth, kazoo 808, kazoo mini, kazoo cs80, \
+                 kazoo dx, kazoo arp or another kazoo instrument in another terminal"
             ),
             1 => format!("{demo}1 instrument plugged in"),
             n => format!("{demo}{n} instruments plugged in"),

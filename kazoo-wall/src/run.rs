@@ -128,6 +128,8 @@ fn write_usage(output: &mut impl Write) -> io::Result<()> {
 
 /// Run the console, serve the wall, or stop it. The caller installs error
 /// reports (`color_eyre::install`) before calling this.
+///
+/// A combined binary must call [`tui::run`] with its own [`ServeCommand`] for the console.
 pub fn run(args: Args) -> color_eyre::Result<()> {
     match args {
         Args::Console => {

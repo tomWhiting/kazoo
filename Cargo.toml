@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "kazoo-cli",
     "kazoo-core",
     "kazoo-tui",
     "kazoo-mix",

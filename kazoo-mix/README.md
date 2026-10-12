@@ -6,19 +6,22 @@ every kazoo instrument plugs into, all following one tempo and one play/stop.
 ## Playing with it
 
 ```sh
+# build the studio once
+cargo build --release -p kazoo
+
 # terminal 1: the desk
-cargo run -p kazoo-mix --release
+target/release/kazoo mix
 
 # terminals 2, 3, …: instruments, in any order, before or after the desk
-cargo run -p kazoo-808 --release
-cargo run -p kazoo-mini --release
-cargo run -p kazoo-cs80 --release
-cargo run -p kazoo-dx --release
-cargo run -p kazoo-arp --release
-cargo run -p kazoo-303 --release
-cargo run -p kazoo-juno --release
-cargo run -p kazoo-prophet --release
-cargo run -p kazoo-tui --release   # the voice synth
+target/release/kazoo 808
+target/release/kazoo mini
+target/release/kazoo cs80
+target/release/kazoo dx
+target/release/kazoo arp
+target/release/kazoo 303
+target/release/kazoo juno
+target/release/kazoo prophet
+target/release/kazoo mouth   # the voice synth
 ```
 
 Each instrument plugs into the next free strip, and the desk says so in its
@@ -26,7 +29,7 @@ header. While an instrument is plugged in, its own output goes quiet: you hear
 it through its strip. Close the desk and the instruments go back to playing
 on their own. Start it again and they plug straight back in.
 
-`cargo run -p kazoo-mix --release -- --demo` also plugs in a built-in 808
+`target/release/kazoo mix --demo` also plugs in a built-in 808
 pattern, so there is something to mix straight away. It joins the desk the
 way any instrument does, on the next free strip.
 
