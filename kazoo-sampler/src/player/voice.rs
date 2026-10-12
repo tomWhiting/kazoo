@@ -5,11 +5,12 @@ use kazoo_fx::dsp::Noise;
 
 use super::envelope::Envelope;
 use super::params::{GrainSettings, Mode, Settings};
+use super::playback::Playback;
 use crate::SampleData;
 use crate::sample::MAX_OCTAVES_UP;
 
 /// Grains one voice can have sounding at once.
-pub(crate) const MAX_GRAINS: usize = 32;
+pub const MAX_GRAINS: usize = 32;
 
 /// The lowest a voice can be pitched, in octaves below the original.
 const LOWEST_OCTAVE: f32 = -8.0;
@@ -19,7 +20,7 @@ const MIN_SPAN: f64 = 16.0;
 
 /// Which of the player's samples a voice reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Source {
+pub enum Source {
     /// The loaded sample.
     Current,
     /// The sample being swapped out, while its voices fade.
@@ -30,7 +31,7 @@ pub(crate) enum Source {
 /// coordinates: frames from the start of the sample going forwards, or from
 /// its end going backwards.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Region {
+pub struct Region {
     pub(crate) frames: f64,
     pub(crate) start: f64,
     pub(crate) end: f64,
@@ -89,7 +90,7 @@ fn ordered(a: f64, b: f64, span: f64, low: f64, high: f64) -> (f64, f64) {
 
 /// What a voice needs to know about its sample and the knobs.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Context<'a> {
+pub struct Context<'a> {
     pub(crate) data: &'a SampleData,
     pub(crate) settings: &'a Settings,
     /// Regions for playing forwards and backwards.
@@ -126,7 +127,7 @@ const SILENT_GRAIN: Grain = Grain {
 
 /// How to start a voice.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Start {
+pub struct Start {
     pub(crate) age: u64,
     pub(crate) key: Option<u8>,
     pub(crate) follows_cv: bool,
@@ -145,7 +146,7 @@ pub(crate) struct Start {
 
 /// A voice.
 #[derive(Debug, Clone)]
-pub(crate) struct Voice {
+pub struct Voice {
     pub(crate) active: bool,
     pub(crate) age: u64,
     pub(crate) source: Source,
@@ -154,14 +155,12 @@ pub(crate) struct Voice {
     pub(crate) follows_cv: bool,
     pub(crate) note: f32,
     mode: Mode,
-    reverse: bool,
+    playback: Playback,
     gain: f32,
     env: Envelope,
     fade: f32,
     fade_step: f32,
     position: f64,
-    forward: bool,
-    wrapped: bool,
     slice: (f64, f64),
     grains: [Grain; MAX_GRAINS],
     grain_timer: f64,
@@ -180,14 +179,12 @@ impl Voice {
             follows_cv: false,
             note: 0.0,
             mode: Mode::OneShot,
-            reverse: false,
+            playback: Playback::new(false),
             gain: 1.0,
             env: Envelope::new(),
             fade: 1.0,
             fade_step: 0.0,
             position: 0.0,
-            forward: true,
-            wrapped: false,
             slice: (0.0, 0.0),
             grains: [SILENT_GRAIN; MAX_GRAINS],
             grain_timer: 0.0,
@@ -197,7 +194,7 @@ impl Voice {
     }
 
     /// Begin playing, from silence.
-    pub(crate) fn start(&mut self, start: &Start) {
+    pub(crate) const fn start(&mut self, start: &Start) {
         self.active = true;
         self.age = start.age;
         self.source = Source::Current;
@@ -206,15 +203,13 @@ impl Voice {
         self.follows_cv = start.follows_cv;
         self.note = start.note;
         self.mode = start.mode;
-        self.reverse = start.reverse;
+        self.playback = Playback::new(start.reverse);
         self.gain = start.gain;
         self.env.reset();
         self.env.gate_on();
         self.fade = 1.0;
         self.fade_step = 0.0;
         self.position = start.position;
-        self.forward = true;
-        self.wrapped = false;
         self.slice = start.slice;
         self.grains = [SILENT_GRAIN; MAX_GRAINS];
         self.grain_timer = 0.0;
@@ -249,7 +244,7 @@ impl Voice {
     }
 
     /// Stop at once.
-    pub(crate) fn stop(&mut self) {
+    pub(crate) const fn stop(&mut self) {
         self.active = false;
         self.held = false;
         self.follows_cv = false;
@@ -259,7 +254,7 @@ impl Voice {
     /// The playhead, as a fraction of the sample from its start.
     pub(crate) fn playhead(&self, frames: usize) -> f32 {
         let total = frames.max(1) as f64;
-        let physical = if self.reverse {
+        let physical = if self.playback.is_reverse() {
             total - 1.0 - self.position
         } else {
             self.position
@@ -298,7 +293,7 @@ impl Voice {
 
     /// The sample at playback position `position`.
     fn read(&self, context: &Context<'_>, position: f64, speed: f64) -> (f32, f32) {
-        let physical = if self.reverse {
+        let physical = if self.playback.is_reverse() {
             context.regions[1].frames - 1.0 - position
         } else {
             position
@@ -308,7 +303,7 @@ impl Voice {
 
     /// One frame of the sample-playing modes; `None` once past the end.
     fn play(&mut self, context: &Context<'_>, speed: f64) -> Option<(f32, f32)> {
-        let region = context.regions[usize::from(self.reverse)];
+        let region = context.regions[usize::from(self.playback.is_reverse())];
         match self.mode {
             // Granular voices never come here; they read through their
             // grains.
@@ -332,7 +327,7 @@ impl Voice {
                 if self.position >= region.loop_end {
                     self.position =
                         region.loop_start + (self.position - region.loop_end).rem_euclid(length);
-                    self.wrapped = true;
+                    self.playback.wrap();
                 }
                 let out = self.loop_read(context, &region, speed, length);
                 self.position += speed;
@@ -370,7 +365,10 @@ impl Voice {
                 let lead = self.read(context, self.position - length, speed);
                 return mix(here, lead, t);
             }
-        } else if after >= 1.0 && self.wrapped && self.position < region.loop_start + after {
+        } else if after >= 1.0
+            && self.playback.has_wrapped()
+            && self.position < region.loop_start + after
+        {
             let t = ((self.position - region.loop_start) / after) as f32;
             let tail = self.read(context, self.position + length, speed);
             return mix(tail, here, t);
@@ -381,20 +379,20 @@ impl Voice {
     /// Move back and forth between the loop points.
     fn bounce(&mut self, region: &Region, speed: f64) {
         let (low, high) = (region.loop_start, region.loop_end);
-        if self.forward {
+        if self.playback.is_forward() {
             self.position += speed;
             if self.position >= high {
                 self.position = high - (self.position - high);
-                self.forward = false;
+                self.playback.turn_back();
             }
         } else {
             self.position -= speed;
             if self.position <= low {
                 self.position = low + (low - self.position);
-                self.forward = true;
+                self.playback.turn_forward();
             }
         }
-        if !self.forward || self.position >= low {
+        if !self.playback.is_forward() || self.position >= low {
             self.position = self.position.clamp(low, high);
         }
     }
@@ -407,7 +405,7 @@ impl Voice {
         if !settings.freeze {
             self.scan = (self.scan + context.rate_ratio).rem_euclid(span);
         }
-        let anchor = settings.position * region.frames - region.start;
+        let anchor = settings.position.mul_add(region.frames, -region.start);
         let centre = region.start + (anchor + self.scan).rem_euclid(span);
         self.grain_timer -= 1.0;
         if self.grain_timer <= 0.0 {
@@ -458,7 +456,11 @@ impl Voice {
         self.grains[slot] = Grain {
             active: true,
             position,
-            step: if self.reverse { -step } else { step },
+            step: if self.playback.is_reverse() {
+                -step
+            } else {
+                step
+            },
             age: 0.0,
             length: settings.size,
         };

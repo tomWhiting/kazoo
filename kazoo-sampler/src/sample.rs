@@ -26,7 +26,7 @@ struct Level {
 }
 
 /// A share of a memory budget, handed back when dropped.
-pub(crate) struct Reservation {
+pub struct Reservation {
     budget: Arc<AtomicUsize>,
     bytes: usize,
 }

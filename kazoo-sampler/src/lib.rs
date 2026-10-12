@@ -34,6 +34,9 @@ pub mod resample;
 mod sample;
 pub mod store;
 
+#[cfg(test)]
+mod lint_tests;
+
 pub use error::Error;
 pub use name::{MAX_NAME_LEN, SampleName};
 pub use player::{PlayerInputs, SamplePlayer, SampleReaper};

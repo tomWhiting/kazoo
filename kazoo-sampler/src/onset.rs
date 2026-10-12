@@ -51,7 +51,7 @@ pub fn detect(left: &[f32], right: &[f32], rate: u32) -> Vec<usize> {
             let x = mono(n);
             let x = if x.is_finite() { x } else { 0.0 };
             e += x * x;
-            d += (x - previous) * (x - previous);
+            d = (x - previous).mul_add(x - previous, d);
             previous = x;
         }
         energy.push(e / hop as f64);
@@ -137,7 +137,7 @@ mod tests {
                 seed ^= seed >> 17;
                 seed ^= seed << 5;
                 let noise = (seed >> 8) as f32 / 8_388_608.0 - 1.0;
-                out[start + n] += noise * 0.8 * (-(n as f32) / 800.0).exp();
+                out[start + n] = (noise * 0.8).mul_add((-(n as f32) / 800.0).exp(), out[start + n]);
             }
         }
         out

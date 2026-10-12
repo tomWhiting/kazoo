@@ -13,6 +13,7 @@
 //! the new Nyquist folds back when the rate drops. This runs off the audio
 //! thread only: it allocates its table and its output.
 
+use std::cmp::Ordering;
 use std::f64::consts::PI;
 
 use crate::{Error, Result};
@@ -84,7 +85,9 @@ impl Resampler {
         }
         let out_len = self.output_len(input.len());
         let mut output = Vec::with_capacity(out_len);
-        let last = input.len() as i64 - 1;
+        // A f32 slice's frame count fits in i64 because its byte length is
+        // bounded by isize::MAX. Clamp to the signed index limit otherwise.
+        let last = i64::try_from(input.len()).unwrap_or(i64::MAX) - 1;
         let mut numerator: u128 = 0;
         for _ in 0..out_len {
             let whole = (numerator / u128::from(self.to)) as i64;
@@ -95,7 +98,7 @@ impl Resampler {
             let mut index = first;
             while index <= end {
                 let distance = ((index - whole) as f64 - frac).abs() * self.cutoff;
-                acc += f64::from(input[index as usize]) * self.window(distance);
+                acc = f64::from(input[index as usize]).mul_add(self.window(distance), acc);
                 index += 1;
             }
             output.push((acc * self.cutoff) as f32);
@@ -164,21 +167,23 @@ impl Halver {
     /// Half as many samples, band-limited: output `m` sits at input `2m`.
     /// Allocates the output.
     pub(crate) fn process(&self, input: &[f32]) -> Vec<f32> {
-        let reach = HALVER_REACH as i64;
-        let last = input.len() as i64 - 1;
+        // Every index stays unsigned, so nothing needs converting. An output
+        // `m` exists only while `2m < input.len()`, so `last` is read only
+        // for a non-empty input, and `first >= centre - HALVER_REACH` keeps
+        // every tap offset `index + HALVER_REACH - centre` at least 0.
+        let last = input.len().saturating_sub(1);
         (0..input.len().div_ceil(2))
             .map(|m| {
-                let centre = 2 * m as i64;
-                let first = (centre - reach).max(0);
-                let end = (centre + reach).min(last);
-                let mut acc = 0.0f32;
-                let mut index = first;
-                while index <= end {
-                    let tap = self.taps[(index - centre + reach) as usize];
-                    acc = tap.mul_add(input[index as usize], acc);
-                    index += 1;
-                }
-                acc
+                let centre = 2 * m;
+                let first = centre.saturating_sub(HALVER_REACH);
+                let end = (centre + HALVER_REACH).min(last);
+                // `end <= centre + HALVER_REACH`, so the taps from this
+                // offset are at least as many as the samples, so the zip reads every sample.
+                let taps = &self.taps[first + HALVER_REACH - centre..];
+                input[first..=end]
+                    .iter()
+                    .zip(taps)
+                    .fold(0.0f32, |acc, (sample, tap)| tap.mul_add(*sample, acc))
             })
             .collect()
     }
@@ -217,11 +222,14 @@ fn bessel_i0(x: f64) -> f64 {
     let half = x / 2.0;
     let mut sum = 1.0;
     let mut term = 1.0;
-    let mut k = 1.0;
-    while term > sum * 1e-17 {
+    // Kaiser arguments converge before the integer steps lose precision.
+    for step in 1_u32.. {
+        if term.partial_cmp(&(sum * 1e-17)) != Some(Ordering::Greater) {
+            break;
+        }
+        let k = f64::from(step);
         term *= (half / k) * (half / k);
         sum += term;
-        k += 1.0;
     }
     sum
 }
@@ -254,7 +262,7 @@ mod tests {
         let omega = 2.0 * PI * hz / f64::from(rate);
         let (mut re, mut im, mut window_sum) = (0.0, 0.0, 0.0);
         for (n, &x) in signal.iter().enumerate() {
-            let window = 0.5 - 0.5 * (2.0 * PI * n as f64 / len).cos();
+            let window = 0.5f64.mul_add(-(2.0 * PI * n as f64 / len).cos(), 0.5);
             window_sum += window;
             let v = f64::from(x) * window;
             re += v * (omega * n as f64).cos();
@@ -349,6 +357,29 @@ mod tests {
         let high = sine(15_000.0, 48_000, 0.5);
         let folded = amplitude(interior(&halver.process(&high)), 9_000.0, 24_000);
         assert!(folded < 0.5 * 1e-3, "{folded}");
+    }
+
+    #[test]
+    fn halving_matches_the_tap_by_tap_sum_bit_for_bit() {
+        let halver = Halver::new();
+        let source: Vec<f32> = (0..1_000u16)
+            .map(|n| (f32::from(n) * 0.37).sin() * 0.8)
+            .collect();
+        for len in (0..=2 * HALVER_REACH + 8).chain([999, 1_000]) {
+            let input = &source[..len];
+            let output = halver.process(input);
+            assert_eq!(output.len(), len.div_ceil(2));
+            for (m, got) in output.iter().enumerate() {
+                let mut wanted = 0.0f32;
+                for (k, tap) in halver.taps.iter().enumerate() {
+                    let at = (2 * m + k).checked_sub(HALVER_REACH);
+                    wanted = at
+                        .and_then(|i| input.get(i))
+                        .map_or(wanted, |sample| tap.mul_add(*sample, wanted));
+                }
+                assert_eq!(got.to_bits(), wanted.to_bits(), "length {len}, output {m}");
+            }
+        }
     }
 
     #[test]
