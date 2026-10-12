@@ -507,8 +507,11 @@ impl Shimmer {
         for (side, sample) in diffused.iter_mut().enumerate() {
             for (stage, allpass) in self.diffusers[side].iter_mut().enumerate() {
                 let gain = if stage < 2 { 0.7 } else { 0.6 };
-                *sample =
-                    allpass.process(*sample, DIFFUSERS_MS[side][stage] * 0.001 * self.rate, gain);
+                *sample = allpass.process_modulated(
+                    *sample,
+                    DIFFUSERS_MS[side][stage] * 0.001 * self.rate,
+                    gain,
+                );
             }
         }
 
@@ -530,7 +533,13 @@ impl Shimmer {
                 stride,
             };
             let line = &mut self.lines[index];
-            let plain = line.delay.read(reading.base);
+            let gliding = !self.size.settled();
+            let base = if gliding {
+                reading.base
+            } else {
+                reading.base.round()
+            };
+            let plain = line.delay.read_at(base, gliding);
             let shifted = if shift_in > 0.0 {
                 line.shifter.read(&line.source, reading)
             } else {

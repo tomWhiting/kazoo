@@ -69,5 +69,52 @@ fn models(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, models);
+fn reverbs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("model");
+    group
+        .sample_size(30)
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(2));
+    let input = fixture(48_000.0);
+    let context = Context { bpm: 120.0 };
+    for id in ["hall", "plate", "spring"] {
+        let Some(kind) = kazoo_fx::find(id) else {
+            panic!("the catalogue has no {id}");
+        };
+        for variant in ["default", "hot", "two"] {
+            if variant == "two" && id != "spring" {
+                continue;
+            }
+            let mut effect = (kind.build)();
+            effect.prepare(48_000.0);
+            for (index, param) in kind.params.iter().enumerate() {
+                let value = match (variant, param.name) {
+                    ("two", "springs") => 2.0,
+                    ("hot", "decay" | "mod" | "drive") => param.max,
+                    _ => param.default,
+                };
+                effect.set_param(index, value);
+            }
+            effect.reset();
+            let mut left = [0.0; 256];
+            let mut right = [0.0; 256];
+            let blocks = input.len() / 256;
+            let mut cursor = 0;
+            let name = format!("model/{id}/{variant}");
+            report_load(&name);
+            group.bench_function(BenchmarkId::new(id, variant), |b| {
+                b.iter(|| {
+                    let start = cursor * 256;
+                    let block = &input[start..start + 256];
+                    effect.process(&context, [block, block], [&mut left, &mut right]);
+                    cursor = (cursor + 1) % blocks;
+                });
+            });
+            report_load(&name);
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, models, reverbs);
 criterion_main!(benches);
