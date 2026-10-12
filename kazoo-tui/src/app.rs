@@ -448,6 +448,7 @@ impl App {
         terminal.draw(|frame| crate::ui::draw(frame, self))?;
 
         while !self.should_quit {
+            self.engine.check_audio().map_err(io::Error::other)?;
             tokio::select! {
                 maybe_event = event_stream.next() => {
                     match maybe_event {

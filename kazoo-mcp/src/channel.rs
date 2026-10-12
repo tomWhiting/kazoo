@@ -190,7 +190,9 @@ impl News {
             }
             // From a newer wall: nothing this build can tell. Where modules
             // hang on the rack is the consoles' business, not news.
-            Feed::Event(Event::Unknown | Event::Rack { .. } | Event::Groups { .. }) => {}
+            Feed::Event(
+                Event::Unknown | Event::Rack { .. } | Event::Groups { .. } | Event::Chains { .. },
+            ) => {}
         }
     }
 

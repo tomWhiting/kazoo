@@ -123,7 +123,7 @@ fn an_octave_up_doubles_the_frequency() {
     let (mut p, _reaper) = player(&data, &[(index::FINE, 100.0)]);
     let (l, _) = render(&mut p, 20_000, held, |_| -1.0);
     let hz = frequency(&l[1_000..20_000]);
-    let wanted = 220.0 * 2f32.powf(1.0 / 12.0);
+    let wanted = 220.0 * (1.0f32 / 12.0).exp2();
     assert!((hz - wanted).abs() < 0.5, "{hz}");
 }
 
@@ -235,7 +235,7 @@ fn reverse_plays_backwards() {
 
 #[test]
 fn slices_pick_the_right_part() {
-    let data = sample(48_000, |n| (n / 12_000) as f32 * 0.2 + 0.1);
+    let data = sample(48_000, |n| ((n / 12_000) as f32).mul_add(0.2, 0.1));
     for (slice, level) in [(0.0, 0.1), (0.3, 0.3), (0.6, 0.5), (1.0, 0.7)] {
         let (mut p, _reaper) = player(
             &data,

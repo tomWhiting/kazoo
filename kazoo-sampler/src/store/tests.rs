@@ -152,7 +152,7 @@ fn length_cap_holds_for_saving_and_loading() {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         },
-        &[0; 8_000],
+        &vec![0; 8_000],
     );
     assert!(matches!(
         store.load(&name("long"), 48_000),

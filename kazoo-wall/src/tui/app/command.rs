@@ -24,7 +24,7 @@ use super::{App, MAX_ENTRY, Mode, Tone, TurnKind, View, jack_names};
 const MAX_LINE: usize = 4 * MAX_ENTRY;
 
 /// Every command: its name, what it takes and what it does.
-pub const COMMANDS: [(&str, &str, &str); 15] = [
+pub const COMMANDS: [(&str, &str, &str); 17] = [
     (
         "add",
         "[kind] [name]",
@@ -70,6 +70,12 @@ pub const COMMANDS: [(&str, &str, &str); 15] = [
         "show only that group; alone, the whole wall",
     ),
     ("groups", "", "say every group and its modules"),
+    (
+        "chain",
+        "save|replace|add <name>",
+        "save the selected chain (replace saves over one), or add a saved copy",
+    ),
+    ("chains", "", "list saved chains"),
     (
         "fold",
         "[group]",
@@ -210,6 +216,25 @@ impl App {
             return Vec::new();
         };
         match (name, position) {
+            ("chain", 1) => ["save", "replace", "add"]
+                .into_iter()
+                .filter(|action| action.starts_with(&lower))
+                .map(|action| Completion {
+                    word: action.to_string(),
+                    note: "chain action".to_string(),
+                    open: false,
+                })
+                .collect(),
+            ("chain", 2) if matches!(words.get(1), Some(&("add" | "replace"))) => self
+                .chain_names
+                .iter()
+                .filter(|name| name.to_lowercase().starts_with(&lower))
+                .map(|name| Completion {
+                    word: name.clone(),
+                    note: "saved chain".to_string(),
+                    open: false,
+                })
+                .collect(),
             ("add", 1) => self
                 .catalogue
                 .iter()
@@ -448,8 +473,8 @@ impl App {
         let name =
             command(first).ok_or_else(|| format!("'{first}' is not a command: Tab lists them"))?;
         let args = &words[1..];
-        if matches!(name, "fold" | "unfold") {
-            return self.run_fold(name, args, now);
+        if matches!(name, "fold" | "unfold" | "chain" | "chains") {
+            return self.run_extra_command(name, args, now);
         }
         if !self.link.is_up() {
             return Err("the wall is not answering".to_string());

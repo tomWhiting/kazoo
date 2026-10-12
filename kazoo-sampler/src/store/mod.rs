@@ -294,7 +294,7 @@ impl SampleStore {
         }
         self.check_length(name, left.len() as f64 / f64::from(rate))?;
         let dest = self.path_of(name);
-        self.refuse_non_file(name, &dest)?;
+        Self::refuse_non_file(name, &dest)?;
         let mut temp = wav::TempWav::create(self.dir(), name, rate)?;
         temp.write(left, right)?;
         temp.commit(&dest, name, overwrite)?;
@@ -365,7 +365,7 @@ impl SampleStore {
     }
 
     /// Refuse to write over anything at `path` that is not a regular file.
-    pub(crate) fn refuse_non_file(&self, name: &SampleName, path: &Path) -> Result<()> {
+    pub(crate) fn refuse_non_file(name: &SampleName, path: &Path) -> Result<()> {
         match fs::symlink_metadata(path) {
             Ok(meta) if !meta.file_type().is_file() => Err(Error::NotAFile {
                 name: name.to_string(),

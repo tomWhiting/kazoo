@@ -1,11 +1,12 @@
 //! Audio device enumeration and stream construction via `cpal`.
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::{DEFAULT_BUFFER_SIZE, DEFAULT_SAMPLE_RATE, Error, Result};
+use super::channel_adapt::{InputAdapter, OutputAdapter};
+use crate::{DEFAULT_BUFFER_SIZE, Error, Result};
 
 /// Get the human-readable name of a device via `description()`.
-fn device_name(device: &cpal::Device) -> String {
+pub(crate) fn device_name(device: &cpal::Device) -> String {
     device
         .description()
         .map_or_else(|_| "<unknown>".to_owned(), |d| d.name().to_owned())
@@ -55,9 +56,9 @@ impl Default for StreamConfig {
 /// stops both streams automatically (cpal `Stream` implements `Drop`).
 pub struct AudioStreams {
     /// The input (capture) stream.
-    pub input: cpal::Stream,
+    pub input: crate::host::audio::OpenedInput,
     /// The output (playback) stream.
-    pub output: cpal::Stream,
+    pub output: crate::host::audio::OpenedOutput,
     /// Actual sample rate negotiated with the devices.
     pub sample_rate: u32,
     /// Actual buffer size negotiated with the devices.
@@ -211,8 +212,7 @@ fn output_caps(device: &cpal::Device) -> (u16, Vec<u32>) {
 // ---------------------------------------------------------------------------
 
 /// The sample rate [`build_streams`] runs `config` at: the requested rate,
-/// or else the output device's native rate (falling back to
-/// [`DEFAULT_SAMPLE_RATE`] if the device does not report one).
+/// or else the output device's native rate. An unreadable native rate is an error.
 ///
 /// Callers that size or tune anything by sample rate before the streams
 /// exist (the engine's processing state, an instrument's hub link) must use
@@ -221,24 +221,31 @@ fn output_caps(device: &cpal::Device) -> (u16, Vec<u32>) {
 ///
 /// # Errors
 ///
-/// Returns [`Error::AudioDevice`] if no rate was requested and the output
-/// device cannot be found.
+/// Returns [`Error::Device`] if the device or requested configuration is unavailable.
 pub fn resolve_sample_rate(config: &StreamConfig) -> Result<u32> {
-    if let Some(rate) = config.sample_rate {
-        return Ok(rate);
+    use crate::host::audio::{DeviceChoice, OutputRequest, RateChoice};
+    OutputRequest {
+        device: config
+            .output_device
+            .clone()
+            .map_or(DeviceChoice::Default, DeviceChoice::Named),
+        channels: config.output_channels,
+        rate: config
+            .sample_rate
+            .map_or(RateChoice::Native, RateChoice::Hz),
     }
-    let host = cpal::default_host();
-    let output_device = resolve_output_device(&host, config.output_device.as_deref())?;
-    Ok(native_output_rate(&output_device))
+    .info()
+    .map(|info| info.rate)
 }
 
 /// The output device's native sample rate. Running at it avoids Core Audio
 /// inserting an internal resampler (which adds 11-23 ms of latency) when the
 /// device runs at e.g. 48000 Hz but 44100 Hz is requested.
-fn native_output_rate(device: &cpal::Device) -> u32 {
+pub(crate) fn native_output_rate(device: &cpal::Device) -> Result<u32> {
     device
         .default_output_config()
-        .map_or(DEFAULT_SAMPLE_RATE, |c| c.sample_rate())
+        .map(|config| config.sample_rate())
+        .map_err(|error| Error::Device(format!("cannot read native output rate: {error}")))
 }
 
 /// Build an input + output stream pair from the given configuration.
@@ -251,7 +258,7 @@ fn native_output_rate(device: &cpal::Device) -> u32 {
 ///
 /// # Errors
 ///
-/// Returns [`Error::AudioDevice`] if the requested (or default) device
+/// Returns [`Error::Device`] if the requested (or default) device
 /// cannot be found, the configuration is unsupported, or stream creation
 /// fails.
 pub fn build_streams(
@@ -259,113 +266,43 @@ pub fn build_streams(
     mut input_callback: impl FnMut(&[f32]) + Send + 'static,
     mut output_callback: impl FnMut(&mut [f32]) + Send + 'static,
 ) -> Result<AudioStreams> {
-    let host = cpal::default_host();
-
-    // -- resolve devices --------------------------------------------------
-    let input_device = resolve_input_device(&host, config.input_device.as_deref())?;
-    let output_device = resolve_output_device(&host, config.output_device.as_deref())?;
-
-    // -- determine sample rate --------------------------------------------
-    // Use the output device's native rate when no explicit rate is requested.
-    // This avoids Core Audio inserting an internal resampler (which adds
-    // 11-23 ms of latency) when the device runs at e.g. 48000 Hz but we
-    // request 44100 Hz.
-    let sample_rate = config
-        .sample_rate
-        .unwrap_or_else(|| native_output_rate(&output_device));
-
-    // -- determine buffer size --------------------------------------------
-    let buffer_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
-
-    // -- build cpal StreamConfig ------------------------------------------
-    // When a buffer size is set (the default), prefer Fixed mode for low
-    // latency. Bluetooth audio devices cannot honour Fixed sizes, so we
-    // probe the output device first and fall back to Default if needed.
-    let cpal_buffer = if config.buffer_size.is_some() {
-        let fixed = cpal::BufferSize::Fixed(
-            u32::try_from(buffer_size)
-                .map_err(|_| Error::Config("buffer size too large for u32".into()))?,
-        );
-
-        // Probe whether the output device accepts a Fixed buffer size by
-        // building a no-op stream. Bluetooth HALs typically reject Fixed
-        // sizes with a BuildStreamError. The probe stream is dropped
-        // immediately, releasing the device for the real stream.
-        let probe_cfg = cpal::StreamConfig {
-            channels: config.output_channels,
-            sample_rate,
-            buffer_size: fixed,
-        };
-        let probe = output_device.build_output_stream(
-            &probe_cfg,
-            |_: &mut [f32], _: &cpal::OutputCallbackInfo| {},
-            |_| {},
-            None,
-        );
-        match probe {
-            Ok(_) => {
-                // Fixed works. Drop the probe stream and use Fixed for real.
-                fixed
-            }
-            Err(_) => {
-                // Fixed rejected (likely Bluetooth). Fall back to Default.
-                cpal::BufferSize::Default
-            }
-        }
-    } else {
-        cpal::BufferSize::Default
+    use crate::host::audio::{
+        DeviceChoice, OutputRequest, RateChoice, open_input_with_frames, open_output_with_frames,
     };
-
-    let input_stream_cfg = cpal::StreamConfig {
-        channels: config.input_channels,
-        sample_rate,
-        buffer_size: cpal_buffer,
-    };
-
-    let output_stream_cfg = cpal::StreamConfig {
+    let sample_rate = resolve_sample_rate(config)?;
+    let frames = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
+    let output_request = OutputRequest {
+        device: config
+            .output_device
+            .clone()
+            .map_or(DeviceChoice::Default, DeviceChoice::Named),
         channels: config.output_channels,
-        sample_rate,
-        buffer_size: cpal_buffer,
+        rate: RateChoice::Hz(sample_rate),
     };
-
-    // -- build streams ----------------------------------------------------
-    let input_stream = input_device
-        .build_input_stream(
-            &input_stream_cfg,
-            move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                input_callback(data);
-            },
-            |err| {
-                eprintln!("input stream error: {err}");
-            },
-            None,
-        )
-        .map_err(|e| Error::AudioDevice(format!("failed to build input stream: {e}")))?;
-
-    let output_stream = output_device
-        .build_output_stream(
-            &output_stream_cfg,
-            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                output_callback(data);
-            },
-            |err| {
-                eprintln!("output stream error: {err}");
-            },
-            None,
-        )
-        .map_err(|e| Error::AudioDevice(format!("failed to build output stream: {e}")))?;
-
-    // -- start playback ---------------------------------------------------
-    input_stream
-        .play()
-        .map_err(|e| Error::Stream(format!("failed to start input stream: {e}")))?;
-    output_stream
-        .play()
-        .map_err(|e| Error::Stream(format!("failed to start output stream: {e}")))?;
-
+    let input_request = OutputRequest {
+        device: config
+            .input_device
+            .clone()
+            .map_or(DeviceChoice::Default, DeviceChoice::Named),
+        channels: config.input_channels,
+        rate: RateChoice::Hz(sample_rate),
+    };
+    // The host opens the nearest channel count each device offers, which
+    // may differ from the configured one. The engine's callbacks are
+    // written for the configured counts, so each is adapted to the width
+    // the device was opened with.
+    let mut input_adapter = InputAdapter::new(config.input_channels, frames);
+    let mut output_adapter = OutputAdapter::new(config.output_channels, frames);
+    let input = open_input_with_frames(&input_request, frames, move |data, info| {
+        input_adapter.process(data, info.channels, &mut input_callback);
+    })?;
+    let output = open_output_with_frames(&output_request, frames, move |data, info| {
+        output_adapter.process(data, info.channels, &mut output_callback);
+    })?;
+    let buffer_size = output.buffer_frames();
     Ok(AudioStreams {
-        input: input_stream,
-        output: output_stream,
+        input,
+        output,
         sample_rate,
         buffer_size,
     })
@@ -376,7 +313,7 @@ pub fn build_streams(
 // ---------------------------------------------------------------------------
 
 /// Look up an input device by name, falling back to the system default.
-fn resolve_input_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
+pub(crate) fn resolve_input_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
     if let Some(target) = name {
         let devices = host
             .input_devices()
@@ -396,7 +333,7 @@ fn resolve_input_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::D
 }
 
 /// Look up an output device by name, falling back to the system default.
-fn resolve_output_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
+pub(crate) fn resolve_output_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
     if let Some(target) = name {
         let devices = host
             .output_devices()
