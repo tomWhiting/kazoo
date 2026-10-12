@@ -129,16 +129,25 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> ExitCode {
     }
 }
 
-/// Read arguments after the program name. `Ok(None)` requests help; an error
-/// is one sentence describing the invalid argument.
+/// Read arguments after the program name. `Ok(None)` requests help, wherever
+/// `-h` or `--help` stands before `--`, even after a bad argument or where a
+/// flag's value would be; an error is one sentence describing the invalid
+/// argument.
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, String> {
+    let args: Vec<String> = args.into_iter().collect();
+    if args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        return Ok(None);
+    }
     let mut options = Args::default();
     let mut notation_parts = Vec::new();
     let mut iter = args.into_iter();
 
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "-h" | "--help" => return Ok(None),
             "--play" => options.mode = Mode::Play,
             "--events" => options.mode = Mode::Events,
             "--jam" => options.mode = Mode::Jam,
@@ -279,6 +288,22 @@ mod tests {
         assert_eq!(
             Error::Output(std::io::ErrorKind::BrokenPipe.into()).exit_code(),
             1
+        );
+    }
+
+    #[test]
+    fn help_wins_wherever_it_stands() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(|arg| (*arg).to_string()));
+        assert_eq!(parse(&["--bogus", "--help"]), Ok(None));
+        assert_eq!(parse(&["--name", "-h"]), Ok(None));
+        assert_eq!(parse(&["--bpm", "--help"]), Ok(None));
+        assert_eq!(parse(&["c4/4", "-h"]), Ok(None));
+        assert_eq!(
+            parse(&["--", "-h"]),
+            Ok(Some(Args {
+                notation: Some("-h".to_string()),
+                ..Args::default()
+            }))
         );
     }
 
