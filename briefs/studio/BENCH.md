@@ -87,3 +87,35 @@ measured: the after run did not finish inside the builder's time box, and
 the review did not run benches under that load. The 5x speedup, the below
 25% of real time, and the chains within 3% requirements are not verified;
 both columns are to be measured on a quiet machine.
+
+## KZ-V01
+
+Source base: 1e616d7, with the voice judge changes uncommitted in lane/kz-V01.
+Each operation is one 512-sample push at 48 kHz, after priming with 4096
+samples of a 130.81 Hz saw, harmonics 1 through 20 weighted by 1/k, peak
+0.5. Detector construction, priming and destruction are outside the timed
+operation. N is the number of pYIN frames per run. Values are Criterion's
+reported time estimates; each run collected 100 samples and exited 0.
+
+| bench | N | ns per block | blocks per second | % of real time |
+|---|---|---|---|---|
+| judge/hop/48k | 5 | 69,472,000 | 14.394 | 651.300 |
+| judge/hop/48k | 3 | 63,456,000 | 15.759 | 594.900 |
+
+The five-frame interval was 63.183–76.289 ms. The three-frame interval was
+57.071–70.229 ms. The 1/5/15-minute load averages before the commands were
+119.95/126.84/115.98 and 114.00/123.96/118.15, respectively. A sample during
+the five-frame measurement was 127.81/126.02/117.95; after the three-frame
+measurement it was 99.12/115.75/116.23. Other lane work and
+this lane's nextest runs were active. These are loaded measurements, not
+quiet-machine costs or evidence of a speedup.
+
+The five-frame result exceeded 2.1 ms, so the judge was reduced to three
+frames and measured again. Three frames remain the final configuration,
+with two preceding frames of HMM context. Both loaded results exceed the
+budget; the quiet-machine 2.1 ms budget is not verified.
+
+Logs: target/kz-logs/bench-five.txt and target/kz-logs/bench-three.txt, with
+load samples in target/kz-logs/bench-five-load.txt,
+target/kz-logs/bench-five-measure-load.txt, target/kz-logs/bench-three-load.txt
+and target/kz-logs/bench-three-after-load.txt.

@@ -69,7 +69,7 @@ pub struct EngineConfig {
     /// Audio stream configuration (device selection, sample rate, buffer size).
     pub stream: StreamConfig,
 
-    /// Pitch detector configuration.
+    /// Pitch detector configuration; rate, frame and hop are taken from the device.
     pub pitch: PitchDetectorConfig,
 
     /// FFT size for spectrum analysis (default 2048).
@@ -106,6 +106,17 @@ impl Default for EngineConfig {
             onset_threshold: 0.3,
             desk_instrument_name: None,
         }
+    }
+}
+
+/// Preserve the requested range and voicing threshold at the device's rate.
+#[must_use]
+pub const fn judge_config(asked: &PitchDetectorConfig, rate: u32) -> PitchDetectorConfig {
+    PitchDetectorConfig {
+        min_frequency: asked.min_frequency,
+        max_frequency: asked.max_frequency,
+        voiced_threshold: asked.voiced_threshold,
+        ..PitchDetectorConfig::for_rate(rate)
     }
 }
 
@@ -180,16 +191,14 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // Validate the pitch configuration up front: an invalid config is a
     // caller error, not something to discover later on the analysis thread.
     let analysis = analysis_config(&config, sample_rate, buffer_size);
-    let pitch_detector = PitchDetector::new(config.pitch)?;
+    let pitch_detector = PitchDetector::new(judge_config(&config.pitch, sample_rate))?;
     let stats = Arc::new(EngineStats::new());
 
     // The desk link is created before the streams so its audio half can be
     // moved into the output callback with the rest of the processing state.
-    let (desk, desk_audio) = start_desk_link(
-        config.desk_instrument_name.as_deref(),
-        sample_rate,
-        buffer_size,
-    )?;
+    let desk_instrument_name = config.desk_instrument_name;
+    let (desk, desk_audio) =
+        start_desk_link(desk_instrument_name.as_deref(), sample_rate, buffer_size)?;
 
     // -----------------------------------------------------------------------
     // 1. Create ring buffers
@@ -553,6 +562,34 @@ fn spawn_disk_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 48 kHz sine judged at the default 44.1 kHz rate used to read about 404 Hz.
+    #[test]
+    fn the_engine_judges_at_the_device_rate() {
+        let config = judge_config(&EngineConfig::default().pitch, 48_000);
+        assert_eq!(config.sample_rate, 48_000);
+        assert_eq!(config.frame_length, 2048);
+        assert_eq!(config.hop_length, 512);
+        let mut detector = PitchDetector::new(config).expect("valid device judge");
+        let samples: Vec<_> = (0..48_000_u32)
+            .map(|index| (std::f64::consts::TAU * 440.0 * f64::from(index) / 48_000.0).sin() as f32)
+            .collect();
+        let mut settled = 0;
+        for (index, chunk) in samples.chunks(128).enumerate() {
+            if let Some(estimate) = detector.push_samples(chunk) {
+                if (index + 1) * 128 > 4096 {
+                    let frequency = estimate.frequency.expect("settled sine must be voiced");
+                    let cents = (1200.0 * (frequency / 440.0).log2()).abs();
+                    assert!(
+                        cents <= 5.0,
+                        "device-rate sine read {frequency} Hz ({cents} cents)"
+                    );
+                    settled += 1;
+                }
+            }
+        }
+        assert!(settled > 0);
+    }
 
     #[test]
     fn engine_config_default_values() {
