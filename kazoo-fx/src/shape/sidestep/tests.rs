@@ -154,8 +154,10 @@ fn a_chord_is_never_silenced_and_folds_every_note() {
             .filter(|other| other.to_bits() != frequency.to_bits())
             .flat_map(|other| {
                 [
-                    f64::from(frequency) + 2.0 * f64::from(other),
-                    (f64::from(frequency) - 2.0 * f64::from(other)).abs(),
+                    2.0_f64.mul_add(f64::from(other), f64::from(frequency)),
+                    2.0_f64
+                        .mul_add(-f64::from(other), f64::from(frequency))
+                        .abs(),
                 ]
             });
         let other_notes: Vec<_> = frequencies
@@ -302,7 +304,7 @@ fn the_edges_are_band_limited() {
     for tone in [1000.0, 683.0 * f64::from(RATE) / 32_768.0] {
         let input: Vec<f32> = (0..65_536)
             .map(|n| {
-                (std::f64::consts::TAU * tone * n as f64 / f64::from(RATE)).sin() as f32 * 0.25
+                (std::f64::consts::TAU * tone * f64::from(n) / f64::from(RATE)).sin() as f32 * 0.25
             })
             .collect();
         let mut limited = inspected(&settings);

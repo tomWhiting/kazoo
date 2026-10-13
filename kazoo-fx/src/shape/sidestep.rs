@@ -414,7 +414,7 @@ impl Sidestep {
     }
 
     #[cfg(test)]
-    pub(super) fn test_band_limit(&mut self, enabled: bool) {
+    pub(super) const fn test_band_limit(&mut self, enabled: bool) {
         self.band_limited = enabled;
     }
 

@@ -108,15 +108,15 @@ pub fn window_pitch(signal: &[f32], rate: f32, ms: f32) -> Vec<(f64, f64)> {
     assert!(!periods.is_empty(), "signal has no cycles");
     periods.sort_by(f64::total_cmp);
     let centre = f64::from(rate) / periods[periods.len() / 2];
-    let g = (PI * centre / f64::from(rate)).tan();
-    let a = 1.0 / g.mul_add(g + 2.0, 1.0);
+    let warp = (PI * centre / f64::from(rate)).tan();
+    let gain = 1.0 / warp.mul_add(warp + 2.0, 1.0);
     let mut state = [0.0; 2];
     let band: Vec<f32> = signal
         .iter()
         .map(|x| {
             let v3 = f64::from(*x) - state[1];
-            let v1 = a * g.mul_add(v3, state[0]);
-            let v2 = g.mul_add(v1, state[1]);
+            let v1 = gain * warp.mul_add(v3, state[0]);
+            let v2 = warp.mul_add(v1, state[1]);
             state = [
                 2.0_f64.mul_add(v1, -state[0]),
                 2.0_f64.mul_add(v2, -state[1]),
@@ -133,13 +133,16 @@ pub fn window_pitch(signal: &[f32], rate: f32, ms: f32) -> Vec<(f64, f64)> {
     (0..(signal.len() as f64 / stride) as usize)
         .filter_map(|n| {
             let time = (n as f64 + 0.5) * stride;
-            let i = measured.partition_point(|p| p.0 < time);
-            if i == 0 || i >= measured.len() {
+            let after = measured.partition_point(|p| p.0 < time);
+            if after == 0 || after >= measured.len() {
                 return None;
             }
-            let (a, b) = (measured[i - 1], measured[i]);
-            let t = (time - a.0) / (b.0 - a.0);
-            Some((time / f64::from(rate), (b.1 - a.1).mul_add(t, a.1)))
+            let (before, next) = (measured[after - 1], measured[after]);
+            let share = (time - before.0) / (next.0 - before.0);
+            Some((
+                time / f64::from(rate),
+                (next.1 - before.1).mul_add(share, before.1),
+            ))
         })
         .collect()
 }
