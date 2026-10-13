@@ -189,10 +189,7 @@ impl Daemon {
             patch.cables().len(),
             config.socket.display()
         );
-        let tree_dir = std::env::var_os("KAZOO_TREE_DIR")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| config.state_dir.parent().map(|dir| dir.join("tree")));
+        let tree_dir = crate::tree::git::tree_dir(&config.state_dir);
         let recordings = config.recordings;
         let load_guard = config.load_guard;
         let setup = control::Setup {

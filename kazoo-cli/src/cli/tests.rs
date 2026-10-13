@@ -265,3 +265,19 @@ fn arp_keeps_its_target_and_silent_flags() {
     assert_eq!(kazoo_arp::Args::from(args), expected);
     assert!(Cli::try_parse_from(["kazoo", "arp", "--target", "bogus"]).is_err());
 }
+
+#[test]
+fn wall_tree_import_parses() {
+    let parsed = Cli::try_parse_from(["kazoo", "wall", "tree", "import", "--dry-run"])
+        .unwrap()
+        .command;
+    assert_eq!(
+        parsed,
+        Command::Wall {
+            command: Some(WallCommand::Tree {
+                command: super::TreeCommand::Import(super::ImportArgs { dry_run: true })
+            })
+        }
+    );
+    assert!(Cli::try_parse_from(["kazoo", "wall", "tree", "import", "--unknown"]).is_err());
+}

@@ -2,7 +2,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use kazoo::cli::{Cli, Command, WallCommand, console_serve};
+use kazoo::cli::{Cli, Command, TreeCommand, WallCommand, console_serve};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -57,6 +57,19 @@ fn finish(result: color_eyre::Result<()>) -> ExitCode {
 
 fn wall(command: Option<WallCommand>) -> color_eyre::Result<()> {
     match command {
+        Some(WallCommand::Tree {
+            command: TreeCommand::Import(args),
+        }) => {
+            let state = kazoo_wall::paths::state_dir()?;
+            let tree = kazoo_wall::tree::git::tree_dir(&state).ok_or_else(|| {
+                kazoo_wall::tree::rings::RingsError::NotATree("the wall's state directory has no parent to keep the tree beside; set KAZOO_TREE_DIR".into())
+            })?;
+            println!(
+                "{}",
+                kazoo_wall::tree::rings::grow(&state, &tree, args.dry_run)?
+            );
+            Ok(())
+        }
         None | Some(WallCommand::Console) => {
             kazoo_wall::tui::run(console_serve(std::env::current_exe().map_err(|err| {
                 color_eyre::eyre::eyre!("cannot find this program to start the wall with: {err}")
