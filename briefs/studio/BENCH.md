@@ -192,3 +192,21 @@ target/kz-logs/amendment-cpu-{judge,engine}-setup.txt,
 target/kz-logs/amendment-cpu-load-{before,after}.txt,
 target/kz-logs/amendment-bench-{judge,engine}.txt and
 target/kz-logs/amendment-bench{,-engine}-load-before.txt.
+
+### Second review (Opus, 13 Oct, head 10649b9)
+
+Measured the same way as Amendment 1: the release voice bench's `--cpu-*`
+modes under `/usr/bin/time -p`, 100 hop-sized pushes, setup-only user time
+subtracted. All commands exited 0. Load averages 71.52/77.66/90.59 before
+the Criterion runs and 57.07/72.70/88.01 before and after the CPU runs.
+
+| bench | N | ns per block (user CPU) | blocks per second | % of real time |
+|---|---|---|---|---|
+| judge/hop/48k | 3 | 1,500,000 | 666.667 | 14.063 |
+| engine/hop/48k | 3 | 6,400,000 | 156.250 | 15.000 |
+
+Judge 0.17 s − 0.02 s, engine 0.67 s − 0.03 s, over 100 runs. Both are
+under budget (2.1 ms; 8.533 ms). Criterion wall time: judge/hop/48k
+1.3870 ms (1.3697–1.4050), engine/hop/48k 6.2770 ms (6.1513–6.4304).
+Logs: target/kz-logs/review-bench.log, review-cpu-*.log,
+review-bench-load-{before,after}.log, review-cpu-load.log.
