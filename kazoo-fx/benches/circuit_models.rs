@@ -1,9 +1,12 @@
-use std::time::Duration;
+use std::{process::Command, time::Duration};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use kazoo_fx::Context;
 
 fn circuit_models(c: &mut Criterion) {
+    let load = Command::new("uptime").output().expect("read load average");
+    assert!(load.status.success(), "uptime failed: {}", load.status);
+    println!("{}", String::from_utf8(load.stdout).expect("load is UTF-8"));
     let mut group = c.benchmark_group("fx");
     group
         .sample_size(50)
@@ -19,10 +22,14 @@ fn circuit_models(c: &mut Criterion) {
         let mut effect = (kind.build)();
         effect.prepare(48_000.0);
         for (index, param) in kind.params.iter().enumerate() {
-            let value = match param.name {
-                "mix" => param.max,
-                "drive" | "gain" => 0.9_f32.mul_add(param.max - param.min, param.min),
-                _ => param.default,
+            let value = match (kind.id, param.name) {
+                ("sidestep", "square" | "sub1" | "sub2" | "ring" | "half" | "fold") => 50.0,
+                ("sidestep", _) => param.default,
+                (_, name) => match name {
+                    "mix" => param.max,
+                    "drive" | "gain" => 0.9_f32.mul_add(param.max - param.min, param.min),
+                    _ => param.default,
+                },
             };
             effect.set_param(index, value);
         }

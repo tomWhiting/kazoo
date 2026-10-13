@@ -667,3 +667,18 @@ present. Receipt: `target/kz-logs/review/voice-score-final.md`.
 | cycle | whistle | 1.33 | 1.33 | 0 | - | - | 0 | 0 | 0.94 | 2.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
 | pYIN | rearticulate | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |
 | cycle | rearticulate | 7.33 | 7.33 | 0 | - | - | 0 | 0 | 0.00 | 2.88 | 0.00 | 0.00 | 11.11 | 0.00 | - |
+
+## KZ-P10 sidestep
+
+2026-10-14, source base `da446f9`, uncommitted `lane/kz-P10` changes.
+The fixture processes 512 frames at 48 kHz with square, sub1, sub2, ring,
+half and fold at 50%, and the remaining controls at their defaults.
+
+| bench | frames | time per block | load average (1/5/15 minutes) | result |
+|---|---:|---|---|---|
+| fx/sidestep | 512 | not measured | 143.31 / 153.73 / 157.58 | queued command cancelled before execution, exit 130 |
+
+The required cargo lock and dependency compilation consumed the allocation.
+The benchmark never started. The 100 microsecond budget is not verified.
+There is no before number because this effect did not exist at the base.
+The load above was read at cancellation; it is not a benchmark load sample.
