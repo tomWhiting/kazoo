@@ -1,8 +1,7 @@
 //! Shutdown joins the judge worker: `EngineHandle`'s drop waits for it.
 
 use super::{EngineHandle, ThreadHandles};
-use crate::analysis::PitchDetectorConfig;
-use crate::engine::{DiskCommand, EngineCommand};
+use crate::engine::{DiskCommand, EngineCommand, EngineConfig, judge_config};
 use crate::voice::judge::{self, JudgeResult, OnsetConfig};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// with pYIN, or still parked, when the handle is gone.
 #[test]
 fn the_judge_thread_is_joined_at_shutdown() {
-    let config = PitchDetectorConfig::for_rate(48_000);
+    let config = judge_config(&EngineConfig::default().pitch, 48_000);
     let hop = config.hop_length;
     let (mut feed, mut results, judge) = judge::spawn(config, 128, OnsetConfig::default()).unwrap();
     // Two whole hops: the most the judge's input ring holds at 48 kHz.

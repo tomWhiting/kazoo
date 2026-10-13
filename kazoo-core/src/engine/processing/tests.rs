@@ -163,7 +163,7 @@ impl Rig {
         let (analysis_prod, analysis) = HeapRb::<f32>::new(block * 64).split();
         let (disk_prod, disk_samples) = HeapRb::<f32>::new(block * 64).split();
         let (judge, judge_results, judge_worker) = crate::voice::judge::spawn(
-            crate::analysis::PitchDetectorConfig::for_rate(rate),
+            crate::engine::judge_config(&crate::engine::EngineConfig::default().pitch, rate),
             block,
             crate::voice::judge::OnsetConfig::default(),
         )
