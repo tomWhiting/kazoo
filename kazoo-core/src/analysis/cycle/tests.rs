@@ -213,8 +213,11 @@ fn a_hint_overrides_a_reading_an_octave_up() {
         .collect();
     let mut tracker = CycleTracker::new(48_000);
     tracker.process(&signal[..4_800]);
+    // An octave-up reading is of a lag that is not the signal's period, so it
+    // wanders around 300 Hz with the window's phase; what matters is that the
+    // tracker reads the octave above, not 150 Hz.
     assert!(
-        tracker.estimate().is_some_and(|e| cents(e.hz, 300.0) < 3.0),
+        tracker.estimate().is_some_and(|e| e.hz > 250.0),
         "{:?}",
         tracker.estimate()
     );
@@ -223,9 +226,7 @@ fn a_hint_overrides_a_reading_an_octave_up() {
     let mut corrected = false;
     for sample in &signal[4_800..] {
         tracker.push(*sample);
-        corrected |= tracker
-            .estimate()
-            .is_some_and(|e| cents(e.hz, 150.0) < 3.0);
+        corrected |= tracker.estimate().is_some_and(|e| cents(e.hz, 150.0) < 3.0);
         if tracker.marks() >= before + 4 {
             break;
         }
@@ -251,7 +252,10 @@ fn a_low_hum_stays_locked_once_found() {
         }
     }
     assert!(first.is_some(), "never locked");
-    assert_eq!(lost, 0, "unlocked for {lost} samples after locking at {first:?}");
+    assert_eq!(
+        lost, 0,
+        "unlocked for {lost} samples after locking at {first:?}"
+    );
 }
 
 #[test]
@@ -265,4 +269,40 @@ fn a_candidate_off_its_peak_is_climbed_to_the_peak() {
         refined.is_none_or(|e| (e.period - 48_000.0 / 220.0).abs() < 0.05),
         "{refined:?}"
     );
+}
+
+#[test]
+fn a_fading_note_never_reads_an_octave_down() {
+    // Syllables dip 24 dB in 10 ms: candidates compared over different
+    // windows let the longer lag, read further from the fade, win.
+    let take = named("rearticulate");
+    let mut tracker = CycleTracker::new(48_000);
+    for (i, sample) in take.samples.iter().enumerate() {
+        tracker.push(*sample);
+        if let Some(estimate) = tracker.estimate() {
+            assert!(cents(estimate.hz, 220.0) <= 100.0, "{i}: {estimate:?}");
+        }
+    }
+}
+
+#[test]
+fn a_semitone_step_is_never_carried_past_its_note() {
+    // A step's transitional readings must not be taken for a glide and
+    // extrapolated: nothing reads beyond either note by more than 20 cents.
+    for (old, new) in [(220.0, 233.082), (233.082, 220.0)] {
+        let mut tracker = CycleTracker::new(48_000);
+        tracker.process(&sine(old, 48_000, 9_600, 0.0));
+        let phase = TAU * old * 9_600.0 / 48_000.0;
+        let low = f32::min(old, new) * (-20.0_f32 / 1200.0).exp2();
+        let high = f32::max(old, new) * (20.0_f32 / 1200.0).exp2();
+        for (i, sample) in sine(new, 48_000, 9_600, phase).into_iter().enumerate() {
+            tracker.push(sample);
+            if let Some(estimate) = tracker.estimate() {
+                assert!(
+                    (low..=high).contains(&estimate.hz),
+                    "{old} -> {new}, {i}: {estimate:?}"
+                );
+            }
+        }
+    }
 }
