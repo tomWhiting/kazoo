@@ -24,6 +24,8 @@ pyin = "1.2.0"
 ringbuf = "0.4.8"
 rubato = "1.0.1"
 rustfft = "6.4.1"
+serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.10"
 symphonia = "0.5.5"
 thiserror = "2.0.18"
 
