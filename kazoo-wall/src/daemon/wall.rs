@@ -1483,7 +1483,14 @@ impl Wall {
             let needs = self.speech.attach(&module.id, feed);
             (built, needs)
         } else {
-            (dsp::build(module.kind, rate), false)
+            (
+                dsp::build(
+                    module.kind,
+                    rate,
+                    crate::chance::module_seed(self.patch.seed, &module.id),
+                ),
+                false,
+            )
         };
         self.engine.send(Command::Insert {
             slot,
@@ -3223,7 +3230,8 @@ impl Wall {
 
     /// Replace the wall with an empty one at the same tempo, for `seat`.
     fn blank(&mut self, (seat, console): (&str, bool)) -> Result<Outcome, WallError> {
-        let empty = Patch::empty(self.patch.tempo);
+        let mut empty = Patch::empty(self.patch.tempo);
+        empty.seed = crate::chance::fresh_wall_seed();
         self.replace((seat, console), empty, &Source::Empty, Vec::new())
     }
 
@@ -3887,6 +3895,7 @@ impl Wall {
         Snapshot {
             revision: self.revision(),
             wall: self.patch.wall,
+            seed: self.patch.seed,
             tempo: shared.bpm(),
             beat: shared.beat(),
             clock: if shared.following_desk() {

@@ -763,7 +763,7 @@ fn a_version_1_patch_is_brought_up_to_date_on_start() {
         panic!("not a migration: {:?}", change.what);
     };
     assert_eq!((*from_version, *to_version), (1, 2));
-    assert_eq!(notes.len(), 8);
+    assert_eq!(notes.len(), 9);
     assert_eq!(code(&wall.undo(233).unwrap_err()), ErrorCode::NotAllowed);
     // The original is kept, byte for byte; the new patch is saved.
     let kept: Vec<_> = std::fs::read_dir(state.path())

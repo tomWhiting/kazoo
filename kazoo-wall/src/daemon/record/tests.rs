@@ -25,7 +25,7 @@ fn tone_at(rate: u32) -> (Engine, EngineControl) {
             slot,
             tag: u32::try_from(slot).unwrap() + 1,
             kind,
-            module: build(kind, rate as f32),
+            module: build(kind, rate as f32, u64::try_from(slot).unwrap()),
             knobs,
         });
     }

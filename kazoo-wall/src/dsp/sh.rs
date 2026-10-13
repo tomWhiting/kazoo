@@ -1,7 +1,7 @@
 //! Sample and hold: on each rising trigger it samples its input, or its own
 //! noise when the input is unplugged, and glides to it over `slew`.
 
-use super::{Edge, Io, Module, Rng, Tick, bounded, seed};
+use super::{Edge, Io, Module, Rng, Tick, bounded};
 use crate::SUB_BLOCK;
 
 const SLEW: usize = 0;
@@ -18,10 +18,10 @@ pub struct SampleHold {
 }
 
 impl SampleHold {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             trig: Edge::new(),
-            rng: Rng::new(seed()),
+            rng: Rng::new(kazoo_fx::dsp::stream_seed(0, 0)),
             held: 0.0,
             out: 0.0,
         }
@@ -29,6 +29,10 @@ impl SampleHold {
 }
 
 impl Module for SampleHold {
+    fn set_seed(&mut self, seed: u64) {
+        self.rng = Rng::new(kazoo_fx::dsp::stream_seed(seed, 0));
+    }
+
     fn process(&mut self, tick: &Tick, io: Io<'_>) {
         let slew = io.knob(SLEW);
         let coefficient = if slew > 0.0 {

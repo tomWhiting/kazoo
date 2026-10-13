@@ -43,7 +43,7 @@ impl Model {
             slot,
             tag: self.next_tag,
             kind,
-            module: build(kind, 48_000.0),
+            module: build(kind, 48_000.0, u64::try_from(slot).unwrap()),
             knobs,
         });
         self.slots.push((slot, kind));
@@ -273,7 +273,7 @@ fn a_module_producing_nan_is_silenced_reset_and_reported() {
         slot: 8,
         tag: 100,
         kind: Kind::OUT,
-        module: build(Kind::OUT, 48_000.0),
+        module: build(Kind::OUT, 48_000.0, 8),
         knobs: [1.0; MAX_KNOBS],
     });
     let mut table = CableTable::new();
@@ -486,7 +486,7 @@ fn nonsense_commands_are_counted_not_obeyed() {
         slot: usize::MAX,
         tag: 1,
         kind: Kind::VCO,
-        module: build(Kind::VCO, 48_000.0),
+        module: build(Kind::VCO, 48_000.0, u64::try_from(usize::MAX).unwrap()),
         knobs: [0.0; MAX_KNOBS],
     });
     assert!(!control.reserve_slots(usize::MAX));
@@ -1137,7 +1137,7 @@ fn a_new_cable_table_tells_only_the_modules_whose_inputs_it_moves() {
         slot: 0,
         tag: 1,
         kind: Kind::VCO,
-        module: build(Kind::VCO, 48_000.0),
+        module: build(Kind::VCO, 48_000.0, 0),
         knobs: [0.0; MAX_KNOBS],
     });
     for (slot, count) in counts.iter().enumerate() {

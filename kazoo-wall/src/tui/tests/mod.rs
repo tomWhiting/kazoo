@@ -88,6 +88,7 @@ pub fn snapshot() -> Snapshot {
     Snapshot {
         revision: 58,
         wall: 0,
+        seed: 0,
         tempo: 96.0,
         beat: 45.5,
         clock: ClockSource::Own,

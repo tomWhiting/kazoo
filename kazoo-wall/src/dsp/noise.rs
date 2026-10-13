@@ -7,7 +7,7 @@
 //! ultrasonic hiss reaches the master or the amplifiers. The pink and brown
 //! filters keep their corners in hertz, not in samples.
 
-use super::{Io, Module, Rng, Tick, finite, seed};
+use super::{Io, Module, Rng, Tick, finite};
 use crate::SUB_BLOCK;
 
 const COLOUR: usize = 0;
@@ -97,7 +97,7 @@ impl Noise {
         });
         Self {
             rate,
-            rng: Rng::new(seed()),
+            rng: Rng::new(kazoo_fx::dsp::stream_seed(0, 0)),
             gain: if above {
                 (rate / REFERENCE_RATE).sqrt()
             } else {
@@ -144,6 +144,10 @@ impl Noise {
 }
 
 impl Module for Noise {
+    fn set_seed(&mut self, seed: u64) {
+        self.rng = Rng::new(kazoo_fx::dsp::stream_seed(seed, 0));
+    }
+
     fn process(&mut self, tick: &Tick, io: Io<'_>) {
         if tick.sample_rate.to_bits() != self.rate.to_bits() {
             *self = Self::new(tick.sample_rate);
