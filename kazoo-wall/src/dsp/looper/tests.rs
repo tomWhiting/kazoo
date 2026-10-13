@@ -157,6 +157,9 @@ fn wear_darkens_and_quietens_each_pass_and_zero_wear_is_exact() {
         assert!((20.0_f32.mul_add((pair[1] / pair[0]).log10(), 3.0)).abs() < 0.2);
     }
     b.knob("wear", 0.0);
+    // The wear gain glides home over a seam's length, then reads exact.
+    b.beat = 20.0 + 1.0;
+    render(&mut b, 2 * TAIL, |_| 0.0);
     b.beat = 20.0 + 1.0;
     let first = render(&mut b, 32, |_| 0.0);
     b.beat = 24.0 + 1.0;
@@ -406,10 +409,11 @@ fn the_seam_does_not_click_when_the_tempo_moves() {
 fn the_seam_does_not_click_as_the_tape_wears() {
     let (mut b, _) = sine_bar();
     b.knob("wear", 1.0);
-    b.beat = 7.99;
+    b.beat = 7.5;
     let output = render(&mut b, 4 * BAR, |_| 0.0);
     let sine_step = std::f32::consts::TAU * 220.0 / RATE;
-    let largest = largest_step(&output);
+    // From a quarter of a second in: the wear filter starts from rest.
+    let largest = largest_step(&output[12_000..]);
     assert!(
         largest <= 1.5 * sine_step,
         "step {largest}, sine {sine_step}"

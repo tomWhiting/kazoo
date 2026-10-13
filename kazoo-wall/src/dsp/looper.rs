@@ -125,6 +125,11 @@ pub struct LoopModule {
     wear_bar: Option<(usize, i64)>,
     wear_value: f32,
     wear_gain: f32,
+    /// The wear gain applied now: it glides to `wear_gain` over the seam
+    /// length whenever that changes, so a pass's 3 dB never steps.
+    wear_level: f32,
+    wear_step: f32,
+    wear_left: u32,
     coefficient: f32,
     pulse_left: u32,
     peak: [f32; 2],
@@ -201,6 +206,9 @@ impl LoopModule {
             wear_bar: None,
             wear_value: -1.0,
             wear_gain: 1.0,
+            wear_level: 1.0,
+            wear_step: 0.0,
+            wear_left: 0,
             coefficient: 1.0,
             pulse_left: 0,
             peak: [0.0; 2],
@@ -488,7 +496,7 @@ impl LoopModule {
         out
     }
 
-    fn wear(&mut self, h: Head, wear: f32, rate: f32) {
+    fn wear(&mut self, h: Head, wear: f32, rate: f32, glide: usize) {
         if self.wear_bar == Some((h.bar, h.pass)) && self.wear_value.to_bits() == wear.to_bits() {
             return;
         }
@@ -499,20 +507,39 @@ impl LoopModule {
         } else {
             h.pass.saturating_sub(self.bar_pass[h.bar]).max(0)
         };
-        if wear <= 0.0 || age == 0 {
-            self.wear_gain = 1.0;
+        let gain = if wear <= 0.0 || age == 0 {
             self.coefficient = 1.0;
+            1.0
+        } else {
+            let loss = WEAR_DB_PER_PASS * wear * age as f32;
+            let cutoff = (WEAR_TOP_HZ * (-age as f32 * wear / WEAR_PASSES_PER_OCTAVE).exp2())
+                .max(WEAR_FLOOR_HZ);
+            self.coefficient = 1.0 - (-std::f32::consts::TAU * cutoff / rate).exp();
+            if loss >= -WEAR_SILENT_DB {
+                0.0
+            } else {
+                10.0_f32.powf(-loss / 20.0)
+            }
+        };
+        if gain.to_bits() != self.wear_gain.to_bits() {
+            self.wear_gain = gain;
+            // A seam's length, as the splice crossfade and the punch fades.
+            self.wear_left = u32::try_from(glide.max(1)).unwrap_or(u32::MAX);
+            self.wear_step = (gain - self.wear_level) / self.wear_left as f32;
+        }
+    }
+
+    /// One frame of the wear gain's glide; it lands exactly on its target.
+    fn wear_glide(&mut self) {
+        if self.wear_left == 0 {
             return;
         }
-        let loss = WEAR_DB_PER_PASS * wear * age as f32;
-        self.wear_gain = if loss >= -WEAR_SILENT_DB {
-            0.0
+        self.wear_left -= 1;
+        self.wear_level = if self.wear_left == 0 {
+            self.wear_gain
         } else {
-            10.0_f32.powf(-loss / 20.0)
+            self.wear_level + self.wear_step
         };
-        let cutoff =
-            (WEAR_TOP_HZ * (-age as f32 * wear / WEAR_PASSES_PER_OCTAVE).exp2()).max(WEAR_FLOOR_HZ);
-        self.coefficient = 1.0 - (-std::f32::consts::TAU * cutoff / rate).exp();
     }
 
     fn write_cell(&mut self, k: usize, input: [f32; 2], keep: f32) {
@@ -762,7 +789,8 @@ impl Module for LoopModule {
             }
             let pos = h.phase * splice.frames as f64;
             let mut out = self.read(pos, splice).map(finite);
-            self.wear(h, wear, tick.sample_rate);
+            self.wear(h, wear, tick.sample_rate, splice.tail);
+            self.wear_glide();
             let aged = self.bar_pass[h.bar] != i64::MIN && h.pass > self.bar_pass[h.bar];
             if wear > 0.0 && aged {
                 for (ch, sample) in out.iter_mut().enumerate() {
@@ -770,10 +798,17 @@ impl Module for LoopModule {
                         self.coefficient
                             .mul_add(*sample - self.filter[ch], self.filter[ch]),
                     );
-                    *sample = self.filter[ch] * self.wear_gain;
+                    *sample = self.filter[ch] * self.wear_level;
                 }
             } else {
                 self.filter = out;
+                // Fresh or unworn tape is read bit-exact once the gain has
+                // glided home to exactly 1.
+                if self.wear_level.to_bits() != 1.0_f32.to_bits() {
+                    for sample in &mut out {
+                        *sample *= self.wear_level;
+                    }
+                }
             }
             let level = if level_moves { io.knob_at(5, f) } else { level };
             for (ch, sample) in out.iter().enumerate() {
@@ -809,6 +844,8 @@ impl Module for LoopModule {
         self.seam_carry = false;
         self.filter = [0.0; 2];
         self.wear_bar = None;
+        self.wear_left = 0;
+        self.wear_level = self.wear_gain;
         self.pulse_left = 0;
     }
 }
