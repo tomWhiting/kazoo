@@ -197,6 +197,12 @@ impl RegisterMsg {
             if spec.name_str().is_empty() || std::str::from_utf8(&spec.name).is_err() {
                 return Err("stream name must be non-empty UTF-8");
             }
+            if spec.name[spec.name_str().len()..]
+                .iter()
+                .any(|byte| *byte != 0)
+            {
+                return Err("stream name must end in NUL padding only");
+            }
             if self.streams[..index]
                 .iter()
                 .any(|other| other.name_str() == spec.name_str())
