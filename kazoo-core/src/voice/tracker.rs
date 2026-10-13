@@ -32,10 +32,12 @@ pub const LOUDNESS_ATTACK_MS: f32 = 5.0;
 pub const LOUDNESS_RELEASE_MS: f32 = 50.0;
 /// Breath changes at syllable speed rather than cycle speed.
 pub const BREATH_SMOOTH_MS: f32 = 20.0;
-/// Past +12 dBFS a sample is a fault, not a voice: a converter delivers at
-/// most full scale, and a float path with gain before it overshoots by a few
-/// dB at most. A fault resets the tracker; anything up to it is a loud note,
-/// clipped to full scale as the cycle tracker clips it.
+/// Past +12 dBFS a sample is a fault, not a voice.
+///
+/// A converter delivers at most full scale, and a float path with gain
+/// before it overshoots by a few dB at most. A fault resets the tracker;
+/// anything up to it is a loud note, clipped to full scale as the cycle
+/// tracker clips it.
 pub const INPUT_FAULT_LEVEL: f32 = 4.0;
 
 /// Callback-safe voice facts from a preallocated cycle history and judge verdicts.
