@@ -8,10 +8,16 @@ pub(super) fn line(out: &mut String, ids: &[String]) {
     } else {
         String::new()
     };
+    let (modules, reach, are) = if ids.len() == 1 {
+        ("module", "reaches", "is")
+    } else {
+        ("modules", "reach", "are")
+    };
     super::line(
         out,
         format_args!(
-            "{} modules reach no out, scope or readout and are not rendered: {shown}{more}.",
+            "{} {modules} {reach} no out, scope or readout and {are} not rendered: \
+             {shown}{more}.",
             ids.len()
         ),
     );
