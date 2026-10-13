@@ -441,11 +441,21 @@ pub struct Outcome {
 /// The clock line every change is stamped on (see [`ClockStamp`]).
 #[derive(Debug)]
 struct ClockLine {
+    /// This daemon run's start, drawn once: `<start>` in every line.
     start: u64,
+    /// The count of breaks this run: `<n>` in every line.
     n: u64,
     /// The last stamp's beat and whether the desk had the clock then.
     last: Option<(f64, bool)>,
+    /// Whether the daemon log has been told a change went without a stamp.
     invalid_logged: bool,
+}
+
+/// Where a [`ClockLine`] stood before a break, for [`ClockLine::rewind`].
+#[derive(Debug, Clone, Copy)]
+struct ClockMark {
+    n: u64,
+    last: Option<(f64, bool)>,
 }
 
 impl ClockLine {
@@ -461,6 +471,22 @@ impl ClockLine {
     const fn break_line(&mut self) {
         self.n += 1;
         self.last = None;
+    }
+
+    /// Where the line stands now.
+    const fn mark(&self) -> ClockMark {
+        ClockMark {
+            n: self.n,
+            last: self.last,
+        }
+    }
+
+    /// Go back to `mark`, taken before a break for a replacement that then
+    /// did not happen and was written nowhere: the music played on, so its
+    /// line goes on as if the break had never been taken.
+    const fn rewind(&mut self, mark: ClockMark) {
+        self.n = mark.n;
+        self.last = mark.last;
     }
 
     fn check(&mut self, beat: f64, following: bool) {
@@ -3580,6 +3606,10 @@ impl Wall {
             tempo: playing,
             by_console: console,
         };
+        // The wall put up starts a clock line with this change. Should the
+        // change be written nowhere, nothing was replaced and the line is
+        // put back; once it may be in the log, its line is never reused.
+        let unbroken = self.clock_line.mark();
         self.clock_line.break_line();
         let change = self.new_change(seat, what, source.undoes());
         // The wall put up is named by the change that puts it up, and goes
@@ -3587,6 +3617,7 @@ impl Wall {
         incoming.last_seq = change.seq;
         incoming.wall = change.seq;
         let Some(store) = self.store.as_mut() else {
+            self.clock_line.rewind(unbroken);
             return Err(no_saves());
         };
         let batch = backup_bytes
@@ -3617,7 +3648,10 @@ impl Wall {
                     ),
                 ));
             }
-            Err(other) => return Err(not_written(seat, how, &other)),
+            Err(other) => {
+                self.clock_line.rewind(unbroken);
+                return Err(not_written(seat, how, &other));
+            }
         };
         // In the log for good: the load happens.
         self.patch = incoming;
