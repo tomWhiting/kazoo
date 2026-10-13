@@ -160,6 +160,7 @@ pub fn change(seq: u64, seat: &str, summary: &str, undoes: Option<u64>) -> Chang
         },
         summary: summary.to_string(),
         undoes,
+        clock: None,
     }
 }
 

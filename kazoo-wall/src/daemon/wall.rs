@@ -35,7 +35,7 @@ use crate::patch::{
 };
 use crate::probe;
 use crate::protocol::{
-    ArrangeResult, BrokenSave, CatalogueResult, Change, ChangeResult, ClockSource,
+    ArrangeResult, BrokenSave, CatalogueResult, Change, ChangeResult, ClockSource, ClockStamp,
     DeleteSaveResult, EngineHealth, ErrorCode, Event, Faults, GroupsResult, KindInfo, KnobInfo,
     KnobView, Levels, Listen, ListenResult, LoadResult, LogHealth, LogPage, MAX_PROBES,
     MAX_SAVE_NAME, ModuleTiming, ModuleView, Place, PortInfo, Probe, ProbeResult, RecordResult,
@@ -438,6 +438,64 @@ pub struct Outcome {
     pub pending: Option<u64>,
 }
 
+/// The clock line every change is stamped on (see [`ClockStamp`]).
+#[derive(Debug)]
+struct ClockLine {
+    start: u64,
+    n: u64,
+    /// The last stamp's beat and whether the desk had the clock then.
+    last: Option<(f64, bool)>,
+    invalid_logged: bool,
+}
+
+impl ClockLine {
+    const fn new(start: u64) -> Self {
+        Self {
+            start,
+            n: 0,
+            last: None,
+            invalid_logged: false,
+        }
+    }
+
+    const fn break_line(&mut self) {
+        self.n += 1;
+        self.last = None;
+    }
+
+    fn check(&mut self, beat: f64, following: bool) {
+        if !beat.is_finite() {
+            self.break_line();
+            return;
+        }
+        if self
+            .last
+            .is_some_and(|(last, was_following)| following != was_following || beat < last - 1e-9)
+        {
+            self.break_line();
+        }
+        self.last = Some((beat, following));
+    }
+
+    fn stamp(&mut self, beat: f64, tempo: f64, following: bool) -> Option<ClockStamp> {
+        self.check(beat, following);
+        if !beat.is_finite() || !tempo.is_finite() {
+            if !self.invalid_logged {
+                eprintln!(
+                    "kazoo-wall: a non-finite beat or tempo left a change without a clock stamp"
+                );
+                self.invalid_logged = true;
+            }
+            return None;
+        }
+        Some(ClockStamp {
+            beat,
+            tempo,
+            line: format!("{:016x}.{}", self.start, self.n),
+        })
+    }
+}
+
 /// The daemon's state.
 #[derive(Debug)]
 pub struct Wall {
@@ -445,6 +503,7 @@ pub struct Wall {
     patch: Patch,
     rack: Rack,
     engine: EngineControl,
+    clock_line: ClockLine,
     desk: Option<HubLink>,
     log: VecDeque<Change>,
     next_seq: u64,
@@ -1090,6 +1149,7 @@ pub fn resume(
             }),
             what,
             undoes: None,
+            clock: None,
         };
         store.append_synced(&change)?;
         eprintln!("kazoo-wall: {}", change.summary);
@@ -1224,6 +1284,7 @@ impl Wall {
             patch,
             rack: Rack::default(),
             engine,
+            clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
             desk,
             log: history.into_iter().skip(skip).collect(),
             next_seq,
@@ -2089,8 +2150,8 @@ impl Wall {
     /// [`Self::pay_owed`]); returns what was paid, each made, not yet told.
     fn pay_owed_all(&mut self) -> Vec<(Change, Option<Event>)> {
         let mut paid = Vec::new();
-        while let Some((seat, what)) = self.owed.front() {
-            let change = self.new_change(seat, what.clone(), None);
+        while let Some((seat, what)) = self.owed.front().cloned() {
+            let change = self.new_change(&seat, what, None);
             if let Some(store) = self.store.as_mut() {
                 if let Err(err) = store.append_synced(&change) {
                     eprintln!(
@@ -2112,7 +2173,11 @@ impl Wall {
 
     /// `what`, by `seat`, as the next change (not made yet: see
     /// [`Self::apply`]).
-    fn new_change(&self, seat: &str, what: What, undoes: Option<u64>) -> Change {
+    fn new_change(&mut self, seat: &str, what: What, undoes: Option<u64>) -> Change {
+        let shared = self.engine.shared();
+        let clock = self
+            .clock_line
+            .stamp(shared.beat(), shared.bpm(), shared.following_desk());
         Change {
             seq: self.next_seq,
             at: utc_now(),
@@ -2122,6 +2187,7 @@ impl Wall {
             }),
             what,
             undoes,
+            clock,
         }
     }
 
@@ -3514,6 +3580,7 @@ impl Wall {
             tempo: playing,
             by_console: console,
         };
+        self.clock_line.break_line();
         let change = self.new_change(seat, what, source.undoes());
         // The wall put up is named by the change that puts it up, and goes
         // to patch.json as of that change.
@@ -4455,6 +4522,9 @@ impl Wall {
     /// if it is due. Returns the events to tell everyone: faults, and the
     /// changes the daemon made on its own.
     pub fn tick(&mut self, now: Instant) -> Vec<Event> {
+        let shared = self.engine.shared();
+        self.clock_line
+            .check(shared.beat(), shared.following_desk());
         self.settle(now);
         // The saves not read yet since the start, one a tick, so the first
         // listing finds them read (see `Store::list_saves`).
@@ -4763,3 +4833,6 @@ pub fn catalogue() -> CatalogueResult {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod clock_tests;
