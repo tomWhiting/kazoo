@@ -110,6 +110,7 @@ impl Desk {
         let mut buf = FrameBuffer::new();
         assert_eq!(buf.read_frame(&mut stream).unwrap().msg_type, MSG_REGISTER);
         RegisteredMsg {
+            strips: Vec::new(),
             strip_index: 0,
             hub_sample_rate: RATE,
             hub_buffer_size: BLOCK as u32,

@@ -3457,6 +3457,7 @@ fn a_desk(
     let header = buf.read_frame(&mut stream).unwrap();
     assert_eq!(header.msg_type, MSG_REGISTER);
     let reply = RegisteredMsg {
+        strips: Vec::new(),
         strip_index: 1,
         hub_sample_rate: 48_000,
         hub_buffer_size: 256,

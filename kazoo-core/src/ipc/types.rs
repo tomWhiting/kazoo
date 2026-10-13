@@ -2,7 +2,11 @@
 //!
 //! Each message type has a constant tag, a struct for its payload fields,
 //! and `encode` / `decode` methods that work directly on byte slices.
-//! No allocation on the encode/decode path — all buffers are pre-allocated.
+//! Audio payloads use pre-allocated buffers. Registration tails allocate only
+//! when the link connects.
+
+mod streams;
+pub use streams::*;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -18,7 +22,7 @@ pub const MSG_REGISTERED: u8 = 0x02;
 /// Hub -> Instrument. Registration refused; the payload is the reason as
 /// UTF-8 text. The hub closes the connection after sending it.
 pub const MSG_REFUSED: u8 = 0x03;
-/// Instrument -> Hub. Audio block (hot path, every buffer cycle).
+/// Instrument -> Hub. Audio block for stream 0 (hot path, every buffer cycle).
 pub const MSG_AUDIO: u8 = 0x10;
 /// Hub -> Instrument. Transport state broadcast.
 pub const MSG_TRANSPORT_SYNC: u8 = 0x20;
@@ -44,7 +48,9 @@ pub const MSG_SHUTDOWN: u8 = 0xFF;
 /// than misreading its messages.
 ///
 /// Version 3: frames up to 1 MiB and audio blocks up to 16,384 frames;
-/// the frame layout is version 2's.
+/// the frame layout is version 2's. Named stream tails are optional; an old
+/// reader is never sent a new message unless it asked by listing streams.
+/// Stream 0 keeps the original audio frame layout.
 pub const PROTOCOL_VERSION: u16 = 3;
 
 /// Fixed-size instrument name field in the Register message.
@@ -150,6 +156,8 @@ pub struct RegisterMsg {
     /// It rides after the version 2 fields, so a hub that does not know it
     /// reads the rest as before, and a registration without it reads as 0.
     pub pace_lead_frames: u32,
+    /// Optional named streams; the first entry is stream 0.
+    pub streams: Vec<StreamSpec>,
 }
 
 impl RegisterMsg {
@@ -158,8 +166,52 @@ impl RegisterMsg {
     pub const WIRE_SIZE: usize = 16 + REGISTER_NAME_LEN + 1 + 4 + 4 + 2;
 
     /// Bytes a registration has with [`Self::pace_lead_frames`]: 63. This
-    /// is what [`Self::encode`] writes.
+    /// is what [`Self::encode`] writes when no stream list is supplied.
     pub const PACED_WIRE_SIZE: usize = Self::WIRE_SIZE + 4;
+
+    /// Bytes occupied by a registration with `n` named streams.
+    #[must_use]
+    pub const fn streamed_wire_size(n: usize) -> usize {
+        64 + STREAM_ENTRY_SIZE * n
+    }
+
+    /// Whether the payload length is one of the supported registration layouts.
+    #[must_use]
+    pub const fn valid_len(len: usize) -> bool {
+        len == Self::WIRE_SIZE
+            || len == Self::PACED_WIRE_SIZE
+            || (len >= Self::streamed_wire_size(1)
+                && len <= Self::streamed_wire_size(MAX_STREAMS)
+                && (len - 64) % STREAM_ENTRY_SIZE == 0)
+    }
+
+    /// Validate the stream list before connecting or seating it on the desk.
+    pub fn check_streams(&self) -> Result<(), &'static str> {
+        if self.streams.is_empty() || self.streams.len() > MAX_STREAMS {
+            return Err("stream count must be 1 to 16");
+        }
+        for (index, spec) in self.streams.iter().enumerate() {
+            if !(1..=2).contains(&spec.channels) {
+                return Err("stream channels must be mono or stereo");
+            }
+            if spec.name_str().is_empty() || std::str::from_utf8(&spec.name).is_err() {
+                return Err("stream name must be non-empty UTF-8");
+            }
+            if spec.name[spec.name_str().len()..]
+                .iter()
+                .any(|byte| *byte != 0)
+            {
+                return Err("stream name must end in NUL padding only");
+            }
+            if self.streams[..index]
+                .iter()
+                .any(|other| other.name_str() == spec.name_str())
+            {
+                return Err("stream names must be unique");
+            }
+        }
+        Ok(())
+    }
 
     /// Bytes a version 1 registration had (no protocol field), so a hub can
     /// tell an old instrument from a malformed one.
@@ -181,6 +233,7 @@ impl RegisterMsg {
             buffer_size,
             protocol: PROTOCOL_VERSION,
             pace_lead_frames: 0,
+            streams: Vec::new(),
         }
     }
 
@@ -200,12 +253,23 @@ impl RegisterMsg {
         buf[0..16].copy_from_slice(&self.instrument_id);
         buf[16..16 + REGISTER_NAME_LEN].copy_from_slice(&self.name);
         let off = 16 + REGISTER_NAME_LEN;
-        buf[off] = self.channel_count;
+        buf[off] = self
+            .streams
+            .first()
+            .map_or(self.channel_count, |spec| spec.channels);
         buf[off + 1..off + 5].copy_from_slice(&self.sample_rate.to_le_bytes());
         buf[off + 5..off + 9].copy_from_slice(&self.buffer_size.to_le_bytes());
         buf[off + 9..off + 11].copy_from_slice(&self.protocol.to_le_bytes());
         buf[off + 11..off + 15].copy_from_slice(&self.pace_lead_frames.to_le_bytes());
-        Self::PACED_WIRE_SIZE
+        if self.streams.is_empty() {
+            return Self::PACED_WIRE_SIZE;
+        }
+        buf[Self::PACED_WIRE_SIZE] = self.streams.len() as u8;
+        for (index, spec) in self.streams.iter().enumerate() {
+            let offset = 64 + index * STREAM_ENTRY_SIZE;
+            spec.encode(&mut buf[offset..]);
+        }
+        Self::streamed_wire_size(self.streams.len())
     }
 
     /// Decode from exactly the registration's payload: at least
@@ -222,6 +286,21 @@ impl RegisterMsg {
             instrument_id,
             name,
             channel_count: buf[off],
+            // A tail whose count byte disagrees with its length is no list
+            // at all, which `check_streams` refuses.
+            streams: if buf.len() > Self::PACED_WIRE_SIZE {
+                let entries = &buf[64..];
+                if entries.len() == usize::from(buf[63]) * STREAM_ENTRY_SIZE {
+                    entries
+                        .chunks_exact(STREAM_ENTRY_SIZE)
+                        .map(StreamSpec::decode)
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                vec![StreamSpec::new("main", buf[off])]
+            },
             sample_rate: u32::from_le_bytes([
                 buf[off + 1],
                 buf[off + 2],
@@ -256,7 +335,7 @@ impl RegisterMsg {
 /// places them, however its timer drifts from the desk's device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeskPaceMsg {
-    /// The frame of the instrument's stream the desk is playing now.
+    /// The frame of the instrument's stream 0 the desk is playing now.
     pub playing_stream: u64,
     /// How far ahead of the frame playing the desk places the stream's
     /// audio, in frames.
@@ -335,7 +414,7 @@ impl DeskHealthMsg {
 // ---------------------------------------------------------------------------
 
 /// Registration confirmation sent by the hub.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RegisteredMsg {
     /// Assigned mixer channel strip index.
     pub strip_index: u8,
@@ -349,6 +428,8 @@ pub struct RegisteredMsg {
     pub bpm: f32,
     /// Current transport position in samples.
     pub position: u64,
+    /// Assigned strip for each registered stream, or [`NO_STRIP`].
+    pub strips: Vec<u8>,
 }
 
 impl RegisteredMsg {
@@ -357,19 +438,29 @@ impl RegisteredMsg {
 
     /// Encode into a byte buffer. Returns the number of bytes written.
     pub fn encode(&self, buf: &mut [u8]) -> usize {
-        buf[0] = self.strip_index;
+        buf[0] = self.strips.first().copied().unwrap_or(self.strip_index);
         buf[1..5].copy_from_slice(&self.hub_sample_rate.to_le_bytes());
         buf[5..9].copy_from_slice(&self.hub_buffer_size.to_le_bytes());
         buf[9] = self.transport_state;
         buf[10..14].copy_from_slice(&self.bpm.to_le_bytes());
         buf[14..22].copy_from_slice(&self.position.to_le_bytes());
-        Self::WIRE_SIZE
+        if self.strips.is_empty() {
+            return Self::WIRE_SIZE;
+        }
+        buf[22] = self.strips.len() as u8;
+        buf[23..23 + self.strips.len()].copy_from_slice(&self.strips);
+        23 + self.strips.len()
     }
 
-    /// Decode from a byte buffer.
+    /// Decode the exact validated registration reply payload.
     #[must_use]
     pub fn decode(buf: &[u8]) -> Self {
         Self {
+            strips: if buf.len() > Self::WIRE_SIZE {
+                buf[23..23 + usize::from(buf[22])].to_vec()
+            } else {
+                vec![buf[0]]
+            },
             strip_index: buf[0],
             hub_sample_rate: u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]),
             hub_buffer_size: u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]),
@@ -397,7 +488,7 @@ pub struct TransportSyncMsg {
     pub state: u8,
     /// Tempo in BPM from `at_frame` on.
     pub bpm: f32,
-    /// The frame of the instrument's own audio stream (the frames it has
+    /// The frame of the instrument's stream 0 (the frames it has
     /// handed its link, counted from 0) on which the change lands, or
     /// [`SYNC_NOW`].
     pub at_frame: u64,
@@ -647,6 +738,7 @@ mod tests {
     #[test]
     fn registered_msg_roundtrip() {
         let msg = RegisteredMsg {
+            strips: Vec::new(),
             strip_index: 3,
             hub_sample_rate: 48_000,
             hub_buffer_size: 256,
@@ -752,3 +844,6 @@ mod tests {
         assert_ne!(id1, id2);
     }
 }
+
+#[cfg(test)]
+mod streams_tests;

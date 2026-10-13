@@ -168,6 +168,7 @@ impl DemoRender {
                 // the hub closing.
                 HubMessage::NoteEvent(_)
                 | HubMessage::ParameterChange(_)
+                | HubMessage::StreamReady { .. }
                 | HubMessage::Shutdown => {}
             }
         }

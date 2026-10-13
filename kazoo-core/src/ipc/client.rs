@@ -39,6 +39,11 @@ pub enum HubMessage {
     NoteEvent(NoteEventMsg),
     /// Mixer parameter change from the hub.
     ParameterChange(ParameterChangeMsg),
+    /// A named stream was seated or refused.
+    StreamReady {
+        stream: types::StreamId,
+        strip: Option<u8>,
+    },
     /// Hub requested shutdown.
     Shutdown,
 }
@@ -67,6 +72,11 @@ pub struct HubIpcClient {
     /// The desk's latest word on how it is taking this stream, until taken
     /// ([`Self::take_desk_health`]).
     desk_health: Option<DeskHealthMsg>,
+    last_stream_refusal: Option<(types::StreamId, String)>,
+    /// Whether the desk answered the registration with a strip per stream:
+    /// a desk older than named streams answers without, and must never be
+    /// sent 0x11, 0x12 or 0x13.
+    desk_takes_streams: bool,
 }
 
 // UnixStream is !Debug on some platforms.
@@ -132,12 +142,19 @@ impl HubIpcClient {
         reg: &RegisterMsg,
         timeout: Duration,
     ) -> io::Result<Self> {
+        if !reg.streams.is_empty() {
+            reg.check_streams()
+                .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
+        }
         let stream = UnixStream::connect(socket_path)?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
 
         let instrument_id = reg.instrument_id;
-        let channel_count = reg.channel_count;
+        let channel_count = reg
+            .streams
+            .first()
+            .map_or(reg.channel_count, |spec| spec.channels);
 
         // Send Register message.
         let mut write_buf = FrameBuffer::new();
@@ -162,7 +179,22 @@ impl HubIpcClient {
                 ),
             ));
         }
-        let resp = RegisteredMsg::decode(read_buf.payload());
+        let payload = &read_buf.payload()[..len];
+        // A desk that knows streams answers one strip per stream registered
+        // (a register without a list is one stream), and stream 0's strip
+        // is the one byte 0 names. An old desk answers the 22 bytes alone.
+        let expected = reg.streams.len().max(1);
+        if len != RegisteredMsg::WIRE_SIZE
+            && (len != 23 + expected
+                || usize::from(payload[22]) != expected
+                || payload[23] != payload[0])
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the desk answered {len} bytes of strips for {expected} streams"),
+            ));
+        }
+        let resp = RegisteredMsg::decode(payload);
 
         // Switch to non-blocking for audio path.
         stream.set_nonblocking(true)?;
@@ -180,14 +212,24 @@ impl HubIpcClient {
             registration: resp,
             desk_pace: None,
             desk_health: None,
+            last_stream_refusal: None,
+            desk_takes_streams: len != RegisteredMsg::WIRE_SIZE,
         })
     }
 
     /// The hub's answer to the registration, including the transport state
     /// and tempo at the moment the instrument joined.
     #[must_use]
-    pub const fn registration(&self) -> RegisteredMsg {
-        self.registration
+    pub const fn registration(&self) -> &RegisteredMsg {
+        &self.registration
+    }
+
+    /// Whether the desk takes named streams: it answered the registration
+    /// with a strip for each. One that did not would drop the instrument
+    /// for a named stream's audio, an add or a remove.
+    #[must_use]
+    pub const fn desk_takes_streams(&self) -> bool {
+        self.desk_takes_streams
     }
 
     /// The instrument ID assigned during construction.
@@ -341,7 +383,7 @@ impl HubIpcClient {
 
     /// The instrument's message in the read buffer, of type `msg_type`
     /// and `len` bytes; `None` for a type this instrument does not know.
-    fn decode(&self, msg_type: u8, len: usize) -> io::Result<Option<HubMessage>> {
+    fn decode(&mut self, msg_type: u8, len: usize) -> io::Result<Option<HubMessage>> {
         Ok(match msg_type {
             MSG_TRANSPORT_SYNC => Some(HubMessage::TransportSync(TransportSyncMsg::decode(
                 self.whole(msg_type, len, TransportSyncMsg::WIRE_SIZE)?,
@@ -354,6 +396,33 @@ impl HubIpcClient {
             MSG_PARAMETER_CHANGE => Some(HubMessage::ParameterChange(ParameterChangeMsg::decode(
                 self.whole(msg_type, len, ParameterChangeMsg::WIRE_SIZE)?,
             ))),
+            types::MSG_STREAM_READY => {
+                let payload = self.whole(msg_type, len, types::StreamReadyMsg::WIRE_SIZE)?;
+                if len > types::StreamReadyMsg::WIRE_SIZE + types::STREAM_REFUSAL_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "stream refusal reason exceeds 256 bytes",
+                    ));
+                }
+                std::str::from_utf8(&payload[3..])
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+                let (ready, reason) = types::StreamReadyMsg::decode(payload);
+                if usize::from(ready.stream) >= types::MAX_STREAMS {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "stream id exceeds link capacity",
+                    ));
+                }
+                let refusal =
+                    (ready.strip == types::NO_STRIP).then(|| (ready.stream, reason.to_string()));
+                if refusal.is_some() {
+                    self.last_stream_refusal = refusal;
+                }
+                Some(HubMessage::StreamReady {
+                    stream: ready.stream,
+                    strip: (ready.strip != types::NO_STRIP).then_some(ready.strip),
+                })
+            }
             MSG_SHUTDOWN => Some(HubMessage::Shutdown),
             // A message type this instrument does not know: skipped.
             _ => None,
@@ -397,6 +466,27 @@ impl HubIpcClient {
         self.flush()
     }
 
+    /// Take the last stream refusal without disconnecting the instrument.
+    pub const fn take_stream_refusal(&mut self) -> Option<(types::StreamId, String)> {
+        self.last_stream_refusal.take()
+    }
+
+    /// Announce a stream through the control outbox.
+    pub fn send_stream_add(&mut self, msg: &types::StreamAddMsg) -> Result<(), OutboxError> {
+        let mut payload = [0; types::StreamAddMsg::WIRE_SIZE];
+        msg.encode(&mut payload);
+        self.outbox.queue(types::MSG_STREAM_ADD, &payload)?;
+        self.flush()
+    }
+
+    /// Withdraw a stream through the control outbox.
+    pub fn send_stream_remove(&mut self, stream: types::StreamId) -> Result<(), OutboxError> {
+        let mut payload = [0; types::StreamRemoveMsg::WIRE_SIZE];
+        types::StreamRemoveMsg { stream }.encode(&mut payload);
+        self.outbox.queue(types::MSG_STREAM_REMOVE, &payload)?;
+        self.flush()
+    }
+
     /// Tell the hub this instrument is leaving.
     ///
     /// # Errors
@@ -424,7 +514,7 @@ mod tests {
     }
 
     /// A client registered with a stand-in hub, and the hub's end.
-    fn connected() -> (HubIpcClient, UnixStream, FrameBuffer) {
+    pub(super) fn connected() -> (HubIpcClient, UnixStream, FrameBuffer) {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -435,6 +525,7 @@ mod tests {
             let mut buf = FrameBuffer::new();
             buf.read_frame(&mut stream).unwrap();
             let reply = RegisteredMsg {
+                strips: Vec::new(),
                 strip_index: 0,
                 hub_sample_rate: 48_000,
                 hub_buffer_size: 256,
@@ -516,3 +607,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod streams_tests;

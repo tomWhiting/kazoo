@@ -151,7 +151,10 @@ fn apply_hub_message(voice: &mut MiniVoice, msg: &HubMessage) {
             _ => {}
         },
         // The Mini has no tempo-dependent features and no remote parameters.
-        HubMessage::TransportSync(_) | HubMessage::ParameterChange(_) | HubMessage::Shutdown => {}
+        HubMessage::TransportSync(_)
+        | HubMessage::ParameterChange(_)
+        | HubMessage::StreamReady { .. }
+        | HubMessage::Shutdown => {}
     }
 }
 

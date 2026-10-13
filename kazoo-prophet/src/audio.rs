@@ -159,6 +159,7 @@ impl AudioEngine {
             // the link itself handles the desk shutting down.
             HubMessage::TransportSync(_)
             | HubMessage::ParameterChange(_)
+            | HubMessage::StreamReady { .. }
             | HubMessage::Shutdown => {}
         }
     }
@@ -405,6 +406,7 @@ mod tests {
         let mut buf = FrameBuffer::new();
         assert_eq!(buf.read_frame(&mut stream).unwrap().msg_type, MSG_REGISTER);
         RegisteredMsg {
+            strips: Vec::new(),
             strip_index: 2,
             hub_sample_rate: 48_000,
             hub_buffer_size: 256,

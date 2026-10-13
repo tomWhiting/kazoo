@@ -1,7 +1,11 @@
 //! Shared desk connection, callback event drain, and bounded teardown.
 
+use crate::ipc::link::ToAudio;
+use crate::ipc::types::MAX_STREAMS;
 use std::io;
 use std::mem;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -9,7 +13,6 @@ use crate::ipc::client::HubIpcClient;
 use crate::ipc::discovery;
 use crate::ipc::follow::TransportFollower;
 use crate::ipc::link::{HubAddress, HubLink, HubLinkAudio, LinkConfig, start_link};
-use crate::ipc::types::RegisterMsg;
 use ringbuf::traits::{Consumer, Split};
 
 pub use crate::ipc::client::HubMessage as HubEvent;
@@ -37,7 +40,8 @@ pub enum Error {
 }
 
 pub struct EventRx {
-    receiver: ringbuf::HeapCons<HubEvent>,
+    receiver: ringbuf::HeapCons<ToAudio>,
+    pub(crate) stream_updates: Arc<[AtomicU64; MAX_STREAMS]>,
 }
 
 impl std::fmt::Debug for EventRx {
@@ -47,12 +51,28 @@ impl std::fmt::Debug for EventRx {
 }
 
 impl EventRx {
-    pub(crate) const fn new(receiver: ringbuf::HeapCons<HubEvent>) -> Self {
-        Self { receiver }
+    pub(crate) fn new(receiver: ringbuf::HeapCons<ToAudio>) -> Self {
+        Self {
+            receiver,
+            stream_updates: Arc::new(std::array::from_fn(|_| AtomicU64::new(0))),
+        }
     }
 
     pub(crate) fn try_recv(&mut self) -> Option<HubEvent> {
-        self.receiver.try_pop()
+        loop {
+            match self.receiver.try_pop()? {
+                ToAudio::Hub(event) => return Some(event),
+                ToAudio::Stream { stream, channels } => {
+                    let slot = &self.stream_updates[usize::from(stream)];
+                    let before = slot.load(Ordering::Relaxed);
+                    let generation = (before >> 16).wrapping_add(u64::from(channels.is_none()));
+                    slot.store(
+                        (generation << 16) | u64::from(channels.unwrap_or(0)),
+                        Ordering::Release,
+                    );
+                }
+            }
+        }
     }
 
     fn empty() -> Self {
@@ -134,15 +154,7 @@ pub fn connect_config(config: LinkConfig) -> Result<Linked, Error> {
 
 fn connect_with(config: LinkConfig, mut sleep: impl FnMut(Duration)) -> Result<Linked, Error> {
     validate(&config)?;
-    let mut register = RegisterMsg::new(
-        &config.name,
-        config.channels,
-        config.sample_rate,
-        config
-            .max_block_frames
-            .min(crate::ipc::link::MAX_LINK_BLOCK_FRAMES),
-    );
-    register.pace_lead_frames = config.pace_lead_frames;
+    let register = config.register()?;
     for _ in 0..3 {
         let socket = match &config.address {
             HubAddress::Discover => discovery::hub_socket(),

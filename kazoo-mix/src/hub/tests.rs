@@ -1,6 +1,7 @@
 //! End-to-end hub tests: real sockets, the client instruments use, and the
 //! real audio callback path (patchbay, engine, shared state).
 
+mod named_link;
 mod transport;
 mod wake;
 

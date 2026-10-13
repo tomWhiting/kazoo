@@ -45,14 +45,22 @@ use super::client::{HubIpcClient, HubMessage};
 use super::discovery;
 use super::outbox::OutboxError;
 use super::protocol::{AUDIO_PAYLOAD_HEADER, FrameHeader, HEADER_SIZE, encode_header};
-use super::types::MSG_AUDIO;
 use super::types::{
     DeskHealthMsg, DeskPaceMsg, NOTE_CC, NOTE_OFF, NOTE_ON, NOTE_PITCH_BEND, NoteEventMsg,
     RegisterMsg, SYNC_NOW, TRANSPORT_PAUSED, TRANSPORT_PLAYING, TRANSPORT_RECORDING,
     TRANSPORT_STOPPED, TRANSPORT_UNCHANGED, TransportRequestMsg, TransportSyncMsg,
 };
+use super::types::{
+    MAX_STREAMS, MSG_AUDIO, MSG_STREAM_AUDIO, NO_STRIP, STREAM_NAME_LEN, StreamAddMsg, StreamId,
+    StreamRemoveMsg, StreamSpec,
+};
 use crate::realtime::{NotRealTime, RealTime};
 use crate::sanitize_sample;
+
+mod audio;
+mod streams;
+pub use streams::StreamConfig;
+use streams::{OLD_DESK_REFUSAL, set_stream_refusal, stream_update};
 
 mod priority;
 mod wire;
@@ -87,9 +95,6 @@ const MESSAGE_BACKLOG: usize = 256;
 /// Requests buffered from each half for the link thread.
 const REQUEST_BACKLOG: usize = 64;
 
-/// Strip value meaning "not plugged in".
-const NO_STRIP: u8 = u8::MAX;
-
 /// How old the desk's last pace may be and still be followed.
 ///
 /// The desk sends one every few milliseconds; one this old means it has
@@ -113,6 +118,8 @@ pub struct LinkConfig {
     pub name: String,
     /// 1 for mono, 2 for stereo.
     pub channels: u8,
+    /// Named outputs; empty means one stream called main.
+    pub streams: Vec<StreamConfig>,
     /// The instrument's sample rate; the hub only accepts its own.
     pub sample_rate: u32,
     /// Largest block the instrument renders, in frames. Larger blocks are
@@ -139,6 +146,7 @@ impl LinkConfig {
         Self {
             name: name.to_string(),
             channels,
+            streams: Vec::new(),
             sample_rate,
             max_block_frames,
             address: HubAddress::Discover,
@@ -177,6 +185,8 @@ impl std::error::Error for RequestError {}
 enum Request {
     Transport { state: u8, bpm: Option<f32> },
     Note(NoteEventMsg),
+    StreamAdd { stream: StreamId, spec: StreamSpec },
+    StreamRemove { stream: StreamId },
 }
 
 impl Request {
@@ -210,7 +220,10 @@ impl Request {
 #[derive(Debug)]
 struct LinkState {
     connected: Arc<AtomicBool>,
-    strip: AtomicU8,
+    strips: [AtomicU8; MAX_STREAMS],
+    streams: std::sync::Mutex<[Option<StreamConfig>; MAX_STREAMS]>,
+    stream_live: AtomicU64,
+    last_stream_refusal: std::sync::Mutex<Option<(StreamId, String)>>,
     blocks_sent: AtomicU64,
     blocks_dropped: AtomicU64,
     messages_dropped: AtomicU64,
@@ -383,7 +396,13 @@ pub struct HubLinkAudio {
     state: Arc<LinkState>,
     channels: u16,
     block_frames: u32,
-    next_frame: u64,
+    next_frames: [u64; MAX_STREAMS],
+    stream_channels: [Option<u16>; MAX_STREAMS],
+    stream_updates: Arc<[AtomicU64; MAX_STREAMS]>,
+    stream_versions: [u64; MAX_STREAMS],
+    /// Bytes that may wait in `wire` at once: a quarter second of the
+    /// streams there are now (see [`wire::link_ring_capacity`]).
+    ring_budget: usize,
     sample_rate: u32,
 }
 
@@ -412,16 +431,24 @@ pub(crate) fn start_link(
     client: Option<HubIpcClient>,
     start: bool,
 ) -> io::Result<(HubLink, HubLinkAudio)> {
-    let channels = u16::from(config.channels.clamp(1, 2));
+    let slots = config.resolved_streams()?;
+    let stream_channels =
+        std::array::from_fn(|id| slots[id].as_ref().map(|slot| u16::from(slot.channels)));
+    let channels = stream_channels[0]
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "stream 0 is missing"))?;
     let block_frames = config.max_block_frames.clamp(1, MAX_LINK_BLOCK_FRAMES);
-    let wire_bytes = wire::link_ring_bytes(config.sample_rate, channels, block_frames);
+    let wire_bytes = wire::link_ring_capacity(config.sample_rate, block_frames);
+    let ring_budget = audio::ring_budget(config.sample_rate, &stream_channels, block_frames);
     let (wire_tx, wire_rx) = HeapRb::<u8>::new(wire_bytes).split();
-    let (message_tx, message_rx) = HeapRb::<HubMessage>::new(MESSAGE_BACKLOG).split();
+    let (message_tx, message_rx) = HeapRb::<ToAudio>::new(MESSAGE_BACKLOG).split();
     let (callback_tx, callback_rx) = HeapRb::<Request>::new(REQUEST_BACKLOG).split();
     let (ui_tx, ui_rx) = mpsc::sync_channel(REQUEST_BACKLOG);
     let state = Arc::new(LinkState {
         connected: Arc::new(AtomicBool::new(false)),
-        strip: AtomicU8::new(NO_STRIP),
+        strips: std::array::from_fn(|_| AtomicU8::new(NO_STRIP)),
+        stream_live: AtomicU64::new((1 << slots.iter().flatten().count()) - 1),
+        streams: streams::table(slots),
+        last_stream_refusal: std::sync::Mutex::new(None),
         blocks_sent: AtomicU64::new(0),
         blocks_dropped: AtomicU64::new(0),
         messages_dropped: AtomicU64::new(0),
@@ -474,6 +501,11 @@ pub(crate) fn start_link(
     let waker = join
         .as_ref()
         .map_or_else(thread::current, |join| join.thread().clone());
+    let events = crate::host::link::EventRx::new(message_rx);
+    let stream_updates = Arc::clone(&events.stream_updates);
+    for (id, channels) in stream_channels.iter().enumerate() {
+        stream_updates[id].store(u64::from(channels.unwrap_or(0)), Ordering::Release);
+    }
     Ok((
         HubLink {
             state: Arc::clone(&state),
@@ -485,13 +517,17 @@ pub(crate) fn start_link(
         HubLinkAudio {
             wire: wire_tx,
             seq: 0,
-            events: crate::host::link::EventRx::new(message_rx),
+            events,
             requests: callback_tx,
             waker,
             state,
             channels,
             block_frames,
-            next_frame: 0,
+            next_frames: [0; MAX_STREAMS],
+            stream_channels,
+            stream_updates,
+            stream_versions: [0; MAX_STREAMS],
+            ring_budget,
             sample_rate,
         },
     ))
@@ -531,7 +567,7 @@ impl HubLink {
     /// The link's counters.
     #[must_use]
     pub fn status(&self) -> LinkStatus {
-        let strip = self.state.strip.load(Ordering::Acquire);
+        let strip = self.state.strips[0].load(Ordering::Acquire);
         let last_refusal = match self.state.last_refusal.lock() {
             Ok(guard) => guard.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
@@ -643,80 +679,7 @@ impl HubLinkAudio {
     /// changes on (see [`super::follow`]).
     #[must_use]
     pub const fn stream_frame(&self) -> u64 {
-        self.next_frame
-    }
-
-    /// Hand the link a rendered block of `frames` interleaved frames: every
-    /// block the instrument renders, so the stream position stays true.
-    /// Real-time safe. A block longer than the link's block size is split.
-    ///
-    /// Returns `true` while the desk is playing this instrument: the caller
-    /// should then silence its own output. A block that cannot be queued (the
-    /// link is behind, or `samples` does not hold `frames` whole frames) is
-    /// counted as dropped, and the result is still `true`, since the desk is
-    /// still the instrument's output.
-    pub fn send_audio(&mut self, frames: u32, samples: &[f32]) -> bool {
-        let start_frame = self.next_frame;
-        self.next_frame = self.next_frame.wrapping_add(u64::from(frames));
-        if !self.is_connected() {
-            return false;
-        }
-        let channels = usize::from(self.channels);
-        if (frames as usize).checked_mul(channels) != Some(samples.len()) {
-            self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
-            return true;
-        }
-        let mut done = 0_u32;
-        while done < frames {
-            let count = (frames - done).min(self.block_frames);
-            let start = done as usize * channels;
-            let end = start + count as usize * channels;
-            self.push(
-                start_frame.wrapping_add(u64::from(done)),
-                count,
-                &samples[start..end],
-            );
-            done += count;
-        }
-        true
-    }
-
-    /// Wake only after publishing the block.
-    ///
-    /// `Thread::unpark` is constant time: an atomic swap and, only if parked,
-    /// a wake system call. It never waits for the link thread. This is the
-    /// callback's sole permitted system call; it adds no allocation, lock or
-    /// socket I/O.
-    fn push(&mut self, start_frame: u64, frames: u32, samples: &[f32]) {
-        let payload = AUDIO_PAYLOAD_HEADER + samples.len() * 4;
-        let total = HEADER_SIZE + payload;
-        if self.wire.vacant_len() < total {
-            self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        let mut head = [0_u8; HEADER_SIZE + AUDIO_PAYLOAD_HEADER];
-        encode_header(
-            &FrameHeader {
-                msg_type: MSG_AUDIO,
-                payload_len: payload as u32,
-                seq: self.seq,
-            },
-            &mut head[..HEADER_SIZE],
-        );
-        head[HEADER_SIZE..HEADER_SIZE + 8].copy_from_slice(&start_frame.to_le_bytes());
-        head[HEADER_SIZE + 8..].copy_from_slice(&frames.to_le_bytes());
-        // Publish the header and samples together so a disconnect can never
-        // discard a header while its samples are still being encoded.
-        self.wire.push_iter(
-            head.into_iter().chain(
-                samples
-                    .iter()
-                    .flat_map(|sample| sanitize_sample(*sample).to_le_bytes()),
-            ),
-        );
-        self.seq = self.seq.wrapping_add(1);
-        self.state.blocks_sent.fetch_add(1, Ordering::Relaxed);
-        self.waker.unpark();
+        self.next_frames[0]
     }
 
     /// For an instrument that renders on a timer and asked the desk to pace
@@ -740,7 +703,7 @@ impl HubLinkAudio {
         // An arrival the clock cannot hold is no pace at all.
         let paced_at = self.state.pace.epoch.checked_add(pace.arrived)?;
         Some(DeskOwes {
-            frames: owed(pace, age, self.sample_rate, self.next_frame),
+            frames: owed(pace, age, self.sample_rate, self.next_frames[0]),
             lead_frames: pace.lead_frames,
             paced_at,
         })
@@ -748,7 +711,9 @@ impl HubLinkAudio {
 
     /// The next message from the hub, if one has arrived. Real-time safe.
     pub fn try_recv(&mut self) -> Option<HubMessage> {
-        self.events.try_recv()
+        let message = self.events.try_recv();
+        self.update_streams();
+        message
     }
 
     /// Ask the desk to change its transport. Real-time safe. See
@@ -800,7 +765,7 @@ struct LinkWorker {
     wire: ringbuf::HeapCons<u8>,
     /// Bytes left in an audio frame already started on the socket.
     audio_frame_left: usize,
-    messages: ringbuf::HeapProd<HubMessage>,
+    messages: ringbuf::HeapProd<ToAudio>,
     callback_requests: ringbuf::HeapCons<Request>,
     ui_requests: Receiver<Request>,
     client: Option<HubIpcClient>,
@@ -873,88 +838,6 @@ impl LinkWorker {
         priority.map_or(Ok(()), RealTime::demote)
     }
 
-    /// Try to plug in; returns how long to wait before trying again.
-    fn try_connect(&mut self) -> Duration {
-        let socket = match &self.config.address {
-            HubAddress::Discover => match discovery::hub_socket() {
-                Ok(socket) => socket,
-                Err(err) => {
-                    self.set_refusal(Some(format!("cannot find the desk: {err}")));
-                    return RETRY_INTERVAL;
-                }
-            },
-            HubAddress::Socket(path) => path.clone(),
-        };
-        let mut register = RegisterMsg::new(
-            &self.config.name,
-            self.config.channels,
-            self.config.sample_rate,
-            self.config.max_block_frames.min(MAX_LINK_BLOCK_FRAMES),
-        );
-        register.pace_lead_frames = self.config.pace_lead_frames;
-        match HubIpcClient::register_with_timeout(&socket, &register, Duration::from_millis(250)) {
-            Ok(client) => {
-                self.plug_in(client);
-                RETRY_INTERVAL
-            }
-            // No desk yet. Keep the last reason: it says why the link is
-            // down until something new happens.
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                ) =>
-            {
-                self.refusal_delay = RETRY_INTERVAL;
-                RETRY_INTERVAL
-            }
-            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-                self.set_refusal(Some(format!(
-                    "the desk refused {}: {err}",
-                    self.config.name
-                )));
-                self.refusal_delay = (self.refusal_delay * 2).min(MAX_RETRY_INTERVAL);
-                self.refusal_delay
-            }
-            Err(err) => {
-                self.set_refusal(Some(format!(
-                    "could not plug into the desk at {}: {err}",
-                    socket.display()
-                )));
-                RETRY_INTERVAL
-            }
-        }
-    }
-
-    fn plug_in(&mut self, client: HubIpcClient) {
-        let registration = client.registration();
-        // The desk's tempo and play state at once; where in the song this
-        // stream is follows as soon as the hub has placed its first block.
-        let sync = TransportSyncMsg {
-            state: registration.transport_state,
-            bpm: registration.bpm,
-            at_frame: SYNC_NOW,
-            beat: f64::NAN,
-        };
-        if self
-            .messages
-            .try_push(HubMessage::TransportSync(sync))
-            .is_err()
-        {
-            self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
-        }
-        self.state
-            .strip
-            .store(client.strip_index(), Ordering::Release);
-        self.state.connections.fetch_add(1, Ordering::Relaxed);
-        self.set_refusal(None);
-        self.refusal_delay = RETRY_INTERVAL;
-        self.audio_frame_left = 0;
-        self.stuck_since = None;
-        self.client = Some(client);
-        self.state.connected.store(true, Ordering::Release);
-    }
-
     fn set_refusal(&self, refusal: Option<String>) {
         match self.state.last_refusal.lock() {
             Ok(mut guard) => *guard = refusal,
@@ -981,10 +864,24 @@ impl LinkWorker {
         if self.audio_frame_left == 0 {
             let source = *client.instrument_id();
             while let Some(request) = self.callback_requests.try_pop() {
-                send_request(client, request, source, &self.state, &mut self.stuck_since)?;
+                send_request(
+                    client,
+                    request,
+                    source,
+                    &self.state,
+                    &mut self.messages,
+                    &mut self.stuck_since,
+                )?;
             }
             while let Ok(request) = self.ui_requests.try_recv() {
-                send_request(client, request, source, &self.state, &mut self.stuck_since)?;
+                send_request(
+                    client,
+                    request,
+                    source,
+                    &self.state,
+                    &mut self.messages,
+                    &mut self.stuck_since,
+                )?;
             }
             let before = client.pending_bytes();
             client
@@ -1010,7 +907,20 @@ impl LinkWorker {
             match client.try_recv() {
                 Ok(Some(HubMessage::Shutdown)) => return Err("the desk closed".to_string()),
                 Ok(Some(message)) => {
-                    if self.messages.try_push(message).is_err() {
+                    if let HubMessage::StreamReady { stream, strip } = &message {
+                        let id = usize::from(*stream);
+                        if self.state.stream_live.load(Ordering::Acquire) & (1 << id) != 0 {
+                            self.state.strips[id]
+                                .store(strip.unwrap_or(NO_STRIP), Ordering::Release);
+                        }
+                        if let Some(reason) = client.take_stream_refusal() {
+                            match self.state.last_stream_refusal.lock() {
+                                Ok(mut slot) => *slot = Some(reason),
+                                Err(poisoned) => *poisoned.into_inner() = Some(reason),
+                            }
+                        }
+                    }
+                    if self.messages.try_push(ToAudio::Hub(message)).is_err() {
                         self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -1033,7 +943,9 @@ impl LinkWorker {
         // The reason goes first: anyone who sees the link down can read why.
         self.set_refusal(Some(why));
         self.state.connected.store(false, Ordering::Release);
-        self.state.strip.store(NO_STRIP, Ordering::Release);
+        for strip in &self.state.strips {
+            strip.store(NO_STRIP, Ordering::Release);
+        }
         self.state.pace.store(None);
         self.client = None;
         // The desk counts afresh for the next connection.
@@ -1080,8 +992,15 @@ impl LinkWorker {
         while self.callback_requests.try_pop().is_some() {
             self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
         }
-        while self.ui_requests.try_recv().is_ok() {
-            self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
+        while let Ok(request) = self.ui_requests.try_recv() {
+            // A stream change is already in the table the next registration
+            // is built from: nothing is lost.
+            if !matches!(
+                request,
+                Request::StreamAdd { .. } | Request::StreamRemove { .. }
+            ) {
+                self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -1131,25 +1050,59 @@ fn send_request(
     request: Request,
     source: [u8; 16],
     state: &LinkState,
+    messages: &mut ringbuf::HeapProd<ToAudio>,
     stuck_since: &mut Option<Instant>,
 ) -> Result<(), String> {
+    if !client.desk_takes_streams()
+        && let Some(update) = stream_update(&request)
+    {
+        // A desk older than named streams answered the registration without
+        // strips and would drop the instrument for a 0x12 or 0x13. The
+        // callback still learns the stream (it plays it itself, having no
+        // strip); the instrument can read why.
+        if let Request::StreamAdd { stream, .. } = request {
+            set_stream_refusal(state, stream, OLD_DESK_REFUSAL);
+        }
+        return messages
+            .try_push(update)
+            .map_err(|_| "callback stream queue is full".to_string());
+    }
     let before = client.pending_bytes();
     let payload_len = match &request {
         Request::Transport { .. } => TransportRequestMsg::WIRE_SIZE,
         Request::Note(_) => NoteEventMsg::WIRE_SIZE,
+        Request::StreamAdd { .. } => StreamAddMsg::WIRE_SIZE,
+        Request::StreamRemove { .. } => StreamRemoveMsg::WIRE_SIZE,
     };
     let sent = match request {
         Request::Transport { state, bpm } => client.send_transport_request(state, bpm),
         Request::Note(event) => client.send_note_event(&NoteEventMsg { source, ..event }),
+        Request::StreamAdd { stream, spec } => {
+            client.send_stream_add(&StreamAddMsg { stream, spec })
+        }
+        Request::StreamRemove { stream } => client.send_stream_remove(stream),
     };
     match sent {
         Ok(()) => {
+            if let Some(update) = stream_update(&request) {
+                messages
+                    .try_push(update)
+                    .map_err(|_| "callback stream queue is full".to_string())?;
+            }
             if client.pending_bytes() < before + HEADER_SIZE + payload_len {
                 *stuck_since = None;
             }
             Ok(())
         }
         // The hub is not reading; the audio path decides when to give up.
+        Err(OutboxError::Stuck)
+            if matches!(
+                request,
+                Request::StreamAdd { .. } | Request::StreamRemove { .. }
+            ) =>
+        {
+            Err("stream request outbox is full".to_string())
+        }
         Err(OutboxError::Stuck) => {
             state.messages_dropped.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -1161,3 +1114,13 @@ fn send_request(
 
 #[cfg(test)]
 mod tests;
+
+/// Internal stream bookkeeping is consumed before events reach an instrument.
+#[derive(Debug)]
+pub(crate) enum ToAudio {
+    Hub(HubMessage),
+    Stream {
+        stream: StreamId,
+        channels: Option<u16>,
+    },
+}

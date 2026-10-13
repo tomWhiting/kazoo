@@ -102,7 +102,7 @@ fn the_backlog_holds_a_quarter_second_then_counts_drops() {
     let total_bytes = accepted_blocks as usize * (HEADER_SIZE + AUDIO_PAYLOAD_HEADER + 4_096);
     let waiting = observer.occupied_len();
     let socket_accepted = total_bytes - waiting;
-    let ring_bytes = wire::link_ring_bytes(48_000, 2, 512);
+    let ring_bytes = wire::link_ring_bytes(48_000, 2, 1, 512);
     assert!(
         accepted_blocks * 512 >= 12_000,
         "only {accepted_blocks} blocks before dropping"
@@ -111,6 +111,37 @@ fn the_backlog_holds_a_quarter_second_then_counts_drops() {
     eprintln!(
         "BACKLOG blocks={accepted_blocks} socket_accepted={socket_accepted} ring_bytes={ring_bytes}"
     );
+}
+
+#[test]
+fn a_stream_added_live_gets_its_own_quarter_second() {
+    let path = socket();
+    let (link, mut audio) = start_link(
+        LinkConfig {
+            max_block_frames: 512,
+            ..config(&path)
+        },
+        None,
+        false,
+    )
+    .unwrap();
+    link.state.connected.store(true, Ordering::Release);
+    link.state.strips[1].store(4, Ordering::Release);
+    // What the link thread hands the callback when a stereo stream is added.
+    audio.stream_updates[1].store(2, Ordering::Release);
+    let mut queued = 0;
+    loop {
+        audio.send_audio(512, &[0.25; 1024]);
+        assert!(audio.send_stream_audio(1, 512, &[0.25; 1024]));
+        if link.status().blocks_dropped > 0 {
+            break;
+        }
+        queued += 1;
+        assert!(queued < 1_000);
+    }
+    let seconds = f64::from(queued * 512) / 48_000.0;
+    assert!(seconds >= 0.25, "queued={queued}, seconds={seconds}");
+    assert!(seconds <= 0.29, "queued={queued}, seconds={seconds}");
 }
 
 #[test]

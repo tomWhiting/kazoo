@@ -5,16 +5,41 @@ use std::time::Instant;
 
 use ringbuf::traits::Consumer;
 
-use super::{AUDIO_PAYLOAD_HEADER, HubIpcClient, LINK_BACKLOG_MS, STUCK_LIMIT};
-use crate::ipc::protocol::{FrameHeader, HEADER_SIZE, decode_header};
+use super::{HubIpcClient, LINK_BACKLOG_MS, MAX_STREAMS, STUCK_LIMIT};
+use crate::ipc::protocol::{AUDIO_STREAM_PAYLOAD_HEADER, FrameHeader, HEADER_SIZE, decode_header};
 
-pub(super) fn link_ring_bytes(sample_rate: u32, channels: u16, block_frames: u32) -> usize {
+/// Bytes that hold [`LINK_BACKLOG_MS`] of `streams` streams carrying
+/// `channels` channels between them, with a frame head (the larger, named
+/// one) for every 64 frames of each stream, and never less than two of the
+/// largest blocks one stream can send.
+pub(super) fn link_ring_bytes(
+    sample_rate: u32,
+    channels: u16,
+    streams: usize,
+    block_frames: u32,
+) -> usize {
     let frames = u64::from(sample_rate) * LINK_BACKLOG_MS / 1000;
-    let headers = frames.div_ceil(64) * (HEADER_SIZE + AUDIO_PAYLOAD_HEADER) as u64;
+    let headers =
+        frames.div_ceil(64) * streams as u64 * (HEADER_SIZE + AUDIO_STREAM_PAYLOAD_HEADER) as u64;
     let bytes = frames * u64::from(channels) * 4 + headers;
-    let largest =
-        HEADER_SIZE + AUDIO_PAYLOAD_HEADER + block_frames as usize * usize::from(channels) * 4;
+    let largest = HEADER_SIZE
+        + AUDIO_STREAM_PAYLOAD_HEADER
+        + block_frames as usize * usize::from(channels.min(2)) * 4;
     (bytes as usize).max(2 * largest)
+}
+
+/// The ring a link allocates: room for every stream it may ever carry,
+/// all stereo, since streams are added while the callback runs and the
+/// ring cannot grow then. What may wait in it at once is held to the
+/// streams there are now ([`link_ring_bytes`] of them), so the backlog
+/// stays bounded by time.
+pub(super) fn link_ring_capacity(sample_rate: u32, block_frames: u32) -> usize {
+    link_ring_bytes(
+        sample_rate,
+        2 * MAX_STREAMS as u16,
+        MAX_STREAMS,
+        block_frames,
+    )
 }
 
 pub(super) fn check_stuck(stuck_since: &mut Option<Instant>) -> Result<(), String> {
