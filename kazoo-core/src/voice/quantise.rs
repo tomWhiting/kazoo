@@ -194,8 +194,9 @@ impl Quantiser {
 
     /// Write snapped pitch, retaining the last output while unvoiced.
     ///
-    /// Onsets initialise the centre before target selection so a note starts
-    /// in tune. Non-finite pitch resets state and writes finite direct values.
+    /// An onset chooses its own nearest note after resetting the centre, and
+    /// hysteresis only holds a note already sounding.
+    /// Non-finite pitch resets state and writes finite direct values.
     /// With blend at zero every frame, voiced or not, carries the direct
     /// pitch bit for bit.
     pub fn process(&mut self, frame: &mut VoiceFrame) {
@@ -218,8 +219,9 @@ impl Quantiser {
         let note = self.nearest_note();
         let target = match self.target {
             Some(target)
-                if (self.centre - target).abs() - (self.centre - note).abs()
-                    <= self.settings.hysteresis_cents / 100.0 =>
+                if !frame.onset
+                    && (self.centre - target).abs() - (self.centre - note).abs()
+                        <= self.settings.hysteresis_cents / 100.0 =>
             {
                 target
             }
