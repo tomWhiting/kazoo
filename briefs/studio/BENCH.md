@@ -561,3 +561,36 @@ One head round exited 0. Uptime at launch: 19:22  6 users, load averages: 115.49
 
 The builder did not complete the three alternating base/head rounds; the
 review's five are in the review section above.
+
+## KZ-V02 voice trackers (baseline: the judge alone)
+
+Date: 2026-10-13, 23:51 AEDT. HEAD: `55f1cf3f978a9698d01851cbdf2454f41ad52d96` (lane/kz-V02 after its Opus review).
+Load average at launch (1/5/15 minutes): 122.60 / 142.50 / 152.08.
+
+Command: `nice lockf -k ~/.kazoo-cargo.lock cargo run --release -j 4 -p kazoo-core --example voice_score` (exit 0).
+Synthetic rate: 48,000 Hz. No recorded WAVs were present. The identical table is saved at
+`target/kz-logs/voice-score.md`. Latency is counted in samples, not CPU time: from each event's sample
+to the reading after the step on which the judge lands and stays, so it is never shorter than the
+judge's own latency and at most one step (0.67 ms) longer.
+
+How to read it:
+- The judge is pYIN at one estimate per 512 samples over a 2048-sample window, so its first pitch comes
+  about 45 ms after an onset and every figure is unshifted: on `glide` (two octaves in 500 ms,
+  48 semitones a second) a 45 ms lag is about two semitones, which is the 55.67% gross error; on
+  `vibrato` it is the 38 cents median.
+- Cents of about 1.66 on held notes are the judge's pitch bins (a third of a semitone, `JUDGE_RESOLUTION`),
+  not noise.
+- `rearticulate`'s 13.75% missed is the judge going unvoiced in each -24 dB dip between syllables.
+
+| tracker | take | onset median ms | onset max ms | onsets missed | step median ms | step max ms | steps | steps missed | cents median | cents p95 | octave % | gross % | missed % | false % | aligned lag ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pYIN | sine_ladder | 38.00 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 11.73 | 0.00 | 0.00 | 6.69 | 7.78 | - |
+| pYIN | hum_low | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.67 | 1.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | steps | 45.33 | 45.33 | 0 | 45.00 | 49.33 | 6 | 0 | 1.66 | 1.66 | 0.00 | 4.72 | 4.52 | 0.00 | - |
+| pYIN | vibrato | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 38.04 | 69.68 | 0.00 | 0.00 | 2.91 | 0.00 | - |
+| pYIN | glide | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 65.00 | 0.00 | 55.67 | 1.76 | 2.88 | - |
+| pYIN | octave_bait | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.96 | 1.96 | 0.00 | 0.00 | 3.92 | 0.00 | - |
+| pYIN | vowel_ah | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.70 | 1.70 | 0.00 | 0.00 | 2.50 | 0.00 | - |
+| pYIN | noise_bursts | 45.33 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 10.50 | 1.31 | - |
+| pYIN | whistle | 34.67 | 34.67 | 0 | - | - | 0 | 0 | 8.27 | 31.60 | 0.00 | 0.00 | 3.77 | 3.96 | - |
+| pYIN | rearticulate | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |
