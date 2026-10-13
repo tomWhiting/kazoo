@@ -5,10 +5,11 @@
 //! synthesis: application to an augmented guitar", SMC 2018, pp. 444–451:
 //! <https://doi.org/10.5281/zenodo.1422641> (equations 3–7).
 //! Period-driven filter tracking is inspired by the GR-300 description:
-//! <https://gr300.com/GR-300.htm>. Divider context: the OC-2 teardown cited
-//! by that paper, <https://www.valvewizard.co.uk/uboat.html>, and
-//! <https://en.wikipedia.org/wiki/Octave_effect>. Boss's SY-1/SY-300 method
-//! is not public; this effect makes no claim to reproduce it.
+//! <https://gr300.com/GR-300.htm>. Divider context: the Boss OC-2 at
+//! <https://en.wikipedia.org/wiki/Octave_effect>, and The Valve Wizard's
+//! own U-Boat design, which compares itself with the OC-2,
+//! <https://www.valvewizard.co.uk/uboat.html>. Boss's SY-1 and SY-300
+//! method is not public; this effect makes no claim to reproduce it.
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -18,6 +19,11 @@ use crate::dsp::{OnePole, sane_rate};
 use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
 
 const N: usize = 21;
+
+/// The longest gap between rising edges, in seconds, that is taken as a
+/// period: 10 Hz, half the lowest `low` corner, so no input the high-pass
+/// passes is longer.
+const LONGEST_PERIOD: f64 = 0.1;
 
 const fn knob(
     name: &'static str,
@@ -77,6 +83,18 @@ pub(super) const KIND: EffectKind = EffectKind {
     params: &PARAMS,
     build: || Box::new(Sidestep::new()),
 };
+
+/// The bilinear one-pole low-pass at `cutoff`: `(b, a)` for
+/// `y = b (x + x₋₁) − a y₋₁`, prewarped so it is 3 dB down at `cutoff`
+/// itself, and held under 0.45 × `rate` so the warp stays finite. The same
+/// `a` is the allpass coefficient (Esqueda et al., eqs. 3 to 5): a
+/// first-order allpass with it has twice this low-pass's phase lag at every
+/// frequency, so two allpasses have the phase of four low-passes.
+pub(super) fn bilinear_lowpass(cutoff: f32, rate: f64) -> (f64, f64) {
+    let corner = f64::from(cutoff).clamp(1.0, 0.45 * rate);
+    let w = 2.0 * (std::f64::consts::PI * corner / rate).tan();
+    (w / (2.0 + w), (w - 2.0) / (w + 2.0))
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Pole {
@@ -145,6 +163,7 @@ pub(super) struct Sidestep {
     edges: [EdgeWave; 3],
     edge_age: f64,
     have_edge: bool,
+    gate: bool,
     period: f64,
     clock: f64,
     clock_coeff: f64,
@@ -192,6 +211,7 @@ impl Sidestep {
             edges: [EdgeWave::new(); 3],
             edge_age: 0.0,
             have_edge: false,
+            gate: false,
             period: 48_000.0 / 220.0,
             clock: 220.0,
             clock_coeff: 0.0,
@@ -223,9 +243,7 @@ impl Sidestep {
         if p[..2] != self.front {
             self.front = [p[0], p[1]];
             self.highpass.set_cutoff(p[0], self.rate as f32);
-            let w = std::f64::consts::TAU * f64::from(p[1]) / self.rate;
-            self.b = w / (2.0 + w);
-            self.a = (w - 2.0) / (w + 2.0);
+            (self.b, self.a) = bilinear_lowpass(p[1], self.rate);
         }
         let times = [p[13], p[14], p[16]];
         if times.map(f32::to_bits) != self.envelope_params.map(f32::to_bits) {
@@ -271,6 +289,11 @@ impl Sidestep {
                 (self.previous_negative / (self.previous_negative - difference)).clamp(0.0, 1.0);
         }
         self.edge_age += 1.0;
+        if !self.gate || self.edge_age > self.rate * LONGEST_PERIOD {
+            // A rest, or a gap no input below the lowest `low` corner can
+            // make, is not a cycle: the next edge starts a new count.
+            self.have_edge = false;
+        }
         if self.latch && !was_high {
             if self.have_edge {
                 self.period = (self.edge_age + fraction - 1.0).max(1.0);
@@ -304,6 +327,7 @@ impl Sidestep {
         flush64(&mut self.envelope);
         let db = 20.0 * self.envelope.max(1e-8).log10();
         let gate = db >= f64::from(p[18]);
+        self.gate = gate;
         if db < self.valley || self.onset_age < self.rate * 0.04 {
             // The same attack can keep rising during the refractory period.
             self.valley = db;
@@ -441,6 +465,7 @@ impl Sidestep {
         self.edges = [EdgeWave::new(); 3];
         self.edge_age = 0.0;
         self.have_edge = false;
+        self.gate = false;
         self.period = self.rate / 220.0;
         self.clock = 220.0;
         self.envelope = 0.0;

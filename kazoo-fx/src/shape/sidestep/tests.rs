@@ -407,3 +407,41 @@ fn processing_never_allocates() {
         effect.reset();
     });
 }
+
+#[test]
+fn the_smoothing_corner_is_at_high() {
+    // A bilinear one-pole is 3.01 dB down at its corner only when the
+    // corner is prewarped; at 4 kHz and 48 kHz an unwarped design misses.
+    for (cutoff, rate) in [(1000.0, 48_000.0), (4000.0, 48_000.0), (4000.0, 8000.0)] {
+        let (b, a) = super::sidestep::bilinear_lowpass(cutoff, rate);
+        let corner = std::f64::consts::TAU * f64::from(cutoff).min(0.45 * rate) / rate;
+        let (sin, cos) = corner.sin_cos();
+        let numerator = b * (1.0 + cos).hypot(sin);
+        let denominator = a.mul_add(cos, 1.0).hypot(a * sin);
+        let db = 20.0 * (numerator / denominator).log10();
+        println!("{cutoff} Hz at {rate}: {db} dB at the corner");
+        assert!((db + 3.0103).abs() < 0.01, "{cutoff} Hz at {rate}: {db} dB");
+    }
+}
+
+#[test]
+fn a_silence_is_not_a_period() {
+    // A note, a rest, the same note: the clock (and the filter that tracks
+    // it) must never read the rest as one very long cycle.
+    let tone: Vec<f32> = (0..14_400)
+        .map(|n| {
+            (std::f64::consts::TAU * 220.0 * f64::from(n) / f64::from(RATE)).sin() as f32 * 0.25
+        })
+        .collect();
+    let mut input = tone.clone();
+    input.extend(std::iter::repeat_n(0.0, 14_400));
+    input.extend(&tone);
+    let mut effect = inspected(&[("track", 100.0)]);
+    let expected = f64::from(RATE) / 220.0;
+    let longest = input
+        .iter()
+        .map(|sample| effect.test_sample(*sample).1[2])
+        .fold(0.0_f64, f64::max);
+    println!("longest period {longest} samples, expected {expected}");
+    assert!(longest < expected * 1.01, "longest period {longest}");
+}
