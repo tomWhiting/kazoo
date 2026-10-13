@@ -361,3 +361,30 @@ fn a_hot_input_over_full_scale_is_still_a_voice() {
     let onsets = output.iter().filter(|f| f.onset).count();
     assert_eq!(onsets, 1);
 }
+#[test]
+fn the_rest_of_a_recovery_is_the_same_syllable() {
+    // A re-sung syllable fires on its ≥ 9 dB rise part-way up the ramp; the
+    // ramp then carries on above the reset valley, and the judge's flux for
+    // the same syllable arrives about 30 ms late. None of that is a second
+    // syllable once the refractory time is over.
+    let mut gate = super::gate::Gate::new(48_000);
+    assert!(gate.frame(64, true, -6.0, -70.0).1);
+    for frame in 2_u64..50 {
+        assert!(!gate.frame(frame * 64, true, -6.0, -6.0).1);
+    }
+    // The dip, then the first part of the recovery (past the refractory time).
+    assert!(!gate.frame(50 * 64, true, -30.0, -30.0).1);
+    assert!(gate.frame(51 * 64, true, -20.0, -30.0).1);
+    // The valley is reset to the fast level at the onset; the ramp goes on,
+    // 5 dB over it, and the flux arrives 22 frames (29 ms) later. Old code
+    // paired the two once the refractory time ended, at frame 96.
+    let mut onsets = 0;
+    for frame in 52_u64..130 {
+        let at = frame * 64;
+        if frame == 74 {
+            gate.flux(at);
+        }
+        onsets += u32::from(gate.frame(at, true, -6.0, -11.0).1);
+    }
+    assert_eq!(onsets, 0, "one syllable, one onset");
+}

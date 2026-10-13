@@ -83,7 +83,12 @@ impl Gate {
             self.last_onset = Some(at);
             self.flux = None;
             self.rise = None;
-            self.rise_active = false;
+            // The rest of the rise that made this onset is this onset: the
+            // valley is reset part-way up the recovery, and the climb that
+            // follows must not be taken for a new ≥ 4 dB rise for the judge's
+            // late flux to pair with. A new rise must first fall back under
+            // `ONSET_FLUX_RISE_DB`.
+            self.rise_active = true;
         }
         (self.high, onset)
     }
