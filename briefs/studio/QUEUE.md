@@ -110,3 +110,4 @@ REVIEWED KZ-L01 READY head=2203f2d (Opus fixed 7: existing dirs to 0700, new dir
 START KZ-W01b base=42664d7 branch=lane/kz-W01b df=43GB at 18:24
 START KZ-W01c base=42664d7 branch=lane/kz-W01c df=41GB at 18:24
 START KZ-D03b base=42664d7 branch=lane/kz-D03b df=41GB at 18:25
+START KZ-A03b base=42664d7 branch=lane/kz-A03b df=29GB at 19:50

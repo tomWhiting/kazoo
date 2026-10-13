@@ -242,7 +242,7 @@ Tom's words, 13 Oct 2026, about 19:20 to 20:10:
 | T04 moments, marks and buds | `wall_mark`, `wall_go` (a cut), buds on the first change, `wall_tree`; console keys | kazoo-wall, kazoo-mcp | T02 |
 | T05 the crossing | going to a moment glides, fades and crossfades by birth mark over N beats | kazoo-wall | T04 |
 | T06 the fire | replay of a branch at its beats and any speed; a change mid-fire grows a bud | kazoo-wall, kazoo-mcp | T05 |
-| T07 lanterns | notes on moments as git notes; lanterns with session and transcript pointers; ask a moment | kazoo-wall, kazoo-mcp | T04 |
+| T07 lanterns | notes on moments as git notes; lanterns with session and transcript pointers; ask a moment. Its brief is drafted only with Tom in the room: the shape of a lantern is his to speak first (he asked in September that nobody start on lanterns without him) | kazoo-wall, kazoo-mcp | T04, Tom |
 | T08 the little tree | the console's tree view: branches, thickness, marks, lanterns, where the wall is | kazoo-wall | T04 |
 | T09 the Bevy tree | an explorable tree (native and wasm), after Meridian Life | new crate | T08 |
 
