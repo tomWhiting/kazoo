@@ -34,6 +34,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, eyre};
+use kazoo_mix::shared::DESK_CHANNELS;
 use serde::Deserialize;
 
 use crate::cli::{Cli, Command, StudioCommand};
@@ -75,6 +76,12 @@ impl StudioFile {
     /// Parse a session, rejecting unknown keys, invalid rates and invalid instrument commands.
     pub fn parse(contents: &str) -> Result<Self> {
         let session: Self = toml::from_str(contents)?;
+        if session.instrument.len() > DESK_CHANNELS {
+            return Err(eyre!(
+                "{} instruments are listed but the desk has {DESK_CHANNELS} strips",
+                session.instrument.len()
+            ));
+        }
         if let Some(rate) = session.desk.rate {
             if !(8_000..=384_000).contains(&rate) {
                 return Err(eyre!("desk.rate must be between 8000 and 384000 Hz"));
