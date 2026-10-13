@@ -1,6 +1,6 @@
 //! Audio engine: real-time audio graph, buffer management, thread coordination.
 //!
-//! The engine orchestrates five threads:
+//! The engine orchestrates six threads:
 //!
 //! 1. **cpal input callback** (OS-managed) -- writes mic samples to ring buffer.
 //! 2. **cpal output callback** (OS-managed) -- the main audio workhorse.
@@ -8,12 +8,12 @@
 //!    effects), applies the soft limiter, and writes directly to the output
 //!    buffer. All processing state is owned by this callback's closure, and
 //!    it never allocates, frees, locks or does I/O.
-//! 3. **Analysis thread** (`kazoo-analysis`) -- runs pitch, spectrum, formant,
-//!    and onset detection.
+//! 3. **Analysis thread** (`kazoo-analysis`) -- runs spectrum and formants.
 //! 4. **Disk I/O thread** (`kazoo-disk-io`) -- writes recorded audio to WAV files.
 //! 5. **Reclaim thread** (`kazoo-reclaim`) -- frees everything the output
 //!    callback lets go of, turns finished takes into clips and builds the
 //!    timeline snapshots (see [`reclaim`]).
+//! 6. **Judge thread** (`kazoo-judge`) -- runs pYIN and onset detection.
 //!
 //! Communication between threads uses lock-free ring buffers (`ringbuf` crate)
 //! for audio data and `crossbeam-channel` for commands.
@@ -48,8 +48,9 @@ use std::thread::JoinHandle;
 use ringbuf::traits::{Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
-use crate::analysis::{FormantData, PitchDetector, PitchDetectorConfig, PitchEstimate};
+use crate::analysis::{FormantData, PitchDetectorConfig};
 use crate::io::StreamConfig;
+use crate::voice::judge::{self, OnsetConfig};
 use crate::{Result, SPECTRUM_FFT_SIZE};
 
 use analysis_thread::AnalysisConfig;
@@ -69,8 +70,8 @@ pub struct EngineConfig {
     /// Audio stream configuration (device selection, sample rate, buffer size).
     pub stream: StreamConfig,
 
-    /// Pitch detector configuration; rate, frame and hop are taken from the device.
-    /// The cycle tracker replaces this detector in V06.
+    /// The judge's pYIN range and voicing threshold; rate, frame and hop are
+    /// taken from the device (see [`judge_config`]).
     pub pitch: PitchDetectorConfig,
 
     /// FFT size for spectrum analysis (default 2048).
@@ -112,10 +113,10 @@ impl Default for EngineConfig {
 
 /// Preserve the requested range and voicing threshold at the device's rate.
 ///
-/// Run once per window at 0.1-semitone resolution until V06 retires this
-/// detector. Below about 18 kHz pYIN cannot hold a one-window hop over the
-/// default range, so there the hop halves until it can (to 1024 samples at
-/// 16 kHz and 512 at 8 kHz): the engine starts at every device rate.
+/// The judge runs once per window at 0.1-semitone resolution. Below about
+/// 18 kHz pYIN cannot hold a one-window hop over the default range, so
+/// there the hop halves until it can (to 1024 samples at 16 kHz and 512 at
+/// 8 kHz): the engine starts at every device rate.
 #[must_use]
 pub fn judge_config(asked: &PitchDetectorConfig, rate: u32) -> PitchDetectorConfig {
     PitchDetectorConfig {
@@ -144,7 +145,7 @@ struct RingBufferCapacities {
     display_frames: usize,
     /// Analysis input: `buffer_size` * 4.
     analysis_input: usize,
-    /// Analysis results (pitch, spectrum, formant): 32 slots each.
+    /// Analysis results (spectrum, formant): 32 slots each.
     analysis_results: usize,
     /// Disk recording: `buffer_size` * 32.
     disk: usize,
@@ -178,7 +179,7 @@ impl RingBufferCapacities {
 /// 1. Creates all inter-thread ring buffers.
 /// 2. Builds audio I/O streams via `cpal`, moving all processing state into
 ///    the output callback closure.
-/// 3. Spawns the analysis and disk I/O threads.
+/// 3. Spawns the analysis, judge and disk I/O threads.
 /// 4. Returns an [`EngineHandle`] for the caller to send commands and poll
 ///    display state.
 ///
@@ -186,7 +187,7 @@ impl RingBufferCapacities {
 ///
 /// Returns [`crate::Error::AudioDevice`] if audio streams cannot be created,
 /// or [`crate::Error::Config`] for invalid configuration values (including
-/// an invalid pitch detector configuration).
+/// an invalid judge pitch range or onset setting).
 pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // Keep the selected device and configuration until the streams open, so
     // processing and the device use the same rate and buffer size.
@@ -196,10 +197,14 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     let stream_config = &config.stream;
     let buffer_size = output_info.frames;
 
-    // Validate the pitch configuration up front: an invalid config is a
-    // caller error, not something to discover later on the analysis thread.
+    // Validate the judge's configuration up front: an invalid config is a
+    // caller error, not something to discover later on the judge thread.
     let analysis = analysis_config(&config, sample_rate, buffer_size);
-    let pitch_detector = PitchDetector::new(judge_config(&config.pitch, sample_rate))?;
+    let (judge_feed, judge_results, judge) = judge::spawn(
+        judge_config(&config.pitch, sample_rate),
+        buffer_size,
+        onset_config(&config),
+    )?;
     let stats = Arc::new(EngineStats::new());
 
     // The desk link is created before the streams so its audio half can be
@@ -221,7 +226,6 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // Analysis input: output callback -> analysis thread.
     let (analysis_in_prod, analysis_in_cons) = HeapRb::<f32>::new(caps.analysis_input).split();
     // Analysis results: analysis thread -> output callback.
-    let (pitch_prod, pitch_cons) = HeapRb::<PitchEstimate>::new(caps.analysis_results).split();
     let (spectrum_prod, spectrum_cons) = HeapRb::<Vec<f32>>::new(caps.analysis_results).split();
     let (formant_prod, formant_cons) =
         HeapRb::<Option<FormantData>>::new(caps.analysis_results).split();
@@ -267,7 +271,8 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         display_recycle: display.recycle_cons,
         analysis_prod: analysis_in_prod,
         disk_prod,
-        pitch_cons,
+        judge: judge_feed,
+        judge_results,
         spectrum_cons,
         formant_cons,
         command_rx,
@@ -286,12 +291,10 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     let analysis_handle = spawn_analysis_thread(
         analysis_thread::AnalysisIo {
             input_cons: analysis_in_cons,
-            pitch_prod,
             spectrum_prod,
             formant_prod,
             stats: Arc::clone(&stats),
         },
-        pitch_detector,
         analysis,
     )?;
     let disk_handle = spawn_disk_thread(disk_cons, disk_cmd_rx, sample_rate, Arc::clone(&stats))?;
@@ -332,6 +335,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
 
     handle.set_thread_handles(ThreadHandles {
         analysis: analysis_handle,
+        judge,
         disk: disk_handle,
         reclaim: reclaim.thread,
         stream_holder: stream_holder_handle,
@@ -447,15 +451,22 @@ fn make_input_callback(
 /// Spawn the analysis thread (`kazoo-analysis`).
 fn spawn_analysis_thread(
     io: analysis_thread::AnalysisIo,
-    pitch_detector: PitchDetector,
     config: AnalysisConfig,
 ) -> Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("kazoo-analysis".into())
         .spawn(move || {
-            analysis_thread::run(io, pitch_detector, &config);
+            analysis_thread::run(io, &config);
         })
         .map_err(|e| crate::Error::Stream(format!("failed to spawn analysis thread: {e}")))
+}
+
+/// The caller's onset settings, as the judge takes them.
+const fn onset_config(config: &EngineConfig) -> OnsetConfig {
+    OnsetConfig {
+        onset_fft_size: config.onset_fft_size,
+        onset_threshold: config.onset_threshold,
+    }
 }
 
 /// The analysis pipeline's configuration for an engine running at
@@ -468,8 +479,6 @@ const fn analysis_config(
     AnalysisConfig {
         spectrum_fft_size: config.spectrum_fft_size,
         spectrum_smoothing: config.spectrum_smoothing,
-        onset_fft_size: config.onset_fft_size,
-        onset_threshold: config.onset_threshold,
         sample_rate,
         buffer_size,
     }
@@ -576,6 +585,23 @@ fn spawn_disk_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voice::judge::{JudgeResult, JudgeResults};
+    use std::time::{Duration, Instant};
+
+    /// The judge's next pitch verdict, skipping onsets; fails after five seconds.
+    fn next_pitch(results: &mut JudgeResults) -> crate::analysis::PitchEstimate {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match results.pop() {
+                Some(JudgeResult::Pitch(estimate)) => return estimate,
+                Some(JudgeResult::Onset { .. }) => {}
+                None => {
+                    assert!(Instant::now() < deadline, "the judge gave no verdict");
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
 
     /// A 48 kHz sine judged at the default 44.1 kHz rate used to read about 404 Hz.
     #[test]
@@ -584,36 +610,52 @@ mod tests {
         assert_eq!(config.sample_rate, 48_000);
         assert_eq!(config.frame_length, 2048);
         assert_eq!(config.hop_length, 2048);
-        let mut detector = PitchDetector::new(config).expect("valid device judge");
+        let (mut feed, mut results, judge) =
+            judge::spawn(config, 128, OnsetConfig::default()).expect("valid device judge");
         let samples: Vec<_> = (0..48_000_u32)
             .map(|index| (std::f64::consts::TAU * 440.0 * f64::from(index) / 48_000.0).sin() as f32)
             .collect();
+        // One window at a time, each judged before the next is fed, so the
+        // judge's input ring never overflows.
         let mut settled = 0;
         let mut estimates = 0;
-        for (index, chunk) in samples.chunks(128).enumerate() {
-            if let Some(estimate) = detector.push_samples(chunk) {
-                estimates += 1;
-                if (index + 1) * 128 > 4096 {
-                    let frequency = estimate.frequency.expect("settled sine must be voiced");
-                    let cents = (1200.0 * (frequency / 440.0).log2()).abs();
-                    assert!(
-                        cents <= 5.0,
-                        "device-rate sine read {frequency} Hz ({cents} cents)"
-                    );
-                    settled += 1;
-                }
+        let mut windows = samples.chunks_exact(2048);
+        for (index, window) in windows.by_ref().enumerate() {
+            feed.push(window);
+            let estimate = next_pitch(&mut results);
+            estimates += 1;
+            if (index + 1) * 2048 > 4096 {
+                let frequency = estimate.frequency.expect("settled sine must be voiced");
+                let cents = (1200.0 * (frequency / 440.0).log2()).abs();
+                assert!(
+                    cents <= 5.0,
+                    "device-rate sine read {frequency} Hz ({cents} cents)"
+                );
+                settled += 1;
             }
+        }
+        feed.push(windows.remainder());
+        drop(feed);
+        let stats = judge.stats();
+        judge.join().expect("the judge exits once its feed is gone");
+        while let Some(result) = results.pop() {
+            assert!(
+                !matches!(result, JudgeResult::Pitch(_)),
+                "a partial window was judged"
+            );
         }
         assert_eq!(estimates, 23, "one estimate per device-rate window");
         assert!(settled > 0);
+        assert_eq!(stats.samples_dropped, 0);
+        assert_eq!(stats.results_dropped, 0);
     }
 
     /// A one-window hop is 128 ms at 16 kHz: pyin's transition band then
     /// spans more semitones than the 60 to 1000 Hz range holds, and the
     /// detector is refused, so `start` failed on a Bluetooth headset's 16 kHz
     /// output. Main built its detector at 44.1 kHz on every device and
-    /// always started. The engine must start at every device rate, and still
-    /// run once per window wherever pyin can hold that.
+    /// always started. The engine must start its judge at every device rate,
+    /// and still run once per window wherever pyin can hold that.
     #[test]
     fn the_engine_builds_its_judge_at_every_device_rate() {
         for rate in [
@@ -622,12 +664,13 @@ mod tests {
         ] {
             let config = judge_config(&EngineConfig::default().pitch, rate);
             let shown = format!("{config:?}");
-            let built = PitchDetector::new(config);
-            assert!(built.is_ok(), "rate {rate} was refused: {shown} {built:?}");
+            let once_per_window = config.hop_length == config.frame_length;
+            let (feed, _results, judge) =
+                judge::spawn(config, 128, onset_config(&EngineConfig::default()))
+                    .unwrap_or_else(|error| panic!("rate {rate} was refused: {shown} {error}"));
+            drop(feed);
+            judge.join().expect("the judge exits once its feed is gone");
             if rate >= 22_050 {
-                let once_per_window = built.as_ref().is_ok_and(|detector| {
-                    detector.config().hop_length == detector.config().frame_length
-                });
                 assert!(once_per_window, "rate {rate} must run once per window");
             }
         }

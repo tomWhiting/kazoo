@@ -138,6 +138,12 @@ impl VoiceTracker {
         }
     }
 
+    /// Samples still to come before the next frame, 1 to [`VOICE_HOP`].
+    #[must_use]
+    pub const fn until_frame(&self) -> usize {
+        VOICE_HOP - self.hop
+    }
+
     /// Process arbitrary callback sizes, emitting once per fixed 64-sample hop.
     pub fn process(&mut self, mic: &[f32], mut emit: impl FnMut(VoiceFrame)) {
         for &sample in mic {

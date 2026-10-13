@@ -1,4 +1,4 @@
-//! Analysis thread: pitch detection, spectrum analysis, formant extraction.
+//! Analysis thread: spectrum analysis and formant extraction.
 //!
 //! Runs in a dedicated thread at lower priority than the audio callback.
 //! Reads raw mic samples from a ring buffer, runs the analysis pipeline, and
@@ -10,24 +10,15 @@ use ringbuf::traits::{Consumer, Observer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
 use super::stats::EngineStats;
-use crate::analysis::{
-    FormantData, FormantExtractor, OnsetDetector, PitchDetector, PitchEstimate, SpectrumAnalyzer,
-};
+use crate::analysis::{FormantData, FormantExtractor, SpectrumAnalyzer};
 
 /// Configuration for the analysis pipeline.
-///
-/// The pitch detector is constructed (and its configuration validated) by
-/// the caller and handed to [`run`] directly.
 #[derive(Debug, Clone)]
 pub struct AnalysisConfig {
     /// FFT size for spectrum analysis (must be >= 2, typically 2048).
     pub spectrum_fft_size: usize,
     /// EMA smoothing factor for spectrum display (0.0 = no smoothing, 1.0 = max).
     pub spectrum_smoothing: f32,
-    /// FFT size for onset detection.
-    pub onset_fft_size: usize,
-    /// Threshold factor for onset detection.
-    pub onset_threshold: f32,
     /// Audio sample rate in Hz.
     pub sample_rate: u32,
     /// Audio buffer size (used for sizing the internal read buffer).
@@ -38,8 +29,6 @@ pub struct AnalysisConfig {
 pub struct AnalysisIo {
     /// Raw mic (or clip) samples from the output callback.
     pub input_cons: HeapCons<f32>,
-    /// Pitch estimates back to the output callback.
-    pub pitch_prod: HeapProd<PitchEstimate>,
     /// Spectrum magnitudes (dB) back to the output callback.
     pub spectrum_prod: HeapProd<Vec<f32>>,
     /// Formant results back to the output callback.
@@ -57,8 +46,8 @@ impl std::fmt::Debug for AnalysisIo {
 
 /// Entry point for the analysis thread.
 ///
-/// Reads raw mic audio from `io.input_cons`, runs pitch detection, spectrum
-/// analysis, onset detection, and formant extraction, then pushes results
+/// Reads raw mic audio from `io.input_cons`, runs spectrum analysis
+/// and formant extraction, then pushes results
 /// into the respective ring buffer producers. Results that do not fit
 /// because the output callback has not drained the previous ones are
 /// counted in [`EngineStats`] (the callback always uses the latest value, so
@@ -68,7 +57,7 @@ impl std::fmt::Debug for AnalysisIo {
 /// by the output callback) has been dropped at engine shutdown. A temporarily
 /// silent input — e.g. a stalled or disconnected microphone — does not stop
 /// analysis.
-pub fn run(mut io: AnalysisIo, mut pitch_detector: PitchDetector, config: &AnalysisConfig) {
+pub fn run(mut io: AnalysisIo, config: &AnalysisConfig) {
     let sr_f32 = config.sample_rate as f32;
 
     let mut spectrum_analyzer = SpectrumAnalyzer::new(
@@ -76,11 +65,6 @@ pub fn run(mut io: AnalysisIo, mut pitch_detector: PitchDetector, config: &Analy
         sr_f32,
         config.spectrum_smoothing.clamp(0.0, 1.0),
     );
-
-    let onset_fft = config.onset_fft_size.max(4);
-    let onset_hop = onset_fft / 4;
-    let mut onset_detector =
-        OnsetDetector::new(onset_fft, onset_hop, sr_f32, config.onset_threshold);
 
     // Formant extractor: LPC order 24 is reasonable for 44.1kHz speech.
     // Frame size of 1024 gives ~23ms frames at 44.1kHz.
@@ -106,12 +90,6 @@ pub fn run(mut io: AnalysisIo, mut pitch_detector: PitchDetector, config: &Analy
 
         let samples = &read_buf[..num_read];
 
-        if let Some(estimate) = pitch_detector.push_samples(samples) {
-            if io.pitch_prod.try_push(estimate).is_err() {
-                io.stats.analysis_result_dropped();
-            }
-        }
-
         if let Some(spectrum_data) = spectrum_analyzer.push_samples(samples) {
             if io
                 .spectrum_prod
@@ -121,10 +99,6 @@ pub fn run(mut io: AnalysisIo, mut pitch_detector: PitchDetector, config: &Analy
                 io.stats.analysis_result_dropped();
             }
         }
-
-        // Onset detection (results currently not displayed but computed for
-        // future use; kept to validate the pipeline end-to-end).
-        let _onsets = onset_detector.push_samples(samples);
 
         let formant_result = formant_extractor.push_samples(samples);
         if formant_result.is_some() && io.formant_prod.try_push(formant_result).is_err() {
@@ -136,7 +110,6 @@ pub fn run(mut io: AnalysisIo, mut pitch_detector: PitchDetector, config: &Analy
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::PitchDetectorConfig;
     use ringbuf::HeapRb;
     use ringbuf::traits::Split;
 
@@ -145,7 +118,6 @@ mod tests {
         let (mut in_prod, input_cons) = HeapRb::<f32>::new(8192).split();
         // Result rings of capacity 1: later results cannot fit and must be
         // counted rather than silently discarded.
-        let (pitch_prod, _pitch_cons) = HeapRb::<PitchEstimate>::new(1).split();
         let (spectrum_prod, mut spectrum_cons) = HeapRb::<Vec<f32>>::new(1).split();
         let (formant_prod, _formant_cons) = HeapRb::<Option<FormantData>>::new(1).split();
         let stats = Arc::new(EngineStats::new());
@@ -159,21 +131,16 @@ mod tests {
         let config = AnalysisConfig {
             spectrum_fft_size: 1024,
             spectrum_smoothing: 0.0,
-            onset_fft_size: 1024,
-            onset_threshold: 0.3,
             sample_rate: 44_100,
             buffer_size: 256,
         };
-        let detector = PitchDetector::new(PitchDetectorConfig::default()).unwrap();
         run(
             AnalysisIo {
                 input_cons,
-                pitch_prod,
                 spectrum_prod,
                 formant_prod,
                 stats: Arc::clone(&stats),
             },
-            detector,
             &config,
         );
 
@@ -187,16 +154,12 @@ mod tests {
         let config = AnalysisConfig {
             spectrum_fft_size: 2048,
             spectrum_smoothing: 0.8,
-            onset_fft_size: 1024,
-            onset_threshold: 0.3,
             sample_rate: 44_100,
             buffer_size: 256,
         };
 
         assert_eq!(config.spectrum_fft_size, 2048);
         assert!((config.spectrum_smoothing - 0.8).abs() < f32::EPSILON);
-        assert_eq!(config.onset_fft_size, 1024);
-        assert!((config.onset_threshold - 0.3).abs() < f32::EPSILON);
         assert_eq!(config.sample_rate, 44_100);
         assert_eq!(config.buffer_size, 256);
     }
@@ -206,8 +169,6 @@ mod tests {
         let config = AnalysisConfig {
             spectrum_fft_size: 2048,
             spectrum_smoothing: 0.8,
-            onset_fft_size: 1024,
-            onset_threshold: 0.3,
             sample_rate: 44_100,
             buffer_size: 256,
         };
@@ -221,8 +182,6 @@ mod tests {
         let config = AnalysisConfig {
             spectrum_fft_size: 4096,
             spectrum_smoothing: 0.5,
-            onset_fft_size: 2048,
-            onset_threshold: 0.5,
             sample_rate: 48_000,
             buffer_size: 512,
         };
