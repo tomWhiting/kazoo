@@ -437,12 +437,13 @@ impl LoopModule {
         }
         let fraction = (pos - cell as f64) as f32;
         let before_cell = if cell == 0 { frames - 1 } else { cell - 1 };
-        let after_cell = if cell + 1 == frames { 0 } else { cell + 1 };
-        let next_cell = if after_cell + 1 == frames {
-            0
-        } else {
-            after_cell + 1
-        };
+        // Past the last cell the tape runs on into the tail (cells N and
+        // N + 1, always there: the tail is at least one cell and the guard
+        // follows it), what was recorded just after the end. Wrapping to
+        // the loop's start instead would lean the last cells into a
+        // punch-in's fade and click whenever the head reads at fractions.
+        let after_cell = cell + 1;
+        let next_cell = cell + 2;
         let before = self.tape[2 * before_cell + channel];
         let current = self.tape[2 * cell + channel];
         let after = self.tape[2 * after_cell + channel];
