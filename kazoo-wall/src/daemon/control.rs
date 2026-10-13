@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 use kazoo_core::host::link::connect_config_or_direct;
 use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig};
 
+mod link_diagnostics;
+
 use super::DeskMode;
 use super::audio::headless_lead_frames;
 use super::audio::{AudioMode, Device, Headless, StreamHealth};
@@ -253,7 +255,10 @@ struct Control {
     awaiting: HashMap<u64, (u64, u64)>,
     /// The audio counts, kept across rebuilds of the audio.
     counts: AudioCounts,
+    /// Whether the scheduling refusal has already been logged.
     told_link_refused: bool,
+    /// Process-wide shutdown failures already reported by this daemon.
+    reported_link_shutdowns: u64,
 }
 
 /// Run the control thread until stopped.
@@ -283,6 +288,7 @@ pub fn run(setup: Setup) {
         awaiting: HashMap::new(),
         counts: AudioCounts::new(Instant::now()),
         told_link_refused: false,
+        reported_link_shutdowns: 0,
     };
     while !control.stopping {
         match setup.inbox.recv_timeout(TICK) {
@@ -299,6 +305,13 @@ pub fn run(setup: Setup) {
     }
     control.stop.store(true, Ordering::Release);
     control.finish();
+    let mut reported_link_shutdowns = control.reported_link_shutdowns;
+    drop(control);
+    link_diagnostics::report_shutdowns(
+        &mut reported_link_shutdowns,
+        kazoo_core::ipc::link::stuck_shutdowns(),
+        |line| eprintln!("{line}"),
+    );
     if setup.accept.join().is_err() {
         eprintln!("kazoo-wall: the accept thread panicked");
     }
@@ -797,14 +810,16 @@ impl Control {
     }
 
     fn housekeeping(&mut self) {
-        if !self.told_link_refused {
-            if let Some(Err(why)) = self.wall.desk_link().and_then(HubLink::real_time) {
-                eprintln!(
-                    "kazoo-wall: the desk link runs at normal priority ({why}); on a busy machine the desk may hear it jump"
-                );
-                self.told_link_refused = true;
-            }
-        }
+        link_diagnostics::report_refusal(
+            &mut self.told_link_refused,
+            self.wall.desk_link().and_then(HubLink::real_time),
+            |line| eprintln!("{line}"),
+        );
+        link_diagnostics::report_shutdowns(
+            &mut self.reported_link_shutdowns,
+            kazoo_core::ipc::link::stuck_shutdowns(),
+            |line| eprintln!("{line}"),
+        );
         let now = Instant::now();
         self.last_tick = now;
         while let Ok(listen) = self.listen_rx.try_recv() {

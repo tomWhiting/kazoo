@@ -63,6 +63,10 @@ pub use streams::StreamConfig;
 use streams::{OLD_DESK_REFUSAL, set_stream_refusal, stream_update};
 
 mod priority;
+mod shutdown;
+#[cfg(test)]
+pub(crate) use shutdown::LINK_CONSTRUCTIONS;
+pub use shutdown::stuck_shutdowns;
 mod wire;
 
 /// How often the link looks for a hub while none is answering.
@@ -431,6 +435,8 @@ pub(crate) fn start_link(
     client: Option<HubIpcClient>,
     start: bool,
 ) -> io::Result<(HubLink, HubLinkAudio)> {
+    #[cfg(test)]
+    LINK_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
     let slots = config.resolved_streams()?;
     let stream_channels =
         std::array::from_fn(|id| slots[id].as_ref().map(|slot| u16::from(slot.channels)));
@@ -487,10 +493,8 @@ pub(crate) fn start_link(
                 .name("kazoo-hub-link".to_string())
                 .spawn(move || {
                     worker.run(&thread_running);
-                    if let Err(err) = finished_tx.send(()) {
-                        worker.set_refusal(Some(format!(
-                            "desk link completion could not be delivered: {err}"
-                        )));
+                    if finished_tx.send(()).is_err() {
+                        shutdown::record_failure();
                     }
                 })?,
         )
@@ -648,7 +652,7 @@ impl HubLink {
             if self.finished.recv_timeout(Duration::from_millis(500))
                 == Err(mpsc::RecvTimeoutError::Timeout)
             {
-                self.report_start_refusal("desk link did not stop within 500 ms".to_string());
+                shutdown::record_failure();
                 return;
             }
             if let Err(payload) = join.join() {

@@ -13,14 +13,14 @@ fn config(path: &std::path::Path) -> LinkConfig {
 }
 
 #[test]
-fn connect_with_no_desk_is_no_desk_after_three_tries() {
+fn no_desk_sleeps_only_between_tries() {
     let directory = tempfile::tempdir().unwrap();
     let mut sleeps = Vec::new();
     let result = connect_with(config(&directory.path().join("missing.sock")), |delay| {
         sleeps.push(delay);
     });
     assert!(matches!(result, Err(Error::NoDesk)));
-    assert_eq!(sleeps, vec![Duration::from_millis(250); 3]);
+    assert_eq!(sleeps, vec![Duration::from_millis(250); 2]);
 }
 
 #[test]
@@ -136,4 +136,43 @@ fn a_desk_that_refuses_the_name_leaves_the_instrument_playing_direct() {
     assert!(parts.is_ok(), "a refusal must not stop the instrument");
     drop(parts);
     drop(listener);
+}
+
+#[test]
+fn connecting_builds_one_link_not_two() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("desk.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let hub = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = FrameBuffer::new();
+        assert_eq!(
+            buffer.read_frame(&mut stream).unwrap().msg_type,
+            MSG_REGISTER
+        );
+        let reply = RegisteredMsg {
+            strips: Vec::new(),
+            strip_index: 0,
+            hub_sample_rate: 48_000,
+            hub_buffer_size: 256,
+            transport_state: 0,
+            bpm: 120.0,
+            position: 0,
+        };
+        let size = reply.encode(buffer.payload_mut());
+        buffer
+            .write_frame(MSG_REGISTERED, 0, size, &mut stream)
+            .unwrap();
+        assert_eq!(
+            buffer.read_frame(&mut stream).unwrap().msg_type,
+            MSG_SHUTDOWN
+        );
+    });
+    let before = crate::ipc::link::LINK_CONSTRUCTIONS.with(std::cell::Cell::get);
+    let (link, audio) = connect_config_or_direct(config(&socket)).unwrap();
+    let built = crate::ipc::link::LINK_CONSTRUCTIONS.with(std::cell::Cell::get) - before;
+    drop(audio);
+    drop(link);
+    hub.join().unwrap();
+    assert_eq!(built, 1);
 }

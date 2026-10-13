@@ -374,13 +374,19 @@ fn start_desk_link(
     let frames = u32::try_from(buffer_size)
         .map_err(|_| crate::Error::Config("buffer size too large for the desk link".into()))?;
     let link_config = crate::ipc::link::LinkConfig::new(name, 2, sample_rate, frames);
-    Ok(match crate::ipc::link::hub_link(link_config) {
+    Ok(start_desk_link_config(link_config))
+}
+
+fn start_desk_link_config(
+    link_config: crate::ipc::link::LinkConfig,
+) -> (handle::DeskLink, Option<crate::ipc::link::HubLinkAudio>) {
+    match crate::host::link::connect_config_or_direct(link_config) {
         Ok((link, audio)) => (handle::DeskLink::Running(link), Some(audio)),
         Err(err) => (
             handle::DeskLink::Failed(format!("could not start the desk link: {err}")),
             None,
         ),
-    })
+    }
 }
 
 /// Build the cpal input callback: push mic samples into the ring buffer as
@@ -648,5 +654,27 @@ mod tests {
         assert_eq!(config.stream.buffer_size, Some(512));
         assert!((config.pitch.min_frequency - 80.0).abs() < f32::EPSILON);
         assert!((config.pitch.max_frequency - 800.0).abs() < f32::EPSILON);
+    }
+}
+
+#[cfg(test)]
+mod desk_link_tests {
+    #[test]
+    fn engine_reports_no_desk_through_shared_setup() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = crate::ipc::link::LinkConfig {
+            address: crate::ipc::link::HubAddress::Socket(directory.path().join("missing.sock")),
+            ..crate::ipc::link::LinkConfig::new("kazoo-tui", 2, 48_000, 256)
+        };
+        let (desk, audio) = super::start_desk_link_config(config);
+        let super::handle::DeskLink::Running(link) = desk else {
+            panic!("link must run direct");
+        };
+        assert_eq!(
+            link.status().last_refusal.as_deref(),
+            Some("no desk; playing direct")
+        );
+        drop(audio);
+        drop(link);
     }
 }

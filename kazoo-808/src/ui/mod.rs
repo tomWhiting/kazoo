@@ -262,6 +262,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 /// went wrong (dropped commands, stream errors, refused requests).
 fn draw_alert_line(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::with_capacity(4);
+    spans.extend(shutdown_span(kazoo_core::ipc::link::stuck_shutdowns()));
 
     if let Some(hub) = &app.hub {
         if hub.normal_priority {
@@ -394,3 +395,26 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
 
 #[cfg(test)]
 mod priority_tests;
+
+fn shutdown_span(count: u64) -> Option<Span<'static>> {
+    (count > 0).then(|| {
+        Span::styled(
+            format!(" {count} desk link shutdown failures  "),
+            Style::new().fg(Color::Yellow),
+        )
+    })
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn the_hub_badge_shows_process_shutdown_failures() {
+        assert!(shutdown_span(0).is_none());
+        assert_eq!(
+            shutdown_span(2).unwrap().content,
+            " 2 desk link shutdown failures  "
+        );
+    }
+}
