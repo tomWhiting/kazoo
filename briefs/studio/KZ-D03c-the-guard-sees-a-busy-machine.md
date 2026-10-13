@@ -19,9 +19,10 @@ On a quiet Mac nothing changes: the bench table errs high (61% for a 57% wall), 
 ### The factor (`cost.rs`)
 
 ```rust
-/// Below this sum of bench shares, the wall up now is too small to say how
-/// busy the machine is: one cheap module's timing is mostly noise.
-pub(super) const BUSY_MIN_BENCH: f32 = 0.05;
+/// Below this sum of bench shares (about a dozen modules), the wall up now
+/// is too small to say how busy the machine is: its render time is mostly
+/// the engine's own work and timing noise.
+pub(super) const BUSY_MIN_BENCH: f32 = 0.15;
 /// The most the factor reads. A wall whose measure is eight times its bench
 /// cost is already far past the guard; a larger factor says nothing more.
 pub(super) const BUSY_MAX: f32 = 8.0;
@@ -40,7 +41,7 @@ pub(super) const BUSY_SAID: f32 = 1.25;
 ### Where it is used
 
 Every place a module the wall has not measured is costed from the bench, and nowhere else:
-- `module_share` (`:178`): the fallback for a module with no measured cost (`kind_share`) becomes `kind_share_now`. A measured cost is used as it is: it was measured on the machine as it is.
+- `module_share` (`:178`): the fallback for a module with no measured cost (`kind_share`) becomes `kind_share_now`. A measured cost of a module rendered now (heard, so `note_cost` updates it every block, `engine/room.rs:109`) is used as it is: it was measured on the machine as it is. A measured cost of a module not rendered now (in `self.unheard`: culled, so its cost was last updated whenever it was last heard, perhaps an hour ago on a quiet machine) is multiplied by `busy()` like a bench share. Reason (Waffles' reading): within one wall, every cost the guard did not measure just now must be scaled the same, or the comparison is uneven.
 - `load_projection` (`:265`): the incoming wall's `sum` uses `kind_share_now`. `current` and `rest` are unchanged.
 - KZ-T05b's `crossing_load` (born modules): `kind_share_now` (T05b's brief is amended to say so; if T05b lands first, this lane changes its one call).
 - `busy` itself uses plain `kind_share`, never `kind_share_now`.
@@ -50,6 +51,10 @@ Every place a module the wall has not measured is costed from the bench, and now
 ### What it says
 
 When `busy() >= BUSY_SAID`, each of the three sentences (`wake_refusal`, `load_room`'s refusal, `load_room_as`'s warning) gains, before its last clause, ` (the machine is busy: the wall up now renders at <k:.1>× its quiet cost, and the new modules are costed the same)`. Below `BUSY_SAID` they are unchanged, byte for byte. Reason: Tom asked that the wall always say what is happening (memory: "Tom gets frustrated when UI doesn't communicate state"), and a refusal on a busy machine that names only the wall would read as the wall being wrong.
+
+### Why there is no hysteresis
+
+`render_load` is already averaged over `LOAD_SECONDS` (1 s, `engine/mod.rs:68`), and every refusal and warning carries `k`, so a save near the line that is refused and then put up a moment later says why each time. A hold on the factor would make the guard answer for a machine that has already changed.
 
 ## Not this lane
 
@@ -63,7 +68,7 @@ In `daemon/wall/tests/cost.rs`, with D03b's harness (`guarded`, `set_render_load
 2. `a_quiet_machine_is_costed_at_the_bench`: the same wall at `set_render_load(0.25)`: `busy()` is 1.0, and the same save is put up; every sentence is byte for byte as before this lane (compare with D03b's expected strings).
 3. `a_small_wall_says_nothing_of_the_machine`: a wall whose bench shares sum below `BUSY_MIN_BENCH`, at any render load: `busy()` is 1.0.
 4. `the_factor_is_held_to_eight`: `set_render_load(9.0)` on a 0.30 wall: `busy()` is 8.0.
-5. `a_measured_module_is_not_scaled`: D03b's `a_measured_cost_is_used_before_the_bench_cost` with `busy()` at 2.0: the measured module's share is its measured cost, unscaled; an unmeasured one's is twice its bench share.
+5. `a_measured_module_is_not_scaled`: D03b's `a_measured_cost_is_used_before_the_bench_cost` with `busy()` at 2.0: a heard module's share is its measured cost, unscaled; an unmeasured one's is twice its bench share; an unheard (culled) module with a measured cost is twice that cost.
 6. `tom_hears_the_machine_is_busy`: a console load past the guard at `busy()` 2.0: put up, and the warning holds the busy clause.
 
 ## Checks
