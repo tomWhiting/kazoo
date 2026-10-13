@@ -5076,4 +5076,5 @@ fn a_small_heavy_wall_takes_additions_apart_and_says_when_it_is_full() {
     assert!(!wall.snapshot().engine.unwrap().refusing);
 }
 
+mod cost;
 mod unheard;

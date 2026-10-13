@@ -52,7 +52,7 @@ use crate::dsp::{Block, Io, Module, Sweep, Tick};
 use crate::{MAX_INPUTS, MAX_KNOBS, MAX_OUTPUTS, SUB_BLOCK};
 pub use lines::MoreLines;
 pub use master::CEILING;
-pub use room::{KnobCells, Room};
+pub use room::{CostCells, KnobCells, Room};
 pub use tables::{CableTable, MAX_CABLE_DELAY, Order, Route, processing_order};
 
 /// Module slots a new engine has room for before it first grows.
@@ -66,6 +66,13 @@ pub const INITIAL_LINES: usize = 256;
 /// growing, the machine busy for a moment) does not count as the wall
 /// being full.
 pub const LOAD_SECONDS: f32 = 1.0;
+
+/// Follow a real rise about 68% in four rounds, limiting an odd sample's influence.
+pub const COST_RISE: f32 = 0.25;
+/// Believe lower samples sooner: preemption inflates timings, never lowers them.
+pub const COST_FALL: f32 = 0.5;
+/// Cap a preempted sample at four times the held cost; real rises follow over rounds.
+pub const COST_CLAMP: f32 = 4.0;
 
 /// Commands waiting for the engine.
 const COMMAND_BACKLOG: usize = 512;
@@ -529,6 +536,7 @@ pub struct Engine {
     filled: u32,
     cables: Box<CableTable>,
     order: Box<Order>,
+    timed: usize,
     commands: HeapCons<Command>,
     /// Cable tables taken in (see [`ProbeFrame::cables`]).
     tables: u64,
@@ -602,6 +610,7 @@ pub struct EngineControl {
     /// A page's cells never move, so they read the same before and after
     /// the engine puts the page in place (NaN until it publishes to them).
     knobs: Vec<Arc<KnobCells>>,
+    costs: Vec<Arc<CostCells>>,
 }
 
 impl std::fmt::Debug for EngineControl {
@@ -646,6 +655,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         .into_iter()
         .map(|(_, cells)| cells)
         .collect();
+    let costs = room.costs().into_iter().map(|(_, cells)| cells).collect();
     // 8 kHz to a few hundred kHz: exact in f32.
     let rate = sample_rate as f32;
     let lines = lines::Lines::new(rate, INITIAL_LINES);
@@ -666,6 +676,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         filled: 0,
         cables: Box::new(CableTable::new()),
         order: Box::new(Order::default()),
+        timed: 0,
         commands: command_rx,
         tables: 0,
         retired: retired_tx,
@@ -706,6 +717,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         lines: shared.lines(),
         shared,
         knobs,
+        costs,
     };
     (engine, control)
 }
@@ -976,6 +988,7 @@ impl Engine {
             return;
         };
         let old = page.modules[at].replace(module);
+        page.costs[at].store(f32::NAN.to_bits(), Ordering::Relaxed);
         page.tags[at] = tag;
         page.kinds[at] = Some(kind);
         page.outputs[at] = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
@@ -1103,11 +1116,25 @@ impl Engine {
         }
         self.follow_desk();
         let tick = Tick::new(self.sample_rate, self.bpm, self.beat).at_frame(self.rendered);
-        for index in 0..self.order.slots().len() {
+        let len = self.order.slots().len();
+        self.timed = self.timed.checked_rem(len).unwrap_or(0);
+        for index in 0..len {
             // u32 into usize: lossless.
             let slot = self.order.slots()[index] as usize;
-            self.render_module(slot, &tick);
+            if index == self.timed {
+                let start = std::time::Instant::now();
+                self.render_module(slot, &tick);
+                let end = std::time::Instant::now();
+                let ns = u64::try_from(end.duration_since(start).as_nanos()).unwrap_or(u64::MAX);
+                // Nanoseconds need relative precision, not integer precision.
+                if let Some((page, at)) = self.room.page(slot) {
+                    page.note_cost(at, ns as f32);
+                }
+            } else {
+                self.render_module(slot, &tick);
+            }
         }
+        self.timed = (self.timed + 1).checked_rem(len).unwrap_or(0);
         let mut left = [0.0; SUB_BLOCK];
         let mut right = [0.0; SUB_BLOCK];
         for &slot in self.order.outs() {
@@ -1375,6 +1402,11 @@ impl EngineControl {
                 self.knobs.push(cells);
             }
         }
+        for (number, cells) in room.costs() {
+            if number >= self.costs.len() {
+                self.costs.push(cells);
+            }
+        }
         self.slots = room.len();
         self.push(Command::Room(Box::new(room)));
         true
@@ -1411,6 +1443,38 @@ impl EngineControl {
             .and_then(|knobs| knobs.get(knob))
             .map(|value| f32::from_bits(value.load(Ordering::Relaxed)))
             .filter(|value| !value.is_nan())
+    }
+
+    /// Last measured render nanoseconds per sub-block, or no finite measurement.
+    #[must_use]
+    pub fn cost(&self, slot: usize) -> Option<f32> {
+        self.costs
+            .get(slot / room::SLOTS_PER_PAGE)
+            .and_then(|cells| cells.get(slot % room::SLOTS_PER_PAGE))
+            .map(|cell| f32::from_bits(cell.load(Ordering::Relaxed)))
+            .filter(|ns| ns.is_finite())
+    }
+
+    /// Clear the previous occupant's cost before sending an insertion.
+    pub fn forget_cost(&self, slot: usize) {
+        if let Some(cell) = self
+            .costs
+            .get(slot / room::SLOTS_PER_PAGE)
+            .and_then(|cells| cells.get(slot % room::SLOTS_PER_PAGE))
+        {
+            cell.store(f32::NAN.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_cost(&self, slot: usize, ns: f32) {
+        if let Some(cell) = self
+            .costs
+            .get(slot / room::SLOTS_PER_PAGE)
+            .and_then(|cells| cells.get(slot % room::SLOTS_PER_PAGE))
+        {
+            cell.store(ns.to_bits(), Ordering::Relaxed);
+        }
     }
 
     /// Send a command, making room for it first: a module's slot, or a
