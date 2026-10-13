@@ -53,7 +53,7 @@ impl OutputRequest {
         self.prepare_output_with_frames(crate::DEFAULT_BUFFER_SIZE)
     }
 
-    pub(crate) fn prepare_output_with_frames(&self, frames: usize) -> Result<PreparedOutput> {
+    pub fn prepare_output_with_frames(&self, frames: usize) -> Result<PreparedOutput> {
         self.prepare_output_using(|request| prepare(request, false, frames))
     }
 
@@ -73,7 +73,7 @@ impl OutputRequest {
         self.prepare_input_with_frames(crate::DEFAULT_BUFFER_SIZE)
     }
 
-    pub(crate) fn prepare_input_with_frames(&self, frames: usize) -> Result<PreparedInput> {
+    pub fn prepare_input_with_frames(&self, frames: usize) -> Result<PreparedInput> {
         let (device, chosen, context) = prepare(self, true, frames)?;
         Ok(PreparedInput {
             device,
@@ -203,6 +203,7 @@ pub struct OpenedOutput {
     pub(super) stream: cpal::Stream,
     pub(super) info: OutputInfo,
     pub(super) health: StreamHealth,
+    pub(super) fixed: bool,
 }
 
 impl std::fmt::Debug for OpenedOutput {
@@ -215,6 +216,12 @@ impl std::fmt::Debug for OpenedOutput {
 }
 
 impl OpenedOutput {
+    /// Whether the fixed buffer configuration was accepted by the device.
+    #[must_use]
+    pub const fn fixed_buffer(&self) -> bool {
+        self.fixed
+    }
+
     #[must_use]
     pub const fn rate(&self) -> u32 {
         self.info.rate
