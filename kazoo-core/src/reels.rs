@@ -447,7 +447,11 @@ impl ReelStore {
         // A file shorter than its header says is damaged, not a disk fault:
         // hound reports running out of bytes as an I/O error.
         let data_start = source.stream_position()?;
-        let present = source.get_ref().metadata()?.len().saturating_sub(data_start);
+        let present = source
+            .get_ref()
+            .metadata()?
+            .len()
+            .saturating_sub(data_start);
         let needed = u64::from(len) * 4;
         if present < needed {
             return Err(ReelError::WrongFormat(format!(

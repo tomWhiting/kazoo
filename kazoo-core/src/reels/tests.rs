@@ -277,7 +277,6 @@ fn holders_are_checked() -> TestResult {
     Ok(())
 }
 
-
 #[test]
 fn an_existing_directory_is_made_private() -> TestResult {
     use std::os::unix::fs::PermissionsExt;
@@ -302,7 +301,9 @@ fn a_reel_cut_short_is_the_wrong_format_not_a_disk_fault() -> TestResult {
     let id = store.put(48_000, &[0.25, -0.25, 0.5, -0.5])?;
     let bytes = fs::read(store.path(&id))?;
     fs::write(store.path(&id), &bytes[..bytes.len() - 4])?;
-    let error = store.get(&id).expect_err("a cut-short reel must be refused");
+    let error = store
+        .get(&id)
+        .expect_err("a cut-short reel must be refused");
     assert!(matches!(error, ReelError::WrongFormat(_)), "{error:?}");
     Ok(())
 }
