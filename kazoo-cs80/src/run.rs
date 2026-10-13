@@ -227,7 +227,10 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers, commands: &
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     let shift = modifiers.contains(KeyModifiers::SHIFT);
 
-    if let KeyCode::Char(ch) = code {
+    // A Ctrl chord is a command (Ctrl+S, Ctrl+L), never a piano key.
+    if let KeyCode::Char(ch) = code
+        && !ctrl
+    {
         match kazoo_host::keys::piano_key(ch, app.octave) {
             Some(kazoo_host::keys::PianoKey::Note(note)) => {
                 let Some(slot) = key_slot(ch) else {
@@ -490,6 +493,37 @@ mod tests {
         );
         handle_key_release(&mut app, KeyCode::Char('\u{e9}'), &mut commands);
         assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn control_keys_reach_their_commands_not_the_piano() {
+        let (mut commands, rx) = link();
+        let mut app = App::new(44100.0);
+        // Ctrl+L loads the preset: whether it loads or not, it says so,
+        // and the `l` under it is never played as a note.
+        handle_key(
+            &mut app,
+            KeyCode::Char('l'),
+            KeyModifiers::CONTROL,
+            &mut commands,
+        );
+        assert!(app.status.is_some());
+        assert!(
+            !rx.try_iter()
+                .any(|cmd| matches!(cmd, AudioCommand::NoteOn { .. }))
+        );
+        assert!(app.held_notes.iter().all(|held| !held));
+        // No Ctrl chord plays a note or moves the octave.
+        for ch in ['a', 'x', 'z'] {
+            handle_key(
+                &mut app,
+                KeyCode::Char(ch),
+                KeyModifiers::CONTROL,
+                &mut commands,
+            );
+        }
+        assert_eq!(rx.try_iter().count(), 0);
+        assert_eq!(app.octave, kazoo_host::keys::Octave::DEFAULT);
     }
 
     #[test]
