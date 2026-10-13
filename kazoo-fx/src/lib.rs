@@ -15,7 +15,6 @@
 //! - [`space`]: reverbs, resonators and tone shaping.
 //! - [`lofi`]: worn media: VHS, cassette and reel tape, vinyl, generation
 //!   loss.
-//!
 //! - [`shape`]: input-driven synthesis, dividers and wave shaping.
 //!
 //! # Real-time contract
