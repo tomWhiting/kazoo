@@ -108,6 +108,7 @@ pub struct Terminal {
     inner: ratatui::Terminal<Backend>,
     releases: KeyReleases,
     mouse: bool,
+    mouse_refused: Option<String>,
 }
 
 impl Terminal {
@@ -121,6 +122,12 @@ impl Terminal {
     #[must_use]
     pub const fn mouse_captured(&self) -> bool {
         self.mouse
+    }
+
+    /// Why the terminal refused mouse capture, if it did.
+    #[must_use]
+    pub fn mouse_refused(&self) -> Option<&str> {
+        self.mouse_refused.as_deref()
     }
 
     /// Put the terminal back now and say whether every step worked.
@@ -190,16 +197,28 @@ pub fn enter_with(options: Options) -> Result<Terminal, Error> {
     } else {
         KeyReleases::NotAsked
     };
-    let mouse = options.mouse && execute!(stdout, EnableMouseCapture).is_ok();
+    let (mouse, mouse_refused) = if options.mouse {
+        match capture_mouse(&mut stdout) {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(error.to_string())),
+        }
+    } else {
+        (false, None)
+    };
     MOUSE.store(mouse, Ordering::Release);
     match ratatui::Terminal::new(CrosstermBackend::new(stdout)) {
         Ok(inner) => Ok(Terminal {
             inner,
             releases,
             mouse,
+            mouse_refused,
         }),
         Err(error) => Err(undone(Error::Backend(error))),
     }
+}
+
+fn capture_mouse(stdout: &mut impl io::Write) -> io::Result<()> {
+    execute!(stdout, EnableMouseCapture)
 }
 
 fn ask_for_releases(stdout: &mut Stdout) -> KeyReleases {
@@ -285,6 +304,22 @@ fn install_panic_hook() {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn mouse_capture_failure_keeps_the_reason() {
+        #[derive(Debug)]
+        struct Refused;
+        impl io::Write for Refused {
+            fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("mouse capture refused"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let error = capture_mouse(&mut Refused).expect_err("mouse capture is refused");
+        assert!(error.to_string().contains("mouse capture refused"));
+    }
 
     #[test]
     fn restore_runs_once_even_if_asked_twice() {

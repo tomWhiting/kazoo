@@ -20,7 +20,6 @@ pub mod song;
 pub mod source;
 pub mod studio_clock;
 pub mod tap;
-pub mod terminal;
 #[cfg(test)]
 mod test_support;
 pub mod ui;

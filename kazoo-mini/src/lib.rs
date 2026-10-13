@@ -14,7 +14,6 @@ mod input;
 mod params;
 mod run;
 mod synth;
-mod terminal;
 mod ui;
 
 pub use run::{Args, USAGE, cli, parse_args, run};

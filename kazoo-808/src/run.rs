@@ -4,8 +4,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyEventKind};
-use crossterm::execute;
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -58,7 +56,7 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> color_eyre::Result<()> {
 const FRAME_POLL: Duration = Duration::from_millis(16);
 
 /// Run the instrument until it quits: audio, desk link, terminal, event loop.
-/// Error reports must already be installed by the caller with `color_eyre::install`.
+/// Error reports must already be installed by the caller with `kazoo_host::reports::install`.
 pub fn run(args: Args) -> color_eyre::Result<()> {
     let Args = args;
 
@@ -90,12 +88,12 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     );
     let stream = prepared.open(move |data, _| engine.render(data))?;
 
-    let mut terminal = setup_terminal()?;
+    let mut terminal = kazoo_host::terminal::enter()?;
 
     // Run the TUI event loop.
     let mut app = App::new(sample_rate, CommandSender::new(cmd_tx));
     let result = run_event_loop(&mut terminal, &mut app, &shared, &hub, &stream);
-    let restored = restore_terminal(&mut terminal);
+    let restored = terminal.leave();
 
     // Stop audio, then leave the desk.
     drop(stream);
@@ -112,44 +110,6 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
 }
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
-
-/// Put the terminal into raw mode on the alternate screen. On failure the
-/// terminal is put back as it was.
-fn setup_terminal() -> io::Result<Tui> {
-    terminal::enable_raw_mode()?;
-    match enter_screen() {
-        Ok(terminal) => Ok(terminal),
-        Err(err) => match terminal::disable_raw_mode() {
-            Ok(()) => Err(err),
-            Err(raw_err) => Err(io::Error::other(format!(
-                "{err}; leaving raw mode also failed: {raw_err}"
-            ))),
-        },
-    }
-}
-
-fn enter_screen() -> io::Result<Tui> {
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    match Terminal::new(CrosstermBackend::new(stdout)) {
-        Ok(terminal) => Ok(terminal),
-        Err(err) => match execute!(io::stdout(), LeaveAlternateScreen) {
-            Ok(()) => Err(err),
-            Err(undo_err) => Err(io::Error::other(format!(
-                "{err}; leaving the alternate screen also failed: {undo_err}"
-            ))),
-        },
-    }
-}
-
-/// Undo the terminal setup. Every step runs even if an earlier one fails;
-/// the first failure is returned.
-fn restore_terminal(terminal: &mut Tui) -> io::Result<()> {
-    let raw = terminal::disable_raw_mode();
-    let screen = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let cursor = terminal.show_cursor();
-    raw.and(screen).and(cursor)
-}
 
 /// Main TUI event loop.
 fn run_event_loop(

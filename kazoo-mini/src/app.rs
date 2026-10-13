@@ -6,7 +6,7 @@ use kazoo_core::ipc::link::LinkStatus;
 
 use crate::command::QueueStatus;
 use crate::synth::MiniVoice;
-use crate::terminal::KeyReleases;
+use kazoo_host::terminal::KeyReleases;
 
 /// A one-line message for the user (preset saved, load failed, ...).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,7 +185,7 @@ impl App {
         }
         match &self.key_releases {
             KeyReleases::Reported => {}
-            KeyReleases::Unsupported => out.push(
+            KeyReleases::NotAsked | KeyReleases::Unsupported => out.push(
                 "terminal can't report key release: notes latch, Backspace = all notes off"
                     .to_string(),
             ),

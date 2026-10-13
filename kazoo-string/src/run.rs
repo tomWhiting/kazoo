@@ -1,16 +1,12 @@
 use crate::{Args, ui};
+use kazoo_host::terminal::KeyReleases;
 
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use crossterm::execute;
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -75,14 +71,17 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     );
     let stream = prepared.open(move |data, _| engine.render(data))?;
 
-    let (mut terminal, keyboard) = setup_terminal()?;
-    let release_events = matches!(keyboard, KeyReleases::Reported);
+    let mut terminal = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
+        mouse: false,
+        key_release_events: true,
+    })?;
+    let keyboard = terminal.key_releases().clone();
 
     let mut app = App::new(&keyboard, has_phrase, hub.status(), Arc::clone(&stats));
     let result = run_event_loop(&mut terminal, &mut app, &hub, &cmd_tx, &display_rx, &stream);
 
     // Always restore the terminal, even if the loop failed.
-    let restored = restore_terminal(&mut terminal, release_events);
+    let restored = terminal.leave();
     drop(stream);
     drop(hub);
 
@@ -96,83 +95,6 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
             Err(error)
         }
     }
-}
-
-/// Whether the terminal reports key releases, or why it does not.
-#[derive(Debug)]
-enum KeyReleases {
-    Reported,
-    /// The terminal has no keyboard enhancement protocol.
-    Unsupported,
-    /// Support could not be detected or enabled; the reason is shown to the user.
-    Failed(String),
-}
-
-/// Enter raw mode and the alternate screen and ask for key-release events.
-/// On failure, whatever was already changed is undone before returning.
-fn setup_terminal() -> color_eyre::Result<(Terminal<CrosstermBackend<io::Stdout>>, KeyReleases)> {
-    terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
-        return Err(undo_setup(error, false, false));
-    }
-    let keyboard = match terminal::supports_keyboard_enhancement() {
-        Ok(true) => match execute!(
-            stdout,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
-        ) {
-            Ok(()) => KeyReleases::Reported,
-            Err(error) => KeyReleases::Failed(format!("could not enable key releases: {error}")),
-        },
-        Ok(false) => KeyReleases::Unsupported,
-        Err(error) => KeyReleases::Failed(format!("could not query the keyboard: {error}")),
-    };
-    let pushed = matches!(keyboard, KeyReleases::Reported);
-    match Terminal::new(CrosstermBackend::new(stdout)) {
-        Ok(terminal) => Ok((terminal, keyboard)),
-        Err(error) => Err(undo_setup(error, true, pushed)),
-    }
-}
-
-/// Undo a partial [`setup_terminal`], attaching any cleanup failure to `error`.
-fn undo_setup(error: io::Error, alternate: bool, pushed: bool) -> color_eyre::Report {
-    let mut stdout = io::stdout();
-    let pop = if pushed {
-        execute!(stdout, PopKeyboardEnhancementFlags)
-    } else {
-        Ok(())
-    };
-    let leave = if alternate {
-        execute!(stdout, LeaveAlternateScreen)
-    } else {
-        Ok(())
-    };
-    let raw = terminal::disable_raw_mode();
-    let cleanup = pop.and(leave).and(raw);
-    let report = color_eyre::Report::new(error).wrap_err("could not set up the terminal");
-    match cleanup {
-        Ok(()) => report,
-        Err(cleanup_error) => report.wrap_err(format!(
-            "and could not restore it afterwards: {cleanup_error}"
-        )),
-    }
-}
-
-/// Undo every terminal change. Every step is attempted even if an earlier one
-/// fails; the first failure is returned.
-fn restore_terminal(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    release_events: bool,
-) -> io::Result<()> {
-    let pop = if release_events {
-        execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)
-    } else {
-        Ok(())
-    };
-    let raw = terminal::disable_raw_mode();
-    let leave = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let cursor = terminal.show_cursor();
-    pop.and(raw).and(leave).and(cursor)
 }
 
 /// Rows on the panel: every patch control, then the master volume.
@@ -256,7 +178,7 @@ impl App {
             KeyReleases::Reported => {
                 "Keyboard reports key release: notes hold while you hold the key.".to_owned()
             }
-            KeyReleases::Unsupported => format!(
+            KeyReleases::NotAsked | KeyReleases::Unsupported => format!(
                 "Terminal can't report key release: notes release automatically.{delay_note}"
             ),
             KeyReleases::Failed(why) => {
