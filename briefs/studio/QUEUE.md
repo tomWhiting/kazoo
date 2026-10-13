@@ -118,3 +118,9 @@ START KZ-V02 base=96051a2 branch=lane/kz-V02 df=10GB at 20:25
 START KZ-V07a base=96051a2 branch=lane/kz-V07a df=9GB at 20:26
 START KZ-F01 base=96051a2 branch=lane/kz-F01 df=6GB at 20:27
 START KZ-T01 base=acf8b92 branch=lane/kz-T01 df=1GB at 20:29
+
+## Merged 13 Oct, about 22:1x
+- KZ-D03b (review READY at cd291c4; the review fixed four: undos that replug skipped the guard, a zero timing pinned a cost at 0, the kind table taken at load ~100 was 3-6x high and refused every save, its own clippy). Merge check on main b8714ee: fmt 0, clippy 0, doc 0, ast-grep 0; nextest first run 887 passed and 1 failed (kazoo-core `ipc::link::tests::wake::a_queued_block_wakes_the_link_thread_at_once`, p50 219 us against 200 us, load 72-98; not touched by the lane), rerun --no-fail-fast 3892/3892 and that test alone passed. Logs: target/kz-logs/full-D03b-2139.log, full-D03b-nff-2147.log.
+- Defect to fix (rule 8: a test that fails under load is a defect, never hidden): the wake test's 200 us p50 bound fails at load ~90. Needs a brief: measure the wake against a same-run baseline, or assert on the wake mechanism, not wall time.
+- To re-measure on a quiet Mac: D03b's culled/1000 +20.8% (160.3 to 193.6 us); cause not found (clock reads are ~33 ns).
+- Follow-up brief written: KZ-D03c the guard sees a busy machine (Waffles read it; taken).
