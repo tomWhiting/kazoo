@@ -318,29 +318,122 @@ fn a_new_cable_on_a_line_starts_clean() {
 }
 
 #[test]
+fn a_playing_cable_joins_a_line_before_gliding_to_its_first_delay() {
+    let tone = |frame| sine(1_000.0, RATE)(frame).mul_add(0.25, 0.25);
+    for delay in [43, MAX_CABLE_DELAY] {
+        let mut line = Line::joining(RATE, 7).unwrap();
+        let source = std::array::from_fn(tone);
+        let mut first = [0.0; SUB_BLOCK];
+        line.carry(&route(delay, false), &source, &mut first);
+        assert_eq!(first.map(f32::to_bits), source.map(f32::to_bits));
+        assert_eq!(line.tap.at.to_bits(), 0.0_f64.to_bits());
+        let mut out = first.to_vec();
+        out.extend(run(
+            &mut line,
+            60_000,
+            |frame| tone(frame + SUB_BLOCK),
+            |_| route(delay, false),
+        ));
+        let own: Vec<f32> = (0..out.len()).map(tone).collect();
+        assert!(largest_step(&out) <= largest_step(&own).mul_add(1.02, 1e-5));
+        assert!(out.iter().all(|sample| *sample > 0.0));
+        for (frame, sample) in out.iter().enumerate().skip(59_000) {
+            assert!((sample - tone(frame - usize::from(delay))).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn a_joining_line_keeps_direct_history_until_its_route_arrives() {
+    let mut line = Line::joining(RATE, 7).unwrap();
+    let direct = Route {
+        tag: 0,
+        ..route(0, false)
+    };
+    let source = [0.25; SUB_BLOCK];
+    let mut out = [0.0; SUB_BLOCK];
+    for _ in 0..100 {
+        line.carry(&direct, &source, &mut out);
+        assert_eq!(out.map(f32::to_bits), source.map(f32::to_bits));
+    }
+    line.carry(&route(MAX_CABLE_DELAY, false), &source, &mut out);
+    assert_eq!(out.map(f32::to_bits), source.map(f32::to_bits));
+    assert!(line.tap.gliding);
+    assert!(line.tap.at > 0.0 && line.tap.at < f64::from(MAX_CABLE_DELAY));
+}
+
+#[test]
+fn a_joining_gate_keeps_its_first_pulse_whole() {
+    let gate = |frame| if frame % 1_000 < 300 { 1.0 } else { 0.0 };
+    let mut line = Line::joining(RATE, 7).unwrap();
+    let out = run(&mut line, 96_000, gate, |_| route(700, true));
+    assert!(
+        out[..SUB_BLOCK]
+            .iter()
+            .all(|sample| sample.to_bits() == 1.0_f32.to_bits())
+    );
+    assert!(only_zeroes_and_ones(&out));
+    assert!(high_runs(&out).iter().all(|length| *length == 300));
+    for (frame, sample) in out.iter().enumerate().skip(95_000) {
+        assert_eq!(sample.to_bits(), gate(frame - 700).to_bits());
+    }
+}
+
+#[test]
+fn a_joining_line_given_to_another_cable_starts_silent() {
+    let mut line = Line::joining(RATE, 7).unwrap();
+    run(
+        &mut line,
+        4_096,
+        |_| 0.75,
+        |_| Route {
+            tag: 0,
+            ..route(0, false)
+        },
+    );
+    let newcomer = Route {
+        tag: 8,
+        ..route(500, false)
+    };
+    let out = run(&mut line, 400, |_| 0.25, |_| newcomer);
+    assert!(out.iter().all(|sample| *sample == 0.0));
+}
+
+#[test]
 fn nothing_but_numbers_come_out() {
-    let mut lines = Line::new(RATE).unwrap();
     let wild = |i: usize| match i % 4 {
         0 => 3e38,
         1 => -3e38,
         2 => f32::NAN,
         _ => f32::INFINITY,
     };
-    let out = run(&mut lines, 96_000, wild, |frame| {
-        route(if frame < 1_000 { 0 } else { 777 }, false)
-    });
-    assert!(out.iter().all(|s| s.is_finite()));
+    for mut line in [Line::new(RATE).unwrap(), Line::joining(RATE, 7).unwrap()] {
+        let out = run(&mut line, 96_000, wild, |frame| {
+            route(if frame < 1_000 { 0 } else { 777 }, false)
+        });
+        assert!(out.iter().all(|s| s.is_finite()));
+    }
 }
 
 #[test]
 fn carrying_never_allocates() {
-    let mut lines = Line::new(RATE).unwrap();
+    let mut lines = [Line::new(RATE).unwrap(), Line::joining(RATE, 7).unwrap()];
     let source = [0.5; SUB_BLOCK];
     let mut out = [0.0; SUB_BLOCK];
     let before = assert_no_alloc::violation_count();
     assert_no_alloc::assert_no_alloc(|| {
-        for step in 0..1_000_u16 {
-            lines.carry(&route(step % 200, step % 3 == 0), &source, &mut out);
+        for line in &mut lines {
+            line.carry(
+                &Route {
+                    tag: 0,
+                    ..route(0, false)
+                },
+                &source,
+                &mut out,
+            );
+            for step in 0..1_000_u16 {
+                line.carry(&route(step % 200, step % 3 == 0), &source, &mut out);
+            }
         }
     });
     assert_eq!(assert_no_alloc::violation_count(), before);

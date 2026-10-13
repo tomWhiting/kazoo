@@ -1456,10 +1456,10 @@ impl EngineControl {
         }
     }
 
-    /// Send a command, making room for its destination slot first. With no memory for the room, the
-    /// command goes anyway and the engine refuses it (counting it in
-    /// [`Shared::ignored`]). If the ring is full it waits in order on this
-    /// side and goes with the next [`Self::pump`].
+    /// Send a command, making room for its destination slot first. With no
+    /// memory for the room, the command goes anyway and the engine refuses
+    /// it (counting it in [`Shared::ignored`]). If the ring is full it waits
+    /// in order on this side and goes with the next [`Self::pump`].
     pub fn send(&mut self, command: Command) {
         let room = match &command {
             Command::Insert { slot, .. } | Command::Line { slot, .. } => {

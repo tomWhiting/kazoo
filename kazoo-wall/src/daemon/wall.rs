@@ -596,8 +596,12 @@ pub struct Wall {
     heard_units: usize,
     /// The tag of every cable that has needed delay.
     lined: BTreeMap<u32, u32>,
-    /// Destinations of sent cables, retained until their removal is mirrored.
+    /// Destinations recorded as lines are placed, until they are retired.
+    line_places: BTreeMap<u32, (usize, usize)>,
+    /// Destinations of cables in the last table sent.
     sent_cables: BTreeMap<u32, (usize, usize)>,
+    #[cfg(test)]
+    line_allocator: fn(f32, u32, bool) -> Option<crate::engine::Line>,
     /// The last tag given to a delay line.
     line_tags: u32,
     /// One prepared effect of each kind on the wall, and the rate it was
@@ -1322,7 +1326,10 @@ impl Wall {
             unheard: Vec::new(),
             heard_units: 0,
             lined: BTreeMap::new(),
+            line_places: BTreeMap::new(),
             sent_cables: BTreeMap::new(),
+            #[cfg(test)]
+            line_allocator: delay_lines::make_line,
             line_tags: 0,
             probes: HashMap::new(),
             settled: HashMap::new(),
@@ -1504,6 +1511,7 @@ impl Wall {
         self.restart_load_watch();
         self.rack = Rack::default();
         self.lined.clear();
+        self.line_places.clear();
         self.sent_cables.clear();
         // What the old engine's modules measured is gone with them.
         self.readings.clear();
@@ -1549,6 +1557,7 @@ impl Wall {
         self.speech.replace_wall();
         self.loops.replace_wall();
         self.lined.clear();
+        self.line_places.clear();
         self.sent_cables.clear();
         self.settled.clear();
         self.settling.clear();
@@ -1659,6 +1668,13 @@ impl Wall {
     }
 
     fn send_tables(&mut self) {
+        let heard_before: BTreeSet<usize> = self
+            .rack
+            .index
+            .iter()
+            .filter(|(id, _)| !self.unheard.contains(id))
+            .map(|(_, slot)| *slot)
+            .collect();
         let mut edges = Vec::with_capacity(self.patch.cables().len());
         for cable in self.patch.cables() {
             if let (Some(from), Some(to)) = (
@@ -1693,7 +1709,6 @@ impl Wall {
             latencies.get(id).copied().unwrap_or(0)
         });
         self.timing.unsteady = self.unsteady();
-        self.place_lines();
         // The table room_to_grow made sure of, or one made now for the rack
         // as it stands (a re-timing, or a change that added nothing).
         let slots = self.rack.slots.len();
@@ -1715,6 +1730,7 @@ impl Wall {
             .iter()
             .map(|module| (module.id.as_str(), module.kind))
             .collect();
+        let mut routed = BTreeMap::new();
         for cable in self.patch.cables() {
             let (Some(from), Some(to)) = (
                 self.rack.slot_of(&cable.from_module),
@@ -1733,7 +1749,6 @@ impl Wall {
                 continue;
             };
             let tag = self.lined.get(&cable.id).copied().unwrap_or(0);
-            self.sent_cables.insert(cable.id, (to, jack));
             let route = Route {
                 delay: self.timing.delays.get(&cable.id).copied().unwrap_or(0),
                 gate: carries_gate(&kinds, cable),
@@ -1744,10 +1759,15 @@ impl Wall {
                     "kazoo-wall: cable {} could not go in the engine's table and is not played",
                     cable.id
                 );
+            } else {
+                routed.insert(cable.id, (to, jack));
             }
         }
+        self.place_lines(&routed, &heard_before);
+        self.apply_line_delays(&mut table, &routed);
         self.engine.send(Command::Cables(Box::new(table)));
         self.engine.send(Command::Order(Box::new(order)));
+        self.sent_cables = routed;
         self.tables_sent = self.tables_sent.wrapping_add(1);
         self.note_rewiring();
     }

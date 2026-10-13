@@ -9,8 +9,12 @@
 //! is applied.
 //!
 //! A jack whose cable has needed delay keeps a line, written every time its
-//! signal passes, so its history survives changes back to zero delay. When a cable's delay changes (an effect
-//! added or taken away upstream), the signal never breaks:
+//! signal passes, so its history survives changes back to zero delay. A
+//! cable already playing direct through that jack joins its first line by
+//! reading one sub-block at zero delay to fill its history, then gliding
+//! to the new delay. A new cable, or one whose destination has just become
+//! heard again, starts silent for its delay. For a cable already playing,
+//! the signal never breaks when its delay changes:
 //!
 //! - Audio and control voltages are read from a point that glides from the
 //!   old delay to the new one, like a tape head, over at least
@@ -104,6 +108,9 @@ pub struct Line {
     tap: Tap,
     shortest: u32,
     longest: u32,
+    joining: bool,
+    /// The line command may arrive before the joining cable's new table.
+    awaiting_route: bool,
 }
 
 impl Line {
@@ -120,7 +127,22 @@ impl Line {
             tap: Tap::EMPTY,
             shortest,
             longest,
+            joining: false,
+            awaiting_route: false,
         })
+    }
+
+    /// A line for `tag`'s cable already playing direct through this jack.
+    /// Its first sub-block reads at zero delay, filling history before it
+    /// moves to the route's delay. Allocates on the control side, returning
+    /// `None` when there is no memory for the history.
+    #[must_use]
+    pub fn joining(sample_rate: f32, tag: u32) -> Option<Self> {
+        let mut line = Self::new(sample_rate)?;
+        line.tap.tag = tag;
+        line.joining = true;
+        line.awaiting_route = true;
+        Some(line)
     }
 
     /// How many frames a glide of `moved` frames takes, between `shortest`
@@ -131,8 +153,9 @@ impl Line {
             .min(f64::from(longest))
     }
 
-    /// Pass one sub-block of `source` through `route`'s line into `out`,
-    /// scaled by the cable's amount. Real-time safe.
+    /// Carry one sub-block of `source` into `out` at the route's amount.
+    /// A new owner starts empty; a joining cable keeps its first block
+    /// at zero delay before moving toward the route's delay. Real-time safe.
     pub fn carry(&mut self, route: &Route, source: &Block, out: &mut Block) {
         let mut tap = self.tap;
         let (shortest, longest) = (self.shortest, self.longest);
@@ -140,10 +163,12 @@ impl Line {
             *out = [0.0; SUB_BLOCK];
             return;
         };
-        if tap.tag != route.tag {
+        if tap.tag != route.tag && !(self.awaiting_route && route.tag == 0) {
             // A new cable: nothing came through it before now, and it
             // starts at its own delay with nothing to glide from.
             samples.fill(0.0);
+            self.joining = false;
+            self.awaiting_route = false;
             tap = Tap {
                 tag: route.tag,
                 at: f64::from(route.delay),
@@ -151,11 +176,22 @@ impl Line {
                 ..Tap::EMPTY
             };
         }
+        if tap.tag == route.tag {
+            self.awaiting_route = false;
+        }
+        // First keep the direct reading and fill history, so a glide can
+        // read behind it without reaching an unwritten sample.
+        let route = if self.joining {
+            self.joining = false;
+            Route { delay: 0, ..*route }
+        } else {
+            *route
+        };
         for (frame, sample) in source.iter().enumerate() {
             samples[(tap.write + frame) & (LINE_LEN - 1)] = *sample;
         }
         if route.gate {
-            gate_block(samples, &mut tap, route, out);
+            gate_block(samples, &mut tap, &route, out);
         } else {
             if route.delay != tap.target {
                 // Glide from wherever the reading point is now.

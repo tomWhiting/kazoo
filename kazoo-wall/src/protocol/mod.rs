@@ -1350,7 +1350,9 @@ pub struct Timings {
     #[serde(default)]
     pub cables: BTreeMap<String, u32>,
     /// Cables that needed more delay than a cable holds (about 21 ms at
-    /// 48 kHz): their paths are not fully in step.
+    /// 48 kHz), or whose line could not be allocated: their paths are not
+    /// fully in step. A cable without a line plays with no delay and is
+    /// absent from `cables`.
     #[serde(default)]
     pub uncompensated: Vec<u32>,
     /// Modules whose latency follows a knob with a cable in it: the cable
