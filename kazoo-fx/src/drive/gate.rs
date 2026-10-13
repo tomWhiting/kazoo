@@ -104,7 +104,8 @@ struct Settings {
 struct Gate {
     knobs: Knobs<7>,
     retune: Retune<7>,
-    highpass: [OnePole; 2],
+    /// The detector's key, per channel: two one-pole high-passes in series.
+    highpass: [[OnePole; 2]; 2],
     rate: f32,
     detector_release: f64,
     envelope: f64,
@@ -121,7 +122,7 @@ impl Gate {
         let mut gate = Self {
             knobs,
             retune,
-            highpass: [OnePole::default(); 2],
+            highpass: [[OnePole::default(); 2]; 2],
             rate: DEFAULT_RATE,
             detector_release: 0.0,
             envelope: 0.0,
@@ -145,8 +146,8 @@ impl Gate {
             hold_samples: (f64::from(values[HOLD]) * samples_per_ms).round() as usize,
             range,
         };
-        for highpass in &mut self.highpass {
-            highpass.set_cutoff(values[KEY], self.rate);
+        for pole in self.highpass.iter_mut().flatten() {
+            pole.set_cutoff(values[KEY], self.rate);
         }
     }
 
@@ -155,10 +156,8 @@ impl Gate {
         if self.retune.due(values) {
             self.tune(values);
         }
-        let detected = self.highpass[0]
-            .highpass(left)
-            .abs()
-            .max(self.highpass[1].highpass(right).abs());
+        let [key_left, key_right] = &mut self.highpass;
+        let detected = keyed(key_left, left).abs().max(keyed(key_right, right).abs());
         self.envelope = f64::from(detected).max(self.envelope * self.detector_release);
         if self.envelope < 1e-20 {
             self.envelope = 0.0;
@@ -188,6 +187,13 @@ impl Gate {
     }
 }
 
+/// `sample` through one channel's key: two one-pole high-passes in series,
+/// 12 dB an octave, so a key at 120 Hz takes 16.6 dB off 50 Hz mains hum.
+fn keyed(poles: &mut [OnePole; 2], sample: f32) -> f32 {
+    let [first, second] = poles;
+    second.highpass(first.highpass(sample))
+}
+
 impl Effect for Gate {
     fn prepare(&mut self, sample_rate: f32) {
         self.rate = sane_rate(sample_rate);
@@ -201,8 +207,8 @@ impl Effect for Gate {
         let values = self.knobs.values();
         self.retune.settle(values);
         self.tune(values);
-        for highpass in &mut self.highpass {
-            highpass.reset();
+        for pole in self.highpass.iter_mut().flatten() {
+            pole.reset();
         }
         self.envelope = 0.0;
         self.open = false;
@@ -273,14 +279,18 @@ mod tests {
         let mut input = sine(1_000.0, 0.1, 0.2);
         input.extend(std::iter::repeat_n(1e-6, 24_000));
         let output = render_mono(&mut *gate, &input);
-        let mut hp = OnePole::default();
-        hp.set_cutoff(20.0, RATE);
+        let mut key = [OnePole::default(); 2];
+        for pole in &mut key {
+            pole.set_cutoff(20.0, RATE);
+        }
         let mut env = 0.0f64;
         let decay = (-1.0 / (0.01 * f64::from(RATE))).exp();
         let closing = 10f64.powf(-61.0 / 20.0);
         let mut last_active = 0;
         for (i, x) in input.iter().enumerate() {
-            env = f64::from(hp.highpass(*x).abs()).max(env * decay);
+            let once = key[0].highpass(*x);
+            let keyed = key[1].highpass(once);
+            env = f64::from(keyed.abs()).max(env * decay);
             if env >= closing {
                 last_active = i;
             }
