@@ -379,6 +379,36 @@ fn a_damaged_or_doubled_birth_is_found_afresh_and_said() {
 }
 
 #[test]
+fn a_found_mark_belongs_to_the_module_it_names() {
+    // A found mark names its module; on another module it is that module's
+    // mark, and the module it names is found to it: births stay unique.
+    let mut file = Patch::empty(120.0).to_file();
+    let mut forged = record("lfo2", "lfo");
+    forged.birth = Some("found 0 0000000000000000 lfo1".into());
+    file.modules = vec![forged.clone(), record("lfo1", "lfo")];
+    let (patch, notes) = Patch::load(&file).unwrap();
+    for id in ["lfo1", "lfo2"] {
+        assert_eq!(
+            patch.find(id).unwrap().record().birth,
+            Some(format!("found 0 0000000000000000 {id}"))
+        );
+    }
+    assert_eq!(
+        notes,
+        vec!["module 'lfo2' had the birth mark of lfo1; it is found afresh".to_string()]
+    );
+    let mut restored = Patch::empty(120.0);
+    restored.restore(&forged, &[], None).unwrap();
+    restored.restore(&record("lfo1", "lfo"), &[], None).unwrap();
+    for id in ["lfo1", "lfo2"] {
+        assert_eq!(
+            restored.find(id).unwrap().record().birth,
+            Some(format!("found 0 0000000000000000 {id}"))
+        );
+    }
+}
+
+#[test]
 fn old_records_and_lines_read_without_a_birth() {
     let json = r#"{"id":"lfo1","kind":"lfo","knobs":{}}"#;
     let module: ModuleRecord = serde_json::from_str(json).unwrap();
