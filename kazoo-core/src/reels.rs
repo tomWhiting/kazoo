@@ -10,7 +10,7 @@ mod tests;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -419,20 +419,34 @@ impl ReelStore {
                 ReelError::Io(error)
             }
         })?;
-        let mut reader = hound::WavReader::new(BufReader::new(file)).map_err(wav_error)?;
-        let spec = reader.spec();
+        let mut source = BufReader::new(file);
+        let (spec, frames, len) = {
+            let header = hound::WavReader::new(&mut source).map_err(wav_error)?;
+            (header.spec(), u64::from(header.duration()), header.len())
+        };
         if spec.channels != 2
             || spec.bits_per_sample != 32
             || spec.sample_format != hound::SampleFormat::Float
         {
             return Err(ReelError::WrongFormat(format!("found {spec:?}")));
         }
-        let frames = u64::from(reader.duration());
         if frames > MAX_REEL_FRAMES {
             return Err(ReelError::TooLong { frames });
         }
         check_rate(spec.sample_rate)?;
-        let count = usize::try_from(reader.len()).map_err(|_| ReelError::NoMemory)?;
+        // A file shorter than its header says is damaged, not a disk fault:
+        // hound reports running out of bytes as an I/O error.
+        let data_start = source.stream_position()?;
+        let present = source.get_ref().metadata()?.len().saturating_sub(data_start);
+        let needed = u64::from(len) * 4;
+        if present < needed {
+            return Err(ReelError::WrongFormat(format!(
+                "the file holds {present} of its {needed} sample bytes"
+            )));
+        }
+        source.rewind()?;
+        let mut reader = hound::WavReader::new(&mut source).map_err(wav_error)?;
+        let count = usize::try_from(len).map_err(|_| ReelError::NoMemory)?;
         let mut samples = Vec::new();
         samples
             .try_reserve_exact(count)
