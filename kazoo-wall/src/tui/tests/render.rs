@@ -445,7 +445,10 @@ fn the_header_says_how_the_tree_is() {
             error: None,
         }),
     );
-    assert!(screen.contains(" TREE BEHIND from 812 · 1024 waiting "), "{screen}");
+    assert!(
+        screen.contains(" TREE BEHIND from 812 · 1024 waiting "),
+        "{screen}"
+    );
     // A stopped tree says why, in its first 40 characters.
     let screen = shown(
         &mut app,

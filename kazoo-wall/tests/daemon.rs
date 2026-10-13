@@ -1358,7 +1358,14 @@ fn the_daemon_commits_to_a_tree_planted_beside_its_state_and_plants_none() {
     daemon.stop();
     daemon.wait().unwrap();
 
-    let log = git(&tree, &["log", "--reverse", "--format=%an|%s|%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Gap,valueonly,separator=%x2C)"]);
+    let log = git(
+        &tree,
+        &[
+            "log",
+            "--reverse",
+            "--format=%an|%s|%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Gap,valueonly,separator=%x2C)",
+        ],
+    );
     let lines: Vec<_> = log.lines().collect();
     assert_eq!(
         lines,

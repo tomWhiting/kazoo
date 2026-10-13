@@ -2271,7 +2271,9 @@ impl Wall {
         (change, moved)
     }
 
-    /// Attach only to an already planted bare repository.
+    /// Attach the tree in `dir` when it is a planted bare repository; the
+    /// daemon never plants one. A failure is kept for the snapshot and
+    /// said in the daemon's log; the wall plays on.
     pub fn find_tree(&mut self, dir: &std::path::Path) {
         match crate::tree::git::is_bare(dir) {
             Ok(true) => match crate::tree::thread::TreeHandle::attach(dir) {
@@ -2286,6 +2288,8 @@ impl Wall {
         }
     }
 
+    /// Take `handle` as the wall's tree: the mirror becomes the wall's
+    /// files and the start commit is offered.
     pub fn attach_tree(&mut self, handle: crate::tree::thread::TreeHandle) {
         self.tree = Some(handle);
         self.whole_tree(crate::tree::thread::WholeKind::Start);
@@ -2318,16 +2322,45 @@ impl Wall {
         }
     }
 
+    /// The wall did not turn into files: nothing can be sent until it does,
+    /// so the tree is behind from this change. Said once while it lasts
+    /// (every tick tries again).
     fn tree_failed(&mut self, err: &crate::tree::TreeError) {
+        let error = err.to_string();
         if let Some(tree) = self.tree.as_mut() {
-            tree.error = Some(err.to_string());
+            if tree.error.as_deref() != Some(error.as_str()) {
+                eprintln!(
+                    "kazoo-wall: the tree could not encode change {}: {error}",
+                    self.made
+                );
+            }
+            tree.error = Some(error);
             tree.resync = true;
             tree.behind_from.get_or_insert(self.made);
         }
-        eprintln!(
-            "kazoo-wall: the tree could not encode change {}: {err}",
-            self.made
-        );
+    }
+
+    /// Stopping: send what the tree still lacks (trying again while its
+    /// queue is full) and finish it, waiting at most
+    /// [`crate::tree::thread::FINISH_WAIT`] in all.
+    fn finish_tree(&mut self) {
+        let deadline = Instant::now() + crate::tree::thread::FINISH_WAIT;
+        loop {
+            self.tick_tree();
+            let Some(tree) = self.tree.as_mut() else {
+                return;
+            };
+            if !tree.resync || Instant::now() >= deadline {
+                break;
+            }
+            tree.wait_news(Duration::from_millis(20));
+        }
+        if let Some(tree) = self.tree.as_mut() {
+            match tree.finish_by(deadline) {
+                Ok(()) => eprintln!("kazoo-wall: the tree finished"),
+                Err(err) => eprintln!("kazoo-wall: the tree did not finish: {err}"),
+            }
+        }
     }
 
     fn feed_tree(&mut self, change: &Change) {
@@ -4162,13 +4195,7 @@ impl Wall {
     /// on from what was written and nothing told is ever numbered again.
     pub fn close(&mut self, now: Instant) -> Vec<Event> {
         self.save(now);
-        self.tick_tree();
-        if let Some(tree) = self.tree.as_mut() {
-            match tree.finish() {
-                Ok(()) => eprintln!("kazoo-wall: the tree finished"),
-                Err(err) => eprintln!("kazoo-wall: the tree did not finish: {err}"),
-            }
-        }
+        self.finish_tree();
         if !self.owed.is_empty() {
             eprintln!(
                 "kazoo-wall: stopping with {} of the wall's own changes the change log could not \

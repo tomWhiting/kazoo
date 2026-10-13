@@ -11,26 +11,46 @@ use super::git::{self, Commit, Importer, Planted};
 use super::{Files, TreeError};
 use crate::protocol::{Change, ClockStamp, TreeHealth};
 
-/// Four simultaneous eight-seat bursts, or six busiest logged minutes.
+/// Items the queue holds. The log's busiest second held 30 changes and its
+/// busiest minute 165 (26 Sep to 13 Oct); the flood guard lets eight seats
+/// make 240 at once. 1,024 is four times that, and over six of the busiest
+/// minutes.
 pub const TREE_QUEUE: usize = 1_024;
-/// Eight maximum-size walls, or about sixteen thousand ordinary changes.
+/// Bytes the queue holds: eight of the largest walls (`MAX_WALL_FILE`,
+/// 8 MiB) or about sixteen thousand ordinary changes of about 4 KB, so
+/// memory stays bounded whatever happens.
 pub const TREE_QUEUE_BYTES: usize = 64 * 1024 * 1024;
-/// A durable checkpoint costs about 17 ms; one a second stays below 2%.
+/// A durable checkpoint costs about 17 ms (measured), so at most one a
+/// second costs under 2% of the thread, and a crash loses at most a
+/// second of commits (never of the log; the next start covers them).
 pub const CHECKPOINT_AFTER: Duration = Duration::from_secs(1);
-/// Bound unacknowledged commits even when a flood keeps the queue busy.
+/// Checkpoint after this many commits even while a flood keeps the queue
+/// busy, so a crash never loses more than this many.
 pub const CHECKPOINT_COMMITS: u64 = 256;
-/// Geometric repacking after 64 packs keeps their count logarithmic.
+/// Each checkpoint writes one pack; a geometric repack after every 64
+/// keeps their number logarithmic without rewriting everything.
 pub const REPACK_EVERY: u64 = 64;
-/// Retry a failed git without repeatedly spawning it during an outage.
+/// How long a stopped tree waits before starting git again: often enough
+/// to recover soon, seldom enough not to spawn git over and over while a
+/// disk is full.
 pub const RETRY_AFTER: Duration = Duration::from_secs(5);
+/// The longest a stopping daemon waits for the tree to take its last items
+/// and finish: the only time the control thread waits on the tree.
+pub const FINISH_WAIT: Duration = Duration::from_secs(5);
+/// How long the control thread waits for news between tries while it
+/// finishes, so a full queue has time to drain.
+const FINISH_POLL: Duration = Duration::from_millis(20);
 
+/// What the control thread sends the tree thread.
 #[derive(Debug)]
 pub enum TreeItem {
+    /// A made change: what differs from the last item.
     Change {
         change: Box<Change>,
         files: Vec<(String, Option<Vec<u8>>)>,
         generation: u64,
     },
+    /// The whole wall, after change `seq`.
     Whole {
         kind: WholeKind,
         seq: u64,
@@ -38,21 +58,31 @@ pub enum TreeItem {
         files: Files,
         generation: u64,
     },
+    /// Finish: checkpoint, `done`, and say so.
     Finish,
 }
 
+/// Why a whole item is sent.
 #[derive(Debug, Clone, Copy)]
 pub enum WholeKind {
+    /// The daemon's start, on a fresh clock line.
     Start,
+    /// After items the tree did not take one by one.
     Gap,
 }
 
+/// What the tree thread tells the control thread.
 #[derive(Debug)]
 pub enum News {
+    /// The tree durably holds every change through `through`.
     Committed { through: u64 },
+    /// A gap commit holds changes `first` to `last` as one.
     Gap { first: u64, last: u64 },
+    /// Git failed: the tree is stopped; it holds changes through `through`.
     Down { error: String, through: Option<u64> },
+    /// Git works again: send the whole wall.
     NeedWhole,
+    /// The answer to [`TreeItem::Finish`].
     Finished(Result<(), String>),
 }
 
@@ -104,6 +134,8 @@ impl TreeItem {
     }
 }
 
+/// The control thread's end of the tree: it offers items, never blocking,
+/// and hears news.
 #[derive(Debug)]
 pub struct TreeHandle {
     sender: SyncSender<TreeItem>,
@@ -119,6 +151,13 @@ pub struct TreeHandle {
 }
 
 impl TreeHandle {
+    /// Check git, read where the tree in `dir` stands, and start the tree
+    /// thread `kazoo-wall-tree`.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` when git is missing or too old, the tree does not
+    /// read, or the thread cannot start.
     pub fn attach(dir: &Path) -> Result<Self, TreeError> {
         Self::spawn(dir, None)
     }
@@ -172,6 +211,9 @@ impl TreeHandle {
         })
     }
 
+    /// Queue `item` without ever blocking. When the queue is full (by
+    /// count or bytes) or the thread has gone, the item is dropped, the
+    /// tree is marked behind from its change, and a whole item must follow.
     pub fn offer(&mut self, item: TreeItem) -> bool {
         let seq = item.seq();
         let bytes = match item.bytes() {
@@ -215,17 +257,19 @@ impl TreeHandle {
         }
     }
 
+    /// The tree's health for the snapshot.
     #[must_use]
     pub fn health(&self) -> TreeHealth {
         TreeHealth {
             planted: true,
             through: self.through,
-            waiting: self.waiting.load(Ordering::Acquire) as u32,
+            waiting: u32::try_from(self.waiting.load(Ordering::Acquire)).unwrap_or(u32::MAX),
             behind_from: self.behind_from,
             error: self.error.clone(),
         }
     }
 
+    /// Hear all the news waiting, never blocking.
     pub fn poll(&mut self) {
         while let Ok(news) = self.news.try_recv() {
             self.hear(news);
@@ -273,20 +317,69 @@ impl TreeHandle {
         }
     }
 
-    pub fn finish(&mut self) -> Result<(), String> {
-        if !self.offer(TreeItem::Finish) {
-            return Err("the tree could not accept Finish".into());
+    /// Hear the next news, waiting at most `wait`; whether any came.
+    pub fn wait_news(&mut self, wait: Duration) -> bool {
+        match self.news.recv_timeout(wait) {
+            Ok(news) => {
+                self.hear(news);
+                true
+            }
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => false,
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
+    }
+
+    /// Finish the tree by [`FINISH_WAIT`] from now (see
+    /// [`Self::finish_by`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::finish_by`].
+    pub fn finish(&mut self) -> Result<(), String> {
+        self.finish_by(Instant::now() + FINISH_WAIT)
+    }
+
+    /// Send `Finish` (trying again while the queue is full), wait for the
+    /// thread to checkpoint and close git, and join it; all by `deadline`.
+    ///
+    /// # Errors
+    ///
+    /// The tree's own failure, or that it did not finish by `deadline`.
+    pub fn finish_by(&mut self, deadline: Instant) -> Result<(), String> {
+        let bytes = TreeItem::Finish.bytes().map_err(|err| err.to_string())?;
+        loop {
+            self.bytes.fetch_add(bytes, Ordering::AcqRel);
+            self.waiting.fetch_add(1, Ordering::AcqRel);
+            match self.sender.try_send(TreeItem::Finish) {
+                Ok(()) => break,
+                Err(err) => {
+                    self.bytes.fetch_sub(bytes, Ordering::AcqRel);
+                    self.waiting.fetch_sub(1, Ordering::AcqRel);
+                    if matches!(err, TrySendError::Disconnected(_)) {
+                        return Err("the tree thread has stopped".into());
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "the tree's queue was still full after {} s",
+                    FINISH_WAIT.as_secs()
+                ));
+            }
+            self.wait_news(FINISH_POLL);
+        }
         loop {
             match self
                 .news
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             {
                 Ok(News::Finished(result)) => {
-                    if let Some(join) = self.join.take().filter(JoinHandle::is_finished) {
+                    // The thread returns as soon as it has said so.
+                    if let Some(join) = self.join.take() {
                         join.join()
                             .map_err(|_| "the tree thread panicked".to_string())?;
+                    }
+                    if let Err(error) = &result {
+                        self.error = Some(error.clone());
                     }
                     return result;
                 }
@@ -303,8 +396,9 @@ fn tell(sender: &mpsc::Sender<News>, news: News) {
     }
 }
 
+/// The tree thread's state while git works.
 struct Writer {
-    importer: Importer,
+    importer: Option<Importer>,
     accepted: u64,
     through: Option<u64>,
     last: Option<(u64, u64)>,
@@ -318,7 +412,7 @@ struct Writer {
 impl Writer {
     fn new(dir: &Path, planted: &Planted) -> Result<Self, TreeError> {
         Ok(Self {
-            importer: Importer::new(dir, planted)?,
+            importer: Some(Importer::new(dir, planted)?),
             accepted: 0,
             through: planted.through,
             last: None,
@@ -330,12 +424,18 @@ impl Writer {
         })
     }
 
+    fn importer(&mut self) -> Result<&mut Importer, TreeError> {
+        self.importer
+            .as_mut()
+            .ok_or_else(|| TreeError::Git("no fast-import is running".into()))
+    }
+
     fn checkpoint(&mut self, dir: &Path, news: &mpsc::Sender<News>) -> Result<(), TreeError> {
         if self.pending == 0 {
             return Ok(());
         }
         if let Some((mark, seq)) = self.last {
-            self.importer.checkpoint(mark)?;
+            self.importer()?.checkpoint(mark)?;
             self.through = Some(seq);
             self.pending = 0;
             self.checkpointed = Instant::now();
@@ -353,7 +453,7 @@ impl Writer {
 
     fn finish(mut self, dir: &Path, news: &mpsc::Sender<News>) -> Result<(), String> {
         self.checkpoint(dir, news)
-            .and_then(|()| self.importer.finish())
+            .and_then(|()| self.importer.take().map_or(Ok(()), git::Importer::finish))
             .map_err(|err| err.to_string())
     }
 
@@ -418,7 +518,7 @@ impl Writer {
             }
             TreeItem::Finish => return Ok(()),
         };
-        let mark = self.importer.commit(&commit)?;
+        let mark = self.importer()?.commit(&commit)?;
         self.last = Some((mark, seq));
         self.pending += 1;
         Ok(())
@@ -477,21 +577,20 @@ fn worker(
             return;
         }
         if let Some(w) = writer.as_mut() {
-            let result = match outcome {
-                Ok(item) => w.item(item, dir, news),
-                Err(RecvTimeoutError::Timeout) => Ok(()),
-                Err(RecvTimeoutError::Disconnected) => unreachable!(),
-            }
-            .and_then(|()| {
-                if w.pending >= CHECKPOINT_COMMITS
-                    || (waiting.load(Ordering::Acquire) == 0
-                        && w.checkpointed.elapsed() >= CHECKPOINT_AFTER)
-                {
-                    w.checkpoint(dir, news)
-                } else {
-                    Ok(())
-                }
-            });
+            // `outcome` is an item or a timeout here: a closed queue
+            // finished above.
+            let result = outcome
+                .map_or(Ok(()), |item| w.item(item, dir, news))
+                .and_then(|()| {
+                    if w.pending >= CHECKPOINT_COMMITS
+                        || (waiting.load(Ordering::Acquire) == 0
+                            && w.checkpointed.elapsed() >= CHECKPOINT_AFTER)
+                    {
+                        w.checkpoint(dir, news)
+                    } else {
+                        Ok(())
+                    }
+                });
             through = w.through;
             if let Err(err) = result {
                 tell(
@@ -535,7 +634,13 @@ fn worker(
 /// Changed paths and their optional replacement bytes.
 pub type FileDiff = Vec<(String, Option<Vec<u8>>)>;
 
-/// Compute the exact delta after a change, including rack and group edits.
+/// The wall's files (T01's `to_files`) compared with `mirror`: each new or
+/// changed file with its bytes, each gone one with `None`; then `mirror`
+/// becomes the new files. Rack moves and groups ride in `wall.toml`.
+///
+/// # Errors
+///
+/// When the wall does not turn into files.
 pub fn files_diff(
     file: &crate::patch::PatchFile,
     mirror: &mut Files,

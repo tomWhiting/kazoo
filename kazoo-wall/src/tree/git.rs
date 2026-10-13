@@ -355,7 +355,8 @@ pub struct Importer {
 }
 
 impl Importer {
-    /// Start `fast-import` on `planted.branch`, never with `--force`.
+    /// Start `fast-import` on `planted.branch`. It is never forced, so git
+    /// itself refuses any update that would move the branch backwards.
     ///
     /// # Errors
     ///

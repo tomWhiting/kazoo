@@ -1901,14 +1901,22 @@ mod tests;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TreeHealth {
+    /// Whether a planted tree is attached (`~/.kazoo/tree`, planted by
+    /// KZ-T03 or `tree::git::plant`; the daemon never plants one).
     pub planted: bool,
+    /// The last change the tree durably holds.
     pub through: Option<u64>,
+    /// Items queued for the tree thread.
     pub waiting: u32,
+    /// The first change not committed one by one (the queue was full); a
+    /// gap commit will hold it.
     pub behind_from: Option<u64>,
+    /// Why the tree is stopped, while it is.
     pub error: Option<String>,
 }
 
 impl TreeHealth {
+    /// Planted, not stopped and not behind.
     #[must_use]
     pub const fn is_ok(&self) -> bool {
         self.planted && self.error.is_none() && self.behind_from.is_none()

@@ -503,8 +503,19 @@ fn no_tree_no_writes() {
 
 /// Git commands that move a ref backwards, or rewrite or prune history.
 const FORBIDDEN_GIT_WORDS: &[&str] = &[
-    "--force", "-f", "update-ref", "reset", "branch", "push", "tag", "gc", "--prune", "prune",
-    "filter-branch", "replace", "fetch",
+    "--force",
+    "-f",
+    "update-ref",
+    "reset",
+    "branch",
+    "push",
+    "tag",
+    "gc",
+    "--prune",
+    "prune",
+    "filter-branch",
+    "replace",
+    "fetch",
 ];
 
 /// Every string literal inside each `.arg(` or `.args(` call in `source`.
@@ -528,13 +539,7 @@ fn arg_literals(source: &str) -> Vec<String> {
                 }
             }
             let inside = &source[at + call.len()..end];
-            found.extend(
-                inside
-                    .split('"')
-                    .skip(1)
-                    .step_by(2)
-                    .map(str::to_string),
-            );
+            found.extend(inside.split('"').skip(1).step_by(2).map(str::to_string));
         }
     }
     found
