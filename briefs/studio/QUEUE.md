@@ -124,3 +124,6 @@ START KZ-T01 base=acf8b92 branch=lane/kz-T01 df=1GB at 20:29
 - Defect to fix (rule 8: a test that fails under load is a defect, never hidden): the wake test's 200 us p50 bound fails at load ~90. Needs a brief: measure the wake against a same-run baseline, or assert on the wake mechanism, not wall time.
 - To re-measure on a quiet Mac: D03b's culled/1000 +20.8% (160.3 to 193.6 us); cause not found (clock reads are ~33 ns).
 - Follow-up brief written: KZ-D03c the guard sees a busy machine (Waffles read it; taken).
+- KZ-A03b (review READY at 0229a01; the review fixed: one stuck link counted twice, hub_link left public as a second setup path, a footer test widened). Merge check on main efef1b6: fmt 0, clippy 0, nextest 3905/3905, doc 0, ast-grep 0 (target/kz-logs/full-A03b-2227.log).
+- Follow-up to brief (A03b review finding 4): `stuck_shutdowns` can never be above 0 while an instrument runs, so the 808's badge never shows; instruments should print the stuck and undelivered counts on exit, and the badge go.
+- Held: KZ-A08 (its Justfile gate is a per-repository gate script, against Tom's rule 9; to ask Tom).
