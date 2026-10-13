@@ -14,6 +14,12 @@ struct Oracle {
 }
 
 impl Oracle {
+    /// An oracle reading the truth of the step it has just taken: the
+    /// scorer's own grid, one step late by the scorer's count.
+    fn on_grid(take: &Take) -> Self {
+        Self::new(take, SCORE_STEP)
+    }
+
     fn new(take: &Take, delay: usize) -> Self {
         Self {
             truth: take.truth.clone(),
@@ -30,11 +36,13 @@ impl TrackerUnderTest for Oracle {
     fn name(&self) -> &'static str {
         "oracle"
     }
+    /// Reads the truth `delay` samples before the newest sample it has taken,
+    /// so the scorer, which counts every sample taken, sees `delay` exactly.
     fn push(&mut self, block: &[f32]) {
         self.cursor += block.len();
         self.latest = self
             .cursor
-            .checked_sub(block.len() + self.delay)
+            .checked_sub(self.delay)
             .and_then(|sample| self.truth.get(sample / SCORE_STEP).copied().flatten())
             .map(|hz| hz * self.multiplier)
             .or(self.unvoiced);
@@ -66,6 +74,10 @@ fn an_oracle_scores_perfectly() {
         assert!((delayed.onset_ms_median - 10.0).abs() <= 32.0 / 48.0);
         if name == "steps" {
             assert!((delayed.step_ms_median - 10.0).abs() <= 32.0 / 48.0);
+            // Steps hold still between events, so a late oracle is exact
+            // once each settle zone has passed.
+            assert!(delayed.cents_median.abs() < 0.01, "{delayed:?}");
+            assert!(delayed.cents_p95.abs() < 0.01, "{delayed:?}");
         }
         for value in [
             delayed.octave_pct,
@@ -75,8 +87,9 @@ fn an_oracle_scores_perfectly() {
         ] {
             assert!(value.abs() < f32::EPSILON);
         }
-        // Continuous truth changes during a delay, so zero cents requires zero delay.
-        let exact = score(&mut Oracle::new(&take, 0), &take);
+        // Every figure is unshifted, so a delayed oracle reads a moving
+        // pitch late; only an oracle on the scorer's grid can read 0 cents.
+        let exact = score(&mut Oracle::on_grid(&take), &take);
         assert!(exact.cents_median.abs() < 0.01);
         assert!(exact.cents_p95.abs() < 0.01);
         for value in [
@@ -98,8 +111,11 @@ fn an_oracle_scores_perfectly() {
         onsets: vec![0],
         exact: true,
     };
-    let result = score(&mut Oracle::new(&short_step, 0), &short_step);
-    assert!(result.step_ms_median.abs() < f32::EPSILON, "{result:?}");
+    let result = score(&mut Oracle::on_grid(&short_step), &short_step);
+    assert!(
+        (result.step_ms_median - 32.0 / 48.0).abs() < 1e-4,
+        "{result:?}"
+    );
     let constant = Take {
         name: "constant reference".into(),
         rate: 44_100,
@@ -121,7 +137,7 @@ fn an_oracle_scores_perfectly() {
 fn an_octave_high_oracle_is_all_octave_errors() {
     let mut take = take_named("sine_ladder", 48_000);
     cut(&mut take, 72_000);
-    let mut oracle = Oracle::new(&take, 0);
+    let mut oracle = Oracle::on_grid(&take);
     oracle.multiplier = 2.0;
     let result = score(&mut oracle, &take);
     assert!((result.octave_pct - 100.0).abs() < f32::EPSILON);
@@ -132,7 +148,7 @@ fn an_octave_high_oracle_is_all_octave_errors() {
 fn a_silent_tracker_misses_everything() {
     let mut take = take_named("sine_ladder", 48_000);
     cut(&mut take, 72_000);
-    let mut oracle = Oracle::new(&take, 0);
+    let mut oracle = Oracle::on_grid(&take);
     oracle.truth.fill(None);
     let result = score(&mut oracle, &take);
     assert!((result.missed_pct - 100.0).abs() < f32::EPSILON);
@@ -146,10 +162,10 @@ fn a_silent_tracker_misses_everything() {
 fn a_tracker_that_never_stops_is_false_voiced() {
     let mut take = take_named("noise_bursts", 48_000);
     cut(&mut take, 72_000);
-    let mut oracle = Oracle::new(&take, 0);
+    let mut oracle = Oracle::on_grid(&take);
     oracle.unvoiced = Some(220.0);
     assert!(score(&mut oracle, &take).false_pct > 90.0);
-    let mut release = Oracle::new(&take, 0);
+    let mut release = Oracle::on_grid(&take);
     for i in 1..take.truth.len() {
         if take.truth[i].is_none() && take.truth[i - 1].is_some() {
             for pitch in release.truth.iter_mut().skip(i).take(45) {
@@ -400,7 +416,7 @@ fn a_recorded_lag_is_set_by_the_notes_not_the_release() {
             .is_some_and(|lag| (lag - 960.0 / 44.1).abs() <= 32.0 / 44.1),
         "{result:?}"
     );
-    let mut silent = Oracle::new(&take, 0);
+    let mut silent = Oracle::on_grid(&take);
     silent.truth.fill(None);
     let result = score(&mut silent, &take);
     // A tracker that never agrees has no lag, not a perfect one.

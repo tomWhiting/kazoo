@@ -48,26 +48,45 @@ fn within(estimate: Option<f32>, truth: Option<f32>, tolerance: f32) -> bool {
     }
 }
 
+/// The sample an event happens at. Steps are read at their centres, so an
+/// event lies between the previous centre and this one; the step's first
+/// sample stands for it unless the take knows the onset to the sample.
+fn event_sample(event: Event, onsets: &[usize]) -> usize {
+    let start = event.index * SCORE_STEP;
+    let known = onsets.iter().copied().find(|&onset| {
+        onset + SCORE_STEP / 2 > start && onset <= start + SCORE_STEP / 2
+    });
+    match known {
+        Some(onset) if event.start => onset,
+        _ => start,
+    }
+}
+
+/// Time from the event to the reading at which the tracker first lands and
+/// stays. A reading is taken after the tracker has had all of its step, so
+/// the figure counts every sample the tracker took and is never shorter than
+/// the tracker's real latency (it may be up to one step longer).
 fn latency(
     event: Event,
     end: usize,
-    truth: &[Option<f32>],
+    take: &Take,
     estimates: &[Option<f32>],
-    rate: u32,
 ) -> Option<f32> {
-    let hold = period_steps(rate, event.hz, 0.0);
+    let hold = period_steps(take.rate, event.hz, 0.0);
     let hold = if event.start {
         hold.max(3)
     } else {
         hold.max(1)
     };
     let tolerance = if event.start { 50.0 } else { 20.0 };
+    let from = event_sample(event, &take.onsets);
     let mut run = 0;
     for index in event.index..end {
-        if within(estimates[index], truth[index], tolerance) {
+        if within(estimates[index], take.truth[index], tolerance) {
             run += 1;
             if run >= hold {
-                return Some(milliseconds(index + 1 - hold - event.index, rate));
+                let landed = (index + 2 - hold) * SCORE_STEP;
+                return Some(milliseconds(landed.saturating_sub(from), take.rate));
             }
         } else {
             run = 0;
@@ -76,8 +95,8 @@ fn latency(
     None
 }
 
-fn milliseconds(steps: usize, rate: u32) -> f32 {
-    (count_f64(steps) * count_f64(SCORE_STEP) * 1000.0 / f64::from(rate)) as f32
+fn milliseconds(samples: usize, rate: u32) -> f32 {
+    (count_f64(samples) * 1000.0 / f64::from(rate)) as f32
 }
 
 fn percent(numerator: usize, denominator: usize) -> f32 {
@@ -104,23 +123,39 @@ fn maximum(values: &[f32]) -> f32 {
     values.last().copied().unwrap_or(f32::NAN)
 }
 
+/// The lag (ms) at which the tracker, shifted earlier, best agrees with the
+/// reference over the reference's voiced steps: most steps within 50 cents,
+/// less every step it misses or gets wrong. A step whose shifted reading
+/// falls past the take's end cannot be judged and is left out, so a note
+/// running to the end does not pull the lag either way; ties go to the
+/// smaller lag, so a tracker that holds its last note through a release is
+/// aligned by where its notes start. With no agreement at any lag, the lag is
+/// NaN. The lag is read on the same terms as `latency`: a shift of `lag` steps
+/// means the reading after `lag + 1` steps of samples.
 fn aligned_lag(truth: &[Option<f32>], estimates: &[Option<f32>], rate: u32) -> f32 {
     let max_lag = (f64::from(rate) * 0.15 / count_f64(SCORE_STEP)).floor() as usize;
-    let mut best_count = 0;
-    let mut best_lag = 0;
+    let mut best: Option<(i64, usize)> = None;
     for lag in 0..=max_lag.min(estimates.len()) {
-        let matches = truth
-            .iter()
-            .zip(estimates.iter().skip(lag))
-            .filter(|(truth, estimate)| within(**estimate, **truth, 50.0))
-            .count();
-        // Preserve a delayed onset when a sustained note runs to the take's end.
-        if matches > 0 && matches >= best_count {
-            best_count = matches;
-            best_lag = lag;
+        let mut matches = 0_i64;
+        let mut misses = 0_i64;
+        for (index, reference) in truth.iter().enumerate() {
+            if valid(*reference).is_none() {
+                continue;
+            }
+            match estimates.get(index + lag) {
+                Some(estimate) if within(*estimate, *reference, 50.0) => matches += 1,
+                Some(_) => misses += 1,
+                None => {}
+            }
+        }
+        let agreement = matches - misses;
+        if matches > 0 && best.is_none_or(|(most, _)| agreement > most) {
+            best = Some((agreement, lag));
         }
     }
-    milliseconds(best_lag, rate)
+    best.map_or(f32::NAN, |(_, lag)| {
+        milliseconds((lag + 1) * SCORE_STEP, rate)
+    })
 }
 
 pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
@@ -142,7 +177,7 @@ pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
         let note_end = (event.index..next_event)
             .find(|&index| valid(truth[index]).is_none())
             .unwrap_or(next_event);
-        match latency(event, note_end, truth, estimates, take.rate) {
+        match latency(event, note_end, take, estimates) {
             Some(delay) if event.start => onset_latencies.push(delay),
             Some(delay) => step_latencies.push(delay),
             None if event.start => onsets_missed += 1,
