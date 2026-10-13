@@ -204,7 +204,7 @@ impl fmt::Display for ReelError {
             ),
             Self::PinUnreadable { holder } => write!(
                 f,
-                "reel pin list for {holder} is unreadable; nothing was swept"
+                "reel pin list for {holder} is unreadable or cut short, so no reel may be deleted until it is whole"
             ),
             Self::Io(error) => write!(f, "reel storage failed: {error}"),
         }
