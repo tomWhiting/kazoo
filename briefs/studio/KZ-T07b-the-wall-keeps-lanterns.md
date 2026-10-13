@@ -4,6 +4,8 @@ Line numbers are from main at `820ccc5` and may have moved; find each item by wh
 
 Read by Cassio, 13 Oct evening, line by line. Changes: the lane opens only after T07a and T04b have landed; `ErrorCode::ALL` grows by one from whatever the base holds (19 at T04b's count; another lane may have added one since). The window is computed from the seconds `change::utc` is given (`now − WORDS_BEFORE`, `now + WORDS_AFTER`), never by parsing `at` back. Accepted otherwise as written.
 
+Revised by Cassio, 13 Oct 21:19, on Waffles' reading against Tom's 8 Aug lantern definition (MEMORY-AND-LANTERNS.md §3, §3.1): a lantern dims by the changes since it was lit, and visits and added notes no longer brighten it; `ask` opens with the changes since as the past self's briefing; a watcher may visit, answered and not counted.
+
 Second of PLAN.md's T07 split in four (T07a the tree thread, **T07b** the wall, T07c the seats' tools, T07d the console).
 
 Time: about 35 minutes of a builder's work. One mechanism: four requests the wall hands to its tree thread, as T04b's are. Crates: kazoo-wall, and one arm each in kazoo-mcp and the console. Depends on T07a, which must have landed: `NoteEntry`, `Way`, `Words`, `NoteView`, `NotesResult`, `Visited`, `TreeItem::{Write, Notes}`, `Target`, `Scope`, `Answered::{Wrote, Visited, Notes}`, `HereError::NoLantern`, `NOTE_TEXT_MAX`, `WORDS_BEFORE`, `WORDS_AFTER`; and T04b, which must have landed: `Waiting`, `Asked`, `tree_answers`, `TREE_TICKETS`, the tree bucket, `answer_later`.
@@ -20,7 +22,7 @@ A lantern or a note is told to every seat (`Event::Lit`); a visit is not. None o
 
 ## Who may write (decided, with reasons)
 
-- **Lanterns, notes and visits: any seat but a watcher, and the console.** They write to the tree, so watchers are refused them as they are refused a mark (`refusal`, `daemon/control.rs:997`). Reason: Norn's design makes lanterns communal ("they belong to the landscape, not the walker", `DESIGN.md`), and Tom's wish is that anyone can go back and ask a moment how it felt.
+- **Lanterns and notes: any seat but a watcher, and the console.** They write to the tree, so watchers are refused them as they are refused a mark (`refusal`, `daemon/control.rs:997`). **Visits: anyone, watchers too.** A seat's or the console's visit is counted (a line written, from the three-a-minute bucket below); a watcher's is answered and never written (`count: false` in T07a's `Write` job), through the listing's bucket, since it is then a read. Reason: a visit is how anyone reads a moment and gets its way back, and Tom's rule for the wall is that what one seat can do, Waffles' can (13 Oct evening, Cassio's decision on Waffles' reading). Reason: Norn's design makes lanterns communal ("they belong to the landscape, not the walker", `DESIGN.md`), and Tom's wish is that anyone can go back and ask a moment how it felt.
 - **Three a minute per seat, for the three together**, in a bucket of their own with the mark allowance's numbers (`SAVE_BURST`, `SAVE_REFILL_PER_SECOND`, `daemon/wall.rs:167`, `:172`, as T04b's marks use). The console is never held. Reason: a lantern is a deliberate act (Tom, 8 Aug: "declared at moments of completion or success or … learnings"); three a minute is more than any deliberate act needs and stops a seat in a loop from filling a moment's note (1 MiB, T07a). A visit writes a line too, so it shares the bucket.
 - **The listing: anyone, watchers too**, through T04b's tree-listing bucket (10 in a burst, one a second). Reason: it is a read, and it walks notes on the thread that writes the commits.
 
@@ -45,7 +47,8 @@ Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lantern: Option<String>,
 },
-/// Visit a lantern (a `Visited`): the visit is counted. Any seat but a watcher.
+/// Visit a lantern (a `Visited`): counted for any seat but a watcher and for
+/// the console; a watcher's visit is answered and not counted.
 Visit { lantern: String },
 /// The notes and lanterns (a `NotesResult`): near `near` (default where the
 /// wall is), on `branch`, or `every` one. A read: anyone may ask.
@@ -122,7 +125,7 @@ In `daemon/wall/lanterns/tests.rs` (declared from `lanterns.rs`), with a real `W
 5. `words_and_ways_are_checked_plainly`: empty, 2,001 characters, a tab, only spaces; a `way` whose session is not a uuid, whose transcript is relative; a `way` from the console: each its sentence, nothing sent to the tree.
 6. `an_unknown_lantern_is_no_lantern_and_gives_the_allowance_back`.
 7. `the_listing_takes_one_scope`: near, branch, every; two at once: `bad_request`.
-8. `watchers_list_and_may_not_write`: through `refusal` in `control.rs`.
+8. `watchers_list_and_visit_and_may_not_write`: through `refusal` in `control.rs`: a watcher's lantern and note are refused; its visit is answered, `visits` is unchanged, and it draws on the listing's bucket, not the three a minute.
 9. `a_wall_with_no_tree_or_a_stopped_tree_says_so`.
 10. `lanterns_change_nothing_in_the_music`: before and after a lantern, a note, a visit and a listing: the patch's fingerprint, `revision()`, the undo list's length and `log.jsonl`'s bytes are equal.
 
@@ -165,4 +168,4 @@ If this code were used in a hospital, the worst credible failure is ___, and it 
 
 ## Note: fire steps do not dim lanterns (Cassio, 13 Oct evening)
 
-A lantern dims by the changes the wall has made since anyone touched it (KZ-T07a). A fire (KZ-T06) logs one `What::Fired` per step, and replaying the past is not new work. So the `revision` the wall passes to the tree thread's lantern jobs (`Write`, `Notes`, `Shape`) is the **work revision**: the wall's revision less the number of `What::Fired` changes in the log. `Wall` keeps `fired_steps: u64`, counted from the log at start (in the same pass that reads it) and raised by one for each `Fired` applied. Each lantern's own `change` field is written in the same work revision, so `since` stays consistent. Whichever of KZ-T06b and KZ-T07b lands second adds this, with a test: a lantern, then a fire of 50 steps, leaves `since` at 0.
+A lantern dims by the changes the wall has made since it was lit (KZ-T07a). A fire (KZ-T06) logs one `What::Fired` per step, and replaying the past is not new work. So the `revision` the wall passes to the tree thread's lantern jobs (`Write`, `Notes`, `Shape`) is the **work revision**: the wall's revision less the number of `What::Fired` changes in the log. `Wall` keeps `fired_steps: u64`, counted from the log at start (in the same pass that reads it) and raised by one for each `Fired` applied. Each lantern's own `change` field is written in the same work revision, so `since` stays consistent. Whichever of KZ-T06b and KZ-T07b lands second adds this, with a test: a lantern, then a fire of 50 steps, leaves `since` at 0.

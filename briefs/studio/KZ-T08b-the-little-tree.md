@@ -4,6 +4,8 @@ Line numbers are from main at `820ccc5` and may have moved; find each item by wh
 
 Read by Cassio, 13 Oct evening, line by line. Checked test 2's depths (bud from trunk commit 10 starts at 11; a bud from its commit 4, at depth 15, starts at 16). Changes: the lane opens only after T08a, T07d and L12 have landed; the by-hand check is Cassio's and Tom's. Tom wants the tree badly and L12 sits at the end of the loop chain (L03, L04, L05), so: when T08a and T07d have landed and L12 has not, Cassio splits L12's `Dots` move, its plain-glyph switch and an empty `benches/tape_view.rs` into a small lane of their own, which both L12 and this lane then build on. Accepted otherwise as written.
 
+Revised by Cassio, 13 Oct 21:19, on Waffles' reading against Tom's 8 Aug lantern definition (MEMORY-AND-LANTERNS.md §3, §3.1): a lantern dims by the changes since it was lit, and visits and added notes no longer brighten it; `ask` opens with the changes since as the past self's briefing; a watcher may visit, answered and not counted.
+
 Second of PLAN.md's T08 split in two (T08a the shape, **T08b** the view).
 
 Time: about 40 minutes of a builder's work. One mechanism: a console view drawn from T08a's shape. Crates: kazoo-wall (`tui/` and one bench file). Depends on T08a, which must have landed; T07d, which must have landed ( lanterns open from here, and both edit `tui/app/mod.rs`, `tui/app/keys.rs`, `tui/draw/mod.rs`, `tui/draw/overlay.rs`); KZ-L12, which must have landed (or the small lane split from it, above) ( `Dots` in `tui/rack/dots.rs`, the plain-glyph switch `G` / `Prefs.plain_glyphs` / `KAZOO_PLAIN_GLYPHS`, the way a view is entered and left, and `benches/tape_view.rs`).
@@ -23,7 +25,7 @@ So the little tree is reached on purpose (`Y`), is never where the console opens
 | `◉` | the wall: the moment it is at |
 | `◆` | a mark |
 | `▪` | a save's mark |
-| `✦` `✧` `·` | a lantern: lit, dim, faint (it dims as the wall makes changes with no one visiting it) |
+| `✦` `✧` `·` | a lantern: lit, dim, faint (it dims as the wall makes changes after it was lit; visits do not brighten it) |
 | a name at a tip | the branch: `trunk`, or a bud's moment and the time it grew |
 
 Why 24 and 56: Tom's walls run from the 14-module seed to the 85-module evening wall (KZ-T01's fixture). Two thresholds split that range into three readable widths: a sparse wall, a working wall, a full one. One, two and three braille dots are the widths a braille cell can show side by side.

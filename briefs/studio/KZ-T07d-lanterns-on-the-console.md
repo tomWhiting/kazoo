@@ -4,6 +4,8 @@ Line numbers are from main at `820ccc5` and may have moved; find each item by wh
 
 Read by Cassio, 13 Oct evening, line by line. Changes: the lane opens only after T07b and T04d have landed; the by-hand check is Cassio's and Tom's after landing. If the terminal cannot tell Alt-Enter from Enter (crossterm reports the modifier on Ghostty and Terminal.app; say under FOUND if a test shows otherwise), `Ctrl-J` also puts a line break in the words. Accepted otherwise as written.
 
+Revised by Cassio, 13 Oct 21:19, on Waffles' reading against Tom's 8 Aug lantern definition (MEMORY-AND-LANTERNS.md §3, §3.1): a lantern dims by the changes since it was lit, and visits and added notes no longer brighten it; `ask` opens with the changes since as the past self's briefing; a watcher may visit, answered and not counted.
+
 Last of PLAN.md's T07 split in four (T07a the tree thread, T07b the wall, T07c the seats' tools, **T07d** the console). The little tree drawn as a tree is T08b, which puts the same lanterns on its branches. Runs beside T07c: they share no file.
 
 Time: about 35 minutes of a builder's work. One mechanism: the console's lantern key and the lantern rows of T04d's tree list. Crates: kazoo-wall (`tui/` only). Depends on T07b and T04d, which must have landed.
@@ -71,7 +73,7 @@ T04d's `TreeList` gains `lanterns: Option<NotesResult>`, `fetching_lanterns: boo
   <glyph> lantern <id> (<glow>) on #<n> <short> · lit by <seat><" at the console"> <date> <time>
   “<words>”                                            (every line of them)
   added: <seat> <when>: “<words>”                       (each added note, oldest first)
-  visited <n> times · since it was lit the wall has made <since_lit> changes; since anyone was last here, <since_last>
+  visited <n> times · since it was lit the wall has made <since_lit> changes
   Tom's spoken words around it (<from>–<to>), kept by Dot:
     <lines> lines in <path>, seq <first>–<last>          (each `Heard`; or "none are kept now")
   the way back (kazoo never starts it; run it in a terminal):
@@ -80,7 +82,7 @@ T04d's `TreeList` gains `lanterns: Option<NotesResult>`, `fetching_lanterns: boo
     the whole conversation (it also knows what came after):
       <open>
   ```
-  `<ask>` and `<open>` from T07a's `commands(way, resume_at, None)`, so `<ask>` ends in `'<your question>'` for Tom to replace. The way-back block is instead `the way back is gone: Claude Code no longer keeps <transcript>` (`Portal::Gone`) or `lit at the console: there is no conversation to go back to; your words are its way` (`Portal::Words`). The keys line: `j k scroll · n add a note · Esc back`. Commands are drawn whole, wrapped at the popup's edge with no hyphen, in `CREAM` on `PANEL`, so they can be selected and copied with the terminal's mouse.
+  `<ask>` and `<open>` from T07a's `commands(way, resume_at, None, Moved { lit: lantern.entry.change, now: visited.revision })`, so `<ask>` ends in `<your question>'` (after the briefing, when the wall has moved on) for Tom to replace. The way-back block is instead `the way back is gone: Claude Code no longer keeps <transcript>` (`Portal::Gone`) or `lit at the console: there is no conversation to go back to; your words are its way` (`Portal::Words`). The keys line: `j k scroll · n add a note · Esc back`. Commands are drawn whole, wrapped at the popup's edge with no hyphen, in `CREAM` on `PANEL`, so they can be selected and copied with the terminal's mouse.
 - `draw/mod.rs`'s overlay `match` (`:92`) gains `Mode::Lantern`; `Mode::Light` and `Mode::Note` join the modes with no overlay (they draw in the prompt line), except that `Mode::Note` keeps T04d's tree popup drawn beneath it, at its `index`.
 - Help (`overlay.rs`, after T04d's `B` line): `("n", "light a lantern on the moment the wall is at, with your words; your spoken words around it are its way back (in B: n adds a note to a moment or a lantern, ⏎ on a lantern shows its way back)")`.
 

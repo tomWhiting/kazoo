@@ -3,6 +3,8 @@
 Line numbers are from main at `820ccc5` and may have moved; find each item by what it does, never rename. Items from KZ-T04c, KZ-T07a and KZ-T07b are named as those briefs name them; if a lane landed a name differently, use what landed. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list and the cargo form below.
 
 Read by Cassio, 13 Oct evening, line by line. Changes:
+
+Revised by Cassio, 13 Oct 21:19, on Waffles' reading against Tom's 8 Aug lantern definition (MEMORY-AND-LANTERNS.md §3, §3.1): a lantern dims by the changes since it was lit, and visits and added notes no longer brighten it; `ask` opens with the changes since as the past self's briefing; a watcher may visit, answered and not counted.
 - The lane opens only after T07b, T07a and T04c have landed.
 - `find_way` reads other conversations' files (a helper's, and in "Moved" up to eight others in the folder). It must only parse a line that contains both the tool suffix `__wall_lantern` and the call's words as JSON would write them; every other line is skipped unparsed. So kazoo never decodes another conversation's content, and the scan stays cheap. T07a's `find_call` does the same filtering; test 5 gains a line of another conversation that would fail to parse, and passes.
 - The by-hand proof (a Claude seat on the wall, and running the fork commands) is Cassio's after landing, not the builder's: the builder never touches the live wall and never starts a Claude session.
@@ -125,14 +127,14 @@ Every seat's or note's text through `channel::clean`'s rules for control charact
   ```
   Lantern <id> (<glow>) on <moment>, lit by <seat> <at>: “<text>”. Visited <n> times.
   Added since: <seat> <at>: “<text>”; …                  (left out with none)
-  Since it was lit, the wall has made <since_lit> changes; since anyone was last here, <since_last>.
+  Since it was lit, the wall has made <since_lit> changes (its glow counts them; visits do not brighten it). The ask below begins by telling the past self so.
   The way back (kazoo does not run it; it costs a Claude session):
   - ask the self at that moment: <ask>
   - talk with the whole conversation (it also knows what came after): <open>
   Tom's spoken words from <from> to <to> UTC, kept by Dot (kazoo never reads them out):
   - <lines> lines in <path>, seq <first> to <last> (<first_at> to <last_at>)
   ```
-  `<ask>` and `<open>` from T07a's `commands(way, resume_at, question)`. The way-back block is instead `The way back is gone: Claude Code no longer keeps <transcript> (it removes conversations after cleanupPeriodDays, 30 days unless set).` for `Portal::Gone`, and `Lit at Tom's console: there is no conversation to go back to; Tom's words are its way.` for `Portal::Words`. Tom's words with no `heard`: `Tom's spoken words from <from> to <to> UTC: none are kept now in <dot> (Dot keeps each seat's last five runs, or none were spoken then).`
+  `<ask>` and `<open>` from T07a's `commands(way, resume_at, question, Moved { lit: lantern.entry.change, now: visited.revision })`. The way-back block is instead `The way back is gone: Claude Code no longer keeps <transcript> (it removes conversations after cleanupPeriodDays, 30 days unless set).` for `Portal::Gone`, and `Lit at Tom's console: there is no conversation to go back to; Tom's words are its way.` for `Portal::Words`. Tom's words with no `heard`: `Tom's spoken words from <from> to <to> UTC: none are kept now in <dot> (Dot keeps each seat's last five runs, or none were spoken then).`
   Before the `ask` line, when the way is `Helper`: `(lit by one of the seat's helpers: the command asks the seat as it was while its helper worked)`.
 
 ## Not this lane
