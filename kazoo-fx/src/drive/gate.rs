@@ -423,27 +423,50 @@ mod tests {
         assert_eq!(transitions, [1, 2], "hold {hold} ms");
     }
 
-    /// At the default 6 dB hysteresis the B0's detector, about 14 dB down
-    /// between its peaks, would stay above the closing level on its own;
-    /// with no hysteresis it falls below between every pair of peaks, and
-    /// only the 50 ms hold keeps the gate open, so the test runs both.
+    /// At -40 dBFS the B0's peak follower stays above the closing level
+    /// even without hysteresis. At -46 dBFS with no hysteresis it dips
+    /// below between peaks, so only the 50 ms hold keeps the gate open.
+    /// A no-hold control must attenuate every settled cycle.
     #[test]
     fn the_lowest_bass_note_does_not_chatter() {
-        for hysteresis in [6.0, 0.0] {
+        for (hysteresis, level_db) in [(6.0, -40.0), (0.0, -40.0), (0.0, -46.0)] {
             let mut gate = built();
             gate.set_param(1, hysteresis);
             gate.reset();
-            let input = sine(30.87, 0.01, 2.0);
+            let input = sine(30.87, 10f32.powf(level_db / 20.0), 2.0);
             let output = render_mono(&mut *gate, &input);
             for (i, (x, y)) in input.iter().zip(&output).enumerate().skip(480) {
                 if x.abs() > 1e-8 {
                     assert!(
                         gain_db(*x, *y) >= -0.1,
-                        "hysteresis {hysteresis} dB: B0 gain at sample {i}: {}",
+                        "hysteresis {hysteresis} dB, level {level_db} dBFS: B0 gain at sample {i}: {}",
                         gain_db(*x, *y)
                     );
                 }
             }
+        }
+
+        let mut no_hold = built();
+        no_hold.set_param(1, 0.0);
+        no_hold.set_param(3, 0.0);
+        no_hold.reset();
+        let input = sine(30.87, 10f32.powf(-46.0 / 20.0), 2.0);
+        let output = render_mono(&mut *no_hold, &input);
+        let period = (f64::from(RATE) / 30.87).ceil() as usize;
+        // Leave the key's startup transient out of the complete-cycle check.
+        for (cycle, (input, output)) in input
+            .chunks_exact(period)
+            .zip(output.chunks_exact(period))
+            .enumerate()
+            .skip(3)
+        {
+            assert!(
+                input
+                    .iter()
+                    .zip(output)
+                    .any(|(x, y)| x.abs() > 1e-8 && gain_db(*x, *y) < -0.1),
+                "B0 cycle {cycle} never attenuated without the hold"
+            );
         }
     }
 
