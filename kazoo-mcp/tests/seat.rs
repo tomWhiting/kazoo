@@ -16,7 +16,7 @@ use kazoo_wall::protocol::Event;
 use kazoo_wall::protocol::SOCKET_NAME;
 use kazoo_wall::protocol::client::{Subscription, WallClient};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientInfo, ContentBlock, CustomNotification,
+    CallToolRequestParams, CallToolResult, ClientConfig, ContentBlock, CustomNotification,
     ProtocolVersion,
 };
 use rmcp::service::{MaybeSendFuture, NotificationContext, RunningService};
@@ -70,8 +70,8 @@ impl ClientHandler for Ears {
         std::future::ready(())
     }
 
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
         if let Some(version) = &self.version {
             info.protocol_version = version.clone();
         }
@@ -945,6 +945,79 @@ async fn the_legacy_revisions_are_offered_so_the_channel_can_travel() {
         assert_eq!(info.protocol_version, answered, "asked for {asked:?}");
         client.cancel().await.unwrap();
     }
+}
+
+/// Claude Code's opening, line for line as version 2.1.296 sends it: a
+/// `server/discover` for the 2026-07-28 revision first, then, once that is
+/// refused, the old `initialize` handshake and the tool list. rmcp 3.2.0
+/// answered the discover and then held the session to the new revision's
+/// rules, so the tool list was refused for want of its `_meta`, and the
+/// seat came up with no tools.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_codes_discover_opener_falls_back_to_the_handshake() {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    const OPENING: [&str; 4] = [
+        r#"{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"claude-code","title":"Claude Code","version":"2.1.296","description":"Anthropic's agentic coding tool","websiteUrl":"https://claude.com/claude-code"},"io.modelcontextprotocol/clientCapabilities":{"roots":{"listChanged":true},"elicitation":{"form":{},"url":{}}}}}}"#,
+        r#"{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"roots":{"listChanged":true},"elicitation":{"form":{},"url":{}}},"clientInfo":{"name":"claude-code","title":"Claude Code","version":"2.1.296","description":"Anthropic's agentic coding tool","websiteUrl":"https://claude.com/claude-code"}},"jsonrpc":"2.0","id":0}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        r#"{"method":"tools/list","jsonrpc":"2.0","id":1}"#,
+    ];
+
+    // No daemon: the handshake and the tool list never reach the wall.
+    let (runtime, _state) = dirs();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_kazoo-mcp"))
+        .arg("--seat")
+        .arg("Waffles")
+        .arg("--socket")
+        .arg(runtime.path().join(SOCKET_NAME))
+        .env_remove("KAZOO_SEAT")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("kazoo-mcp spawns");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut answers = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut answer = async || -> serde_json::Value {
+        let line = tokio::time::timeout(Duration::from_secs(10), answers.next_line())
+            .await
+            .expect("kazoo-mcp answers within ten seconds")
+            .unwrap()
+            .expect("kazoo-mcp is still talking");
+        serde_json::from_str(&line).unwrap()
+    };
+    for line in OPENING {
+        stdin.write_all(line.as_bytes()).await.unwrap();
+        stdin.write_all(b"\n").await.unwrap();
+    }
+    stdin.flush().await.unwrap();
+
+    let discover = answer().await;
+    assert_eq!(discover["id"], "server-discover-probe-1", "{discover}");
+    assert!(
+        discover["error"]["data"]["requested"] == "2026-07-28",
+        "the discover is refused by its version: {discover}"
+    );
+    let initialize = answer().await;
+    assert_eq!(initialize["id"], 0, "{initialize}");
+    assert_eq!(
+        initialize["result"]["protocolVersion"], "2025-11-25",
+        "{initialize}"
+    );
+    let list = answer().await;
+    assert_eq!(list["id"], 1, "{list}");
+    let tools = list["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the tool list is answered: {list}"));
+    assert!(
+        tools.iter().any(|tool| tool["name"] == "wall_look"),
+        "{list}"
+    );
+
+    drop(stdin);
+    child.kill().await.unwrap();
 }
 
 #[test]

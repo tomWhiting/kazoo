@@ -16,7 +16,7 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CacheScope, CallToolResult, ContentBlock, Implementation, ListToolsResult,
-    PaginatedRequestParams, ProtocolVersion, ResultType, ServerCapabilities, ServerInfo,
+    PaginatedRequestParams, ProtocolVersion, ResultType, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{MaybeSendFuture, NotificationContext, RequestContext};
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_router};
@@ -697,13 +697,13 @@ impl ServerHandler for Seat {
         ])
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut capabilities = ServerCapabilities::builder().enable_tools().build();
         capabilities.experimental = Some(std::collections::BTreeMap::from_iter([(
             "claude/channel".to_owned(),
             serde_json::Map::new(),
         )]));
-        ServerInfo::new(capabilities)
+        ServerConfig::new(capabilities)
             .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
             .with_instructions(INSTRUCTIONS)
     }
