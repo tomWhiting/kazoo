@@ -7,7 +7,7 @@ pub mod wav;
 #[cfg(test)]
 mod tests;
 
-use super::{PitchDetector, PitchDetectorConfig};
+use super::{PitchDetector, PitchDetectorConfig, cycle::CycleTracker};
 
 /// Trajectories are compared every 32 samples (0.67 ms at 48 kHz).
 pub const SCORE_STEP: usize = 32;
@@ -33,6 +33,22 @@ pub struct Take {
     pub exact: bool,
 }
 
+/// An articulation or pitch change measured separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Onset,
+    Step,
+}
+
+/// The latency of one event, including events that never landed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EventLatency {
+    pub at_sample: usize,
+    pub kind: EventKind,
+    pub truth_hz: f32,
+    pub latency_ms: Option<f32>,
+}
+
 /// One tracker's figures on one take.
 ///
 /// Errors are unshifted: they include the
@@ -43,6 +59,8 @@ pub struct Take {
 /// Medians and maxima of an empty list are NaN.
 #[derive(Debug, Clone)]
 pub struct Score {
+    /// Every onset and step, in sample order.
+    pub events: Vec<EventLatency>,
     pub onset_ms_median: f32,
     pub onset_ms_max: f32,
     pub onsets_missed: usize,
@@ -93,6 +111,30 @@ impl TrackerUnderTest for PyinUnderTest {
 
     fn hz(&self) -> Option<f32> {
         self.latest
+    }
+}
+
+/// The callback-safe cycle converter on the offline scoreboard.
+#[derive(Debug)]
+pub struct CycleUnderTest(CycleTracker);
+
+impl CycleUnderTest {
+    /// Build a converter for this take's sample rate.
+    #[must_use]
+    pub fn new(rate: u32) -> Self {
+        Self(CycleTracker::new(rate))
+    }
+}
+
+impl TrackerUnderTest for CycleUnderTest {
+    fn name(&self) -> &'static str {
+        "cycle"
+    }
+    fn push(&mut self, block: &[f32]) {
+        self.0.process(block);
+    }
+    fn hz(&self) -> Option<f32> {
+        self.0.estimate().map(|e| e.hz)
     }
 }
 

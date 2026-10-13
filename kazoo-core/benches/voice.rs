@@ -1,7 +1,9 @@
 use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion};
-use kazoo_core::analysis::{PitchDetector, PitchDetectorConfig};
+use kazoo_core::analysis::{
+    PitchDetector, PitchDetectorConfig, cycle::CycleTracker, score::signals,
+};
 use kazoo_core::engine::{EngineConfig, judge_config};
 
 fn saw_samples(length: u32) -> Vec<f32> {
@@ -53,6 +55,26 @@ fn cpu_runs(config: PitchDetectorConfig, setup_only: bool) {
     println!("CPU runs: {}", if setup_only { 0 } else { 100 });
 }
 
+fn cycle(c: &mut Criterion) {
+    let take = signals::suite(48_000)
+        .into_iter()
+        .find(|take| take.name == "vowel_ah")
+        .expect("vowel fixture");
+    let samples = &take.samples[..48_000];
+    let mut group = c.benchmark_group("cycle");
+    group.bench_function(BenchmarkId::new("second", "48k"), |b| {
+        b.iter_batched_ref(
+            || CycleTracker::new(48_000),
+            |tracker| {
+                tracker.process(black_box(samples));
+                black_box(tracker.estimate());
+            },
+            BatchSize::PerIteration,
+        );
+    });
+    group.finish();
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("--cpu-judge") => cpu_runs(PitchDetectorConfig::for_rate(48_000), false),
@@ -75,6 +97,7 @@ fn main() {
                 "engine",
                 &judge_config(&EngineConfig::default().pitch, 48_000),
             );
+            cycle(&mut criterion);
             criterion.final_summary();
         }
     }
