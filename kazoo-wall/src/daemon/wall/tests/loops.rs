@@ -156,7 +156,12 @@ fn wall_erase_and_undo_bring_the_tape_back() {
             &tape.reel[..8]
         )
     );
-    assert_eq!(wall.patch.loop_record("loop1").unwrap().tape, Some(tape));
+    assert_eq!(
+        wall.patch
+            .loop_record("loop1")
+            .and_then(|kept| kept.tape.as_ref()),
+        Some(&tape)
+    );
     tape_arrives(&mut wall, &mut engine);
     holds_the_reel(&wall, &mut engine);
 }
@@ -203,7 +208,7 @@ fn the_ninth_loop_on_a_wall_is_refused_by_name() {
         name: None,
         place: None,
     };
-    for _ in 0..crate::daemon::loops::MAX_LOOPS {
+    for _ in 0..8 {
         ask(&mut wall, &add).unwrap();
     }
     let before = wall.patch.to_file();

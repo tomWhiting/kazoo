@@ -179,7 +179,12 @@ fn a_missing_reel_leaves_a_blank_loop_and_a_note_and_the_record_stays() {
         "{:?}",
         loops.notes().collect::<Vec<_>>()
     );
-    assert_eq!(patch.loop_record("loop1").unwrap().tape, Some(record()));
+    assert_eq!(
+        patch
+            .loop_record("loop1")
+            .and_then(|kept| kept.tape.as_ref()),
+        Some(&record())
+    );
     assert_eq!(
         patch.to_file().loops["loop1"].tape.as_ref(),
         Some(&record())
@@ -267,7 +272,12 @@ fn erase_then_undo_brings_the_tape_back() {
     assert_eq!(state(&loops), LoopState::Blank as u8);
 
     let undone = patch.undo(&erased).unwrap();
-    assert_eq!(patch.loop_record("loop1").unwrap().tape, Some(tape.clone()));
+    assert_eq!(
+        patch
+            .loop_record("loop1")
+            .and_then(|kept| kept.tape.as_ref()),
+        Some(&tape.clone())
+    );
     assert_eq!(
         crate::change::describe(&undone),
         format!("put loop1's tape back (1 bar, reel {})", &tape.reel[..8])
@@ -294,14 +304,20 @@ fn remove_then_undo_brings_the_loop_and_its_tape_back() {
     let (mut patch, notes) = Patch::load(&file).unwrap();
     assert!(notes.is_empty(), "{notes:?}");
     patch.undo(&removed).unwrap();
-    assert_eq!(patch.loop_record("loop1").unwrap().tape, Some(record()));
+    assert_eq!(
+        patch
+            .loop_record("loop1")
+            .and_then(|kept| kept.tape.as_ref()),
+        Some(&record())
+    );
     assert!(patch.to_file().retired_loops.is_empty());
 }
 
 #[test]
 fn the_ninth_loop_is_refused_by_name() {
+    assert_eq!(MAX_LOOPS, 8);
     let mut patch = Patch::empty(120.0);
-    for _ in 0..MAX_LOOPS {
+    for _ in 0..8 {
         patch.add("loop", None, None).unwrap();
     }
     let refused = patch.add("loop", None, None).unwrap_err();
