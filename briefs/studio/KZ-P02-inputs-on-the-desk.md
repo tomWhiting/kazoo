@@ -44,7 +44,7 @@ Why: Tom's main use is "to get the sound in there and then probably process it w
 
 ### The desk opens at the frames asked (`run.rs:301-312`)
 
-`MixerAudio::start` takes `frames` and calls `request.prepare_output_with_frames(frames)` (public since P01) instead of `prepare_output()`. The output's device name is kept for `two_clocks`. If the output stream's `fixed_buffer()` is false, the footer says "the output device refused <n>-frame buffers; it runs at its own size".
+`MixerAudio::start` takes `frames` and calls `request.prepare_output_with_frames(frames)` (public since P01) instead of `prepare_output()`. The output's device name is kept for `two_clocks`. If the output stream's `fixed_buffer()` is false, the footer says "the output device refused <n>-frame buffers; it runs at its own size". A device may also clamp the asked size to its minimum without refusing (P01's review: `configure` turns 32 into 64 and `fixed_buffer()` stays true), so the head's latency figure always comes from `LiveInput::latency_frames()` (the measured callback size), never from `--frames`; when the measured input callback is larger than asked, the footer says "the interface runs <m>-frame buffers, not <n>".
 
 ### Seats (`hub.rs`)
 
