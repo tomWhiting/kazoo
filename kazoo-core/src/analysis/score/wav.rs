@@ -157,8 +157,8 @@ pub fn fixture_takes(dir: &Path) -> crate::Result<Vec<Take>> {
         if path
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))
-            && entry
-                .file_type()
+            // A take linked into the folder is followed to its file.
+            && std::fs::metadata(&path)
                 .map_err(|error| config_error(&path, error))?
                 .is_file()
         {
