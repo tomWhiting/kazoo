@@ -205,7 +205,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
     let mut spans = vec![
         Span::styled(" Oct: ", Style::new().fg(DIM)),
-        Span::styled(format!("{}", app.octave), Style::new().fg(Color::White)),
+        Span::styled(
+            format!("{}", app.octave.number()),
+            Style::new().fg(Color::White),
+        ),
         Span::styled("  |  Drift: ", Style::new().fg(DIM)),
         Span::styled(
             format!("{:.1}c", app.synth.params.drift_cents),
@@ -720,13 +723,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let lines = vec![
         Line::from(vec![
             Span::styled(" Piano: ", Style::new().fg(GOLD)),
-            Span::styled("z x c v b n m , . /", Style::new().fg(Color::White)),
+            Span::styled("a s d f g h j k l ;", Style::new().fg(Color::White)),
             Span::styled("  sharps: ", Style::new().fg(DIM)),
-            Span::styled("s d g h j", Style::new().fg(Color::White)),
-            Span::styled("  upper: ", Style::new().fg(DIM)),
-            Span::styled("q w e r t y u i o p", Style::new().fg(Color::White)),
-            Span::styled("  sharps: ", Style::new().fg(DIM)),
-            Span::styled("2 3 5 6 7", Style::new().fg(Color::White)),
+            Span::styled("w e t y u o p", Style::new().fg(Color::White)),
         ]),
         Line::from(vec![
             Span::styled(" Tab", Style::new().fg(ACCENT)),
@@ -737,7 +736,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(":adjust  ", Style::new().fg(DIM)),
             Span::styled("Shift+\u{2190}/\u{2192}", Style::new().fg(ACCENT)),
             Span::styled(":coarse  ", Style::new().fg(DIM)),
-            Span::styled("[/]", Style::new().fg(ACCENT)),
+            Span::styled("z/x", Style::new().fg(ACCENT)),
             Span::styled(":octave  ", Style::new().fg(DIM)),
             Span::styled("Shift+\u{2191}/\u{2193}", Style::new().fg(ACCENT)),
             Span::styled(":aftertouch", Style::new().fg(DIM)),

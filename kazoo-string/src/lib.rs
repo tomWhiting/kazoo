@@ -18,4 +18,4 @@ mod waveguide;
 pub use args::{Args, USAGE, cli, parse_args};
 pub use run::run;
 
-pub(crate) use run::{App, PhraseState, ROWS, VOLUME_ROW, piano_offset};
+pub(crate) use run::{App, PhraseState, ROWS, VOLUME_ROW};

@@ -8,6 +8,7 @@ description = "Plucked-string physical-model synth: Karplus-Strong waveguides wi
 workspace = true
 
 [dependencies]
+kazoo-host = { path = "../kazoo-host" }
 kazoo-core = { version = "0.1.0", path = "../kazoo-core" }
 color-eyre = "0.6.5"
 cpal = "0.17"

@@ -23,7 +23,8 @@ use kazoo_core::ipc::link::HubLink;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::{input, ui};
+use crate::ui;
+use kazoo_host::keys::{self, PianoKey};
 
 /// What the command line gave: nothing yet for this instrument.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -331,41 +332,66 @@ fn flush_params(app: &mut App, cmd_tx: &crossbeam_channel::Sender<AudioCommand>)
     }
 }
 
+fn release_all_notes(app: &mut App, tx: &crossbeam_channel::Sender<AudioCommand>) -> bool {
+    if !send_command(app, tx, AudioCommand::AllNotesOff) {
+        return false;
+    }
+    app.held_notes.fill(None);
+    true
+}
+
 fn handle_key_press(
     app: &mut App,
     code: KeyCode,
     modifiers: KeyModifiers,
     cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
 ) {
-    // Quit is checked first: several quit keys are also note keys.
     if is_quit_key(code, modifiers) {
         app.should_quit = true;
         return;
     }
 
-    if let Some(note) = input::key_to_note(code) {
-        let velocity = if modifiers.contains(KeyModifiers::SHIFT) {
-            1.0
-        } else {
-            0.82
-        };
-        // Only a note the engine accepted is shown as held.
-        if send_command(app, cmd_tx, AudioCommand::NoteOn { note, velocity }) {
-            app.add_held_note(note);
+    let piano = match code {
+        KeyCode::Char(ch) => keys::piano_key(ch, app.octave),
+        _ => None,
+    };
+    match piano {
+        Some(PianoKey::Note(note)) => {
+            let velocity = if modifiers.contains(KeyModifiers::SHIFT) {
+                1.0
+            } else {
+                0.82
+            };
+            // Only a note the engine accepted is shown as held.
+            if send_command(app, cmd_tx, AudioCommand::NoteOn { note, velocity }) {
+                app.add_held_note(note);
+            }
+            return;
         }
-        return;
+        Some(PianoKey::OctaveDown) => {
+            if release_all_notes(app, cmd_tx) {
+                app.octave = app.octave.down();
+            }
+            return;
+        }
+        Some(PianoKey::OctaveUp) => {
+            if release_all_notes(app, cmd_tx) {
+                app.octave = app.octave.up();
+            }
+            return;
+        }
+        None => {}
     }
 
     match code {
         KeyCode::Tab => app.next_section(),
         KeyCode::BackTab => app.prev_section(),
-        KeyCode::Down | KeyCode::Char('j') => app.next_param(),
-        KeyCode::Up | KeyCode::Char('k') => app.prev_param(),
-        KeyCode::Right | KeyCode::Char('l') => update_param(app, 1.0, cmd_tx),
-        KeyCode::Left | KeyCode::Char('h') => update_param(app, -1.0, cmd_tx),
-        // Held notes are cleared only once the engine accepted the release.
-        KeyCode::Char(' ') if send_command(app, cmd_tx, AudioCommand::AllNotesOff) => {
-            app.held_notes.fill(None);
+        KeyCode::Down => app.next_param(),
+        KeyCode::Up => app.prev_param(),
+        KeyCode::Right => update_param(app, 1.0, cmd_tx),
+        KeyCode::Left => update_param(app, -1.0, cmd_tx),
+        KeyCode::Char(' ') => {
+            release_all_notes(app, cmd_tx);
         }
         _ => {}
     }
@@ -376,7 +402,10 @@ fn handle_key_release(
     code: KeyCode,
     cmd_tx: &crossbeam_channel::Sender<AudioCommand>,
 ) {
-    let Some(note) = input::key_to_note(code) else {
+    let KeyCode::Char(ch) = code else {
+        return;
+    };
+    let Some(note) = keys::note(ch, app.octave) else {
         return;
     };
     // A refused note-off keeps the note shown as held, so the screen matches
@@ -411,16 +440,70 @@ mod tests {
     }
 
     #[test]
+    fn octave_moves_release_held_notes_and_change_the_note() {
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        let mut app = App::new(48_000);
+        press(&mut app, &tx, 'a');
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 48, .. })
+        ));
+        press(&mut app, &tx, 'x');
+        assert_eq!(app.octave, keys::Octave::new(4));
+        assert!(matches!(rx.try_recv(), Ok(AudioCommand::AllNotesOff)));
+        assert!(app.held_notes.iter().all(Option::is_none));
+        press(&mut app, &tx, 'a');
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 60, .. })
+        ));
+    }
+
+    #[test]
+    fn the_piano_is_the_shared_one() {
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        let mut app = App::new(48_000);
+        press(&mut app, &tx, ';');
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 64, .. })
+        ));
+        press(&mut app, &tx, 'q');
+        assert!(rx.is_empty());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn refused_octave_release_keeps_the_held_note() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let mut app = App::new(48_000);
+        press(&mut app, &tx, 'a');
+        assert!(app.held_notes.contains(&Some(48)));
+        press(&mut app, &tx, 'x');
+        assert_eq!(app.octave, keys::Octave::DEFAULT);
+        assert!(app.held_notes.contains(&Some(48)));
+        assert_eq!(app.commands_dropped, 1);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 48, .. })
+        ));
+        press(&mut app, &tx, 'x');
+        assert_eq!(app.octave, keys::Octave::new(4));
+        assert!(matches!(rx.try_recv(), Ok(AudioCommand::AllNotesOff)));
+        assert!(app.held_notes.iter().all(Option::is_none));
+    }
+
+    #[test]
     fn accepted_note_is_held_and_released() {
         let (tx, rx) = crossbeam_channel::bounded(4);
         let mut app = App::new(48_000);
-        press(&mut app, &tx, 'z');
+        press(&mut app, &tx, 'a');
         assert!(matches!(
             rx.try_recv(),
             Ok(AudioCommand::NoteOn { note: 48, .. })
         ));
         assert!(app.held_notes.contains(&Some(48)));
-        handle_key_release(&mut app, KeyCode::Char('z'), &tx);
+        handle_key_release(&mut app, KeyCode::Char('a'), &tx);
         assert!(matches!(
             rx.try_recv(),
             Ok(AudioCommand::NoteOff { note: 48 })
@@ -433,14 +516,14 @@ mod tests {
     fn refused_note_is_counted_and_not_shown() {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let mut app = App::new(48_000);
-        press(&mut app, &tx, 'z');
-        press(&mut app, &tx, 'x');
+        press(&mut app, &tx, 'a');
+        press(&mut app, &tx, 's');
         assert_eq!(rx.try_iter().count(), 1);
         assert_eq!(app.commands_dropped, 1);
         assert_eq!(app.delivery_warning, Some("audio engine busy"));
         assert!(!app.held_notes.contains(&Some(50)));
         // The refused key can be pressed again once the engine keeps up.
-        press(&mut app, &tx, 'x');
+        press(&mut app, &tx, 's');
         assert!(app.held_notes.contains(&Some(50)));
         assert_eq!(app.delivery_warning, None);
     }
@@ -449,12 +532,12 @@ mod tests {
     fn refused_note_off_keeps_note_held() {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let mut app = App::new(48_000);
-        press(&mut app, &tx, 'z');
-        handle_key_release(&mut app, KeyCode::Char('z'), &tx);
+        press(&mut app, &tx, 'a');
+        handle_key_release(&mut app, KeyCode::Char('a'), &tx);
         assert!(app.held_notes.contains(&Some(48)));
         assert_eq!(app.commands_dropped, 1);
         assert!(matches!(rx.try_recv(), Ok(AudioCommand::NoteOn { .. })));
-        handle_key_release(&mut app, KeyCode::Char('z'), &tx);
+        handle_key_release(&mut app, KeyCode::Char('a'), &tx);
         assert!(!app.held_notes.contains(&Some(48)));
     }
 
@@ -462,7 +545,7 @@ mod tests {
     fn refused_params_stay_pending_until_delivered() {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let mut app = App::new(48_000);
-        press(&mut app, &tx, 'z');
+        press(&mut app, &tx, 'a');
         update_param(&mut app, 1.0, &tx);
         assert!(app.params_pending);
         assert_eq!(app.delivery_warning, Some("audio engine busy"));
@@ -485,7 +568,7 @@ mod tests {
     #[test]
     fn quit_keys_win_over_notes() {
         let (tx, rx) = crossbeam_channel::bounded(4);
-        // 'q' and 'c' are note keys; with Ctrl they quit instead of playing.
+        // Control quit bindings take precedence over piano notes.
         for code in [KeyCode::Char('q'), KeyCode::Char('c'), KeyCode::Char('d')] {
             let mut app = App::new(48_000);
             handle_key_press(&mut app, code, KeyModifiers::CONTROL, &tx);
@@ -495,13 +578,15 @@ mod tests {
         handle_key_press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &tx);
         assert!(app.should_quit);
         assert!(rx.try_recv().is_err(), "a quit key must not play a note");
-        // A bare letter still plays.
+        // Unmapped plain letters stay idle; piano keys still play.
         let mut app = App::new(48_000);
         handle_key_press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE, &tx);
         assert!(!app.should_quit);
+        assert!(rx.is_empty());
+        handle_key_press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AudioCommand::NoteOn { note: 60, .. })
+            Ok(AudioCommand::NoteOn { note: 52, .. })
         ));
     }
 

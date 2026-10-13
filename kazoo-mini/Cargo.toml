@@ -8,6 +8,7 @@ description = "Moog Minimoog inspired bass/lead synth — monophonic, ladder fil
 workspace = true
 
 [dependencies]
+kazoo-host = { path = "../kazoo-host" }
 kazoo-core = { version = "0.1.0", path = "../kazoo-core" }
 cpal = "0.17"
 crossbeam-channel = "0.5"

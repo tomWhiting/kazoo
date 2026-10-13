@@ -16,7 +16,7 @@ use crate::patch::{PATCHES, ParamField};
 use crate::synth::note_name;
 use kazoo_core::ipc::link::LinkStatus;
 
-use crate::{App, PhraseState, ROWS, VOLUME_ROW, piano_offset};
+use crate::{App, PhraseState, ROWS, VOLUME_ROW};
 
 const ACCENT: Color = Color::Rgb(155, 195, 255);
 const TONE: Color = Color::Rgb(170, 240, 245);
@@ -192,7 +192,11 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::raw("   "),
-        Span::raw(format!("oct {}  vel {}  ", app.octave, app.velocity)),
+        Span::raw(format!(
+            "oct {}  vel {}  ",
+            app.octave.number(),
+            app.velocity
+        )),
         level_meter(app.display.peak),
         Span::raw("  "),
     ];
@@ -439,7 +443,7 @@ fn draw_keyboard(frame: &mut Frame, area: Rect, app: &App) {
                             .bg(ACCENT)
                             .add_modifier(Modifier::BOLD),
                     )
-                } else if piano_offset(c).is_some() {
+                } else if kazoo_host::keys::semitone(c).is_some() {
                     Span::styled(c.to_string(), Style::new().fg(Color::White))
                 } else {
                     Span::raw(" ")
@@ -448,7 +452,7 @@ fn draw_keyboard(frame: &mut Frame, area: Rect, app: &App) {
             .collect();
         Line::from(spans)
     };
-    let base = note_name((app.octave.clamp(0, 8) as u8 + 1) * 12);
+    let base = note_name((app.octave.number() as u8 + 1) * 12);
     let mut black = row(BLACK_ROW);
     black.spans.insert(0, Span::raw("  "));
     let mut white = row(WHITE_ROW);

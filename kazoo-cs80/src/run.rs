@@ -227,6 +227,37 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers, commands: &
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     let shift = modifiers.contains(KeyModifiers::SHIFT);
 
+    if let KeyCode::Char(ch) = code {
+        match kazoo_host::keys::piano_key(ch, app.octave) {
+            Some(kazoo_host::keys::PianoKey::Note(note)) => {
+                let Some(slot) = key_slot(ch) else {
+                    return;
+                };
+                if app.key_note_map[slot].is_none() {
+                    app.key_note_map[slot] = Some(note);
+                    app.note_on(note, input::DEFAULT_VELOCITY);
+                    commands.note_on(note, input::DEFAULT_VELOCITY);
+                }
+                return;
+            }
+            Some(direction) => {
+                for (note, held) in (0..128).zip(app.held_notes) {
+                    if held {
+                        commands.note_off(note);
+                    }
+                }
+                match direction {
+                    kazoo_host::keys::PianoKey::OctaveDown => app.octave_down(),
+                    kazoo_host::keys::PianoKey::OctaveUp => app.octave_up(),
+                    kazoo_host::keys::PianoKey::Note(_) => return,
+                }
+                commands.all_notes_off();
+                return;
+            }
+            None => {}
+        }
+    }
+
     match code {
         // Quit.
         KeyCode::Char('`') | KeyCode::Esc => app.should_quit = true,
@@ -271,29 +302,6 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers, commands: &
         KeyCode::Char('-' | '_') | KeyCode::Left => {
             app.decrement_param();
             commands.params(&app.synth.params);
-        }
-
-        // Octave shift.
-        KeyCode::Char('[') => app.octave_down(),
-        KeyCode::Char(']') => app.octave_up(),
-
-        // Musical keyboard — note on.
-        KeyCode::Char(ch) => {
-            let Some(note) = input::key_to_note(ch, app.octave) else {
-                return;
-            };
-            let Some(slot) = key_slot(ch) else {
-                return;
-            };
-            // Ignore key repeat — only trigger note_on on the initial press.
-            // Without this guard, held keys fire repeated note_on messages
-            // which causes the synth to "build up" or re-trigger.
-            if app.key_note_map[slot].is_some() {
-                return;
-            }
-            app.key_note_map[slot] = Some(note);
-            app.note_on(note, input::DEFAULT_VELOCITY);
-            commands.note_on(note, input::DEFAULT_VELOCITY);
         }
 
         _ => {}
@@ -363,16 +371,58 @@ mod tests {
     }
 
     #[test]
+    fn octave_moves_release_held_notes_and_change_the_note() {
+        let (mut commands, rx) = link();
+        let mut app = App::new(44100.0);
+        let ch = 'a';
+        handle_key(
+            &mut app,
+            KeyCode::Char(ch),
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 48, .. })
+        ));
+        let ch = 'x';
+        handle_key(
+            &mut app,
+            KeyCode::Char(ch),
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        assert_eq!(app.octave, kazoo_host::keys::Octave::new(4));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOff { note: 48 })
+        ));
+        assert!(matches!(rx.try_recv(), Ok(AudioCommand::AllNotesOff)));
+        assert!(app.held_notes.iter().all(|held| !held));
+        let ch = 'a';
+        handle_key(
+            &mut app,
+            KeyCode::Char(ch),
+            KeyModifiers::NONE,
+            &mut commands,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 60, .. })
+        ));
+    }
+
+    #[test]
     fn key_press_and_release_send_note_on_and_off() {
         let (mut commands, rx) = link();
         let mut app = App::new(44100.0);
         handle_key(
             &mut app,
-            KeyCode::Char('z'),
+            KeyCode::Char('a'),
             KeyModifiers::NONE,
             &mut commands,
         );
-        handle_key_release(&mut app, KeyCode::Char('z'), &mut commands);
+        handle_key_release(&mut app, KeyCode::Char('a'), &mut commands);
         let got: Vec<AudioCommand> = rx.try_iter().collect();
         assert_eq!(got.len(), 2);
         assert!(matches!(got[0], AudioCommand::NoteOn { .. }));
@@ -385,13 +435,13 @@ mod tests {
         let mut app = App::new(44100.0);
         handle_key(
             &mut app,
-            KeyCode::Char('z'),
+            KeyCode::Char('a'),
             KeyModifiers::NONE,
             &mut commands,
         );
         handle_key(
             &mut app,
-            KeyCode::Char('z'),
+            KeyCode::Char('a'),
             KeyModifiers::NONE,
             &mut commands,
         );
@@ -404,7 +454,7 @@ mod tests {
         let mut app = App::new(44100.0);
         handle_key(
             &mut app,
-            KeyCode::Char('z'),
+            KeyCode::Char('a'),
             KeyModifiers::NONE,
             &mut commands,
         );
@@ -421,7 +471,7 @@ mod tests {
         // The key can be played again straight away.
         handle_key(
             &mut app,
-            KeyCode::Char('z'),
+            KeyCode::Char('a'),
             KeyModifiers::NONE,
             &mut commands,
         );
