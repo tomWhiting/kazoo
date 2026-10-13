@@ -271,27 +271,41 @@ fn stop(tmux: &Path, session: &str, desk: Option<u32>) -> Result<()> {
                 ));
             }
         }
-        let deadline = Instant::now() + DESK_WAIT;
-        while desk_alive(tmux, session, pid)? {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(eyre!(
-                    "studio desk PID {pid} did not exit after SIGTERM within 5 seconds"
-                ));
-            }
-            std::thread::sleep(PROBE_INTERVAL.min(remaining));
-        }
     }
+    let lingering = match desk {
+        Some(pid) => desk_lingers(tmux, session, pid)?,
+        None => None,
+    };
     // The session may disappear with its final pane when the desk exits.
     // Inspect exact session names before killing, so a similarly named
-    // session can never be selected by tmux's prefix matching.
+    // session can never be selected by tmux's prefix matching. A desk that
+    // outlived SIGTERM is killed with the session rather than left running.
     if session_exists(tmux, session)? {
         output(
             tmux,
             &["kill-session".into(), "-t".into(), format!("={session}")],
         )?;
     }
-    Ok(())
+    match lingering {
+        Some(pid) => Err(eyre!(
+            "studio desk PID {pid} did not exit within 5 seconds of SIGTERM, \
+             so the session was killed with it still running"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Wait up to five seconds for the desk to leave; `Some(pid)` if it did not.
+fn desk_lingers(tmux: &Path, session: &str, pid: u32) -> Result<Option<u32>> {
+    let deadline = Instant::now() + DESK_WAIT;
+    while desk_alive(tmux, session, pid)? {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(Some(pid));
+        }
+        std::thread::sleep(PROBE_INTERVAL.min(remaining));
+    }
+    Ok(None)
 }
 
 fn session_exists(tmux: &Path, session: &str) -> Result<bool> {
