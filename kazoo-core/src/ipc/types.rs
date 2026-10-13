@@ -280,12 +280,18 @@ impl RegisterMsg {
             instrument_id,
             name,
             channel_count: buf[off],
+            // A tail whose count byte disagrees with its length is no list
+            // at all, which `check_streams` refuses.
             streams: if buf.len() > Self::PACED_WIRE_SIZE {
-                buf[64..]
-                    .chunks_exact(STREAM_ENTRY_SIZE)
-                    .take(usize::from(buf[63]))
-                    .map(StreamSpec::decode)
-                    .collect()
+                let entries = &buf[64..];
+                if entries.len() == usize::from(buf[63]) * STREAM_ENTRY_SIZE {
+                    entries
+                        .chunks_exact(STREAM_ENTRY_SIZE)
+                        .map(StreamSpec::decode)
+                        .collect()
+                } else {
+                    Vec::new()
+                }
             } else {
                 vec![StreamSpec::new("main", buf[off])]
             },
