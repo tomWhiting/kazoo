@@ -2,6 +2,9 @@
 
 Line numbers are from the sweep that wrote this brief and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md with `-p kazoo-host` plus every crate touched, and `cargo test --doc -p kazoo-host`. Depends: A01a–g.
 
+
+**Status, 13 Oct 2026 12:25 (Cassio): part 1 is on main (b670f5e).** `kazoo-host` exists with `reports::install` and `terminal::enter_with` (and its guarded restore), and its four red tests are green. Do not rewrite or reorganise it; read it and use it. This run is part 2 only: move every program onto it, as "Replace each crate's ..." below says. Today `terminal.rs` files remain in kazoo-cs80, kazoo-mini, kazoo-mix and kazoo-wall/src/tui, and other programs may still set up the terminal inline in `run.rs` or `main.rs` (find each `enable_raw_mode`, `EnterAlternateScreen`, `PushKeyboardEnhancementFlags`, `color_eyre::install` and panic-hook restore outside kazoo-host). If `kazoo-host` needs something a program uses that it lacks (for example a way to hand the program a `ratatui::Terminal` it can call `draw` on), add it to kazoo-host with its own test, under FOUND. Done is the Definition of done below, including the grep.
+
 ## Outcome
 
 Raw mode, the alternate screen, the panic-safe restore and the error-report install are set up in one place, once per process. The ten `terminal.rs` files (mini and cs80 are byte-identical) are gone. The code lives in a new crate, `kazoo-host`, because kazoo-core is the DSP library with no UI dependency (CLAUDE.md) and ratatui and crossterm must not enter it. A05 (keys) and A06 (the `kazoo` binary) build on this crate.
