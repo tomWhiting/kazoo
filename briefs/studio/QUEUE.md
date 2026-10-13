@@ -134,3 +134,8 @@ START KZ-T01 base=acf8b92 branch=lane/kz-T01 df=1GB at 20:29
 START KZ-V03 base=ac26501 branch=lane/kz-V03 df=48GB at 00:26
 START KZ-D03c base=ac26501 branch=lane/kz-D03c df=48GB at 00:27
 - Follow-ups from F01's review (to brief): kazoo-fx/src/space/spring.rs is 1250 lines (over 1000); kazoo-speech's test Scratch (testing.rs:15) makes folders in the system temp directory (against the no-temp rule).
+START KZ-T02a base=ac26501 branch=lane/kz-T02a df=109GB at 02:14
+START KZ-L03 base=ac26501 branch=lane/kz-L03 df=109GB at 02:15
+START KZ-P01 base=ac26501 branch=lane/kz-P01 df=108GB at 02:15
+- KZ-F01 merged (review READY 67267cf), KZ-D03c merged (review de3682a: wake costed against its own pending change, refused wake costed twice; doc tests ran here), KZ-V03 merged (review READY d3b4c27: mechanism changed to marks at both crossings, half-period window, glide carried forward; targets unchanged and met). Merge check on main 4cdb36f: fmt 0, clippy 0, nextest 3965/3965, doc 0, ast-grep 0 (full-F01-D03c-V03-0205.log).
+- To hear with Tom: V03's glide carry (any overshoot at a glide's end) once a synth follows the voice (V09).
