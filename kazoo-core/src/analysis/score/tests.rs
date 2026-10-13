@@ -313,3 +313,96 @@ fn the_judge_holds_its_floors() -> crate::Result<()> {
     assert!(result.false_pct <= 10.0, "{result:?}");
     Ok(())
 }
+
+/// Reads each listed pitch once it has taken that many samples.
+#[derive(Debug)]
+struct Switches {
+    taken: usize,
+    changes: Vec<(usize, Option<f32>)>,
+}
+
+impl TrackerUnderTest for Switches {
+    fn name(&self) -> &'static str {
+        "switches"
+    }
+    fn push(&mut self, block: &[f32]) {
+        self.taken += block.len();
+    }
+    fn hz(&self) -> Option<f32> {
+        self.changes
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= self.taken)
+            .and_then(|(_, hz)| *hz)
+    }
+}
+
+fn recorded(rate: u32, truth: Vec<Option<f32>>) -> Take {
+    Take {
+        name: "recorded".into(),
+        rate,
+        samples: vec![0.0; truth.len() * SCORE_STEP],
+        onsets: Vec::new(),
+        truth,
+        exact: false,
+    }
+}
+
+#[test]
+fn latency_is_never_understated() {
+    let mut truth = vec![None; 10];
+    truth.extend([Some(220.0); 100]);
+    truth.extend([Some(330.0); 100]);
+    let take = Take {
+        onsets: vec![10 * SCORE_STEP],
+        exact: true,
+        ..recorded(48_000, truth)
+    };
+    // 100 samples is not a whole number of steps, so a reading on the step
+    // before the tracker could have known must not count.
+    let late = 100;
+    let mut tracker = Switches {
+        taken: 0,
+        changes: vec![
+            (10 * SCORE_STEP + late, Some(220.0)),
+            (110 * SCORE_STEP + late, Some(330.0)),
+        ],
+    };
+    let result = score(&mut tracker, &take);
+    let truth_ms = 100.0 / 48.0;
+    for measured in [result.onset_ms_median, result.step_ms_median] {
+        assert!(
+            measured >= truth_ms && measured < truth_ms + 32.0 / 48.0,
+            "{measured} ms for a {truth_ms} ms tracker: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn a_recorded_lag_is_set_by_the_notes_not_the_release() {
+    let mut truth = vec![None; 20];
+    truth.extend([Some(220.0); 100]);
+    truth.extend([None; 100]);
+    truth.extend([Some(330.0); 100]);
+    truth.extend([None; 60]);
+    let take = recorded(44_100, truth);
+    // 960 samples late, and holding its last note through every gap.
+    let mut oracle = Oracle::new(&take, 960);
+    let mut held = None;
+    for pitch in &mut oracle.truth {
+        held = pitch.or(held);
+        *pitch = held;
+    }
+    let result = score(&mut oracle, &take);
+    assert!(
+        result
+            .aligned_lag_ms
+            .is_some_and(|lag| (lag - 960.0 / 44.1).abs() <= 32.0 / 44.1),
+        "{result:?}"
+    );
+    let mut silent = Oracle::new(&take, 0);
+    silent.truth.fill(None);
+    let result = score(&mut silent, &take);
+    // A tracker that never agrees has no lag, not a perfect one.
+    assert!(result.aligned_lag_ms.is_some_and(f32::is_nan), "{result:?}");
+}
