@@ -326,7 +326,9 @@ impl AudioEngine {
                 }
                 // The 808 exposes no hub-controllable parameters, and the
                 // link itself handles the hub shutting down.
-                HubMessage::ParameterChange(_) | HubMessage::Shutdown => {}
+                HubMessage::ParameterChange(_)
+                | HubMessage::StreamReady { .. }
+                | HubMessage::Shutdown => {}
             }
         }
     }
@@ -426,6 +428,7 @@ mod tests {
             let mut buf = kazoo_core::ipc::protocol::FrameBuffer::new();
             assert_eq!(buf.read_frame(&mut stream).unwrap().msg_type, MSG_REGISTER);
             RegisteredMsg {
+                strips: Vec::new(),
                 strip_index: 0,
                 hub_sample_rate: 48_000,
                 hub_buffer_size: 256,

@@ -302,6 +302,29 @@ impl Default for FrameBuffer {
 /// `frame_count` (u32).
 pub const AUDIO_PAYLOAD_HEADER: usize = 12;
 
+/// Named stream audio head: frame u64, count u32, stream u16, reserved u16.
+pub const AUDIO_STREAM_PAYLOAD_HEADER: usize = 16;
+
+/// Encode a named stream audio head; reserved bytes are always zero.
+pub fn encode_audio_stream_head(
+    stream_frame: u64,
+    frame_count: u32,
+    stream: super::types::StreamId,
+    buf: &mut [u8],
+) -> usize {
+    buf[..8].copy_from_slice(&stream_frame.to_le_bytes());
+    buf[8..12].copy_from_slice(&frame_count.to_le_bytes());
+    buf[12..14].copy_from_slice(&stream.to_le_bytes());
+    buf[14..16].fill(0);
+    AUDIO_STREAM_PAYLOAD_HEADER
+}
+
+/// Decode the id from a validated named stream audio head.
+#[must_use]
+pub fn decode_audio_stream_id(buf: &[u8]) -> super::types::StreamId {
+    u16::from_le_bytes([buf[12], buf[13]])
+}
+
 /// Encode audio samples into a buffer's payload area.
 ///
 /// Writes the 8-byte `stream_frame` (the block's first frame in the
@@ -560,3 +583,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod streams_tests;

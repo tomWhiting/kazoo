@@ -1,3 +1,4 @@
+mod streams;
 mod transport;
 mod wake;
 
@@ -38,6 +39,7 @@ fn accept(listener: &UnixListener) -> (UnixStream, FrameBuffer) {
     let register = RegisterMsg::decode(&buf.payload()[..header.payload_len as usize]);
     assert_eq!(register.name_str(), "kazoo-test");
     let reply = RegisteredMsg {
+        strips: vec![3],
         strip_index: 3,
         hub_sample_rate: 48_000,
         hub_buffer_size: 256,
@@ -45,8 +47,8 @@ fn accept(listener: &UnixListener) -> (UnixStream, FrameBuffer) {
         bpm: 120.0,
         position: 0,
     };
-    reply.encode(buf.payload_mut());
-    buf.write_frame(MSG_REGISTERED, 0, RegisteredMsg::WIRE_SIZE, &mut stream)
+    let len = reply.encode(buf.payload_mut());
+    buf.write_frame(MSG_REGISTERED, 0, len, &mut stream)
         .unwrap();
     (stream, buf)
 }
@@ -229,6 +231,7 @@ fn a_paced_link_asks_for_its_lead_and_owes_the_desk_what_it_is_behind() {
     let register = RegisterMsg::decode(&buf.payload()[..header.payload_len as usize]);
     assert_eq!(register.pace_lead_frames, 1_920);
     let reply = RegisteredMsg {
+        strips: Vec::new(),
         strip_index: 0,
         hub_sample_rate: 48_000,
         hub_buffer_size: 256,

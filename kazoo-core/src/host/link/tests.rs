@@ -27,7 +27,7 @@ fn connect_with_no_desk_is_no_desk_after_three_tries() {
 fn drain_events_takes_at_most_sixty_four_per_call() {
     let (mut sender, receiver) = ringbuf::HeapRb::new(128).split();
     for _ in 0..100 {
-        sender.try_push(HubEvent::Shutdown).unwrap();
+        sender.try_push(ToAudio::Hub(HubEvent::Shutdown)).unwrap();
     }
     let mut receiver = EventRx::new(receiver);
     let mut count = 0;
@@ -50,6 +50,7 @@ fn drop_sends_shutdown() {
             MSG_REGISTER
         );
         let reply = RegisteredMsg {
+            strips: Vec::new(),
             strip_index: 0,
             hub_sample_rate: 48_000,
             hub_buffer_size: 256,

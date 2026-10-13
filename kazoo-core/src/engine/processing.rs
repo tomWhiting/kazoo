@@ -613,7 +613,9 @@ fn drain_desk_messages(io: &mut ProcessingIO, state: &mut ProcessingState) {
             },
             // The desk's own mixer parameters are its business, and the
             // link handles the desk shutting down.
-            HubMessage::ParameterChange(_) | HubMessage::Shutdown => {}
+            HubMessage::ParameterChange(_)
+            | HubMessage::StreamReady { .. }
+            | HubMessage::Shutdown => {}
         }
     }
 }

@@ -814,6 +814,7 @@ impl Server {
         let clock = self.clock();
         let transport = self.shared.transport();
         let registered = RegisteredMsg {
+            strips: Vec::new(),
             strip_index: u8::try_from(slot).unwrap_or(u8::MAX),
             hub_sample_rate: self.config.sample_rate,
             hub_buffer_size: clock.device_frames,
