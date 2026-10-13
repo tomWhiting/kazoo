@@ -183,7 +183,9 @@ impl Gate {
             self.tune(values);
         }
         let [key_left, key_right] = &mut self.highpass;
-        let detected = keyed(key_left, left).abs().max(keyed(key_right, right).abs());
+        let detected = keyed(key_left, left)
+            .abs()
+            .max(keyed(key_right, right).abs());
         self.envelope = f64::from(detected).max(self.envelope * self.detector_release);
         if self.envelope < 1e-20 {
             self.envelope = 0.0;
