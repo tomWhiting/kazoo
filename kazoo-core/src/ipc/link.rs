@@ -987,8 +987,15 @@ impl LinkWorker {
         while self.callback_requests.try_pop().is_some() {
             self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
         }
-        while self.ui_requests.try_recv().is_ok() {
-            self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
+        while let Ok(request) = self.ui_requests.try_recv() {
+            // A stream change is already in the table the next registration
+            // is built from: nothing is lost.
+            if !matches!(
+                request,
+                Request::StreamAdd { .. } | Request::StreamRemove { .. }
+            ) {
+                self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 

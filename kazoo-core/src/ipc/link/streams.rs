@@ -196,6 +196,11 @@ impl LinkWorker {
                 return RETRY_INTERVAL;
             }
         };
+        // add_stream and remove_stream change the table and queue their
+        // request under this lock, so every stream request queued now is
+        // in the registration below; sent after it, a desk would refuse an
+        // add for a stream it has seated, or remove one added again since.
+        self.discard_backlog();
         let register = self.config.register_streams(&streams);
         match HubIpcClient::register_with_timeout(&socket, &register, Duration::from_millis(250)) {
             Ok(mut client) => {
