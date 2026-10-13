@@ -12,6 +12,13 @@ fn main() -> ExitCode {
     }
     match cli.command {
         Command::Mix(args) => finish(kazoo_mix::run(args.into())),
+        Command::Studio { command } => match kazoo::studio::run(&command) {
+            Ok(code) => code,
+            Err(report) => {
+                eprintln!("kazoo: {report:#}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Wall { command } => finish(wall(command)),
         Command::Mcp(args) => finish(kazoo_mcp::run(args.into())),
         Command::EightOhEight => finish(kazoo_808::run(kazoo_808::Args)),

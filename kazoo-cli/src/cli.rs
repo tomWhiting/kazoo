@@ -18,6 +18,12 @@ pub struct Cli {
 pub enum Command {
     /// The desk: every instrument plugs into a strip and follows its tempo and play/stop.
     Mix(MixArgs),
+    /// Start or stop the desk and instruments named in a studio session file.
+    Studio {
+        /// The operation on the named studio session.
+        #[command(subcommand)]
+        command: StudioCommand,
+    },
     /// The wall: the shared modular synth that never stops (the console, unless told otherwise).
     Wall {
         /// The wall operation; none opens its console.
@@ -60,6 +66,21 @@ pub struct MixArgs {
     /// Put a built-in 808 pattern on strip 1.
     #[arg(long)]
     pub demo: bool,
+}
+
+/// Operations on a named studio session.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum StudioCommand {
+    /// Start the desk and instruments in tmux, then attach to their panes.
+    Up {
+        /// The session file name in ~/.kazoo/studio, without .toml.
+        name: String,
+    },
+    /// Stop the desk before stopping the instrument panes.
+    Down {
+        /// The tmux studio session name, without the kazoo- prefix.
+        name: String,
+    },
 }
 
 /// Operations on the shared wall.
