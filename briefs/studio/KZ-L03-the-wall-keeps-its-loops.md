@@ -4,6 +4,14 @@ Line numbers are from the sweep that wrote this brief, at `247ca07`, and may hav
 
 Time: about 30 minutes of a builder's work. One mechanism: the loop's place in the patch, and the tape thread that moves reels between the store and the loops. Crates: kazoo-wall only (new `src/daemon/loops.rs`, `src/daemon/loops/worker.rs`, `src/daemon/loops/tests.rs`; small additions to `patch.rs`, `migrate.rs`, `store.rs`, `protocol/mod.rs`, `change.rs`, `daemon/wall.rs`). Depends: KZ-L01 (the reel store), KZ-L02 (the loop module), KZ-D03 (sinks; landed at `247ca07`) and KZ-W01a (landed at `779e316`; its `seed` field sits beside the new ones in the same `PatchFile` literals).
 
+Read by Cassio, 14 Oct 00:2x. Changes: the checks are written out in the lane form, and the live-wall listen is Cassio's and Tom's after landing.
+
+**The tree (Track T, PLAN.md) and this lane.** Since this brief was written, Tom decided the wall is one tree versioned in git (KZ-T01 to T04). A loop's line in the patch names its reel by content hash, which is exactly what a tree commit should carry: the tree stores the patch text, never the audio. Two consequences:
+- If KZ-T01 has landed when this lane branches, `PatchFile` already has T01's birth-mark fields; add `loops` and `retired_loops` beside them, and every `PatchFile { .. }` literal T01 touched gains the two fields too.
+- A reel named by any commit in the tree must never be swept. That is KZ-L04's sweep, not this lane's; it is noted there.
+
+Every test that sets a directory through the environment uses the wall tests' existing helper for the state dir. `std::env::set_var` is `unsafe` in this edition and the workspace forbids unsafe, so if the helper does not cover a second variable, pass the reels directory as a parameter instead (a `Loops::with_reels_dir` used by the tests) and say so under CHANGED.
+
 ## Outcome
 
 A wall with loops on it is saved as text. Each loop's line names its reel (`9f3c01ab…`), its length in beats and frames, where it was spliced, which of its bars were written on which pass, and the desk strip it records from, if any. Loading that save, starting the daemon, undoing a removal, or the engine being rebuilt after the audio device changes all put every loop back with exactly the samples it had. The same save renders the same samples every time.
@@ -117,7 +125,15 @@ In `daemon/loops/tests.rs` and `daemon/wall/tests.rs`. Build the wall offline as
 
 ## Checks
 
-As PLAN.md, with `-p kazoo-wall`, and `ast-grep scan kazoo-wall/src`. Run doc tests for kazoo-wall.
+Every cargo command runs under the kazoo cargo lock, niced, with four jobs. Read `df -h /System/Volumes/Data` before each and put it in START and END.
+
+```
+nice lockf -k /Users/tom/.kazoo-cargo.lock cargo nextest run -p kazoo-wall --build-jobs 4 -j 4
+nice lockf -k /Users/tom/.kazoo-cargo.lock cargo clippy -p kazoo-wall --all-targets -j 4 -- -D warnings
+nice lockf -k /Users/tom/.kazoo-cargo.lock cargo test --doc -p kazoo-wall -j 4
+cargo fmt --all --check
+ast-grep scan kazoo-wall/src
+```
 
 ## Definition of done
 
@@ -125,7 +141,7 @@ As PLAN.md, with `-p kazoo-wall`, and `ast-grep scan kazoo-wall/src`. Run doc te
 - [ ] No reel is read, and no buffer over 1 MB is allocated, on the control thread or the render thread. Name in DONE every place a loop's buffer is allocated and freed: it is allocated on the worker and in `LoopModule::new` (build, control side), and freed in `Loops::collect` and in the retire drain.
 - [ ] `MAX_LOOPS`, `WORST_LOOP_BYTES`, `MAX_RETIRED_LOOPS`, `valid_from`, `Request::Loop`, `What::Erase` and `What::LoopFrom` exist as named.
 - [ ] D03's sinks include `loop`. Name the line.
-- [ ] By hand on the live wall, after the landing reinstall: add a loop, patch a `vco` into it and an `out` from it, turn `record` on for a bar and off, and hear the bar come round. Say what you heard. Saving it is KZ-L04's by-hand check, because no reel is written until then.
+- [ ] Not the builder's: the builder never touches the live wall (no MCP call, load, save or daemon restart). After landing and reinstalling, Cassio adds a loop, patches a `vco` into it and an `out` from it, records a bar, and asks Tom to listen for the bar coming round. Saving it is KZ-L04's check, because no reel is written until then. The builder lists this under NOT CONFIRMED and does not claim it.
 
 ## Code quality
 
