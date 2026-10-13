@@ -276,7 +276,7 @@ fn erase_then_undo_brings_the_tape_back() {
         patch
             .loop_record("loop1")
             .and_then(|kept| kept.tape.as_ref()),
-        Some(&tape.clone())
+        Some(&tape)
     );
     assert_eq!(
         crate::change::describe(&undone),
