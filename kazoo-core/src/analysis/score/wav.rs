@@ -12,6 +12,31 @@ fn config_error(path: &Path, reason: impl std::fmt::Display) -> crate::Error {
     crate::Error::Config(format!("{}: {reason}", path.display()))
 }
 
+fn whole(count: usize) -> f64 {
+    u32::try_from(count).map_or(f64::NAN, f64::from)
+}
+
+/// The reference at a step's centre sample, from centred frames `hop` apart:
+/// voiced as the nearest frame is, and between two voiced frames
+/// interpolated in octaves.
+fn at_step(frames: &[Option<f64>], step: usize, hop: usize) -> Option<f32> {
+    let centre = step * SCORE_STEP + SCORE_STEP / 2;
+    let before = centre / hop;
+    let offset = centre % hop;
+    let nearest = if offset * 2 < hop { before } else { before + 1 };
+    let hz = (*frames.get(nearest)?)?;
+    let hz = match (frames[before], frames.get(before + 1).copied().flatten()) {
+        (Some(low), Some(high)) => {
+            let weight = whole(offset) / whole(hop);
+            low.log2()
+                .mul_add(1.0 - weight, high.log2() * weight)
+                .exp2()
+        }
+        _ => hz,
+    };
+    Some(hz as f32)
+}
+
 /// Read channel zero and judge the entire take without streaming latency.
 pub fn read_take(path: &Path) -> crate::Result<Take> {
     let mut reader = WavReader::open(path).map_err(|error| config_error(path, error))?;
@@ -19,7 +44,8 @@ pub fn read_take(path: &Path) -> crate::Result<Take> {
     if spec.channels == 0 {
         return Err(config_error(path, "WAV has no channels"));
     }
-    let frame = PitchDetectorConfig::for_rate(spec.sample_rate).frame_length;
+    let config = PitchDetectorConfig::for_rate(spec.sample_rate);
+    let frame = config.frame_length;
     let rate = f64::from(spec.sample_rate);
     let max_period = (rate / f64::from(VOICE_MIN_HZ)).ceil().min(f64::from(
         u32::try_from(frame / 2 - 1).map_err(|error| config_error(path, error))?,
@@ -72,22 +98,30 @@ pub fn read_take(path: &Path) -> crate::Result<Take> {
         return Err(config_error(path, "WAV has no samples"));
     }
     let input: Vec<f64> = samples.iter().copied().map(f64::from).collect();
+    // The judge's own framing, run once over the whole take. pYIN's HMM lets
+    // a pitch move at most 35.92 octaves a second, in whole semitones per
+    // frame; at one frame per 32-sample step that rounds to none, so the path
+    // could only change pitch through an unvoiced frame (a slide lagged, every
+    // step dropped out), and its cost (frames x states squared) was 16 times
+    // this. Each step is then read between the two frames around its centre.
     let mut executor = PYINExecutor::new(
         f64::from(VOICE_MIN_HZ),
         f64::from(VOICE_MAX_HZ),
         spec.sample_rate,
-        frame,
+        config.frame_length,
         None,
-        Some(SCORE_STEP),
+        Some(config.hop_length),
         None,
     );
     let (_, f0, voiced, _) =
         executor.pyin(&input, f64::NAN, Framing::Center(PadMode::Constant(0.0)));
-    let truth: Vec<_> = f0
+    let frames: Vec<Option<f64>> = f0
         .into_iter()
         .zip(voiced)
-        .take(samples.len().div_ceil(SCORE_STEP))
-        .map(|(hz, voiced)| (voiced && hz.is_finite() && hz > 0.0).then_some(hz as f32))
+        .map(|(hz, voiced)| (voiced && hz.is_finite() && hz > 0.0).then_some(hz))
+        .collect();
+    let truth: Vec<_> = (0..samples.len().div_ceil(SCORE_STEP))
+        .map(|step| at_step(&frames, step, config.hop_length))
         .collect();
     let onsets = truth
         .iter()
