@@ -196,10 +196,13 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
 
     // Cleanup. With the stream stopped no new note can start, so the note
     // the driven synth still holds is released before the link closes.
+    let restored = terminal.leave();
     drop(stream);
     let released = release_driven(&shared, args.target, &hub);
     drop(hub);
-    let restored = terminal.leave();
+    if let Some(report) = kazoo_core::host::link::exit_report() {
+        eprintln!("{report}");
+    }
     let result = result.and_then(|()| released.map_err(|why| color_eyre::eyre::eyre!(why)));
 
     match (result, restored) {

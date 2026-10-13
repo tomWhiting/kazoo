@@ -155,13 +155,16 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let result = event_loop(&mut tui, &mut app, &mut channels, &stream);
 
     // -----------------------------------------------------------------------
-    // Cleanup: stop audio, then always restore the terminal.
+    // Cleanup: always restore the terminal, then stop audio and leave the desk.
     // -----------------------------------------------------------------------
 
+    let restored = tui.leave();
     drop(stream);
     drop(channels);
     drop(hub);
-    let restored = tui.leave();
+    if let Some(report) = kazoo_core::host::link::exit_report() {
+        eprintln!("{report}");
+    }
     match (result, restored) {
         (Ok(()), restored) => restored.map_err(Into::into),
         (Err(error), Ok(())) => Err(error),

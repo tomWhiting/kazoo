@@ -93,11 +93,16 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Run the TUI event loop.
     let mut app = App::new(sample_rate, CommandSender::new(cmd_tx));
     let result = run_event_loop(&mut terminal, &mut app, &shared, &hub, &stream);
-    let restored = terminal.leave();
-
-    // Stop audio, then leave the desk.
-    drop(stream);
-    drop(hub);
+    let restored = teardown(
+        || terminal.leave(),
+        || drop(stream),
+        || drop(hub),
+        || {
+            if let Some(report) = kazoo_core::host::link::exit_report() {
+                eprintln!("{report}");
+            }
+        },
+    );
 
     match (result, restored) {
         (Ok(()), Ok(())) => Ok(()),
@@ -107,6 +112,19 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
             Err(err.wrap_err(format!("restoring the terminal also failed: {restore_err}")))
         }
     }
+}
+
+fn teardown<R>(
+    leave: impl FnOnce() -> R,
+    stop_stream: impl FnOnce(),
+    drop_link: impl FnOnce(),
+    report: impl FnOnce(),
+) -> R {
+    let restored = leave();
+    stop_stream();
+    drop_link();
+    report();
+    restored
 }
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
@@ -154,6 +172,22 @@ fn run_event_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn teardown_leaves_terminal_stops_stream_drops_link_then_reports() {
+        let steps = std::cell::RefCell::new(Vec::new());
+        let restored = teardown(
+            || {
+                steps.borrow_mut().push("leave");
+                Err::<(), _>("terminal restore failed")
+            },
+            || steps.borrow_mut().push("stream"),
+            || steps.borrow_mut().push("link"),
+            || steps.borrow_mut().push("report"),
+        );
+        assert_eq!(restored, Err("terminal restore failed"));
+        assert_eq!(*steps.borrow(), ["leave", "stream", "link", "report"]);
+    }
 
     #[test]
     fn help_asks_for_the_usage() {
