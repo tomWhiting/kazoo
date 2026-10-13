@@ -27,6 +27,7 @@ const FOREIGN_GIT_ENV: &[&str] = &[
 ];
 
 /// `git [-C <dir>] [-c ...] <name>`: the only way this crate runs git.
+///
 /// `repack` and `fast-import` get the durability settings they need, and
 /// none of the caller's repository variables reach git, so a daemon started
 /// from inside some other repository (a hook, a tool) still writes only to

@@ -11,7 +11,9 @@ use super::git::{self, Commit, Importer, Planted};
 use super::{Files, TreeError};
 use crate::protocol::{Change, ClockStamp, TreeHealth};
 
-/// Items the queue holds. The log's busiest second held 30 changes and its
+/// Items the queue holds.
+///
+/// The log's busiest second held 30 changes and its
 /// busiest minute 165 (26 Sep to 13 Oct); the flood guard lets eight seats
 /// make 240 at once. 1,024 is four times that, and over six of the busiest
 /// minutes.
@@ -27,6 +29,8 @@ pub const CHECKPOINT_AFTER: Duration = Duration::from_secs(1);
 /// Checkpoint after this many commits even while a flood keeps the queue
 /// busy, so a crash never loses more than this many.
 pub const CHECKPOINT_COMMITS: u64 = 256;
+/// Checkpoints between repacks.
+///
 /// Each checkpoint writes one pack; a geometric repack after every 64
 /// keeps their number logarithmic without rewriting everything. The
 /// importer is finished and started again around it, since a running
@@ -651,9 +655,10 @@ fn worker(
 /// Changed paths and their optional replacement bytes.
 pub type FileDiff = Vec<(String, Option<Vec<u8>>)>;
 
-/// The wall's files (T01's `to_files`) compared with `mirror`: each new or
-/// changed file with its bytes, each gone one with `None`; then `mirror`
-/// becomes the new files. Rack moves and groups ride in `wall.toml`.
+/// The wall's files (T01's `to_files`) compared with `mirror`.
+///
+/// Each new or changed file comes with its bytes, each gone one with
+/// `None`; then `mirror` becomes the new files. Rack moves and groups ride in `wall.toml`.
 ///
 /// # Errors
 ///

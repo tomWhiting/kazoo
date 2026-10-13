@@ -396,7 +396,7 @@ fn a_tree_that_fails_at_its_start_is_said_and_clears_with_nothing_behind() {
     let cleared = tick_until(
         &mut wall,
         thread::RETRY_AFTER + Duration::from_secs(5),
-        |tree| tree.is_ok(),
+        crate::protocol::TreeHealth::is_ok,
     );
     assert!(cleared.is_some(), "{:?}", wall.snapshot().tree);
     wall.close(Instant::now());
