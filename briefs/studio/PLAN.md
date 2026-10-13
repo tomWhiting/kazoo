@@ -243,6 +243,7 @@ Tom's words, 13 Oct 2026, about 19:20 to 20:10:
 | T05a the engine glides | cables and tempo glide in the engine, frame by frame | kazoo-wall | T04 |
 | T05b the wall crosses to a moment | going to a moment glides, fades and crossfades by birth mark over N beats (16 by default, 0 a cut, up to 64); an overload becomes a cut | kazoo-wall | T05a, D03b |
 | T05c seats and console choose the crossing | `wall_go`'s beats; the console's `[ ]` crossing length | kazoo-mcp, kazoo-wall (tui) | T05b |
+| T05d loads cross | a load of a save (and its undo) crosses over 16 beats like a go, 0 for a cut; `wall_load` and the console's load question take the length. Decided 13 Oct on Waffles' reading: a save is a mark on the tree, so reaching it must not sound different by which verb reached it. A new (empty) wall stays a cut, and says so. Brief to write; likely two lanes (wall, then seats and console) by the ten-file rule | kazoo-wall, kazoo-mcp | T05c |
 | T06a the tree can be walked and burnt | the tree's side: a branch's moments in order with their beats; fire steps do not dim lanterns | kazoo-wall | T05c |
 | T06b the wall burns a branch | replay of a branch at its beats, 0.25× to 64×; a change mid-fire puts it out and grows a bud; news to every seat | kazoo-wall | T06a |
 | T06c wall fire for the seats | `wall_fire` lights and puts out the fire | kazoo-mcp | T06b |
