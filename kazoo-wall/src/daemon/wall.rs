@@ -475,8 +475,9 @@ pub struct Wall {
     /// They are not rendered: knob glides freeze, with look reporting the
     /// target and frozen value, and resume when heard again. State (tails,
     /// envelope stages and sequencer steps) is held, never reset. Outputs
-    /// keep the last block; no heard module can read an unheard source.
-    /// A scope or readout makes its sources heard. An unheard speaker's
+    /// keep the last block; no heard module can read an unheard source, and
+    /// cables into a module heard again start with empty delay lines (see
+    /// `engine::tables`). A scope or readout makes its sources heard. An unheard speaker's
     /// phrase feed waits for rendering; speech synthesis completion answers
     /// the request without waiting for playback.
     unheard: Vec<String>,

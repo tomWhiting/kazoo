@@ -8,7 +8,12 @@
 //! that look reports. Their state, including tails, envelope stages and
 //! sequencer steps, is held rather than reset. Output buffers keep their
 //! last rendered block; reachability prevents a heard module reading an
-//! unheard source, so those stale blocks are never read.
+//! unheard source. When a group of modules is heard again, a cable that
+//! closes a feedback loop inside it reads its source's last rendered block
+//! once, one sub-block, as a back-edge always reads the block before. The
+//! delay lines of cables into a module heard again are given fresh tags on
+//! the control side, so each starts empty, as a new cable does, and never
+//! replays what it held when its reader went unheard.
 //!
 //! Plugging a scope or readout into a module makes it heard. An unheard
 //! speaker does not consume its phrase feed: words wait there until it is
