@@ -131,3 +131,6 @@ START KZ-T01 base=acf8b92 branch=lane/kz-T01 df=1GB at 20:29
 - Track P: all 17 briefs read by Cassio and committed; Track P merged into PLAN.md (P08's key is `v`, P15's is `C`: `t` is tap tempo and `c` the click on the desk). Openable now: P01, P04, P10.
 - KZ-T01 merged (review READY c9a545c; fixed duplicate birth marks). Merge check on main 09511e0: fmt 0, clippy 0, nextest 3920/3920, doc 0, ast-grep 0 (target/kz-logs/full-T01-2311.log).
 - KZ-V02 merged (review READY 102afca; seven fixed: pYIN reference at the judge's hop, latency one step short, tie rule, steps_missed, float headroom, linked fixtures, suite test). Merge check on main 196ea41: fmt 0, clippy 0, nextest 3935/3935, doc 0, ast-grep 0 (target/kz-logs/full-V02-2354.log). V03's brief updated from the review (per-event latency, no missed events, pyin opt-level 3).
+START KZ-V03 base=ac26501 branch=lane/kz-V03 df=48GB at 00:26
+START KZ-D03c base=ac26501 branch=lane/kz-D03c df=48GB at 00:27
+- Follow-ups from F01's review (to brief): kazoo-fx/src/space/spring.rs is 1250 lines (over 1000); kazoo-speech's test Scratch (testing.rs:15) makes folders in the system temp directory (against the no-temp rule).
