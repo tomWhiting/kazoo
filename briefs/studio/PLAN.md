@@ -95,6 +95,115 @@ Each lane is one brief in this directory, `KZ-<track><nn>-<slug>.md`. A lane is 
 | E01 chains | `:chain save <name>` keeps a selected run of modules and cables; `:chain add <name>` puts it down | kazoo-wall, kazoo-mcp | — |
 | E02 folding groups | a group folds to one tile on the rack and unfolds | kazoo-wall | — |
 
+### Track V: the voice
+
+Tom's words, 13 Oct 2026, about 15:10 to 15:20: "I would really love to be able to sing the melody into the synth kind of thing or whistle it into the synth ... look at the mouth synthesizer part like I want it to be able to sort of capture like auto tune kind of things" (and then: "When I say auto-tune, obviously, I mean like quantization") "... but also to be able to just drive it direct, like, hertz, you know, hertz for hertz." Then: "id still love a dedicated synth, not just on the wall, but i'd like voice to able to drive all the engines we have".
+
+**Where we are (sweep at `fa3c8d8`).** The voice path is kazoo-tui's engine (`kazoo mouth` runs kazoo-tui today, `kazoo-cli/src/main.rs:37`). Pitch comes from pYIN (`kazoo-core/src/analysis/pitch.rs`) on the analysis thread. It analyses non-overlapping 2048-sample buffers, so there is one estimate every 43 to 46 ms (`pitch.rs:139-154`). It averages the Hz of the five centre-padded sub-frames it gets back, so an octave flip reads as a note in between (`:186-217`). Its range is 60 to 1000 Hz (`:29-30`), so a whistle above 1 kHz is never voiced and the bottom of a low hum is cut off. Its sample rate stays at the default 44,100 (`:31`), because `engine::start` builds the detector from `config.pitch` (`engine/mod.rs:183`) and kazoo-tui passes `EngineConfig::default()` (`kazoo-tui/src/run.rs:85-88`), even though the stream runs at the device rate (`engine/mod.rs:176`). On a 48 kHz device every note therefore reads 147 cents flat (×44.1/48). The path from sound to synth is: input callback → mic ring → output callback → analysis ring → analysis thread, which sleeps 1 ms when the ring is empty (`analysis_thread.rs:95-105`) → `HeapRb<PitchEstimate>` of 32 → `drain_analysis_results` (`processing.rs:865-903`) → `set_pitch` on armed tracks → `PitchTrackedSynth`, with a 20 ms one-pole portamento (`synthesis/pitch_tracked.rs:128`). The onset detector is computed and thrown away (`analysis_thread.rs:125-127`). The desk carries notes (`NoteEventMsg`, 7-bit, no timestamp, `ipc/types.rs:482-540`). It carries no continuous control, and it disconnects an instrument that sends any type it does not know (`kazoo-mix/src/hub/instrument.rs:260`). No instrument handles pitch bend from the desk. The wall drops desk notes (`kazoo-wall/src/engine/mod.rs:1072-1076`) and has no module that takes anything from the desk.
+
+**Decisions for the whole track** (each is argued in its brief):
+- **A fast tracker with a slow judge.** A period-synchronous cycle tracker runs on the output callback and updates once per cycle of the note. It works the way a hardware pitch-to-voltage converter does: a Schmitt trigger on a filtered signal marks each cycle, and a normalised autocorrelation over exactly one period checks each candidate period. pYIN stays on a thread as the judge. It moves to overlapping 2048-sample windows with a 512-sample hop, takes the newest frame instead of an average, and runs at the device rate. The fusion takes octave and voicing from the judge and Hz from the tracker.
+- **Latency budgets.** The first pitch arrives within 2 periods + 1 ms of the note's start: 2.3 ms for a 1.5 kHz whistle, 10 ms for A3, 31 ms for a C2 hum. A change of note lands within 2 periods of the new note + 1 ms. A voice frame goes out every 64 samples (1.3 ms at 48 kHz). The desk passes a frame from the mouth to a follower within 2 ms at p95 on a quiet machine. Taken together, from sound in to a following instrument's sound out is about 2 periods + 8 ms at 128-frame buffers.
+- **The voice stream is its own message, not audio and not notes.** A batch of 40-byte frames goes out as `MSG_VOICE` (0x31). A follower asks for it with `MSG_VOICE_FOLLOW` (0x32), and the desk says it can carry it with `MSG_DESK_FEATURES` (0x24, hub → instrument). Three other routes were weighed and turned down:
+  - B03's named streams are audio. Each takes a desk strip, goes into the mix and will be resampled by B05.
+  - Notes plus `ParameterChange` are 7-bit and discrete. They would need every instrument's parameter table (B06), and 750 messages a second would fill the 64-entry request ring that notes share (`ipc/link.rs:88`).
+  - The protocol version stays 3: a new desk tells an instrument it carries the voice, and an instrument built before this track never asks.
+- **One way to follow, the same everywhere.** `i` toggles follow-the-voice on every pitched instrument, and `--follow` starts one following. `i` is in A05's list of keys left free for commands and is bound by no instrument today. `m` is the wall console's key for hearing the wall, so it is not used here. A mono instrument plays legato with continuous pitch. A poly instrument gives one voice to the voice, and keyboard notes keep the other voices.
+- **Excluded from following, with reasons:**
+  - kazoo-808: its notes choose a drum, not a pitch.
+  - kazoo-arp: it makes notes for other instruments. Its only sound is a preview sine, and a voice would fight its pattern.
+  - kazoo-play: it plays text phrases, and its jam engine is a 16-sine monitor.
+  - kazoo-tui: the voice drives its armed tracks directly through its own engine (V06).
+  - kazoo-perc, kazoo-sampler, kazoo-speech: libraries, not programs.
+  - kazoo-mix: the desk.
+  - The wall gets modules instead (V10).
+
+| Lane | Outcome | Crates | Depends |
+|---|---|---|---|
+| V01 the judge at the right rate | pYIN runs at the device rate on overlapping windows (2048 window, 512 hop at 48 kHz, scaled for 88.2 kHz and up), reads the newest frame instead of an average, and covers 50 to 4000 Hz; a bench for one judge run | kazoo-core | — |
+| V02 the scoreboard | `analysis::score`: synthetic takes (sines, a low hum, steps, vibrato, a glide, octave bait, a vowel, noise bursts, a whistle, re-articulation) with exact truth, plus WAVs dropped into `kazoo-core/tests/fixtures/voice/` scored against offline pYIN; latency, cents, octave, gross, missed and false-voiced figures; the `voice_score` example; baseline in BENCH.md | kazoo-core | V01 |
+| V03 the cycle tracker | `analysis::cycle::CycleTracker`: a pitch per cycle on the callback, allocation-free, meeting the latency budget on the scoreboard | kazoo-core | V02 |
+| V04 the voice frame | `kazoo_core::voice`: `VoiceFrame` every 64 samples (Hz, 1 V/oct with 0 = C4, gate, onset, loudness, breath, confidence); the judge thread (pYIN plus the onset detector, which is no longer thrown away); the fusion that folds octaves and vetoes false voicing | kazoo-core | V03 |
+| V05 the quantiser | `voice::quantise`: scale and root, snap speed 0 to 400 ms, keep-vibrato, hysteresis, blend; the wall's scale tables as the one source | kazoo-core | V04 |
+| V06 kazoo-tui plays Hz for Hz | the tui engine's armed tracks follow the voice frame, not the 46 ms pYIN; the judge thread replaces pitch and onset on the analysis thread; portamento default 3 ms | kazoo-core | V04 |
+| V07a voice on the wire | `MSG_VOICE`, `MSG_VOICE_FOLLOW` and `MSG_DESK_FEATURES`; `HubLinkAudio::send_voice` and `drain_voice` on rings of their own; `HubLink::follow_voice` | kazoo-core | V04, B03a |
+| V07b the desk carries the voice | the hub announces the feature, forwards voice only to followers, keeps one voice at a time, and the strip heads say `voice` and `follows` | kazoo-mix | V07a, B03b |
+| V08a the mouth | new crate kazoo-mouth: mic in, the tracker, the quantiser, its own synth (tone plus breath "air"), the stream published on the desk; `kazoo mouth` runs it, kazoo-tui moves to `kazoo tui`; `kazoo mouth --score` | kazoo-mouth (new), kazoo-cli | V05, V07a |
+| V08b the mouth's screen | the pitch readout, a 4-second trail (direct and snapped), meters, and every quantiser and synth control on keys | kazoo-mouth | V08a |
+| V09a following: the shared part and the mini | `voice::follow` (`Follower`, the `Follows` trait, `FollowStatus`), `FOLLOW_VOICE = 'i'` in `kazoo_host::keys`, `--follow`; the mini follows legato | kazoo-core, kazoo-host, kazoo-mini, kazoo-cli | V07b, V08a, A05 |
+| V09b following: 303, cs80, dx | the 303 follows legato, with its sequencer resting; one voice of the cs80 and of the dx follows, and keyboard notes keep the rest | those three, kazoo-cli | V09a |
+| V09c following: juno, prophet | one voice of each follows | those two, kazoo-cli | V09a |
+| V09d following: string and glass | the plucked and struck voices are retuned at frame rate while they ring | kazoo-string, kazoo-glass, kazoo-cli | V09a |
+| V10 the voice on the wall | `voice` (pitch, snap, gate, level) and `breath` (breath, onset, sure) modules fed from the desk's stream; the wall follows while one is on it; the wall's `quant` and the mouth share one scale table | kazoo-wall | V07b, V05 |
+
+**For Tom by hand (needed from V02 on, not blocking):** four takes into `kazoo-core/tests/fixtures/voice/`, each 10 to 30 s, mono or stereo, any rate, on the laptop mic at your normal distance: `hum-low.wav` (a slow low hum, the lowest you can), `vibrato-phrase.wav` (a sung phrase with vibrato), `slides.wav` (slides up and down between notes), `whistle.wav` (a whistled tune). `cargo run --release -p kazoo-core --example voice_score` scores them, and from V08a on so does `kazoo mouth --score kazoo-core/tests/fixtures/voice/*.wav`.
+
+**Follow-up for C05a (recorded where C05a is next written, not built here):** C05a's `.kzev` record has kinds 0 to 4. Recording the voice stream beside a take needs kind 5 "voice frame", with the 40-byte frame as its body.
+
+### Track L: loops and tape
+
+Tom's words, 13 Oct 2026, about 15:25 to 15:35:
+- On loops: "for that [the voice] to work alongside the wall ... we also really need like the tracking, like the loop stuff, because like I'd record something as a loop and have it work in and out over time ... I don't know if that's on the wall or in the tracker or both."
+- On the look: "I love the aesthetic ... recreating sort of old analog stuff in the terminal ... we could really lean into that aesthetic." He also named Teenage Engineering-style interfaces, and: "Try to create the effect of like a spinning reel to reel tape thing. I had an Ampex ... an eight track. It had like the eight big preamps that were like as big as a VCR, kind of mounted on the top. The thing was taller than me ... I think a standard tracking view should be good, but I also think that'd be a great thing ... a loom-style concept, this idea of things being sort of woven together ... something we can do with the interface for a looping thing with reel-to-reel tape."
+- The binding rule: "the dressing should never overpower function, the tracking view is why im saying that, we need to be careful vu meters and such dont take over."
+- Then: "lets get them briefed and ready, and move through it as best we can."
+
+**Where we are (sweep at `247ca07`).**
+- The wall has no recorder of its own material. `wall_record` writes the master to a WAV (`daemon/record.rs`), and nothing plays a recording back.
+- The wall takes no sound from the desk: `drain_hub` drops notes and parameters (`engine/mod.rs:1061`). Track V brings the voice to the wall as control frames (V10), not as sound.
+- The mouth (V08a) sends only its synth to the desk.
+- The wall's save is text with a hard size bound (`MAX_WALL_FILE`, `store.rs:67`), and its change log is stamped with UTC, not frames. KZ-W02 (frame-stamped replay) is not written yet.
+- The desk has no recording, takes or timeline until Track C (C04, C06, C07).
+- D03 culls any module that reaches no `out`, `scope` or `readout`.
+- `tape` and `reel` are already kazoo-fx effect ids, so the new module is `loop`.
+- For drawing, the wall console has its own braille grid (`tui/rack/screen.rs`'s layered dots, `tui/rack/dial.rs`'s `braille_bit`, `braille` and `dial::small`). The desk draws its VU needles with ratatui's `Canvas` and `Marker::Braille` (`kazoo-mix/src/ui.rs:963`).
+
+**Decisions for the whole track** (each is argued in its brief):
+- **One recording, two places.** The loop machine lives on the wall: a `loop` module (L02) whose level, like every knob, any cable moves. So a loop works in and out over time under the wall's own modulation. Every take it finishes is one reel in a shared store, and the same reel reaches the desk as a loop clip to place, repeat, mix and record (L10, L11).
+- **Reels by hash, not in the save.** `~/.kazoo/reels/<sha256>.wav` is 32-bit float stereo, hashed over its samples. The wall's save and the desk's session name reels; they never hold audio.
+  - A reel is kept while any pin list names it, and swept a day after nothing does.
+  - Checkpoints are held to 4 GiB.
+  - The sweep deletes nothing while any pin list is unreadable (L01, L04).
+- **Loops in bars, in the wall's time.**
+  - Length is `bars` × 4 + `beats`, read when blank tape is spliced, up to 96 s (4,608,000 frames, 36.9 MB).
+  - Punches land on the loop's own bar lines.
+  - The head is a pure function of the wall's beat, so a save, a load and a rebuild need no head state. A tempo change varispeeds the tape.
+  - There are at most eight loops on a wall, the eight-track: 295 MB at 48 kHz.
+  - Unequal lengths drift (Eno's *Music for Airports*). `look` says when they meet again (L05), and the loom shows it (L13).
+- **Tape-like loss is optional.** `keep` (overdub feedback, default 1) and `wear` (3 dB and a quarter-octave a pass at full, read-time, bit-exact at 0). The seam is an 8 ms diagonal splice from a recorded tail, and so are the punch fades.
+- **Exactness.**
+  - The loop has no randomness, so the same save renders the same samples.
+  - A take is a copy-on-write snapshot at a stated frame, logged by `kazoo-wall` as an undoable `What::Take` with its reel, so KZ-W02 can install it at that frame on replay. Between a punch-in and its take, replay plays what the wall alone would record.
+  - A save waits up to 5 s for recording loops; a load says what it did not keep.
+  - Checkpoints every minute bound a crash's loss.
+- **Sources.** A loop records what is patched into it (any wall signal, the wall's own mix included), or a desk strip named by `from`.
+  - The desk sends that strip back down the wall's link ("returns", L06, L07), each block stamped with the wall's own stream frame at which the desk played it.
+  - The loop writes it 0.5 s behind its head, at the positions it was heard (L09). Tom's voice reaches the desk dry as `mouth/dry` (L08).
+  - A return is not offered as a live wall module: heard live it would flam by the desk's lead, and only a loop, heard one pass later, can put it back on the beat.
+- **Views, function first.**
+  - The desk's timeline (C07, the standard tracking view) gets a loop clip drawn as one run with `↻` and seam ticks, and nothing else (L11).
+  - The dressing lives in the wall console, reached on purpose with `T` and `W`, never the default:
+    - the tape view: eight channel strips with braille VU needles, two reels turning one turn a bar with packs that grow as the loop fills, and the tape's bars under the heads (L12);
+    - the loom: outs as warp, loops as weft, over where the loop is louder, past above the line and the predicted future below (L13).
+  - Every mark is listed with the reading it carries.
+  - The caps are 30 fps (tape) and 10 fps (loom), 1 ms a rebuild. An ASCII fallback below 100 × 30, or on `G`, keeps every reading.
+
+| Lane | Outcome | Crates | Depends |
+|---|---|---|---|
+| L01 the reel store | content-addressed f32 WAV reels in `~/.kazoo/reels`, checked on read, pinned by holders, swept after a day's grace, budget constant | kazoo-core | — |
+| L02 the loop module | `loop`: records on bar lines, plays in the wall's time with a spliced seam, overdubs with `keep`, wears with `wear`, copy-on-write snapshots, `pass` and `phase` outputs, never culled into silence by a fault | kazoo-wall | W01a (landed) |
+| L03 the wall keeps its loops | loops in the save by reel, put back on load, undo, restore and rebuild by a tape thread; `erase` and `from` requests; eight at most; a loop is a D03 sink | kazoo-wall | L01, L02, D03 (landed), W01a (landed) |
+| L04 takes | punch-outs become reels and undoable `What::Take` changes; checkpoints a minute apart; a save waits for its loops; pins, the sweep and the 4 GiB checkpoint budget | kazoo-wall | L03 |
+| L05 loops for seats | `look` shows each loop's state, length, place, pass, wear and take; when unequal loops meet again; `wall_loop`; one line on the console's loop panel | kazoo-wall, kazoo-mcp | L04 |
+| L06 returns on the wire | `MSG_RETURN_ASK/READY/AUDIO/DROP` (0x15 to 0x18) and `MSG_LOOP_TAKE` (0x50), gated by desk features; the link's return rings and `pop_return` | kazoo-core | B03a, V07a |
+| L07 the desk sends returns | taps on any strip, group or the master, forwarded by the hub stamped in the asker's stream frames; `ret` on the strip head | kazoo-mix | L06, B03b, C01, C04, V07b |
+| L08 the mouth sends its dry voice | `mouth/dry`, mono, sample-aligned with `mouth/main` | kazoo-mouth | V08a, V08b, B03a, B03b |
+| L09 a loop records a desk return | the engine's return lines; a loop with `from` writes the return 0.5 s behind its head at the beats it was heard, with `nudge`; asks again every 5 s | kazoo-wall | L06, L03, L05, L02 |
+| L10 loop takes reach the desk | the wall sends each punch take; the desk loads the reel with its seam baked, puts it on a `loops` strip's take list, places repeats, saves and pins it in the session | kazoo-wall, kazoo-mix | L04, L06, L07, L01, C06, C08a |
+| L11 loop clips on the timeline | a loop clip drawn as one run with `↻` and seam ticks, moved and deleted whole; the tracking view stays plain | kazoo-mix | L10, C07a, C07b |
+| L12 the tape view | `T`: eight channel strips with braille needles, reels turning with the beat whose packs grow with the take, the tape's bars, the counter; 30 fps cap, ASCII fallback | kazoo-wall | L05 |
+| L13 the loom view | `W`: per-out levels from the engine; outs as warp, loops as weft, over/under by loudness, pass diamonds, past and predicted future; 10 fps cap, ASCII fallback | kazoo-wall | L12, L05 |
+
 ## Order of play
 
 1. D01 (benchmarks first, so every later number is against a baseline) and A01 side by side.
@@ -102,6 +211,8 @@ Each lane is one brief in this directory, `KZ-<track><nn>-<slug>.md`. A lane is 
 3. B01, B02, B03, B04 in order, with B07 and D02 beside them.
 4. C01 through C10 in order, with D03 through D13 beside them (different crates).
 5. B05, B06, E01, E02 fill gaps.
+6. Track V: V01, V02, V03, V04 in order (each scores on the last one's scoreboard). Then V05 and V06 side by side, since they share no files. V07a waits for B03a and V07b waits for B03b, because they edit the same wire files. V08a follows V05 and V07a. Then V08b, V09a and V10 run side by side. After V09a, V09b, V09c and V09d run side by side; they share only `kazoo-cli/src/cli.rs`, where each adds its own `--follow` flags, so the merge is line by line.
+7. Track L: L01 and L02 side by side (different crates), then L03, L04 and L05 in order (each edits `daemon/loops/`). L06 waits for B03a and V07a, because they edit the same wire files, and L07 waits for L06, C04 and V07b. L08 runs once V08b has landed. L09 follows L05 and L06. L12 can run beside L06 to L09 (console files only), then L13. L10 waits for L07 and C08a, then L11 after C07b. The first thing Tom can play is after L05: a loop on the wall recording any wall signal, saved and undoable. Singing into it needs L06 to L09.
 
 ## How a lane runs
 
