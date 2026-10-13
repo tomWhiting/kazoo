@@ -19,6 +19,8 @@ pub mod reels;
 pub mod synthesis;
 pub mod transport;
 
+pub mod voice;
+
 /// In tests, every allocation and free goes through an allocator that can be
 /// told a region must not allocate (`assert_no_alloc`): the engine's tests
 /// run the audio callback under it and fail on any allocation or free.

@@ -667,3 +667,73 @@ present. Receipt: `target/kz-logs/review/voice-score-final.md`.
 | cycle | whistle | 1.33 | 1.33 | 0 | - | - | 0 | 0 | 0.94 | 2.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
 | pYIN | rearticulate | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |
 | cycle | rearticulate | 7.33 | 7.33 | 0 | - | - | 0 | 0 | 0.00 | 2.88 | 0.00 | 0.00 | 11.11 | 0.00 | - |
+
+
+## KZ-V04 voice trackers
+
+Date: 2026-10-13T17:35:22Z (14 Oct 04:35 AEDT), after review. HEAD: `3154dcd` on `lane/kz-V04`.
+Load at completion: load averages 178.66 165.03 161.13.
+
+`nice lockf -k ~/.kazoo-cargo.lock cargo run --release -j 4 -p kazoo-core --example voice_score` exited 0.
+Complete analytic takes at 48,000 Hz; no recorded fixtures were present. The review's fixes (a hot
+input is clipped rather than reset; a recovery's remaining climb is not a second rise) leave every
+row below identical to the builder's run at the uncommitted tree.
+Receipt: `target/kz-logs/review-voice-score.txt`; tables: `target/kz-logs/voice-score.md`.
+Latency measures sample counts, independently of the shared machine load.
+
+| tracker | take | onset median ms | onset max ms | onsets missed | step median ms | step max ms | steps | steps missed | cents median | cents p95 | octave % | gross % | missed % | false % | aligned lag ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pYIN | sine_ladder | 38.00 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 11.73 | 0.00 | 0.00 | 6.69 | 7.78 | - |
+| cycle | sine_ladder | 3.00 | 14.00 | 0 | - | - | 0 | 0 | 0.01 | 0.37 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | sine_ladder | 3.33 | 14.67 | 0 | - | - | 0 | 0 | 0.01 | 0.37 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | hum_low | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.67 | 1.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| cycle | hum_low | 30.67 | 30.67 | 0 | - | - | 0 | 0 | 0.00 | 0.01 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | hum_low | 30.67 | 30.67 | 0 | - | - | 0 | 0 | 0.00 | 0.01 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | steps | 45.33 | 45.33 | 0 | 45.00 | 49.33 | 6 | 0 | 1.66 | 1.66 | 0.00 | 4.72 | 4.52 | 0.00 | - |
+| cycle | steps | 12.00 | 12.00 | 0 | 7.33 | 12.67 | 6 | 0 | 0.00 | 0.05 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | steps | 12.00 | 12.00 | 0 | 7.67 | 13.33 | 6 | 0 | 0.00 | 0.07 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | vibrato | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 38.04 | 69.68 | 0.00 | 0.00 | 2.91 | 0.00 | - |
+| cycle | vibrato | 7.33 | 7.33 | 0 | - | - | 0 | 0 | 1.27 | 2.49 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | vibrato | 8.00 | 8.00 | 0 | - | - | 0 | 0 | 1.17 | 2.62 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | glide | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 65.00 | 0.00 | 55.67 | 1.76 | 2.88 | - |
+| cycle | glide | 14.00 | 14.00 | 0 | - | - | 0 | 0 | 2.42 | 3.30 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | glide | 14.67 | 14.67 | 0 | - | - | 0 | 0 | 0.20 | 3.25 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | octave_bait | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.96 | 1.96 | 0.00 | 0.00 | 3.92 | 0.00 | - |
+| cycle | octave_bait | 14.00 | 14.00 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | octave_bait | 14.67 | 14.67 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | vowel_ah | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.70 | 1.70 | 0.00 | 0.00 | 2.50 | 0.00 | - |
+| cycle | vowel_ah | 12.00 | 12.00 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | vowel_ah | 12.00 | 12.00 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | noise_bursts | 45.33 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 10.50 | 1.31 | - |
+| cycle | noise_bursts | 4.67 | 7.33 | 0 | - | - | 0 | 0 | 0.00 | 0.17 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | noise_bursts | 5.33 | 8.00 | 0 | - | - | 0 | 0 | 0.00 | 0.18 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | whistle | 34.67 | 34.67 | 0 | - | - | 0 | 0 | 8.27 | 31.60 | 0.00 | 0.00 | 3.77 | 3.96 | - |
+| cycle | whistle | 1.33 | 1.33 | 0 | - | - | 0 | 0 | 0.94 | 2.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | whistle | 1.33 | 1.33 | 0 | - | - | 0 | 0 | 1.00 | 2.82 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | rearticulate | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |
+| cycle | rearticulate | 7.33 | 7.33 | 0 | - | - | 0 | 0 | 0.00 | 2.88 | 0.00 | 0.00 | 11.11 | 0.00 | - |
+| voice | rearticulate | 8.00 | 8.00 | 0 | - | - | 0 | 0 | 0.00 | 2.88 | 0.00 | 0.00 | 10.84 | 0.00 | - |
+
+| tracker | take | rise max ms | fall max ms | noise high % | onsets counted | onsets expected | rises missed | falls missed |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| voice | sine_ladder | 14.67 | 30.67 | 0.00 | 6 | 6 | 0 | 0 |
+| voice | hum_low | 30.67 | 38.67 | 2.16 | 1 | 1 | 0 | 0 |
+| voice | steps | 12.00 | 26.00 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | vibrato | 8.00 | 18.67 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | glide | 14.67 | 14.67 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | octave_bait | 14.67 | 20.00 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | vowel_ah | 12.00 | 25.33 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | noise_bursts | 8.00 | 18.67 | 0.00 | 3 | 3 | 0 | 0 |
+| voice | whistle | 1.33 | 12.00 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | rearticulate | 8.00 | 18.67 | 0.00 | 5 | 5 | 0 | 0 |
+
+The fused tracker adds at most one 64-sample frame boundary to the cycle readings.
+Both octave traps have zero octave errors. Noise has zero false pitch and zero gate-high percentage.
+Rearticulation counts five onsets, the ladder six and noise bursts three.
+The low-hum gate remains high for 38.67 ms on release, within its two-period plus 15 ms limit;
+the gate table reports 2.16% against its separate fixed 30 ms noise allowance.
+
+The unvoiced veto uses the same post-leap window condition as octave folding: silence verdicts
+otherwise delay a new note until the slower judge becomes voiced (57.33 ms maximum on the ladder).
+A four-dB recovery is timestamped on its threshold crossing, rather than on every frame it remains
+above threshold; refreshing it repeatedly counted nine onsets for five syllables.
