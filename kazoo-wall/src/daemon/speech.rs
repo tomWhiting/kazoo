@@ -513,6 +513,7 @@ fn speech_error(err: &SpeechError) -> WallError {
         | SpeechError::TimedOut(_)
         | SpeechError::BadRender(_)
         | SpeechError::EmptyRender
+        | SpeechError::EmptyRenderTwice
         | SpeechError::NoHome
         | SpeechError::NotAbsolute(_)
         | SpeechError::Io { .. }

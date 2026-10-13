@@ -59,6 +59,8 @@ use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 mod chains;
 mod coil;
 
+mod reset;
+
 use chains::Chains;
 use coil::Coil;
 
@@ -889,6 +891,7 @@ impl Effect for Spring {
         self.fed.clear();
         self.sweep_countdown = self.sweep_every;
         self.countdown = 0;
+        self.reset_controls();
     }
 
     fn set_param(&mut self, index: usize, value: f32) {

@@ -117,6 +117,8 @@ pub enum SpeechError {
     BadRender(String),
     /// `say` rendered no audio at all.
     EmptyRender,
+    /// `say` rendered no audio on either attempt.
+    EmptyRenderTwice,
     /// No home directory to keep the cache under.
     NoHome,
     /// The cache directory or `say` path is relative.
@@ -174,6 +176,7 @@ impl fmt::Display for SpeechError {
             ),
             Self::BadRender(why) => write!(formatter, "say's output was not usable: {why}"),
             Self::EmptyRender => write!(formatter, "say rendered no audio"),
+            Self::EmptyRenderTwice => write!(formatter, "say rendered no audio twice"),
             Self::NoHome => write!(
                 formatter,
                 "HOME is not set, so there is nowhere to keep the speech cache"
@@ -466,7 +469,15 @@ impl Tts {
                 return Ok(render);
             }
         }
-        let samples = self.run_say(&text, resolved.as_deref(), request)?;
+        let samples = match self.run_say(&text, resolved.as_deref(), request) {
+            Err(SpeechError::EmptyRender) => {
+                match self.run_say(&text, resolved.as_deref(), request) {
+                    Err(SpeechError::EmptyRender) => return Err(SpeechError::EmptyRenderTwice),
+                    result => result?,
+                }
+            }
+            result => result?,
+        };
         if let Err(source) = self.cache.put(&key, request.sample_rate, &samples) {
             cache_warning = Some(SpeechError::Io {
                 doing: "writing the speech cache",
@@ -536,9 +547,8 @@ impl Tts {
         };
         let result = self.run_say_with(&files, text, voice, request);
         let cleanup = files.remove();
-        let samples = result?;
         cleanup.map_err(io_error("removing temporary speech files"))?;
-        Ok(samples)
+        result
     }
 
     fn run_say_with(
@@ -761,3 +771,112 @@ fn load_wav(path: &Path, sample_rate: u32) -> Result<Vec<f32>, SpeechError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use crate::testing::Scratch;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn fake_say(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("fake-say");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("chmod");
+        path
+    }
+
+    fn tts_with(scratch: &Scratch, say: PathBuf) -> Tts {
+        let mut config = TtsConfig::with_cache_dir(scratch.0.join("cache"));
+        config.say_path = say;
+        config.timeout = Duration::from_secs(10);
+        Tts::new(config).expect("tts")
+    }
+
+    fn retry_renderer(scratch: &Scratch, second_has_audio: bool) -> (Tts, PathBuf, Vec<f32>) {
+        let empty = scratch.0.join("empty.wav");
+        let tone = scratch.0.join("retry-tone.wav");
+        let log = scratch.0.join("attempts");
+        let samples: Vec<f32> = (0..48_000u32)
+            .map(|n| (std::f64::consts::TAU * 300.0 * f64::from(n) / 48_000.0).sin() as f32 * 0.3)
+            .collect();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        for (path, audio) in [(&empty, &[][..]), (&tone, samples.as_slice())] {
+            let mut writer = hound::WavWriter::create(path, spec).expect("create retry wav");
+            for &sample in audio {
+                writer.write_sample(sample).expect("write retry sample");
+            }
+            writer.finalize().expect("finalize retry wav");
+        }
+        let second = if second_has_audio { &tone } else { &empty };
+        let say = fake_say(
+            &scratch.0,
+            &format!(
+                "if [ -s '{log}' ]; then cp '{second}' \"$2\"; else cp '{empty}' \"$2\"; fi\n\
+                 printf '%s\\n' \"$2\" >> '{log}'",
+                log = log.display(),
+                second = second.display(),
+                empty = empty.display(),
+            ),
+        );
+        (tts_with(scratch, say), log, samples)
+    }
+
+    fn assert_retry_files_removed(tts: &Tts, log: &Path) {
+        let attempts = fs::read_to_string(log).expect("read attempts");
+        let paths: Vec<&str> = attempts.lines().collect();
+        assert_eq!(paths.len(), 2, "renderer called exactly twice");
+        assert_ne!(paths[0], paths[1], "retry uses a fresh path");
+        for path in paths {
+            assert!(!Path::new(path).exists(), "audio temporary file removed");
+            assert!(
+                !Path::new(path).with_extension("txt").exists(),
+                "text temporary file removed"
+            );
+        }
+        assert!(
+            fs::read_dir(&tts.config().cache_dir)
+                .expect("list cache")
+                .all(|entry| {
+                    !entry
+                        .expect("cache entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("tmp-")
+                })
+        );
+    }
+
+    #[test]
+    fn an_empty_render_is_tried_once_more() {
+        let scratch = Scratch::new("tts-retry");
+        let (mut tts, log, samples) = retry_renderer(&scratch, true);
+        let render = tts
+            .render(&RenderRequest::new("hello", 48_000))
+            .expect("retry succeeds");
+        assert_eq!(render.phrase.samples(), samples);
+        assert_retry_files_removed(&tts, &log);
+    }
+
+    #[test]
+    fn two_empty_renders_fail_with_their_own_error() {
+        let scratch = Scratch::new("tts-retry-empty");
+        let (mut tts, log, _) = retry_renderer(&scratch, false);
+        let error = tts
+            .render(&RenderRequest::new("hello", 48_000))
+            .expect_err("empty twice");
+        assert!(matches!(error, SpeechError::EmptyRenderTwice), "{error}");
+        assert_eq!(error.to_string(), "say rendered no audio twice");
+        assert_retry_files_removed(&tts, &log);
+        assert_eq!(
+            fs::read_dir(&tts.config().cache_dir)
+                .expect("list cache")
+                .count(),
+            0
+        );
+    }
+}

@@ -20,6 +20,12 @@ pub const JUDGE_FRAMES: usize = 3;
 /// under the 2.1 ms budget.
 pub const JUDGE_RESOLUTION: f64 = 0.34;
 
+/// The engine uses resolution 0.1 over 60–1000 Hz and the wall listener
+/// uses 0.1 over its range; both tables are under 19 MB. A 64 MiB ceiling
+/// leaves room for 0.1 over 50–4000 Hz (about 18.4 MB), while refusing 0.05
+/// over that range (about 73.7 MB).
+const PYIN_TABLE_CEILING: f64 = 64.0 * 1024.0 * 1024.0;
+
 /// Configuration for the pitch detector.
 #[derive(Debug, Clone)]
 pub struct PitchDetectorConfig {
@@ -346,6 +352,15 @@ fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
         )));
     }
 
+    let table = (2.0 * pitch_bins).powi(2) * 8.0;
+    if table > PYIN_TABLE_CEILING {
+        return Err(crate::Error::Config(format!(
+            "resolution {} over [{fmin}, {fmax}] Hz needs a {:.1} MiB pyin table, more than the 64 MiB ceiling",
+            config.resolution,
+            table / 1_048_576.0
+        )));
+    }
+
     let hop = u32::try_from(config.hop_length)
         .map(f64::from)
         .map_err(|_| crate::Error::Config("hop_length too large for pyin".into()))?;
@@ -364,3 +379,37 @@ fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn a_pyin_table_past_the_ceiling_is_refused() {
+    let config = PitchDetectorConfig {
+        min_frequency: 50.0,
+        max_frequency: 4_000.0,
+        ..PitchDetectorConfig::for_rate(48_000)
+    };
+    for resolution in [0.01, 0.05] {
+        let asked = PitchDetectorConfig {
+            resolution,
+            ..config.clone()
+        };
+        let error = validate(&asked).expect_err("oversized table refused before allocation");
+        assert!(matches!(error, crate::Error::Config(ref message) if message.contains("MiB")));
+        let error = validate(&asked.with_longest_hop()).expect_err("longest hop keeps ceiling");
+        assert!(matches!(error, crate::Error::Config(ref message) if message.contains("MiB")));
+    }
+    let full_range = PitchDetectorConfig {
+        resolution: 0.1,
+        ..config
+    };
+    assert!(validate(&full_range).is_ok());
+    assert!(validate(&crate::engine::judge_config(&full_range, 48_000)).is_ok());
+    assert!(validate(&PitchDetectorConfig::for_rate(48_000)).is_ok());
+    let narrow = PitchDetectorConfig {
+        min_frequency: 200.0,
+        max_frequency: 400.0,
+        resolution: 0.01,
+        ..PitchDetectorConfig::for_rate(48_000)
+    };
+    assert!(validate(&narrow).is_ok());
+}
