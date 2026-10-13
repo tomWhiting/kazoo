@@ -299,10 +299,9 @@ where
     })();
     if let Err(error) = result {
         match fs::remove_file(&temporary) {
-            Ok(()) => {
-                File::open(parent)?.sync_all()?;
-                return Err(error);
-            }
+            // A leftover temporary file is harmless (the sweep reclaims it),
+            // so its removal needs no flush that could hide `error`.
+            Ok(()) => return Err(error),
             Err(cleanup) if cleanup.kind() == io::ErrorKind::NotFound => return Err(error),
             Err(cleanup) => {
                 return Err(io::Error::new(
