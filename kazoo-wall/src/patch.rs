@@ -1300,15 +1300,28 @@ impl Patch {
     /// [`hash_bytes`] of the save's file as it is on disk.
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        hash_bytes(&self.print_bytes())
+        // A PatchFile is plain data: encoding it cannot fail. Were it ever
+        // to, the empty fingerprint matches no wall, so nothing is skipped
+        // on its strength.
+        let bytes = self.print_bytes();
+        if bytes.is_empty() {
+            String::new()
+        } else {
+            hash_bytes(&bytes)
+        }
     }
 
-    /// The fingerprint as the stable 64-bit word used by birth marks.
+    /// [`chance::fnv1a64`](crate::chance::fnv1a64) of the very bytes
+    /// [`Self::fingerprint`] hashes: the wall a module is born into, as its
+    /// birth mark's `print`.
     #[must_use]
     pub fn fingerprint_word(&self) -> u64 {
         crate::chance::fnv1a64(&self.print_bytes())
     }
 
+    /// The wall's file as this build writes it, compact, without the
+    /// latest change's number or which wall it is; empty only if it cannot
+    /// be encoded, which never happens.
     fn print_bytes(&self) -> Vec<u8> {
         let file = PatchFile {
             last_seq: 0,
