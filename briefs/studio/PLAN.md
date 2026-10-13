@@ -240,8 +240,13 @@ Tom's words, 13 Oct 2026, about 19:20 to 20:10:
 | T02 a commit for every change | the tree thread writes one git commit per logged change, seat as author, UTC date, beat and seq trailers; bounded queue, failures shown, the wall never waits | kazoo-wall | T01 |
 | T03 the first rings | the log since 26 Sep imported as the trunk, exact where it can be, gaps stated | kazoo-wall (tool) | T02 |
 | T04 moments, marks and buds | `wall_mark`, `wall_go` (a cut), buds on the first change, `wall_tree`; console keys | kazoo-wall, kazoo-mcp | T02 |
-| T05 the crossing | going to a moment glides, fades and crossfades by birth mark over N beats | kazoo-wall | T04 |
-| T06 the fire | replay of a branch at its beats and any speed; a change mid-fire grows a bud | kazoo-wall, kazoo-mcp | T05 |
+| T05a the engine glides | cables and tempo glide in the engine, frame by frame | kazoo-wall | T04 |
+| T05b the wall crosses to a moment | going to a moment glides, fades and crossfades by birth mark over N beats (16 by default, 0 a cut, up to 64); an overload becomes a cut | kazoo-wall | T05a, D03b |
+| T05c seats and console choose the crossing | `wall_go`'s beats; the console's `[ ]` crossing length | kazoo-mcp, kazoo-wall (tui) | T05b |
+| T06a the tree can be walked and burnt | the tree's side: a branch's moments in order with their beats; fire steps do not dim lanterns | kazoo-wall | T05c |
+| T06b the wall burns a branch | replay of a branch at its beats, 0.25× to 64×; a change mid-fire puts it out and grows a bud; news to every seat | kazoo-wall | T06a |
+| T06c wall fire for the seats | `wall_fire` lights and puts out the fire | kazoo-mcp | T06b |
+| T06d the console sets the tree on fire | `F` in the tree list, `[ ]` speed, the `FIRE` badge, `:fire`, `:douse`, `:firespeed` | kazoo-wall (tui) | T06b |
 | T07a notes and lanterns in the tree | the note format (JSON lines, append only) in `refs/notes/lanterns`, kept out of every copy; writing, listing, visits, dimming by changes; readers for Claude and Dot transcripts (where Tom's words are, never what). Built from Tom's Norn lantern design (`MEMORY-AND-LANTERNS.md`, his 8 Aug definition); Tom, 13 Oct 20:2x: "the design for that has already basically happened now, so we're all good" | kazoo-wall | T04a, T04b |
 | T07b the wall keeps lanterns | `lantern`, `note`, `visit`, `lanterns` requests, three a minute per seat, `Event::Lit`, `no_lantern` | kazoo-wall, kazoo-mcp (one arm each) | T07a |
 | T07c lanterns for the seats | `wall_lantern`, `wall_note`, `wall_lanterns`, `wall_ask`; the server finds the seat's own conversation and the exact call; kazoo returns the fork command and never runs it | kazoo-mcp | T07b, T04c |
@@ -259,7 +264,7 @@ Tom's words, 13 Oct 2026, about 19:20 to 20:10:
 5. B05, B06, E01, E02 fill gaps.
 6. Track V: V01, V02, V03, V04 in order (each scores on the last one's scoreboard). Then V05 and V06 side by side, since they share no files. V07a waits for B03a and V07b waits for B03b, because they edit the same wire files. V08a follows V05 and V07a. Then V08b, V09a and V10 run side by side. After V09a, V09b, V09c and V09d run side by side; they share only `kazoo-cli/src/cli.rs`, where each adds its own `--follow` flags, so the merge is line by line.
 7. Track L: L01 and L02 side by side (different crates), then L03, L04 and L05 in order (each edits `daemon/loops/`). L06 waits for B03a and V07a, because they edit the same wire files, and L07 waits for L06, C04 and V07b. L08 runs once V08b has landed. L09 follows L05 and L06. L12 can run beside L06 to L09 (console files only), then L13. L10 waits for L07 and C08a, then L11 after C07b. The first thing Tom can play is after L05: a loop on the wall recording any wall signal, saved and undoable. Singing into it needs L06 to L09.
-8. Track T: T01, T02a, T02b, T03 in order, then T04a, T04b, then T04c and T04d side by side (T02 and T04 were split by the ten-file rule; T03 and T04a both edit the tree thread, so they run in order), then T05, T06 in order. T07a, T07b in order, then T07c and T07d side by side (no shared file); then T08a, then T08b. T07 and T08 can run beside T05 and T06, two lanes at most at once. T09 waits for T08b. T01 goes first among new wall work because birth marks must be in before anything else saves modules.
+8. Track T: T01, T02a, T02b, T03 in order, then T04a, T04b, then T04c and T04d side by side (T02 and T04 were split by the ten-file rule; T03 and T04a both edit the tree thread, so they run in order), then T05a, T05b, T05c, T06a, T06b in order, then T06c and T06d side by side (no shared file); T05b also waits for D03b. T07a, T07b in order, then T07c and T07d side by side (no shared file); then T08a, then T08b. T07 and T08 can run beside T05 and T06, two lanes at most at once. T09 waits for T08b. T01 goes first among new wall work because birth marks must be in before anything else saves modules.
 
 ## How a lane runs
 
