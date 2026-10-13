@@ -39,7 +39,8 @@ const FIRST_CHANCE: usize = 6;
 /// How many steps there are.
 pub const MAX_STEPS: usize = 16;
 
-/// The seed the dice are reloaded with when locked.
+/// The dice's seed when the sequencer is never seeded, and the salt its
+/// own seed is stirred with when it is (see [`Rhythm::set_seed`]).
 const SEED: u32 = 0x5052_4F42;
 
 const fn chance(name: &'static str, default: f32) -> ParamSpec {
@@ -148,6 +149,7 @@ pub struct Prob {
     inputs: Inputs,
     meter: Meter,
     dice: Noise,
+    /// The seed the dice are reloaded with at the top of every locked cycle.
     lock_seed: u32,
     next: usize,
     fire: bool,
