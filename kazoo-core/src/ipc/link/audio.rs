@@ -152,6 +152,10 @@ impl HubLinkAudio {
         );
         self.seq = self.seq.wrapping_add(1);
         self.state.blocks_sent.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        if !self.wake_audio {
+            return;
+        }
         self.waker.unpark();
     }
 }

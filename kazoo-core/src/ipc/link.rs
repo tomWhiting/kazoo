@@ -87,6 +87,12 @@ const STUCK_LIMIT: Duration = Duration::from_millis(500);
 /// are read at least as often as pace is sent. Also the real-time period.
 pub const LINK_TICK: Duration = Duration::from_millis(5);
 
+/// Margin separating an unpark from a connected timeout.
+///
+/// `park_timeout` never returns more than a scheduling delay early on a timeout;
+/// half a millisecond is far past any measured early return.
+const WAKE_SLACK: Duration = Duration::from_micros(500);
+
 /// Link thread poll interval while looking for a hub.
 const IDLE_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -144,6 +150,8 @@ pub struct LinkConfig {
     /// by default: the link thread carries audio to the desk. A refusal is
     /// reported through [`HubLink::real_time()`], never printed by the link.
     pub real_time: bool,
+    #[cfg(test)]
+    pub(crate) wake_audio: bool,
 }
 
 impl LinkConfig {
@@ -159,6 +167,22 @@ impl LinkConfig {
             address: HubAddress::Discover,
             pace_lead_frames: 0,
             real_time: true,
+            #[cfg(test)]
+            wake_audio: true,
+        }
+    }
+
+    /// Disable audio wakes so the wake test can detect service by the tick.
+    #[cfg(test)]
+    pub(crate) fn for_test_without_wake(
+        name: &str,
+        channels: u8,
+        sample_rate: u32,
+        max_block_frames: u32,
+    ) -> Self {
+        Self {
+            wake_audio: false,
+            ..Self::new(name, channels, sample_rate, max_block_frames)
         }
     }
 }
@@ -235,6 +259,8 @@ struct LinkState {
     blocks_dropped: AtomicU64,
     messages_dropped: AtomicU64,
     connections: AtomicU64,
+    woken: AtomicU64,
+    ticked: AtomicU64,
     last_refusal: std::sync::Mutex<Option<String>>,
     pace: PaceSlot,
     /// Scheduling is published before serving audio on each connection.
@@ -400,6 +426,8 @@ pub struct HubLinkAudio {
     pub events: crate::host::link::EventRx,
     requests: ringbuf::HeapProd<Request>,
     waker: Thread,
+    #[cfg(test)]
+    wake_audio: bool,
     state: Arc<LinkState>,
     channels: u16,
     block_frames: u32,
@@ -466,6 +494,8 @@ pub(crate) fn start_link(
         blocks_dropped: AtomicU64::new(0),
         messages_dropped: AtomicU64::new(0),
         connections: AtomicU64::new(0),
+        woken: AtomicU64::new(0),
+        ticked: AtomicU64::new(0),
         last_refusal: std::sync::Mutex::new(None),
         pace: PaceSlot::new(),
         real_time: AtomicU8::new(priority::NOT_ASKED),
@@ -474,7 +504,9 @@ pub(crate) fn start_link(
         desk_dropped: AtomicU64::new(0),
     });
     let sample_rate = config.sample_rate;
-    let running = Arc::new(AtomicBool::new(true));
+    #[cfg(test)]
+    let wake_audio = config.wake_audio;
+    let running = Arc::new(AtomicBool::new(start));
     let mut worker = LinkWorker {
         config,
         state: Arc::clone(&state),
@@ -494,19 +526,15 @@ pub(crate) fn start_link(
     }
     let (finished_tx, finished) = mpsc::sync_channel(1);
     let thread_running = Arc::clone(&running);
-    let join = if start {
-        Some(
-            thread::Builder::new()
-                .name("kazoo-hub-link".to_string())
-                .spawn(move || {
-                    worker.run(&thread_running);
-                    shutdown::report_finished(&finished_tx);
-                })?,
-        )
-    } else {
-        running.store(false, Ordering::Release);
-        None
+    let spawn = || {
+        thread::Builder::new()
+            .name("kazoo-hub-link".to_string())
+            .spawn(move || {
+                worker.run(&thread_running);
+                shutdown::report_finished(&finished_tx);
+            })
     };
+    let join = start.then(spawn).transpose()?;
     let waker = join
         .as_ref()
         .map_or_else(thread::current, |join| join.thread().clone());
@@ -529,6 +557,8 @@ pub(crate) fn start_link(
             events,
             requests: callback_tx,
             waker,
+            #[cfg(test)]
+            wake_audio,
             state,
             channels,
             block_frames,
@@ -543,6 +573,18 @@ pub(crate) fn start_link(
 }
 
 impl HubLink {
+    /// Connected parks ending early and at the tick, over the link's lifetime.
+    ///
+    /// Returns `(woken, ticked)` for tests and diagnostics, separate from
+    /// the UI counters in [`LinkStatus`]. Idle parks are not counted.
+    #[must_use]
+    pub fn wake_counts(&self) -> (u64, u64) {
+        (
+            self.state.woken.load(Ordering::Relaxed),
+            self.state.ticked.load(Ordering::Relaxed),
+        )
+    }
+
     /// Whether the instrument is plugged into the desk.
     #[must_use]
     pub fn is_connected(&self) -> bool {
@@ -824,7 +866,13 @@ impl LinkWorker {
                 self.disconnect(why);
                 next_attempt = Instant::now() + RETRY_INTERVAL;
             }
+            let parked_at = Instant::now();
             thread::park_timeout(LINK_TICK);
+            if parked_at.elapsed().saturating_add(WAKE_SLACK) < LINK_TICK {
+                self.state.woken.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.state.ticked.fetch_add(1, Ordering::Relaxed);
+            }
         }
         if let Err(why) = Self::demote(priority.take()) {
             self.set_refusal(Some(format!(
