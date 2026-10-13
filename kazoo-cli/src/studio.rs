@@ -236,7 +236,18 @@ fn find_tmux(path: Option<&OsStr>) -> Result<Option<PathBuf>> {
             let candidate = directory.join("tmux");
             let metadata = match fs::metadata(&candidate) {
                 Ok(metadata) => Some(metadata),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                // A PATH entry that is missing, is a file or cannot be
+                // searched holds no tmux; execvp skips it the same way.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound
+                            | std::io::ErrorKind::NotADirectory
+                            | std::io::ErrorKind::PermissionDenied
+                    ) =>
+                {
+                    None
+                }
                 Err(error) => {
                     return Err(error)
                         .wrap_err_with(|| format!("checking {}", candidate.display()));
