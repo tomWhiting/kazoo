@@ -77,8 +77,11 @@ fn latency(event: Event, end: usize, take: &Take, estimates: &[Option<f32>]) -> 
     let tolerance = if event.start { 50.0 } else { 20.0 };
     let from = event_sample(event, &take.onsets);
     let mut run = 0;
-    for index in event.index..end {
-        if within(estimates[index], take.truth[index], tolerance) {
+    let readings = estimates[event.index..end]
+        .iter()
+        .zip(&take.truth[event.index..end]);
+    for (index, (estimate, truth)) in (event.index..).zip(readings) {
+        if within(*estimate, *truth, tolerance) {
             run += 1;
             if run >= hold {
                 let landed = (index + 2 - hold) * SCORE_STEP;

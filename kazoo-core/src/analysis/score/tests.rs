@@ -621,7 +621,7 @@ fn the_suite_is_voiced_and_pitched_where_the_table_says() {
     assert!(close(pitch_at("noise_bursts", 650), 330.0));
     assert!(close(
         pitch_at("whistle", 50),
-        1500.0 * 2.0_f32.powf(20.0 / 1200.0)
+        1500.0 * (20.0_f32 / 1200.0).exp2()
     ));
     assert!(close(pitch_at("vibrato", 0), 220.0));
 }

@@ -33,7 +33,9 @@ pub struct Take {
     pub exact: bool,
 }
 
-/// One tracker's figures on one take. Errors are unshifted: they include the
+/// One tracker's figures on one take.
+///
+/// Errors are unshifted: they include the
 /// tracker's latency the way a listener hears it. A latency runs from the
 /// event's sample to the reading at which the tracker lands and stays, and
 /// a reading is taken after each whole step, so a latency is never shorter
