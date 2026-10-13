@@ -308,11 +308,16 @@ fn a_cable_waking_a_cheap_set_is_allowed() {
         wall.engine.set_cost(wall.rack.slot_of(id).unwrap(), ns);
     }
     let before = wall.held();
+    guarded(&mut wall, 0.30);
+    // The seed's bench sum is below 0.30, so the machine reads busy, and
+    // the culled modules' timings (taken when they were last heard) are
+    // scaled by the factor, as their bench shares would be (KZ-D03c).
+    let busy = wall.busy();
+    assert!(busy > 1.0, "{busy}");
     assert!(
-        (0.30 / before as f32).mul_add(2.0, 40.0f32.mul_add(share, 0.30))
+        (0.30 / before as f32).mul_add(2.0, 40.0f32.mul_add(share * busy, 0.30))
             < LOAD_GUARD * SETTLE_SHARE
     );
-    guarded(&mut wall, 0.30);
     request(
         &mut wall,
         &patch(&last_output(&ids, kind), &format!("{mixer}.a")),
@@ -324,7 +329,7 @@ fn a_cable_waking_a_cheap_set_is_allowed() {
     );
     let recent = wall.load_watch.recent.back().unwrap();
     assert!(recent.1 >= 41);
-    assert!(40.0f32.mul_add(-share, recent.2).abs() < 1e-6);
+    assert!((40.0 * share).mul_add(-busy, recent.2).abs() < 1e-6);
     let held = wall.held();
     let delta: i64 = wall
         .load_watch
@@ -551,7 +556,7 @@ fn a_quiet_machine_is_costed_at_the_bench() {
     guarded(&mut wall, 0.25);
     assert!((wall.busy() - 1.0).abs() < f32::EPSILON);
     assert_eq!(
-        wall.wake_refusal(0.25, 0.9).message,
+        wall.costed_wake(&[]).refusal(0.25, 0.9).message,
         "this would wake 0 modules nobody heard (), taking the wall from 25% to about 90% of its time rendering, past the 80% it keeps to; take something away first, or wake them a few at a time"
     );
     let sum: f32 = incoming
@@ -605,7 +610,8 @@ fn a_small_wall_says_nothing_of_the_machine() {
         assert!((wall.busy() - 1.0).abs() < f32::EPSILON, "{load}");
         assert!(
             !wall
-                .wake_refusal(load, 0.9)
+                .costed_wake(&[])
+                .refusal(load, 0.9)
                 .message
                 .contains("machine is busy")
         );
@@ -625,7 +631,8 @@ fn the_factor_is_held_to_eight() {
     for factor in [1.24, super::super::cost::BUSY_SAID] {
         wall.engine.shared().set_render_load(bench * factor);
         assert_eq!(
-            wall.wake_refusal(0.6, 0.9)
+            wall.costed_wake(&[])
+                .refusal(0.6, 0.9)
                 .message
                 .contains("machine is busy"),
             factor >= super::super::cost::BUSY_SAID
@@ -653,7 +660,8 @@ fn a_measured_module_is_not_scaled() {
     let busy = wall.busy();
     assert!((busy - 2.0).abs() < f32::EPSILON);
     assert!(
-        wall.wake_refusal(2.0 * bench, 1.12)
+        wall.costed_wake(&[])
+            .refusal(2.0 * bench, 1.12)
             .message
             .contains("2.0× its quiet cost")
     );

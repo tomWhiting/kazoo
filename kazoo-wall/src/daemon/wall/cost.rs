@@ -9,7 +9,7 @@ use crate::SUB_BLOCK;
 use crate::catalogue::Kind;
 use crate::engine::tables;
 use crate::patch::Patch;
-use crate::protocol::{ErrorCode, WallError, What};
+use crate::protocol::{ErrorCode, ModuleRecord, WallError, What};
 
 /// Ten names identify a waking set without overwhelming a console refusal.
 pub const WAKE_NAMES: usize = 10;
@@ -172,6 +172,58 @@ fn heard_modules(patch: &Patch) -> Vec<usize> {
     tables::heard(&slots, &edges, &sinks)
 }
 
+/// The modules `what` takes off the wall: a removal's, or every removal's
+/// in a chain. Each still renders until the change is made.
+fn taken_away(what: &What) -> Vec<&ModuleRecord> {
+    match what {
+        What::Remove { module, .. } => vec![module],
+        What::Chain { changes, .. } => changes.iter().flat_map(taken_away).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// What a change would wake, costed once: the factor it was costed at, and
+/// each module it would wake with its share of the wall's time.
+pub(super) struct Waking {
+    busy: f32,
+    woken: Vec<(String, f32)>,
+}
+
+impl Waking {
+    /// The share of the wall's time the woken modules would take.
+    pub(super) fn share(&self) -> f32 {
+        self.woken.iter().map(|(_, share)| share).sum()
+    }
+
+    /// The refusal of this wake, which would take the wall from `load` to
+    /// `projected`.
+    pub(super) fn refusal(&self, load: f32, projected: f32) -> WallError {
+        let clause = busy_clause(self.busy);
+        let n = self.woken.len();
+        let ids = self
+            .woken
+            .iter()
+            .take(WAKE_NAMES)
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ids = if n > WAKE_NAMES {
+            format!("{ids}, and {} more", n - WAKE_NAMES)
+        } else {
+            ids
+        };
+        error(
+            ErrorCode::Full,
+            format!(
+                "this would wake {n} modules nobody heard ({ids}), taking the wall from {:.0}% to about {:.0}% of its time rendering, past the {:.0}% it keeps to{clause}; take something away first, or wake them a few at a time",
+                load * 100.0,
+                projected * 100.0,
+                LOAD_GUARD * 100.0,
+            ),
+        )
+    }
+}
+
 fn busy_clause(busy: f32) -> String {
     if busy >= BUSY_SAID {
         format!(
@@ -183,11 +235,41 @@ fn busy_clause(busy: f32) -> String {
 }
 
 impl Wall {
+    /// How many times its bench cost the wall up now takes to render: its
+    /// render load over the sum of the bench shares of the modules the
+    /// engine renders now, held to 1 to [`BUSY_MAX`]; 1 for a wall too small
+    /// to say (below [`BUSY_MIN_BENCH`]) or a load not measured.
     pub(super) fn busy(&self) -> f32 {
+        self.busy_beside(&[])
+    }
+
+    /// [`Self::busy`], with `taken` (modules a staged change takes off the
+    /// wall, still rendering until it is made) counted as rendered now.
+    ///
+    /// The bench is the modules the engine renders now (placed in a slot,
+    /// and not culled), never the heard modules of `self.patch`: a change
+    /// that may wake modules is costed with the patch already staged, and
+    /// the modules it would wake render nothing yet. Counted, they would
+    /// lower the factor, and the wake would be costed the less the busier
+    /// the machine. With nothing staged the two are the same modules.
+    fn busy_beside(&self, taken: &[&ModuleRecord]) -> f32 {
         let rate = self.engine.sample_rate();
-        let bench: f32 = heard_modules(&self.patch)
+        let unheard: HashSet<&str> = self.unheard.iter().map(String::as_str).collect();
+        let on_wall = self
+            .patch
+            .modules()
             .iter()
-            .map(|&index| kind_share(self.patch.modules()[index].kind, rate))
+            .map(|module| (module.id.as_str(), Some(module.kind)));
+        // A module taken away was placed with a kind the catalogue knows.
+        let going = taken
+            .iter()
+            .filter(|module| self.patch.module(&module.id).is_none())
+            .map(|module| (module.id.as_str(), Kind::from_name(&module.kind)));
+        let bench: f32 = on_wall
+            .chain(going)
+            .filter(|(id, _)| self.rack.slot_of(id).is_some() && !unheard.contains(id))
+            .filter_map(|(_, kind)| kind)
+            .map(|kind| kind_share(kind, rate))
             .sum();
         let load = self.engine.shared().render_load();
         if bench < BUSY_MIN_BENCH || !load.is_finite() {
@@ -236,6 +318,17 @@ impl Wall {
             )
     }
 
+    /// The modules the staged patch would wake, each costed once at the
+    /// factor of the wall the engine renders now (with `taken`, the
+    /// modules the change takes away, as in [`Self::busy_beside`]).
+    pub(super) fn costed_wake(&self, taken: &[&ModuleRecord]) -> Waking {
+        let busy = self.busy_beside(taken);
+        Waking {
+            busy,
+            woken: self.woken(busy),
+        }
+    }
+
     fn woken(&self, busy: f32) -> Vec<(String, f32)> {
         let heard: HashSet<usize> = heard_modules(&self.patch).into_iter().collect();
         let unheard: HashSet<&str> = self.unheard.iter().map(String::as_str).collect();
@@ -257,13 +350,14 @@ impl Wall {
             .collect()
     }
 
-    pub(super) fn wake_room(&mut self) -> Result<(), WallError> {
+    /// Make sure the machine has time to render what the staged change
+    /// `what` would wake (see [`Self::render_room`]).
+    pub(super) fn wake_room(&mut self, what: &What) -> Result<(), WallError> {
         if !self.load_watch.on {
             return Ok(());
         }
-        let busy = self.busy();
-        let woken = self.woken(busy);
-        if woken.is_empty() {
+        let waking = self.costed_wake(&taken_away(what));
+        if waking.woken.is_empty() {
             return Ok(());
         }
         let units = self
@@ -278,40 +372,12 @@ impl Wall {
                 .iter()
                 .filter(|cable| !self.lines.contains_key(&cable.id))
                 .count();
-        let waking = woken.iter().map(|(_, share)| share).sum();
-        if let Err(err) = self.render_room(units, waking) {
+        if let Err(err) = self.render_room(units, Some(&waking)) {
             self.unmade = true;
             return Err(err);
         }
-        self.load_watch.waking = waking;
+        self.load_watch.waking = waking.share();
         Ok(())
-    }
-
-    pub(super) fn wake_refusal(&self, load: f32, projected: f32) -> WallError {
-        let busy = self.busy();
-        let clause = busy_clause(busy);
-        let woken = self.woken(busy);
-        let n = woken.len();
-        let ids = woken
-            .iter()
-            .take(WAKE_NAMES)
-            .map(|(id, _)| id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let ids = if n > WAKE_NAMES {
-            format!("{ids}, and {} more", n - WAKE_NAMES)
-        } else {
-            ids
-        };
-        error(
-            ErrorCode::Full,
-            format!(
-                "this would wake {n} modules nobody heard ({ids}), taking the wall from {:.0}% to about {:.0}% of its time rendering, past the {:.0}% it keeps to{clause}; take something away first, or wake them a few at a time",
-                load * 100.0,
-                projected * 100.0,
-                LOAD_GUARD * 100.0,
-            ),
-        )
     }
 
     fn load_projection(&self, incoming: &Patch) -> (usize, f32, f32, f32) {

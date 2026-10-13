@@ -2592,7 +2592,7 @@ impl Wall {
             return Ok(());
         }
         self.file_room(growth.bytes())?;
-        self.render_room(growth.modules + growth.cables, 0.0)?;
+        self.render_room(growth.modules + growth.cables, None)?;
         let slots = self.rack.slots_for(growth.modules);
         if !self.engine.reserve_slots(slots) {
             return Err(error(
@@ -2694,7 +2694,8 @@ impl Wall {
     }
 
     /// Make sure the machine has time to render `units` more modules and
-    /// cables (see [`LOAD_GUARD`]).
+    /// cables, and the modules a staged change would wake, costed once by
+    /// [`Self::wake_room`] (see [`LOAD_GUARD`]).
     ///
     /// # Errors
     ///
@@ -2705,8 +2706,13 @@ impl Wall {
     /// wall just put up is still being measured, and above
     /// [`SETTLE_SHARE`] of the guard until the last addition has been
     /// taken in (see [`ABSORBED_WINDOWS`]).
-    fn render_room(&mut self, units: usize, waking: f32) -> Result<(), WallError> {
-        if !self.load_watch.on || (units == 0 && waking <= 0.0) {
+    fn render_room(
+        &mut self,
+        units: usize,
+        waking: Option<&cost::Waking>,
+    ) -> Result<(), WallError> {
+        let woken = waking.map_or(0.0, cost::Waking::share);
+        if !self.load_watch.on || (units == 0 && woken <= 0.0) {
             return Ok(());
         }
         let shared = self.engine.shared();
@@ -2766,10 +2772,10 @@ impl Wall {
             .iter()
             .map(|(_, _, share)| share)
             .sum();
-        let projected = base + recent + waking;
+        let projected = base + recent + woken;
         if projected > LOAD_GUARD {
-            if waking > 0.0 {
-                return Err(self.wake_refusal(load, projected));
+            if let Some(waking) = waking.filter(|_| woken > 0.0) {
+                return Err(waking.refusal(load, projected));
             }
             return Err(error(
                 ErrorCode::Full,
@@ -2845,7 +2851,7 @@ impl Wall {
             _ => None,
         });
         if cost::can_wake(&what) {
-            self.wake_room()?;
+            self.wake_room(&what)?;
         }
         let (change, fingerprints) = self.commit(seat, what, undoes)?;
         self.note_addition(&change.what);
