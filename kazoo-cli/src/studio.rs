@@ -167,6 +167,10 @@ pub fn commands(
     .as_str()])?;
     let pane = |child: &str| format!("exec /usr/bin/env {environment} {child}");
     let session = format!("kazoo-{name}");
+    // `=` asks tmux for an exact session name, never a prefix. In a pane or
+    // window target it needs the trailing colon: tmux 3.5a answers
+    // split-window -t =kazoo-demo with "can't find pane: =kazoo-demo".
+    let window = format!("={session}:");
     let target = format!("={session}");
     let mut children = vec![shell_command([executable, "mix"])?];
     for instrument in &file.instrument {
@@ -193,7 +197,7 @@ pub fn commands(
             args: vec![
                 "split-window".into(),
                 "-t".into(),
-                target.clone(),
+                window.clone(),
                 pane(child),
             ],
         });
@@ -201,7 +205,7 @@ pub fn commands(
             args: vec![
                 "select-layout".into(),
                 "-t".into(),
-                target.clone(),
+                window.clone(),
                 "tiled".into(),
             ],
         });
@@ -415,17 +419,17 @@ mod tests {
             vec![
                 "split-window",
                 "-t",
-                "=kazoo-demo",
+                "=kazoo-demo:",
                 "exec /usr/bin/env 'XDG_RUNTIME_DIR=/run/user/501' '/path with spaces/kazoo' '808'",
             ],
-            vec!["select-layout", "-t", "=kazoo-demo", "tiled"],
+            vec!["select-layout", "-t", "=kazoo-demo:", "tiled"],
             vec![
                 "split-window",
                 "-t",
-                "=kazoo-demo",
+                "=kazoo-demo:",
                 "exec /usr/bin/env 'XDG_RUNTIME_DIR=/run/user/501' '/path with spaces/kazoo' 'mini'",
             ],
-            vec!["select-layout", "-t", "=kazoo-demo", "tiled"],
+            vec!["select-layout", "-t", "=kazoo-demo:", "tiled"],
             vec!["attach", "-t", "=kazoo-demo"],
         ];
         assert_eq!(
