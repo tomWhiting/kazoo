@@ -13,7 +13,9 @@
 //! Plugging a scope or readout into a module makes it heard. An unheard
 //! speaker does not consume its phrase feed: words wait there until it is
 //! heard. Speech requests are answered when synthesis finishes and the
-//! phrase is handed over, independently of playback.
+//! phrase is handed over, independently of playback. At most eight
+//! phrases wait for an unheard speaker; past them its words are refused
+//! with `not_allowed`, saying it reaches no out, scope or readout.
 //!
 //! Slots and delay lines are numbered in `u32`: the wall holds as many as
 //! the machine can render, and the tables are as long as the wall is.

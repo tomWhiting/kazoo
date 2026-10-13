@@ -3646,7 +3646,7 @@ impl Wall {
         if let Err(err) = self.speech.hand_over(&module, phrase) {
             // In the log, but no player says it: it did not happen.
             self.not_made(change.seq);
-            return Err(err);
+            return Err(self.unheard_refusal(&module, err));
         }
         self.patch.speech.insert(module.clone(), words);
         let (change, fingerprints) = self.apply(change);
