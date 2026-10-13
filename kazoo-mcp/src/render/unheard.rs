@@ -33,5 +33,9 @@ mod tests {
         let text = look(&wall);
         assert!(text.contains("vco20 and 3 more."));
         assert!(!text.contains("vco21"));
+        wall.timing.unheard = vec!["lfo1".to_string()];
+        assert!(look(&wall).contains(
+            "1 module reaches no out, scope or readout and is not rendered: lfo1."
+        ));
     }
 }
