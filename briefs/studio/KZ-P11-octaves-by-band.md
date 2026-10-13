@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `efef1b6`, and may hav
 
 Place in the track: Track P (audio inputs), lane 11, the second chord lane, in the `shape` family P10 started.
 
-Written by the Track P drafting seat, 13 Oct 2026 (night). Read by Cassio, 13 Oct night, line by line. Change: the doc also states the response time at a bass's lowest band (with `low` at 30 Hz, about 100 ms), so a bass player knows the octave down on a low B blooms rather than speaks. Accepted otherwise as written; the full-rate bank's 600 µs a block is accepted for what it gives.
+Written by the Track P drafting seat, 13 Oct 2026 (night). Read by Cassio, 13 Oct night, line by line. Change: the doc also states the response time at a bass's lowest band (with `low` at its 30 Hz floor, about 100 ms), so a bass player knows the octave down on a low B blooms rather than speaks. Accepted otherwise as written; the full-rate bank's 600 µs a block is accepted for what it gives.
 
 Time: about 40 minutes. Crates: kazoo-fx (kazoo-wall in the checks).
 
@@ -59,7 +59,7 @@ Mono inside, as P10: `(L + R)/2`, processed once, written to both.
 ### Latency and cost
 
 - `latency()` is 0. The dry path is the input, and the octaves are new sounds whose group delay is part of what they are, like a delay's echo under the `Effect::latency` contract (`lib.rs:193-200`).
-- The doc states each band's response time, `≈ 1/(π · bw)`: about 100 ms at 30 Hz (`low` as P05 sets it for bass), about 40 ms at 60 Hz, 10 ms at 1 kHz and 5 ms at 2 kHz with `width` 1 (where ERB/80 spacing gives bands of about 7.5, 32 and 58 Hz). `width` 2 halves those, and adjacent notes then leak into each other's bands and roughen.
+- The doc states each band's response time, `≈ 1/(π · bw)`: about 100 ms at 30 Hz (`low`'s floor, where P05's bass range of 29 Hz clamps), about 40 ms at 60 Hz, 10 ms at 1 kHz and 5 ms at 2 kHz with `width` 1 (where ERB/80 spacing gives bands of about 7.5, 32 and 58 Hz). `width` 2 halves those, and adjacent notes then leak into each other's bands and roughen.
 - Cost, all paths on and all 80 bands sounding: about 60 flops per band per sample, 4,800 a sample, 2.5 M per 512-frame block. That is about 600 µs on this Mac's scalar cores, 5.6% of the block's 10.7 ms. With silent bands skipped, a single note costs about a tenth of that. The bench must show at most 800 µs per block with all paths on and a six-note chord.
 
 ## Not this lane
