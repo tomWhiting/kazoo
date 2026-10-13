@@ -252,7 +252,9 @@ fn load(wall: &mut Wall) -> Result<Outcome, WallError> {
 }
 
 fn fail_once(wall: &mut Wall, at: crate::store::FailAt) -> TestResult {
-    wall.store_mut().ok_or("the wall has no store")?.fail_once(at);
+    wall.store_mut()
+        .ok_or("the wall has no store")?
+        .fail_once(at);
     Ok(())
 }
 
@@ -341,13 +343,7 @@ fn a_new_wall_and_an_undone_load_each_start_a_line() -> TestResult {
     assert_eq!(stamp(&loaded).line, format!("{start}.2"));
     engine.render(&mut buffer, 2);
     let undone = wall
-        .request(
-            "Tom",
-            &Request::Undo {
-                change: loaded.seq,
-            },
-            Instant::now(),
-        )?
+        .request("Tom", &Request::Undo { change: loaded.seq }, Instant::now())?
         .change
         .ok_or("the undo made no change")?;
     assert!(matches!(undone.what, What::Load { .. }));
