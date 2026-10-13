@@ -288,7 +288,7 @@ fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
     let hop = u32::try_from(config.hop_length)
         .map(f64::from)
         .map_err(|_| crate::Error::Config("hop_length too large for pyin".into()))?;
-    let transition_width = (35.92 * 12.0 * hop / rate).round() * 10.0 + 1.0;
+    let transition_width = (35.92 * 12.0 * hop / rate).round().mul_add(10.0, 1.0);
     if pitch_bins < transition_width {
         return Err(crate::Error::Config(format!(
             "hop_length {} at {rate} Hz lets a pitch move {transition_width} bins \
