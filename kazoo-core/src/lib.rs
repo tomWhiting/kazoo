@@ -206,13 +206,19 @@ pub trait Processor: Send {
 
     /// Feed a detected pitch frequency (Hz) to this processor.
     ///
-    /// Called by the output callback when the analysis thread detects a
+    /// Called by the output callback when its voice tracker detects a
     /// voiced pitch. Synthesis processors that track vocal pitch should
     /// override this to update their oscillator frequency.
     ///
     /// The default implementation is a no-op — effects and synths that do not
     /// use pitch tracking ignore this.
     fn set_pitch(&mut self, _frequency: f32) {}
+
+    /// Inspect the requested pitch through a synth layer in callback tests.
+    #[cfg(test)]
+    fn target_frequency(&self) -> Option<f32> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

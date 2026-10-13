@@ -1,6 +1,6 @@
 //! Audio engine: real-time audio graph, buffer management, thread coordination.
 //!
-//! The engine orchestrates five threads:
+//! The engine orchestrates six threads:
 //!
 //! 1. **cpal input callback** (OS-managed) -- writes mic samples to ring buffer.
 //! 2. **cpal output callback** (OS-managed) -- the main audio workhorse.
@@ -8,12 +8,12 @@
 //!    effects), applies the soft limiter, and writes directly to the output
 //!    buffer. All processing state is owned by this callback's closure, and
 //!    it never allocates, frees, locks or does I/O.
-//! 3. **Analysis thread** (`kazoo-analysis`) -- runs pitch, spectrum, formant,
-//!    and onset detection.
+//! 3. **Analysis thread** (`kazoo-analysis`) -- runs spectrum and formants.
 //! 4. **Disk I/O thread** (`kazoo-disk-io`) -- writes recorded audio to WAV files.
 //! 5. **Reclaim thread** (`kazoo-reclaim`) -- frees everything the output
 //!    callback lets go of, turns finished takes into clips and builds the
 //!    timeline snapshots (see [`reclaim`]).
+//! 6. **Judge thread** (`kazoo-judge`) -- runs pYIN and onset detection.
 //!
 //! Communication between threads uses lock-free ring buffers (`ringbuf` crate)
 //! for audio data and `crossbeam-channel` for commands.
@@ -48,8 +48,9 @@ use std::thread::JoinHandle;
 use ringbuf::traits::{Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
-use crate::analysis::{FormantData, PitchDetector, PitchDetectorConfig, PitchEstimate};
+use crate::analysis::{FormantData, PitchDetectorConfig};
 use crate::io::StreamConfig;
+use crate::voice::judge::{self, OnsetConfig};
 use crate::{Result, SPECTRUM_FFT_SIZE};
 
 use analysis_thread::AnalysisConfig;
@@ -112,8 +113,8 @@ impl Default for EngineConfig {
 
 /// Preserve the requested range and voicing threshold at the device's rate.
 ///
-/// Run once per window at 0.1-semitone resolution until V06 retires this
-/// detector. Below about 18 kHz pYIN cannot hold a one-window hop over the
+/// Run once per window at 0.1-semitone resolution. Below about 18 kHz
+/// pYIN cannot hold a one-window hop over the
 /// default range, so there the hop halves until it can (to 1024 samples at
 /// 16 kHz and 512 at 8 kHz): the engine starts at every device rate.
 #[must_use]
@@ -144,7 +145,7 @@ struct RingBufferCapacities {
     display_frames: usize,
     /// Analysis input: `buffer_size` * 4.
     analysis_input: usize,
-    /// Analysis results (pitch, spectrum, formant): 32 slots each.
+    /// Analysis results (spectrum, formant): 32 slots each.
     analysis_results: usize,
     /// Disk recording: `buffer_size` * 32.
     disk: usize,
@@ -178,7 +179,7 @@ impl RingBufferCapacities {
 /// 1. Creates all inter-thread ring buffers.
 /// 2. Builds audio I/O streams via `cpal`, moving all processing state into
 ///    the output callback closure.
-/// 3. Spawns the analysis and disk I/O threads.
+/// 3. Spawns the analysis, judge and disk I/O threads.
 /// 4. Returns an [`EngineHandle`] for the caller to send commands and poll
 ///    display state.
 ///
@@ -199,7 +200,11 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // Validate the pitch configuration up front: an invalid config is a
     // caller error, not something to discover later on the analysis thread.
     let analysis = analysis_config(&config, sample_rate, buffer_size);
-    let pitch_detector = PitchDetector::new(judge_config(&config.pitch, sample_rate))?;
+    let (judge_feed, judge_results, judge) = judge::spawn(
+        judge_config(&config.pitch, sample_rate),
+        buffer_size,
+        onset_config(&config),
+    )?;
     let stats = Arc::new(EngineStats::new());
 
     // The desk link is created before the streams so its audio half can be
@@ -221,7 +226,6 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // Analysis input: output callback -> analysis thread.
     let (analysis_in_prod, analysis_in_cons) = HeapRb::<f32>::new(caps.analysis_input).split();
     // Analysis results: analysis thread -> output callback.
-    let (pitch_prod, pitch_cons) = HeapRb::<PitchEstimate>::new(caps.analysis_results).split();
     let (spectrum_prod, spectrum_cons) = HeapRb::<Vec<f32>>::new(caps.analysis_results).split();
     let (formant_prod, formant_cons) =
         HeapRb::<Option<FormantData>>::new(caps.analysis_results).split();
@@ -267,7 +271,8 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         display_recycle: display.recycle_cons,
         analysis_prod: analysis_in_prod,
         disk_prod,
-        pitch_cons,
+        judge: judge_feed,
+        judge_results,
         spectrum_cons,
         formant_cons,
         command_rx,
@@ -286,12 +291,10 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     let analysis_handle = spawn_analysis_thread(
         analysis_thread::AnalysisIo {
             input_cons: analysis_in_cons,
-            pitch_prod,
             spectrum_prod,
             formant_prod,
             stats: Arc::clone(&stats),
         },
-        pitch_detector,
         analysis,
     )?;
     let disk_handle = spawn_disk_thread(disk_cons, disk_cmd_rx, sample_rate, Arc::clone(&stats))?;
@@ -332,6 +335,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
 
     handle.set_thread_handles(ThreadHandles {
         analysis: analysis_handle,
+        judge,
         disk: disk_handle,
         reclaim: reclaim.thread,
         stream_holder: stream_holder_handle,
@@ -447,15 +451,21 @@ fn make_input_callback(
 /// Spawn the analysis thread (`kazoo-analysis`).
 fn spawn_analysis_thread(
     io: analysis_thread::AnalysisIo,
-    pitch_detector: PitchDetector,
     config: AnalysisConfig,
 ) -> Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("kazoo-analysis".into())
         .spawn(move || {
-            analysis_thread::run(io, pitch_detector, &config);
+            analysis_thread::run(io, &config);
         })
         .map_err(|e| crate::Error::Stream(format!("failed to spawn analysis thread: {e}")))
+}
+
+const fn onset_config(config: &EngineConfig) -> OnsetConfig {
+    OnsetConfig {
+        onset_fft_size: config.onset_fft_size,
+        onset_threshold: config.onset_threshold,
+    }
 }
 
 /// The analysis pipeline's configuration for an engine running at
@@ -468,8 +478,6 @@ const fn analysis_config(
     AnalysisConfig {
         spectrum_fft_size: config.spectrum_fft_size,
         spectrum_smoothing: config.spectrum_smoothing,
-        onset_fft_size: config.onset_fft_size,
-        onset_threshold: config.onset_threshold,
         sample_rate,
         buffer_size,
     }
@@ -576,6 +584,7 @@ fn spawn_disk_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::PitchDetector;
 
     /// A 48 kHz sine judged at the default 44.1 kHz rate used to read about 404 Hz.
     #[test]

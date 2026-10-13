@@ -35,7 +35,7 @@ use crossbeam_channel::{Receiver, Sender};
 use ringbuf::traits::{Consumer, Observer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
-use crate::analysis::{EnvelopeFollower, FormantData, PitchEstimate};
+use crate::analysis::{EnvelopeFollower, FormantData};
 use crate::ipc::client::HubMessage;
 use crate::ipc::follow::{TransportChange, TransportFollower};
 use crate::ipc::link::{HubLinkAudio, RequestError};
@@ -59,6 +59,8 @@ use super::reclaim::{
     resident_buffer,
 };
 use super::stats::EngineStats;
+
+mod voice;
 
 #[cfg(test)]
 mod block_tests;
@@ -175,7 +177,8 @@ pub(super) struct ProcessingState {
     transport: TransportClock,
     mixer: Mixer,
     envelope: EnvelopeFollower,
-    latest_pitch: PitchEstimate,
+    voice: crate::voice::VoiceTracker,
+    last_frame: crate::voice::VoiceFrame,
     /// The latest spectrum, copied from the analysis thread's frame.
     spectrum: Vec<f32>,
     /// The latest formants, copied from the analysis thread's data.
@@ -245,11 +248,8 @@ impl ProcessingState {
             transport: TransportClock::new(sample_rate),
             mixer,
             envelope: EnvelopeFollower::new(5.0, 50.0, sr_f32),
-            latest_pitch: PitchEstimate {
-                frequency: None,
-                voiced_probability: 0.0,
-                midi_note: None,
-            },
+            voice: crate::voice::VoiceTracker::new(sample_rate),
+            last_frame: voice::INITIAL_FRAME,
             spectrum: Vec::with_capacity(spectrum_len),
             formants: FormantData {
                 frequencies: Vec::with_capacity(FORMANT_CAPACITY),
@@ -378,7 +378,8 @@ pub(super) struct ProcessingIO {
     pub(super) display_recycle: HeapCons<DisplayState>,
     pub(super) analysis_prod: HeapProd<f32>,
     pub(super) disk_prod: HeapProd<f32>,
-    pub(super) pitch_cons: HeapCons<PitchEstimate>,
+    pub(super) judge: crate::voice::judge::JudgeFeed,
+    pub(super) judge_results: crate::voice::judge::JudgeResults,
     pub(super) spectrum_cons: HeapCons<Vec<f32>>,
     pub(super) formant_cons: HeapCons<Option<FormantData>>,
     pub(super) command_rx: Receiver<EngineCommand>,
@@ -496,6 +497,9 @@ fn render_segment(state: &mut ProcessingState, io: &mut ProcessingIO, output: &m
 
     feed_analysis(io, state, num_read);
     drain_analysis_results(io, state);
+    if !state.transport.is_playing() || state.transport.is_recording() {
+        voice::feed_voice(io, state, voice::Input::Mic(num_read));
+    }
 
     let input_level_db = compute_input_level(state, num_read);
     let position_before_advance = state.transport.position_samples();
@@ -515,6 +519,9 @@ fn render_segment(state: &mut ProcessingState, io: &mut ProcessingIO, output: &m
         );
     }
     feed_clip_analysis(io, state, num_samples);
+    if state.transport.is_playing() && !state.transport.is_recording() {
+        voice::feed_voice(io, state, voice::Input::Clip(num_samples));
+    }
 
     let copy_len = if routed {
         0
@@ -808,8 +815,8 @@ fn read_mic_input(io: &mut ProcessingIO, state: &mut ProcessingState, max_read: 
 
 /// Feed raw mic samples to the analysis thread's ring buffer.
 ///
-/// Called before the mixer runs to feed mic audio for pitch detection during
-/// recording and monitoring. During playback, [`feed_clip_analysis`] is
+/// Called before the mixer runs to feed mic audio for spectrum and formants
+/// during recording and monitoring. During playback, [`feed_clip_analysis`] is
 /// called after the mixer to feed clip audio instead.
 fn feed_analysis(io: &mut ProcessingIO, state: &ProcessingState, num_read: usize) {
     // During playback (not recording), skip mic — clip audio will be fed after the mixer.
@@ -825,8 +832,7 @@ fn feed_analysis(io: &mut ProcessingIO, state: &ProcessingState, num_read: usize
 /// Feed mixed clip audio to the analysis thread during playback.
 ///
 /// Called after `run_mixer` so the `clip_mix_buffer` is populated.
-/// This enables pitch detection on clip content so synths receive the correct
-/// frequency data when processing clips.
+/// Spectrum and formants therefore describe the clips being played.
 fn feed_clip_analysis(io: &mut ProcessingIO, state: &ProcessingState, num_samples: usize) {
     if state.transport.is_playing() && !state.transport.is_recording() {
         let clip_buf = state.mixer.clip_mix_buffer();
@@ -856,8 +862,7 @@ fn copy_formants(dst: &mut FormantData, src: &FormantData) {
         .min(dst.bandwidths.len());
 }
 
-/// Drain analysis results (pitch, spectrum, formants) from ring buffers
-/// and feed detected pitch to armed tracks' synths.
+/// Drain spectrum and formant results from ring buffers.
 ///
 /// Spectrum and formant results arrive in buffers the analysis thread
 /// allocated: they are copied into pre-allocated state and the buffers sent
@@ -865,9 +870,6 @@ fn copy_formants(dst: &mut FormantData, src: &FormantData) {
 /// room to send its buffer on; otherwise it waits (and the analysis thread
 /// counts any result it then cannot queue).
 fn drain_analysis_results(io: &mut ProcessingIO, state: &mut ProcessingState) {
-    while let Some(pitch) = io.pitch_cons.try_pop() {
-        state.latest_pitch = pitch;
-    }
     while io.reclaim.room() > 0 {
         let Some(spectrum) = io.spectrum_cons.try_pop() else {
             break;
@@ -886,20 +888,6 @@ fn drain_analysis_results(io: &mut ProcessingIO, state: &mut ProcessingState) {
             state.formants.frequencies.clear();
             state.formants.bandwidths.clear();
             state.formants.num_formants = 0;
-        }
-    }
-
-    // Feed detected pitch to all synth layers on tracks.
-    // During playback: all tracks need pitch (synths process clip audio).
-    // During recording/monitoring: only armed tracks need pitch.
-    if let Some(freq) = state.latest_pitch.frequency {
-        let playback_mode = state.transport.is_playing() && !state.transport.is_recording();
-        for track in state.mixer.tracks_mut() {
-            if playback_mode || track.is_armed() {
-                for layer in track.layers_mut() {
-                    layer.synth_mut().set_pitch(freq);
-                }
-            }
         }
     }
 }
@@ -1081,7 +1069,7 @@ fn write_display_frame(
 ) {
     frame.transport = state.transport.snapshot();
     state.mixer.write_snapshot(&mut frame.mixer);
-    frame.pitch = state.latest_pitch;
+    frame.pitch = voice::pitch(state.last_frame);
     copy_within_capacity(&mut frame.spectrum_magnitudes, &state.spectrum);
     copy_within_capacity(&mut frame.waveform, &state.waveform_snapshot);
     frame.input_level_db = input_level_db;

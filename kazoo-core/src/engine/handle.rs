@@ -6,6 +6,10 @@
 #[path = "host_health.rs"]
 mod host_health;
 
+#[cfg(test)]
+#[path = "judge_shutdown_tests.rs"]
+mod judge_shutdown_tests;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -128,6 +132,8 @@ pub enum DeskLink {
 pub(super) struct ThreadHandles {
     /// Analysis thread handle.
     pub analysis: JoinHandle<()>,
+    /// Pitch and onset judge worker.
+    pub judge: crate::voice::judge::Judge,
     /// Disk I/O thread handle.
     pub disk: JoinHandle<()>,
     /// Reclaim thread handle (frees what the output callback retires).
@@ -657,8 +663,9 @@ impl Drop for EngineHandle {
                 eprintln!("kazoo engine: disk thread exited before shutdown");
             }
 
-            // Now the analysis and disk threads can exit.
+            // Now the analysis, judge and disk threads can exit.
             report_join("analysis", handles.analysis.join());
+            report_join("judge", handles.judge.join());
             report_join("disk I/O", handles.disk.join());
         }
     }

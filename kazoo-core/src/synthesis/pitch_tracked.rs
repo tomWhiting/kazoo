@@ -81,7 +81,7 @@ fn poly_blep(mut t: f32, dt: f32) -> f32 {
 
 /// Voice-pitch-driven synthesizer with band-limited oscillators.
 ///
-/// The analysis thread sets `target_frequency` via [`set_target_frequency`].
+/// The callback voice tracker sets `target_frequency` via [`set_target_frequency`].
 /// The output callback calls [`process`], which:
 /// 1. Reads input to track envelope amplitude.
 /// 2. Smooths frequency via one-pole portamento.
@@ -125,7 +125,7 @@ impl PitchTrackedSynth {
     // Defaults
     const DEFAULT_CUTOFF: f32 = 5000.0;
     const DEFAULT_Q: f32 = 0.707;
-    const DEFAULT_PORTAMENTO_MS: f32 = 20.0;
+    const DEFAULT_PORTAMENTO_MS: f32 = 3.0;
     const DEFAULT_ENV_SENSITIVITY: f32 = 0.5;
 
     /// Create a new pitch-tracked synthesizer at the given sample rate.
@@ -431,6 +431,11 @@ impl Processor for PitchTrackedSynth {
         self.reset();
     }
 
+    #[cfg(test)]
+    fn target_frequency(&self) -> Option<f32> {
+        Some(self.target_frequency)
+    }
+
     fn set_pitch(&mut self, frequency: f32) {
         self.set_target_frequency(frequency);
     }
@@ -464,6 +469,16 @@ fn compute_portamento_coeff(time_ms: f32, sample_rate: f32) -> f32 {
 mod tests {
     use super::*;
     use std::f32::consts::PI;
+
+    #[test]
+    fn default_portamento_is_three_ms() {
+        assert_eq!(
+            PitchTrackedSynth::PARAMS[PitchTrackedSynth::PARAM_PORTAMENTO]
+                .default
+                .to_bits(),
+            3.0_f32.to_bits()
+        );
+    }
 
     #[test]
     fn generates_output_when_frequency_set() {
