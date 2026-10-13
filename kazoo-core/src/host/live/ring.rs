@@ -93,8 +93,9 @@ pub struct LiveInput {
     last_sample: f32,
 }
 
-/// The real ring's two halves without a device: the stream uses this, and
-/// so do the desk's tests. Not a fake. It allocates, so call it off the audio
+/// The real ring's two halves without a device.
+///
+/// The stream uses this, and so do the desk's tests. Not a fake. It allocates, so call it off the audio
 /// thread. Panics unless `rate` is nonzero and `frames` is 32, 64, 128 or 256.
 #[must_use]
 pub fn live_pair(rate: u32, frames: usize) -> (LiveWriter, LiveInput) {

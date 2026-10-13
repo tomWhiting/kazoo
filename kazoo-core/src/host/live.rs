@@ -12,17 +12,21 @@ use cpal::traits::DeviceTrait;
 pub use ring::{LiveInput, LiveStats, LiveWriter, ReadReport, live_pair};
 pub use round_trip::{RoundTrip, RoundTripError, RoundTripResult};
 
-/// 170 ms at 48 kHz and 43 ms at 192 kHz: more than the largest slack (one
-/// 256-frame buffer) plus the drift window's excess plus the crossfade, at
-/// every rate; a power of two so every history index is masked.
+/// 170 ms at 48 kHz and 43 ms at 192 kHz of history.
+///
+/// More than the largest slack (one 256-frame buffer) plus the drift
+/// window's excess plus the crossfade, at every rate; a power of two so every
+/// history index is masked.
 pub const LIVE_RING_FRAMES: usize = 8192;
 /// The reader never goes within 1024 frames of being overwritten, so a
 /// stalled reader is caught as an overrun, not read torn.
 pub const GUARD: usize = 1024;
-/// An underrun adds 16 frames (0.33 ms at 48 kHz) of slack: small enough
-/// that one bad callback costs little latency, large enough that a machine
-/// with real jitter settles within a few steps. The slack is capped at the
-/// output buffer: more would hide a buffer size the machine cannot keep.
+/// An underrun adds 16 frames (0.33 ms at 48 kHz) of slack.
+///
+/// Small enough that one bad callback costs little latency, large enough
+/// that a machine with real jitter settles within a few steps. The slack is
+/// capped at the output buffer: more would hide a buffer size the machine
+/// cannot keep.
 pub const SLACK_STEP: usize = 16;
 /// Every jump crossfades over 1 ms (48 frames at 48 kHz): shorter than a
 /// pick attack, long enough that a jump is not a click.
@@ -160,8 +164,10 @@ fn check_channels(name: &str, count: u16, channels: &[u16]) -> Result<()> {
 }
 
 /// Open the asked channels of an input device at the desk's rate and a
-/// fixed buffer, one [`LiveInput`] per channel in the order asked, each to be
-/// moved into the output callback. Fails on a request out of range, a device
+/// fixed buffer.
+///
+/// Gives one [`LiveInput`] per channel in the order asked, each to be moved
+/// into the output callback. Fails on a request out of range, a device
 /// that cannot run at the rate, or a channel the device does not have.
 pub fn open_live_input(request: &LiveInputRequest) -> Result<(LiveInputStream, Vec<LiveInput>)> {
     let channels = validate(request)?;
