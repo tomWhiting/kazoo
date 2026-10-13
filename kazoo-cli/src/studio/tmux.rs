@@ -363,6 +363,34 @@ mod tests {
     }
 
     #[test]
+    fn every_planned_command_runs_on_real_tmux_and_opens_one_pane_per_child() {
+        let harness = Harness::new("plan");
+        let child = harness.script("child", "exec sleep 30\n");
+        let file =
+            StudioFile::parse("[[instrument]]\nname = '808'\n[[instrument]]\nname = 'mini'\n")
+                .unwrap();
+        let plan = commands("demo", &file, &child, &harness.directory).unwrap();
+        let (attach, launch) = plan.commands.split_last().unwrap();
+        assert_eq!(attach.args[0], "attach");
+        for command in launch {
+            output(&harness.tmux, &command.args).unwrap();
+        }
+        let listed = output(
+            &harness.tmux,
+            &[
+                "list-panes".into(),
+                "-s".into(),
+                "-t".into(),
+                format!("={}", plan.session),
+                "-F".into(),
+                "#{pane_dead}".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8(listed.stdout).unwrap(), "0\n0\n0\n");
+    }
+
+    #[test]
     fn down_sends_sigterm_to_the_desk_before_killing_the_session() {
         let harness = Harness::new("term");
         let directory = harness.directory.display().to_string();
