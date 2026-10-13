@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 const MARK: &str = "born 6374.0 2026-10-13T08:48:24Z 5f3c0e2a91b4d7e8 91d0c3a2b4e5f607";
 const FIXTURE: &[u8] = include_bytes!("fixtures/evening.json");
-const LOGS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/kz-logs");
 
 fn record(id: &str, kind: &str) -> ModuleRecord {
     ModuleRecord {
@@ -216,8 +215,7 @@ fn stamping_numbers_each_newborn_of_a_change() {
 
 #[test]
 fn an_added_module_is_born_with_its_change() {
-    std::fs::create_dir_all(LOGS).unwrap();
-    let dir = tempfile::tempdir_in(LOGS).unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let store = crate::store::Store::open(dir.path()).unwrap();
     let (mut wall, _engine) = wall(Some(store));
     assert!(
@@ -276,11 +274,87 @@ fn an_added_module_is_born_with_its_change() {
         .unwrap();
     let logged: Change = serde_json::from_str(line).unwrap();
     assert_eq!(logged, first);
-    std::fs::write(
-        std::path::Path::new(LOGS).join("born-add.jsonl"),
-        format!("{line}\n"),
+}
+
+/// Every module's birth, in wall order; each is there and none repeats.
+fn births(patch: &Patch) -> Vec<Birth> {
+    let births: Vec<Birth> = patch
+        .modules()
+        .iter()
+        .map(|module| module.birth.clone().unwrap())
+        .collect();
+    assert_eq!(
+        births.iter().collect::<HashSet<_>>().len(),
+        births.len(),
+        "{births:?}"
+    );
+    births
+}
+
+#[test]
+fn births_survive_a_load_its_undo_and_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine_now, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let store = crate::store::Store::open(dir.path()).unwrap();
+    let mut wall = Wall::new(
+        crate::seed::seed().unwrap(),
+        control,
+        None,
+        Vec::new(),
+        Some(store),
+    );
+    wall.set_recordings_dir(dir.path().join("recordings"));
+    let now = Instant::now();
+    ask(&mut wall, &add(), now);
+    let saved = births(wall.patch());
+    wall.request(
+        "Tom",
+        &Request::Save {
+            name: "kept".into(),
+            overwrite: false,
+        },
+        now,
     )
     .unwrap();
+    ask(&mut wall, &add(), now);
+    let before_load = births(wall.patch());
+    let outcome = wall
+        .request(
+            "Tom",
+            &Request::Load {
+                name: "kept".into(),
+            },
+            now,
+        )
+        .unwrap();
+    let loaded: crate::protocol::LoadResult = serde_json::from_value(outcome.result).unwrap();
+    assert_eq!(births(wall.patch()), saved, "a load carries its births");
+    wall.request(
+        "Tom",
+        &Request::Undo {
+            change: loaded.change.seq,
+        },
+        now,
+    )
+    .unwrap();
+    assert_eq!(
+        births(wall.patch()),
+        before_load,
+        "and its undo brings them back"
+    );
+    wall.save(now);
+    drop((wall, engine_now));
+    let store = crate::store::Store::peek(dir.path()).unwrap();
+    let crate::store::Loaded::Patch { patch, .. } = store.load_patch().unwrap() else {
+        panic!("no patch.json");
+    };
+    let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let restarted = Wall::new(*patch, control, None, Vec::new(), None);
+    assert_eq!(
+        births(restarted.patch()),
+        before_load,
+        "and a restart keeps them"
+    );
 }
 
 #[test]
@@ -323,22 +397,31 @@ fn an_old_save_is_found_the_same_way_every_time() {
             .all(|module| module.get("birth").is_none())
     );
     assert_eq!(fixture().wall, 3217);
-    for bytes in [FIXTURE.to_vec(), {
+    let seedless = {
         let mut value = value;
         value.as_object_mut().unwrap().remove("seed");
         serde_json::to_vec(&value).unwrap()
-    }] {
-        let file = crate::migrate::read(&bytes).unwrap().0;
-        let first = Patch::load(&file).unwrap().0.to_file();
-        let second = Patch::load(&file).unwrap().0.to_file();
-        assert_eq!(first.modules, second.modules);
-        for module in first.modules {
+    };
+    let mut seeds = Vec::new();
+    for bytes in [FIXTURE.to_vec(), seedless] {
+        // Read whole twice, from the bytes: the same seed and marks.
+        let read = || {
+            let file = crate::migrate::read(&bytes).unwrap().0;
+            (file.seed, Patch::load(&file).unwrap().0.to_file().modules)
+        };
+        let (seed, first) = read();
+        assert_eq!(read(), (seed, first.clone()));
+        assert_eq!(first.len(), 85);
+        for module in first {
             assert_eq!(
                 module.birth,
-                Some(format!("found 3217 {:016x} {}", file.seed, module.id))
+                Some(format!("found 3217 {seed:016x} {}", module.id))
             );
         }
+        seeds.push(seed);
     }
+    // The seedless copy's seed comes from its own bytes, not the save's.
+    assert_ne!(seeds[0], seeds[1]);
 }
 
 #[test]
@@ -503,6 +586,7 @@ fn random_roundtrips(compare_files: bool) {
             }
             let mut output = [0.0; 64];
             engine.render(&mut output, 1);
+            births(wall.patch());
             roundtrip(&wall.patch().to_file(), compare_files);
         }
     }
