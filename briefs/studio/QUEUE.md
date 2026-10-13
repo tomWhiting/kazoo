@@ -139,3 +139,7 @@ START KZ-L03 base=ac26501 branch=lane/kz-L03 df=109GB at 02:15
 START KZ-P01 base=ac26501 branch=lane/kz-P01 df=108GB at 02:15
 - KZ-F01 merged (review READY 67267cf), KZ-D03c merged (review de3682a: wake costed against its own pending change, refused wake costed twice; doc tests ran here), KZ-V03 merged (review READY d3b4c27: mechanism changed to marks at both crossings, half-period window, glide carried forward; targets unchanged and met). Merge check on main 4cdb36f: fmt 0, clippy 0, nextest 3965/3965, doc 0, ast-grep 0 (full-F01-D03c-V03-0205.log).
 - To hear with Tom: V03's glide carry (any overshoot at a glide's end) once a synth follows the voice (V09).
+START KZ-V04 base=538cfbe branch=lane/kz-V04 df=64GB at 03:26
+START KZ-B01c base=538cfbe branch=lane/kz-B01c df=64GB at 03:26
+START KZ-A03c base=538cfbe branch=lane/kz-A03c df=63GB at 03:26
+- KZ-T02a merged (review READY 0607f1c: kazoo-mcp Change literals, a refused load no longer starts a clock line). Merge check on main 1617372: fmt 0, clippy 0, nextest 3977/3977, doc 0, ast-grep 0 (full-T02a-0326.log).
