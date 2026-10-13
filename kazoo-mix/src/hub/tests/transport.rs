@@ -111,3 +111,17 @@ fn extra_lead_is_held_to_the_instruments_own_block_size() {
     );
     assert_eq!(AUDIO_PAYLOAD_HEADER, 12);
 }
+
+#[test]
+fn a_block_too_large_refusal_always_reads_as_text() {
+    // Any value of the public reason renders: a Display error would panic
+    // the hub thread inside `to_string`.
+    for most in [0, 40_000] {
+        let text = RefuseReason::BlockTooLarge {
+            frames: 50_000,
+            most,
+        }
+        .to_string();
+        assert!(text.starts_with("blocks of 50000 frames"), "{text}");
+    }
+}
