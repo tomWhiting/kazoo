@@ -443,6 +443,14 @@ fn validate(file: &PatchFile) -> Result<(), TreeError> {
             )));
         }
     }
+    for id in file.loops.keys() {
+        if !ids.contains(id.as_str()) {
+            return Err(TreeError::NotOneWall(format!(
+                "a loop's tape belongs to missing module '{}'",
+                printable(id)
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -511,6 +519,10 @@ fn module_text(file: &PatchFile, module: &ModuleRecord) -> Result<String, TreeEr
             line(&mut out, "voice", &string(voice));
         }
     }
+    if let Some(record) = file.loops.get(&module.id) {
+        out.push_str("\n[loop]\n");
+        loops::write(&mut out, "loop", record, &path)?;
+    }
     Ok(out)
 }
 
@@ -549,22 +561,6 @@ fn wall_text(file: &PatchFile) -> Result<String, TreeError> {
         }
         out.push_str("]\n");
     }
-    // JSON preserves unwritten bars because TOML has no null array cells.
-    if !file.loops.is_empty() {
-        let text = serde_json::to_string(&file.loops).map_err(|error| TreeError::Parse {
-            path: "wall.toml".into(),
-            reason: error.to_string(),
-        })?;
-        line(&mut out, "loops_json", &string(&text));
-    }
-    if !file.retired_loops.is_empty() {
-        let text =
-            serde_json::to_string(&file.retired_loops).map_err(|error| TreeError::Parse {
-                path: "wall.toml".into(),
-                reason: error.to_string(),
-            })?;
-        line(&mut out, "retired_loops_json", &string(&text));
-    }
     out.push_str("\n[next_ids]\n");
     for (kind, number) in &file.next_ids {
         line(&mut out, &key(kind), &number.to_string());
@@ -580,6 +576,11 @@ fn wall_text(file: &PatchFile) -> Result<String, TreeError> {
         if let Some(voice) = &retired.words.voice {
             line(&mut out, "voice", &string(voice));
         }
+    }
+    for retired in &file.retired_loops {
+        out.push_str("\n[[retired_loops]]\n");
+        line(&mut out, "module", &string(&retired.module));
+        loops::write(&mut out, "retired_loops", &retired.record, "wall.toml")?;
     }
     Ok(out)
 }
@@ -614,9 +615,7 @@ struct WallToml {
     #[serde(default)]
     retired_speech: Vec<RetiredToml>,
     #[serde(default)]
-    loops_json: Option<String>,
-    #[serde(default)]
-    retired_loops_json: Option<String>,
+    retired_loops: Vec<loops::RetiredLoopToml>,
 }
 
 #[derive(Deserialize)]
@@ -630,6 +629,8 @@ struct ModuleToml {
     inputs: BTreeMap<String, InputToml>,
     dye: Option<BTreeMap<String, f64>>,
     words: Option<WordsToml>,
+    #[serde(rename = "loop")]
+    looped: Option<loops::LoopToml>,
 }
 
 #[derive(Deserialize)]
@@ -698,8 +699,8 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
         cables: Vec::new(),
         dye: BTreeMap::new(),
         speech: BTreeMap::new(),
-        loops: loop_json(wall.loops_json)?,
-        retired_loops: loop_json(wall.retired_loops_json)?,
+        loops: BTreeMap::new(),
+        retired_loops: loops::retired(wall.retired_loops),
         rack: wall.rack,
         groups: wall.groups,
         retired_speech: wall
@@ -748,6 +749,9 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
                 },
             );
         }
+        if let Some(record) = module.looped {
+            file.loops.insert(id.clone(), record.into());
+        }
         file.modules.push(ModuleRecord {
             id,
             kind: module.kind,
@@ -767,19 +771,6 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
     Ok(file)
 }
 
-fn loop_json<T: serde::de::DeserializeOwned + Default>(
-    text: Option<String>,
-) -> Result<T, TreeError> {
-    text.map_or_else(
-        || Ok(T::default()),
-        |text| {
-            serde_json::from_str(&text).map_err(|error| TreeError::Parse {
-                path: "wall.toml".into(),
-                reason: error.to_string(),
-            })
-        },
-    )
-}
-
+mod loops;
 #[cfg(test)]
 mod tests;
