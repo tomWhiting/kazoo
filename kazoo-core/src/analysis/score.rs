@@ -41,7 +41,11 @@ pub struct Score {
     pub onsets_missed: usize,
     pub step_ms_median: f32,
     pub step_ms_max: f32,
+    /// Step events in the truth.
     pub steps: usize,
+    /// Step events the tracker never landed on before the note ended; they
+    /// are not in the step latency figures.
+    pub steps_missed: usize,
     pub cents_median: f32,
     pub cents_p95: f32,
     pub octave_pct: f32,
@@ -111,7 +115,7 @@ fn number(value: f32) -> String {
 #[must_use]
 pub fn table(rows: &[(&str, &str, Score)]) -> String {
     let mut output = String::from(
-        "| tracker | take | onset median ms | onset max ms | onsets missed | step median ms | step max ms | steps | cents median | cents p95 | octave % | gross % | missed % | false % | aligned lag ms |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+        "| tracker | take | onset median ms | onset max ms | onsets missed | step median ms | step max ms | steps | steps missed | cents median | cents p95 | octave % | gross % | missed % | false % | aligned lag ms |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
     for (tracker, take, score) in rows {
         let fields = [
@@ -123,6 +127,7 @@ pub fn table(rows: &[(&str, &str, Score)]) -> String {
             number(score.step_ms_median),
             number(score.step_ms_max),
             score.steps.to_string(),
+            score.steps_missed.to_string(),
             number(score.cents_median),
             number(score.cents_p95),
             number(score.octave_pct),

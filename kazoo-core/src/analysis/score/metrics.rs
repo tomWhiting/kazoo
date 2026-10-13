@@ -53,9 +53,10 @@ fn within(estimate: Option<f32>, truth: Option<f32>, tolerance: f32) -> bool {
 /// sample stands for it unless the take knows the onset to the sample.
 fn event_sample(event: Event, onsets: &[usize]) -> usize {
     let start = event.index * SCORE_STEP;
-    let known = onsets.iter().copied().find(|&onset| {
-        onset + SCORE_STEP / 2 > start && onset <= start + SCORE_STEP / 2
-    });
+    let known = onsets
+        .iter()
+        .copied()
+        .find(|&onset| onset + SCORE_STEP / 2 > start && onset <= start + SCORE_STEP / 2);
     match known {
         Some(onset) if event.start => onset,
         _ => start,
@@ -66,12 +67,7 @@ fn event_sample(event: Event, onsets: &[usize]) -> usize {
 /// stays. A reading is taken after the tracker has had all of its step, so
 /// the figure counts every sample the tracker took and is never shorter than
 /// the tracker's real latency (it may be up to one step longer).
-fn latency(
-    event: Event,
-    end: usize,
-    take: &Take,
-    estimates: &[Option<f32>],
-) -> Option<f32> {
+fn latency(event: Event, end: usize, take: &Take, estimates: &[Option<f32>]) -> Option<f32> {
     let hold = period_steps(take.rate, event.hz, 0.0);
     let hold = if event.start {
         hold.max(3)
@@ -167,6 +163,7 @@ pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
     let mut onset_latencies = Vec::new();
     let mut step_latencies = Vec::new();
     let mut onsets_missed = 0;
+    let mut steps_missed = 0;
     for (position, &event) in events.iter().enumerate() {
         let settle_end = event
             .index
@@ -181,7 +178,7 @@ pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
             Some(delay) if event.start => onset_latencies.push(delay),
             Some(delay) => step_latencies.push(delay),
             None if event.start => onsets_missed += 1,
-            None => {}
+            None => steps_missed += 1,
         }
     }
     let mut errors = Vec::new();
@@ -237,6 +234,7 @@ pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
         step_ms_median: median(&step_latencies),
         step_ms_max: maximum(&step_latencies),
         steps: events.iter().filter(|event| !event.start).count(),
+        steps_missed,
         cents_median: median(&errors),
         cents_p95: errors.get(p95).copied().unwrap_or(f32::NAN),
         octave_pct: percent(octave, scored),

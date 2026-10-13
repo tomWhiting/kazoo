@@ -432,8 +432,9 @@ fn a_step_never_landed_is_counted() {
     // Only the last step, back to C3, lands on the note this tracker holds.
     assert_eq!(result.steps, 6, "{result:?}");
     assert_eq!(result.steps_missed, 5, "{result:?}");
-    assert!(
-        crate::analysis::score::table(&[("held", &take.name, result)]).contains("steps missed")
-    );
+    let table = crate::analysis::score::table(&[("held", &take.name, result)]);
+    assert!(table.contains("steps missed"));
+    let cells: Vec<_> = table.lines().map(|line| line.matches('|').count()).collect();
+    assert_eq!(cells, [17, 17, 17], "{table}");
 }
 
