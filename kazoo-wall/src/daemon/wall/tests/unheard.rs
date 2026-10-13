@@ -117,3 +117,66 @@ fn a_scope_makes_what_it_reads_heard() {
     assert!(wall.snapshot().timing.unheard.is_empty());
     drop(engine);
 }
+
+type Script = std::sync::Arc<std::sync::Mutex<crate::daemon::speech::tests::Script>>;
+
+/// Gives `speak1` new words `times` times, rendering a block after each as
+/// the audio thread would, and answers the last refusal, if any.
+fn speak_often(
+    wall: &mut Wall,
+    engine: &mut Engine,
+    script: &Script,
+    times: usize,
+) -> Option<WallError> {
+    let mut buffer = vec![0.0; SUB_BLOCK * 2];
+    let mut refused = None;
+    for time in 0..times {
+        let words = Request::Speak {
+            module: "speak1".to_string(),
+            text: format!("words number {time}"),
+            voice: None,
+        };
+        ask(wall, &words).unwrap();
+        script.lock().unwrap().finish_all();
+        for (_, answer) in wall.spoken() {
+            if let Err(err) = answer {
+                refused = Some(err);
+            }
+        }
+        engine.render(&mut buffer, 2);
+    }
+    refused
+}
+
+#[test]
+fn an_unheard_speaker_given_too_many_words_says_why_it_takes_none() {
+    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
+    let (speech, script) = crate::daemon::speech::tests::scripted(16);
+    wall.speech = speech;
+    ask(&mut wall, &add("speak")).unwrap();
+    assert_eq!(wall.snapshot().timing.unheard, ["speak1"]);
+    // Heard, its player takes every phrase as it comes.
+    ask(&mut wall, &add("out")).unwrap();
+    ask(&mut wall, &patch("speak1.out", "out1.left")).unwrap();
+    assert!(speak_often(&mut wall, &mut engine, &script, 12).is_none());
+    // Unheard, its player takes none: the refusal says why, and that
+    // waiting will not help.
+    ask(
+        &mut wall,
+        &Request::Remove {
+            module: "out1".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(wall.snapshot().timing.unheard, ["speak1"]);
+    let refused = speak_often(&mut wall, &mut engine, &script, 12).unwrap();
+    assert_eq!(refused.code, ErrorCode::NotAllowed, "{refused:?}");
+    assert!(
+        refused
+            .message
+            .contains("speak1 reaches no out, scope or readout"),
+        "{}",
+        refused.message
+    );
+}
