@@ -129,3 +129,4 @@ START KZ-T01 base=acf8b92 branch=lane/kz-T01 df=1GB at 20:29
 - Held: KZ-A08 (its Justfile gate is a per-repository gate script, against Tom's rule 9; to ask Tom).
 - Briefs written for the two follow-ups above: KZ-B01c (the wake test counts woken parks instead of a 200 us bound) and KZ-A03c (stuck link counts printed on exit; the 808 badge goes). Both ready, no dependencies.
 - Track P: all 17 briefs read by Cassio and committed; Track P merged into PLAN.md (P08's key is `v`, P15's is `C`: `t` is tap tempo and `c` the click on the desk). Openable now: P01, P04, P10.
+- KZ-T01 merged (review READY c9a545c; fixed duplicate birth marks). Merge check on main 09511e0: fmt 0, clippy 0, nextest 3920/3920, doc 0, ast-grep 0 (target/kz-logs/full-T01-2311.log).
