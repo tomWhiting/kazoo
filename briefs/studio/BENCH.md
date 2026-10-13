@@ -119,3 +119,25 @@ Logs: target/kz-logs/bench-five.txt and target/kz-logs/bench-three.txt, with
 load samples in target/kz-logs/bench-five-load.txt,
 target/kz-logs/bench-five-measure-load.txt, target/kz-logs/bench-three-load.txt
 and target/kz-logs/bench-three-after-load.txt.
+
+Review, on lane/kz-V01 at 34793ee with JUDGE_FRAMES = 3: judge/hop/48k read
+18.802 ms (interval 18.129 to 19.515 ms), load 75.07/82.82/108.05 before and
+75.60/82.14/107.06 after; log target/kz-logs/review-bench.log. To separate
+the cost from the load, pyin 1.2.0 alone was timed in a scratch binary as
+user CPU time over 100 runs at 48 kHz, frame 2048, hop 512, the same saw:
+
+| range | resolution | pYIN frames | CPU ms per run |
+|---|---|---|---|
+| 50 to 4000 Hz | 0.1 | 1 | 7.9 |
+| 50 to 4000 Hz | 0.1 | 3 | 14.8 to 15.5 |
+| 50 to 4000 Hz | 0.1 | 5 | 21.7 to 23.5 |
+| 60 to 1000 Hz | 0.1 | 3 | 6.0 |
+| 50 to 4000 Hz | 0.2 | 3 | 3.6 |
+| 50 to 4000 Hz | 0.34 | 3 | 1.4 |
+
+The cost is CPU, not load: pyin's Viterbi runs over 1518 states (759 pitch
+bins, voiced and unvoiced) and takes the log of the whole 1518 by 1518
+transition matrix on every call. At three frames one run costs more CPU than
+the 10.7 ms hop it judges, so on a live 48 kHz device the analysis thread
+cannot keep up. The 2.1 ms budget is out of reach at this range and
+resolution with any frame count.
