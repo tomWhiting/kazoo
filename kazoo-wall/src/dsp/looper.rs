@@ -76,11 +76,15 @@ pub(crate) fn head(beat: f64, anchor: f64, beats: f64) -> Option<Head> {
     if !rel.is_finite() || !beats.is_finite() || beats < 4.0 {
         return None;
     }
-    let pass = (rel / beats).floor();
+    // `rem_euclid` of a value a hair below a multiple of the loop rounds up
+    // to the whole loop: that is the next pass's first beat. The pass is
+    // taken from the same remainder, so the two always agree.
+    let within = rel.rem_euclid(beats);
+    let within = if within >= beats { 0.0 } else { within };
+    let pass = ((rel - within) / beats).round();
     if pass < i64::MIN as f64 || pass >= i64::MAX as f64 {
         return None;
     }
-    let within = rel.rem_euclid(beats);
     let Ok(bar) = usize::try_from((within / BEATS_PER_BAR).floor() as u64) else {
         return None;
     };
