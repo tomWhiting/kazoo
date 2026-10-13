@@ -630,6 +630,36 @@ mod tests {
     }
 
     #[test]
+    fn refused_scheduling_is_shown_in_the_hub_badge() {
+        for connected in [false, true] {
+            let link = LinkStatus {
+                normal_priority: true,
+                connected,
+                ..status()
+            };
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    frame
+                        .render_widget(Paragraph::new(Line::from(link_spans(&link))), frame.area());
+                })
+                .unwrap();
+            let rendered: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
+            assert!(
+                rendered.contains("desk link at normal priority"),
+                "{rendered}"
+            );
+        }
+    }
+
+    #[test]
     fn connected_link_names_the_strip() {
         let link = LinkStatus {
             normal_priority: false,

@@ -59,7 +59,7 @@ Read from the code; file references are to `kazoo-wall/src` unless they say othe
 
 **kazoo-mcp** is a tokio client of the same socket, with one request connection and one subscribed connection per Claude seat. It turns other seats' changes and seat joins into Claude channel notifications, coalesced to one every 20 s. So **every web player who joins is announced to every Claude seat**, and a web player's seat name, 24 characters of `[A-Za-z0-9 _.-]`, reaches those seats' context. "Ignore the rules" fits in 24 characters.
 
-**kazoo-mix** is the desk and hub. The wall on Tom's Mac joins it through `hub_link` and sends its audio there instead of to the device. A board on a server has no desk.
+**kazoo-mix** is the desk and hub. The wall on Tom's Mac joins it through `kazoo_core::host::link::connect_config_or_direct` and sends its audio there instead of to the device. A board on a server has no desk.
 
 **In-flight work this design must fit, without waiting for it:**
 - **Save and load** (named saves, load, and an auto-save before every load). A load replaces the whole patch under every client. The bridge must treat it like a reconnect: take a fresh `look` and send the browsers a whole new wall. If the save/load work adds an event for it, the bridge listens for that. If not, the bridge spots it from the revision and the module set changing at once, or from a gap in `seq`, and takes a fresh `look` (FEED.md already says to on a gap). Web players do not get save or load until phase 3, and then only a board's owner does.

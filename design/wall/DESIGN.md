@@ -124,7 +124,7 @@ A knob moves toward its target linearly over the glide ("weather, not a crash").
 
 **Clock:**
 - The wall is always running and keeps its own beat.
-- When the kazoo-mix desk is up, the wall joins it as an instrument named `kazoo-wall`, using `hub_link`. It follows the desk's tempo and beat with `TransportFollower`, which is the same code as the jam engine.
+- When the kazoo-mix desk is up, the wall joins it as an instrument named `kazoo-wall`, using `kazoo_core::host::link::connect_config_or_direct`. It follows the desk's tempo and beat with `TransportFollower`, which is the same code as the jam engine.
 - When the desk stops, or disappears, the wall keeps playing at the last tempo, with its beat continuing from where it was.
 - The `tempo` op asks the desk for a tempo when linked (`request_tempo`), and sets the wall's own tempo otherwise.
 

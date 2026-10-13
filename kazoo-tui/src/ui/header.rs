@@ -739,6 +739,19 @@ mod tests {
     }
 
     #[test]
+    fn header_shows_refused_link_scheduling() {
+        for connected in [false, true] {
+            let mut app = crate::test_support::TestApp::empty();
+            app.desk = DeskView::Link(kazoo_core::ipc::link::LinkStatus {
+                normal_priority: true,
+                ..link(connected)
+            });
+            let text = render_header(&app, 180);
+            assert!(text.contains("desk link at normal priority"), "{text}");
+        }
+    }
+
+    #[test]
     fn header_names_the_desk_strip() {
         let mut app = crate::test_support::TestApp::empty();
         app.desk = DeskView::Link(kazoo_core::ipc::link::LinkStatus {

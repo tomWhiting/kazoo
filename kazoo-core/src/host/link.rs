@@ -11,9 +11,8 @@ use std::time::Duration;
 
 use crate::ipc::client::HubIpcClient;
 use crate::ipc::discovery;
-use crate::ipc::follow::TransportFollower;
 use crate::ipc::link::{HubAddress, HubLink, HubLinkAudio, LinkConfig, start_link};
-use ringbuf::traits::{Consumer, Split};
+use ringbuf::traits::Consumer;
 
 pub use crate::ipc::client::HubMessage as HubEvent;
 pub type AudioTx = HubLinkAudio;
@@ -40,7 +39,7 @@ pub enum Error {
 }
 
 pub struct EventRx {
-    receiver: ringbuf::HeapCons<ToAudio>,
+    receiver: Option<ringbuf::HeapCons<ToAudio>>,
     pub(crate) stream_updates: Arc<[AtomicU64; MAX_STREAMS]>,
 }
 
@@ -53,14 +52,14 @@ impl std::fmt::Debug for EventRx {
 impl EventRx {
     pub(crate) fn new(receiver: ringbuf::HeapCons<ToAudio>) -> Self {
         Self {
-            receiver,
+            receiver: Some(receiver),
             stream_updates: Arc::new(std::array::from_fn(|_| AtomicU64::new(0))),
         }
     }
 
     pub(crate) fn try_recv(&mut self) -> Option<HubEvent> {
         loop {
-            match self.receiver.try_pop()? {
+            match self.receiver.as_mut()?.try_pop()? {
                 ToAudio::Hub(event) => return Some(event),
                 ToAudio::Stream { stream, channels } => {
                     let slot = &self.stream_updates[usize::from(stream)];
@@ -75,47 +74,41 @@ impl EventRx {
         }
     }
 
-    fn empty() -> Self {
-        let (sender, receiver) = ringbuf::HeapRb::new(1).split();
-        drop(sender);
-        Self::new(receiver)
+    const fn empty(stream_updates: Arc<[AtomicU64; MAX_STREAMS]>) -> Self {
+        Self {
+            receiver: None,
+            stream_updates,
+        }
     }
 }
 
 #[derive(Debug)]
 pub struct Linked {
+    control: HubLink,
     pub tx: AudioTx,
     pub events: EventRx,
-    pub transport: TransportFollower,
-    control: HubLink,
 }
 
 impl Linked {
-    fn new(control: HubLink, mut tx: AudioTx, rate: u32) -> Self {
-        let events = mem::replace(&mut tx.events, EventRx::empty());
+    fn new(control: HubLink, mut tx: AudioTx) -> Self {
+        let empty = EventRx::empty(Arc::clone(&tx.events.stream_updates));
+        let events = mem::replace(&mut tx.events, empty);
         Self {
+            control,
             tx,
             events,
-            transport: TransportFollower::new(rate),
-            control,
         }
     }
 
-    // Existing engines keep their combined callback handle and UI handle.
-    // Replacements are built here, before either render thread starts.
-    pub fn into_parts(mut self) -> Result<(HubLink, HubLinkAudio), Error> {
-        let (replacement_control, replacement_audio) =
-            start_link(LinkConfig::new("detached", 1, 1, 1), None, false)?;
-        let control = mem::replace(&mut self.control, replacement_control);
-        let mut audio = mem::replace(&mut self.tx, replacement_audio);
-        audio.events = mem::replace(&mut self.events, EventRx::empty());
-        Ok((control, audio))
-    }
-}
-
-impl Drop for Linked {
-    fn drop(&mut self) {
-        self.control.shutdown();
+    #[must_use]
+    pub fn into_parts(self) -> (HubLink, HubLinkAudio) {
+        let Self {
+            control,
+            mut tx,
+            events,
+        } = self;
+        tx.events = events;
+        (control, tx)
     }
 }
 
@@ -155,7 +148,7 @@ pub fn connect_config(config: LinkConfig) -> Result<Linked, Error> {
 fn connect_with(config: LinkConfig, mut sleep: impl FnMut(Duration)) -> Result<Linked, Error> {
     validate(&config)?;
     let register = config.register()?;
-    for _ in 0..3 {
+    for attempt in 0..3 {
         let socket = match &config.address {
             HubAddress::Discover => discovery::hub_socket(),
             HubAddress::Socket(path) => Ok(path.clone()),
@@ -164,9 +157,8 @@ fn connect_with(config: LinkConfig, mut sleep: impl FnMut(Duration)) -> Result<L
             .and_then(|path| HubIpcClient::register_with_timeout(&path, &register, RETRY_DELAY));
         match result {
             Ok(client) => {
-                let rate = config.sample_rate;
                 let (control, audio) = start_link(config, Some(client), true)?;
-                return Ok(Linked::new(control, audio, rate));
+                return Ok(Linked::new(control, audio));
             }
             Err(err)
                 if matches!(
@@ -177,7 +169,9 @@ fn connect_with(config: LinkConfig, mut sleep: impl FnMut(Duration)) -> Result<L
                         | io::ErrorKind::WouldBlock
                 ) =>
             {
-                sleep(RETRY_DELAY);
+                if attempt < 2 {
+                    sleep(RETRY_DELAY);
+                }
             }
             Err(err) => return Err(Error::Io(err)),
         }
@@ -193,7 +187,7 @@ pub fn connect_or_direct(setup: &LinkSetup) -> Result<(HubLink, HubLinkAudio), E
 // instrument still picks it up, as the link always has.
 pub fn connect_config_or_direct(config: LinkConfig) -> Result<(HubLink, HubLinkAudio), Error> {
     match connect_config(config.clone()) {
-        Ok(linked) => linked.into_parts(),
+        Ok(linked) => Ok(linked.into_parts()),
         Err(Error::NoDesk) => {
             let (link, audio) = start_link(config, None, true)?;
             link.report_start_refusal("no desk; playing direct".to_string());
@@ -210,11 +204,6 @@ pub fn connect_config_or_direct(config: LinkConfig) -> Result<(HubLink, HubLinkA
         }
         Err(err) => Err(err),
     }
-}
-
-// Asynchronous openings let socket fixtures accept registration after setup.
-pub fn open(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)> {
-    crate::ipc::link::hub_link(config)
 }
 
 pub fn drain_events(rx: &mut EventRx, mut on: impl FnMut(HubEvent)) {

@@ -370,7 +370,7 @@ impl AudioEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kazoo_core::host::link::open;
+    use kazoo_core::host::link::connect_config_or_direct;
     use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig};
     use kazoo_core::ipc::protocol::FrameBuffer;
     use kazoo_core::ipc::types::{
@@ -410,7 +410,7 @@ mod tests {
         config.address = HubAddress::Socket(
             std::env::temp_dir().join(format!("kazoo-dx-no-hub-{}.sock", std::process::id())),
         );
-        let (hub, hub_audio) = open(config).unwrap();
+        let (hub, hub_audio) = connect_config_or_direct(config).unwrap();
         // The UI half says goodbye on drop; the audio half keeps working
         // unconnected, which is what these tests exercise.
         drop(hub);
@@ -493,7 +493,7 @@ mod tests {
             let listener = UnixListener::bind(&path).unwrap();
             let mut config = LinkConfig::new("kazoo-dx-test", 2, RATE, MAX_BLOCK_FRAMES as u32);
             config.address = HubAddress::Socket(path.clone());
-            let (hub, hub_audio) = open(config).unwrap();
+            let linking = std::thread::spawn(move || connect_config_or_direct(config));
             let (mut stream, _) = listener.accept().unwrap();
             let mut buf = FrameBuffer::new();
             assert_eq!(buf.read_frame(&mut stream).unwrap().msg_type, MSG_REGISTER);
@@ -509,6 +509,7 @@ mod tests {
             .encode(buf.payload_mut());
             buf.write_frame(MSG_REGISTERED, 0, RegisteredMsg::WIRE_SIZE, &mut stream)
                 .unwrap();
+            let (hub, hub_audio) = linking.join().unwrap().unwrap();
 
             let (request_tx, requests) = std::sync::mpsc::channel();
             let mut read_half = stream.try_clone().unwrap();

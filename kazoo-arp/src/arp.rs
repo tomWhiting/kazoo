@@ -139,7 +139,7 @@ mod tests {
         MAX_CALLBACK_FRAMES,
     };
     use crate::{ClockDivision, parse_args};
-    use kazoo_core::host::link::open;
+    use kazoo_core::host::link::connect_config_or_direct;
     use kazoo_core::ipc::link::{HubAddress, LinkConfig};
     use kazoo_core::ipc::types::{TRANSPORT_PLAYING, TransportSyncMsg};
     use ringbuf::traits::{Consumer, Split};
@@ -151,7 +151,7 @@ mod tests {
             "target/kz-logs/absent-{name}-{}.sock",
             std::process::id()
         )));
-        let (hub, audio) = open(config).unwrap();
+        let (hub, audio) = connect_config_or_direct(config).unwrap();
         drop(hub);
         let (tx, rx) = crossbeam_channel::bounded(COMMAND_CAPACITY);
         let (display, consumer) = ringbuf::HeapRb::new(DISPLAY_CAPACITY).split();

@@ -1,13 +1,13 @@
 //! A link that names its streams, against this desk.
 
 use super::*;
-use kazoo_core::host::link::open;
+use kazoo_core::host::link::connect_config_or_direct;
 use kazoo_core::ipc::link::{HubAddress, LinkConfig, StreamConfig};
 
 #[test]
 fn a_link_with_two_streams_stays_plugged_in_and_its_first_stream_is_heard() {
     let mut rig = Rig::new([false; DESK_CHANNELS]);
-    let (link, mut audio) = open(LinkConfig {
+    let (link, mut audio) = connect_config_or_direct(LinkConfig {
         address: HubAddress::Socket(rig.socket.clone()),
         streams: vec![
             StreamConfig {
