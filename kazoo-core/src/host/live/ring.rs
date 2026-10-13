@@ -52,7 +52,8 @@ pub struct LiveInput {
     frames: usize,
     // More than one output buffer of slack would hide an unsustainable buffer size.
     slack: usize,
-    reset_pending: bool,
+    // Set by reset_slack: the next read jumps to the new, smaller target.
+    retarget: bool,
     started: bool,
     fade: usize,
     fade_left: usize,
@@ -98,7 +99,7 @@ pub fn live_pair(rate: u32, frames: usize) -> (LiveWriter, LiveInput) {
         pos: 0,
         frames,
         slack: 0,
-        reset_pending: false,
+        retarget: false,
         started: false,
         fade: ((rate as f32 * FADE_MS / 1000.0) as usize).max(1),
         fade_left: 0,
@@ -160,10 +161,7 @@ impl LiveInput {
     }
 
     const fn jump(&mut self, written: u64, frames: usize, old: Option<u64>, fade: usize) {
-        if self.reset_pending {
-            self.slack = 0;
-            self.reset_pending = false;
-        }
+        self.retarget = false;
         self.pos = written.saturating_sub((frames + self.slack) as u64);
         self.old_pos = old;
         self.old_end = written;
@@ -197,6 +195,11 @@ impl LiveInput {
             self.jump(written, n, Some(self.pos), self.fade);
             return ReadReport::Underrun;
         }
+        if self.retarget && lag > target {
+            self.jump(written, n, Some(self.pos), self.fade);
+            return ReadReport::Jump;
+        }
+        self.retarget = false;
         if lag > target + n as u64 / 2 {
             self.drift_frames += n as u64;
         } else {
@@ -260,9 +263,12 @@ impl LiveInput {
         self.slack
     }
 
-    /// Remove accumulated slack when the next crossfaded jump occurs.
+    /// Return the slack to 0. The next read takes the latency back with a
+    /// crossfaded jump forward (reported as `Jump`, not counted in `jumps`,
+    /// which counts drift corrections); a later underrun grows it again.
     pub const fn reset_slack(&mut self) {
-        self.reset_pending = true;
+        self.slack = 0;
+        self.retarget = true;
     }
 
     #[must_use]
