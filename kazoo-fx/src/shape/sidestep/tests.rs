@@ -148,8 +148,32 @@ fn a_chord_is_never_silenced_and_folds_every_note() {
         / segment.len() as f64;
     for frequency in frequencies {
         let mut peak = 0.0_f64;
-        for harmonic in [1.0, 3.0, 5.0] {
-            let product = f64::from(frequency) * harmonic;
+        let products = [1.0, 3.0, 5.0].map(|harmonic| f64::from(frequency) * harmonic);
+        let intermodulated = frequencies
+            .into_iter()
+            .filter(|other| other.to_bits() != frequency.to_bits())
+            .flat_map(|other| {
+                [
+                    f64::from(frequency) + 2.0 * f64::from(other),
+                    (f64::from(frequency) - 2.0 * f64::from(other)).abs(),
+                ]
+            });
+        let other_notes: Vec<_> = frequencies
+            .into_iter()
+            .filter(|other| other.to_bits() != frequency.to_bits())
+            .map(f64::from)
+            .collect();
+        let mixed_products = [
+            (f64::from(frequency) + other_notes[0] + other_notes[1]).abs(),
+            (f64::from(frequency) + other_notes[0] - other_notes[1]).abs(),
+            (f64::from(frequency) - other_notes[0] + other_notes[1]).abs(),
+            (f64::from(frequency) - other_notes[0] - other_notes[1]).abs(),
+        ];
+        for product in products
+            .into_iter()
+            .chain(intermodulated)
+            .chain(mixed_products)
+        {
             let measured = magnitude(segment, RATE, product);
             let db = 20.0 * (measured / strongest).log10();
             println!("fold {frequency} Hz, product {product} Hz: {measured}, {db} dB relative");
@@ -178,9 +202,9 @@ fn each_onset_restarts_the_envelope() {
     ]);
     let single = pluck(RATE, 220.0, 0.5);
     let mut input = vec![0.0; single.len()];
-    for offset in [0, 7200, 14_400] {
+    for (offset, strength) in [(0, 0.0625_f32), (7200, 0.25), (14_400, 1.0)] {
         for (to, from) in input[offset..].iter_mut().zip(&single) {
-            *to += from;
+            *to = strength.mul_add(*from, *to);
         }
     }
     let trace: Vec<_> = input
@@ -247,9 +271,6 @@ fn inspected(settings: &[(&str, f32)]) -> super::sidestep::Sidestep {
 
 #[test]
 fn the_edges_are_band_limited() {
-    let input: Vec<f32> = (0..65_536)
-        .map(|n| (std::f64::consts::TAU * 1000.0 * n as f64 / f64::from(RATE)).sin() as f32 * 0.25)
-        .collect();
     let settings = [
         ("square", 100.0),
         ("sub1", 0.0),
@@ -259,37 +280,48 @@ fn the_edges_are_band_limited() {
         ("fenv", 0.0),
         ("env", 0.0),
     ];
-    let mut limited = inspected(&settings);
-    let mut naive = inspected(&settings);
-    naive.test_band_limit(false);
-    let corrected = render(&mut limited, &input);
-    let uncorrected = render(&mut naive, &input);
-    let energy = |signal: &[f32]| {
+    let energy = |signal: &[f32], tone: f64| {
         let bins = super::testkit::spectrum(&signal[32_768..]);
         let mut alias = 0.0;
         let mut fundamental = 0.0;
         for (bin, power) in bins.iter().enumerate().skip(1) {
             let frequency = bin as f64 * f64::from(RATE) / 32_768.0;
-            let harmonic = (frequency / 1000.0).round();
-            let distance = (frequency - harmonic * 1000.0).abs() * 32_768.0 / f64::from(RATE);
+            let harmonic = (frequency / tone).round();
+            let distance = (frequency - harmonic * tone).abs() * 32_768.0 / f64::from(RATE);
             if distance > 3.0 {
                 alias += power;
             }
-            if (frequency - 1000.0).abs() * 32_768.0 / f64::from(RATE) <= 3.0 {
+            if (frequency - tone).abs() * 32_768.0 / f64::from(RATE) <= 3.0 {
                 fundamental += power;
             }
         }
         (alias, fundamental)
     };
-    let (alias, fundamental) = energy(&corrected);
-    let (naive_alias, _) = energy(&uncorrected);
-    let reduction = 10.0 * (naive_alias / alias).log10();
-    let under = 10.0 * (alias / fundamental).log10();
-    println!(
-        "polyBLEP alias reduction {reduction} dB; alias/fundamental {under} dB; naive {naive_alias}, corrected {alias}"
-    );
-    assert!(reduction >= 12.0, "reduction {reduction} dB");
-    assert!(under <= -30.0, "alias/fundamental {under} dB");
+    // At exactly 1 kHz every folded harmonic is another 1 kHz multiple.
+    // A neighbouring coherent FFT bin separates aliases from harmonics.
+    for tone in [1000.0, 683.0 * f64::from(RATE) / 32_768.0] {
+        let input: Vec<f32> = (0..65_536)
+            .map(|n| {
+                (std::f64::consts::TAU * tone * n as f64 / f64::from(RATE)).sin() as f32 * 0.25
+            })
+            .collect();
+        let mut limited = inspected(&settings);
+        let mut naive = inspected(&settings);
+        naive.test_band_limit(false);
+        let corrected = render(&mut limited, &input);
+        let uncorrected = render(&mut naive, &input);
+        let (alias, fundamental) = energy(&corrected, tone);
+        let (naive_alias, _) = energy(&uncorrected, tone);
+        let reduction = 10.0 * (naive_alias / alias).log10();
+        let under = 10.0 * (alias / fundamental).log10();
+        println!(
+            "{tone} Hz: polyBLEP alias reduction {reduction} dB; alias/fundamental {under} dB; naive {naive_alias}, corrected {alias}"
+        );
+        if tone > 1000.0 {
+            assert!(reduction >= 12.0, "reduction {reduction} dB");
+        }
+        assert!(under <= -30.0, "alias/fundamental {under} dB");
+    }
 }
 
 #[test]

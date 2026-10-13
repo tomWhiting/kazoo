@@ -1,7 +1,7 @@
 //! Two-sample polynomial residuals for an edge between two sample instants.
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct EdgeWave {
+pub struct EdgeWave {
     high: bool,
     pending: f64,
 }
@@ -23,7 +23,7 @@ impl EdgeWave {
         if high != self.high && band_limited {
             let direction = if high { 1.0 } else { -1.0 };
             let before = 1.0 - fraction.clamp(0.0, 1.0);
-            previous += direction * before * before;
+            previous = (direction * before).mul_add(before, previous);
             self.pending = -direction * fraction * fraction;
         }
         self.high = high;

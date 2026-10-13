@@ -670,15 +670,21 @@ present. Receipt: `target/kz-logs/review/voice-score-final.md`.
 
 ## KZ-P10 sidestep
 
-2026-10-14, source base `da446f9`, uncommitted `lane/kz-P10` changes.
+2026-10-14, source head `dae8a42`, base `da446f9`, with uncommitted
+`lane/kz-P10` resume changes.
 The fixture processes 512 frames at 48 kHz with square, sub1, sub2, ring,
 half and fold at 50%, and the remaining controls at their defaults.
 
 | bench | frames | time per block | load average (1/5/15 minutes) | result |
 |---|---:|---|---|---|
 | fx/sidestep | 512 | not measured | 143.31 / 153.73 / 157.58 | queued command cancelled before execution, exit 130 |
+| fx/sidestep resume | 512 | not measured | 260.72 / 233.51 / 184.05 | owned exec session cancelled while waiting for the cargo lock, exit 130; benchmark did not run |
 
 The required cargo lock and dependency compilation consumed the allocation.
 The benchmark never started. The 100 microsecond budget is not verified.
 There is no before number because this effect did not exist at the base.
 The load above was read at cancellation; it is not a benchmark load sample.
+The resume load was read while waiting for the cargo lock on 2026-10-14.
+It is also a queue observation, not a benchmark load sample. The resume
+has not obtained a timing result, so the 100 microsecond budget remains
+unverified.

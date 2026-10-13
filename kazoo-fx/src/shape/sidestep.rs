@@ -86,7 +86,7 @@ struct Pole {
 
 impl Pole {
     fn lowpass(&mut self, input: f64, b: f64, a: f64) -> f64 {
-        self.output = b * (input + self.input) - a * self.output;
+        self.output = a.mul_add(-self.output, b * (input + self.input));
         self.input = input;
         flush64(&mut self.input);
         flush64(&mut self.output);
@@ -94,7 +94,7 @@ impl Pole {
     }
 
     fn allpass(&mut self, input: f64, a: f64) -> f64 {
-        self.output = a * (input - self.output) + self.input;
+        self.output = a.mul_add(input - self.output, self.input);
         self.input = input;
         flush64(&mut self.input);
         flush64(&mut self.output);
@@ -109,6 +109,18 @@ enum Stage {
     Decay,
     Sustain,
     Release,
+}
+
+#[derive(Debug, Default)]
+struct Comparators {
+    positive: bool,
+    negative: bool,
+}
+
+#[derive(Debug, Default)]
+struct Dividers {
+    sub1: bool,
+    sub2: bool,
 }
 
 #[derive(Debug)]
@@ -127,11 +139,9 @@ pub(super) struct Sidestep {
     discharge: f64,
     previous_s: f64,
     previous_negative: f64,
-    positive: bool,
-    negative: bool,
+    comparators: Comparators,
     latch: bool,
-    sub1: bool,
-    sub2: bool,
+    dividers: Dividers,
     edges: [EdgeWave; 3],
     edge_age: f64,
     have_edge: bool,
@@ -176,11 +186,9 @@ impl Sidestep {
             discharge: 0.0,
             previous_s: 0.0,
             previous_negative: 0.0,
-            positive: false,
-            negative: false,
+            comparators: Comparators::default(),
             latch: false,
-            sub1: false,
-            sub2: false,
+            dividers: Dividers::default(),
             edges: [EdgeWave::new(); 3],
             edge_age: 0.0,
             have_edge: false,
@@ -220,7 +228,7 @@ impl Sidestep {
             self.a = (w - 2.0) / (w + 2.0);
         }
         let times = [p[13], p[14], p[16]];
-        if times != self.envelope_params {
+        if times.map(f32::to_bits) != self.envelope_params.map(f32::to_bits) {
             self.envelope_params = times;
             self.attack_step = 1000.0 / (self.rate * f64::from(p[13]));
             self.decay_factor =
@@ -241,7 +249,8 @@ impl Sidestep {
             self.discharge
         };
         let drive = if s <= self.peak { s } else { 0.0 };
-        self.peak = (alpha * (drive + self.peak_input) + (1.0 - alpha) * self.peak) / (1.0 + alpha);
+        self.peak =
+            (1.0 - alpha).mul_add(self.peak, alpha * (drive + self.peak_input)) / (1.0 + alpha);
         self.peak_input = drive;
         flush64(&mut self.peak);
         let positive = s >= 0.0;
@@ -249,14 +258,14 @@ impl Sidestep {
         let negative = difference < 0.0;
         let was_high = self.latch;
         let mut fraction = 1.0;
-        if positive && !self.positive {
+        if positive && !self.comparators.positive {
             self.latch = true;
             fraction = if s > self.previous_s {
                 (-self.previous_s / (s - self.previous_s)).clamp(0.0, 1.0)
             } else {
                 1.0
             };
-        } else if negative && !self.negative {
+        } else if negative && !self.comparators.negative {
             self.latch = false;
             fraction =
                 (self.previous_negative / (self.previous_negative - difference)).clamp(0.0, 1.0);
@@ -268,19 +277,19 @@ impl Sidestep {
             }
             self.have_edge = true;
             self.edge_age = 1.0 - fraction;
-            self.sub1 = !self.sub1;
-            if self.sub1 {
-                self.sub2 = !self.sub2;
+            self.dividers.sub1 = !self.dividers.sub1;
+            if self.dividers.sub1 {
+                self.dividers.sub2 = !self.dividers.sub2;
             }
         }
-        self.positive = positive;
-        self.negative = negative;
+        self.comparators.positive = positive;
+        self.comparators.negative = negative;
         self.previous_s = s;
         self.previous_negative = difference;
         [
             self.edges[0].step(self.latch, fraction, self.band_limited),
-            self.edges[1].step(self.sub1, fraction, self.band_limited),
-            self.edges[2].step(self.sub2, fraction, self.band_limited),
+            self.edges[1].step(self.dividers.sub1, fraction, self.band_limited),
+            self.edges[2].step(self.dividers.sub2, fraction, self.band_limited),
         ]
     }
 
@@ -291,14 +300,15 @@ impl Sidestep {
         } else {
             self.release_coeff
         };
-        self.envelope += coefficient * (magnitude - self.envelope);
+        self.envelope = coefficient.mul_add(magnitude - self.envelope, self.envelope);
         flush64(&mut self.envelope);
         let db = 20.0 * self.envelope.max(1e-8).log10();
         let gate = db >= f64::from(p[18]);
-        if db < self.valley {
+        if db < self.valley || self.onset_age < self.rate * 0.04 {
+            // The same attack can keep rising during the refractory period.
             self.valley = db;
         } else {
-            self.valley += self.valley_coeff * (db - self.valley);
+            self.valley = self.valley_coeff.mul_add(db - self.valley, self.valley);
         }
         self.onset_age += 1.0;
         if gate && db - self.valley >= 6.0 && self.onset_age >= self.rate * 0.04 {
@@ -319,7 +329,7 @@ impl Sidestep {
                 }
             }
             Stage::Decay => {
-                self.adsr = sustain + (self.adsr - sustain) * self.decay_factor;
+                self.adsr = (self.adsr - sustain).mul_add(self.decay_factor, sustain);
                 if (self.adsr - sustain).abs() < 1e-4 {
                     self.adsr = sustain;
                     self.stage = Stage::Sustain;
@@ -338,8 +348,8 @@ impl Sidestep {
     }
 
     fn sample(&mut self, left: f32, right: f32) -> f32 {
-        let p = self.knobs.step();
-        self.tune(&p);
+        let params = self.knobs.step();
+        self.tune(&params);
         if !left.is_finite() || !right.is_finite() {
             self.clear_audio();
             return 0.0;
@@ -355,37 +365,42 @@ impl Sidestep {
             d = allpass.allpass(d, self.a);
         }
         let waves = self.clock_waves(s);
-        self.envelope(x, &p);
+        self.envelope(x, &params);
         let dry = self.previous_x;
         let aligned = self.previous_d;
         self.previous_x = x;
         self.previous_d = d;
-        let folded = if p[7] > 0.0 {
-            (FRAC_PI_2 * (f64::from(p[8]) * aligned / self.previous_env.max(1e-4)).clamp(-8.0, 8.0))
-                .sin()
+        let folded = if params[7] > 0.0 {
+            (FRAC_PI_2
+                * (f64::from(params[8]) * aligned / self.previous_env.max(1e-4)).clamp(-8.0, 8.0))
+            .sin()
         } else {
             0.0
         };
         self.previous_env = self.envelope;
-        let w = 0.005
-            * (f64::from(p[2]) * waves[0]
-                + f64::from(p[3]) * waves[1]
-                + f64::from(p[4]) * waves[2])
-            + 0.01
-                * (f64::from(p[5]) * aligned * waves[1]
-                    + f64::from(p[6]) * aligned * (waves[1] + 1.0) * 0.5
-                    + f64::from(p[7]) * folded);
+        let divided = f64::from(params[4]).mul_add(
+            waves[2],
+            f64::from(params[3]).mul_add(waves[1], f64::from(params[2]) * waves[0]),
+        );
+        let processors = f64::from(params[7]).mul_add(
+            folded,
+            (f64::from(params[6]) * aligned * (waves[1] + 1.0))
+                .mul_add(0.5, f64::from(params[5]) * aligned * waves[1]),
+        );
+        let w = 0.01_f64.mul_add(processors, 0.005 * divided);
         let clock_target = (self.rate / self.period).clamp(1.0, self.rate * 0.45);
-        self.clock += self.clock_coeff * (clock_target - self.clock);
-        let mode = f64::from(p[17]);
+        self.clock = self
+            .clock_coeff
+            .mul_add(clock_target - self.clock, self.clock);
+        let mode = f64::from(params[17]);
         let amplitude = (self.adsr - self.envelope).mul_add(mode, self.envelope);
-        let cutoff = f64::from(p[9])
-            * (f64::from(p[12]) * 0.06 * self.adsr * mode).exp2()
-            * (self.clock / 220.0).powf(f64::from(p[11]) * 0.01);
+        let cutoff = f64::from(params[9])
+            * (f64::from(params[12]) * 0.06 * self.adsr * mode).exp2()
+            * (self.clock / 220.0).powf(f64::from(params[11]) * 0.01);
         let filtered = self
             .filter
-            .lowpass(w, cutoff, f64::from(p[10]) * 0.01, self.rate);
-        let output = self.level * (filtered * amplitude + f64::from(p[19]) * 0.01 * dry);
+            .lowpass(w, cutoff, f64::from(params[10]) * 0.01, self.rate);
+        let output = self.level * (f64::from(params[19]) * 0.01).mul_add(dry, filtered * amplitude);
         if output.is_finite() {
             if output.abs() < 1e-30 {
                 0.0
@@ -420,11 +435,9 @@ impl Sidestep {
         self.peak_input = 0.0;
         self.previous_s = 0.0;
         self.previous_negative = 0.0;
-        self.positive = false;
-        self.negative = false;
+        self.comparators = Comparators::default();
         self.latch = false;
-        self.sub1 = false;
-        self.sub2 = false;
+        self.dividers = Dividers::default();
         self.edges = [EdgeWave::new(); 3];
         self.edge_age = 0.0;
         self.have_edge = false;

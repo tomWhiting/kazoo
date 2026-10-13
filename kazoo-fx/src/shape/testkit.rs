@@ -54,8 +54,10 @@ pub fn pluck(rate: f32, frequency: f32, seconds: f32) -> Vec<f32> {
             seed ^= seed << 13;
             seed ^= seed >> 17;
             seed ^= seed << 5;
-            0.25 * (TAU * n as f64 / f64::from(delay)).sin()
-                + 0.025 * (f64::from(seed) / f64::from(u32::MAX) * 2.0 - 1.0)
+            0.025_f64.mul_add(
+                (f64::from(seed) / f64::from(u32::MAX)).mul_add(2.0, -1.0),
+                0.25 * (TAU * n as f64 / f64::from(delay)).sin(),
+            )
         })
         .collect();
     let mean = ring.iter().sum::<f64>() / length as f64;
@@ -107,15 +109,18 @@ pub fn window_pitch(signal: &[f32], rate: f32, ms: f32) -> Vec<(f64, f64)> {
     periods.sort_by(f64::total_cmp);
     let centre = f64::from(rate) / periods[periods.len() / 2];
     let g = (PI * centre / f64::from(rate)).tan();
-    let a = 1.0 / (1.0 + g * (g + 2.0));
+    let a = 1.0 / g.mul_add(g + 2.0, 1.0);
     let mut state = [0.0; 2];
     let band: Vec<f32> = signal
         .iter()
         .map(|x| {
             let v3 = f64::from(*x) - state[1];
-            let v1 = a * (state[0] + g * v3);
-            let v2 = state[1] + g * v1;
-            state = [2.0 * v1 - state[0], 2.0 * v2 - state[1]];
+            let v1 = a * g.mul_add(v3, state[0]);
+            let v2 = g.mul_add(v1, state[1]);
+            state = [
+                2.0_f64.mul_add(v1, -state[0]),
+                2.0_f64.mul_add(v2, -state[1]),
+            ];
             v1 as f32
         })
         .collect();
@@ -142,15 +147,15 @@ pub fn window_pitch(signal: &[f32], rate: f32, ms: f32) -> Vec<(f64, f64)> {
 pub fn magnitude(signal: &[f32], rate: f32, frequency: f64) -> f64 {
     let step = TAU * frequency / f64::from(rate);
     let rotation = (step.cos(), step.sin());
-    let mut phase = (1.0, 0.0);
+    let mut phase = (1.0_f64, 0.0);
     let mut sum = (0.0, 0.0);
     for (n, sample) in signal.iter().enumerate() {
-        let window = 0.5 - 0.5 * (TAU * n as f64 / signal.len() as f64).cos();
-        sum.0 += f64::from(*sample) * window * phase.0;
-        sum.1 += f64::from(*sample) * window * phase.1;
+        let window = 0.5_f64.mul_add(-(TAU * n as f64 / signal.len() as f64).cos(), 0.5);
+        sum.0 = (f64::from(*sample) * window).mul_add(phase.0, sum.0);
+        sum.1 = (f64::from(*sample) * window).mul_add(phase.1, sum.1);
         phase = (
-            phase.0 * rotation.0 - phase.1 * rotation.1,
-            phase.0 * rotation.1 + phase.1 * rotation.0,
+            phase.0.mul_add(rotation.0, -phase.1 * rotation.1),
+            phase.0.mul_add(rotation.1, phase.1 * rotation.0),
         );
     }
     sum.0.hypot(sum.1) / signal.len() as f64
@@ -165,7 +170,7 @@ pub fn spectrum(signal: &[f32]) -> Vec<f64> {
         .enumerate()
         .map(|(n, x)| {
             (
-                f64::from(*x) * (0.5 - 0.5 * (TAU * n as f64 / length as f64).cos()),
+                f64::from(*x) * 0.5_f64.mul_add(-(TAU * n as f64 / length as f64).cos(), 0.5),
                 0.0,
             )
         })
@@ -182,16 +187,19 @@ pub fn spectrum(signal: &[f32]) -> Vec<f64> {
         let step = -TAU / width as f64;
         let rotation = (step.cos(), step.sin());
         for chunk in data.chunks_mut(width) {
-            let mut phase = (1.0, 0.0);
+            let mut phase = (1.0_f64, 0.0);
             for n in 0..width / 2 {
                 let a = chunk[n];
                 let b = chunk[n + width / 2];
-                let rotated = (b.0 * phase.0 - b.1 * phase.1, b.0 * phase.1 + b.1 * phase.0);
+                let rotated = (
+                    b.0.mul_add(phase.0, -b.1 * phase.1),
+                    b.0.mul_add(phase.1, b.1 * phase.0),
+                );
                 chunk[n] = (a.0 + rotated.0, a.1 + rotated.1);
                 chunk[n + width / 2] = (a.0 - rotated.0, a.1 - rotated.1);
                 phase = (
-                    phase.0 * rotation.0 - phase.1 * rotation.1,
-                    phase.0 * rotation.1 + phase.1 * rotation.0,
+                    phase.0.mul_add(rotation.0, -phase.1 * rotation.1),
+                    phase.0.mul_add(rotation.1, phase.1 * rotation.0),
                 );
             }
         }
@@ -199,6 +207,6 @@ pub fn spectrum(signal: &[f32]) -> Vec<f64> {
     }
     data[..length / 2]
         .iter()
-        .map(|(real, imag)| real * real + imag * imag)
+        .map(|(real, imag)| real.mul_add(*real, imag * imag))
         .collect()
 }
