@@ -37,6 +37,9 @@ pub mod parts;
 pub mod rhythm;
 pub mod voices;
 
+#[cfg(test)]
+mod seed_tests;
+
 use std::fmt;
 
 use kazoo_fx::ParamSpec;
@@ -51,6 +54,11 @@ pub trait Voice: Send + fmt::Debug {
     /// not finite or is below 8 kHz is treated as 48 kHz; one above
     /// 768 kHz is held there.
     fn prepare(&mut self, sample_rate: f32);
+
+    /// Restart every random source from `seed`. Called off the audio thread,
+    /// after `prepare`; `prepare` and `reset` keep it. A voice with no
+    /// randomness ignores it.
+    fn set_seed(&mut self, _seed: u64) {}
 
     /// Silence every tail at once, keeping the parameters. Real-time safe.
     fn reset(&mut self);
@@ -138,6 +146,11 @@ pub trait Rhythm: Send + fmt::Debug {
     /// off the audio thread; the only method that may allocate. The rate
     /// is sanitised as [`Voice::prepare`] describes.
     fn prepare(&mut self, sample_rate: f32);
+
+    /// Restart every random source from `seed`. Called off the audio thread,
+    /// after `prepare`; `prepare` and `reset` keep it. A rhythm with no
+    /// randomness ignores it.
+    fn set_seed(&mut self, _seed: u64) {}
 
     /// Go back to the start of the pattern with every output low, keeping
     /// the parameters. Real-time safe.

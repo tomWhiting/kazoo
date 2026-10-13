@@ -241,6 +241,10 @@ impl Circuit for NoisePerc {
 }
 
 impl Voice for NoisePerc {
+    fn set_seed(&mut self, seed: u64) {
+        self.noise = Noise::new(kazoo_fx::dsp::seeded(Some(seed), 0x4E4F_4953));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         self.rate = sane_rate(sample_rate);
         self.params.prepare(self.rate);

@@ -453,6 +453,15 @@ impl Vocoder {
         vocoder
     }
 
+    /// Restart every random source from `seed`. Called off the audio thread,
+    /// after `prepare`; `prepare` and `reset` keep it.
+    pub const fn set_seed(&mut self, seed: u64) {
+        self.noise = [
+            Noise::new(kazoo_fx::dsp::seeded(Some(seed), 0x5EED_0001)),
+            Noise::new(kazoo_fx::dsp::seeded(Some(seed), 0x5EED_0002)),
+        ];
+    }
+
     /// Re-size for `sample_rate` (a non-finite or non-positive rate is taken
     /// as 48 kHz) and forget the old audio, keeping the parameters. Designs
     /// the analysis bank for every band count. Allocates: call it off the
@@ -777,6 +786,9 @@ impl Vocoder {
         }
     }
 }
+
+#[cfg(test)]
+mod seed_tests;
 
 #[cfg(test)]
 mod tests {
