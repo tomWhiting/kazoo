@@ -538,11 +538,7 @@ impl ReelStore {
     }
 
     fn remove_files(&self, id: &ReelId) -> io::Result<bool> {
-        let removed = match fs::remove_file(self.path(id)) {
-            Ok(()) => true,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => return Err(error),
-        };
+        let removed = removed(&self.path(id))?;
         let stem = id.to_string();
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
@@ -586,24 +582,43 @@ impl ReelStore {
     /// Reclaim old unpinned reels only after every pin list has been validated.
     pub fn sweep(&self, grace: Duration, now: SystemTime) -> Result<Swept, ReelError> {
         let pinned = self.read_pins(None)?;
-        let mut swept = Swept::default();
+        // One listing, read before anything is deleted: a directory changed
+        // while it is being read may skip names, and a listing per deleted
+        // reel would make the sweep quadratic in the store's size.
+        let mut files = Vec::new();
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
+            if entry.file_type()?.is_file() {
+                files.push(entry);
             }
+        }
+        let mut swept = Swept::default();
+        let mut deleted = BTreeSet::new();
+        for entry in &files {
             let path = entry.path();
             if let Some(id) = canonical_id(&path) {
                 let metadata = entry.metadata()?;
                 if !pinned.contains(&id) && old_enough(&metadata, grace, now)? {
-                    if self.remove_files(&id)? {
+                    if removed(&path)? {
                         swept.deleted += 1;
                         swept.bytes += metadata.len();
                     }
+                    deleted.insert(id.to_string());
                 } else {
                     swept.kept += 1;
                 }
             } else if is_temporary(&path) && old_enough(&entry.metadata()?, grace, now)? {
+                remove_if_present(&path)?;
+            }
+        }
+        for entry in &files {
+            let path = entry.path();
+            if canonical_id(&path).is_none()
+                && path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| deleted.contains(stem))
+            {
                 remove_if_present(&path)?;
             }
         }
@@ -690,6 +705,16 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
+/// Whether `path` was there to remove; a name already gone is not an error.
+fn removed(path: &Path) -> io::Result<bool> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Remove `path` if it is there; a name already gone is not an error.
 fn remove_if_present(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),

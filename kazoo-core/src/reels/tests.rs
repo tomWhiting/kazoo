@@ -374,3 +374,32 @@ fn a_new_nested_directory_is_created_private() -> TestResult {
     assert_eq!(store.get(&id)?.rate, 48_000);
     Ok(())
 }
+
+#[test]
+fn the_sweep_clears_many_reels_and_keeps_the_sidecars_of_kept_ones() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let store = ReelStore::open(dir.path())?;
+    let kept = store.put(48_000, &[1.0, -1.0])?;
+    make_old(&store.path(&kept))?;
+    fs::write(store.path(&kept).with_extension("peaks"), b"peaks")?;
+    store.pin("wall", &BTreeSet::from([kept]))?;
+    let mut gone = Vec::new();
+    for n in 0_u16..50 {
+        let id = store.put(48_000, &[f32::from(n) / 64.0, 0.0])?;
+        make_old(&store.path(&id))?;
+        fs::write(store.path(&id).with_extension("peaks"), b"peaks")?;
+        gone.push(id);
+    }
+    let swept = store.sweep(SWEEP_GRACE, SystemTime::now())?;
+    assert_eq!(swept.deleted, 50);
+    assert_eq!(swept.bytes, 50 * 76);
+    assert_eq!(swept.kept, 1);
+    for id in &gone {
+        assert!(!store.contains(id));
+        assert!(!store.path(id).with_extension("peaks").exists());
+    }
+    assert!(store.contains(&kept));
+    assert!(store.path(&kept).with_extension("peaks").exists());
+    assert_eq!(store.usage()?.reels, 1);
+    Ok(())
+}
