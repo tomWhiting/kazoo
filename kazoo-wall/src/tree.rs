@@ -229,6 +229,8 @@ pub fn stamp_births(
             | What::Unpatch { .. }
             | What::Remove { .. }
             | What::Restore { .. }
+            | What::Erase { .. }
+            | What::LoopFrom { .. }
             | What::Speak { .. }
             | What::Migrate { .. }
             | What::Tempo { .. }
@@ -256,6 +258,8 @@ pub(crate) fn has_add(what: &What) -> bool {
         | What::Unpatch { .. }
         | What::Remove { .. }
         | What::Restore { .. }
+        | What::Erase { .. }
+        | What::LoopFrom { .. }
         | What::Speak { .. }
         | What::Migrate { .. }
         | What::Tempo { .. }
@@ -545,6 +549,22 @@ fn wall_text(file: &PatchFile) -> Result<String, TreeError> {
         }
         out.push_str("]\n");
     }
+    // JSON preserves unwritten bars because TOML has no null array cells.
+    if !file.loops.is_empty() {
+        let text = serde_json::to_string(&file.loops).map_err(|error| TreeError::Parse {
+            path: "wall.toml".into(),
+            reason: error.to_string(),
+        })?;
+        line(&mut out, "loops_json", &string(&text));
+    }
+    if !file.retired_loops.is_empty() {
+        let text =
+            serde_json::to_string(&file.retired_loops).map_err(|error| TreeError::Parse {
+                path: "wall.toml".into(),
+                reason: error.to_string(),
+            })?;
+        line(&mut out, "retired_loops_json", &string(&text));
+    }
     out.push_str("\n[next_ids]\n");
     for (kind, number) in &file.next_ids {
         line(&mut out, &key(kind), &number.to_string());
@@ -593,6 +613,10 @@ struct WallToml {
     groups: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     retired_speech: Vec<RetiredToml>,
+    #[serde(default)]
+    loops_json: Option<String>,
+    #[serde(default)]
+    retired_loops_json: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -674,6 +698,8 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
         cables: Vec::new(),
         dye: BTreeMap::new(),
         speech: BTreeMap::new(),
+        loops: loop_json(wall.loops_json)?,
+        retired_loops: loop_json(wall.retired_loops_json)?,
         rack: wall.rack,
         groups: wall.groups,
         retired_speech: wall
@@ -739,6 +765,20 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
     // The writer checks finite scalars and all structural invariants too.
     to_files(&file)?;
     Ok(file)
+}
+
+fn loop_json<T: serde::de::DeserializeOwned + Default>(
+    text: Option<String>,
+) -> Result<T, TreeError> {
+    text.map_or_else(
+        || Ok(T::default()),
+        |text| {
+            serde_json::from_str(&text).map_err(|error| TreeError::Parse {
+                path: "wall.toml".into(),
+                reason: error.to_string(),
+            })
+        },
+    )
 }
 
 #[cfg(test)]

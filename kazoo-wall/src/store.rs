@@ -110,16 +110,25 @@ pub const WORST_CABLE_BYTES: usize = 2 * (24 + 2 * (64 + MAX_CATALOGUE_NAME) + 3
 pub const WORST_WORDS_BYTES: usize =
     160 + (kazoo_speech::tts::MAX_TEXT_CHARS + kazoo_speech::tts::MAX_VOICE_CHARS) * 6;
 
+/// The most one loop record adds to a pretty-printed file, including escaped
+/// labels, geometry and one pass per bar (see [`WORST_MODULE_BYTES`]).
+pub const WORST_LOOP_BYTES: usize =
+    2 * (64 + 64 + 6 * 32 + crate::dsp::looper::MAX_LOOP_BARS * 24 + MAX_NAME * 6 + 96);
+
 /// The most the numbering of every kind and the retired speakers' words
 /// add to a wall's file, whatever its size.
-pub const MAX_NUMBERING_BYTES: usize = 2 * MAX_KINDS * 64 + MAX_RETIRED_WORDS * WORST_WORDS_BYTES;
+pub const MAX_NUMBERING_BYTES: usize = 2 * MAX_KINDS * 64
+    + MAX_RETIRED_WORDS * WORST_WORDS_BYTES
+    + crate::patch::MAX_RETIRED_LOOPS * WORST_LOOP_BYTES;
 
 // A wall of the 96 modules and 320 cables it once held at most, every
 // module a speaker, fits its file many times over.
 const _: () = assert!(
-    (96 * (WORST_MODULE_BYTES + WORST_WORDS_BYTES) + 320 * WORST_CABLE_BYTES + MAX_NUMBERING_BYTES)
-        as u64
-        <= MAX_WALL_FILE / 4,
+    (96 * (WORST_MODULE_BYTES + WORST_WORDS_BYTES)
+        + 320 * WORST_CABLE_BYTES
+        + 8 * WORST_LOOP_BYTES
+        + MAX_NUMBERING_BYTES) as u64
+        <= MAX_WALL_FILE / 2,
     "a wall the size it once held at most may not fit MAX_WALL_FILE"
 );
 

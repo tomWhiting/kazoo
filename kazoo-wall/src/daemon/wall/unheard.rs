@@ -8,8 +8,8 @@ use crate::protocol::{ErrorCode, WallError};
 use std::collections::HashSet;
 
 /// An output or measurement hears every module that feeds it.
-pub(super) fn is_sink(kind: Kind) -> bool {
-    kind == Kind::OUT || probe::measures(kind)
+pub fn is_sink(kind: Kind) -> bool {
+    kind == Kind::OUT || probe::measures(kind) || kind == Kind::LOOP
 }
 
 impl Wall {
@@ -78,7 +78,7 @@ impl Wall {
             error(
                 ErrorCode::NotAllowed,
                 format!(
-                    "{module} reaches no out, scope or readout, so it is not rendered and has \
+                    "{module} reaches no out, scope or readout or loop, so it is not rendered and has \
                      taken none of the words given it since; patch it toward one and it takes \
                      words again"
                 ),

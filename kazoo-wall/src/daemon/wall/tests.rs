@@ -5080,3 +5080,5 @@ fn a_small_heavy_wall_takes_additions_apart_and_says_when_it_is_full() {
 
 mod cost;
 mod unheard;
+
+mod loops;

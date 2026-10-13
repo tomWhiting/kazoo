@@ -12,8 +12,10 @@
 //! the sound and returns no [`What`].
 
 mod chains;
+mod loops;
 
 pub use chains::{Chain, ChainCable, ChainModule};
+pub use loops::{LoopRecord, MAX_RETIRED_LOOPS, RetiredLoop, TapeRecord};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
@@ -160,6 +162,12 @@ pub struct PatchFile {
     /// Kept as privately as [`Self::speech`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retired_speech: Vec<RetiredWords>,
+    /// Tape records for active loops.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub loops: BTreeMap<String, LoopRecord>,
+    /// Removed loop records retained for undo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_loops: Vec<RetiredLoop>,
     /// The rack's rows, top to bottom, each its module ids left to right.
     /// Absent in patches saved before the rack had rows (they are laid out
     /// afresh, a row for each group of modules).
@@ -218,6 +226,8 @@ pub struct Patch {
     pub speech: BTreeMap<String, Words>,
     /// Removed speakers' words, oldest removal first.
     retired_speech: VecDeque<RetiredWords>,
+    loops: BTreeMap<String, LoopRecord>,
+    retired_loops: VecDeque<RetiredLoop>,
     /// The rack's rows: every module in exactly one, none empty.
     rows: Vec<Vec<String>>,
     /// The groups: each one's module ids, in the order they joined; none
@@ -263,7 +273,9 @@ pub fn never_undone(what: &What) -> Option<WallError> {
             "that change was made by a newer wall and cannot be undone by this one".to_string(),
         ),
         What::Chain { changes, .. } => changes.iter().find_map(never_undone),
-        What::Turn { .. }
+        What::Erase { .. }
+        | What::LoopFrom { .. }
+        | What::Turn { .. }
         | What::Patch { .. }
         | What::Unpatch { .. }
         | What::Add { .. }
@@ -450,6 +462,8 @@ impl Patch {
             dye: Dye::new(),
             speech: BTreeMap::new(),
             retired_speech: VecDeque::new(),
+            loops: BTreeMap::new(),
+            retired_loops: VecDeque::new(),
             rows: Vec::new(),
             groups: BTreeMap::new(),
         }
@@ -794,6 +808,9 @@ impl Patch {
         place: Option<&Place>,
     ) -> Result<What, WallError> {
         let kind = Self::check_add(kind, name)?;
+        if kind == Kind::LOOP {
+            self.loop_room()?;
+        }
         let mut number = self.next_ids.get(kind.name()).copied().unwrap_or(1).max(1);
         let mut id = make_id(kind.name(), number);
         // Migrated modules keep ids of other kinds: never take one.
@@ -837,6 +854,15 @@ impl Patch {
         self.cables = gone;
         let cables = self.cable_records();
         self.cables = kept;
+        if let Some(record) = self.loops.remove(module) {
+            self.retired_loops.push_back(RetiredLoop {
+                module: module.into(),
+                record,
+            });
+            while self.retired_loops.len() > MAX_RETIRED_LOOPS {
+                self.retired_loops.pop_front();
+            }
+        }
         if let Some(words) = self.speech.remove(module) {
             self.retired_speech.push_back(RetiredWords {
                 module: module.to_string(),
@@ -944,7 +970,19 @@ impl Patch {
             });
         }
         self.count_id(&module.id);
+        if module.kind == Kind::LOOP {
+            self.loop_room()?;
+        }
         let restored = module.record();
+        if let Some(at) = self
+            .retired_loops
+            .iter()
+            .position(|retired| retired.module == module.id)
+        {
+            if let Some(retired) = self.retired_loops.remove(at) {
+                self.loops.insert(retired.module, retired.record);
+            }
+        }
         if let Some(at) = self
             .retired_speech
             .iter()
@@ -1149,6 +1187,20 @@ impl Patch {
     /// cable already back.
     pub fn undo(&mut self, what: &What) -> Result<What, WallError> {
         match what {
+            What::Erase { module, was } => {
+                if self.find(module)?.kind != Kind::LOOP {
+                    return Err(error(ErrorCode::NotAllowed, "module is not a loop"));
+                }
+                let record = self.loops.entry(module.clone()).or_default();
+                let prior = std::mem::replace(&mut record.tape, was.clone());
+                Ok(What::Erase {
+                    module: module.clone(),
+                    was: prior,
+                })
+            }
+            What::LoopFrom { module, was, .. } => {
+                self.loop_op(module, &crate::protocol::LoopOp::From { from: was.clone() })
+            }
             What::Chain { name, changes } => self.undo_chain(name, changes),
             What::Turn {
                 module,
@@ -1280,6 +1332,8 @@ impl Patch {
             dye: self.dye.deposits().clone(),
             speech: self.speech.clone(),
             retired_speech: self.retired_speech.iter().cloned().collect(),
+            loops: self.loops.clone(),
+            retired_loops: self.retired_loops.iter().cloned().collect(),
             rack: self.rows.clone(),
             groups: self.groups.clone(),
         }
@@ -1425,6 +1479,7 @@ impl Patch {
             }
         }
         patch.find_births(&mut notes);
+        patch.load_loops(file, &mut notes);
         let mut plugged = HashSet::with_capacity(file.cables.len());
         for record in &file.cables {
             if let Err(why) = patch.load_cable(record, &mut plugged) {
@@ -1586,6 +1641,9 @@ impl Patch {
             return Err("its id appears twice".to_string());
         }
         let (module, ignored, bad_birth) = module_from_record(record).map_err(|err| err.message)?;
+        if module.kind == Kind::LOOP {
+            self.loop_room().map_err(|error| error.message)?;
+        }
         if let Some(why) = bad_birth {
             notes.push(format!(
                 "module '{}' had a birth mark that does not read ('{why}'); it is found afresh",

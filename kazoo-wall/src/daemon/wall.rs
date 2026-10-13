@@ -6,7 +6,8 @@
 
 mod chains;
 mod cost;
-mod unheard;
+mod loops;
+pub(super) mod unheard;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,6 +17,7 @@ use kazoo_fx::Effect;
 use ringbuf::HeapCons;
 use ringbuf::traits::{Consumer, Observer};
 
+use super::loops::Loops;
 use super::record::{Ending, Finished, Recorder};
 use super::speech::Speech;
 use super::timing::{Timing, timing};
@@ -476,6 +478,7 @@ pub struct Wall {
     fresh_from: HashMap<String, [u64; MAX_INPUTS]>,
     fingerprints: Fingerprints,
     speech: Speech,
+    loops: Loops,
     recorder: Recorder,
     /// Changes the daemon made on its own (to a recording), for the next
     /// [`Self::tick`] to tell everyone.
@@ -1209,6 +1212,7 @@ impl Wall {
         let mut wall = Self {
             chain_batch: None,
             speech: Speech::new(speech_cache),
+            loops: Loops::new(),
             recorder,
             told: Vec::new(),
             timing: Timing::default(),
@@ -1391,6 +1395,7 @@ impl Wall {
     }
 
     fn load_engine(&mut self) {
+        self.loops.replace_wall();
         self.restart_load_watch();
         self.rack = Rack::default();
         // What the old engine's modules measured is gone with them.
@@ -1439,6 +1444,7 @@ impl Wall {
             self.engine.send(Command::Remove { slot });
         }
         self.speech.replace_wall();
+        self.loops.replace_wall();
         self.lines.clear();
         self.settled.clear();
         self.settling.clear();
@@ -1516,6 +1522,17 @@ impl Wall {
             let (built, feed) = adapters::build_speaker(rate);
             let needs = self.speech.attach(&module.id, feed);
             (built, needs)
+        } else if module.kind == Kind::LOOP {
+            let (built, feed) = dsp::looper::build_loop(rate);
+            self.loops.attach(&module.id, feed, rate);
+            if let Some(tape) = self
+                .patch
+                .loop_record(&module.id)
+                .and_then(|record| record.tape.clone())
+            {
+                self.loops.put_back(&module.id, tape);
+            }
+            (built, false)
         } else {
             (
                 dsp::build(
@@ -1895,6 +1912,7 @@ impl Wall {
             }
             What::Remove { module, .. } => {
                 self.speech.forget(&module.id);
+                self.loops.forget(&module.id);
                 // What it measured goes with it: brought back, it measures
                 // afresh.
                 self.readings.remove(&module.id);
@@ -1907,7 +1925,15 @@ impl Wall {
             // Applied before the engine was loaded, (new words) already
             // handed to the player, or (a recording) started or stopped by
             // the recorder itself: nothing to mirror.
-            What::Migrate { .. }
+            What::Erase { module, .. } => {
+                let tape = self
+                    .patch
+                    .loop_record(module)
+                    .and_then(|record| record.tape.clone());
+                self.loops.replace(module, tape, false);
+            }
+            What::LoopFrom { .. }
+            | What::Migrate { .. }
             | What::Speak { .. }
             | What::Record { .. }
             | What::Abandoned { .. }
@@ -2343,7 +2369,8 @@ impl Wall {
             | Request::Unpatch { .. }
             | Request::Add { .. }
             | Request::Remove { .. }
-            | Request::ChainAdd { .. } => Before::Whole(Box::new(self.patch.clone())),
+            | Request::ChainAdd { .. }
+            | Request::Loop { .. } => Before::Whole(Box::new(self.patch.clone())),
             Request::Undo { change } => {
                 match self.log.iter().find(|logged| logged.seq == *change) {
                     Some(Change {
@@ -2357,7 +2384,9 @@ impl Wall {
                             | What::Add { .. }
                             | What::Remove { .. }
                             | What::Restore { .. }
-                            | What::Chain { .. },
+                            | What::Chain { .. }
+                            | What::Erase { .. }
+                            | What::LoopFrom { .. },
                         ..
                     }) => Before::Whole(Box::new(self.patch.clone())),
                     // A tempo, a load and words touch nothing before they
@@ -2503,6 +2532,7 @@ impl Wall {
             Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change),
             Request::Tempo { bpm } => self.tempo(seat, *bpm, None),
+            Request::Loop { module, op } => self.loop_change(seat, module, op),
             Request::Speak {
                 module,
                 text,
@@ -2560,7 +2590,23 @@ impl Wall {
         name: Option<&str>,
         place: Option<&Place>,
     ) -> Result<Outcome, WallError> {
-        Patch::check_add(kind, name)?;
+        let checked_kind = Patch::check_add(kind, name)?;
+        if checked_kind == Kind::LOOP {
+            if self
+                .patch
+                .modules()
+                .iter()
+                .filter(|module| module.kind == Kind::LOOP)
+                .count()
+                >= super::loops::MAX_LOOPS
+            {
+                return Err(error(
+                    ErrorCode::Full,
+                    "a wall holds eight loops, like the eight-track; remove one, or erase one and use it again",
+                ));
+            }
+            self.file_room(crate::store::WORST_LOOP_BYTES)?;
+        }
         let growth = Growth {
             modules: 1,
             ..Growth::NONE
@@ -4455,6 +4501,7 @@ impl Wall {
     /// if it is due. Returns the events to tell everyone: faults, and the
     /// changes the daemon made on its own.
     pub fn tick(&mut self, now: Instant) -> Vec<Event> {
+        self.loops.poll();
         self.settle(now);
         // The saves not read yet since the start, one a tick, so the first
         // listing finds them read (see `Store::list_saves`).
