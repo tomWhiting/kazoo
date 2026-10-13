@@ -57,7 +57,13 @@ pub struct LiveInput {
     fade: usize,
     fade_left: usize,
     fade_total: usize,
+    // The position faded out of, read while it is below `old_end` (the
+    // frames written when the jump was taken) and held at its last sample
+    // after, so every jump crossfades for the whole fade. None fades in from
+    // silence.
     old_pos: Option<u64>,
+    old_end: u64,
+    old_value: f32,
     drift_frames: u64,
     drift_window: u64,
     underruns: u64,
@@ -65,8 +71,6 @@ pub struct LiveInput {
     overruns: u64,
     last_written: u64,
     last_sample: f32,
-    hold_previous: bool,
-    held_sample: f32,
 }
 
 /// Allocate the real stream's history off the audio thread.
@@ -100,6 +104,8 @@ pub fn live_pair(rate: u32, frames: usize) -> (LiveWriter, LiveInput) {
         fade_left: 0,
         fade_total: 0,
         old_pos: None,
+        old_end: 0,
+        old_value: 0.0,
         drift_frames: 0,
         drift_window: u64::from(rate) * DRIFT_WINDOW_MS / 1000,
         underruns: 0,
@@ -107,8 +113,6 @@ pub fn live_pair(rate: u32, frames: usize) -> (LiveWriter, LiveInput) {
         overruns: 0,
         last_written: 0,
         last_sample: 0.0,
-        hold_previous: false,
-        held_sample: 0.0,
     };
     (writer, reader)
 }
@@ -162,8 +166,8 @@ impl LiveInput {
         }
         self.pos = written.saturating_sub((frames + self.slack) as u64);
         self.old_pos = old;
-        self.hold_previous = false;
-        self.held_sample = self.last_sample;
+        self.old_end = written;
+        self.old_value = if old.is_some() { self.last_sample } else { 0.0 };
         self.fade_total = fade;
         self.fade_left = fade;
         self.drift_frames = 0;
@@ -188,15 +192,9 @@ impl LiveInput {
         if lag < n as u64 {
             self.slack = (self.slack + SLACK_STEP).min(n);
             self.underruns += 1;
-            let (old, fade) = if lag == 0 {
-                (None, self.fade)
-            } else {
-                (Some(self.pos), self.fade.min(lag as usize))
-            };
-            self.jump(written, n, old, fade);
-            // At zero lag there is no unread tail. Holding the final played
-            // sample keeps the repeat continuous at the callback boundary.
-            self.hold_previous = lag == 0;
+            // The unread tail (none at zero lag) fades out and then holds its
+            // last sample, so the repeat is never a step to silence.
+            self.jump(written, n, Some(self.pos), self.fade);
             return ReadReport::Underrun;
         }
         if lag > target + n as u64 / 2 {
@@ -206,10 +204,21 @@ impl LiveInput {
         }
         if lag > target + 4 * n as u64 || self.drift_frames >= self.drift_window {
             self.jumps += 1;
-            self.jump(written, n, Some(self.pos), self.fade.min(lag as usize));
+            self.jump(written, n, Some(self.pos), self.fade);
             return ReadReport::Jump;
         }
         ReadReport::Audio
+    }
+
+    /// The next sample of the position being faded out: its own frames while
+    /// they were written before the jump, then its last sample held.
+    fn fading_out(&mut self) -> f32 {
+        let end = self.old_end;
+        if let Some(position) = self.old_pos.filter(|position| *position < end) {
+            self.old_value = self.sample(position);
+            self.old_pos = Some(position + 1);
+        }
+        self.old_value
     }
 
     /// Fill the entire output without consuming the history or allocating.
@@ -225,20 +234,12 @@ impl LiveInput {
             out.fill(0.0);
             return report;
         }
-        let held = self.held_sample;
         for target in out {
             let new = self.sample(self.pos);
             *target = if self.fade_left > 0 {
-                let old = if self.hold_previous {
-                    held
-                } else {
-                    self.old_pos.map_or(0.0, |position| self.sample(position))
-                };
+                let old = self.fading_out();
                 let weight = (self.fade_total - self.fade_left + 1) as f32 / self.fade_total as f32;
                 self.fade_left -= 1;
-                if let Some(position) = self.old_pos.as_mut() {
-                    *position += 1;
-                }
                 new.mul_add(weight, old * (1.0 - weight))
             } else {
                 new
