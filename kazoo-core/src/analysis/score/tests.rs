@@ -434,7 +434,70 @@ fn a_step_never_landed_is_counted() {
     assert_eq!(result.steps_missed, 5, "{result:?}");
     let table = crate::analysis::score::table(&[("held", &take.name, result)]);
     assert!(table.contains("steps missed"));
-    let cells: Vec<_> = table.lines().map(|line| line.matches('|').count()).collect();
+    let cells: Vec<_> = table
+        .lines()
+        .map(|line| line.matches('|').count())
+        .collect();
     assert_eq!(cells, [17, 17, 17], "{table}");
 }
 
+fn write_float_wav(path: &Path, rate: u32, samples: &[f32]) -> crate::Result<()> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer =
+        hound::WavWriter::create(path, spec).map_err(|e| crate::Error::Config(e.to_string()))?;
+    for &sample in samples {
+        writer
+            .write_sample(sample)
+            .map_err(|e| crate::Error::Config(e.to_string()))?;
+    }
+    writer
+        .finalize()
+        .map_err(|e| crate::Error::Config(e.to_string()))
+}
+
+/// Shares of an analytic take's voiced steps, between two whole-step sample
+/// positions, where its recorded reference is voiced, and where it is within
+/// 50 cents.
+fn reference_against_truth(name: &str, from: usize, to: usize) -> crate::Result<(f32, f32)> {
+    let take = take_named(name, 48_000);
+    let dir = logs_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{name}.wav"));
+    write_float_wav(&path, take.rate, &take.samples[from..to])?;
+    let recorded = wav::read_take(&path)?;
+    let truth = &take.truth[from / SCORE_STEP..to / SCORE_STEP];
+    assert_eq!(recorded.truth.len(), truth.len());
+    let (mut voiced, mut referenced, mut close) = (0_u16, 0_u16, 0_u16);
+    for (truth, reference) in truth.iter().zip(&recorded.truth) {
+        let Some(truth) = truth else { continue };
+        voiced += 1;
+        if let Some(reference) = reference {
+            referenced += 1;
+            close += u16::from((1200.0 * (reference / truth).log2()).abs() <= 50.0);
+        }
+    }
+    let share = |count: u16| f32::from(count) / f32::from(voiced);
+    Ok((share(referenced), share(close)))
+}
+
+#[test]
+fn a_recorded_slide_and_a_step_are_referenced() -> crate::Result<()> {
+    // From 50 ms before each note: the glide's held 110 Hz and its first
+    // 250 ms of slide; steps' C3 and half its E3.
+    let (voiced, close) = reference_against_truth("glide", 7_200, 31_200)?;
+    assert!(
+        voiced >= 0.98 && close >= 0.95,
+        "glide: {voiced} voiced, {close} within 50 cents"
+    );
+    let (voiced, close) = reference_against_truth("steps", 7_200, 28_800)?;
+    assert!(
+        voiced >= 0.97 && close >= 0.95,
+        "steps: {voiced} voiced, {close} within 50 cents"
+    );
+    Ok(())
+}
