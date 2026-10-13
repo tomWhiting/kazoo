@@ -332,6 +332,14 @@ impl LoopModule {
                     self.gauges.refused.fetch_add(1, Ordering::Relaxed);
                     LoopOut::Refused(tape)
                 } else {
+                    // A punch the install interrupts ends here, on the tape
+                    // it was made on: its mark goes first (admission kept a
+                    // slot for it), and the bars it wrote are not the new
+                    // tape's.
+                    if self.written.contains(&true) {
+                        self.finish_take();
+                    }
+                    self.written.fill(false);
                     let old = std::mem::replace(&mut self.tape, tape);
                     self.capacity = (self.tape.len() / 2)
                         .saturating_sub(self.tail + 1)

@@ -511,6 +511,13 @@ fn an_install_ends_the_punch_it_interrupts() {
             _ => None,
         })
         .collect();
+    // The interrupted punch is marked on its own, ahead of the new one.
+    assert!(
+        marks
+            .iter()
+            .any(|mark| mark.bars[0] && mark.bars[1] && !mark.bars[3]),
+        "{marks:?}"
+    );
     let last = marks.last().expect("a take for bar 3");
     assert!(last.bars[3], "{:?}", &last.bars[..4]);
     assert!(
