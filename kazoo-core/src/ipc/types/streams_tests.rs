@@ -99,3 +99,39 @@ fn stream_names_are_truncated_at_a_utf8_boundary() {
     let spec = StreamSpec::new(&name, 1);
     assert_eq!(spec.name_str(), "a".repeat(23));
 }
+
+#[test]
+fn a_register_whose_count_disagrees_with_its_length_has_no_streams() {
+    let mut msg = RegisterMsg::new("test", 2, 48_000, 256);
+    msg.streams = vec![StreamSpec::new("kick", 1), StreamSpec::new("pad", 2)];
+    let mut buf = vec![0; RegisterMsg::streamed_wire_size(2)];
+    msg.encode(&mut buf);
+    for count in [0, 1, 3, 16, 255] {
+        buf[63] = count;
+        let decoded = RegisterMsg::decode(&buf);
+        assert_eq!(decoded.streams, Vec::new(), "count byte {count}");
+        assert!(decoded.check_streams().is_err(), "count byte {count}");
+    }
+}
+
+#[test]
+fn check_streams_refuses_bytes_after_a_name_s_padding() {
+    let mut msg = RegisterMsg::new("test", 2, 48_000, 256);
+    msg.streams = vec![StreamSpec::new("ab", 1)];
+    msg.streams[0].name[5] = b'x';
+    assert!(msg.check_streams().is_err());
+}
+
+#[test]
+fn a_ready_reason_that_is_not_utf8_reads_up_to_the_fault_without_panicking() {
+    let payload = [1, 0, NO_STRIP, b'o', b'k', 0xff, b'!'];
+    let (ready, reason) = StreamReadyMsg::decode(&payload);
+    assert_eq!(
+        ready,
+        StreamReadyMsg {
+            stream: 1,
+            strip: NO_STRIP
+        }
+    );
+    assert_eq!(reason, "ok");
+}
