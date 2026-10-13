@@ -359,3 +359,202 @@ fn no_memory_is_a_silent_loop_that_says_so() {
         LoopState::NoTape as u8
     );
 }
+
+/// The largest sample-to-sample step of `samples`.
+fn largest_step(samples: &[f32]) -> f32 {
+    samples
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).abs())
+        .fold(0.0, f32::max)
+}
+
+/// One bar of a 220 Hz sine, begun mid-cycle, recorded and punched out.
+fn sine_bar() -> (Bench, impl Fn(usize) -> f32) {
+    let sine = |f: usize| (std::f32::consts::TAU * 220.0 * f as f32 / RATE + 0.7).sin();
+    let (mut b, _) = bench(1.0);
+    b.knob("record", 1.0);
+    render(&mut b, 32, |_| 0.0);
+    render(&mut b, BAR, sine);
+    b.knob("record", 0.0);
+    render(&mut b, TAIL, |f| sine(BAR + f));
+    (b, sine)
+}
+
+#[test]
+fn the_seam_does_not_click_when_the_tempo_moves() {
+    // Off the splice tempo the head reads the last cells at fractions: they
+    // must lean into the tail, the end's continuation, not into the
+    // faded-in start of the loop.
+    for bpm in [131.0, 150.0, 173.0] {
+        let (mut b, _) = sine_bar();
+        b.bpm = bpm;
+        b.beat = 7.99;
+        // Four passes at this tempo.
+        let frames = (4.0 * 4.0 * 60.0 / bpm * f64::from(RATE)) as usize;
+        let output = render(&mut b, frames, |_| 0.0);
+        let sine_step = std::f32::consts::TAU * 220.0 * (bpm / 120.0) as f32 / RATE;
+        let largest = largest_step(&output);
+        assert!(
+            largest <= 1.5 * sine_step,
+            "{bpm} BPM: step {largest}, sine {sine_step}"
+        );
+    }
+}
+
+#[test]
+fn the_seam_does_not_click_as_the_tape_wears() {
+    let (mut b, _) = sine_bar();
+    b.knob("wear", 1.0);
+    b.beat = 7.99;
+    let output = render(&mut b, 4 * BAR, |_| 0.0);
+    let sine_step = std::f32::consts::TAU * 220.0 / RATE;
+    let largest = largest_step(&output);
+    assert!(
+        largest <= 1.5 * sine_step,
+        "step {largest}, sine {sine_step}"
+    );
+}
+
+#[test]
+fn the_head_is_always_on_the_tape_and_agrees_with_itself() {
+    // A beat a hair before the anchor: `rem_euclid` rounds up to the whole
+    // loop, which would put the head one cell past the end (silence).
+    let h = head(-1e-17, 0.0, 4.0).unwrap();
+    assert!(h.phase < 1.0, "phase {}", h.phase);
+    assert_eq!(h.pass, 0);
+    // Around every seam of loops of every length, the pass and the phase
+    // put the head back where the beat says.
+    for beats in 4..=259_u32 {
+        let beats = f64::from(beats);
+        for pass in [1.0_f64, 2.0, 17.0, 391.0, 100_003.0] {
+            let seam = pass * beats;
+            for rel in [
+                f64::from_bits(seam.to_bits() - 1),
+                seam,
+                f64::from_bits(seam.to_bits() + 1),
+            ] {
+                let h = head(rel, 0.0, beats).unwrap();
+                assert!((0.0..1.0).contains(&h.phase), "{rel} {beats}");
+                let back = h.phase.mul_add(beats, h.pass as f64 * beats);
+                assert!(
+                    (back - rel).abs() <= 1e-9 * rel.abs().max(1.0),
+                    "{rel} {beats}: {h:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_loop_built_without_a_feed_keeps_recording_after_many_punches() {
+    // The catalogue's builder (what `wall_add loop` puts up) has no feed:
+    // nobody will ever collect its marks, and that must not stop it.
+    let mut b = Bench::seeded(Kind::LOOP, RATE, 0);
+    b.knob("bars", 1.0).knob("level", 1.0);
+    b.beat = -32.0 / 24_000.0;
+    for _ in 0..13 {
+        b.knob("record", 1.0);
+        render(&mut b, BAR, |_| 0.0);
+        b.knob("record", 0.0);
+        render(&mut b, BAR + TAIL + 64, |_| 0.0);
+    }
+    b.knob("record", 1.0);
+    render(&mut b, BAR, |_| 0.5);
+    b.knob("record", 0.0);
+    render(&mut b, 2 * BAR, |_| 0.5);
+    let out = render(&mut b, BAR, |_| 0.0);
+    assert!(
+        out.iter().any(|x| (*x - 0.5).abs() < 1e-3),
+        "the last punch was not recorded"
+    );
+}
+
+#[test]
+fn an_install_ends_the_punch_it_interrupts() {
+    let (mut b, mut feed) = bench(4.0);
+    b.knob("record", 1.0);
+    render(&mut b, 32, |_| 0.0);
+    render(&mut b, BAR + BAR / 2, |_| 0.5);
+    let splice = Splice {
+        beats: 16.0,
+        frames: 4 * BAR,
+        tail: TAIL,
+        anchor: 0.0,
+        rate: RATE,
+    };
+    feed.install(
+        vec![0.0; 2 * (4 * BAR + TAIL + 1)].into_boxed_slice(),
+        Some(splice),
+        [i64::MIN; MAX_LOOP_BARS],
+        [0; LOOP_BINS],
+        false,
+    )
+    .unwrap();
+    b.knob("record", 0.0);
+    render(&mut b, 64, |_| 0.0);
+    // Record bar 3 alone on the new tape.
+    b.beat = 11.0;
+    b.knob("record", 1.0);
+    render(&mut b, BAR / 2 + 1024, |_| 0.25);
+    b.knob("record", 0.0);
+    render(&mut b, BAR + TAIL, |_| 0.25);
+    let marks: Vec<TakeMark> = feed
+        .collect()
+        .into_iter()
+        .filter_map(|item| match item {
+            LoopOut::Took(mark) => Some(mark),
+            _ => None,
+        })
+        .collect();
+    let last = marks.last().expect("a take for bar 3");
+    assert!(last.bars[3], "{:?}", &last.bars[..4]);
+    assert!(
+        !last.bars[0] && !last.bars[1],
+        "bars of the retired tape counted in the new take: {:?}",
+        &last.bars[..4]
+    );
+}
+
+#[test]
+fn the_post_roll_marks_no_bar_of_its_own() {
+    // The 8 ms fade after the bar line belongs to the punch that ended:
+    // the take names bars 0 and 1, not bar 2 where the fade fell.
+    let (mut b, mut feed) = bench(4.0);
+    b.knob("record", 1.0);
+    render(&mut b, 32, |_| 0.0);
+    render(&mut b, 156_000, |_| 0.5);
+    b.knob("record", 0.0);
+    render(&mut b, 36_000 + TAIL + 64, |_| 0.5);
+    let mark = feed
+        .collect()
+        .into_iter()
+        .find_map(|item| match item {
+            LoopOut::Took(mark) => Some(mark),
+            _ => None,
+        })
+        .expect("a take");
+    assert_eq!(&mark.bars[..4], &[true, true, false, false]);
+}
+
+#[test]
+fn a_post_roll_into_the_tail_does_not_make_the_first_bar_younger() {
+    // Two bars recorded in one pass are the same age on every later pass,
+    // so at full wear they play equally loud: the post-roll that ran into
+    // the tail at the next pass must not count as writing bar 0 again.
+    let (mut b, _) = recorded(2.0, |_| 0.5);
+    b.knob("wear", 1.0);
+    let rms = |samples: &[f32]| {
+        (samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32).sqrt()
+    };
+    for pass in 2..=3 {
+        b.beat = f64::from(pass) * 8.0 + 1.0;
+        let first = render(&mut b, BAR / 2, |_| 0.0);
+        b.beat = f64::from(pass) * 8.0 + 5.0;
+        let second = render(&mut b, BAR / 2, |_| 0.0);
+        let (first, second) = (rms(&first[1000..]), rms(&second[1000..]));
+        assert!(
+            (first - second).abs() <= 1e-4 * second,
+            "pass {pass}: bar 0 {first}, bar 1 {second}"
+        );
+    }
+}
