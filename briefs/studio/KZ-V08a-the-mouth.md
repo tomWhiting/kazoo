@@ -2,7 +2,7 @@
 
 Line numbers are from the sweep that wrote this brief, at `fa3c8d8`, and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list below.
 
-Crates: kazoo-mouth (new), kazoo-cli. Time: about 30 to 40 minutes. Depends: KZ-V05 (quantiser), KZ-V07a (`send_voice`); A02 (`kazoo_core::host::audio`), A03 (`kazoo_core::host::link`), A04 (`kazoo_host::terminal`), A06 (`kazoo-cli`) are on main.
+Crates: kazoo-mouth (new), kazoo-cli. Time: about 30 to 40 minutes. Depends: KZ-V05 (quantiser), KZ-V07a (`send_voice`), KZ-V11 (`io::mic::open_mic`, `MouthArgs`); A02 (`kazoo_core::host::audio`), A03 (`kazoo_core::host::link`), A04 (`kazoo_host::terminal`), A06 (`kazoo-cli`) are on main.
 
 Read by Cassio, 13 Oct evening. Changes: the checks take the lane form; the smoke test no longer opens the mic or speakers (the wall plays on them), and the real start and the listen are Cassio's and Tom's after landing; a callback over 4096 frames is rendered in chunks so the 64-frame array always holds. Opens only after V05 and V07a have landed.
 
@@ -24,7 +24,7 @@ Why: Tom: "id still love a dedicated synth, not just on the wall, but i'd like v
 
 ### Audio (`engine.rs`)
 
-- Open the output with `kazoo_core::host::audio::open_output` (stereo, native rate, the named device or default); then the input with `open_input` at `RateChoice::Hz(<output rate>)`, 1 channel asked, the named device or default. An input that cannot run at the output's rate fails start with the host's error plus "the mic must run at the speakers' rate (<rate> Hz)". Why the same rate: one clock for tracker, synth and desk, with no resampler on the callback.
+- Open the output with `kazoo_core::host::audio::open_output` (stereo, native rate, the named device or default); then the mic with KZ-V11's `kazoo_core::io::mic::open_mic` (the device's own rate and channel, resampled to the output's rate on the input side, the supervisor handling a lost or changed device), taking V11's `MouthArgs` (`--input`, `--input-channel`, `--list-inputs`) and growing them with this lane's flags. (Amended 14 Oct 2026 by Cassio: the first version opened the input at the output's rate, which refused Tom's AirPods mic at 24 kHz; Tom: "we need to be flexible on input". `kazoo tui` keeps `kazoo_tui::Args::default()`.)
 - Input callback: push channel 0 of each frame (`OutputInfo::channels` gives the stride) into `HeapRb<f32>` of `rate / 10` samples (100 ms); what does not fit is counted (`mic_dropped`).
 - Output callback, per call (the `MouthEngine::render(&mut self, out: &mut [f32], channels: usize)` method, which owns everything):
   1. Drain the command channel (`crossbeam_channel::bounded(64)`): `SetQuantise(QuantiseSettings)`, `SetSynth(SynthSettings)`, `SetSilent(bool)`.

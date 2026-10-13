@@ -140,6 +140,8 @@ Tom's words, 13 Oct 2026, about 15:10 to 15:20: "I would really love to be able 
 | V09c following: juno, prophet | one voice of each follows | those two, kazoo-cli | V09a |
 | V09d following: string and glass | the plucked and struck voices are retuned at frame rate while they ring | kazoo-string, kazoo-glass, kazoo-cli | V09a |
 | V10 the voice on the wall | `voice` (pitch, snap, gate, level) and `breath` (breath, onset, sure) modules fed from the desk's stream; the wall follows while one is on it; the wall's `quant` and the mouth share one scale table | kazoo-wall | V07b, V05 |
+| V11 any input, any rate | the mic opens at its own rate and channel (8-192 kHz), resampled on the input side by rubato; a supervisor for lost or changed devices; `kazoo mouth --input/--input-channel/--list-inputs`; header shows the mic and its rate | kazoo-core, kazoo-tui, kazoo-cli | V06 |
+| V12 high notes hold | the engine's judge was 60-1000 Hz, so 800-2200 Hz notes folded an octave down and flapped: the engine judges with `for_rate` (50-4000 Hz); 16 scoreboard rows 800-2200 Hz (whistles, sung, splices, 96 kHz); then B1 (tracker unlock) or B2 (fold needs two verdicts) by the measured rule | kazoo-core | V06 |
 
 **For Tom by hand (needed from V02 on, not blocking):** four takes into `kazoo-core/tests/fixtures/voice/`, each 10 to 30 s, mono or stereo, any rate, on the laptop mic at your normal distance: `hum-low.wav` (a slow low hum, the lowest you can), `vibrato-phrase.wav` (a sung phrase with vibrato), `slides.wav` (slides up and down between notes), `whistle.wav` (a whistled tune). `cargo run --release -p kazoo-core --example voice_score` scores them, and from V08a on so does `kazoo mouth --score kazoo-core/tests/fixtures/voice/*.wav`.
 
