@@ -114,6 +114,37 @@ fn the_backlog_holds_a_quarter_second_then_counts_drops() {
 }
 
 #[test]
+fn a_stream_added_live_gets_its_own_quarter_second() {
+    let path = socket();
+    let (link, mut audio) = start_link(
+        LinkConfig {
+            max_block_frames: 512,
+            ..config(&path)
+        },
+        None,
+        false,
+    )
+    .unwrap();
+    link.state.connected.store(true, Ordering::Release);
+    link.state.strips[1].store(4, Ordering::Release);
+    // What the link thread hands the callback when a stereo stream is added.
+    audio.stream_updates[1].store(2, Ordering::Release);
+    let mut queued = 0;
+    loop {
+        audio.send_audio(512, &[0.25; 1024]);
+        assert!(audio.send_stream_audio(1, 512, &[0.25; 1024]));
+        if link.status().blocks_dropped > 0 {
+            break;
+        }
+        queued += 1;
+        assert!(queued < 1_000);
+    }
+    let seconds = f64::from(queued * 512) / 48_000.0;
+    assert!(seconds >= 0.25, "queued={queued}, seconds={seconds}");
+    assert!(seconds <= 0.29, "queued={queued}, seconds={seconds}");
+}
+
+#[test]
 fn a_hub_that_stops_reading_for_half_a_second_is_let_go_by_time() {
     let mut stopped = WireRig::new(512);
     let start = Instant::now();
