@@ -422,3 +422,18 @@ fn a_recorded_lag_is_set_by_the_notes_not_the_release() {
     // A tracker that never agrees has no lag, not a perfect one.
     assert!(result.aligned_lag_ms.is_some_and(f32::is_nan), "{result:?}");
 }
+#[test]
+fn a_step_never_landed_is_counted() {
+    let take = take_named("steps", 48_000);
+    let first = take.truth.iter().find_map(|pitch| *pitch);
+    let mut oracle = Oracle::on_grid(&take);
+    oracle.truth = take.truth.iter().map(|pitch| pitch.and(first)).collect();
+    let result = score(&mut oracle, &take);
+    // Only the last step, back to C3, lands on the note this tracker holds.
+    assert_eq!(result.steps, 6, "{result:?}");
+    assert_eq!(result.steps_missed, 5, "{result:?}");
+    assert!(
+        crate::analysis::score::table(&[("held", &take.name, result)]).contains("steps missed")
+    );
+}
+
