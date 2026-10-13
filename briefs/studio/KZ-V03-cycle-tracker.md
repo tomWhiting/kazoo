@@ -96,6 +96,17 @@ Why marks from zero crossings and the period from NSDF: the crossings are when a
 
 `analysis/score.rs` gains `pub struct CycleUnderTest(CycleTracker)` (`name` = `"cycle"`, `hz` = `estimate().map(|e| e.hz)`), and the `voice_score` example scores it beside `pyin`. Add the bench `cycle/second/48k` to `kazoo-core/benches/voice.rs`: one second of `vowel_ah` (from `score::suite(48_000)`) through `process`; budget 10 ms (1% of real time).
 
+### Test speed (decided by Cassio, 13 Oct 23:5x, from V02's review)
+
+V02's review found the scoreboard tests are kazoo-core's slowest in debug (the judge floor 28 s, each WAV test about 19 s, V01's pitch tests 90 s under load), all from pYIN's per-frame search run unoptimised. The workspace `Cargo.toml` gains:
+
+```toml
+[profile.dev.package.pyin]
+opt-level = 3
+```
+
+Why only pyin: it optimises the one dependency whose search dominates, and leaves every kazoo crate's own code built as today (debug assertions, overflow checks and all). Paste the four tests' times before and after under BENCH. If pyin's own heavy dependencies (find them with `cargo tree -p pyin --depth 1`) carry the cost instead, add each by name in the same form and say which.
+
 ## Not this lane
 
 The judge's octave folding and voicing veto, gate, loudness, breath, frames (V04). Wiring the tracker into any engine (V06, V08a).
