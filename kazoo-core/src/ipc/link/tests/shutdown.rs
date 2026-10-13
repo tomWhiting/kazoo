@@ -66,9 +66,18 @@ fn a_wedged_worker_that_finishes_after_the_drop_is_counted_once() {
         assert_eq!(undelivered_completions() - late, count - 1);
         let plural = if count == 1 { "" } else { "s" };
         let expected = format!("kazoo: {count} desk link{plural} did not stop within 500 ms");
-        let pending = crate::host::link::exit_report_from(count, count - 1).unwrap();
-        assert!(pending.starts_with(&expected));
-        assert_eq!(pending.contains("finished later"), count > 1);
+        let pending = if count == 1 {
+            expected.clone()
+        } else {
+            format!("{expected}; {} finished later", count - 1)
+        };
+        assert_eq!(
+            crate::host::link::exit_report_from(
+                stuck_shutdowns() - before,
+                undelivered_completions() - late,
+            ),
+            Some(pending),
+        );
         release.send(()).unwrap();
         completed.recv().unwrap();
         drop(audio);

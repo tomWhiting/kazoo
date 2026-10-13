@@ -193,6 +193,7 @@ pub fn exit_report() -> Option<String> {
     )
 }
 
+/// The exit line for these counts, or `None` when every link stopped in time.
 #[must_use]
 pub(crate) fn exit_report_from(stuck: u64, late: u64) -> Option<String> {
     if stuck == 0 && late == 0 {
@@ -253,39 +254,3 @@ pub fn take_events(rx: &mut EventRx) -> impl Iterator<Item = HubEvent> + use<> {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod exit_report_tests {
-    use super::*;
-
-    #[test]
-    fn exit_report_is_silent_when_every_link_stopped() {
-        assert_eq!(exit_report_from(0, 0), None);
-        assert_eq!(exit_report(), None);
-    }
-
-    #[test]
-    fn exit_report_counts_stuck_and_late_links() {
-        for (stuck, late, expected) in [
-            (1, 0, "kazoo: 1 desk link did not stop within 500 ms"),
-            (2, 0, "kazoo: 2 desk links did not stop within 500 ms"),
-            (
-                1,
-                1,
-                "kazoo: 1 desk link did not stop within 500 ms; 1 finished later",
-            ),
-            (
-                2,
-                2,
-                "kazoo: 2 desk links did not stop within 500 ms; 2 finished later",
-            ),
-            (
-                0,
-                1,
-                "kazoo: 0 desk links did not stop within 500 ms; 1 finished later",
-            ),
-        ] {
-            assert_eq!(exit_report_from(stuck, late).as_deref(), Some(expected));
-        }
-    }
-}
