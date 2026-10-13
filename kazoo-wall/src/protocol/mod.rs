@@ -646,6 +646,34 @@ impl std::error::Error for WallError {}
 // Changes
 // ---------------------------------------------------------------------------
 
+/// Where in the music a change landed.
+///
+/// The beat is the engine's published song position at the end of the last
+/// rendered sub-block, where the next sub-block starts. It is read on the
+/// control thread when the change is numbered: the earliest beat at which
+/// the change could sound, within one device buffer of when it lands.
+/// The tempo is what was playing at that read, before a tempo change lands.
+/// Both readings follow the desk while it has the clock.
+///
+/// Equal clock lines name one continuous song position. Within a line, replay
+/// waits the difference between two changes' beats. Across a line break, it
+/// waits the UTC difference between their `at` values, converted to beats at
+/// the earlier stamp's tempo, at most 16 beats (4 bars).
+///
+/// A line is `<start>.<n>`: a fresh 16-digit lower-case hexadecimal start for
+/// each daemon run, and a decimal count starting at 0. Replacing the wall,
+/// the desk taking or letting go of the clock, or a beat going back by more
+/// than `1e-9` starts a new line. A tempo change keeps the line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClockStamp {
+    /// The song position, in beats, at which the change could first sound.
+    pub beat: f64,
+    /// The tempo playing then, in beats per minute.
+    pub tempo: f64,
+    /// The clock line `beat` is on: `<start>.<n>`.
+    pub line: String,
+}
+
 /// One change to the wall, as logged and pushed to other seats.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Change {
@@ -662,6 +690,9 @@ pub struct Change {
     /// The change this one undid, if it was an undo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undoes: Option<u64>,
+    /// Where in the music the change landed; `None` means no beat known, never beat 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<ClockStamp>,
 }
 
 /// What a change did.

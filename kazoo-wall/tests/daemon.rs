@@ -434,6 +434,7 @@ fn a_patch_json_past_the_limits_with_the_log_ahead_starts_within_them() {
                 desk: false,
             },
             undoes: None,
+            clock: None,
         })
         .unwrap();
     store.sync_log().unwrap();

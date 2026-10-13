@@ -89,6 +89,7 @@ fn load_change(save: Option<&str>, undoes: Option<u64>) -> Change {
         },
         summary: "Tom loaded the save".to_string(),
         undoes,
+        clock: None,
     }
 }
 

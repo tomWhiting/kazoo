@@ -5,6 +5,17 @@ use serde_json::json;
 
 use super::*;
 
+#[test]
+fn old_lines_read_without_a_clock() -> Result<(), serde_json::Error> {
+    let line = r#"{"seq":6400,"at":"2026-10-13T21:04:11Z","seat":"Tom","what":{"op":"turn","module":"vcf1","knob":"cutoff","from":420.0,"to":800.0,"glide_beats":0.0},"summary":"Tom turned vcf1 cutoff 420 Hz → 800 Hz at once"}"#;
+    let change: Change = serde_json::from_str(line)?;
+    assert_eq!(change.clock, None);
+    let written = serde_json::to_value(&change)?;
+    assert!(written.get("clock").is_none());
+    assert_eq!(written, serde_json::from_str::<serde_json::Value>(line)?);
+    Ok(())
+}
+
 fn round_trip_request(request: Request) {
     let line = RequestLine {
         id: 7,
@@ -190,6 +201,7 @@ fn responses_and_events_have_the_design_shape() {
         },
         summary: "Tom turned vcf1 cutoff 420 Hz → 800 Hz over 4 beats".to_string(),
         undoes: None,
+        clock: None,
     };
     let event = Event::Change {
         change: Box::new(change),
@@ -329,6 +341,7 @@ fn changes_undo_and_every_what_round_trip() {
             what,
             summary: String::new(),
             undoes: Some(9),
+            clock: None,
         };
         let text = serde_json::to_string(&change).unwrap();
         assert_eq!(serde_json::from_str::<Change>(&text).unwrap(), change);
@@ -809,6 +822,7 @@ fn a_load_names_the_save_its_wall_is_kept_in_and_nothing_more() {
         },
         summary: "Tom loaded the save \"jam\"".to_string(),
         undoes: None,
+        clock: None,
     };
     // The log line is small whatever the wall, and the words in the wall
     // it replaced are never in it: they stay in the save, privately.

@@ -232,6 +232,7 @@ mod tests {
             },
             summary: format!("{seat} set the tempo ({seq})"),
             undoes,
+            clock: None,
         }
     }
 

@@ -35,7 +35,7 @@ use crate::patch::{
 };
 use crate::probe;
 use crate::protocol::{
-    ArrangeResult, BrokenSave, CatalogueResult, Change, ChangeResult, ClockSource,
+    ArrangeResult, BrokenSave, CatalogueResult, Change, ChangeResult, ClockSource, ClockStamp,
     DeleteSaveResult, EngineHealth, ErrorCode, Event, Faults, GroupsResult, KindInfo, KnobInfo,
     KnobView, Levels, Listen, ListenResult, LoadResult, LogHealth, LogPage, MAX_PROBES,
     MAX_SAVE_NAME, ModuleTiming, ModuleView, Place, PortInfo, Probe, ProbeResult, RecordResult,
@@ -438,6 +438,97 @@ pub struct Outcome {
     pub pending: Option<u64>,
 }
 
+/// The clock line every change is stamped on (see [`ClockStamp`]).
+#[derive(Debug)]
+struct ClockLine {
+    /// This daemon run's start, drawn once: `<start>` in every line.
+    start: u64,
+    /// The count of breaks this run: `<n>` in every line.
+    n: u64,
+    /// The last stamp's beat and whether the desk had the clock then.
+    last: Option<(f64, bool)>,
+    /// Whether the daemon log has been told a change went without a stamp.
+    invalid_logged: bool,
+}
+
+/// Where a [`ClockLine`] stood before a break, for [`ClockLine::rewind`].
+#[derive(Debug, Clone, Copy)]
+struct ClockMark {
+    n: u64,
+    last: Option<(f64, bool)>,
+}
+
+impl ClockLine {
+    /// A run's first line, `<start>.0`, with no stamp on it yet.
+    const fn new(start: u64) -> Self {
+        Self {
+            start,
+            n: 0,
+            last: None,
+            invalid_logged: false,
+        }
+    }
+
+    /// Start the next line: the beats after this are not on the last one's.
+    const fn break_line(&mut self) {
+        self.n += 1;
+        self.last = None;
+    }
+
+    /// Where the line stands now.
+    const fn mark(&self) -> ClockMark {
+        ClockMark {
+            n: self.n,
+            last: self.last,
+        }
+    }
+
+    /// Go back to `mark`, taken before a break for a replacement that then
+    /// did not happen and was written nowhere: the music played on, so its
+    /// line goes on as if the break had never been taken.
+    const fn rewind(&mut self, mark: ClockMark) {
+        self.n = mark.n;
+        self.last = mark.last;
+    }
+
+    /// Break the line if the desk took or let go of the clock, or the beat
+    /// went back, since the last reading; then remember this one. A beat
+    /// that is not finite breaks the line and is never remembered.
+    fn check(&mut self, beat: f64, following: bool) {
+        if !beat.is_finite() {
+            self.break_line();
+            return;
+        }
+        if self
+            .last
+            .is_some_and(|(last, was_following)| following != was_following || beat < last - 1e-9)
+        {
+            self.break_line();
+        }
+        self.last = Some((beat, following));
+    }
+
+    /// [`Self::check`], then the stamp for a change made now; `None`, said
+    /// once in the daemon log, when `beat` or `tempo` is not finite.
+    fn stamp(&mut self, beat: f64, tempo: f64, following: bool) -> Option<ClockStamp> {
+        self.check(beat, following);
+        if !beat.is_finite() || !tempo.is_finite() {
+            if !self.invalid_logged {
+                eprintln!(
+                    "kazoo-wall: a non-finite beat or tempo left a change without a clock stamp"
+                );
+                self.invalid_logged = true;
+            }
+            return None;
+        }
+        Some(ClockStamp {
+            beat,
+            tempo,
+            line: format!("{:016x}.{}", self.start, self.n),
+        })
+    }
+}
+
 /// The daemon's state.
 #[derive(Debug)]
 pub struct Wall {
@@ -445,6 +536,7 @@ pub struct Wall {
     patch: Patch,
     rack: Rack,
     engine: EngineControl,
+    clock_line: ClockLine,
     desk: Option<HubLink>,
     log: VecDeque<Change>,
     next_seq: u64,
@@ -1090,6 +1182,7 @@ pub fn resume(
             }),
             what,
             undoes: None,
+            clock: None,
         };
         store.append_synced(&change)?;
         eprintln!("kazoo-wall: {}", change.summary);
@@ -1224,6 +1317,7 @@ impl Wall {
             patch,
             rack: Rack::default(),
             engine,
+            clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
             desk,
             log: history.into_iter().skip(skip).collect(),
             next_seq,
@@ -2089,8 +2183,8 @@ impl Wall {
     /// [`Self::pay_owed`]); returns what was paid, each made, not yet told.
     fn pay_owed_all(&mut self) -> Vec<(Change, Option<Event>)> {
         let mut paid = Vec::new();
-        while let Some((seat, what)) = self.owed.front() {
-            let change = self.new_change(seat, what.clone(), None);
+        while let Some((seat, what)) = self.owed.front().cloned() {
+            let change = self.new_change(&seat, what, None);
             if let Some(store) = self.store.as_mut() {
                 if let Err(err) = store.append_synced(&change) {
                     eprintln!(
@@ -2112,7 +2206,11 @@ impl Wall {
 
     /// `what`, by `seat`, as the next change (not made yet: see
     /// [`Self::apply`]).
-    fn new_change(&self, seat: &str, what: What, undoes: Option<u64>) -> Change {
+    fn new_change(&mut self, seat: &str, what: What, undoes: Option<u64>) -> Change {
+        let shared = self.engine.shared();
+        let clock = self
+            .clock_line
+            .stamp(shared.beat(), shared.bpm(), shared.following_desk());
         Change {
             seq: self.next_seq,
             at: utc_now(),
@@ -2122,6 +2220,7 @@ impl Wall {
             }),
             what,
             undoes,
+            clock,
         }
     }
 
@@ -3520,12 +3619,18 @@ impl Wall {
             tempo: playing,
             by_console: console,
         };
+        // The wall put up starts a clock line with this change. Should the
+        // change be written nowhere, nothing was replaced and the line is
+        // put back; once it may be in the log, its line is never reused.
+        let unbroken = self.clock_line.mark();
+        self.clock_line.break_line();
         let change = self.new_change(seat, what, source.undoes());
         // The wall put up is named by the change that puts it up, and goes
         // to patch.json as of that change.
         incoming.last_seq = change.seq;
         incoming.wall = change.seq;
         let Some(store) = self.store.as_mut() else {
+            self.clock_line.rewind(unbroken);
             return Err(no_saves());
         };
         let batch = backup_bytes
@@ -3556,7 +3661,10 @@ impl Wall {
                     ),
                 ));
             }
-            Err(other) => return Err(not_written(seat, how, &other)),
+            Err(other) => {
+                self.clock_line.rewind(unbroken);
+                return Err(not_written(seat, how, &other));
+            }
         };
         // In the log for good: the load happens.
         self.patch = incoming;
@@ -4461,6 +4569,9 @@ impl Wall {
     /// if it is due. Returns the events to tell everyone: faults, and the
     /// changes the daemon made on its own.
     pub fn tick(&mut self, now: Instant) -> Vec<Event> {
+        let shared = self.engine.shared();
+        self.clock_line
+            .check(shared.beat(), shared.following_desk());
         self.settle(now);
         // The saves not read yet since the start, one a tick, so the first
         // listing finds them read (see `Store::list_saves`).
@@ -4769,3 +4880,6 @@ pub fn catalogue() -> CatalogueResult {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod clock_tests;

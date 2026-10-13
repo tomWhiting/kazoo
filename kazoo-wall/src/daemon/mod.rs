@@ -780,6 +780,7 @@ mod tests {
                     desk: false,
                 },
                 undoes: None,
+                clock: None,
             })
             .unwrap();
         store.sync_log().unwrap();

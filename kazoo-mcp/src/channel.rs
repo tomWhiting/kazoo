@@ -387,6 +387,7 @@ mod tests {
                 },
                 summary: summary.to_string(),
                 undoes: None,
+                clock: None,
             }),
         })
     }
