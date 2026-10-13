@@ -1308,3 +1308,74 @@ fn saves_load_live_over_the_socket_and_a_load_undoes_after_a_restart() {
     daemon.stop();
     daemon.wait().unwrap();
 }
+
+/// `git -C <dir> <args>` for the tree tests: its output, trimmed.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// The daemon looks for its tree beside its state directory (`~/.kazoo/wall`
+/// gives `~/.kazoo/tree`). With none planted there it says so and writes
+/// nothing; once one is planted, its start and every change are commits.
+#[test]
+fn the_daemon_commits_to_a_tree_planted_beside_its_state_and_plants_none() {
+    let runtime = tempfile::Builder::new()
+        .prefix("kw")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("wall");
+    let tree = root.path().join("tree");
+
+    let daemon = start(runtime.path(), &state);
+    let mut wall = WallClient::connect(daemon.socket(), "Tom", "test", true).unwrap();
+    let health = wall.look().unwrap().tree.unwrap();
+    assert!(!health.planted, "{health:?}");
+    assert_eq!(health.error, None);
+    let first = wall.turn("vcf1", "cutoff", 800.0, Some(0.0)).unwrap();
+    drop(wall);
+    daemon.stop();
+    daemon.wait().unwrap();
+    assert!(!tree.exists(), "the daemon planted a tree");
+
+    kazoo_wall::tree::git::plant(&tree).unwrap();
+    let daemon = start(runtime.path(), &state);
+    let mut wall = WallClient::connect(daemon.socket(), "Tom", "test", true).unwrap();
+    assert!(wall.look().unwrap().tree.unwrap().planted);
+    let second = wall.turn("vcf1", "cutoff", 700.0, Some(0.0)).unwrap();
+    drop(wall);
+    daemon.stop();
+    daemon.wait().unwrap();
+
+    let log = git(
+        &tree,
+        &[
+            "log",
+            "--reverse",
+            "--format=%an|%s|%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Gap,valueonly,separator=%x2C)",
+        ],
+    );
+    let lines: Vec<_> = log.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            format!(
+                "kazoo-wall|the wall started after change {0}; the tree did not hold changes 1 to {0} one by one|start,{0},1-{0}",
+                first.change.seq
+            ),
+            format!("Tom|{}|change,{}", second.change.summary, second.change.seq),
+        ],
+        "{log}"
+    );
+}

@@ -1208,6 +1208,9 @@ pub struct Snapshot {
     /// Whether the change log is taking changes: left out while it is.
     #[serde(default, skip_serializing_if = "LogHealth::is_ok")]
     pub log: LogHealth,
+    /// The tree writer, absent from older walls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<TreeHealth>,
     /// What the scopes and readouts on the wall measured, at most
     /// [`MAX_PROBES`] of them (the first in the wall's order; `probe` reads
     /// the rest). Left out when there are none, and from a wall older than
@@ -1936,3 +1939,29 @@ pub struct ShutdownResult {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether the planted tree durably holds the wall's changes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TreeHealth {
+    /// Whether a planted tree is attached (`~/.kazoo/tree`, planted by
+    /// KZ-T03 or `tree::git::plant`; the daemon never plants one).
+    pub planted: bool,
+    /// The last change the tree durably holds.
+    pub through: Option<u64>,
+    /// Items queued for the tree thread.
+    pub waiting: u32,
+    /// The first change not committed one by one (the queue was full); a
+    /// gap commit will hold it.
+    pub behind_from: Option<u64>,
+    /// Why the tree is stopped, while it is.
+    pub error: Option<String>,
+}
+
+impl TreeHealth {
+    /// Planted, not stopped and not behind.
+    #[must_use]
+    pub const fn is_ok(&self) -> bool {
+        self.planted && self.error.is_none() && self.behind_from.is_none()
+    }
+}

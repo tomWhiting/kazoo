@@ -142,6 +142,7 @@ pub fn snapshot() -> Snapshot {
         log: crate::protocol::LogHealth::default(),
         probes: Vec::new(),
         engine: None,
+        tree: None,
     }
 }
 
