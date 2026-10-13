@@ -50,6 +50,8 @@ impl Rig {
         }
     }
 
+    /// Accept the link and answer with `strips`; no strips is an old
+    /// desk's 22-byte answer, strip 3.
     fn connect(&mut self, strips: Vec<u8>) -> (UnixStream, FrameBuffer, RegisterMsg) {
         let listener = UnixListener::bind(&self.path).unwrap();
         let hub = thread::spawn(move || {
@@ -58,7 +60,7 @@ impl Rig {
             let header = buf.read_frame(&mut stream).unwrap();
             let register = RegisterMsg::decode(&buf.payload()[..header.payload_len as usize]);
             let reply = RegisteredMsg {
-                strip_index: strips[0],
+                strip_index: strips.first().copied().unwrap_or(3),
                 hub_sample_rate: 48_000,
                 hub_buffer_size: 256,
                 transport_state: 0,
@@ -300,4 +302,66 @@ fn a_full_request_queue_does_not_record_an_unannounced_stream() {
     }
     assert_eq!(rig.link.add_stream("lead", 2), Err(RequestError::Full));
     assert_eq!(rig.link.remove_stream(1), Err(RequestError::Invalid));
+}
+
+/// Every frame the hub end has been sent so far, by type.
+fn frames_sent(hub: &mut UnixStream, buf: &mut FrameBuffer) -> Vec<u8> {
+    hub.set_nonblocking(true).unwrap();
+    let mut types = Vec::new();
+    loop {
+        match buf.try_read_frame(hub) {
+            Ok(Some(header)) => types.push(header.msg_type),
+            Ok(None) => break,
+            Err(err) => panic!("reading the link's frames failed: {err}"),
+        }
+    }
+    hub.set_nonblocking(false).unwrap();
+    types
+}
+
+#[test]
+fn a_stream_request_queued_as_the_link_went_down_is_not_sent_after_reconnecting() {
+    let mut rig = Rig::new(vec![]);
+    let (hub, _buf, _register) = rig.connect(vec![3]);
+    drop(hub);
+    rig.worker.disconnect("desk restarted".to_string());
+    // add_stream read the link as up an instant before it went down, so it
+    // queued its request; the next registration lists the stream anyway.
+    rig.link.state.connected.store(true, Ordering::Release);
+    assert_eq!(rig.link.add_stream("lead", 2), Ok(1));
+    rig.link.state.connected.store(false, Ordering::Release);
+    let (mut hub, mut buf, register) = rig.connect(vec![3, 7]);
+    assert_eq!(register.streams.len(), 2);
+    rig.worker.serve().unwrap();
+    assert!(
+        !frames_sent(&mut hub, &mut buf).contains(&MSG_STREAM_ADD),
+        "a stream the registration listed was added again"
+    );
+    assert_eq!(rig.link.stream_strip(1), Some(7));
+}
+
+#[test]
+fn an_old_desk_is_never_sent_a_named_stream() {
+    let mut rig = Rig::new(pair());
+    let (mut hub, mut buf, register) = rig.connect(vec![]);
+    assert_eq!(register.streams.len(), 2);
+    assert_eq!(rig.link.stream_strip(0), Some(3));
+    assert_eq!(rig.link.stream_strip(1), None);
+    while rig.audio.try_recv().is_some() {}
+    // The desk does not play stream 1: the instrument plays it itself, and
+    // its clock still runs.
+    assert!(!rig.audio.send_stream_audio(1, 1, &[0.0; 2]));
+    assert_eq!(rig.audio.stream_frame_of(1), 1);
+    // Stream 0 by either call is plain audio.
+    assert!(rig.audio.send_stream_audio(0, 1, &[0.0]));
+    assert!(rig.audio.send_audio(1, &[0.0]));
+    assert_eq!(rig.audio.stream_frame(), 2);
+    assert_eq!(rig.link.add_stream("lead", 2), Ok(2));
+    assert_eq!(rig.link.remove_stream(1), Ok(()));
+    rig.worker.serve().unwrap();
+    assert_eq!(frames_sent(&mut hub, &mut buf), vec![MSG_AUDIO, MSG_AUDIO]);
+    assert!(rig.link.is_connected());
+    let (stream, reason) = rig.link.last_stream_refusal().unwrap();
+    assert_eq!(stream, 2);
+    assert!(reason.contains("named streams"), "{reason}");
 }
