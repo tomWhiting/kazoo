@@ -3,14 +3,14 @@
 //! Layout (top to bottom):
 //! ```text
 //! +======================== YAMAHA CS-80 ========================+
-//! | Oct: 0  |  Drift: 6.0c  |  LAYER I > Waveform: Saw         |
+//! | Oct: 3  |  Drift: 6.0c  |  LAYER I > Waveform: Saw         |
 //! | [Layer I] [Layer II] [Ring] [LFO] [Mix]                     |
 //! +--------- LAYER I ----------+--------- LAYER II ---------+---+
 //! |  VCO                       |  VCO                        | R |
 //! |    ...                     |    ...                       | . |
 //! +----VOICES--1~C4+2.1c--2~E4-1.3c--3.....--4.....--------+---+
 //! |  [waveform] | [spectrum]                                     |
-//! | Piano: z x c v b n m   sharps: s d g h j   Shift+arrows     |
+//! | Piano: a s d f g h j k l ;   sharps: w e t y u o p   z/x oct |
 //! +--------------------------------------------------------------+
 //! ```
 
