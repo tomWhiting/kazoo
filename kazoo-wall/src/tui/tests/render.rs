@@ -411,6 +411,60 @@ fn the_header_says_when_the_change_log_takes_no_changes() {
     assert!(screen.contains("changes still go to it"), "{screen}");
 }
 
+#[test]
+fn the_header_says_how_the_tree_is() {
+    let mut app = connected();
+    let now = Instant::now();
+    let shown = |app: &mut App, tree: Option<crate::protocol::TreeHealth>| {
+        let mut look = snapshot();
+        look.tree = tree;
+        app.on_reply(Reply::Snapshot(Box::new(look)), now);
+        text(&render(app, 160, 30))
+    };
+    // A wall older than the tree says nothing; a well tree says nothing.
+    for tree in [
+        None,
+        Some(crate::protocol::TreeHealth {
+            planted: true,
+            through: Some(12),
+            ..crate::protocol::TreeHealth::default()
+        }),
+    ] {
+        let screen = shown(&mut app, tree);
+        assert!(!screen.contains("TREE"), "{screen}");
+    }
+    let screen = shown(&mut app, Some(crate::protocol::TreeHealth::default()));
+    assert!(screen.contains(" NO TREE "), "{screen}");
+    let screen = shown(
+        &mut app,
+        Some(crate::protocol::TreeHealth {
+            planted: true,
+            through: Some(811),
+            waiting: 1_024,
+            behind_from: Some(812),
+            error: None,
+        }),
+    );
+    assert!(screen.contains(" TREE BEHIND from 812 · 1024 waiting "), "{screen}");
+    // A stopped tree says why, in its first 40 characters.
+    let screen = shown(
+        &mut app,
+        Some(crate::protocol::TreeHealth {
+            planted: true,
+            through: Some(811),
+            waiting: 0,
+            behind_from: Some(812),
+            error: Some("git: fast-import checkpoint: stdout ended; exit status: 128".into()),
+        }),
+    );
+    assert!(
+        screen.contains(" TREE STOPPED: git: fast-import checkpoint: stdout ende "),
+        "{screen}"
+    );
+    assert!(!screen.contains("TREE BEHIND"), "{screen}");
+    assert!(!screen.contains("ended;"), "{screen}");
+}
+
 /// Modules on a big wall: twice the 96 the wall once held at most.
 const BIG_MODULES: usize = 192;
 

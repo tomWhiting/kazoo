@@ -548,3 +548,6 @@ pub fn files_diff(
     *mirror = files;
     Ok(diff)
 }
+
+#[cfg(test)]
+mod tests;

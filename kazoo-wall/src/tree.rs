@@ -9,10 +9,6 @@
 pub mod git;
 pub mod thread;
 
-#[cfg(test)]
-#[path = "tree/thread/tests.rs"]
-mod thread_tests;
-
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
