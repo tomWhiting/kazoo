@@ -1,6 +1,9 @@
 use super::{TrackerUnderTest, gate::GateUnderTest};
 use crate::analysis::{OnsetDetector, PitchDetector, PitchDetectorConfig};
-use crate::voice::{VoiceFrame, VoiceTracker, judge::JudgeResult};
+use crate::voice::{
+    VoiceFrame, VoiceTracker,
+    judge::{JudgeResult, OnsetConfig},
+};
 use std::collections::VecDeque;
 
 /// Voice fusion with synchronous judges delivered one judge hop late.
@@ -21,10 +24,17 @@ impl FusedUnderTest {
         let config = PitchDetectorConfig::for_rate(rate);
         let scale = config.frame_length / 2048;
         let lag = config.hop_length as u64;
+        let onsets = OnsetConfig::default();
         Ok(Self {
             tracker: VoiceTracker::new(rate),
             pitch: PitchDetector::new(config)?,
-            onset: OnsetDetector::new(1024 * scale, 256 * scale, rate as f32, 0.3),
+            // The judge thread's own onset settings, scaled as `judge::spawn` scales them.
+            onset: OnsetDetector::new(
+                onsets.onset_fft_size * scale,
+                onsets.onset_fft_size * scale / 4,
+                rate as f32,
+                onsets.onset_threshold,
+            ),
             pending: VecDeque::with_capacity(64),
             samples: 0,
             lag,

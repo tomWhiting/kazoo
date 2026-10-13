@@ -137,12 +137,20 @@ fn three_unvoiced_verdicts_unlock_a_false_pitch() {
     let mut tracker = VoiceTracker::new(48_000);
     tracker.process(&signal[..4096], |_| {});
     assert!(tracker.cycle.estimate().is_some());
-    let mut latest = true;
+    // The first verdict arrives at 4096; within four judge hops of it the
+    // frame is unvoiced, and it stays so while the verdicts keep coming.
+    let deadline = 4096 + 4 * 512;
+    let mut frames_checked = 0;
     for block in signal[4096..].chunks(512) {
         tracker.judge(pitch(None, 0.02));
-        tracker.process(block, |f| latest = f.voiced);
+        tracker.process(block, |f| {
+            if f.at >= deadline {
+                frames_checked += 1;
+                assert!(!f.voiced && !f.gate, "{f:?}");
+            }
+        });
     }
-    assert!(!latest);
+    assert!(frames_checked >= 32);
 }
 #[test]
 fn the_gate_has_hysteresis() {
@@ -166,7 +174,7 @@ fn the_gate_has_hysteresis() {
     assert!(
         output
             .iter()
-            .filter(|f| f.at > 19_200 + 1024)
+            .filter(|f| f.at >= 19_200 + 1013)
             .all(|f| !f.gate)
     );
 }
@@ -217,33 +225,49 @@ fn the_judge_thread_comes_and_goes() -> crate::Result<()> {
         128,
         OnsetConfig::default(),
     )?;
-    let signal = sine(220.0, 48_128, 0.5);
+    let signal = sine(220.0, 48_000, 0.5);
     let mut pitches = 0;
+    let mut voiced = 0;
     for hop in signal.chunks(512) {
         for block in hop.chunks(128) {
             feed.push(block);
         }
-        if hop.len() == 512 {
-            loop {
-                match results.pop() {
-                    Some(JudgeResult::Pitch(p)) => {
-                        pitches += 1;
-                        if pitches > 6 {
-                            assert!(
-                                p.frequency
-                                    .is_some_and(|f| (1200.0 * (f / 220.0).log2()).abs() < 10.0)
-                            );
-                        }
-                        break;
+        if hop.len() < 512 {
+            continue;
+        }
+        // Pace the feed by the judge's own hops, never forever: a judge that
+        // stops answering fails here instead of hanging the run.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match results.pop() {
+                Some(JudgeResult::Pitch(p)) => {
+                    pitches += 1;
+                    if let Some(hz) = p.frequency {
+                        voiced += 1;
+                        assert!((1200.0 * (hz / 220.0).log2()).abs() < 10.0, "{p:?}");
                     }
-                    Some(JudgeResult::Onset { .. }) => {}
-                    None => std::thread::yield_now(),
+                    break;
+                }
+                Some(JudgeResult::Onset { .. }) => {}
+                None => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "no verdict for hop {pitches}"
+                    );
+                    std::thread::yield_now();
                 }
             }
         }
     }
+    assert!(voiced >= 80, "{voiced} voiced of {pitches}");
     assert!(pitches >= 80);
-    assert_eq!(judge.stats().samples_dropped, 0);
+    assert_eq!(
+        judge.stats(),
+        judge::JudgeStatsSnapshot {
+            samples_dropped: 0,
+            results_dropped: 0
+        }
+    );
     drop(feed);
     let start = std::time::Instant::now();
     assert!(judge.join().is_ok());
@@ -262,7 +286,7 @@ fn the_judge_thread_comes_and_goes() -> crate::Result<()> {
 fn processing_never_allocates() -> crate::Result<()> {
     let vowel = take("vowel_ah");
     let mut tracker = VoiceTracker::new(48_000);
-    let (mut feed, results, judge) = judge::spawn(
+    let (mut feed, mut results, judge) = judge::spawn(
         PitchDetectorConfig::for_rate(48_000),
         128,
         OnsetConfig::default(),
@@ -276,17 +300,29 @@ fn processing_never_allocates() -> crate::Result<()> {
         .cycle()
         .take(480_000)
         .collect();
+    let mut frames = 0_u64;
     assert_no_alloc::assert_no_alloc(|| {
-        for block in signal.chunks(64) {
-            tracker.judge(pitch(Some(130.81), 0.9));
+        for (i, block) in signal.chunks(64).enumerate() {
+            // Everything the callback does: feed the judge, drain it, hand
+            // over its verdicts (stub ones too, so both kinds are always
+            // exercised), then track.
+            feed.push(block);
+            while let Some(result) = results.pop() {
+                tracker.judge(result);
+            }
+            if i % 8 == 0 {
+                tracker.judge(pitch(Some(130.81), 0.9));
+                tracker.judge(JudgeResult::Onset { strength: 0.5 });
+            }
             tracker.process(block, |f| {
+                frames += 1;
                 std::hint::black_box(f);
             });
-            feed.push(block);
         }
         tracker.reset();
     });
     assert_eq!(assert_no_alloc::violation_count(), before);
+    assert_eq!(frames, 7500);
     drop(feed);
     drop(results);
     assert!(judge.join().is_ok());
