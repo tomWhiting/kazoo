@@ -5,6 +5,7 @@
 //! methods, so it can be tested without any.
 
 mod chains;
+mod cost;
 mod unheard;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -62,13 +63,15 @@ pub const FLOOD_REFILL_PER_SECOND: f64 = 3.0;
 ///
 /// The wall has no fixed number of modules or cables: it holds as many as
 /// the machine can render. Heard modules render every sub-block, and their
-/// cables carry signals through delay lines. Unheard modules and cables
-/// still count as held when costing additions against the measured load.
+/// cables carry signals through delay lines. The load is shared over heard
+/// modules and the cables into them; an unheard module costs nothing until
+/// a change makes it heard, and that change is costed at what it wakes
+/// (see [`Wall::wake_room`]).
 /// Past this share of the time it has, a busy moment elsewhere on the machine would leave the device waiting and the
 /// wall would drop out for everyone listening, so a change that would add
 /// more work is refused until something is taken away (or a heavy module
 /// swapped for a light one). Changes that add nothing (turning a knob,
-/// moving a cable to a jack already in use, taking things away) are never
+/// moving a cable without waking modules, taking things away) are never
 /// refused for it.
 ///
 /// The load is an average over about a second, so on its own it would let
@@ -84,8 +87,9 @@ pub const FLOOD_REFILL_PER_SECOND: f64 = 3.0;
 ///   averaging windows ([`crate::engine::LOAD_SECONDS`]) since the last
 ///   one, so the next is judged on a load that includes it.
 ///
-/// A load (or `new`, or a load undone) is not refused for it: the wall it
-/// puts up costs what it costs, which this wall's load cannot tell. Once it
+/// A load (or a load undone) is costed at what its heard modules cost by
+/// the bench (see [`Wall::load_room`]); a new, empty wall never is. Tom's
+/// console can put a saved wall back past the guard, with a warning. Once it
 /// is up (and when the engine starts), the wall takes no more (`slow_down`)
 /// until its load has been measured for [`ABSORBED_WINDOWS`] windows, then
 /// nothing more while past the guard.
@@ -346,8 +350,11 @@ struct LoadWatch {
     refusing: bool,
     /// Changes the load has not yet taken in (see [`ABSORBED_WINDOWS`]):
     /// the frames the engine had rendered when each was made, and how many
-    /// modules and cables it added (less than none for what it took away).
-    recent: VecDeque<(u64, i64)>,
+    /// heard units it added (negative for removals), and the share it woke.
+    recent: VecDeque<(u64, i64, f32)>,
+    waking: f32,
+    /// Last addition, including unheard work, for the unchanged settling rule.
+    added: Option<u64>,
     /// The frames the engine will have rendered when its load has taken in
     /// the whole wall, after the wall was put up or the engine started.
     measured_from: u64,
@@ -361,6 +368,8 @@ impl LoadWatch {
             on: false,
             refusing: false,
             recent: VecDeque::new(),
+            waking: 0.0,
+            added: None,
             measured_from: 0,
         }
     }
@@ -370,6 +379,8 @@ impl LoadWatch {
     fn restart(&mut self, rendered: u64, window: u64) {
         self.refusing = false;
         self.recent.clear();
+        self.waking = 0.0;
+        self.added = None;
         self.measured_from = rendered.saturating_add(window.saturating_mul(ABSORBED_WINDOWS));
     }
 }
@@ -481,6 +492,8 @@ pub struct Wall {
     /// phrase feed waits for rendering; speech synthesis completion answers
     /// the request without waiting for playback.
     unheard: Vec<String>,
+    /// Heard modules and cables into them, sharing the measured render load.
+    heard_units: usize,
     /// Each cable's delay line and the tag it owns it under, by cable id.
     lines: BTreeMap<u32, (u32, u32)>,
     /// The last tag given to a delay line.
@@ -1192,6 +1205,7 @@ impl Wall {
             told: Vec::new(),
             timing: Timing::default(),
             unheard: Vec::new(),
+            heard_units: 0,
             lines: BTreeMap::new(),
             line_tags: 0,
             probes: HashMap::new(),
@@ -1328,9 +1342,10 @@ impl Wall {
         self.load_watch.restart(rendered, window);
     }
 
-    /// Modules and cables on the wall: what the render load is shared over.
-    fn held(&self) -> usize {
-        self.patch.modules().len() + self.patch.cables().len()
+    /// Heard modules and the cables into them: what the render load is shared
+    /// over (an unheard module renders nothing, see `unheard`).
+    const fn held(&self) -> usize {
+        self.heard_units
     }
 
     /// The desk link, while the wall has one.
@@ -1503,6 +1518,7 @@ impl Wall {
                 false,
             )
         };
+        self.engine.forget_cost(slot);
         self.engine.send(Command::Insert {
             slot,
             tag,
@@ -2260,6 +2276,7 @@ impl Wall {
         let outcome = self.answer((seat, console), request, now);
         if std::mem::take(&mut self.unmade) {
             self.put_back(before);
+            self.load_watch.waking = 0.0;
         }
         // A wall put up is measured afresh (see `swap_engine`); any other
         // change counts towards the load not yet taken in (one the log
@@ -2552,7 +2569,7 @@ impl Wall {
             return Ok(());
         }
         self.file_room(growth.bytes())?;
-        self.render_room(growth.modules + growth.cables)?;
+        self.render_room(growth.modules + growth.cables, 0.0)?;
         let slots = self.rack.slots_for(growth.modules);
         if !self.engine.reserve_slots(slots) {
             return Err(error(
@@ -2665,8 +2682,8 @@ impl Wall {
     /// wall just put up is still being measured, and above
     /// [`SETTLE_SHARE`] of the guard until the last addition has been
     /// taken in (see [`ABSORBED_WINDOWS`]).
-    fn render_room(&mut self, units: usize) -> Result<(), WallError> {
-        if !self.load_watch.on || units == 0 {
+    fn render_room(&mut self, units: usize, waking: f32) -> Result<(), WallError> {
+        if !self.load_watch.on || (units == 0 && waking <= 0.0) {
             return Ok(());
         }
         let shared = self.engine.shared();
@@ -2677,7 +2694,7 @@ impl Wall {
             .load_watch
             .recent
             .front()
-            .is_some_and(|(at, _)| rendered.saturating_sub(*at) >= absorbed)
+            .is_some_and(|(at, _, _)| rendered.saturating_sub(*at) >= absorbed)
         {
             self.load_watch.recent.pop_front();
         }
@@ -2704,29 +2721,54 @@ impl Wall {
         // it has not taken in yet: share it over the modules and cables it
         // had then, and cost the wall with this addition too.
         let held = self.held();
-        let lately: i64 = self.load_watch.recent.iter().map(|(_, units)| units).sum();
+        let lately: i64 = self
+            .load_watch
+            .recent
+            .iter()
+            .map(|(_, units, _)| units)
+            .sum();
         // Counts of modules and cables: far inside i64.
         let measured_on = usize::try_from(i64::try_from(held).unwrap_or(i64::MAX) - lately)
             .unwrap_or(0)
             .max(1);
-        if measured_on >= COSTED_FROM {
-            // Counts far below 2^24: close enough in f32.
-            let projected = load / measured_on as f32 * held.saturating_add(units) as f32;
-            if projected > LOAD_GUARD {
-                return Err(error(
-                    ErrorCode::Full,
-                    format!(
-                        "the wall is spending {:.0}% of its time rendering, and this would take \
+        // Counts far below 2^24: close enough in f32.
+        let base = if measured_on >= COSTED_FROM {
+            load / measured_on as f32 * held.saturating_add(units) as f32
+        } else {
+            load
+        };
+        let recent: f32 = self
+            .load_watch
+            .recent
+            .iter()
+            .map(|(_, _, share)| share)
+            .sum();
+        let projected = base + recent + waking;
+        if projected > LOAD_GUARD {
+            if waking > 0.0 {
+                return Err(self.wake_refusal(load, projected));
+            }
+            return Err(error(
+                ErrorCode::Full,
+                format!(
+                    "the wall is spending {:.0}% of its time rendering, and this would take \
                          it to about {:.0}%, past the {:.0}% it keeps to; take something away \
                          first",
-                        load * 100.0,
-                        projected * 100.0,
-                        LOAD_GUARD * 100.0
-                    ),
-                ));
-            }
+                    load * 100.0,
+                    projected * 100.0,
+                    LOAD_GUARD * 100.0
+                ),
+            ));
         }
-        let adding_lately = self.load_watch.recent.iter().any(|(_, units)| *units > 0);
+        let adding_lately = self
+            .load_watch
+            .added
+            .is_some_and(|at| rendered.saturating_sub(at) < absorbed)
+            || self
+                .load_watch
+                .recent
+                .iter()
+                .any(|(_, units, share)| *units > 0 || *share > 0.0);
         // A wall too small to cost by its share can still be heavy: its
         // additions come apart from a lower load.
         let settle_from = if measured_on >= COSTED_FROM {
@@ -2753,9 +2795,10 @@ impl Wall {
     fn note_held(&mut self, before: usize) {
         let delta = i64::try_from(self.held()).unwrap_or(i64::MAX)
             - i64::try_from(before).unwrap_or(i64::MAX);
-        if delta != 0 {
+        let waking = std::mem::take(&mut self.load_watch.waking);
+        if delta != 0 || waking > 0.0 {
             let rendered = self.engine.shared().frames();
-            self.load_watch.recent.push_back((rendered, delta));
+            self.load_watch.recent.push_back((rendered, delta, waking));
         }
     }
 
@@ -2778,7 +2821,14 @@ impl Wall {
             What::Patch { cable, .. } => Some(cable.id),
             _ => None,
         });
+        if matches!(
+            what,
+            What::Patch { .. } | What::Add { .. } | What::Restore { .. } | What::Chain { .. }
+        ) {
+            self.wake_room()?;
+        }
         let (change, fingerprints) = self.commit(seat, what, undoes)?;
+        self.note_addition(&change.what);
         let result = encode(&ChangeResult {
             change: change.clone(),
             module,
@@ -3427,6 +3477,7 @@ impl Wall {
         if self.store.is_none() {
             return Err(no_saves());
         }
+        let warning = self.load_room_as(console, &incoming, source, &mut notes)?;
         let how = source.how();
         // The daemon's own changes owed to the log go first (they take
         // their numbers before this one), or nothing is replaced.
@@ -3485,6 +3536,9 @@ impl Wall {
         self.patch = incoming;
         let (change, _) = self.apply(change);
         eprintln!("kazoo-wall: {}", change.summary);
+        if let Some(warning) = warning {
+            eprintln!("kazoo-wall: {warning}");
+        }
         // Saved with the batch, or again at the next save.
         self.dirty = !in_patch;
         self.last_save = Some(Instant::now());
