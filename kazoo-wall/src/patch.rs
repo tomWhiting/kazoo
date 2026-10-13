@@ -931,6 +931,9 @@ impl Patch {
             ));
         }
         let (mut module, ignored, bad_birth) = module_from_record(record)?;
+        if module.kind == Kind::LOOP {
+            self.loop_room()?;
+        }
         for knob in ignored {
             eprintln!(
                 "kazoo-wall: {} has no knob '{}'; its value was dropped",
@@ -970,9 +973,6 @@ impl Patch {
             });
         }
         self.count_id(&module.id);
-        if module.kind == Kind::LOOP {
-            self.loop_room()?;
-        }
         let restored = module.record();
         if let Some(at) = self
             .retired_loops
@@ -1187,17 +1187,7 @@ impl Patch {
     /// cable already back.
     pub fn undo(&mut self, what: &What) -> Result<What, WallError> {
         match what {
-            What::Erase { module, was } => {
-                if self.find(module)?.kind != Kind::LOOP {
-                    return Err(error(ErrorCode::NotAllowed, "module is not a loop"));
-                }
-                let record = self.loops.entry(module.clone()).or_default();
-                let prior = std::mem::replace(&mut record.tape, was.clone());
-                Ok(What::Erase {
-                    module: module.clone(),
-                    was: prior,
-                })
-            }
+            What::Erase { module, was, .. } => self.undo_erase(module, was.as_ref()),
             What::LoopFrom { module, was, .. } => {
                 self.loop_op(module, &crate::protocol::LoopOp::From { from: was.clone() })
             }

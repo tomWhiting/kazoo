@@ -485,13 +485,14 @@ pub struct Wall {
     told: Vec<Event>,
     /// Latency and delays as the tables were last sent.
     timing: Timing,
-    /// Ids with no cable path to an out, scope or readout, in added order.
+    /// Ids with no cable path to an out, scope, readout or loop, in added
+    /// order.
     /// They are not rendered: knob glides freeze, with look reporting the
     /// target and frozen value, and resume when heard again. State (tails,
     /// envelope stages and sequencer steps) is held, never reset. Outputs
     /// keep the last block; no heard module can read an unheard source, and
     /// cables into a module heard again start with empty delay lines (see
-    /// `engine::tables`). A scope or readout makes its sources heard. An unheard speaker's
+    /// `engine::tables`). A scope, readout or loop makes its sources heard. An unheard speaker's
     /// phrase feed waits for rendering; speech synthesis completion answers
     /// the request without waiting for playback.
     unheard: Vec<String>,
@@ -1922,9 +1923,8 @@ impl Wall {
                     self.engine.send(Command::Remove { slot });
                 }
             }
-            // Applied before the engine was loaded, (new words) already
-            // handed to the player, or (a recording) started or stopped by
-            // the recorder itself: nothing to mirror.
+            // The loop takes what the patch now says it holds, over what
+            // it recorded.
             What::Erase { module, .. } => {
                 let tape = self
                     .patch
@@ -1932,6 +1932,10 @@ impl Wall {
                     .and_then(|record| record.tape.clone());
                 self.loops.replace(module, tape, false);
             }
+            // Applied before the engine was loaded, (new words) already
+            // handed to the player, (a recording) started or stopped by
+            // the recorder itself, or (a loop's desk strip) asked of the
+            // desk by KZ-L09: nothing to mirror.
             What::LoopFrom { .. }
             | What::Migrate { .. }
             | What::Speak { .. }
@@ -2592,19 +2596,7 @@ impl Wall {
     ) -> Result<Outcome, WallError> {
         let checked_kind = Patch::check_add(kind, name)?;
         if checked_kind == Kind::LOOP {
-            if self
-                .patch
-                .modules()
-                .iter()
-                .filter(|module| module.kind == Kind::LOOP)
-                .count()
-                >= super::loops::MAX_LOOPS
-            {
-                return Err(error(
-                    ErrorCode::Full,
-                    "a wall holds eight loops, like the eight-track; remove one, or erase one and use it again",
-                ));
-            }
+            self.patch.loop_room()?;
             self.file_room(crate::store::WORST_LOOP_BYTES)?;
         }
         let growth = Growth {

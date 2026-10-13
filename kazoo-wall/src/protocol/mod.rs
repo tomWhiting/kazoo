@@ -695,12 +695,17 @@ pub struct Change {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum What {
-    /// Tape erased; undo restores the prior reel.
+    /// A loop's tape erased (`tape` none), or put back by the erase's
+    /// undo (`tape` the reel put back). Undone, the loop holds `was` again.
     Erase {
         module: String,
         was: Option<crate::patch::TapeRecord>,
+        /// What the loop holds after: none for an erase.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tape: Option<crate::patch::TapeRecord>,
     },
-    /// Recording source changed.
+    /// The desk strip a loop records from (`from`; none: what is patched
+    /// into it), which was `was`.
     LoopFrom {
         module: String,
         from: Option<String>,
@@ -1319,8 +1324,8 @@ pub struct Timings {
     /// for the knob as set.
     #[serde(default)]
     pub unsteady: Vec<String>,
-    /// Modules from which no cable path reaches an out, scope or readout;
-    /// they are not rendered.
+    /// Modules from which no cable path reaches an out, scope, readout or
+    /// loop; they are not rendered.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unheard: Vec<String>,
 }

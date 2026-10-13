@@ -92,16 +92,44 @@ impl Patch {
     pub fn loop_record(&self, id: &str) -> Option<&LoopRecord> {
         self.loops.get(id)
     }
-    /// Keep a loop's record. Callers validate the module and record first.
-    pub fn set_loop(&mut self, id: &str, record: LoopRecord) {
-        self.loops.insert(id.into(), record);
+    /// Keep `record` as loop `id`'s tape and source.
+    ///
+    /// # Errors
+    /// `id` is not a loop on the wall, or the record does not read as the
+    /// file would have to hold it (see [`TapeRecord::check`]).
+    pub fn set_loop(&mut self, id: &str, record: LoopRecord) -> Result<(), WallError> {
+        if self.find(id)?.kind != Kind::LOOP {
+            return Err(error(ErrorCode::NotAllowed, format!("{id} is not a loop")));
+        }
+        record.check().map_err(|why| {
+            error(
+                ErrorCode::BadRequest,
+                format!("{id}'s tape does not read: {why}"),
+            )
+        })?;
+        self.keep_loop(id, record);
+        Ok(())
+    }
+    /// Keep `record` for `id`, holding no record for a blank loop that
+    /// records what is patched into it, so the file names only loops with
+    /// something to keep.
+    fn keep_loop(&mut self, id: &str, record: LoopRecord) {
+        if record == LoopRecord::default() {
+            self.loops.remove(id);
+        } else {
+            self.loops.insert(id.to_string(), record);
+        }
     }
     /// Every active loop's saved record.
     #[must_use]
     pub const fn loops(&self) -> &std::collections::BTreeMap<String, LoopRecord> {
         &self.loops
     }
-    pub(super) fn loop_room(&self) -> Result<(), WallError> {
+    /// Whether the wall has room for another loop.
+    ///
+    /// # Errors
+    /// `full` when it holds [`MAX_LOOPS`] already.
+    pub fn loop_room(&self) -> Result<(), WallError> {
         if self
             .modules
             .iter()
@@ -128,12 +156,15 @@ impl Patch {
                 format!("{module} is not a loop"),
             ));
         }
+        let mut record = self.loops.get(module).cloned().unwrap_or_default();
         match op {
             LoopOp::Erase => {
-                let record = self.loops.entry(module.into()).or_default();
+                let was = record.tape.take();
+                self.keep_loop(module, record);
                 Ok(What::Erase {
                     module: module.into(),
-                    was: record.tape.take(),
+                    was,
+                    tape: None,
                 })
             }
             LoopOp::From { from } => {
@@ -143,8 +174,8 @@ impl Patch {
                         "a desk strip label is 1 to 24 bytes of letters, digits, /, _, . or -",
                     ));
                 }
-                let record = self.loops.entry(module.into()).or_default();
                 let was = std::mem::replace(&mut record.from, from.clone());
+                self.keep_loop(module, record);
                 Ok(What::LoopFrom {
                     module: module.into(),
                     from: from.clone(),
@@ -152,6 +183,27 @@ impl Patch {
                 })
             }
         }
+    }
+    /// Undo an erase, or the undo of one: the loop holds `was` again.
+    pub(super) fn undo_erase(
+        &mut self,
+        module: &str,
+        was: Option<&TapeRecord>,
+    ) -> Result<What, WallError> {
+        if self.find(module)?.kind != Kind::LOOP {
+            return Err(error(
+                ErrorCode::NotAllowed,
+                format!("{module} is not a loop"),
+            ));
+        }
+        let mut record = self.loops.get(module).cloned().unwrap_or_default();
+        let prior = std::mem::replace(&mut record.tape, was.cloned());
+        self.keep_loop(module, record);
+        Ok(What::Erase {
+            module: module.to_string(),
+            was: prior,
+            tape: was.cloned(),
+        })
     }
     pub(super) fn load_loops(&mut self, file: &super::PatchFile, notes: &mut Vec<String>) {
         for (id, record) in &file.loops {
@@ -169,7 +221,7 @@ impl Patch {
                     printable(id)
                 ));
             } else {
-                self.loops.insert(id.clone(), record.clone());
+                self.keep_loop(id, record.clone());
             }
         }
         for retired in &file.retired_loops {
