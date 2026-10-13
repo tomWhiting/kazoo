@@ -8,7 +8,7 @@ use crate::SUB_BLOCK;
 pub use feed::{LoopFeed, LoopGauges, LoopIn, LoopOut, LoopState, TakeMark};
 use ringbuf::{
     HeapCons, HeapProd,
-    traits::{Consumer, Producer},
+    traits::{Consumer, Observer, Producer},
 };
 use std::sync::{Arc, atomic::Ordering};
 
@@ -272,6 +272,14 @@ impl LoopModule {
     }
 
     fn finish_take(&mut self) {
+        if !self.outgoing.read_is_held() {
+            // Nobody holds the feed (the catalogue's builder keeps none):
+            // the mark has no reader, and waiting for one would never let
+            // the loop arm again. It holds no buffer, so nothing is freed.
+            self.written.fill(false);
+            self.pending_take = false;
+            return;
+        }
         self.mark.bars = self.written;
         if self.emit(LoopOut::Took(self.mark)).is_none() {
             self.written.fill(false);
