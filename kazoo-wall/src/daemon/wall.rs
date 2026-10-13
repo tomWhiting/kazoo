@@ -459,6 +459,7 @@ struct ClockMark {
 }
 
 impl ClockLine {
+    /// A run's first line, `<start>.0`, with no stamp on it yet.
     const fn new(start: u64) -> Self {
         Self {
             start,
@@ -468,6 +469,7 @@ impl ClockLine {
         }
     }
 
+    /// Start the next line: the beats after this are not on the last one's.
     const fn break_line(&mut self) {
         self.n += 1;
         self.last = None;
@@ -489,6 +491,9 @@ impl ClockLine {
         self.last = mark.last;
     }
 
+    /// Break the line if the desk took or let go of the clock, or the beat
+    /// went back, since the last reading; then remember this one. A beat
+    /// that is not finite breaks the line and is never remembered.
     fn check(&mut self, beat: f64, following: bool) {
         if !beat.is_finite() {
             self.break_line();
@@ -503,6 +508,8 @@ impl ClockLine {
         self.last = Some((beat, following));
     }
 
+    /// [`Self::check`], then the stamp for a change made now; `None`, said
+    /// once in the daemon log, when `beat` or `tempo` is not finite.
     fn stamp(&mut self, beat: f64, tempo: f64, following: bool) -> Option<ClockStamp> {
         self.check(beat, following);
         if !beat.is_finite() || !tempo.is_finite() {
