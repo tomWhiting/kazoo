@@ -77,6 +77,8 @@ Each lane is one brief in this directory, `KZ-<track><nn>-<slug>.md`. A lane is 
 | D01 benchmarks | criterion benches: wall render per module kind and per cable count (10, 100, 1k, 10k); desk callback at 8, 64, 512 strips; each circuit model; the link path. Numbers recorded in `briefs/studio/BENCH.md` | kazoo-wall, kazoo-mix, kazoo-fx | — |
 | D02 no cost for the unplugged | gathers only for plugged jacks; knob glides only while moving; the finiteness scan one pass per block; `out` sum from a list, not a room scan (`engine/mod.rs:1107–1230`) | kazoo-wall | D01 |
 | D03 cull what nobody hears | modules that reach no `out`, scope, readout or record are left out of the render order | kazoo-wall | D02 |
+| D03b the guard costs what a cable wakes | per-kind bench costs; a load or a wake past 80% is refused for a seat, warned for Tom (merged 13 Oct) | kazoo-wall | D03 |
+| D03c the guard sees a busy machine | bench costs scaled by how the wall up now measures against its own bench cost, so a busy Mac is seen; the sentences say so | kazoo-wall | D03b; before T05b |
 | D04 cables without lines | a cable's delay line exists only where latency compensation or a cycle needs it; other cables pass by index | kazoo-wall | D02 |
 | D05 incremental tables | a change updates the order, latencies and cable table for the slots it touches; `send_tables` (`wall.rs:1495`) is no longer O(N²); `patch.rs` scans become indexed maps | kazoo-wall | D04 |
 | D06 render in parallel | the sorted graph is split into independent chains rendered by a pool of real-time threads with a per-block barrier; one thread when the pool is 1 | kazoo-wall | D05 |
