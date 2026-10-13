@@ -28,7 +28,9 @@ pub const CHECKPOINT_AFTER: Duration = Duration::from_secs(1);
 /// busy, so a crash never loses more than this many.
 pub const CHECKPOINT_COMMITS: u64 = 256;
 /// Each checkpoint writes one pack; a geometric repack after every 64
-/// keeps their number logarithmic without rewriting everything.
+/// keeps their number logarithmic without rewriting everything. The
+/// importer is finished and started again around it, since a running
+/// `fast-import` keeps its packs from any repack.
 pub const REPACK_EVERY: u64 = 64;
 /// How long a stopped tree waits before starting git again: often enough
 /// to recover soon, seldom enough not to spawn git over and over while a
@@ -398,6 +400,7 @@ fn tell(sender: &mpsc::Sender<News>, news: News) {
 
 /// The tree thread's state while git works.
 struct Writer {
+    /// `None` only while [`Self::renew`] swaps one importer for the next.
     importer: Option<Importer>,
     accepted: u64,
     through: Option<u64>,
@@ -430,6 +433,20 @@ impl Writer {
             .ok_or_else(|| TreeError::Git("no fast-import is running".into()))
     }
 
+    /// Repack, between two importers. `fast-import` keeps a `.keep` file on
+    /// every pack it writes until it exits, and a repack leaves kept packs
+    /// alone; so the running importer is finished first (its packs are let
+    /// go), the packs are repacked, and a new importer continues from the
+    /// branch's tip.
+    fn renew(&mut self, dir: &Path) -> Result<(), TreeError> {
+        if let Some(importer) = self.importer.take() {
+            importer.finish()?;
+        }
+        git::repack(dir)?;
+        self.importer = Some(Importer::new(dir, &git::read(dir)?)?);
+        Ok(())
+    }
+
     fn checkpoint(&mut self, dir: &Path, news: &mpsc::Sender<News>) -> Result<(), TreeError> {
         if self.pending == 0 {
             return Ok(());
@@ -445,7 +462,7 @@ impl Writer {
             }
             self.checkpoints += 1;
             if self.checkpoints % REPACK_EVERY == 0 {
-                git::repack(dir)?;
+                self.renew(dir)?;
             }
         }
         Ok(())
