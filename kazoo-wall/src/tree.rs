@@ -1,4 +1,10 @@
 //! Lasting module identities and the wall's deterministic text form.
+//!
+//! Every module carries a [`Birth`] for life: the change that added it, or,
+//! for a module from a file made before births were marked, a found mark
+//! worked out from that file. [`to_files`] and [`from_files`] turn a save
+//! into `wall.toml` and one `modules/<id>.toml` per module and back, byte
+//! for byte, with no I/O.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
@@ -12,18 +18,36 @@ use crate::patch::{PatchFile, RetiredWords, Words, printable, valid_id};
 use crate::protocol::{CableRecord, ModuleRecord, What};
 
 /// A module's lasting identity, independent of its present wall.
+///
+/// Its text form is `born <seq>.<n> <at> <print> <salt>` or
+/// `found <wall> <seed> <id>` ([`fmt::Display`], [`FromStr`]); found marks
+/// order before born ones, born ones by time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Birth {
     /// Born on a wall that marks births.
     Born {
+        /// The number of the change that added the module.
         seq: u64,
+        /// Its place among that change's newborns, from 0.
         n: u32,
+        /// The change's UTC instant, `YYYY-MM-DDTHH:MM:SSZ`.
         at: String,
+        /// [`crate::patch::Patch::fingerprint_word`] of the wall it was
+        /// born into, with it and its siblings on it and still unmarked.
         print: u64,
+        /// 64 random bits drawn once per change, so births in clones of one
+        /// tree never coincide.
         salt: u64,
     },
-    /// Found in a file made before births were marked.
-    Found { wall: u64, seed: u64, id: String },
+    /// On a wall from a file made before births were marked.
+    Found {
+        /// The `wall` of the file it was found in.
+        wall: u64,
+        /// That file's seed.
+        seed: u64,
+        /// The module's own id.
+        id: String,
+    },
 }
 
 impl Birth {
@@ -221,6 +245,8 @@ pub fn stamp_births(
     births
 }
 
+/// Whether `what` adds a module (in a chain too): whether
+/// [`stamp_births`] has anything to stamp. Written out in full like it.
 pub(crate) fn has_add(what: &What) -> bool {
     match what {
         What::Add { .. } => true,
@@ -248,13 +274,33 @@ pub type Files = BTreeMap<String, Vec<u8>>;
 /// A malformed identity or wall text form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeError {
+    /// A birth mark that does not read, as given (made printable).
     BadBirth(String),
+    /// A save or set of files that is not one wall, and why.
     NotOneWall(String),
-    NotANumber { path: String, key: String },
-    TooLarge { what: &'static str },
+    /// A value that is not a finite number, in `path` under `key`.
+    NotANumber {
+        /// The file.
+        path: String,
+        /// The key.
+        key: String,
+    },
+    /// A number past what a TOML integer holds.
+    TooLarge {
+        /// Which number.
+        what: &'static str,
+    },
+    /// A file that is no part of a wall.
     UnknownFile(String),
+    /// A file a wall needs that is not there.
     Missing(String),
-    Parse { path: String, reason: String },
+    /// A file that does not read into its form.
+    Parse {
+        /// The file.
+        path: String,
+        /// Why, as the reader says.
+        reason: String,
+    },
 }
 
 impl fmt::Display for TreeError {
