@@ -599,6 +599,31 @@ mod tests {
         assert!(settled > 0);
     }
 
+    /// A one-window hop is 128 ms at 16 kHz: pyin's transition band then
+    /// spans more semitones than the 60 to 1000 Hz range holds, and the
+    /// detector is refused, so `start` failed on a Bluetooth headset's 16 kHz
+    /// output. Main built its detector at 44.1 kHz on every device and
+    /// always started. The engine must start at every device rate, and still
+    /// run once per window wherever pyin can hold that.
+    #[test]
+    fn the_engine_builds_its_judge_at_every_device_rate() {
+        for rate in [
+            8000, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000,
+            176_400, 192_000, 384_000,
+        ] {
+            let config = judge_config(&EngineConfig::default().pitch, rate);
+            let shown = format!("{config:?}");
+            let built = PitchDetector::new(config);
+            assert!(built.is_ok(), "rate {rate} was refused: {shown} {built:?}");
+            if rate >= 22_050 {
+                let once_per_window = built.as_ref().is_ok_and(|detector| {
+                    detector.config().hop_length == detector.config().frame_length
+                });
+                assert!(once_per_window, "rate {rate} must run once per window");
+            }
+        }
+    }
+
     #[test]
     fn engine_config_default_values() {
         let config = EngineConfig::default();

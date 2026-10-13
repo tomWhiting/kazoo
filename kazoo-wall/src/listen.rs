@@ -408,6 +408,28 @@ mod tests {
             .collect()
     }
 
+    /// The listener's pitch configuration must build at every rate the wall
+    /// plays at (8 kHz upwards), and analyse one frame per listening where
+    /// pyin can hold that hop.
+    #[test]
+    fn the_listener_hears_pitch_at_every_rate() {
+        for rate in [8000, 16_000, 22_050, 44_100, 48_000, 96_000, 192_000] {
+            let listener = Listener::new(rate);
+            let hop = listener
+                .pitch
+                .as_ref()
+                .map(|pitch| pitch.config().hop_length);
+            assert!(hop.is_some(), "rate {rate} listens without pitch");
+            if rate >= 44_100 {
+                assert_eq!(
+                    hop,
+                    Some(PITCH_FRAME),
+                    "rate {rate}: one frame per listening"
+                );
+            }
+        }
+    }
+
     #[test]
     fn silence_is_silent() {
         let mut listener = Listener::new(RATE);
