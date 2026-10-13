@@ -475,7 +475,7 @@ mod tests {
         let (_display, cons) = ringbuf::HeapRb::new(4).split();
         let mut app = App::new(48_000.0, CommandSender::new(tx), cons, key_mode);
         app.hub = hub;
-        let mut terminal = Terminal::new(TestBackend::new(220, 30)).expect("test backend");
+        let mut terminal = Terminal::new(TestBackend::new(140, 30)).expect("test backend");
         terminal
             .draw(|frame| draw(frame, &app))
             .expect("draw to the test backend");
