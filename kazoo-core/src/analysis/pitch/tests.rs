@@ -339,3 +339,27 @@ fn every_device_rate_builds_a_judge() {
         assert!(built.is_ok(), "rate {rate} was refused: {built:?}");
     }
 }
+
+/// `reset` forgets the voice: the first run after it judges only what came
+/// after it, so a held note cannot sound on after the detector is cleared.
+#[test]
+fn reset_forgets_the_voice() {
+    let mut detector = PitchDetector::new(device_config()).expect("valid device config");
+    let sine = generate_sine(440.0, 48_000.0, 48_000);
+    let held = sine
+        .chunks(128)
+        .filter_map(|chunk| detector.push_samples(chunk))
+        .last()
+        .expect("a second of sine is judged");
+    assert!(held.frequency.is_some(), "the held note must be voiced");
+
+    detector.reset();
+    let after = detector
+        .push_samples(&[0.0; 512])
+        .expect("one hop after reset is judged");
+    assert!(
+        after.frequency.is_none(),
+        "the first run after reset read {:?} from before it",
+        after.frequency
+    );
+}
