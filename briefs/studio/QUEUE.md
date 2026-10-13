@@ -84,3 +84,12 @@ START KZ-A04 base=3d82ea1 branch=lane/kz-A04 df=28GB at 08:22
 START KZ-A05 base=3d82ea1 branch=lane/kz-A05 df=28GB at 08:22
 START KZ-D08b base=3d82ea1 branch=lane/kz-D08b df=28GB at 08:22
 START KZ-D14 base=3d82ea1 branch=lane/kz-D14 df=28GB at 08:22
+START KZ-A04 base=c65de47 branch=lane/kz-A04 df=34GB at 13:04
+START KZ-A05 base=c65de47 branch=lane/kz-A05 df=34GB at 13:04
+START KZ-B02 base=c65de47 branch=lane/kz-B02 df=34GB at 13:04
+START KZ-W01a base=158d731 branch=lane/kz-W01a df=25GB at 13:14
+START KZ-A07 base=158d731 branch=lane/kz-A07 df=96GB at 13:27
+START KZ-D03 base=158d731 branch=lane/kz-D03 df=95GB at 13:29
+REVIEWED KZ-A05 head=6aa336c reviewed=READY(review fixed cs80 Ctrl+S/Ctrl+L playing notes, arp footer and cs80 sketch; arp desk socket test fails same on base at load 455); merge after A04 at 13:43
+TIMEOUT KZ-W01a code complete, verification cut short; committed and sent to review to finish checks at 13:45
+END KZ-B02 head=797e59c reviewed=READY(fixed refusal Display panic, uncounted backlog drop, docs; p99 A/B overlaps base) merged=1140b44 at 13:48
