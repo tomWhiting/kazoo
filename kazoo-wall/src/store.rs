@@ -115,14 +115,16 @@ pub const WORST_WORDS_BYTES: usize =
 pub const WORST_LOOP_BYTES: usize =
     2 * (64 + 64 + 6 * 32 + crate::dsp::looper::MAX_LOOP_BARS * 24 + MAX_NAME * 6 + 96);
 
-/// The most the numbering of every kind and the retired speakers' words
-/// add to a wall's file, whatever its size.
+/// The most the numbering of every kind, the retired speakers' words and
+/// the retired loops' records add to a wall's file, whatever its size.
 pub const MAX_NUMBERING_BYTES: usize = 2 * MAX_KINDS * 64
     + MAX_RETIRED_WORDS * WORST_WORDS_BYTES
     + crate::patch::MAX_RETIRED_LOOPS * WORST_LOOP_BYTES;
 
 // A wall of the 96 modules and 320 cables it once held at most, every
-// module a speaker, fits its file many times over.
+// module a speaker, with eight loops, fits its file twice over. (Four times
+// over until the 64 retired loops' records joined the numbering: 2.37 MB
+// against the file's 8 MB.)
 const _: () = assert!(
     (96 * (WORST_MODULE_BYTES + WORST_WORDS_BYTES)
         + 320 * WORST_CABLE_BYTES

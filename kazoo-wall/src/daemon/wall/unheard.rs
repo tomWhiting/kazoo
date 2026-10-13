@@ -1,4 +1,5 @@
-//! Keeping only modules whose cables lead to an output or a measurement.
+//! Keeping only modules whose cables lead to an output, a measurement or
+//! a loop.
 
 use super::{Order, Wall, error};
 use crate::catalogue::Kind;
@@ -7,7 +8,9 @@ use crate::probe;
 use crate::protocol::{ErrorCode, WallError};
 use std::collections::HashSet;
 
-/// An output or measurement hears every module that feeds it.
+/// An output, a measurement or a loop hears every module that feeds it.
+/// A loop records whether or not anything listens to it yet: arming a
+/// loop and patching its output later is the usual order.
 pub fn is_sink(kind: Kind) -> bool {
     kind == Kind::OUT || probe::measures(kind) || kind == Kind::LOOP
 }
@@ -78,7 +81,7 @@ impl Wall {
             error(
                 ErrorCode::NotAllowed,
                 format!(
-                    "{module} reaches no out, scope or readout or loop, so it is not rendered and has \
+                    "{module} reaches no out, scope, readout or loop, so it is not rendered and has \
                      taken none of the words given it since; patch it toward one and it takes \
                      words again"
                 ),

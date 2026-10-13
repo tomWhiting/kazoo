@@ -2,7 +2,8 @@
 //! modules render in. Both are built on the control side and swapped in
 //! whole.
 //!
-//! Only modules with a cable path to an out, scope or readout are heard.
+//! Only modules with a cable path to an out, scope, readout or loop are
+//! heard.
 //! Unheard modules are omitted from the order. Their knob glides stop:
 //! when heard again they continue from the frozen value toward the target
 //! that look reports. Their state, including tails, envelope stages and
@@ -15,12 +16,12 @@
 //! the control side, so each starts empty, as a new cable does, and never
 //! replays what it held when its reader went unheard.
 //!
-//! Plugging a scope or readout into a module makes it heard. An unheard
+//! Plugging a scope, readout or loop into a module makes it heard. An unheard
 //! speaker does not consume its phrase feed: words wait there until it is
 //! heard. Speech requests are answered when synthesis finishes and the
 //! phrase is handed over, independently of playback. At most eight
 //! phrases wait for an unheard speaker; past them its words are refused
-//! with `not_allowed`, saying it reaches no out, scope or readout.
+//! with `not_allowed`, saying it reaches no out, scope, readout or loop.
 //!
 //! Slots and delay lines are numbered in `u32`: the wall holds as many as
 //! the machine can render, and the tables are as long as the wall is.

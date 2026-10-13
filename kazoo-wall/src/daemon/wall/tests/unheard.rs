@@ -175,7 +175,7 @@ fn an_unheard_speaker_given_too_many_words_says_why_it_takes_none() {
     assert!(
         refused
             .message
-            .contains("speak1 reaches no out, scope or readout or loop"),
+            .contains("speak1 reaches no out, scope, readout or loop"),
         "{}",
         refused.message
     );
