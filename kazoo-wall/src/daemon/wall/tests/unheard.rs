@@ -180,3 +180,91 @@ fn an_unheard_speaker_given_too_many_words_says_why_it_takes_none() {
         refused.message
     );
 }
+
+/// A mixer stand-in: the loudest of the first `first` frames its `b`
+/// input heard in the block it last rendered.
+#[derive(Debug)]
+struct HearB {
+    first: usize,
+    loudest: Arc<AtomicU32>,
+}
+
+impl DspModule for HearB {
+    fn process(&mut self, _tick: &Tick, io: Io<'_>) {
+        let loudest = io.inputs[1][..self.first]
+            .iter()
+            .fold(0.0_f32, |most, sample| most.max(sample.abs()));
+        self.loudest.store(loudest.to_bits(), Ordering::Relaxed);
+        io.outputs[0].copy_from_slice(&io.inputs[0]);
+    }
+
+    fn reset(&mut self) {}
+}
+
+#[test]
+fn a_held_back_cable_heard_again_plays_nothing_from_before_it_was_unheard() {
+    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
+    for kind in ["vco", "klon", "mix", "readout"] {
+        ask(&mut wall, &add(kind)).unwrap();
+    }
+    for (from, to) in [
+        ("vco1.out", "klon1.left"),
+        ("klon1.left", "mix1.a"),
+        ("vco1.out", "mix1.b"),
+        ("mix1.out", "readout1.in"),
+    ] {
+        ask(&mut wall, &patch(from, to)).unwrap();
+    }
+    // The dry cable into the mixer is held back to meet the drive.
+    let dry = wall
+        .patch
+        .cables()
+        .iter()
+        .find(|cable| cable.from_module == "vco1" && cable.to_module == "mix1")
+        .map(|cable| cable.id.to_string())
+        .unwrap();
+    let delay = wall.snapshot().timing.cables[&dry] as usize;
+    assert!(delay > 0);
+    let loudest = Arc::new(AtomicU32::new(0));
+    let slot = wall.rack.slot_of("mix1").unwrap();
+    let mut knobs = [0.0; MAX_KNOBS];
+    for (target, value) in knobs
+        .iter_mut()
+        .zip(&wall.patch.module("mix1").unwrap().knobs)
+    {
+        *target = *value;
+    }
+    wall.engine.send(Command::Insert {
+        slot,
+        tag: wall.rack.slots[slot].as_ref().unwrap().1,
+        kind: Kind::MIX,
+        module: Box::new(HearB {
+            first: delay.min(SUB_BLOCK),
+            loudest: Arc::clone(&loudest),
+        }),
+        knobs,
+    });
+    // Heard: the dry cable's line fills with the oscillator.
+    let mut buffer = vec![0.0; 4_800 * 2];
+    engine.render(&mut buffer, 2);
+    assert!(f32::from_bits(loudest.load(Ordering::Relaxed)) > 0.0);
+    // Unheard, then heard again: the line starts as a new cable's does,
+    // silent for its delay, not replaying what it held when it went unheard.
+    ask(
+        &mut wall,
+        &Request::Unpatch {
+            cable: None,
+            to: Some("readout1.in".to_string()),
+        },
+    )
+    .unwrap();
+    assert_eq!(wall.snapshot().timing.unheard, ["vco1", "klon1", "mix1"]);
+    engine.render(&mut buffer, 2);
+    ask(&mut wall, &patch("mix1.out", "readout1.in")).unwrap();
+    assert!(wall.snapshot().timing.unheard.is_empty());
+    assert_eq!(wall.snapshot().timing.cables[&dry] as usize, delay);
+    let mut block = vec![0.0; SUB_BLOCK * 2];
+    engine.render(&mut block, 2);
+    assert_eq!(f32::from_bits(loudest.load(Ordering::Relaxed)), 0.0);
+}
