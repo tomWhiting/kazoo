@@ -1,3 +1,4 @@
+mod shutdown;
 mod streams;
 mod transport;
 mod wake;

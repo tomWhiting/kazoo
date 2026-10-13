@@ -50,7 +50,7 @@ silent when even the fundamental lies beyond that limit. The final mix is softly
 ## Studio integration
 
 The executable reuses `kazoo-string`'s established audio, keyboard, phrase and front-panel
-structure. It registers as `kazoo-glass` through `kazoo-core::ipc::link::hub_link`, automatically
+structure. It registers as `kazoo-glass` through `kazoo_core::host::link::connect_or_direct`, automatically
 joins/rejoins `kazoo-mix`, accepts hub note events (including `kazoo-arp`), and routes stereo
 blocks to its mixer strip. Local output is muted while the desk routes it, avoiding doubled
 sound. Standalone operation resumes when the link is absent.

@@ -13,6 +13,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
+#[cfg(test)]
+mod desk_reader;
 mod drive;
 
 use crate::{ArpClock, ArpCursor, ArpMode, Arpeggiator, ClockDivision, NoteEvent};
@@ -562,12 +564,12 @@ impl AudioEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kazoo_core::host::link::open;
+    use kazoo_core::host::link::connect_config_or_direct;
     use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig};
     use kazoo_core::ipc::protocol::FrameBuffer;
     use kazoo_core::ipc::types::{
-        MSG_NOTE_EVENT, MSG_REGISTER, MSG_REGISTERED, MSG_TRANSPORT_REQUEST, MSG_TRANSPORT_SYNC,
-        NoteEventMsg, RegisteredMsg, TransportRequestMsg, TransportSyncMsg,
+        MSG_NOTE_EVENT, MSG_REGISTER, MSG_REGISTERED, MSG_TRANSPORT_SYNC, NoteEventMsg,
+        RegisteredMsg, TransportRequestMsg, TransportSyncMsg,
     };
     use ringbuf::HeapCons;
     use ringbuf::traits::{Consumer, Split};
@@ -602,7 +604,7 @@ mod tests {
         config.address = HubAddress::Socket(
             std::env::temp_dir().join(format!("kazoo-arp-no-hub-{}.sock", std::process::id())),
         );
-        let (hub, hub_audio) = open(config).unwrap();
+        let (hub, hub_audio) = connect_config_or_direct(config).unwrap();
         // The UI half says goodbye on drop; the audio half keeps working
         // unconnected, which is what these tests exercise.
         drop(hub);
@@ -784,6 +786,7 @@ mod tests {
         stream: UnixStream,
         buf: FrameBuffer,
         path: PathBuf,
+        reader: desk_reader::DeskReader,
     }
 
     impl Desk {
@@ -797,7 +800,7 @@ mod tests {
             let listener = UnixListener::bind(&path).unwrap();
             let mut config = LinkConfig::new("kazoo-arp-test", 2, RATE, MAX_CALLBACK_FRAMES as u32);
             config.address = HubAddress::Socket(path.clone());
-            let (hub, hub_audio) = open(config).unwrap();
+            let linking = std::thread::spawn(move || connect_config_or_direct(config));
             let (mut stream, _) = listener.accept().unwrap();
             let mut buf = FrameBuffer::new();
             assert_eq!(buf.read_frame(&mut stream).unwrap().msg_type, MSG_REGISTER);
@@ -813,17 +816,18 @@ mod tests {
             .encode(buf.payload_mut());
             buf.write_frame(MSG_REGISTERED, 0, RegisteredMsg::WIRE_SIZE, &mut stream)
                 .unwrap();
+            let (hub, hub_audio) = linking.join().unwrap().unwrap();
             let mut rig = engine_with(hub_audio, DISPLAY_CAPACITY, 2);
-            let desk = Self { stream, buf, path };
-            // Joining hands the arp the desk's transport: stopped, 100 BPM.
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while rig.shared.playing.load(Ordering::Acquire)
-                || (bpm(&rig.shared) - 100.0).abs() > 1e-9
-            {
-                assert!(Instant::now() < deadline, "never joined");
-                rig.engine.render(&mut [0.0; 64]);
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            let reader = desk_reader::DeskReader::new(stream.try_clone().unwrap()).unwrap();
+            let desk = Self {
+                stream,
+                buf,
+                path,
+                reader,
+            };
+            rig.engine.render(&mut [0.0; 64]);
+            assert!(!rig.shared.playing.load(Ordering::Acquire));
+            assert!((bpm(&rig.shared) - 100.0).abs() < 1e-9);
             assert_eq!(hub.status().strip, Some(3));
             (desk, rig, hub)
         }
@@ -847,13 +851,8 @@ mod tests {
         }
 
         /// The next transport request the arp sent, skipping its audio.
-        fn transport_request(&mut self) -> TransportRequestMsg {
-            loop {
-                let header = self.buf.read_frame(&mut self.stream).unwrap();
-                if header.msg_type == MSG_TRANSPORT_REQUEST {
-                    return TransportRequestMsg::decode(self.buf.payload());
-                }
-            }
+        fn transport_request(&self) -> TransportRequestMsg {
+            self.reader.transport_request()
         }
     }
 

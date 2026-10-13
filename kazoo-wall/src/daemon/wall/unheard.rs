@@ -7,6 +7,11 @@ use crate::probe;
 use crate::protocol::{ErrorCode, WallError};
 use std::collections::HashSet;
 
+/// An output or measurement hears every module that feeds it.
+pub(super) fn is_sink(kind: Kind) -> bool {
+    kind == Kind::OUT || probe::measures(kind)
+}
+
 impl Wall {
     pub(super) fn heard_order(
         &mut self,
@@ -18,11 +23,12 @@ impl Wall {
             .patch
             .modules()
             .iter()
-            .filter(|module| module.kind == Kind::OUT || probe::measures(module.kind))
+            .filter(|module| is_sink(module.kind))
             .filter_map(|module| self.rack.slot_of(&module.id))
             .collect();
         let kept = heard(slots, edges, &sinks);
         let heard: HashSet<usize> = kept.iter().copied().collect();
+        self.heard_units = kept.len() + edges.iter().filter(|(_, to)| heard.contains(to)).count();
         let unheard: Vec<String> = slots
             .iter()
             .filter(|slot| !heard.contains(slot))

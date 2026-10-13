@@ -467,10 +467,14 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ringbuf::traits::Split;
 
-    fn screen(key_mode: KeyMode) -> String {
+    fn screen_with_link(
+        key_mode: KeyMode,
+        hub: Option<kazoo_core::ipc::link::LinkStatus>,
+    ) -> String {
         let (tx, _rx) = crossbeam_channel::bounded(4);
         let (_display, cons) = ringbuf::HeapRb::new(4).split();
-        let app = App::new(48_000.0, CommandSender::new(tx), cons, key_mode);
+        let mut app = App::new(48_000.0, CommandSender::new(tx), cons, key_mode);
+        app.hub = hub;
         let mut terminal = Terminal::new(TestBackend::new(140, 30)).expect("test backend");
         terminal
             .draw(|frame| draw(frame, &app))
@@ -487,9 +491,27 @@ mod tests {
     }
 
     #[test]
+    fn refused_scheduling_is_shown_in_the_hub_badge() {
+        for connected in [false, true] {
+            let hub = kazoo_core::ipc::link::LinkStatus {
+                normal_priority: true,
+                connected,
+                strip: None,
+                blocks_sent: 0,
+                blocks_dropped: 0,
+                messages_dropped: 0,
+                connections: 0,
+                last_refusal: None,
+            };
+            let text = screen_with_link(KeyMode::Hold, Some(hub));
+            assert!(text.contains("desk link at normal priority"), "{text}");
+        }
+    }
+
+    #[test]
     fn the_footer_names_the_shared_piano_and_its_octave() {
         for key_mode in [KeyMode::Hold, KeyMode::Toggle] {
-            let text = screen(key_mode);
+            let text = screen_with_link(key_mode, None);
             assert!(text.contains("a w s e d f t g y h u j k o l p ;"), "{text}");
             assert!(text.contains("z/x"), "{text}");
             assert!(text.contains("oct 3"), "{text}");

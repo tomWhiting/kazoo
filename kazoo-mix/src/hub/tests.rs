@@ -684,12 +684,12 @@ fn a_registration_cut_short_inside_its_pace_is_refused() {
 
 #[test]
 fn a_paced_source_with_a_jittery_timer_is_placed_once_and_stays_placed() {
-    use kazoo_core::host::link::open;
+    use kazoo_core::host::link::connect_config_or_direct;
     use kazoo_core::ipc::link::{HubAddress, LinkConfig};
     use std::sync::atomic::AtomicBool;
 
     let mut rig = Rig::new([false; DESK_CHANNELS]);
-    let (link, mut audio) = open(LinkConfig {
+    let (link, mut audio) = connect_config_or_direct(LinkConfig {
         address: HubAddress::Socket(rig.socket.clone()),
         pace_lead_frames: 1_920,
         ..LinkConfig::new("kazoo-wall", 2, RATE, 256)

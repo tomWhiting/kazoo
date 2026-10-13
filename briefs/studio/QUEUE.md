@@ -114,3 +114,20 @@ START KZ-A03b base=42664d7 branch=lane/kz-A03b df=29GB at 19:50
 
 ## Merged 13 Oct, about 20:3x
 - KZ-W01b (review head 26526da), KZ-W01c (review head a86327d), KZ-V01 amendment 1 (review head dc5777a; judge 1.5 ms of 2.1, engine 6.4 of 8.53; engine starts at every rate from 8 kHz). Merge check on main: fmt 0, clippy 0, nextest 3880/3880, doc tests 0. BENCH.md kept both sections.
+START KZ-V02 base=96051a2 branch=lane/kz-V02 df=10GB at 20:25
+START KZ-V07a base=96051a2 branch=lane/kz-V07a df=9GB at 20:26
+START KZ-F01 base=96051a2 branch=lane/kz-F01 df=6GB at 20:27
+START KZ-T01 base=acf8b92 branch=lane/kz-T01 df=1GB at 20:29
+
+## Merged 13 Oct, about 22:1x
+- KZ-D03b (review READY at cd291c4; the review fixed four: undos that replug skipped the guard, a zero timing pinned a cost at 0, the kind table taken at load ~100 was 3-6x high and refused every save, its own clippy). Merge check on main b8714ee: fmt 0, clippy 0, doc 0, ast-grep 0; nextest first run 887 passed and 1 failed (kazoo-core `ipc::link::tests::wake::a_queued_block_wakes_the_link_thread_at_once`, p50 219 us against 200 us, load 72-98; not touched by the lane), rerun --no-fail-fast 3892/3892 and that test alone passed. Logs: target/kz-logs/full-D03b-2139.log, full-D03b-nff-2147.log.
+- Defect to fix (rule 8: a test that fails under load is a defect, never hidden): the wake test's 200 us p50 bound fails at load ~90. Needs a brief: measure the wake against a same-run baseline, or assert on the wake mechanism, not wall time.
+- To re-measure on a quiet Mac: D03b's culled/1000 +20.8% (160.3 to 193.6 us); cause not found (clock reads are ~33 ns).
+- Follow-up brief written: KZ-D03c the guard sees a busy machine (Waffles read it; taken).
+- KZ-A03b (review READY at 0229a01; the review fixed: one stuck link counted twice, hub_link left public as a second setup path, a footer test widened). Merge check on main efef1b6: fmt 0, clippy 0, nextest 3905/3905, doc 0, ast-grep 0 (target/kz-logs/full-A03b-2227.log).
+- Follow-up to brief (A03b review finding 4): `stuck_shutdowns` can never be above 0 while an instrument runs, so the 808's badge never shows; instruments should print the stuck and undelivered counts on exit, and the badge go.
+- Held: KZ-A08 (its Justfile gate is a per-repository gate script, against Tom's rule 9; to ask Tom).
+- Briefs written for the two follow-ups above: KZ-B01c (the wake test counts woken parks instead of a 200 us bound) and KZ-A03c (stuck link counts printed on exit; the 808 badge goes). Both ready, no dependencies.
+- Track P: all 17 briefs read by Cassio and committed; Track P merged into PLAN.md (P08's key is `v`, P15's is `C`: `t` is tap tempo and `c` the click on the desk). Openable now: P01, P04, P10.
+- KZ-T01 merged (review READY c9a545c; fixed duplicate birth marks). Merge check on main 09511e0: fmt 0, clippy 0, nextest 3920/3920, doc 0, ast-grep 0 (target/kz-logs/full-T01-2311.log).
+- KZ-V02 merged (review READY 102afca; seven fixed: pYIN reference at the judge's hop, latency one step short, tie rule, steps_missed, float headroom, linked fixtures, suite test). Merge check on main 196ea41: fmt 0, clippy 0, nextest 3935/3935, doc 0, ast-grep 0 (target/kz-logs/full-V02-2354.log). V03's brief updated from the review (per-event latency, no missed events, pyin opt-level 3).

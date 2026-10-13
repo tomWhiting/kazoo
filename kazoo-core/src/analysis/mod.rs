@@ -17,6 +17,7 @@ mod envelope;
 mod formant;
 mod onset;
 mod pitch;
+pub mod score;
 mod spectrum;
 
 pub use envelope::EnvelopeFollower;

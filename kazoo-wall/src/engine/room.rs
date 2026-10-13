@@ -38,6 +38,9 @@ pub const fn pages_for(slots: usize) -> usize {
 /// the page, then knob. A cell holds NaN until the engine publishes to it.
 pub type KnobCells = Box<[[AtomicU32; MAX_KNOBS]]>;
 
+/// Per-slot render nanoseconds, NaN until the slot has been timed.
+pub type CostCells = Box<[AtomicU32]>;
+
 /// [`SLOTS_PER_PAGE`] slots' state. Every slice is [`SLOTS_PER_PAGE`]
 /// long.
 pub struct Page {
@@ -51,6 +54,7 @@ pub struct Page {
     /// Shared with the control side, which reads the values the engine
     /// publishes here.
     pub(super) published: Arc<KnobCells>,
+    pub(super) costs: Arc<CostCells>,
 }
 
 impl std::fmt::Debug for Page {
@@ -84,6 +88,9 @@ impl Page {
             knobs: slice_of(SLOTS_PER_PAGE, || [0.0; MAX_KNOBS])?,
             outputs: slice_of(SLOTS_PER_PAGE, || [[0.0; SUB_BLOCK]; MAX_OUTPUTS])?,
             published: Arc::new(cells),
+            costs: Arc::new(slice_of(SLOTS_PER_PAGE, || {
+                AtomicU32::new(f32::NAN.to_bits())
+            })?),
         })
     }
 
@@ -92,6 +99,27 @@ impl Page {
         if let Some(cell) = self.published.get(at).and_then(|knobs| knobs.get(knob)) {
             cell.store(value.to_bits(), Ordering::Relaxed);
         }
+    }
+
+    /// Follow real cost increases slowly and discard preempted timings quickly.
+    /// A timing of nothing (both clock reads in one tick of the clock, about
+    /// 42 ns on Apple silicon) measured nothing and is ignored: held, it
+    /// would pin the cost at zero for good, a rise being clamped to
+    /// [`super::COST_CLAMP`] times what is held.
+    pub(super) fn note_cost(&self, at: usize, ns: f32) {
+        if !ns.is_finite() || ns <= 0.0 {
+            return;
+        }
+        let cell = &self.costs[at];
+        let held = f32::from_bits(cell.load(Ordering::Relaxed));
+        let value = if held.is_nan() {
+            ns
+        } else if ns < held {
+            super::COST_FALL.mul_add(ns - held, held)
+        } else {
+            super::COST_RISE.mul_add(ns.min(super::COST_CLAMP * held) - held, held)
+        };
+        cell.store(value.to_bits(), Ordering::Relaxed);
     }
 
     pub(super) fn advance_glides(
@@ -176,6 +204,18 @@ impl Room {
             .filter_map(|(number, page)| {
                 page.as_ref()
                     .map(|page| (number, Arc::clone(&page.published)))
+            })
+            .collect()
+    }
+
+    /// Cost cells of this room's pages, by page number; control side only.
+    #[must_use]
+    pub fn costs(&self) -> Vec<(usize, Arc<CostCells>)> {
+        self.pages
+            .iter()
+            .enumerate()
+            .filter_map(|(number, page)| {
+                page.as_ref().map(|page| (number, Arc::clone(&page.costs)))
             })
             .collect()
     }

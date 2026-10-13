@@ -53,6 +53,21 @@ all `wall/kind/*`; wall chains 10 and 100; unplugged 100 and 1000; cables 10,
 8, 64 and 512; link encode and decode 512; control build 1000 and look 100,
 1000 and 10000.
 
+Two rows taken later, on 13 Oct 2026 at `7f4b334` (the D01 merge) by the
+KZ-D03b review, in its worktree, with
+`nice lockf -k ~/.kazoo-cargo.lock cargo bench -p kazoo-wall --bench wall_render -j 4 -- 'wall/culled|wall/chains/10$'`,
+one-minute load average 12.59 at the start and 20.98 at the end (5- and
+15-minute 29.98/56.19 and 29.17/53.29), on the same machine; log
+`target/kz-logs/review-bench-d01.log`:
+
+| bench | ns per block | interval ns | % of real time |
+|---|---:|---|---:|
+| wall/chains/10 | 560,460 | [558,580, 562,540] | 5.254 |
+| wall/culled/1000 | 13,936,000 | [13,747,000, 14,140,000] | 130.650 |
+
+Criterion's lines: `wall/chains/10 time: [558.58 µs 560.46 µs 562.54 µs]`
+and `wall/culled/1000 time: [13.747 ms 13.936 ms 14.140 ms]`.
+
 The look's size is a count of bytes, not a timing, so load does not move it.
 The review's one-pass run of the control bench (`-- --test`, at 3ab9adb)
 printed the serialised `look` result as 90,133 bytes for 100 vcos, 900,837
@@ -101,8 +116,8 @@ Criterion interval midpoints, ns per 512-frame block at 48 kHz:
 
 | bench | D01 ns per block | D03 before ns per block | D03 after ns per block |
 |---|---:|---:|---:|
-| wall/chains/10 | not measured | 1,538,300 | 2,529,700 |
-| wall/culled/1000 | not measured | 29,436,000 | 2,295,500 |
+| wall/chains/10 | 560,460 | 1,538,300 | 2,529,700 |
+| wall/culled/1000 | 13,936,000 | 29,436,000 | 2,295,500 |
 
 The measured ratio is 0.9074x after, within the 1.2x limit, versus
 19.1354x before. After intervals: chains/10 [2,132,500, 2,981,300] ns;
@@ -111,9 +126,9 @@ other lane work and scoped validation builds. Their broad intervals and
 the chains/10 variation do not establish isolated render costs or a quiet
 machine baseline. The limit above compares the observed midpoints.
 
-The D01 section has no measurements for either requested row; its
-chains/1000 row is 291,080,000 ns under load and explicitly not a baseline.
-No missing D01 value has been inferred.
+The D01 column was filled by the KZ-D03b review from its run at `7f4b334`
+(see the D01 section): a far lighter load than these D03 runs, so the
+columns are not comparable with each other.
 
 Receipts: target/kz-logs/bench-before.txt and
 target/kz-logs/bench-after.txt. Both commands exited 0.
@@ -303,3 +318,279 @@ under budget (2.1 ms; 8.533 ms). Criterion wall time: judge/hop/48k
 1.3870 ms (1.3697–1.4050), engine/hop/48k 6.2770 ms (6.1513–6.4304).
 Logs: target/kz-logs/review-bench.log, review-cpu-*.log,
 review-bench-load-{before,after}.log, review-cpu-load.log.
+||||||| 42664d7
+## KZ-D03b
+
+Base `42664d7`, 13 October 2026, this worktree on Tom's Mac.
+The base kind run exited 0. All rows are nanoseconds per 512-frame block.
+The initial uptime load averages were 106.31 / 93.51 / 88.70; at completion
+96.80 / 103.24 / 99.54. Per-row uptime was not captured, so these rows
+carry the run's load range, not an independently verified per-row load.
+The loaded fixture includes its feeding vco and receiving out, so these
+are conservative fallback costs rather than isolated module CPU costs.
+
+| kind | lower ns | midpoint ns | upper ns | real time at 48 kHz % | load averages at run start; end |
+|---|---:|---:|---:|---:|---|
+| vco | 246,220 | 315,280 | 406,400 | 2.955750 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| lfo | 153,900 | 190,800 | 233,450 | 1.788750 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| noise | 81,851 | 122,460 | 182,900 | 1.148062 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| vcf | 431,570 | 528,620 | 633,510 | 4.955812 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| vca | 326,010 | 423,150 | 551,850 | 3.967031 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| env | 239,290 | 299,770 | 367,480 | 2.810344 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| clock | 310,990 | 349,550 | 388,360 | 3.277031 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| seq | 384,250 | 439,570 | 502,010 | 4.120969 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| sh | 369,300 | 448,740 | 536,020 | 4.206937 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| quant | 374,690 | 440,970 | 509,630 | 4.134094 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| slew | 392,040 | 466,330 | 546,360 | 4.371844 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| mix | 393,160 | 447,710 | 510,670 | 4.197281 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| out | 437,480 | 502,350 | 581,620 | 4.709531 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| compare | 583,510 | 694,290 | 826,410 | 6.508969 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| logic | 504,750 | 583,050 | 662,680 | 5.466094 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| branch | 635,350 | 718,550 | 795,330 | 6.736406 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| switch | 957,240 | 1,368,000 | 1,865,100 | 12.825000 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| select | 487,310 | 590,900 | 707,630 | 5.539687 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| divide | 366,480 | 422,790 | 486,340 | 3.963656 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| math | 448,860 | 518,570 | 591,690 | 4.861594 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| scope | 433,630 | 469,920 | 508,980 | 4.405500 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| readout | 451,300 | 490,350 | 529,310 | 4.597031 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| loop | 336,340 | 404,320 | 477,630 | 3.790500 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| klon | 4,292,600 | 4,950,700 | 5,640,600 | 46.412812 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| screamer | 5,179,900 | 6,504,800 | 7,963,700 | 60.982500 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| fuzz | 2,008,400 | 2,310,000 | 2,607,300 | 21.656250 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| amp | 4,320,000 | 5,187,200 | 6,185,800 | 48.630000 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| fold | 3,142,600 | 3,523,200 | 3,905,000 | 33.030000 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| crush | 570,340 | 612,630 | 659,570 | 5.743406 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| ringmod | 1,312,500 | 1,496,800 | 1,725,900 | 14.032500 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| comp | 1,316,100 | 1,455,000 | 1,624,400 | 13.640625 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| tape | 970,900 | 1,067,000 | 1,175,200 | 10.003125 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| bbd | 264,600 | 291,030 | 319,250 | 2.728406 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| digital | 246,140 | 289,280 | 349,840 | 2.712000 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| chorus | 327,960 | 348,070 | 370,520 | 3.263156 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| flanger | 472,550 | 533,770 | 601,190 | 5.004094 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| phaser | 429,270 | 484,020 | 540,060 | 4.537687 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| trem | 197,470 | 243,690 | 300,380 | 2.284594 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| shift | 718,140 | 783,240 | 856,220 | 7.342875 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| granular | 332,460 | 371,160 | 415,930 | 3.479625 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| pitch | 535,280 | 609,790 | 698,720 | 5.716781 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| plate | 445,940 | 476,870 | 510,820 | 4.470656 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| hall | 669,930 | 741,010 | 812,870 | 6.946969 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| spring | 1,485,200 | 1,675,400 | 1,894,400 | 15.706875 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| shimmer | 1,276,100 | 1,420,200 | 1,561,300 | 13.314375 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| resonator | 269,320 | 304,400 | 341,480 | 2.853750 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| eq | 252,020 | 282,360 | 309,890 | 2.647125 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| vhs | 595,550 | 725,820 | 883,640 | 6.804562 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| cassette | 690,450 | 779,760 | 878,210 | 7.310250 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| reel | 798,160 | 868,550 | 958,640 | 8.142656 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| vinyl | 329,220 | 371,960 | 427,200 | 3.487125 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| genloss | 633,840 | 703,390 | 792,180 | 6.594281 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| radio | 420,230 | 465,940 | 515,860 | 4.368187 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| sampler12 | 934,280 | 1,212,500 | 1,588,500 | 11.367187 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| kick | 147,920 | 163,680 | 183,440 | 1.534500 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| snare | 134,550 | 153,260 | 173,630 | 1.436812 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| clap | 131,810 | 152,390 | 174,870 | 1.428656 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| hat | 155,970 | 169,840 | 186,910 | 1.592250 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| cymbal | 183,550 | 202,540 | 228,370 | 1.898812 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| tom | 157,930 | 176,060 | 197,790 | 1.650562 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| conga | 193,280 | 215,240 | 241,370 | 2.017875 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| rim | 158,800 | 179,960 | 205,290 | 1.687125 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| cowbell | 150,060 | 165,290 | 179,460 | 1.549594 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| shaker | 365,790 | 405,470 | 450,960 | 3.801281 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| membrane | 232,400 | 264,440 | 297,040 | 2.479125 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| modal | 167,560 | 191,950 | 219,120 | 1.799531 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| metal | 180,120 | 191,350 | 203,740 | 1.793906 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| noiseperc | 164,950 | 172,790 | 180,940 | 1.619906 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| euclid | 146,290 | 155,730 | 165,480 | 1.459969 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| prob | 151,740 | 164,390 | 181,520 | 1.541156 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| grids | 135,760 | 144,240 | 153,210 | 1.352250 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| poly | 118,330 | 123,770 | 130,310 | 1.160344 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| burst | 105,420 | 117,960 | 135,300 | 1.105875 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+| vocoder | 244,080 | 267,700 | 295,690 | 2.509687 | 106.31/93.51/88.70; 96.80/103.24/99.54 |
+
+`speak` uses the vca midpoint (423,150 ns). The speaker adapter applies
+parameters and delegates a gate block to SpeechPlayer. Its phrase player
+reads a pre-rendered buffer with gain, but also handles gate edges, fades,
+varispeed interpolation and granular stretch. This exceeds a vca buffer
+read; the mandated vca fallback is retained and this limitation is reported.
+
+D01's missing rows were not run by the builder (it read the stack rules as
+forbidding the checkout at `7f4b334`; they do not); the review took them,
+in the D01 section and D03's D01 column.
+
+The requested cheap-set precondition cannot hold for the measured
+audio-throughput rows at 48 kHz: even trem's 243,690 ns midpoint makes
+40 modules consume 91.38375% of real time, before the 30% load and
+addition average. A measured cheap-set regression covers allowance and
+recent wake accounting without altering these benchmark values.
+
+### KZ-D03b review: the kind rows again, and the render path
+
+The kind rows above were taken with the machine near a load of 100 and are
+three to six times what the same bench reads on a lighter machine (vco
+315,280 against 133,880; klon 4,950,700 against 782,260). With them the
+guard costed Tom's live patch of 13 Oct (41 modules, KZ-D14's bench patch,
+57% of real time on the wall) at about 251%, so no seat could load any of
+Tom's saves and every console load warned at three to four times its cost.
+They are superseded by the rows below, which are in `KIND_BENCH_NS`; with
+them the live patch is costed at 61%.
+
+Kind run at `42664d7`, 13 Oct 2026, 20:38 to 20:48, filter `wall/kind/`,
+exit 0. The load beside each row is the one-, five- and fifteen-minute
+load average sampled every ten seconds during the run, the sample at or
+before the row finished. Log `target/kz-logs/review-bench-kind-base.log`,
+load samples `target/kz-logs/review-bench-load.log`.
+
+| kind | lower ns | midpoint ns | upper ns | real time at 48 kHz % | finished | load |
+|---|---:|---:|---:|---:|---|---|
+| vco | 124,100 | 133,880 | 145,900 | 1.2551 | 20:39:07 | 15.37/26.77/51.31 |
+| lfo | 71,463 | 72,895 | 74,747 | 0.6834 | 20:39:15 | 18.64/27.06/51.12 |
+| noise | 39,375 | 39,575 | 39,813 | 0.3710 | 20:39:24 | 24.69/28.08/51.20 |
+| vcf | 101,410 | 102,190 | 103,170 | 0.9580 | 20:39:31 | 29.03/28.90/51.22 |
+| vca | 91,359 | 91,703 | 92,156 | 0.8597 | 20:39:40 | 29.03/28.90/51.22 |
+| env | 67,779 | 67,967 | 68,187 | 0.6372 | 20:39:48 | 29.32/28.95/50.98 |
+| clock | 70,453 | 71,175 | 72,024 | 0.6673 | 20:39:56 | 27.60/28.61/50.60 |
+| seq | 98,818 | 99,326 | 99,968 | 0.9312 | 20:40:02 | 38.18/30.75/51.10 |
+| sh | 69,282 | 69,456 | 69,642 | 0.6512 | 20:40:10 | 38.18/30.75/51.10 |
+| quant | 96,524 | 97,784 | 99,841 | 0.9167 | 20:40:17 | 33.44/29.98/50.59 |
+| slew | 71,038 | 71,237 | 71,478 | 0.6678 | 20:40:25 | 29.00/29.14/50.05 |
+| mix | 72,226 | 73,098 | 74,105 | 0.6853 | 20:40:33 | 26.02/28.50/49.57 |
+| out | 88,499 | 88,709 | 88,949 | 0.8316 | 20:40:43 | 23.40/27.85/49.10 |
+| compare | 104,130 | 106,340 | 108,830 | 0.9969 | 20:40:50 | 23.40/27.85/49.10 |
+| logic | 93,698 | 95,147 | 96,851 | 0.8920 | 20:40:56 | 21.05/27.20/48.62 |
+| branch | 94,555 | 95,226 | 95,911 | 0.8927 | 20:41:03 | 21.97/27.21/48.37 |
+| switch | 110,610 | 112,510 | 114,660 | 1.0548 | 20:41:10 | 21.97/27.21/48.37 |
+| select | 100,350 | 101,270 | 102,320 | 0.9494 | 20:41:17 | 21.27/26.89/48.01 |
+| divide | 86,167 | 88,433 | 90,708 | 0.8291 | 20:41:26 | 20.08/26.44/47.61 |
+| math | 111,820 | 113,050 | 114,540 | 1.0598 | 20:41:34 | 18.94/25.99/47.19 |
+| scope | 110,610 | 112,080 | 113,670 | 1.0508 | 20:41:41 | 18.82/25.72/46.85 |
+| readout | 96,793 | 97,724 | 98,964 | 0.9162 | 20:41:48 | 18.82/25.72/46.85 |
+| loop | 69,790 | 70,485 | 71,314 | 0.6608 | 20:41:56 | 23.73/26.57/46.91 |
+| klon | 777,210 | 782,260 | 787,580 | 7.3337 | 20:42:04 | 22.39/26.19/46.53 |
+| screamer | 1,541,400 | 1,551,300 | 1,563,100 | 14.5434 | 20:42:11 | 21.07/25.78/46.15 |
+| fuzz | 368,530 | 370,870 | 373,520 | 3.4769 | 20:42:18 | 21.07/25.78/46.15 |
+| amp | 1,194,200 | 1,209,300 | 1,226,700 | 11.3372 | 20:42:27 | 19.82/25.36/45.77 |
+| fold | 817,830 | 836,620 | 861,670 | 7.8433 | 20:42:33 | 21.65/25.59/45.61 |
+| crush | 276,470 | 279,640 | 283,040 | 2.6216 | 20:42:42 | 20.73/25.27/45.26 |
+| ringmod | 376,300 | 379,420 | 383,840 | 3.5571 | 20:42:48 | 20.73/25.27/45.26 |
+| comp | 590,390 | 592,430 | 594,820 | 5.5540 | 20:42:57 | 19.00/24.68/44.70 |
+| tape | 488,000 | 491,630 | 495,560 | 4.6090 | 20:43:04 | 17.54/24.18/44.29 |
+| bbd | 161,510 | 162,010 | 162,580 | 1.5188 | 20:43:13 | 16.75/23.80/43.92 |
+| digital | 133,450 | 133,860 | 134,270 | 1.2549 | 20:43:21 | 16.21/23.45/43.56 |
+| chorus | 231,970 | 233,340 | 234,960 | 2.1876 | 20:43:29 | 16.21/23.45/43.56 |
+| flanger | 210,590 | 212,400 | 214,570 | 1.9912 | 20:43:36 | 16.20/23.21/43.24 |
+| phaser | 157,480 | 159,110 | 160,930 | 1.4917 | 20:43:44 | 16.06/22.95/42.92 |
+| trem | 116,430 | 117,200 | 118,040 | 1.0988 | 20:43:51 | 15.12/22.53/42.53 |
+| shift | 337,660 | 344,140 | 352,050 | 3.2263 | 20:44:00 | 15.12/22.53/42.53 |
+| granular | 152,510 | 153,700 | 154,860 | 1.4409 | 20:44:09 | 14.81/22.21/42.19 |
+| pitch | 305,990 | 314,290 | 325,400 | 2.9465 | 20:44:18 | 13.92/21.78/41.80 |
+| plate | 209,690 | 217,740 | 229,000 | 2.0413 | 20:44:25 | 15.46/21.84/41.58 |
+| hall | 342,670 | 353,440 | 368,090 | 3.3135 | 20:44:34 | 16.33/21.80/41.34 |
+| spring | 596,420 | 604,340 | 614,240 | 5.6657 | 20:44:42 | 16.14/21.59/41.03 |
+| shimmer | 653,320 | 657,380 | 663,550 | 6.1629 | 20:44:52 | 14.66/21.09/40.63 |
+| resonator | 158,800 | 160,690 | 163,360 | 1.5065 | 20:45:00 | 14.66/21.09/40.63 |
+| eq | 119,710 | 120,420 | 121,200 | 1.1289 | 20:45:07 | 14.18/20.77/40.29 |
+| vhs | 259,240 | 261,110 | 263,230 | 2.4479 | 20:45:15 | 13.46/20.40/39.93 |
+| cassette | 381,090 | 385,510 | 391,000 | 3.6142 | 20:45:22 | 13.92/20.27/39.65 |
+| reel | 528,290 | 534,100 | 541,730 | 5.0072 | 20:45:30 | 13.92/20.27/39.65 |
+| vinyl | 203,580 | 208,800 | 215,610 | 1.9575 | 20:45:37 | 13.61/20.00/39.33 |
+| genloss | 360,300 | 374,890 | 395,560 | 3.5146 | 20:45:47 | 13.60/19.78/39.03 |
+| radio | 155,130 | 158,740 | 163,450 | 1.4882 | 20:45:55 | 12.96/19.45/38.68 |
+| sampler12 | 129,630 | 131,510 | 134,020 | 1.2329 | 20:46:03 | 13.10/19.26/38.39 |
+| kick | 81,676 | 81,975 | 82,345 | 0.7685 | 20:46:12 | 12.16/18.86/38.03 |
+| snare | 82,993 | 83,282 | 83,626 | 0.7808 | 20:46:21 | 12.16/18.86/38.03 |
+| clap | 74,918 | 75,216 | 75,567 | 0.7052 | 20:46:29 | 13.27/18.87/37.80 |
+| hat | 88,891 | 89,219 | 89,587 | 0.8364 | 20:46:38 | 12.61/18.54/37.47 |
+| cymbal | 110,240 | 111,510 | 112,940 | 1.0454 | 20:46:45 | 12.24/18.26/37.15 |
+| tom | 84,062 | 84,614 | 85,203 | 0.7933 | 20:46:54 | 12.18/18.05/36.85 |
+| conga | 89,059 | 89,861 | 90,961 | 0.8424 | 20:47:03 | 12.33/17.89/36.57 |
+| rim | 87,324 | 89,555 | 92,132 | 0.8396 | 20:47:12 | 12.63/17.77/36.31 |
+| cowbell | 77,913 | 78,316 | 78,812 | 0.7342 | 20:47:21 | 12.63/17.77/36.31 |
+| shaker | 79,257 | 79,641 | 80,116 | 0.7466 | 20:47:30 | 11.81/17.43/35.98 |
+| membrane | 88,988 | 89,672 | 90,487 | 0.8407 | 20:47:39 | 11.88/17.26/35.70 |
+| modal | 78,189 | 78,788 | 79,476 | 0.7386 | 20:47:47 | 11.43/16.98/35.38 |
+| metal | 79,621 | 79,826 | 80,048 | 0.7484 | 20:47:56 | 13.50/17.26/35.27 |
+| noiseperc | 84,846 | 85,272 | 85,787 | 0.7994 | 20:48:05 | 12.68/16.96/34.95 |
+| euclid | 76,486 | 77,447 | 78,670 | 0.7261 | 20:48:13 | 12.53/16.78/34.67 |
+| prob | 80,398 | 81,155 | 81,902 | 0.7608 | 20:48:22 | 13.90/16.93/34.52 |
+| grids | 77,002 | 82,980 | 91,792 | 0.7779 | 20:48:30 | 13.90/16.93/34.52 |
+| poly | 80,632 | 80,973 | 81,355 | 0.7591 | 20:48:39 | 14.52/16.97/34.33 |
+| burst | 69,333 | 69,658 | 69,981 | 0.6530 | 20:48:47 | 16.30/17.28/34.23 |
+| vocoder | 140,480 | 140,790 | 141,130 | 1.3199 | 20:48:55 | 16.60/17.30/34.04 |
+
+`speak` takes the vca midpoint (91,703 ns), as the brief says; the builder
+read the speaker adapter (it applies its knobs and hands a gate block to
+the phrase player, which also handles gate edges, fades, varispeed and
+granular stretch, more than a vca's buffer read), and the brief's choice is
+kept.
+
+The render path, base `42664d7` then head alternately, filter
+`wall/chains/1000$|wall/chains/10$|wall/culled`, ns per block (five rounds:
+three from 20:48 to 20:54, two more from 20:55 to 21:02; one-minute load at
+the start of each run in brackets). Logs `target/kz-logs/review-bench-base-N.log`,
+`review-bench-head-N.log` (head `52eda51`) and `review-bench2-base-N.log`,
+`review-bench2-head-N.log`.
+
+| round | chains/1000 base | chains/1000 head | chains/10 base | chains/10 head | culled/1000 base | culled/1000 head |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 (16.6 / 13.8) | 49,179,000 | 48,219,000 | 515,640 | 512,530 | 158,820 | 171,230 |
+| 2 (12.3 / 11.2) | 48,278,000 | 50,585,000 | 504,080 | 512,270 | 157,640 | 181,720 |
+| 3 (15.1 / 20.2) | 52,106,000 | 50,900,000 | 633,630 | 626,520 | 160,310 | 194,950 |
+| 4 (17.9 / 20.4) | 50,286,000 | 56,152,000 | 551,050 | 654,580 | 163,200 | 208,290 |
+| 5 (25.3 / 43.3) | 52,680,000 | 50,974,000 | 607,590 | 556,850 | 175,600 | 193,620 |
+| median | 50,286,000 | 50,900,000 | 551,050 | 556,850 | 160,310 | 193,620 |
+
+The head's chains/1000 median is 1.2% over the base's over five rounds, and
+2.9% over the brief's three (49,179,000 against 50,585,000): within 3%.
+culled/1000 is not: every head run is above the base run of its round, 20.8% at
+the median, about 33,000 ns a block. The two clock reads cost 16.7 ns each
+on this machine (`clock_gettime(CLOCK_UPTIME_RAW)` timed in a loop), about
+0.5 us a block, so they do not account for it; chains/10, with as many heard
+modules, does not move beyond its noise. A third set at loads of 37 to 83
+(`review-bench3-*.log`, with variants that drop the timing or call
+`render_module` once) is too noisy to attribute it. Not confirmed either way;
+a quiet machine is needed.
+
+### Head render receipt
+
+One head round exited 0. Uptime at launch: 19:22  6 users, load averages: 115.49 110.43 103.21
+
+| row | lower ns | midpoint ns | upper ns |
+|---|---:|---:|---:|
+| wall/chains/10 | 649,400 | 667,620 | 690,150 |
+| wall/chains/1000 | 277,200,000 | 307,150,000 | 341,270,000 |
+| wall/culled/1000 | 226,100 | 232,310 | 240,210 |
+
+The builder did not complete the three alternating base/head rounds; the
+review's five are in the review section above.
+
+## KZ-V02 voice trackers (baseline: the judge alone)
+
+Date: 2026-10-13, 23:51 AEDT. HEAD: `55f1cf3f978a9698d01851cbdf2454f41ad52d96` (lane/kz-V02 after its Opus review).
+Load average at launch (1/5/15 minutes): 122.60 / 142.50 / 152.08.
+
+Command: `nice lockf -k ~/.kazoo-cargo.lock cargo run --release -j 4 -p kazoo-core --example voice_score` (exit 0).
+Synthetic rate: 48,000 Hz. No recorded WAVs were present. The identical table is saved at
+`target/kz-logs/voice-score.md`. Latency is counted in samples, not CPU time: from each event's sample
+to the reading after the step on which the judge lands and stays, so it is never shorter than the
+judge's own latency and at most one step (0.67 ms) longer.
+
+How to read it:
+- The judge is pYIN at one estimate per 512 samples over a 2048-sample window, so its first pitch comes
+  about 45 ms after an onset and every figure is unshifted: on `glide` (two octaves in 500 ms,
+  48 semitones a second) a 45 ms lag is about two semitones, which is the 55.67% gross error; on
+  `vibrato` it is the 38 cents median.
+- Cents of about 1.66 on held notes are the judge's pitch bins (a third of a semitone, `JUDGE_RESOLUTION`),
+  not noise.
+- `rearticulate`'s 13.75% missed is the judge going unvoiced in each -24 dB dip between syllables.
+
+| tracker | take | onset median ms | onset max ms | onsets missed | step median ms | step max ms | steps | steps missed | cents median | cents p95 | octave % | gross % | missed % | false % | aligned lag ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pYIN | sine_ladder | 38.00 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 11.73 | 0.00 | 0.00 | 6.69 | 7.78 | - |
+| pYIN | hum_low | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.67 | 1.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | steps | 45.33 | 45.33 | 0 | 45.00 | 49.33 | 6 | 0 | 1.66 | 1.66 | 0.00 | 4.72 | 4.52 | 0.00 | - |
+| pYIN | vibrato | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 38.04 | 69.68 | 0.00 | 0.00 | 2.91 | 0.00 | - |
+| pYIN | glide | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 65.00 | 0.00 | 55.67 | 1.76 | 2.88 | - |
+| pYIN | octave_bait | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.96 | 1.96 | 0.00 | 0.00 | 3.92 | 0.00 | - |
+| pYIN | vowel_ah | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.70 | 1.70 | 0.00 | 0.00 | 2.50 | 0.00 | - |
+| pYIN | noise_bursts | 45.33 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 10.50 | 1.31 | - |
+| pYIN | whistle | 34.67 | 34.67 | 0 | - | - | 0 | 0 | 8.27 | 31.60 | 0.00 | 0.00 | 3.77 | 3.96 | - |
+| pYIN | rearticulate | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |

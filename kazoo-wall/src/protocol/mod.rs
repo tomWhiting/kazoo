@@ -896,6 +896,9 @@ pub struct ModuleRecord {
     pub name: Option<String>,
     /// Knob targets by name.
     pub knobs: BTreeMap<String, f64>,
+    /// Lasting identity, absent in records made before births were marked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

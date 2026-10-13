@@ -1,0 +1,352 @@
+//! Cost heard work on the control side before it reaches the engine.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+
+use super::unheard::is_sink;
+use super::{LOAD_GUARD, Source, Wall, error};
+use crate::SUB_BLOCK;
+use crate::catalogue::Kind;
+use crate::engine::tables;
+use crate::patch::Patch;
+use crate::protocol::{ErrorCode, WallError, What};
+
+/// Ten names identify a waking set without overwhelming a console refusal.
+pub const WAKE_NAMES: usize = 10;
+
+/// Each kind's `wall/kind/<name>` bench midpoint, in nanoseconds per
+/// 512-frame block: the kind with a `vco` feeding it and an `out` it feeds
+/// (`benches/support/patches.rs`), so each row includes their cost and the
+/// engine's own, and errs high. Taken at `42664d7` on 13 Oct 2026 by the
+/// KZ-D03b review, one-minute load averages 12 to 38 on ten cores (each
+/// row's load is in `briefs/studio/BENCH.md`). `speak` has no bench row (it
+/// needs a phrase feed): it takes the `vca` row. Rows taken with the machine
+/// near a load of 100 came out three to six times these, and costed walls
+/// that render at 57% of real time at 251%.
+pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
+    ("vco", 133_880),
+    ("lfo", 72_895),
+    ("noise", 39_575),
+    ("vcf", 102_190),
+    ("vca", 91_703),
+    ("env", 67_967),
+    ("clock", 71_175),
+    ("seq", 99_326),
+    ("sh", 69_456),
+    ("quant", 97_784),
+    ("slew", 71_237),
+    ("mix", 73_098),
+    ("out", 88_709),
+    ("compare", 106_340),
+    ("logic", 95_147),
+    ("branch", 95_226),
+    ("switch", 112_510),
+    ("select", 101_270),
+    ("divide", 88_433),
+    ("math", 113_050),
+    ("scope", 112_080),
+    ("readout", 97_724),
+    ("loop", 70_485),
+    ("klon", 782_260),
+    ("screamer", 1_551_300),
+    ("fuzz", 370_870),
+    ("amp", 1_209_300),
+    ("fold", 836_620),
+    ("crush", 279_640),
+    ("ringmod", 379_420),
+    ("comp", 592_430),
+    ("tape", 491_630),
+    ("bbd", 162_010),
+    ("digital", 133_860),
+    ("chorus", 233_340),
+    ("flanger", 212_400),
+    ("phaser", 159_110),
+    ("trem", 117_200),
+    ("shift", 344_140),
+    ("granular", 153_700),
+    ("pitch", 314_290),
+    ("plate", 217_740),
+    ("hall", 353_440),
+    ("spring", 604_340),
+    ("shimmer", 657_380),
+    ("resonator", 160_690),
+    ("eq", 120_420),
+    ("vhs", 261_110),
+    ("cassette", 385_510),
+    ("reel", 534_100),
+    ("vinyl", 208_800),
+    ("genloss", 374_890),
+    ("radio", 158_740),
+    ("sampler12", 131_510),
+    ("kick", 81_975),
+    ("snare", 83_282),
+    ("clap", 75_216),
+    ("hat", 89_219),
+    ("cymbal", 111_510),
+    ("tom", 84_614),
+    ("conga", 89_861),
+    ("rim", 89_555),
+    ("cowbell", 78_316),
+    ("shaker", 79_641),
+    ("membrane", 89_672),
+    ("modal", 78_788),
+    ("metal", 79_826),
+    ("noiseperc", 85_272),
+    ("euclid", 77_447),
+    ("prob", 81_155),
+    ("grids", 82_980),
+    ("poly", 80_973),
+    ("burst", 69_658),
+    ("vocoder", 140_790),
+    ("speak", 91_703),
+];
+
+fn bench_costs() -> &'static HashMap<Kind, u32> {
+    static COSTS: OnceLock<HashMap<Kind, u32>> = OnceLock::new();
+    COSTS.get_or_init(|| {
+        KIND_BENCH_NS
+            .iter()
+            .filter_map(|&(name, ns)| Kind::from_name(name).map(|kind| (kind, ns)))
+            .collect()
+    })
+}
+
+pub(super) fn kind_share(kind: Kind, rate: u32) -> f32 {
+    let costs = bench_costs();
+    let ns = costs
+        .get(&kind)
+        .copied()
+        .unwrap_or_else(|| costs.values().copied().max().unwrap_or(0));
+    // Rates and block lengths are small; nanoseconds need relative precision.
+    ns as f32 / (512.0 * 1e9 / rate as f32)
+}
+
+/// Whether `what` can make a module heard: a cable or a module put on the
+/// wall, a module brought back, a chain, or an undo that plugs back the
+/// cables it had replaced (an unplugging or a removal that replugs). Every
+/// other change (a knob, a tempo, a plain unplugging or removal) only ever
+/// takes work away, and is never costed.
+pub(super) fn can_wake(what: &What) -> bool {
+    match what {
+        What::Patch { .. } | What::Add { .. } | What::Restore { .. } | What::Chain { .. } => true,
+        What::Unpatch { replugged, .. } => replugged.is_some(),
+        What::Remove { replugged, .. } => !replugged.is_empty(),
+        _ => false,
+    }
+}
+
+fn heard_modules(patch: &Patch) -> Vec<usize> {
+    let positions: HashMap<&str, usize> = patch
+        .modules()
+        .iter()
+        .enumerate()
+        .map(|(index, module)| (module.id.as_str(), index))
+        .collect();
+    let slots: Vec<usize> = (0..patch.modules().len()).collect();
+    let edges: Vec<(usize, usize)> = patch
+        .cables()
+        .iter()
+        .filter_map(|cable| {
+            Some((
+                *positions.get(cable.from_module.as_str())?,
+                *positions.get(cable.to_module.as_str())?,
+            ))
+        })
+        .collect();
+    let sinks: Vec<usize> = patch
+        .modules()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, module)| is_sink(module.kind).then_some(index))
+        .collect();
+    tables::heard(&slots, &edges, &sinks)
+}
+
+impl Wall {
+    pub(super) fn note_addition(&mut self, what: &What) {
+        if matches!(
+            what,
+            What::Add { .. }
+                | What::Restore { .. }
+                | What::Chain { .. }
+                | What::Patch { replaced: None, .. }
+        ) {
+            self.load_watch.added = Some(self.engine.shared().frames());
+        }
+    }
+
+    fn module_share(&self, id: &str, kind: Kind) -> f32 {
+        let rate = self.engine.sample_rate();
+        self.rack
+            .slot_of(id)
+            .and_then(|slot| self.engine.cost(slot))
+            .map_or_else(
+                || kind_share(kind, rate),
+                // A sub-block is small; timings need relative precision.
+                |ns| ns / (SUB_BLOCK as f32 * 1e9 / rate as f32),
+            )
+    }
+
+    fn woken(&self) -> Vec<(String, f32)> {
+        let heard: HashSet<usize> = heard_modules(&self.patch).into_iter().collect();
+        let unheard: HashSet<&str> = self.unheard.iter().map(String::as_str).collect();
+        self.patch
+            .modules()
+            .iter()
+            .enumerate()
+            .filter(|(index, module)| {
+                heard.contains(index)
+                    && (self.rack.slot_of(&module.id).is_none()
+                        || unheard.contains(module.id.as_str()))
+            })
+            .map(|(_, module)| {
+                (
+                    module.id.clone(),
+                    self.module_share(&module.id, module.kind),
+                )
+            })
+            .collect()
+    }
+
+    pub(super) fn wake_room(&mut self) -> Result<(), WallError> {
+        if !self.load_watch.on {
+            return Ok(());
+        }
+        let woken = self.woken();
+        if woken.is_empty() {
+            return Ok(());
+        }
+        let units = self
+            .patch
+            .modules()
+            .iter()
+            .filter(|module| self.rack.slot_of(&module.id).is_none())
+            .count()
+            + self
+                .patch
+                .cables()
+                .iter()
+                .filter(|cable| !self.lines.contains_key(&cable.id))
+                .count();
+        let waking = woken.iter().map(|(_, share)| share).sum();
+        if let Err(err) = self.render_room(units, waking) {
+            self.unmade = true;
+            return Err(err);
+        }
+        self.load_watch.waking = waking;
+        Ok(())
+    }
+
+    pub(super) fn wake_refusal(&self, load: f32, projected: f32) -> WallError {
+        let woken = self.woken();
+        let n = woken.len();
+        let ids = woken
+            .iter()
+            .take(WAKE_NAMES)
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ids = if n > WAKE_NAMES {
+            format!("{ids}, and {} more", n - WAKE_NAMES)
+        } else {
+            ids
+        };
+        error(
+            ErrorCode::Full,
+            format!(
+                "this would wake {n} modules nobody heard ({ids}), taking the wall from {:.0}% to about {:.0}% of its time rendering, past the {:.0}% it keeps to; take something away first, or wake them a few at a time",
+                load * 100.0,
+                projected * 100.0,
+                LOAD_GUARD * 100.0,
+            ),
+        )
+    }
+
+    fn load_projection(&self, incoming: &Patch) -> (usize, f32, f32) {
+        let heard = heard_modules(incoming);
+        let sum: f32 = heard
+            .iter()
+            .map(|&index| kind_share(incoming.modules()[index].kind, self.engine.sample_rate()))
+            .sum();
+        let current: f32 = heard_modules(&self.patch)
+            .iter()
+            .map(|&index| {
+                let module = &self.patch.modules()[index];
+                self.module_share(&module.id, module.kind)
+            })
+            .sum();
+        let rest = (self.engine.shared().render_load() - current).max(0.0);
+        (heard.len(), sum, rest + sum)
+    }
+
+    pub(super) fn load_room(&self, incoming: &Patch) -> Result<(), WallError> {
+        if !self.load_watch.on {
+            return Ok(());
+        }
+        let (n, sum, projected) = self.load_projection(incoming);
+        if sum > 0.0 && projected > LOAD_GUARD {
+            return Err(error(
+                ErrorCode::Full,
+                format!(
+                    "the wall this would put up renders {n} modules, taking it to about {:.0}% of its time rendering, past the {:.0}% it keeps to, so it was not put up",
+                    projected * 100.0,
+                    LOAD_GUARD * 100.0,
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn load_room_as(
+        &self,
+        console: bool,
+        incoming: &Patch,
+        source: &Source,
+        notes: &mut Vec<String>,
+    ) -> Result<Option<String>, WallError> {
+        if !console {
+            self.load_room(incoming)?;
+            return Ok(None);
+        }
+        let (_, sum, projected) = self.load_projection(incoming);
+        if !self.load_watch.on || sum <= 0.0 || projected <= LOAD_GUARD {
+            return Ok(None);
+        }
+        let name = source.kept().map_or("new", |kept| kept.name.as_str());
+        let warning = format!(
+            "Tom loaded \"{name}\": about {:.0}% of the wall's time, past the {:.0}% guard",
+            projected * 100.0,
+            LOAD_GUARD * 100.0
+        );
+        notes.push(warning.clone());
+        Ok(Some(warning))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_kind_has_a_bench_cost() {
+        for kind in Kind::all() {
+            if crate::dsp::effect::testing::KINDS
+                .iter()
+                .any(|test| test.id == kind.name())
+            {
+                continue;
+            }
+            assert!(
+                KIND_BENCH_NS
+                    .iter()
+                    .any(|&(name, ns)| name == kind.name() && ns > 0),
+                "{} has no bench cost",
+                kind.name()
+            );
+        }
+        for &(name, ns) in KIND_BENCH_NS {
+            assert!(Kind::from_name(name).is_some(), "unknown kind {name}");
+            assert!(ns > 0);
+        }
+    }
+}

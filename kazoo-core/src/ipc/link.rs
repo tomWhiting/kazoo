@@ -1,7 +1,10 @@
 //! An instrument's link to the hub, split so its audio callback stays
 //! real-time safe.
 //!
-//! [`hub_link`] returns two halves:
+//! A program starts its link with
+//! [`crate::host::link::connect_or_direct`] (or
+//! [`crate::host::link::connect_config_or_direct`] for a full
+//! [`LinkConfig`]), the one setup path, which returns two halves:
 //!
 //! - [`HubLink`] stays with the instrument's UI. It owns a link thread that
 //!   finds the hub, registers, sends the audio, reads the hub's messages, and
@@ -63,6 +66,10 @@ pub use streams::StreamConfig;
 use streams::{OLD_DESK_REFUSAL, set_stream_refusal, stream_update};
 
 mod priority;
+mod shutdown;
+#[cfg(test)]
+pub(crate) use shutdown::LINK_CONSTRUCTIONS;
+pub use shutdown::{stuck_shutdowns, undelivered_completions};
 mod wire;
 
 /// How often the link looks for a hub while none is answering.
@@ -416,13 +423,17 @@ impl fmt::Debug for HubLinkAudio {
     }
 }
 
-/// Start an instrument's link to the hub.
+/// Start a link that looks for the hub on its own thread.
+///
+/// Only kazoo-core's tests call this. Programs go through
+/// [`crate::host::link::connect_or_direct`], the one setup path.
 ///
 /// # Errors
 ///
 /// Fails only if the link thread cannot be started. Not finding a hub is not
 /// an error: the link keeps looking.
-pub fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)> {
+#[cfg(test)]
+pub(crate) fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)> {
     start_link(config, None, true)
 }
 
@@ -431,6 +442,8 @@ pub(crate) fn start_link(
     client: Option<HubIpcClient>,
     start: bool,
 ) -> io::Result<(HubLink, HubLinkAudio)> {
+    #[cfg(test)]
+    LINK_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
     let slots = config.resolved_streams()?;
     let stream_channels =
         std::array::from_fn(|id| slots[id].as_ref().map(|slot| u16::from(slot.channels)));
@@ -487,11 +500,7 @@ pub(crate) fn start_link(
                 .name("kazoo-hub-link".to_string())
                 .spawn(move || {
                     worker.run(&thread_running);
-                    if let Err(err) = finished_tx.send(()) {
-                        worker.set_refusal(Some(format!(
-                            "desk link completion could not be delivered: {err}"
-                        )));
-                    }
+                    shutdown::report_finished(&finished_tx);
                 })?,
         )
     } else {
@@ -648,7 +657,7 @@ impl HubLink {
             if self.finished.recv_timeout(Duration::from_millis(500))
                 == Err(mpsc::RecvTimeoutError::Timeout)
             {
-                self.report_start_refusal("desk link did not stop within 500 ms".to_string());
+                shutdown::record_stuck();
                 return;
             }
             if let Err(payload) = join.join() {

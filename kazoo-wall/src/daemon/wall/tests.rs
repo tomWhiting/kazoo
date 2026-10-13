@@ -3441,17 +3441,18 @@ fn a_desk(
         std::os::unix::net::UnixStream,
     ),
 ) {
-    use kazoo_core::host::link::open;
+    use kazoo_core::host::link::connect_config_or_direct;
     use kazoo_core::ipc::link::{HubAddress, LinkConfig};
     use kazoo_core::ipc::protocol::FrameBuffer;
     use kazoo_core::ipc::types::{MSG_REGISTER, MSG_REGISTERED, RegisteredMsg};
     let path = dir.join("desk.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-    let (link, audio) = open(LinkConfig {
-        address: HubAddress::Socket(path),
-        ..LinkConfig::new("kazoo-wall", 2, 48_000, 256)
-    })
-    .unwrap();
+    let linking = std::thread::spawn(move || {
+        connect_config_or_direct(LinkConfig {
+            address: HubAddress::Socket(path),
+            ..LinkConfig::new("kazoo-wall", 2, 48_000, 256)
+        })
+    });
     let (mut stream, _) = listener.accept().unwrap();
     let mut buf = FrameBuffer::new();
     let header = buf.read_frame(&mut stream).unwrap();
@@ -3468,6 +3469,7 @@ fn a_desk(
     reply.encode(buf.payload_mut());
     buf.write_frame(MSG_REGISTERED, 0, RegisteredMsg::WIRE_SIZE, &mut stream)
         .unwrap();
+    let (link, audio) = linking.join().unwrap().unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !link.is_connected() {
         assert!(Instant::now() < deadline, "the desk never linked");
@@ -5076,4 +5078,5 @@ fn a_small_heavy_wall_takes_additions_apart_and_says_when_it_is_full() {
     assert!(!wall.snapshot().engine.unwrap().refusing);
 }
 
+mod cost;
 mod unheard;

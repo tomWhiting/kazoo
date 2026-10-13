@@ -2,7 +2,7 @@
 
 Line numbers are from the sweep that wrote this brief, at `fa3c8d8`, and may have moved. Find each item by what it does, and never rename anything. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list below.
 
-Crates: kazoo-core. Time: about 30 minutes. Depends: KZ-V02 (the scoreboard; this lane adds its row and asserts its targets there), which needs KZ-V01.
+Crates: kazoo-core. Time: about 30 minutes. (Edited 13 Oct 23:5x after V02's review: per-event latencies and missed events; `analysis/score.rs` and its metrics file are touched for that.) Depends: KZ-V02 (the scoreboard; this lane adds its row and asserts its targets there), which needs KZ-V01.
 
 Why: Tom wants to drive a synth from his voice "hertz for hertz". pYIN needs a 43 ms window and runs on a thread; even after V01 it answers about 50 ms after a note starts. A hardware pitch-to-voltage converter does better because it measures each cycle as it ends. This lane is that converter, in software, run per sample on the output callback (a thread hop would cost a whole callback, 2.7 ms at 128 frames, which is the entire budget for a whistle). pYIN stays as the judge of octave and voicing; V04 joins the two.
 
@@ -96,6 +96,17 @@ Why marks from zero crossings and the period from NSDF: the crossings are when a
 
 `analysis/score.rs` gains `pub struct CycleUnderTest(CycleTracker)` (`name` = `"cycle"`, `hz` = `estimate().map(|e| e.hz)`), and the `voice_score` example scores it beside `pyin`. Add the bench `cycle/second/48k` to `kazoo-core/benches/voice.rs`: one second of `vowel_ah` (from `score::suite(48_000)`) through `process`; budget 10 ms (1% of real time).
 
+### Test speed (decided by Cassio, 13 Oct 23:5x, from V02's review)
+
+V02's review found the scoreboard tests are kazoo-core's slowest in debug (the judge floor 28 s, each WAV test about 19 s, V01's pitch tests 90 s under load), all from pYIN's per-frame search run unoptimised. The workspace `Cargo.toml` gains:
+
+```toml
+[profile.dev.package.pyin]
+opt-level = 3
+```
+
+Why only pyin: it optimises the one dependency whose search dominates, and leaves every kazoo crate's own code built as today (debug assertions, overflow checks and all). Paste the four tests' times before and after under BENCH. If pyin's own heavy dependencies (find them with `cargo tree -p pyin --depth 1`) carry the cost instead, add each by name in the same form and say which.
+
 ## Not this lane
 
 The judge's octave folding and voicing veto, gate, loudness, breath, frames (V04). Wiring the tracker into any engine (V06, V08a).
@@ -115,8 +126,9 @@ Unit tests in `analysis/cycle/tests.rs`; scoreboard targets in `analysis/score/t
 - `nonsense_input_is_survived`: NaN, ±Inf, ±1e30 and a DC step of 1.0: no panic, every estimate finite, then a clean 220 Hz sine locks again within 3 periods.
 - `processing_never_allocates`: `process` over 10 s of `vowel_ah` inside `assert_no_alloc::assert_no_alloc` (dev-dependency already present).
 - `cycle_meets_its_targets` (scoreboard, 48 kHz):
-  - `sine_ladder`, `steps`, `hum_low`, `whistle`: onset latency max ≤ 2 periods of that note + 1 ms (per note), cents median ≤ 3, p95 ≤ 10, octave 0, missed ≤ 2%.
-  - `steps`: step latency max ≤ 2 periods of the new note + 1 ms.
+  - `sine_ladder`, `steps`, `hum_low`, `whistle`: onset latency ≤ 2 periods of that note + 1 ms for every note, `onsets_missed == 0`, cents median ≤ 3, p95 ≤ 10, octave 0, missed ≤ 2%.
+  - `steps`: step latency ≤ 2 periods of the new note + 1 ms for every step, and `steps_missed == 0` (V02's review: a target checked on the steps that landed passes on one).
+  - V02's `Score` gives only the median and maximum across notes, so a per-note bound cannot be read from it. This lane adds `pub events: Vec<EventLatency { at_sample: usize, kind: Onset | Step, truth_hz: f32, latency_ms: Option<f32> }>` to `Score` (`None` for a missed event), filled where V02's metrics already compute each event's latency, and asserts each event against its own note's period. The existing figures are unchanged (V02's tests prove it).
   - `vibrato`: median ≤ 8, p95 ≤ 20 (a per-cycle estimate lags half a cycle of a 1885 cents/s slope: about 4 cents).
   - `glide`: median ≤ 10, p95 ≤ 25.
   - `vowel_ah`, `octave_bait`: octave ≤ 5% (the judge brings these under 0.5% in V04), onset ≤ 3 periods + 1 ms.
