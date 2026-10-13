@@ -296,22 +296,24 @@ mod tests {
         assert!(render_mono(&mut *gate, &silence).iter().all(|s| *s == 0.0));
         let input = sine(1_000.0, 0.1, 0.01);
         let output = render_mono(&mut *gate, &input);
-        let first = input
+        let Some(first) = input
             .iter()
             .position(|s| s.abs() >= 10f32.powf(-55.0 / 20.0))
-            .unwrap();
+        else {
+            panic!("the test tone never crosses the threshold");
+        };
         let opened = input
             .iter()
             .zip(&output)
             .enumerate()
             .skip(first)
             .find(|(_, (x, y))| x.abs() > 1e-6 && gain_db(**x, **y) >= -1.0)
-            .map(|(i, _)| i)
-            .unwrap();
+            .map_or(input.len(), |(i, _)| i);
         assert!(
             opened - first <= 24,
-            "attack took {} samples",
-            opened - first
+            "the gain took {} samples to reach -1 dB (the tone lasts {})",
+            opened - first,
+            input.len() - first
         );
     }
 
@@ -343,8 +345,7 @@ mod tests {
             .enumerate()
             .skip(9_600)
             .find(|(i, y)| gain_db(input[*i], **y) < -0.001)
-            .map(|(i, _)| i)
-            .unwrap();
+            .map_or(input.len(), |(i, _)| i);
         assert!(
             first_fade.abs_diff(release + 1) <= 1,
             "last active {last_active}, first fade {first_fade}, expected {}",
@@ -353,18 +354,20 @@ mod tests {
         assert!(
             output[9_600..=release]
                 .iter()
-                .all(|y| gain_db(1e-6, *y).abs() < 0.001)
+                .all(|y| gain_db(1e-6, *y).abs() < 0.001),
+            "the gain left 0 dB during the hold"
         );
         let floor = output
             .iter()
             .enumerate()
             .skip(first_fade)
             .find(|(i, y)| gain_db(input[*i], **y) <= -89.999)
-            .map(|(i, _)| i)
-            .unwrap();
+            .map_or(input.len(), |(i, _)| i);
         assert!(
             floor.abs_diff(release + 7_200) <= 2,
-            "release ended at {floor}"
+            "the release reached -90 dB at {floor}, expected {} (input ends at {})",
+            release + 7_200,
+            input.len()
         );
     }
 
