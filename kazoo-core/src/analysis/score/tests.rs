@@ -501,3 +501,23 @@ fn a_recorded_slide_and_a_step_are_referenced() -> crate::Result<()> {
     );
     Ok(())
 }
+
+fn short_tone(peak: f32) -> Vec<f32> {
+    (0..4_410_u16)
+        .map(|i| (f32::from(i) * 220.0 * std::f32::consts::TAU / 44_100.0).sin() * peak)
+        .collect()
+}
+
+#[test]
+fn a_float_take_louder_than_full_scale_is_read() -> crate::Result<()> {
+    let dir = logs_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("loud-float.wav");
+    // Float WAVs carry headroom: a peak of 1.5 is a valid recording.
+    write_float_wav(&path, 44_100, &short_tone(1.5))?;
+    let take = wav::read_take(&path)?;
+    assert!(take.samples.iter().any(|sample| *sample > 1.0));
+    write_float_wav(&path, 44_100, &[0.0, f32::NAN, 0.0])?;
+    assert!(matches!(wav::read_take(&path), Err(crate::Error::Config(_))));
+    Ok(())
+}
