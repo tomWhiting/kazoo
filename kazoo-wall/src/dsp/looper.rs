@@ -630,23 +630,29 @@ impl LoopModule {
             } else {
                 k
             };
-            let into_tail = matches!(
+            // A post-roll past the seam belongs after the loop's end: it
+            // writes the tail and its guard, never the loop's own cells.
+            // The write head rounds to the nearest cell, so beat arithmetic
+            // a hair short of the seam lets the fade start a cell late and
+            // reach cell `tail`; that cell is the guard's, not bar 0's.
+            let post_tail = matches!(
                 self.rec,
                 Rec::PostRoll {
                     into_tail: true,
                     ..
                 }
-            ) && k < splice.tail;
+            );
+            let into_tail = post_tail && k < splice.tail;
             if into_tail {
                 self.write_cell(splice.frames + k, input, keep);
-            } else {
+            } else if !post_tail {
                 self.write_cell(k, input, keep);
             }
             if self.seam_carry && k < splice.tail && !into_tail {
                 self.write_cell(splice.frames + k, input, keep);
             }
             // The guard continues the tail's interpolation at its final frame.
-            if (into_tail || self.seam_carry) && k == splice.tail {
+            if (post_tail || self.seam_carry) && k == splice.tail {
                 self.write_cell(splice.frames + splice.tail, input, keep);
             }
             if k == splice.frames - 1 && matches!(self.rec, Rec::Rolling) {
@@ -663,7 +669,7 @@ impl LoopModule {
                 self.bar_pass[h.bar] = h.pass;
                 self.written[h.bar] = true;
             }
-            if into_tail {
+            if post_tail {
                 // The tail is not in the loop's level bins.
                 continue;
             }
