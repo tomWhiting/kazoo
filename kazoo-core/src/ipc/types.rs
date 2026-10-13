@@ -43,9 +43,9 @@ pub const MSG_SHUTDOWN: u8 = 0xFF;
 /// instrument speaking another version, and says which it speaks, rather
 /// than misreading its messages.
 ///
-/// Version 2: audio blocks carry their stream frame, and transport syncs
-/// carry a stream frame and song position.
-pub const PROTOCOL_VERSION: u16 = 2;
+/// Version 3: frames up to 1 MiB and audio blocks up to 16,384 frames;
+/// the frame layout is version 2's.
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// Fixed-size instrument name field in the Register message.
 pub const REGISTER_NAME_LEN: usize = 32;

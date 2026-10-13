@@ -11,14 +11,15 @@
 //!
 //! All multi-byte integers are little-endian. The Length field contains
 //! the payload size in bytes (not including the 9-byte header).
+//! seq counts frames per sender stream and is diagnostic.
 
 use std::io::{self, Read, Write};
 
 /// Size of the frame header in bytes: 1 (type) + 4 (length) + 4 (seq).
 pub const HEADER_SIZE: usize = 9;
 
-/// Maximum payload size in bytes (64 KiB).
-pub const MAX_PAYLOAD_SIZE: usize = 65_536;
+/// Maximum payload size in bytes (1 MiB).
+pub const MAX_PAYLOAD_SIZE: usize = 1_048_576;
 
 /// Maximum total frame size (header + payload).
 pub const MAX_FRAME_SIZE: usize = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -34,7 +35,7 @@ pub struct FrameHeader {
     pub msg_type: u8,
     /// Payload length in bytes (excluding the 9-byte header).
     pub payload_len: u32,
-    /// Monotonically increasing sequence number for ordering.
+    /// Diagnostic sequence number within a sender stream.
     pub seq: u32,
 }
 
@@ -477,16 +478,85 @@ mod tests {
     }
 
     #[test]
-    fn frame_buffer_rejects_oversized_payload() {
-        let mut buf = FrameBuffer::new();
+    fn a_nonblocking_mebibyte_frame_survives_partial_reads() {
+        struct Chunks {
+            wire: std::io::Cursor<Vec<u8>>,
+            blocked: bool,
+        }
+        impl Read for Chunks {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.blocked = !self.blocked;
+                if self.blocked {
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                let len = bytes.len().min(1_024);
+                self.wire.read(&mut bytes[..len])
+            }
+        }
         let header = FrameHeader {
             msg_type: 0x10,
-            payload_len: MAX_PAYLOAD_SIZE as u32 + 1,
+            payload_len: 1_048_576,
+            seq: 7,
+        };
+        let mut wire = vec![0x5a; HEADER_SIZE + header.payload_len as usize];
+        encode_header(&header, &mut wire);
+        let mut reader = Chunks {
+            wire: std::io::Cursor::new(wire),
+            blocked: false,
+        };
+        let mut buffer = FrameBuffer::new();
+        let received = loop {
+            if let Some(header) = buffer.try_read_frame(&mut reader).unwrap() {
+                break header;
+            }
+        };
+        assert_eq!(received, header);
+        assert!(
+            buffer.payload()[..header.payload_len as usize]
+                .iter()
+                .all(|byte| *byte == 0x5a)
+        );
+        let mut oversized = [0; HEADER_SIZE];
+        encode_header(
+            &FrameHeader {
+                payload_len: 1_048_577,
+                ..header
+            },
+            &mut oversized,
+        );
+        assert_eq!(
+            buffer
+                .try_read_frame(&mut oversized.as_slice())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn a_payload_of_one_mebibyte_is_read_and_one_byte_more_is_refused() {
+        let mut buf = FrameBuffer::new();
+        let mut wire = vec![0x5a; HEADER_SIZE + 1_048_576];
+        let header = FrameHeader {
+            msg_type: 0x10,
+            payload_len: 1_048_576,
             seq: 0,
         };
-        let mut wire = vec![0u8; HEADER_SIZE];
         encode_header(&header, &mut wire);
-        let result = buf.read_frame(&mut wire.as_slice());
-        assert!(result.is_err());
+        assert_eq!(buf.read_frame(&mut wire.as_slice()).unwrap(), header);
+        assert!(buf.payload()[..1_048_576].iter().all(|byte| *byte == 0x5a));
+        let header = FrameHeader {
+            payload_len: 1_048_577,
+            ..header
+        };
+        encode_header(&header, &mut wire);
+        assert_eq!(
+            buf.read_frame(&mut wire.as_slice()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            buf.try_read_frame(&mut wire.as_slice()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }

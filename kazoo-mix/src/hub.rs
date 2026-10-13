@@ -33,7 +33,7 @@ mod tests;
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -47,7 +47,7 @@ use rustix::io::Errno;
 
 use kazoo_core::audio_transport::{AudioRingConfig, audio_block_ring};
 use kazoo_core::ipc::discovery;
-use kazoo_core::ipc::protocol::{FrameBuffer, MAX_PAYLOAD_SIZE};
+use kazoo_core::ipc::protocol::{FrameBuffer, FrameHeader, HEADER_SIZE, encode_header};
 use kazoo_core::ipc::types::{
     MSG_NOTE_EVENT, MSG_REFUSED, MSG_REGISTER, MSG_REGISTERED, MSG_SHUTDOWN, MSG_TRANSPORT_SYNC,
     PROTOCOL_VERSION, RegisterMsg, RegisteredMsg, SYNC_NOW, TRANSPORT_PAUSED, TRANSPORT_PLAYING,
@@ -91,6 +91,9 @@ const RING_BLOCK_FRAMES: u32 = 128;
 
 /// Notices waiting for the desk before new ones are counted as dropped.
 const NOTICE_BACKLOG: usize = 64;
+
+/// Most reason text sent to a connection that cannot register.
+const REFUSAL_BYTES: usize = 512;
 
 /// Patch commands the hub may have awaiting the callback's answer.
 pub const PATCH_CAPACITY: usize = 2 * DESK_CHANNELS;
@@ -222,6 +225,15 @@ pub enum RefuseReason {
     },
     /// It asked for a channel count other than mono or stereo.
     Channels(u8),
+    /// Its block cannot fit twice in the strip ring.
+    BlockTooLarge {
+        /// Registered frames per block.
+        frames: u32,
+        /// Most frames that fit twice at its channel count.
+        most: u32,
+        /// Its channel count, which sets `most`.
+        channels: u16,
+    },
     /// Every strip is taken.
     DeskFull,
     /// It did not register properly.
@@ -267,6 +279,14 @@ impl fmt::Display for RefuseReason {
                 "it runs at {instrument} Hz, the desk at {desk} Hz (use the same device)"
             ),
             Self::Channels(n) => write!(f, "{n} channels (mono or stereo only)"),
+            Self::BlockTooLarge {
+                frames,
+                most,
+                channels,
+            } => write!(
+                f,
+                "blocks of {frames} frames (at most {most} at {channels} channels)"
+            ),
             Self::DeskFull => write!(f, "every strip is taken"),
             Self::Handshake(why) => write!(f, "{why}"),
         }
@@ -725,17 +745,23 @@ impl Server {
     /// not. The connection closes when `stream` is dropped.
     fn refuse(&mut self, stream: &UnixStream, name: String, reason: RefuseReason) {
         let text = reason.to_string();
-        let mut end = text.len().min(MAX_PAYLOAD_SIZE);
+        let mut end = text.len().min(REFUSAL_BYTES);
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        let mut frame = FrameBuffer::new();
-        frame.payload_mut()[..end].copy_from_slice(&text.as_bytes()[..end]);
+        let mut frame = [0_u8; HEADER_SIZE + REFUSAL_BYTES];
+        encode_header(
+            &FrameHeader {
+                msg_type: MSG_REFUSED,
+                payload_len: end as u32,
+                seq: 0,
+            },
+            &mut frame[..HEADER_SIZE],
+        );
+        frame[HEADER_SIZE..HEADER_SIZE + end].copy_from_slice(&text.as_bytes()[..end]);
         // A fresh connection's send buffer is empty, so the short refusal
         // goes out whole or not at all.
-        let told = frame
-            .write_frame(MSG_REFUSED, 0, end, &mut &*stream)
-            .is_ok();
+        let told = (&*stream).write_all(&frame[..HEADER_SIZE + end]).is_ok();
         self.notify(HubNotice::Refused { name, reason, told });
     }
 
@@ -765,6 +791,19 @@ impl Server {
                 return;
             }
         };
+        let most = (MAX_SOURCE_RING_SAMPLES / (usize::from(channels) * 2)) as u32;
+        if register.buffer_size > most {
+            self.refuse(
+                &pending.stream,
+                name,
+                RefuseReason::BlockTooLarge {
+                    frames: register.buffer_size,
+                    most,
+                    channels,
+                },
+            );
+            return;
+        }
         let Some(slot) = self.strips.iter().position(|strip| *strip == Strip::Free) else {
             self.refuse(&pending.stream, name, RefuseReason::DeskFull);
             return;
@@ -792,6 +831,9 @@ impl Server {
                 name: name.clone(),
                 slot,
                 channels,
+                block_frames: register
+                    .buffer_size
+                    .clamp(1, instrument::MAX_MESSAGE_FRAMES as u32),
                 pace_lead_frames: register.pace_lead_frames,
                 ring_frames: ring_frames(strip_ring(slot, channels)),
                 sample_rate: self.config.sample_rate,
@@ -1093,10 +1135,9 @@ const fn transport_state(transport: Transport) -> u8 {
 /// audio an instrument sends in a burst after a stall, with the largest
 /// block an instrument may send counted in the lead. And never more than a
 /// second, which would hold every transport change back as long.
-fn most_extra_lead(ring_frames: u64, clock: DeskClock, sample_rate: u32) -> u32 {
-    let base = u64::from(clock.device_frames)
-        + instrument::MAX_MESSAGE_FRAMES as u64
-        + u64::from(clock.margin_frames);
+fn most_extra_lead(ring_frames: u64, clock: DeskClock, sample_rate: u32, block_frames: u32) -> u32 {
+    let base =
+        u64::from(clock.device_frames) + u64::from(block_frames) + u64::from(clock.margin_frames);
     let most = (ring_frames / 2).saturating_sub(base);
     // Held below the rate, a u32: the conversion is exact.
     most.min(u64::from(sample_rate)) as u32

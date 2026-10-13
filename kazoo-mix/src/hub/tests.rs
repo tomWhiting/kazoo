@@ -1,6 +1,7 @@
 //! End-to-end hub tests: real sockets, the client instruments use, and the
 //! real audio callback path (patchbay, engine, shared state).
 
+mod transport;
 mod wake;
 
 use std::path::PathBuf;
@@ -630,10 +631,10 @@ fn a_timer_paced_instruments_lead_is_never_over_a_second() {
         margin_frames: 144,
         slack_frames: 960,
     };
-    assert_eq!(most_extra_lead(ring_frames(ring), clock, RATE), RATE);
+    assert_eq!(most_extra_lead(ring_frames(ring), clock, RATE, 4_096), RATE);
     // And a ring too small for any extra lead gives none.
     let tiny = AudioRingConfig::new(BufferId(0), 2, 128, 8);
-    assert_eq!(most_extra_lead(ring_frames(tiny), clock, RATE), 0);
+    assert_eq!(most_extra_lead(ring_frames(tiny), clock, RATE, 4_096), 0);
 }
 
 #[test]
@@ -650,7 +651,7 @@ fn an_extra_lead_follows_the_device_buffer_and_never_passes_half_the_ring() {
             margin_frames: 144,
             slack_frames: 960,
         };
-        let extra = most_extra_lead(ring, clock, RATE);
+        let extra = most_extra_lead(ring, clock, RATE, 4_096);
         let mut stamp = crate::studio_clock::StudioStamp::with_extra_lead(0);
         stamp.set_extra_lead(extra);
         assert_eq!(stamp.extra_lead(), extra);

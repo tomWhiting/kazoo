@@ -192,6 +192,45 @@ impl AudioBlockProducer {
             .map_err(|_| AudioRingPushError::Full)
     }
 
+    /// Decode little-endian samples directly into the ring, sanitizing as they copy.
+    /// A block is accepted whole or rejected before any samples are copied.
+    pub fn push_block_le(
+        &mut self,
+        mut header: AudioBlockHeader,
+        bytes: &[u8],
+    ) -> Result<(), AudioRingPushError> {
+        let frames = header.frames as usize;
+        let channels = usize::from(header.channels);
+        let expected = frames * channels;
+        if bytes.len() != expected * 4 || frames == 0 || channels == 0 {
+            return Err(AudioRingPushError::InvalidSampleCount {
+                expected,
+                actual: bytes.len() / 4,
+            });
+        }
+        if expected > self.sample_prod.vacant_len() || self.meta_prod.is_full() {
+            return Err(AudioRingPushError::Full);
+        }
+        let copied = self.sample_prod.push_iter(
+            bytes
+                .chunks_exact(4)
+                .map(|b| sanitize_sample(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))),
+        );
+        if copied != expected {
+            return Err(AudioRingPushError::Full);
+        }
+        if header.sequence == 0 {
+            header.sequence = self.next_sequence;
+            self.next_sequence = self.next_sequence.wrapping_add(1);
+        }
+        self.meta_prod
+            .try_push(BlockMeta {
+                header,
+                samples: expected,
+            })
+            .map_err(|_| AudioRingPushError::Full)
+    }
+
     /// Push a block marked as intentional silence.
     pub fn push_silence(
         &mut self,
@@ -366,6 +405,54 @@ mod tests {
 
     fn config() -> AudioRingConfig {
         AudioRingConfig::new(BufferId(1), 2, 4, 2)
+    }
+
+    #[test]
+    fn push_block_le_matches_push_block_and_sanitises() {
+        let (mut floats, mut float_cons) = audio_block_ring(config());
+        let (mut bytes, mut byte_cons) = audio_block_ring(config());
+        let samples = [
+            0.25,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0,
+            -0.75,
+            1.0,
+            0.0,
+        ];
+        let header = AudioBlockHeader {
+            start_frame: 128,
+            frames: 4,
+            channels: 2,
+            sequence: 0,
+            flags: BlockFlags::default(),
+        };
+        let wire: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        floats
+            .push_block(AudioBlock {
+                header,
+                samples: &samples,
+            })
+            .unwrap();
+        bytes.push_block_le(header, &wire).unwrap();
+        let mut a = [0.0; 8];
+        let mut b = [0.0; 8];
+        assert_eq!(float_cons.pop_block(&mut a), byte_cons.pop_block(&mut b));
+        assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+        for len in [31, 33] {
+            let wrong = vec![0; len];
+            assert_eq!(
+                bytes.push_block_le(header, &wrong),
+                Err(AudioRingPushError::InvalidSampleCount {
+                    expected: 8,
+                    actual: len / 4
+                })
+            );
+        }
     }
 
     #[test]

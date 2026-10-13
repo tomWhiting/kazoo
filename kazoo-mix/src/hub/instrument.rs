@@ -5,9 +5,9 @@ use std::io;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use kazoo_core::audio_transport::{AudioBlock, AudioBlockProducer, AudioRingPushError};
+use kazoo_core::audio_transport::{AudioBlockProducer, AudioRingPushError};
 use kazoo_core::ipc::protocol::{
-    AUDIO_PAYLOAD_HEADER, FrameBuffer, FrameHeader, decode_audio_frame_count, decode_audio_samples,
+    AUDIO_PAYLOAD_HEADER, FrameBuffer, FrameHeader, decode_audio_frame_count,
     decode_audio_stream_frame,
 };
 use kazoo_core::ipc::types::{
@@ -20,8 +20,9 @@ use kazoo_core::ipc::outbox::{Outbox, OutboxError};
 
 use crate::studio_clock::{DeskClock, StudioStamp};
 
-/// Largest audio message accepted, in frames: the instruments' own ceiling.
-pub const MAX_MESSAGE_FRAMES: usize = 4096;
+/// Largest audio message accepted, in frames: the instruments' own ceiling,
+/// `MAX_LINK_BLOCK_FRAMES`.
+pub const MAX_MESSAGE_FRAMES: usize = 16_384;
 
 /// How often a paced instrument is told where the desk is playing its
 /// stream: often enough that its own clock never carries it far between
@@ -125,7 +126,7 @@ pub struct Instrument {
     read_buf: FrameBuffer,
     producer: AudioBlockProducer,
     stamp: StudioStamp,
-    scratch: Vec<f32>,
+    block_frames: u32,
     /// Owed the whole song state: it has just joined, or its stream moved on
     /// the studio clock.
     pub needs_song: bool,
@@ -182,7 +183,7 @@ impl Instrument {
             dropped: 0,
             dropped_since: false,
             last_health: (DeskHealthMsg::default(), None),
-            scratch: vec![0.0; MAX_MESSAGE_FRAMES * usize::from(registration.channels)],
+            block_frames: registration.block_frames,
         }
     }
 
@@ -232,7 +233,6 @@ impl Instrument {
                 if frames == 0 {
                     return Ok(Inbound::Audio { resynced: false });
                 }
-                decode_audio_samples(payload, &mut self.scratch, samples);
                 let stream_frame = decode_audio_stream_frame(payload);
                 Ok(self.push_audio(stream_frame, frames, samples, clock))
             }
@@ -271,16 +271,16 @@ impl Instrument {
         // At most MAX_MESSAGE_FRAMES, checked by the caller.
         let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
         let stamped = self.stamp.stamp(stream_frame, frames_u32, clock);
-        let pushed = self.producer.push_block(AudioBlock {
-            header: AudioBlockHeader {
+        let pushed = self.producer.push_block_le(
+            AudioBlockHeader {
                 start_frame: stamped.start_frame,
                 frames: frames_u32,
                 channels: self.channels,
                 sequence: 0,
                 flags: BlockFlags::default(),
             },
-            samples: &self.scratch[..samples],
-        });
+            &self.read_buf.payload()[AUDIO_PAYLOAD_HEADER..AUDIO_PAYLOAD_HEADER + samples * 4],
+        );
         // A placement after the ring was full is the desk starting the
         // stream afresh once it takes it again, not a block that came late:
         // the drop was counted, and that is not.
@@ -344,7 +344,8 @@ impl Instrument {
     /// the desk has played, and may change when the device is rebuilt, so
     /// the hold is worked out again whenever the clock is read.
     fn fit_lead(&mut self, clock: DeskClock) {
-        let most = super::most_extra_lead(self.ring_frames, clock, self.sample_rate);
+        let most =
+            super::most_extra_lead(self.ring_frames, clock, self.sample_rate, self.block_frames);
         self.stamp.set_extra_lead(self.asked_lead.min(most));
     }
 
@@ -405,6 +406,8 @@ pub struct Registration {
     pub name: String,
     pub slot: usize,
     pub channels: u16,
+    /// Registered block size, held to the audio message ceiling.
+    pub block_frames: u32,
     /// Extra lead asked for by an instrument that renders on a timer; 0
     /// for one clocked by its own device (see
     /// [`kazoo_core::ipc::types::RegisterMsg::pace_lead_frames`]). The
