@@ -196,10 +196,16 @@ impl Quantiser {
     ///
     /// Onsets initialise the centre before target selection so a note starts
     /// in tune. Non-finite pitch resets state and writes finite direct values.
+    /// With blend at zero every frame, voiced or not, carries the direct
+    /// pitch bit for bit.
     pub fn process(&mut self, frame: &mut VoiceFrame) {
         if !frame.voiced {
-            frame.snapped_hz = self.last_hz;
-            frame.snapped_volts = self.last_volts;
+            if self.settings.blend <= 0.0 {
+                self.direct(frame);
+            } else {
+                frame.snapped_hz = self.last_hz;
+                frame.snapped_volts = self.last_volts;
+            }
             return;
         }
         let semitones = frame.volts * 12.0;

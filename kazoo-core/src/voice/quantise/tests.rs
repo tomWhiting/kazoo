@@ -342,6 +342,26 @@ fn non_finite_pitch_resets_without_poisoning_the_next_note() {
 }
 
 #[test]
+fn off_is_hertz_for_hertz_through_silence() {
+    let mut quantiser = Quantiser::new(RATE);
+    quantiser.process(&mut frame(9.0, true));
+    let mut held = frame(9.3, false);
+    held.voiced = false;
+    quantiser.process(&mut held);
+    assert_eq!(held.snapped_volts.to_bits(), held.volts.to_bits());
+    assert_eq!(held.snapped_hz.to_bits(), held.hz.to_bits());
+    quantiser.reset();
+    let mut after_reset = frame(9.0, false);
+    after_reset.voiced = false;
+    quantiser.process(&mut after_reset);
+    assert_eq!(
+        after_reset.snapped_volts.to_bits(),
+        after_reset.volts.to_bits()
+    );
+    assert_eq!(after_reset.snapped_hz.to_bits(), after_reset.hz.to_bits());
+}
+
+#[test]
 fn a_scale_change_retargets_a_held_note() {
     let mut quantiser = Quantiser::new(RATE);
     quantiser.set(instant(false));
