@@ -1398,6 +1398,7 @@ mod tests {
             },
             summary: "Waffles added lfo3".to_string(),
             undoes: Some(57),
+            clock: None,
         };
         let result = ChangeResult {
             change: change.clone(),
@@ -1442,6 +1443,7 @@ mod tests {
             },
             summary: summary.to_string(),
             undoes: None,
+            clock: None,
         };
         let started = RecordResult {
             on: true,
@@ -1899,6 +1901,7 @@ mod tests {
                           the wall as it was is saved as \"before-load-20260929-120000\""
                     .to_string(),
                 undoes: None,
+                clock: None,
             },
             backup: "before-load-20260929-120000".to_string(),
             notes: vec!["the desk keeps the tempo at 120 BPM".to_string()],
