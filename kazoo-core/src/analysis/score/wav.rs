@@ -75,11 +75,10 @@ pub fn read_take(path: &Path) -> crate::Result<Take> {
             let mut samples = Vec::new();
             for (index, sample) in reader.samples::<f32>().enumerate() {
                 let sample = sample.map_err(|error| config_error(path, error))?;
-                if !sample.is_finite() || sample.abs() > 1.0 {
-                    return Err(config_error(
-                        path,
-                        "float sample is nonfinite or outside [-1, 1]",
-                    ));
+                // Float carries headroom past ±1, so only a non-finite
+                // sample is not a recording.
+                if !sample.is_finite() {
+                    return Err(config_error(path, "float sample is not finite"));
                 }
                 if index % channels == 0 {
                     samples.push(sample);
