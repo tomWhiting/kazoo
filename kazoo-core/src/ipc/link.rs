@@ -348,7 +348,7 @@ pub struct LinkStatus {
     pub connected: bool,
     /// Desk strip, when plugged in (0-based).
     pub strip: Option<u8>,
-    /// Audio blocks sent to the hub.
+    /// Audio blocks the callback queued for the hub (a discarded backlog also counts as dropped).
     pub blocks_sent: u64,
     /// Audio blocks lost: malformed, the link could not keep up, or the hub
     /// stopped reading. A discarded backlog counts once.
