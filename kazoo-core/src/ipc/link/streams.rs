@@ -6,7 +6,18 @@ use super::{
     Producer, RETRY_INTERVAL, RegisterMsg, Request, RequestError, STREAM_NAME_LEN, SYNC_NOW,
     StreamAddMsg, StreamId, StreamSpec, ToAudio, TransportSyncMsg, discovery, io,
 };
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+
+/// The stream table. Every write to it is one whole assignment, so a panic
+/// on another thread while it was held leaves it whole: a poisoned lock is
+/// taken as it stands rather than refusing every stream change and every
+/// registration from then on.
+fn table_of(state: &LinkState) -> MutexGuard<'_, [Option<StreamConfig>; MAX_STREAMS]> {
+    match state.streams.lock() {
+        Ok(table) => table,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 /// One named output configured before the link starts.
 #[derive(Debug, Clone)]
@@ -94,11 +105,7 @@ impl HubLink {
         if !valid_name(name, channels) {
             return Err(RequestError::Invalid);
         }
-        let mut streams = self
-            .state
-            .streams
-            .lock()
-            .map_err(|_| RequestError::Invalid)?;
+        let mut streams = table_of(&self.state);
         if streams.iter().flatten().any(|stream| stream.name == name) {
             return Err(RequestError::Invalid);
         }
@@ -133,11 +140,7 @@ impl HubLink {
         if id == 0 || id >= MAX_STREAMS {
             return Err(RequestError::Invalid);
         }
-        let mut streams = self
-            .state
-            .streams
-            .lock()
-            .map_err(|_| RequestError::Invalid)?;
+        let mut streams = table_of(&self.state);
         if streams[id].is_none() {
             return Err(RequestError::Invalid);
         }
@@ -189,13 +192,7 @@ impl LinkWorker {
         // Hold the snapshot until connected is published so UI additions cannot
         // fall between registration and the connected request queue.
         let state = Arc::clone(&self.state);
-        let streams = match state.streams.lock() {
-            Ok(streams) => streams,
-            Err(err) => {
-                self.set_refusal(Some(format!("stream table is poisoned: {err}")));
-                return RETRY_INTERVAL;
-            }
-        };
+        let streams = table_of(&state);
         // add_stream and remove_stream change the table and queue their
         // request under this lock, so every stream request queued now is
         // in the registration below; sent after it, a desk would refuse an
