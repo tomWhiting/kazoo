@@ -1167,11 +1167,13 @@ impl Wall {
         history: Vec<Change>,
         store: Option<Store>,
     ) -> Self {
-        // A freshly built seed has no numbered adds to stamp.
+        // A seed is built by plain adds, never numbered as changes: its
+        // modules are found here, as a file's are as it loads. Every module
+        // on a wall has a birth from here on.
         let mut birth_notes = Vec::new();
         patch.find_births(&mut birth_notes);
         for note in birth_notes {
-            eprintln!("{note}");
+            eprintln!("kazoo-wall: {note}");
         }
         let last_logged = history.last().map_or(0, |change| change.seq);
         let next_seq = patch.last_seq.max(last_logged) + 1;

@@ -26,6 +26,21 @@ pub enum Birth {
     Found { wall: u64, seed: u64, id: String },
 }
 
+impl Birth {
+    /// The module a found mark names, when that is not `id`.
+    ///
+    /// A found mark is worked out from its own module's id, and ids never
+    /// change, so such a mark is the named module's and never `id`'s. Read
+    /// this way, two found marks on one wall can never be equal.
+    #[must_use]
+    pub fn names_another(&self, id: &str) -> Option<&str> {
+        match self {
+            Self::Found { id: named, .. } if named != id => Some(named),
+            Self::Found { .. } | Self::Born { .. } => None,
+        }
+    }
+}
+
 impl fmt::Display for Birth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

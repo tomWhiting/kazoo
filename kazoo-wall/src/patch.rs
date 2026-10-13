@@ -15,7 +15,7 @@ mod chains;
 
 pub use chains::{Chain, ChainCable, ChainModule};
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -907,26 +907,31 @@ impl Patch {
         let (mut module, ignored, bad_birth) = module_from_record(record)?;
         for knob in ignored {
             eprintln!(
-                "{} has no knob '{}'; its value was dropped",
+                "kazoo-wall: {} has no knob '{}'; its value was dropped",
                 module.id,
                 printable(&knob)
             );
         }
         if let Some(why) = bad_birth {
             eprintln!(
-                "module '{}' had a birth mark that does not read ('{why}'); it is found afresh",
+                "kazoo-wall: module '{}' had a birth mark that does not read ('{why}'); it is found afresh",
                 module.id
             );
         }
         if let Some(birth) = &module.birth {
-            if let Some(holder) = self
-                .modules
-                .iter()
-                .find(|existing| existing.birth.as_ref() == Some(birth))
-            {
+            let holder = birth
+                .names_another(&module.id)
+                .map(str::to_string)
+                .or_else(|| {
+                    self.modules
+                        .iter()
+                        .find(|existing| existing.birth.as_ref() == Some(birth))
+                        .map(|existing| existing.id.clone())
+                });
+            if let Some(holder) = holder {
                 eprintln!(
-                    "module '{}' had the birth mark of {}; it is found afresh",
-                    module.id, holder.id
+                    "kazoo-wall: module '{}' had the birth mark of {holder}; it is found afresh",
+                    module.id
                 );
                 module.birth = None;
             }
@@ -1313,7 +1318,7 @@ impl Patch {
         match serde_json::to_vec(&file) {
             Ok(bytes) => bytes,
             Err(err) => {
-                eprintln!("wall fingerprint could not be encoded: {err}");
+                eprintln!("kazoo-wall: the wall fingerprint could not be encoded: {err}");
                 Vec::new()
             }
         }
@@ -1529,26 +1534,32 @@ impl Patch {
         dye
     }
 
+    /// Give every module without a birth its found mark, in module order.
+    /// A mark held already by an earlier module, or a found mark naming
+    /// another module, is replaced by the module's own found mark, with a
+    /// note: births on one wall are unique.
     pub(crate) fn find_births(&mut self, notes: &mut Vec<String>) {
-        let mut seen = HashSet::new();
-        let mut holders = BTreeMap::new();
+        let (wall, seed) = (self.wall, self.seed);
+        let mut holders: HashMap<Birth, String> = HashMap::with_capacity(self.modules.len());
         for module in &mut self.modules {
-            if let Some(birth) = &module.birth {
-                if seen.contains(birth) {
-                    let id = holders.get(birth).map_or("another module", String::as_str);
-                    notes.push(format!(
-                        "module '{}' had the birth mark of {id}; it is found afresh",
+            if let Some(birth) = module.birth.take() {
+                let holder = birth
+                    .names_another(&module.id)
+                    .map(str::to_string)
+                    .or_else(|| holders.get(&birth).cloned());
+                match holder {
+                    Some(holder) => notes.push(format!(
+                        "module '{}' had the birth mark of {holder}; it is found afresh",
                         module.id
-                    ));
-                    module.birth = None;
+                    )),
+                    None => module.birth = Some(birth),
                 }
             }
             let birth = module.birth.get_or_insert_with(|| Birth::Found {
-                wall: self.wall,
-                seed: self.seed,
+                wall,
+                seed,
                 id: module.id.clone(),
             });
-            seen.insert(birth.clone());
             holders.insert(birth.clone(), module.id.clone());
         }
     }
