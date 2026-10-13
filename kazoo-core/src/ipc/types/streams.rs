@@ -142,19 +142,22 @@ impl StreamReadyMsg {
         buf[2] = self.strip;
         Self::WIRE_SIZE
     }
-    /// Decode a validated payload and borrow its optional UTF-8 reason.
-    /// The caller validates UTF-8 and the 256-byte reason limit first.
+    /// Decode at least [`Self::WIRE_SIZE`] bytes and borrow the reason after
+    /// them. A reason that is not UTF-8 reads up to its first fault; the
+    /// client refuses such a message before it gets here.
     #[must_use]
     pub fn decode(buf: &[u8]) -> (Self, &str) {
+        let reason = &buf[Self::WIRE_SIZE..];
+        let reason = match std::str::from_utf8(reason) {
+            Ok(reason) => reason,
+            Err(err) => std::str::from_utf8(&reason[..err.valid_up_to()]).unwrap_or_default(),
+        };
         (
             Self {
                 stream: u16::from_le_bytes([buf[0], buf[1]]),
                 strip: buf[2],
             },
-            match std::str::from_utf8(&buf[3..]) {
-                Ok(reason) => reason,
-                Err(err) => panic!("stream ready reason is not UTF-8: {err}"),
-            },
+            reason,
         )
     }
 }
