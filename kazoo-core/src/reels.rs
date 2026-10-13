@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -344,18 +344,23 @@ pub struct ReelStore {
 
 impl ReelStore {
     /// Create the store and its pin directory with private directory modes.
+    /// A directory that already exists is made private too, as the wall's
+    /// state directory is.
     pub fn open(dir: &Path) -> io::Result<Self> {
         DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        let pins = dir.join("pins");
         DirBuilder::new()
             .mode(0o700)
-            .create(dir.join("pins"))
+            .create(&pins)
             .or_else(|error| {
-                if error.kind() == io::ErrorKind::AlreadyExists && dir.join("pins").is_dir() {
+                if error.kind() == io::ErrorKind::AlreadyExists && pins.is_dir() {
                     Ok(())
                 } else {
                     Err(error)
                 }
             })?;
+        fs::set_permissions(&pins, fs::Permissions::from_mode(0o700))?;
         Ok(Self {
             dir: dir.to_owned(),
         })
