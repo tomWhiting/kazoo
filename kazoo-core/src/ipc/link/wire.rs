@@ -21,7 +21,10 @@ pub(super) fn check_stuck(stuck_since: &mut Option<Instant>) -> Result<(), Strin
     let now = Instant::now();
     let since = *stuck_since.get_or_insert(now);
     if now.duration_since(since) > STUCK_LIMIT {
-        return Err("the desk stopped taking audio for over 500 ms".to_string());
+        return Err(format!(
+            "the desk stopped taking audio for over {} ms",
+            STUCK_LIMIT.as_millis()
+        ));
     }
     Ok(())
 }
