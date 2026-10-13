@@ -12,9 +12,31 @@ use crate::protocol::{Change, ClockStamp};
 /// `core.fsync=committed` requires git 2.36 or later.
 pub const MIN_GIT: (u32, u32) = (2, 36);
 
+/// Environment variables that would point git at another repository, or
+/// set its configuration from outside: the caller's, never the tree's.
+const FOREIGN_GIT_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+];
+
+/// `git [-C <dir>] [-c ...] <name>`: the only way this crate runs git.
+/// `repack` and `fast-import` get the durability settings they need, and
+/// none of the caller's repository variables reach git, so a daemon started
+/// from inside some other repository (a hook, a tool) still writes only to
+/// its tree.
 #[must_use]
 pub fn git_command(name: &str, dir: Option<&Path>) -> Command {
     let mut command = Command::new("git");
+    for key in FOREIGN_GIT_ENV {
+        command.env_remove(key);
+    }
     if let Some(dir) = dir {
         command.arg("-C").arg(dir);
     }
@@ -55,6 +77,12 @@ fn checked(command: &mut Command) -> Result<String, TreeError> {
         .map_err(|err| TreeError::Git(format!("{command:?}: {err}")))
 }
 
+/// Requires `git` on `PATH` at [`MIN_GIT`] or later.
+///
+/// # Errors
+///
+/// `TreeError::Git` when git cannot be run, its version does not read, or
+/// it is older than [`MIN_GIT`].
 pub fn check_version() -> Result<(), TreeError> {
     let text = checked(&mut git_command("version", None))?;
     let version = text
@@ -77,7 +105,14 @@ pub fn check_version() -> Result<(), TreeError> {
     Ok(())
 }
 
-/// Plant only in a new or empty directory; never replace history.
+/// Plant a tree: a bare repository on `trunk` with automatic gc off, made
+/// only in a new or empty directory (mode 0700), so no history is ever
+/// replaced.
+///
+/// # Errors
+///
+/// `TreeError::Git` for a directory that is not empty, or any step that
+/// fails, with git's exit status and words.
 pub fn plant(dir: &Path) -> Result<(), TreeError> {
     check_version()?;
     if dir.exists() {
@@ -104,21 +139,55 @@ pub fn plant(dir: &Path) -> Result<(), TreeError> {
     Ok(())
 }
 
+/// Whether `dir` is itself a bare repository: not a directory inside one,
+/// and not a plain directory inside some other repository.
+///
+/// # Errors
+///
+/// `TreeError::Git` when git cannot be run or `dir` cannot be resolved.
 pub fn is_bare(dir: &Path) -> Result<bool, TreeError> {
     if !dir.exists() {
         return Ok(false);
     }
-    let result = output(git_command("rev-parse", Some(dir)).arg("--is-bare-repository"))?;
-    Ok(result.status.success() && result.stdout == b"true\n")
+    let result = output(
+        git_command("rev-parse", Some(dir)).args(["--is-bare-repository", "--absolute-git-dir"]),
+    )?;
+    if !result.status.success() {
+        return Ok(false);
+    }
+    let text = String::from_utf8_lossy(&result.stdout);
+    let mut lines = text.lines();
+    if lines.next() != Some("true") {
+        return Ok(false);
+    }
+    let Some(git_dir) = lines.next() else {
+        return Ok(false);
+    };
+    let resolve = |path: &Path| {
+        fs::canonicalize(path)
+            .map_err(|err| TreeError::Git(format!("resolve {}: {err}", path.display())))
+    };
+    Ok(resolve(Path::new(git_dir))? == resolve(dir)?)
 }
 
+/// Where a planted tree stands.
 #[derive(Debug, Clone)]
 pub struct Planted {
+    /// The wall's branch, the one `HEAD` names (`refs/heads/trunk`).
     pub branch: String,
+    /// The branch's tip, `None` while it has no commit.
     pub tip: Option<String>,
+    /// The last change the tip holds: its `Kazoo-Seq`, or `Kazoo-After`
+    /// for KZ-T03's commits; `None` for a tip with neither.
     pub through: Option<u64>,
 }
 
+/// Read where the tree in `dir` stands.
+///
+/// # Errors
+///
+/// `TreeError::Git` when `HEAD` is not a branch, git fails, or a trailer
+/// does not read as a number.
 pub fn read(dir: &Path) -> Result<Planted, TreeError> {
     let branch = checked(git_command("symbolic-ref", Some(dir)).args(["-q", "HEAD"]))?;
     let result = output(git_command("rev-parse", Some(dir)).args([
@@ -166,17 +235,30 @@ pub fn read(dir: &Path) -> Result<Planted, TreeError> {
     })
 }
 
+/// Geometric repack: keeps the number of packs logarithmic, never touches
+/// a ref.
+///
+/// # Errors
+///
+/// `TreeError::Git` with git's exit status and words.
 pub fn repack(dir: &Path) -> Result<(), TreeError> {
     checked(git_command("repack", Some(dir)).args(["-d", "-q", "--geometric=2"]))?;
     Ok(())
 }
 
+/// One commit for the importer to write.
 #[derive(Debug)]
 pub struct Commit {
+    /// The author: the seat that made the change, or `kazoo-wall`.
     pub seat: String,
+    /// Author and committer date, Unix seconds UTC.
     pub unix: i64,
+    /// Subject, a blank line and the trailers.
     pub message: String,
+    /// Whether `files` is the whole wall (`deleteall` first) rather than
+    /// what differs from the commit before.
     pub whole: bool,
+    /// Each path with its bytes, or `None` for a path that is gone.
     pub files: Vec<(String, Option<Vec<u8>>)>,
 }
 
@@ -194,6 +276,13 @@ fn trailers(kind: &str, seq: u64, clock: Option<&ClockStamp>, gap: Option<(u64, 
 }
 
 impl Commit {
+    /// The commit for one made change: the seat as author, dated the
+    /// change's `at`, the summary as subject, and the change as JSON.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` when `at` does not read or the change does not
+    /// serialise.
     pub fn change(
         change: &Change,
         files: Vec<(String, Option<Vec<u8>>)>,
@@ -217,6 +306,9 @@ impl Commit {
         })
     }
 
+    /// A start or gap commit holding the whole wall after change `seq`,
+    /// naming the changes after `through` it holds without their own
+    /// commits.
     #[must_use]
     pub fn whole(
         kind: &str,
@@ -250,6 +342,7 @@ impl Commit {
     }
 }
 
+/// One `git fast-import` writing commits on the wall's branch.
 #[derive(Debug)]
 pub struct Importer {
     dir: PathBuf,
@@ -262,6 +355,11 @@ pub struct Importer {
 }
 
 impl Importer {
+    /// Start `fast-import` on `planted.branch`, never with `--force`.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` when git cannot be started or takes no input.
     pub fn new(dir: &Path, planted: &Planted) -> Result<Self, TreeError> {
         let mut command = git_command("fast-import", Some(dir));
         command
@@ -313,6 +411,13 @@ impl Importer {
         result.map_err(|err| self.failed("write", err))
     }
 
+    /// Write one commit command; returns its mark (from 1 within this
+    /// importer). The first names the branch's tip as its parent.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` for an author or path the tree cannot hold, or a
+    /// write git did not take (with git's exit status).
     pub fn commit(&mut self, c: &Commit) -> Result<u64, TreeError> {
         if !crate::protocol::valid_name(&c.seat) {
             return Err(TreeError::Git("invalid commit author".into()));
@@ -351,6 +456,13 @@ impl Importer {
         Ok(self.mark)
     }
 
+    /// Make everything written durable, and require the branch to be at
+    /// the commit `mark` names: git refused the update, or someone else
+    /// moved the branch, when it is not.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` when git fails or the branch is elsewhere.
     pub fn checkpoint(&mut self, mark: u64) -> Result<String, TreeError> {
         self.write(
             format!("checkpoint\n\nprogress kazoo {mark}\n\nget-mark :{mark}\n").as_bytes(),
@@ -384,6 +496,11 @@ impl Importer {
         Ok(sha)
     }
 
+    /// End the stream with `done` and require git to exit 0.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` with git's exit status.
     pub fn finish(mut self) -> Result<(), TreeError> {
         self.write(b"done\n")?;
         self.input.take();
