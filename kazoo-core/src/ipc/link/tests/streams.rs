@@ -376,3 +376,20 @@ fn an_old_desk_is_never_sent_a_named_stream() {
     assert_eq!(stream, 2);
     assert!(reason.contains("named streams"), "{reason}");
 }
+
+#[test]
+fn a_stream_table_poisoned_by_a_panic_still_serves_and_registers() {
+    let mut rig = Rig::new(vec![]);
+    let state = Arc::clone(&rig.link.state);
+    let poisoner = thread::spawn(move || {
+        let _held = state.streams.lock().unwrap();
+        panic!("a panic while the stream table is held");
+    });
+    assert!(poisoner.join().is_err());
+    assert!(rig.link.state.streams.is_poisoned());
+    assert_eq!(rig.link.add_stream("lead", 2), Ok(1));
+    let (_hub, _buf, register) = rig.connect(vec![3, 6]);
+    assert_eq!(register.streams.len(), 2);
+    assert_eq!(rig.link.stream_strip(1), Some(6));
+    assert_eq!(rig.link.remove_stream(1), Ok(()));
+}
