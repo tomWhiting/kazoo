@@ -295,3 +295,34 @@ fn a_bad_hop_is_refused() {
         ));
     }
 }
+
+/// Each of these passed `new`'s checks and then panicked inside pyin's
+/// `PYINExecutor::new`, taking the engine's start down with it: a hop so long
+/// that pyin's transition band is wider than the pitch grid, a range too narrow
+/// to hold two pitch bins, and a frame too short to hold the range's periods.
+#[test]
+fn a_config_pyin_cannot_hold_is_refused() {
+    let long_hop = PitchDetectorConfig {
+        sample_rate: 8000,
+        hop_length: 2048,
+        ..PitchDetectorConfig::for_rate(8000)
+    };
+    let narrow_range = PitchDetectorConfig {
+        min_frequency: 440.0,
+        max_frequency: 441.0,
+        ..PitchDetectorConfig::for_rate(48_000)
+    };
+    let short_frame = PitchDetectorConfig {
+        frame_length: 4,
+        hop_length: 1,
+        ..PitchDetectorConfig::for_rate(48_000)
+    };
+    for config in [long_hop, narrow_range, short_frame] {
+        let shown = format!("{config:?}");
+        let built = std::panic::catch_unwind(|| PitchDetector::new(config));
+        assert!(
+            matches!(built, Ok(Err(crate::Error::Config(_)))),
+            "{shown} must be refused with Error::Config, not accepted or panicking"
+        );
+    }
+}
