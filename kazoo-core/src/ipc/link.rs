@@ -493,9 +493,7 @@ pub(crate) fn start_link(
                 .name("kazoo-hub-link".to_string())
                 .spawn(move || {
                     worker.run(&thread_running);
-                    if finished_tx.send(()).is_err() {
-                        shutdown::record_failure();
-                    }
+                    shutdown::report_finished(&finished_tx);
                 })?,
         )
     } else {

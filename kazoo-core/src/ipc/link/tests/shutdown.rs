@@ -41,3 +41,25 @@ fn undelivered_worker_completion_is_counted() {
     drop(link);
     assert_eq!(stuck_shutdowns(), before + 1);
 }
+
+#[test]
+fn a_wedged_worker_that_finishes_after_the_drop_is_counted_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut link, audio) =
+        start_link(config(&directory.path().join("missing.sock")), None, false).unwrap();
+    let (release, blocked) = mpsc::channel();
+    let (done, completed) = mpsc::channel();
+    let (finished_tx, finished) = mpsc::sync_channel(1);
+    link.finished = finished;
+    link.join = Some(thread::spawn(move || {
+        blocked.recv().unwrap();
+        crate::ipc::link::shutdown::report_finished(&finished_tx);
+        done.send(()).unwrap();
+    }));
+    let before = stuck_shutdowns();
+    drop(link);
+    release.send(()).unwrap();
+    completed.recv().unwrap();
+    drop(audio);
+    assert_eq!(stuck_shutdowns(), before + 1);
+}
