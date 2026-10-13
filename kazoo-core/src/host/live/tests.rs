@@ -124,7 +124,7 @@ fn jitter_grows_the_slack_and_then_holds() {
     let mut settled = 0;
     for cycle in 0..7500 {
         let output = schedule.advance(cycle, |frame| sine(frame, 100.0));
-        if cycle > 750 {
+        if cycle > 1 {
             assert_no_holes(&output);
         }
         if cycle == 750 {
@@ -143,6 +143,7 @@ fn a_fast_input_clock_is_pulled_back() {
     let mut late_frames = 0;
     for cycle in 0..15_000 {
         schedule.advance(cycle, |frame| sine(frame, 100.0));
+        // The lag the policy measured for the block just delivered.
         let lag = schedule.reader.lag();
         let target = BLOCK + schedule.reader.slack();
         if lag > (target + BLOCK / 2 + 5) as u64 {
@@ -178,9 +179,13 @@ fn a_slow_input_clock_repeats_instead_of_going_silent() {
     assert!(schedule.reader.stats().underruns > 0);
 }
 
-fn musical(frame: u64) -> f32 {
-    let time = frame as f64 / f64::from(RATE);
-    let phase = if time < 2.0 {
+/// A steady 220 Hz until `start` seconds, then the glide for 2 s, then the
+/// vibrato; the phase is continuous throughout.
+fn musical(frame: u64, start: f64) -> f32 {
+    let time = frame as f64 / f64::from(RATE) - start;
+    let phase = if time < 0.0 {
+        220.0 * time
+    } else if time < 2.0 {
         220.0_f64.mul_add(time, (293.66 - 220.0) * time * time / 4.0)
     } else {
         let t = time - 2.0;
@@ -212,21 +217,31 @@ fn pitch(window: &[f32]) -> Option<f64> {
 
 #[test]
 fn a_glide_and_a_vibrato_come_through_without_steps() {
-    for ppm in [100, -100] {
+    // At 100 ppm the fast clock's drift jump lands near 13.6 s, inside a
+    // glide from 12 s; the slow clock's repeat lands near 13.3 s, inside a
+    // vibrato from 13 s.
+    for (ppm, passage) in [(100, 12.0), (-100, 11.0)] {
         let mut schedule = Schedule::new(ppm, false);
         let mut heard = Vec::new();
         let mut events = Vec::new();
         let mut reference = Vec::new();
-        for cycle in 0..3000 {
+        let signal = |frame| musical(frame, passage);
+        for cycle in 0..12_000 {
             let before = schedule.reader.stats();
-            heard.extend(schedule.advance(cycle, musical));
+            heard.extend(schedule.advance(cycle, signal));
             let start = schedule.reader.position().saturating_sub(BLOCK as u64);
-            reference.extend((0..BLOCK).map(|i| musical(start + i as u64)));
+            reference.extend((0..BLOCK).map(|i| signal(start + i as u64)));
             let after = schedule.reader.stats();
             if after.jumps != before.jumps || after.underruns != before.underruns {
                 events.push(cycle as usize * BLOCK);
             }
         }
+        let passage_frames =
+            (passage * f64::from(RATE)) as usize..((passage + 4.0) * f64::from(RATE)) as usize;
+        assert!(
+            events.iter().any(|event| passage_frames.contains(event)),
+            "{ppm} ppm: no jump or repeat inside the passage: {events:?}"
+        );
         let mut previous: Option<(f64, f64, bool)> = None;
         for (index, window) in heard.chunks_exact(480).enumerate().skip(2) {
             let start = index * 480;

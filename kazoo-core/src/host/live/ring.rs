@@ -290,8 +290,11 @@ impl LiveInput {
         self.pos
     }
 
+    /// The lag of the block the last read delivered: frames written when it
+    /// read, less the first frame it gave. The policy's own `lag` measure.
     #[cfg(test)]
     pub(super) const fn lag(&self) -> u64 {
-        self.last_written.saturating_sub(self.pos)
+        self.last_written
+            .saturating_sub(self.pos.saturating_sub(self.frames as u64))
     }
 }
