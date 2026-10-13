@@ -594,3 +594,76 @@ How to read it:
 | pYIN | noise_bursts | 45.33 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 10.50 | 1.31 | - |
 | pYIN | whistle | 34.67 | 34.67 | 0 | - | - | 0 | 0 | 8.27 | 31.60 | 0.00 | 0.00 | 3.77 | 3.96 | - |
 | pYIN | rearticulate | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |
+
+
+## KZ-V03 voice trackers
+
+Review figures, 2026-10-14 01:59 to 02:01 AEDT, on `lane/kz-V03` at the
+review's tracker commit `53842cd` (base `ac26501`). The machine was shared
+and busy: load averages 90.44 / 99.07 / 126.43 before the benchmark,
+89.00 / 97.89 / 124.90 after it, and 83.78 / 93.81 / 120.19 around the
+scoreboard run. These are observations under that load.
+
+`cargo bench -p kazoo-core --bench voice -- 'cycle'` exited 0.
+`cycle/second/48k`: **1.2854 ms**, Criterion interval **1.2805 to 1.2911 ms**,
+for one second of the suite's `vowel_ah` including its onset: 0.13% of real
+time, under the 10 ms budget. Receipt: `target/kz-logs/review/bench.txt`.
+(The builder's two runs read 1.8150 ms and 12.939 ms at load averages near
+93 and 258; the second was not a regression of the source.)
+
+The brief's prescribed mechanism did not meet its targets (the builder's
+receipts are under `target/kz-logs`). The review changed the mechanism, not
+the targets: marks at rising and falling crossings with a half-period NSDF
+window (onsets and steps inside two periods at every phase), a climb to the
+NSDF peak instead of taking an edge lag, the held period as a locked
+candidate (continuous following through the filter closing), one window for
+every candidate at a mark (no sub-harmonic winning a fade), the hint taking
+precedence, input clipped to full scale, and a steady glide carried forward
+between readings. Every target in `cycle_meets_its_targets` passes.
+
+The four scoreboard test times before and after `[profile.dev.package.pyin] opt-level = 3`:
+
+| test | before seconds | after seconds |
+|---|---:|---:|
+| the_judge_holds_its_floors | 31.454 | 117.079 |
+| a_recorded_take_is_read_and_referenced | 25.216 | 86.947 |
+| the_fixtures_folder_may_be_empty | 24.874 | 88.865 |
+| a_recorded_slide_and_a_step_are_referenced | 26.122 | 92.411 |
+
+Before receipts: `target/kz-logs/pyin-before.txt` (1 passed, exit 0) and
+`target/kz-logs/pyin-before-wav.txt` (3 passed, exit 0).
+After receipt: `target/kz-logs/pyin-after.txt` (4 passed, exit 0).
+The runs have different concurrency and machine load, so their ratio is not
+an attributable optimization result. No dependency besides pyin was optimized:
+`cargo tree -p pyin --depth 1` lists approx, getset, libc, ndarray, ndarray-npy,
+ndarray-stats, realfft and statrs; no isolated cost measurement establishes
+which dependency would justify another profile override. The pYIN and
+Viterbi implementations are generic; their contribution in this unchanged
+debug build has not been isolated.
+
+`voice_score` (`cargo run --release -p kazoo-core --example voice_score`,
+exit 0), complete analytic takes at 48,000 Hz; no recorded takes were
+present. Receipt: `target/kz-logs/review/voice-score-final.md`.
+
+| tracker | take | onset median ms | onset max ms | onsets missed | step median ms | step max ms | steps | steps missed | cents median | cents p95 | octave % | gross % | missed % | false % | aligned lag ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pYIN | sine_ladder | 38.00 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 11.73 | 0.00 | 0.00 | 6.69 | 7.78 | - |
+| cycle | sine_ladder | 3.00 | 14.00 | 0 | - | - | 0 | 0 | 0.01 | 0.37 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | hum_low | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.67 | 1.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| cycle | hum_low | 30.67 | 30.67 | 0 | - | - | 0 | 0 | 0.00 | 0.01 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | steps | 45.33 | 45.33 | 0 | 45.00 | 49.33 | 6 | 0 | 1.66 | 1.66 | 0.00 | 4.72 | 4.52 | 0.00 | - |
+| cycle | steps | 12.00 | 12.00 | 0 | 7.33 | 12.67 | 6 | 0 | 0.00 | 0.05 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | vibrato | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 38.04 | 69.68 | 0.00 | 0.00 | 2.91 | 0.00 | - |
+| cycle | vibrato | 7.33 | 7.33 | 0 | - | - | 0 | 0 | 1.27 | 2.49 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | glide | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 65.00 | 0.00 | 55.67 | 1.76 | 2.88 | - |
+| cycle | glide | 14.00 | 14.00 | 0 | - | - | 0 | 0 | 2.42 | 3.30 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | octave_bait | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.96 | 1.96 | 0.00 | 0.00 | 3.92 | 0.00 | - |
+| cycle | octave_bait | 14.00 | 14.00 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | vowel_ah | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.70 | 1.70 | 0.00 | 0.00 | 2.50 | 0.00 | - |
+| cycle | vowel_ah | 12.00 | 12.00 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | noise_bursts | 45.33 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 10.50 | 1.31 | - |
+| cycle | noise_bursts | 4.67 | 7.33 | 0 | - | - | 0 | 0 | 0.00 | 0.17 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | whistle | 34.67 | 34.67 | 0 | - | - | 0 | 0 | 8.27 | 31.60 | 0.00 | 0.00 | 3.77 | 3.96 | - |
+| cycle | whistle | 1.33 | 1.33 | 0 | - | - | 0 | 0 | 0.94 | 2.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | rearticulate | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |
+| cycle | rearticulate | 7.33 | 7.33 | 0 | - | - | 0 | 0 | 0.00 | 2.88 | 0.00 | 0.00 | 11.11 | 0.00 | - |

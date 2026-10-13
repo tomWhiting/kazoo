@@ -1,6 +1,6 @@
 //! Event detection, settle allowances, and unshifted trajectory arithmetic.
 
-use super::{SCORE_STEP, Score, Take};
+use super::{EventKind, EventLatency, SCORE_STEP, Score, Take};
 
 fn count_f64(count: usize) -> f64 {
     u32::try_from(count).map_or(f64::NAN, f64::from)
@@ -157,11 +157,25 @@ fn aligned_lag(truth: &[Option<f32>], estimates: &[Option<f32>], rate: u32) -> f
     })
 }
 
+fn event_latency(event: Event, take: &Take, delay: Option<f32>) -> EventLatency {
+    EventLatency {
+        at_sample: event_sample(event, &take.onsets),
+        kind: if event.start {
+            EventKind::Onset
+        } else {
+            EventKind::Step
+        },
+        truth_hz: event.hz,
+        latency_ms: delay,
+    }
+}
+
 pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
     let length = take.truth.len().min(estimates.len());
     let truth = &take.truth[..length];
     let estimates = &estimates[..length];
     let events = events(truth);
+    let mut event_latencies = Vec::with_capacity(events.len());
     let mut settled = vec![true; length];
     let mut onset_latencies = Vec::new();
     let mut step_latencies = Vec::new();
@@ -177,7 +191,9 @@ pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
         let note_end = (event.index..next_event)
             .find(|&index| valid(truth[index]).is_none())
             .unwrap_or(next_event);
-        match latency(event, note_end, take, estimates) {
+        let delay = latency(event, note_end, take, estimates);
+        event_latencies.push(event_latency(event, take, delay));
+        match delay {
             Some(delay) if event.start => onset_latencies.push(delay),
             Some(delay) => step_latencies.push(delay),
             None if event.start => onsets_missed += 1,
@@ -231,6 +247,7 @@ pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
         .div_ceil(100)
         .saturating_sub(1);
     Score {
+        events: event_latencies,
         onset_ms_median: median(&onset_latencies),
         onset_ms_max: maximum(&onset_latencies),
         onsets_missed,

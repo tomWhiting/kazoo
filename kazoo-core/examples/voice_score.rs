@@ -5,12 +5,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use kazoo_core::analysis::score::{PyinUnderTest, TrackerUnderTest, score, signals, table, wav};
+use kazoo_core::analysis::score::{
+    CycleUnderTest, PyinUnderTest, TrackerUnderTest, score, signals, table, wav,
+};
 
 const USAGE: &str = "Usage: voice_score [--rate <hz>] [<wav>...]";
 
 fn trackers(rate: u32) -> kazoo_core::Result<Vec<Box<dyn TrackerUnderTest>>> {
-    Ok(vec![Box::new(PyinUnderTest::new(rate)?)])
+    Ok(vec![
+        Box::new(PyinUnderTest::new(rate)?),
+        Box::new(CycleUnderTest::new(rate)),
+    ])
 }
 
 fn arguments() -> (u32, Vec<PathBuf>) {

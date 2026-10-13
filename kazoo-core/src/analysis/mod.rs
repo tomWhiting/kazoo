@@ -1,7 +1,9 @@
 //! Audio analysis: pitch detection, onset detection, FFT, formant extraction.
 //!
-//! This module provides five analysis components:
+//! This module provides six analysis components:
 //!
+//! - [`cycle::CycleTracker`] - Measures pitch at cycle marks with bounded
+//!   autocorrelation searches on preallocated sample history.
 //! - [`EnvelopeFollower`] - Tracks the amplitude contour of an audio signal
 //!   using one-pole smoothing with separate attack and release times.
 //! - [`PitchDetector`] - Detects fundamental frequency using the pYIN algorithm,
@@ -13,6 +15,7 @@
 //! - [`FormantExtractor`] - Extracts vocal-tract resonance frequencies via
 //!   LPC analysis with Levinson-Durbin recursion and polynomial root finding.
 
+pub mod cycle;
 mod envelope;
 mod formant;
 mod onset;

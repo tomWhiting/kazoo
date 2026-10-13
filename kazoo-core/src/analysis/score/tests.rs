@@ -155,6 +155,8 @@ fn a_silent_tracker_misses_everything() {
     assert!((result.false_pct - 0.0).abs() < f32::EPSILON);
     assert_eq!(result.onsets_missed, take.onsets.len());
     assert!(result.onset_ms_median.is_nan());
+    assert_eq!(result.events.len(), result.onsets_missed);
+    assert!(result.events.iter().all(|event| event.latency_ms.is_none()));
     assert!(crate::analysis::score::table(&[("silent", &take.name, result)]).contains(" | - | "));
 }
 
@@ -624,4 +626,49 @@ fn the_suite_is_voiced_and_pitched_where_the_table_says() {
         1500.0 * (20.0_f32 / 1200.0).exp2()
     ));
     assert!(close(pitch_at("vibrato", 0), 220.0));
+}
+
+#[test]
+fn cycle_meets_its_targets() {
+    use super::{CycleUnderTest, EventKind};
+    let mut failures = Vec::new();
+    for mut take in signals::suite(48_000) {
+        cut(&mut take, 72_000);
+        let result = score(&mut CycleUnderTest::new(48_000), &take);
+        let accurate = match take.name.as_str() {
+            "sine_ladder" | "steps" | "hum_low" | "whistle" => {
+                result.onsets_missed == 0
+                    && result.cents_median <= 3.0
+                    && result.cents_p95 <= 10.0
+                    && result.octave_pct <= f32::EPSILON
+                    && result.missed_pct <= 2.0
+                    && (take.name != "steps" || result.steps_missed == 0)
+            }
+            "vibrato" => result.cents_median <= 8.0 && result.cents_p95 <= 20.0,
+            "glide" => result.cents_median <= 10.0 && result.cents_p95 <= 25.0,
+            "vowel_ah" | "octave_bait" => result.octave_pct <= 5.0,
+            "noise_bursts" => result.false_pct <= 2.0,
+            _ => true,
+        };
+        if !accurate {
+            failures.push(format!("{} accuracy: {result:?}", take.name));
+        }
+        let periods = match take.name.as_str() {
+            "sine_ladder" | "steps" | "hum_low" | "whistle" => Some(2.0),
+            "vowel_ah" | "octave_bait" => Some(3.0),
+            _ => None,
+        };
+        if let Some(periods) = periods {
+            for event in &result.events {
+                if event.kind == EventKind::Step && take.name != "steps" {
+                    continue;
+                }
+                let limit = periods * 1_000.0 / event.truth_hz + 1.0;
+                if !event.latency_ms.is_some_and(|ms| ms <= limit) {
+                    failures.push(format!("{}: {event:?}, limit {limit}", take.name));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
