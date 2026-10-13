@@ -255,7 +255,7 @@ Tom's words, 13 Oct 2026, about 19:20 to 20:10:
 5. B05, B06, E01, E02 fill gaps.
 6. Track V: V01, V02, V03, V04 in order (each scores on the last one's scoreboard). Then V05 and V06 side by side, since they share no files. V07a waits for B03a and V07b waits for B03b, because they edit the same wire files. V08a follows V05 and V07a. Then V08b, V09a and V10 run side by side. After V09a, V09b, V09c and V09d run side by side; they share only `kazoo-cli/src/cli.rs`, where each adds its own `--follow` flags, so the merge is line by line.
 7. Track L: L01 and L02 side by side (different crates), then L03, L04 and L05 in order (each edits `daemon/loops/`). L06 waits for B03a and V07a, because they edit the same wire files, and L07 waits for L06, C04 and V07b. L08 runs once V08b has landed. L09 follows L05 and L06. L12 can run beside L06 to L09 (console files only), then L13. L10 waits for L07 and C08a, then L11 after C07b. The first thing Tom can play is after L05: a loop on the wall recording any wall signal, saved and undoable. Singing into it needs L06 to L09.
-8. Track T: T01, T02 in order, then T03 and T04 side by side (T03 is an import tool, T04 the live wall), then T05, T06 in order; T07 and T08 can run beside T05 and T06. T09 waits for T08. T01 goes first among new wall work because birth marks must be in before anything else saves modules.
+8. Track T: T01, T02a, T02b, T03 in order, then T04a, T04b, then T04c and T04d side by side (T02 and T04 were split by the ten-file rule; T03 and T04a both edit the tree thread, so they run in order), then T05, T06 in order; T07 and T08 can run beside T05 and T06. T09 waits for T08. T01 goes first among new wall work because birth marks must be in before anything else saves modules.
 
 ## How a lane runs
 
