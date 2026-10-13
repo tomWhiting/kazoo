@@ -101,3 +101,9 @@ MERGED KZ-A05 as 6214771 (+ fmt c-commit), with A04 part 2 fa3c8d8; merged tree 
 START KZ-V01 base=1e616d7 branch=lane/kz-V01 df=28GB at 15:50
 START KZ-L01 base=1e616d7 branch=lane/kz-L01 df=22GB at 16:05
 MERGED KZ-W01a 779e316, KZ-A07 4369e77, KZ-D03 247ca07 (render.rs clash resolved); combined fmt/clippy/nextest green; pushed at 16:19
+START KZ-L02 base=4c2b6a0 branch=lane/kz-L02 df=31GB at 16:20
+REVIEWED KZ-L01 READY head=2203f2d (Opus fixed 7: existing dirs to 0700, new dirs flushed to parent, cut-short reel is WrongFormat, cleanup keeps the real error, two messages, sweep lists once; 941/941) at 17:46. Decided by Cassio for KZ-L04: put's dedupe verifies the existing file's hash (rewrite if corrupt); .corrupt-* files count against the budget and are swept after SWEEP_GRACE. Brief nits: WAV header is 68 bytes; serde was a second new dep.
+
+## Merged 13 Oct, about 18:4x
+- KZ-L01 the reel store (review head 2203f2d), KZ-L02 the loop module (review head 652404d; feed messages boxed, see the note in L03/L04), KZ-B03a named streams (review head 1b81a1c; old desks fall back, ring for 16 stereo streams). Merge check on main: fmt 0, clippy 0, nextest 3855/3855, doc tests 0.
+- To re-measure on a quiet Mac: L02's loop bench rows (113–123 µs per 512-frame block against 106.7 µs, measured at load 48–68).
