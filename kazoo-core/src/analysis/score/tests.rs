@@ -539,3 +539,89 @@ fn a_linked_take_in_the_fixtures_folder_is_read() -> crate::Result<()> {
     assert_eq!(takes[0].name, "hum-low.wav");
     Ok(())
 }
+
+/// Voiced spans of each take in ms from the end of the leading floor, and
+/// the pitch at a few of those times, as the brief's table gives them.
+#[test]
+fn the_suite_is_voiced_and_pitched_where_the_table_says() {
+    let spans: [(&str, &[(u32, u32)]); 10] = [
+        (
+            "sine_ladder",
+            &[
+                (0, 400),
+                (500, 900),
+                (1000, 1400),
+                (1500, 1900),
+                (2000, 2400),
+                (2500, 2900),
+            ],
+        ),
+        ("hum_low", &[(0, 600)]),
+        ("steps", &[(0, 1750)]),
+        ("vibrato", &[(0, 1000)]),
+        ("glide", &[(0, 900)]),
+        ("octave_bait", &[(0, 600)]),
+        ("vowel_ah", &[(0, 800)]),
+        ("noise_bursts", &[(0, 300), (500, 800), (1000, 1300)]),
+        ("whistle", &[(0, 800)]),
+        ("rearticulate", &[(0, 1000)]),
+    ];
+    let suite = signals::suite(48_000);
+    for (name, voiced) in spans {
+        let take = suite
+            .iter()
+            .find(|take| take.name == name)
+            .expect("named take");
+        for (step, pitch) in take.truth.iter().enumerate() {
+            let centre = step * SCORE_STEP + SCORE_STEP / 2;
+            let inside = centre.checked_sub(9_600).is_some_and(|sample| {
+                voiced
+                    .iter()
+                    .any(|&(from, to)| sample >= from as usize * 48 && sample < to as usize * 48)
+            });
+            assert_eq!(pitch.is_some(), inside, "{name} step {step}");
+        }
+    }
+    let pitch_at = |name: &str, ms: usize| {
+        let take = suite
+            .iter()
+            .find(|take| take.name == name)
+            .expect("named take");
+        take.truth[(9_600 + ms * 48) / SCORE_STEP].expect("voiced")
+    };
+    let close = |hz: f32, expected: f32| (1200.0 * (hz / expected).log2()).abs() < 2.0;
+    for (ms, hz) in [
+        (200, 110.0),
+        (700, 220.0),
+        (1200, 440.0),
+        (1700, 880.0),
+        (2200, 1760.0),
+        (2700, 3000.0),
+    ] {
+        assert!(
+            close(pitch_at("sine_ladder", ms), hz),
+            "sine_ladder at {ms} ms"
+        );
+    }
+    for (ms, hz) in [
+        (100, 130.81),
+        (350, 164.81),
+        (600, 196.0),
+        (850, 261.63),
+        (1100, 196.0),
+        (1350, 164.81),
+        (1600, 130.81),
+    ] {
+        assert!(close(pitch_at("steps", ms), hz), "steps at {ms} ms");
+    }
+    assert!(close(pitch_at("glide", 100), 110.0));
+    assert!(close(pitch_at("glide", 450), 220.0));
+    assert!(close(pitch_at("glide", 800), 440.0));
+    assert!(close(pitch_at("hum_low", 300), 65.406));
+    assert!(close(pitch_at("noise_bursts", 650), 330.0));
+    assert!(close(
+        pitch_at("whistle", 50),
+        1500.0 * 2.0_f32.powf(20.0 / 1200.0)
+    ));
+    assert!(close(pitch_at("vibrato", 0), 220.0));
+}
