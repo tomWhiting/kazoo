@@ -419,6 +419,39 @@ mod tests {
     }
 
     #[test]
+    fn a_session_with_more_instruments_than_desk_strips_is_rejected() {
+        let one = "[[instrument]]\nname = '808'\n";
+        let full = one.repeat(kazoo_mix::shared::DESK_CHANNELS);
+        assert_eq!(
+            StudioFile::parse(&full).unwrap().instrument.len(),
+            kazoo_mix::shared::DESK_CHANNELS
+        );
+        let error = StudioFile::parse(&format!("{full}{one}"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("strips"), "{error}");
+    }
+
+    #[test]
+    fn path_entries_that_are_files_are_skipped_when_finding_tmux() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/kz-logs")
+            .join(format!("find-tmux-{}", std::process::id()));
+        fs::create_dir_all(directory.join("bin")).unwrap();
+        fs::write(directory.join("file"), "").unwrap();
+        fs::write(directory.join("bin/tmux"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(directory.join("bin/tmux"), fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let path = std::env::join_paths([directory.join("file"), directory.join("bin")]).unwrap();
+        let found = find_tmux(Some(&path));
+        fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(
+            found.unwrap(),
+            Some(std::path::absolute(directory.join("bin/tmux")).unwrap())
+        );
+    }
+
+    #[test]
     fn studio_commands_parse_without_loading_session_files() {
         for operation in ["up", "down"] {
             let parsed = Cli::try_parse_from(["kazoo", "studio", operation, "demo"]).unwrap();

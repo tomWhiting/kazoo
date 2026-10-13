@@ -262,7 +262,97 @@ fn absent_server(stderr: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
     use super::*;
+    use crate::studio::{StudioFile, commands, find_tmux};
+
+    /// A private tmux server under the lane's target folder, reached through a
+    /// wrapper script so the code under test runs the real tmux unchanged.
+    struct Harness {
+        directory: PathBuf,
+        tmux: PathBuf,
+    }
+
+    impl Harness {
+        fn new(label: &str) -> Self {
+            let target = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../target")
+                .canonicalize()
+                .unwrap();
+            let directory = target
+                .join("kz-logs")
+                .join(format!("tm-{label}-{}", std::process::id()));
+            fs::create_dir_all(&directory).unwrap();
+            let real = find_tmux(std::env::var_os("PATH").as_deref())
+                .unwrap()
+                .expect("these tests drive the real tmux, which must be on PATH");
+            let tmux = directory.join("tmux");
+            write_script(
+                &tmux,
+                &format!(
+                    "exec '{}' -S '{}' \"$@\"\n",
+                    real.display(),
+                    directory.join("s").display()
+                ),
+            );
+            Self { directory, tmux }
+        }
+
+        fn script(&self, name: &str, body: &str) -> PathBuf {
+            let path = self.directory.join(name);
+            write_script(&path, body);
+            path
+        }
+
+        fn session_exists(&self, session: &str) -> bool {
+            session_exists(&self.tmux, session).unwrap()
+        }
+
+        fn wait_for_file(&self, name: &str) -> String {
+            let deadline = Instant::now() + DESK_WAIT;
+            loop {
+                match fs::read_to_string(self.directory.join(name)) {
+                    Ok(contents) => return contents,
+                    Err(error) => {
+                        assert!(Instant::now() < deadline, "{name} never appeared: {error}");
+                        std::thread::sleep(PROBE_INTERVAL);
+                    }
+                }
+            }
+        }
+    }
+
+    impl Drop for Harness {
+        fn drop(&mut self) {
+            match Command::new(&self.tmux).arg("kill-server").output() {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => eprintln!(
+                    "harness kill-server: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+                Err(error) => eprintln!("harness kill-server: {error}"),
+            }
+            if let Err(error) = fs::remove_dir_all(&self.directory) {
+                eprintln!("harness cleanup {}: {error}", self.directory.display());
+            }
+        }
+    }
+
+    fn write_script(path: &Path, body: &str) {
+        fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Start a studio whose desk is `desk`, exactly as `up` starts one.
+    fn start_desk(harness: &Harness, desk: &Path) -> (LaunchPlan, u32) {
+        let plan = commands("demo", &StudioFile::default(), desk).unwrap();
+        let started = output(&harness.tmux, &plan.commands[0].args).unwrap();
+        let pid = parse_pid(std::str::from_utf8(&started.stdout).unwrap().trim()).unwrap();
+        (plan, pid)
+    }
 
     #[test]
     fn invalid_pids_cannot_signal_a_process_group() {
@@ -270,5 +360,88 @@ mod tests {
             assert!(parse_pid(text).is_err(), "{text}");
         }
         assert_eq!(parse_pid("1234").unwrap(), 1234);
+    }
+
+    #[test]
+    fn down_sends_sigterm_to_the_desk_before_killing_the_session() {
+        let harness = Harness::new("term");
+        let directory = harness.directory.display().to_string();
+        let desk = harness.script(
+            "desk",
+            &format!(
+                "trap 'echo term > \"{directory}/term\"; exit 0' TERM\n\
+                 echo up > \"{directory}/ready\"\n\
+                 while :; do sleep 0.05; done\n"
+            ),
+        );
+        let (plan, _) = start_desk(&harness, &desk);
+        harness.wait_for_file("ready");
+        down(&harness.tmux, &plan.session, &plan.children[0]).unwrap();
+        assert_eq!(harness.wait_for_file("term"), "term\n");
+        assert!(!harness.session_exists(&plan.session));
+    }
+
+    #[test]
+    fn down_leaves_a_session_studio_did_not_start() {
+        let harness = Harness::new("foreign");
+        output(
+            &harness.tmux,
+            &[
+                "new-session".into(),
+                "-d".into(),
+                "-s".into(),
+                "kazoo-demo".into(),
+                "exec sleep 30".into(),
+            ],
+        )
+        .unwrap();
+        let desk = harness.script("desk", "exit 0\n");
+        let plan = commands("demo", &StudioFile::default(), &desk).unwrap();
+        let error = down(&harness.tmux, &plan.session, &plan.children[0]).unwrap_err();
+        assert!(error.to_string().contains("not started by kazoo studio"), "{error}");
+        assert!(harness.session_exists("kazoo-demo"));
+    }
+
+    #[test]
+    fn down_kills_the_session_even_when_the_desk_ignores_sigterm() {
+        let harness = Harness::new("stubborn");
+        let directory = harness.directory.display().to_string();
+        let desk = harness.script(
+            "desk",
+            &format!(
+                "trap '' TERM\n\
+                 echo up > \"{directory}/ready\"\n\
+                 while :; do sleep 0.05; done\n"
+            ),
+        );
+        let (plan, _) = start_desk(&harness, &desk);
+        harness.wait_for_file("ready");
+        let error = down(&harness.tmux, &plan.session, &plan.children[0]).unwrap_err();
+        assert!(error.to_string().contains("SIGTERM"), "{error}");
+        assert!(!harness.session_exists(&plan.session));
+    }
+
+    #[test]
+    fn a_desk_that_dies_shows_its_output_and_runs_in_the_studio_runtime() {
+        let harness = Harness::new("dies");
+        let desk = harness.script(
+            "desk",
+            "echo \"runtime=$XDG_RUNTIME_DIR\"\necho 'cannot open the output device' >&2\nexit 1\n",
+        );
+        let (plan, pid) = start_desk(&harness, &desk);
+        let error = wait_for_desk(
+            &harness.tmux,
+            &plan.session,
+            &harness.directory.join("hub.sock"),
+            pid,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("cannot open the output device"), "{error}");
+        assert!(
+            error.contains(&format!("runtime={}", harness.directory.display())),
+            "{error}"
+        );
     }
 }
