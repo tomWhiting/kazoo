@@ -1,6 +1,6 @@
 use super::*;
 use kazoo_core::ipc::protocol::{AUDIO_PAYLOAD_HEADER, encode_audio_payload};
-use kazoo_core::ipc::types::MSG_AUDIO;
+use kazoo_core::ipc::types::{MSG_AUDIO, PROTOCOL_VERSION};
 
 struct Writer<'a>(&'a mut HubIpcClient);
 impl std::io::Write for Writer<'_> {
@@ -72,7 +72,10 @@ fn a_version_2_instrument_is_told_to_rebuild() {
     let refused = HubIpcClient::register_at(&rig.socket, &register).unwrap_err();
     let text = refused.to_string();
     assert!(
-        text.contains("protocol 2") && text.contains('3') && text.contains("rebuild"),
+        text.contains("protocol 2")
+            && text.contains(&format!("the desk speaks {PROTOCOL_VERSION}"))
+            && PROTOCOL_VERSION == 3
+            && text.contains("rebuild"),
         "{text}"
     );
     assert!(matches!(rig.notice(), HubNotice::Refused { .. }));
