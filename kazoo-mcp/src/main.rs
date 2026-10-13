@@ -1,7 +1,7 @@
 //! kazoo-mcp on its own: the same instrument `kazoo mcp` runs.
 
 fn main() -> std::process::ExitCode {
-    let installed = color_eyre::install();
+    let installed = kazoo_host::reports::install();
     let result = installed.and_then(|()| kazoo_mcp::cli(std::env::args().skip(1)));
     report(result)
 }

@@ -12,7 +12,6 @@ pub mod modular;
 mod preset;
 mod run;
 pub mod synth;
-mod terminal;
 mod ui;
 
 pub use run::{Args, USAGE, cli, parse_args, run};

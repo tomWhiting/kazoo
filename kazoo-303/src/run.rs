@@ -4,8 +4,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::execute;
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use kazoo_core::host::link::{LinkSetup, connect_or_direct};
 use kazoo_core::ipc::link::{HubLink, LinkStatus};
@@ -76,7 +74,7 @@ const SWING_STEP: f64 = 0.01;
 /// Run the instrument until it quits: audio, desk link, terminal, event loop.
 ///
 /// Error reports must already be installed by the caller
-/// (`color_eyre::install`); this never installs them, so one process can
+/// (`kazoo_host::reports::install`); this never installs them, so one process can
 /// run several instruments one after another.
 pub fn run(args: Args) -> color_eyre::Result<()> {
     let Args = args;
@@ -107,14 +105,14 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     );
     let stream = prepared.open(move |data, _| engine.render(data))?;
 
-    let mut terminal = setup_terminal()?;
+    let mut terminal = kazoo_host::terminal::enter()?;
 
     // Device rates are whole numbers of Hz, well inside f32's exact range.
     let mut app = App::new(sample_rate as f32);
     let result = run_event_loop(&mut terminal, &mut app, &cmd_tx, &shared, &hub, &stream);
 
     // Always restore the terminal, even if the loop failed.
-    let restored = restore_terminal(&mut terminal);
+    let restored = terminal.leave();
     // Stop audio, then leave the desk.
     drop(stream);
     drop(hub);
@@ -126,43 +124,6 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
             "restoring the terminal also failed: {restore_error}"
         ))),
     }
-}
-
-/// Enter raw mode and the alternate screen. On failure, whatever was already
-/// changed is undone before returning.
-fn setup_terminal() -> color_eyre::Result<Terminal<CrosstermBackend<io::Stdout>>> {
-    terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
-        return Err(undo_setup(error, false));
-    }
-    Terminal::new(CrosstermBackend::new(stdout)).map_err(|error| undo_setup(error, true))
-}
-
-/// Undo a partial [`setup_terminal`], attaching any cleanup failure to `error`.
-fn undo_setup(error: io::Error, alternate: bool) -> color_eyre::Report {
-    let leave = if alternate {
-        execute!(io::stdout(), LeaveAlternateScreen)
-    } else {
-        Ok(())
-    };
-    let raw = terminal::disable_raw_mode();
-    let report = color_eyre::Report::new(error).wrap_err("could not set up the terminal");
-    match leave.and(raw) {
-        Ok(()) => report,
-        Err(cleanup_error) => report.wrap_err(format!(
-            "and could not restore it afterwards: {cleanup_error}"
-        )),
-    }
-}
-
-/// Undo every terminal change. Every step is attempted even if an earlier one
-/// fails; the first failure is returned.
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
-    let raw = terminal::disable_raw_mode();
-    let leave = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let cursor = terminal.show_cursor();
-    raw.and(leave).and(cursor)
 }
 
 /// Audio stream health, read from the engine each frame.

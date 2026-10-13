@@ -61,7 +61,7 @@ fn parse_invocation(args: impl IntoIterator<Item = String>) -> Result<Invocation
 
 /// Print help or version output, or serve a seat from command-line arguments.
 ///
-/// The caller installs error reports once with `color_eyre::install`.
+/// The caller installs error reports once with `kazoo_host::reports::install`.
 ///
 /// # Errors
 ///
@@ -92,7 +92,7 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> color_eyre::Result<()> {
 
 /// Serve stdio until EOF with a runtime owned and dropped by this call.
 ///
-/// The caller installs error reports once with `color_eyre::install`.
+/// The caller installs error reports once with `kazoo_host::reports::install`.
 /// This never installs them, allowing several instruments in one process.
 ///
 /// # Errors

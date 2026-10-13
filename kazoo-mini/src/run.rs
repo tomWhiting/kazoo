@@ -14,9 +14,9 @@ use crate::audio::{
 };
 use crate::command::CommandLink;
 use crate::params::MiniParams;
-use crate::terminal::Tui;
+use kazoo_host::terminal::Terminal as Tui;
 
-use crate::{audio, input, terminal, ui};
+use crate::{audio, input, ui};
 
 /// What the command line gave: nothing yet for this instrument.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -85,7 +85,7 @@ struct UiChannels<'a> {
 /// Run the instrument until it quits: audio, desk link, terminal, event loop.
 ///
 /// Error reports must already be installed by the caller
-/// (`color_eyre::install`); this never installs them, so one process can
+/// (`kazoo_host::reports::install`); this never installs them, so one process can
 /// run several instruments one after another.
 pub fn run(args: Args) -> color_eyre::Result<()> {
     let Args = args;
@@ -136,10 +136,14 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Terminal + event loop
     // -----------------------------------------------------------------------
 
-    let (mut tui, keyboard) = terminal::setup_terminal()?;
+    let mut tui = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
+        mouse: false,
+        key_release_events: true,
+    })?;
+    let keyboard = tui.key_releases().clone();
 
     let mut app = App::new(sample_rate);
-    app.key_releases = keyboard.clone();
+    app.key_releases = keyboard;
     let mut channels = UiChannels {
         commands: CommandLink::new(cmd_tx),
         display_rx,
@@ -157,8 +161,14 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     drop(stream);
     drop(channels);
     drop(hub);
-    let restored = terminal::restore_terminal(&mut tui, &keyboard);
-    terminal::finish("kazoo-mini", result, restored)
+    let restored = tui.leave();
+    match (result, restored) {
+        (Ok(()), restored) => restored.map_err(Into::into),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(restore_error)) => Err(error.wrap_err(format!(
+            "could not fully restore the terminal either: {restore_error}"
+        ))),
+    }
 }
 
 /// The UI event loop.

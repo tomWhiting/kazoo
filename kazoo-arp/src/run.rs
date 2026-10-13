@@ -3,12 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
-    self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
-use crossterm::execute;
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::event::{self, Event};
 use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -137,7 +132,7 @@ type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 /// Run the instrument until it quits: audio, desk link, terminal, event loop.
 ///
 /// Error reports must already be installed by the caller
-/// (`color_eyre::install`); this never installs them, so one process can
+/// (`kazoo_host::reports::install`); this never installs them, so one process can
 /// run several instruments one after another.
 pub fn run(args: Args) -> color_eyre::Result<()> {
     // -----------------------------------------------------------------------
@@ -179,7 +174,16 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Terminal setup
     // -----------------------------------------------------------------------
 
-    let (mut terminal, key_mode, key_mode_reason) = setup_terminal()?;
+    let mut terminal = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
+        mouse: false,
+        key_release_events: true,
+    })?;
+    let (key_mode, key_mode_reason) = match terminal.key_releases() {
+        kazoo_host::terminal::KeyReleases::Reported => (KeyMode::Hold, None),
+        kazoo_host::terminal::KeyReleases::NotAsked
+        | kazoo_host::terminal::KeyReleases::Unsupported => (KeyMode::Toggle, None),
+        kazoo_host::terminal::KeyReleases::Failed(why) => (KeyMode::Toggle, Some(why.clone())),
+    };
 
     let mut app = App::new(
         f64::from(sample_rate),
@@ -195,7 +199,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     drop(stream);
     let released = release_driven(&shared, args.target, &hub);
     drop(hub);
-    let restored = restore_terminal(&mut terminal, key_mode);
+    let restored = terminal.leave();
     let result = result.and_then(|()| released.map_err(|why| color_eyre::eyre::eyre!(why)));
 
     match (result, restored) {
@@ -229,80 +233,6 @@ fn release_driven(shared: &EngineShared, target: [u8; 16], hub: &HubLink) -> Res
             "the last driven note could not be released: the link refused it as invalid".to_owned(),
         ),
     }
-}
-
-/// Put the terminal into raw mode on the alternate screen, with key
-/// releases when the terminal can report them. On failure the terminal is
-/// put back as it was.
-fn setup_terminal() -> io::Result<(Tui, KeyMode, Option<String>)> {
-    terminal::enable_raw_mode()?;
-    match enter_screen() {
-        Ok(setup) => Ok(setup),
-        Err(err) => match terminal::disable_raw_mode() {
-            Ok(()) => Err(err),
-            Err(raw_err) => Err(io::Error::other(format!(
-                "{err}; leaving raw mode also failed: {raw_err}"
-            ))),
-        },
-    }
-}
-
-fn enter_screen() -> io::Result<(Tui, KeyMode, Option<String>)> {
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-
-    // Key releases (kitty keyboard protocol) let notes sound while held.
-    // Without them, notes fall back to tap-on / tap-off.
-    let (key_mode, reason) = match terminal::supports_keyboard_enhancement() {
-        Ok(true) => match execute!(
-            stdout,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
-        ) {
-            Ok(()) => (KeyMode::Hold, None),
-            Err(err) => (
-                KeyMode::Toggle,
-                Some(format!("could not turn on key releases: {err}")),
-            ),
-        },
-        Ok(false) => (KeyMode::Toggle, None),
-        Err(err) => (
-            KeyMode::Toggle,
-            Some(format!(
-                "could not ask the terminal for key releases: {err}"
-            )),
-        ),
-    };
-
-    match Terminal::new(CrosstermBackend::new(stdout)) {
-        Ok(terminal) => Ok((terminal, key_mode, reason)),
-        Err(err) => {
-            let mut stdout = io::stdout();
-            let flags = match key_mode {
-                KeyMode::Hold => execute!(stdout, PopKeyboardEnhancementFlags),
-                KeyMode::Toggle => Ok(()),
-            };
-            let screen = execute!(stdout, LeaveAlternateScreen);
-            match flags.and(screen) {
-                Ok(()) => Err(err),
-                Err(undo_err) => Err(io::Error::other(format!(
-                    "{err}; leaving the alternate screen also failed: {undo_err}"
-                ))),
-            }
-        }
-    }
-}
-
-/// Undo the terminal setup. Every step runs even if an earlier one fails;
-/// the first failure is returned.
-fn restore_terminal(terminal: &mut Tui, key_mode: KeyMode) -> io::Result<()> {
-    let flags = match key_mode {
-        KeyMode::Hold => execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags),
-        KeyMode::Toggle => Ok(()),
-    };
-    let raw = terminal::disable_raw_mode();
-    let screen = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let cursor = terminal.show_cursor();
-    flags.and(raw).and(screen).and(cursor)
 }
 
 /// Main TUI event loop.

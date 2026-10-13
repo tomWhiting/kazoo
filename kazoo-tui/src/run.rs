@@ -56,7 +56,7 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> Result<()> {
 
 /// Run the application with its own runtime until it quits.
 ///
-/// The caller installs error reports once with `color_eyre::install`.
+/// The caller installs error reports once with `kazoo_host::reports::install`.
 /// This drops the runtime before returning, permitting subsequent instruments.
 ///
 /// # Errors
@@ -78,15 +78,6 @@ async fn main_loop(Args: Args) -> Result<()> {
         return tests::stand_in(Args).await;
     }
 
-    // Wrap color-eyre's panic hook so the terminal is restored before the
-    // panic message is printed — otherwise the user sees garbage in the
-    // alternate screen.
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        ratatui::restore();
-        default_hook(info);
-    }));
-
     // Start the audio engine *before* entering the alternate screen so that
     // initialisation errors (missing audio device, etc.) are printed in the
     // user's normal terminal. The engine plugs into the kazoo-mix desk (the
@@ -105,15 +96,23 @@ async fn main_loop(Args: Args) -> Result<()> {
     let mut app = app::App::new(engine, devices);
 
     // Enter the alternate screen and enable raw mode.
-    let mut terminal = ratatui::init();
+    let mut terminal = kazoo_host::terminal::enter()?;
 
     // Run the application event loop.
-    let result = app.run(&mut terminal).await;
+    let result = app
+        .run(&mut terminal)
+        .await
+        .map_err(color_eyre::Report::from);
 
     // Always restore the terminal, even if the event loop errored.
-    ratatui::restore();
-
-    Ok(result?)
+    let restored = terminal.leave();
+    match (result, restored) {
+        (Ok(()), restored) => restored.map_err(Into::into),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(restore_error)) => Err(error.wrap_err(format!(
+            "restoring the terminal also failed: {restore_error}"
+        ))),
+    }
 }
 
 #[cfg(test)]

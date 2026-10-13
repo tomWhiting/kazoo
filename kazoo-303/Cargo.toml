@@ -8,6 +8,7 @@ description = "TB-303 inspired acid bassline synth — all procedural synthesis,
 workspace = true
 
 [dependencies]
+kazoo-host = { path = "../kazoo-host" }
 kazoo-core = { version = "0.1.0", path = "../kazoo-core" }
 color-eyre = "0.6.5"
 cpal = "0.17"

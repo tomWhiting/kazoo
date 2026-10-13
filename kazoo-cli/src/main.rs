@@ -6,8 +6,7 @@ use kazoo::cli::{Cli, Command, WallCommand, console_serve};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    // A04 replaces this with kazoo_host::reports::install.
-    if let Err(err) = color_eyre::install() {
+    if let Err(err) = kazoo_host::reports::install() {
         eprintln!("kazoo: {err}");
         return ExitCode::FAILURE;
     }

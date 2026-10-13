@@ -9,14 +9,7 @@ use crate::audio::{
     MAX_CALLBACK_FRAMES,
 };
 use crossbeam_channel::TrySendError;
-use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    self, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use kazoo_core::host::audio::{OpenedOutput, OutputRequest};
 use kazoo_core::host::link::{LinkSetup, connect_or_direct};
 use kazoo_core::ipc::link::HubLink;
@@ -78,7 +71,7 @@ type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 /// Run the instrument until it quits: audio, desk link, terminal, event loop.
 ///
 /// Error reports must already be installed by the caller
-/// (`color_eyre::install`); this never installs them, so one process can
+/// (`kazoo_host::reports::install`); this never installs them, so one process can
 /// run several instruments one after another.
 pub fn run(args: Args) -> color_eyre::Result<()> {
     let Args = args;
@@ -111,8 +104,16 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     );
     let stream = prepared.open(move |data, _| engine.render(data))?;
 
-    let (mut terminal, keyboard) = setup_terminal()?;
-    let release_events = matches!(keyboard, KeyReleases::Reported);
+    let mut terminal = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
+        mouse: false,
+        key_release_events: true,
+    })?;
+    let keyboard = match terminal.key_releases() {
+        kazoo_host::terminal::KeyReleases::Reported => KeyReleases::Reported,
+        kazoo_host::terminal::KeyReleases::NotAsked
+        | kazoo_host::terminal::KeyReleases::Unsupported => KeyReleases::Unsupported,
+        kazoo_host::terminal::KeyReleases::Failed(why) => KeyReleases::Failed(why.clone()),
+    };
 
     let mut app = App::new(sample_rate as u32);
     app.key_release_note = keyboard.note();
@@ -128,7 +129,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
 
     // Always restore the terminal, even if the loop failed. Dropping the
     // stream silences every voice; the desk is left once audio has stopped.
-    let restored = restore_terminal(&mut terminal, release_events);
+    let restored = terminal.leave();
     drop(stream);
     drop(hub);
 
@@ -207,69 +208,6 @@ impl KeyReleases {
             Self::Failed(why) => Some(format!("{why}: notes hold until Space")),
         }
     }
-}
-
-/// Enter raw mode and the alternate screen and ask for key-release events.
-/// On failure, whatever was already changed is undone before returning.
-fn setup_terminal() -> color_eyre::Result<(Tui, KeyReleases)> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
-        return Err(undo_setup(error, false, false));
-    }
-    let keyboard = match terminal::supports_keyboard_enhancement() {
-        Ok(true) => match execute!(
-            stdout,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
-        ) {
-            Ok(()) => KeyReleases::Reported,
-            Err(error) => KeyReleases::Failed(format!("could not enable key releases ({error})")),
-        },
-        Ok(false) => KeyReleases::Unsupported,
-        Err(error) => KeyReleases::Failed(format!("could not query the keyboard ({error})")),
-    };
-    let pushed = matches!(keyboard, KeyReleases::Reported);
-    match Terminal::new(CrosstermBackend::new(stdout)) {
-        Ok(terminal) => Ok((terminal, keyboard)),
-        Err(error) => Err(undo_setup(error, true, pushed)),
-    }
-}
-
-/// Undo a partial [`setup_terminal`], attaching any cleanup failure to `error`.
-fn undo_setup(error: io::Error, alternate: bool, pushed: bool) -> color_eyre::Report {
-    let mut stdout = io::stdout();
-    let pop = if pushed {
-        execute!(stdout, PopKeyboardEnhancementFlags)
-    } else {
-        Ok(())
-    };
-    let leave = if alternate {
-        execute!(stdout, LeaveAlternateScreen)
-    } else {
-        Ok(())
-    };
-    let raw = disable_raw_mode();
-    let report = color_eyre::Report::new(error).wrap_err("could not set up the terminal");
-    match pop.and(leave).and(raw) {
-        Ok(()) => report,
-        Err(cleanup_error) => report.wrap_err(format!(
-            "and could not restore it afterwards: {cleanup_error}"
-        )),
-    }
-}
-
-/// Undo every terminal change. Every step is attempted even if an earlier one
-/// fails; the first failure is returned.
-fn restore_terminal(terminal: &mut Tui, release_events: bool) -> io::Result<()> {
-    let pop = if release_events {
-        execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)
-    } else {
-        Ok(())
-    };
-    let raw = disable_raw_mode();
-    let leave = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let cursor = terminal.show_cursor();
-    pop.and(raw).and(leave).and(cursor)
 }
 
 fn process_event(

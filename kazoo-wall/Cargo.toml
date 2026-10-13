@@ -9,6 +9,7 @@ description = "The wall: a shared modular synth that never stops"
 workspace = true
 
 [dependencies]
+kazoo-host = { path = "../kazoo-host" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 color-eyre = "0.6.5"
 cpal = "0.17.1"

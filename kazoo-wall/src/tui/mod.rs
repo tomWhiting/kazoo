@@ -15,7 +15,7 @@
 //! - [`layout`] hangs the module panels.
 //! - [`knob`] works out knob travel and values.
 //! - [`theme`] holds the colours and glyphs.
-//! - [`terminal`] takes over the terminal and gives it back.
+//! - [`kazoo_host::terminal`] takes over the terminal and gives it back.
 
 mod app;
 mod draw;
@@ -25,7 +25,6 @@ mod layout;
 mod link;
 mod log;
 mod rack;
-mod terminal;
 mod theme;
 mod worker;
 
@@ -42,7 +41,6 @@ use crate::daemon::{self, ServeCommand};
 use crate::paths;
 
 use app::{App, Exit, unix_now};
-use terminal::TerminalGuard;
 use worker::{Config, Connection};
 
 /// The seat the console speaks as.
@@ -101,19 +99,19 @@ pub fn run(serve: ServeCommand) -> color_eyre::Result<()> {
         }
         Err(why) => (None, Some(why)),
     };
-    let mut guard = TerminalGuard::enter()
-        .map_err(|err| color_eyre::eyre::eyre!("the terminal could not be used: {err}"))?;
+    let mut guard = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
+        mouse: true,
+        key_release_events: false,
+    })
+    .map_err(|err| color_eyre::eyre::eyre!("the terminal could not be used: {err}"))?;
     if let Some(why) = guard.mouse_refused() {
         app.mouse_refused(why, Instant::now());
     }
     if let Some(why) = refused {
         app.prefs_trouble(why, Instant::now());
     }
-    let result = guard.terminal_mut().map_or_else(
-        || Err("the terminal was given back before the console started".to_string()),
-        |terminal| console(terminal, &mut app, &connection, prefs_file.as_deref()),
-    );
-    let restored = guard.restore();
+    let result = console(&mut guard, &mut app, &connection, prefs_file.as_deref());
+    let restored = guard.leave();
     drop(connection);
     match (result, restored) {
         (Err(err), Err(restore)) => Err(color_eyre::eyre::eyre!(

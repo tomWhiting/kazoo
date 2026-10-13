@@ -14,10 +14,10 @@ use crate::hub::{Hub, HubConfig, HubNotice, HubStopped, LeaveReason, PATCH_CAPAC
 use crate::patchbay::{PatchbayHub, patchbay};
 use crate::shared::{DESK_CHANNELS, SharedState};
 use crate::source::DemoEightOhEight;
-use crate::terminal::{MixTerminal, TerminalGuard};
 use crate::ui::{self, HubPriority, StatusInfo};
 use kazoo_core::ipc::link::LinkStatus;
 use kazoo_core::realtime::NotRealTime;
+use kazoo_host::terminal::Terminal as MixTerminal;
 
 /// Desk redraw interval (~30 fps).
 const UI_TICK: Duration = Duration::from_millis(33);
@@ -87,7 +87,7 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> Result<()> {
 /// Run the studio desk until it quits: audio, instrument hub and terminal.
 ///
 /// Error reports must already be installed by the caller with
-/// `color_eyre::install`; this never installs them.
+/// `kazoo_host::reports::install`; this never installs them.
 pub fn run(args: Args) -> Result<()> {
     // Open audio and the hub before taking over the terminal, so a failure
     // prints a readable error instead of vanishing with the alternate screen.
@@ -107,19 +107,25 @@ pub fn run(args: Args) -> Result<()> {
     } else {
         None
     };
-    let mut terminal_guard = TerminalGuard::enter();
-    let mouse = terminal_guard.mouse_enabled();
+    let mut terminal_guard = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
+        mouse: true,
+        key_release_events: false,
+    })?;
+    let mouse = terminal_guard.mouse_captured();
 
-    let result = terminal_guard.terminal_mut().map_or_else(
-        || Err(eyre!("terminal was restored before the desk started")),
-        |terminal| run_desk(terminal, &audio, &hub, demo.as_ref(), mouse),
-    );
+    let result = run_desk(&mut terminal_guard, &audio, &hub, demo.as_ref(), mouse);
 
     drop(demo);
     drop(hub);
     drop(audio);
-    terminal_guard.restore()?;
-    result
+    let restored = terminal_guard.leave();
+    match (result, restored) {
+        (Ok(()), restored) => restored.map_err(Into::into),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(restore_error)) => Err(error.wrap_err(format!(
+            "restoring the terminal also failed: {restore_error}"
+        ))),
+    }
 }
 
 fn run_desk(
