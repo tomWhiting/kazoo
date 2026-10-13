@@ -345,3 +345,19 @@ fn a_sustained_rise_does_not_reuse_flux_onsets() {
     gate.flux(6464);
     assert!(gate.frame(6464, true, -15.0, -20.0).1);
 }
+#[test]
+fn a_hot_input_over_full_scale_is_still_a_voice() {
+    // A float input with gain before it can run a few dB over full scale;
+    // that is a loud note, not a fault, and it must not reset the tracker.
+    let output = frames(&sine(220.0, 24_000, 1.4));
+    let after = output.iter().filter(|f| f.at >= 2400);
+    let mut count = 0;
+    for f in after {
+        count += 1;
+        assert!(f.gate && f.voiced, "{f:?}");
+        assert!((1200.0 * (f.hz / 220.0).log2()).abs() < 10.0, "{f:?}");
+    }
+    assert!(count > 300);
+    let onsets = output.iter().filter(|f| f.onset).count();
+    assert_eq!(onsets, 1);
+}

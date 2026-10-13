@@ -32,6 +32,11 @@ pub const LOUDNESS_ATTACK_MS: f32 = 5.0;
 pub const LOUDNESS_RELEASE_MS: f32 = 50.0;
 /// Breath changes at syllable speed rather than cycle speed.
 pub const BREATH_SMOOTH_MS: f32 = 20.0;
+/// Past +12 dBFS a sample is a fault, not a voice: a converter delivers at
+/// most full scale, and a float path with gain before it overshoots by a few
+/// dB at most. A fault resets the tracker; anything up to it is a loud note,
+/// clipped to full scale as the cycle tracker clips it.
+pub const INPUT_FAULT_LEVEL: f32 = 4.0;
 
 /// Callback-safe voice facts from a preallocated cycle history and judge verdicts.
 #[derive(Debug)]
@@ -134,9 +139,8 @@ impl VoiceTracker {
     /// Process arbitrary callback sizes, emitting once per fixed 64-sample hop.
     pub fn process(&mut self, mic: &[f32], mut emit: impl FnMut(VoiceFrame)) {
         for &sample in mic {
-            let valid = sample.is_finite() && sample.abs() <= 1.0;
-            let x = if valid {
-                sample
+            let x = if sample.is_finite() && sample.abs() <= INPUT_FAULT_LEVEL {
+                sample.clamp(-1.0, 1.0)
             } else {
                 self.invalid_frame = true;
                 self.cycle.unlock();
