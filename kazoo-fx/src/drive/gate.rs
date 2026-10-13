@@ -243,9 +243,7 @@ impl Effect for Gate {
     }
 
     fn set_param(&mut self, index: usize, value: f32) {
-        if value.is_finite() {
-            self.knobs.set(index, value);
-        }
+        self.knobs.set(index, value);
     }
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
@@ -554,6 +552,25 @@ mod tests {
                 .iter()
                 .all(|x| x.is_finite())
         );
+    }
+
+    /// As every knob in the family takes it (`Knobs::set`), an infinite
+    /// setting is held at the knob's end: a threshold of +Inf is 0 dB, and
+    /// a -20 dBFS tone stays shut out.
+    #[test]
+    fn an_infinite_setting_is_held_at_the_knobs_end() {
+        let mut gate = built();
+        gate.set_param(0, f32::INFINITY);
+        gate.reset();
+        let tone = sine(1_000.0, 0.1, 0.1);
+        let output = render_mono(&mut *gate, &tone);
+        for (x, y) in tone.iter().zip(&output).filter(|(x, _)| x.abs() > 1e-6) {
+            assert!(
+                (gain_db(*x, *y) + 90.0).abs() < 0.01,
+                "gain {} dB with the threshold at +Inf",
+                gain_db(*x, *y)
+            );
+        }
     }
 
     #[test]
