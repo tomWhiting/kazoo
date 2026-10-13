@@ -20,6 +20,15 @@ pub const JUDGE_FRAMES: usize = 3;
 /// under the 2.1 ms budget.
 pub const JUDGE_RESOLUTION: f64 = 0.34;
 
+/// The largest pYIN transition table a detector may build, in bytes.
+///
+/// pYIN 1.2 builds a dense `(2 × pitch_bins)²` table of `f64`s inside
+/// `PYINExecutor::new`. The largest any caller uses is the engine's (0.1 over
+/// 60–1000 Hz) and the wall listener's (0.1 over its range), both under 19 MB.
+/// A 64 MiB ceiling leaves room for 0.1 over the full 50–4000 Hz voice range
+/// (about 18.4 MB) and refuses 0.05 over that range (about 73.7 MB).
+const PYIN_TABLE_CEILING: f64 = 64.0 * 1024.0 * 1024.0;
+
 /// Configuration for the pitch detector.
 #[derive(Debug, Clone)]
 pub struct PitchDetectorConfig {
@@ -343,6 +352,15 @@ fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
     if pitch_bins < 2.0 {
         return Err(crate::Error::Config(format!(
             "range [{fmin}, {fmax}] Hz holds fewer than 2 pyin pitch bins"
+        )));
+    }
+
+    let table = (2.0 * pitch_bins).powi(2) * 8.0;
+    if table > PYIN_TABLE_CEILING {
+        return Err(crate::Error::Config(format!(
+            "resolution {} over [{fmin}, {fmax}] Hz needs a {:.1} MiB pyin table, more than the 64 MiB ceiling",
+            config.resolution,
+            table / 1_048_576.0
         )));
     }
 

@@ -417,3 +417,50 @@ fn reset_forgets_the_voice() {
         after.frequency
     );
 }
+
+/// pYIN builds a dense `(2 × pitch_bins)²` table of `f64`s; at resolution
+/// 0.01 over 50–4000 Hz that is about 1.8 GB. A table past the 64 MiB ceiling
+/// is refused by `validate`, before `new` allocates anything, and the refusal
+/// names the size; the configs callers use are still accepted.
+#[test]
+fn a_pyin_table_past_the_ceiling_is_refused() {
+    let voice_range = PitchDetectorConfig {
+        min_frequency: 50.0,
+        max_frequency: 4_000.0,
+        ..PitchDetectorConfig::for_rate(48_000)
+    };
+    for (resolution, size) in [(0.01, "1756.7 MiB"), (0.05, "70.3 MiB")] {
+        let asked = PitchDetectorConfig {
+            resolution,
+            ..voice_range.clone()
+        };
+        for config in [asked.clone(), asked.with_longest_hop()] {
+            let refused = validate(&config).expect_err("an oversized table is refused");
+            assert!(
+                matches!(refused, crate::Error::Config(ref message) if message.contains(size)),
+                "resolution {resolution}: {refused}"
+            );
+            let built = PitchDetector::new(config).map(|_| ());
+            assert!(
+                matches!(built, Err(crate::Error::Config(ref message)) if message.contains(size)),
+                "resolution {resolution}: {built:?}"
+            );
+        }
+    }
+    let full_range = PitchDetectorConfig {
+        resolution: 0.1,
+        ..voice_range
+    };
+    assert!(validate(&full_range).is_ok());
+    let engine = crate::engine::judge_config(&crate::engine::EngineConfig::default().pitch, 48_000);
+    assert!(validate(&engine).is_ok(), "{engine:?}");
+    assert!(validate(&PitchDetectorConfig::for_rate(48_000)).is_ok());
+    // A narrow range at a fine resolution is still allowed when it fits.
+    let narrow = PitchDetectorConfig {
+        min_frequency: 200.0,
+        max_frequency: 400.0,
+        resolution: 0.01,
+        ..PitchDetectorConfig::for_rate(48_000)
+    };
+    assert!(validate(&narrow).is_ok());
+}

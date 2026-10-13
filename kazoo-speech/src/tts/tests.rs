@@ -13,8 +13,13 @@ fn fake_say(dir: &Path, body: &str) -> PathBuf {
     path
 }
 
-/// A 32-bit float mono WAVE of a 300 Hz tone at `rate`.
+/// A 32-bit float mono WAVE of half a second of a 300 Hz tone at `rate`.
 fn tone_wav(path: &Path, rate: u32) {
+    tone_wav_frames(path, rate, rate / 2);
+}
+
+/// A 32-bit float mono WAVE of `frames` samples of a 300 Hz tone at `rate`.
+fn tone_wav_frames(path: &Path, rate: u32, frames: u32) {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: rate,
@@ -22,7 +27,7 @@ fn tone_wav(path: &Path, rate: u32) {
         sample_format: hound::SampleFormat::Float,
     };
     let mut writer = hound::WavWriter::create(path, spec).expect("create wav");
-    for n in 0..rate / 2 {
+    for n in 0..frames {
         let t = n as f32 / rate as f32;
         writer
             .write_sample(0.3 * (std::f32::consts::TAU * 300.0 * t).sin())
@@ -352,4 +357,95 @@ fn say_really_speaks() {
         tts.render(&unknown),
         Err(SpeechError::UnknownVoice(_))
     ));
+}
+
+/// A stand-in `say` that writes an empty WAVE on its first run and `second`
+/// on every later one, logging the output path of each run to `log`.
+fn empty_then(scratch: &Scratch, second: &Path, log: &Path) -> Tts {
+    let empty = scratch.0.join("empty.wav");
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 22_050,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    hound::WavWriter::create(&empty, spec)
+        .expect("create empty wav")
+        .finalize()
+        .expect("finalise empty wav");
+    let say = fake_say(
+        &scratch.0,
+        &format!(
+            "if [ -s '{log}' ]; then cp '{second}' \"$2\"; else cp '{empty}' \"$2\"; fi\n\
+             printf '%s\\n' \"$2\" >> '{log}'",
+            log = log.display(),
+            second = second.display(),
+            empty = empty.display(),
+        ),
+    );
+    tts_with(scratch, say)
+}
+
+/// `say` ran exactly twice, into two different paths, and neither run's
+/// temporary files are left anywhere.
+fn assert_two_runs_cleaned_up(tts: &Tts, log: &Path) {
+    let logged = fs::read_to_string(log).expect("read the run log");
+    let outputs: Vec<&Path> = logged.lines().map(Path::new).collect();
+    assert_eq!(outputs.len(), 2, "say ran {} times", outputs.len());
+    assert_ne!(
+        outputs[0], outputs[1],
+        "the retry renders into a fresh path"
+    );
+    for output in outputs {
+        assert!(!output.exists(), "{} was left behind", output.display());
+        let text = output.with_extension("txt");
+        assert!(!text.exists(), "{} was left behind", text.display());
+    }
+    let temporary = fs::read_dir(&tts.config().cache_dir)
+        .expect("list the cache")
+        .map(|entry| entry.expect("cache entry").file_name())
+        .filter(|name| name.to_string_lossy().starts_with("tmp-"))
+        .count();
+    assert_eq!(temporary, 0);
+}
+
+#[test]
+fn an_empty_render_is_tried_once_more() {
+    let scratch = Scratch::new("tts-retry");
+    let tone = scratch.0.join("tone.wav");
+    tone_wav_frames(&tone, 22_050, 22_050);
+    let log = scratch.0.join("runs");
+    let mut tts = empty_then(&scratch, &tone, &log);
+    let render = tts
+        .render(&RenderRequest::new("hello", 22_050))
+        .expect("the second render is used");
+    assert!(!render.from_cache);
+    assert_eq!(
+        render.phrase.samples().len(),
+        22_050,
+        "one second of the tone"
+    );
+    assert_eq!(
+        render.phrase.samples(),
+        load_wav(&tone, 22_050).expect("the tone").as_slice()
+    );
+    assert_two_runs_cleaned_up(&tts, &log);
+}
+
+#[test]
+fn two_empty_renders_fail_with_their_own_error() {
+    let scratch = Scratch::new("tts-retry-empty");
+    let empty = scratch.0.join("empty.wav");
+    let log = scratch.0.join("runs");
+    let mut tts = empty_then(&scratch, &empty, &log);
+    let error = tts
+        .render(&RenderRequest::new("hello", 22_050))
+        .expect_err("two empty renders fail");
+    assert!(matches!(error, SpeechError::EmptyRenderTwice), "{error}");
+    assert_eq!(error.to_string(), "say rendered no audio twice");
+    assert_two_runs_cleaned_up(&tts, &log);
+    let cached = fs::read_dir(&tts.config().cache_dir)
+        .expect("list the cache")
+        .count();
+    assert_eq!(cached, 0, "nothing was cached");
 }

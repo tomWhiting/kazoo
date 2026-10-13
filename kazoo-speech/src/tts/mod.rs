@@ -117,6 +117,8 @@ pub enum SpeechError {
     BadRender(String),
     /// `say` rendered no audio at all.
     EmptyRender,
+    /// `say` rendered no audio on either attempt.
+    EmptyRenderTwice,
     /// No home directory to keep the cache under.
     NoHome,
     /// The cache directory or `say` path is relative.
@@ -174,6 +176,7 @@ impl fmt::Display for SpeechError {
             ),
             Self::BadRender(why) => write!(formatter, "say's output was not usable: {why}"),
             Self::EmptyRender => write!(formatter, "say rendered no audio"),
+            Self::EmptyRenderTwice => write!(formatter, "say rendered no audio twice"),
             Self::NoHome => write!(
                 formatter,
                 "HOME is not set, so there is nowhere to keep the speech cache"
@@ -466,7 +469,15 @@ impl Tts {
                 return Ok(render);
             }
         }
-        let samples = self.run_say(&text, resolved.as_deref(), request)?;
+        let samples = match self.run_say(&text, resolved.as_deref(), request) {
+            Err(SpeechError::EmptyRender) => {
+                match self.run_say(&text, resolved.as_deref(), request) {
+                    Err(SpeechError::EmptyRender) => return Err(SpeechError::EmptyRenderTwice),
+                    result => result?,
+                }
+            }
+            result => result?,
+        };
         if let Err(source) = self.cache.put(&key, request.sample_rate, &samples) {
             cache_warning = Some(SpeechError::Io {
                 doing: "writing the speech cache",
@@ -536,9 +547,8 @@ impl Tts {
         };
         let result = self.run_say_with(&files, text, voice, request);
         let cleanup = files.remove();
-        let samples = result?;
         cleanup.map_err(io_error("removing temporary speech files"))?;
-        Ok(samples)
+        result
     }
 
     fn run_say_with(
