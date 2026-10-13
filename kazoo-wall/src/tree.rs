@@ -229,6 +229,8 @@ pub fn stamp_births(
             | What::Unpatch { .. }
             | What::Remove { .. }
             | What::Restore { .. }
+            | What::Erase { .. }
+            | What::LoopFrom { .. }
             | What::Speak { .. }
             | What::Migrate { .. }
             | What::Tempo { .. }
@@ -256,6 +258,8 @@ pub(crate) fn has_add(what: &What) -> bool {
         | What::Unpatch { .. }
         | What::Remove { .. }
         | What::Restore { .. }
+        | What::Erase { .. }
+        | What::LoopFrom { .. }
         | What::Speak { .. }
         | What::Migrate { .. }
         | What::Tempo { .. }
@@ -439,6 +443,14 @@ fn validate(file: &PatchFile) -> Result<(), TreeError> {
             )));
         }
     }
+    for id in file.loops.keys() {
+        if !ids.contains(id.as_str()) {
+            return Err(TreeError::NotOneWall(format!(
+                "a loop's tape belongs to missing module '{}'",
+                printable(id)
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -507,6 +519,10 @@ fn module_text(file: &PatchFile, module: &ModuleRecord) -> Result<String, TreeEr
             line(&mut out, "voice", &string(voice));
         }
     }
+    if let Some(record) = file.loops.get(&module.id) {
+        out.push_str("\n[loop]\n");
+        loops::write(&mut out, "loop", record, &path)?;
+    }
     Ok(out)
 }
 
@@ -561,6 +577,11 @@ fn wall_text(file: &PatchFile) -> Result<String, TreeError> {
             line(&mut out, "voice", &string(voice));
         }
     }
+    for retired in &file.retired_loops {
+        out.push_str("\n[[retired_loops]]\n");
+        line(&mut out, "module", &string(&retired.module));
+        loops::write(&mut out, "retired_loops", &retired.record, "wall.toml")?;
+    }
     Ok(out)
 }
 
@@ -593,6 +614,8 @@ struct WallToml {
     groups: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     retired_speech: Vec<RetiredToml>,
+    #[serde(default)]
+    retired_loops: Vec<loops::RetiredLoopToml>,
 }
 
 #[derive(Deserialize)]
@@ -606,6 +629,8 @@ struct ModuleToml {
     inputs: BTreeMap<String, InputToml>,
     dye: Option<BTreeMap<String, f64>>,
     words: Option<WordsToml>,
+    #[serde(rename = "loop")]
+    looped: Option<loops::LoopToml>,
 }
 
 #[derive(Deserialize)]
@@ -674,6 +699,8 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
         cables: Vec::new(),
         dye: BTreeMap::new(),
         speech: BTreeMap::new(),
+        loops: BTreeMap::new(),
+        retired_loops: loops::retired(wall.retired_loops),
         rack: wall.rack,
         groups: wall.groups,
         retired_speech: wall
@@ -722,6 +749,9 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
                 },
             );
         }
+        if let Some(record) = module.looped {
+            file.loops.insert(id.clone(), record.into());
+        }
         file.modules.push(ModuleRecord {
             id,
             kind: module.kind,
@@ -741,5 +771,6 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
     Ok(file)
 }
 
+mod loops;
 #[cfg(test)]
 mod tests;

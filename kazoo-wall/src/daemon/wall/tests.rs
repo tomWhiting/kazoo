@@ -5002,10 +5002,16 @@ fn a_wall_that_fits_its_file_fits_a_look() {
     // else to them. Checked on such a wall (every kind, no names, no dye)
     // and on one with names, dye from six seats on every module, and a
     // cable into each.
-    // Each kind on its own: a wall of a hundred of it, at its defaults.
+    // Each kind on its own: a wall of a hundred of it (of loops, the eight
+    // a wall holds), at its defaults.
     for kind in Kind::all() {
         let mut bare = Patch::empty(120.0);
-        for _ in 0..100 {
+        let count = if kind == Kind::LOOP {
+            crate::daemon::loops::MAX_LOOPS
+        } else {
+            100
+        };
+        for _ in 0..count {
             bare.add(kind.name(), None, None).unwrap();
         }
         let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
@@ -5082,3 +5088,5 @@ fn a_small_heavy_wall_takes_additions_apart_and_says_when_it_is_full() {
 
 mod cost;
 mod unheard;
+
+mod loops;

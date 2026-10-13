@@ -42,11 +42,14 @@ fn audio_kind(dearest: bool) -> Kind {
         .iter()
         .filter_map(|&(name, ns)| {
             let kind = Kind::from_name(name)?;
-            (kind
-                .spec()
-                .inputs
-                .iter()
-                .any(|port| port.signal == crate::catalogue::Signal::Audio)
+            // A loop is always heard (it records whether or not anything
+            // listens), and a wall holds eight: no cable wakes a set of them.
+            (kind != Kind::LOOP
+                && kind
+                    .spec()
+                    .inputs
+                    .iter()
+                    .any(|port| port.signal == crate::catalogue::Signal::Audio)
                 && kind
                     .spec()
                     .outputs

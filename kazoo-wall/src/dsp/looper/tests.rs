@@ -570,3 +570,20 @@ fn a_post_roll_into_the_tail_does_not_make_the_first_bar_younger() {
         );
     }
 }
+
+#[test]
+fn a_post_roll_into_the_tail_never_writes_the_first_bar() {
+    // The fade after the seam goes into the tail, after the loop's end:
+    // the loop's own cells past the splice's crossfade keep exactly what
+    // the punch put there, whatever is still coming in as it fades.
+    let (mut b, mut feed) = bench(1.0);
+    b.knob("record", 1.0);
+    render(&mut b, 32, |_| 0.0);
+    render(&mut b, BAR, |_| 0.75);
+    b.knob("record", 0.0);
+    render(&mut b, TAIL + 32, |_| 0.75);
+    let tape = snap(&mut b, &mut feed);
+    for cell in TAIL..BAR {
+        assert_eq!(tape[2 * cell].to_bits(), 0.75_f32.to_bits(), "cell {cell}");
+    }
+}
