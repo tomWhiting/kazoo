@@ -60,6 +60,7 @@ use crate::sanitize_sample;
 mod audio;
 mod streams;
 pub use streams::StreamConfig;
+use streams::{OLD_DESK_REFUSAL, set_stream_refusal, stream_update};
 
 mod priority;
 mod wire;
@@ -1052,6 +1053,20 @@ fn send_request(
     messages: &mut ringbuf::HeapProd<ToAudio>,
     stuck_since: &mut Option<Instant>,
 ) -> Result<(), String> {
+    if !client.desk_takes_streams()
+        && let Some(update) = stream_update(&request)
+    {
+        // A desk older than named streams answered the registration without
+        // strips and would drop the instrument for a 0x12 or 0x13. The
+        // callback still learns the stream (it plays it itself, having no
+        // strip); the instrument can read why.
+        if let Request::StreamAdd { stream, .. } = request {
+            set_stream_refusal(state, stream, OLD_DESK_REFUSAL);
+        }
+        return messages
+            .try_push(update)
+            .map_err(|_| "callback stream queue is full".to_string());
+    }
     let before = client.pending_bytes();
     let payload_len = match &request {
         Request::Transport { .. } => TransportRequestMsg::WIRE_SIZE,
@@ -1069,18 +1084,7 @@ fn send_request(
     };
     match sent {
         Ok(()) => {
-            let update = match request {
-                Request::StreamAdd { stream, spec } => Some(ToAudio::Stream {
-                    stream,
-                    channels: Some(u16::from(spec.channels)),
-                }),
-                Request::StreamRemove { stream } => Some(ToAudio::Stream {
-                    stream,
-                    channels: None,
-                }),
-                _ => None,
-            };
-            if let Some(update) = update {
+            if let Some(update) = stream_update(&request) {
                 messages
                     .try_push(update)
                     .map_err(|_| "callback stream queue is full".to_string())?;

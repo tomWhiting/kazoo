@@ -4,7 +4,8 @@ use super::super::protocol::{AUDIO_STREAM_PAYLOAD_HEADER, encode_audio_stream_he
 use super::wire::link_ring_bytes;
 use super::{
     AUDIO_PAYLOAD_HEADER, FrameHeader, HEADER_SIZE, HubLinkAudio, MAX_STREAMS, MSG_AUDIO,
-    MSG_STREAM_AUDIO, Observer, Ordering, Producer, StreamId, encode_header, sanitize_sample,
+    MSG_STREAM_AUDIO, NO_STRIP, Observer, Ordering, Producer, StreamId, encode_header,
+    sanitize_sample,
 };
 
 /// What may wait in the link's ring for these streams: a quarter second of
@@ -44,13 +45,24 @@ impl HubLinkAudio {
     }
 
     /// Queue named stream audio without allocation, locking or socket I/O.
-    /// Unknown streams return false without advancing their clock.
+    /// Unknown streams return false without advancing their clock. A known
+    /// stream the desk has not seated (no strip yet, refused, or a desk
+    /// older than named streams) advances its clock and returns false, so
+    /// the instrument plays it itself. Stream 0 goes as plain audio (0x10),
+    /// as [`Self::send_audio`] sends it.
     pub fn send_stream_audio(&mut self, stream: StreamId, frames: u32, samples: &[f32]) -> bool {
         self.update_streams();
         let id = usize::from(stream);
         let Some(channels) = self.stream_channels.get(id).copied().flatten() else {
             return false;
         };
+        if id == 0 {
+            return self.send_block(0, channels, frames, samples, false);
+        }
+        if self.state.strips[id].load(Ordering::Acquire) == NO_STRIP {
+            self.next_frames[id] = self.next_frames[id].wrapping_add(u64::from(frames));
+            return false;
+        }
         self.send_block(stream, channels, frames, samples, true)
     }
 

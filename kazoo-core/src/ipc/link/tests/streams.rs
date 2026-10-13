@@ -258,6 +258,15 @@ fn a_sparse_stream_keeps_its_id_after_reconnect() {
     let add = StreamAddMsg::decode(buf.payload());
     assert_eq!(add.stream, 2);
     assert_eq!(add.spec.name_str(), "lead");
+    StreamReadyMsg {
+        stream: 2,
+        strip: 5,
+    }
+    .encode(buf.payload_mut());
+    buf.write_frame(MSG_STREAM_READY, 0, StreamReadyMsg::WIRE_SIZE, &mut hub)
+        .unwrap();
+    rig.worker.serve().unwrap();
+    assert_eq!(rig.link.stream_strip(2), Some(5));
     while rig.audio.try_recv().is_some() {}
     assert!(!rig.audio.send_stream_audio(1, 1, &[0.0]));
     assert!(rig.audio.send_stream_audio(2, 1, &[0.0; 2]));
@@ -271,6 +280,8 @@ fn detached_host_events_apply_stream_changes_without_exposing_them() {
     let mut rig = Rig::new(vec![]);
     let (mut hub, mut buf, _register) = rig.connect(vec![3]);
     rig.add(&mut hub, &mut buf);
+    rig.ready(&mut hub, &mut buf, 6, "");
+    while rig.audio.try_recv().is_some() {}
     let (sender, receiver) = HeapRb::new(1).split();
     let mut events = std::mem::replace(
         &mut rig.audio.events,

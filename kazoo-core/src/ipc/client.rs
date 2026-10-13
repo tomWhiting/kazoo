@@ -73,6 +73,10 @@ pub struct HubIpcClient {
     /// ([`Self::take_desk_health`]).
     desk_health: Option<DeskHealthMsg>,
     last_stream_refusal: Option<(types::StreamId, String)>,
+    /// Whether the desk answered the registration with a strip per stream:
+    /// a desk older than named streams answers without, and must never be
+    /// sent 0x11, 0x12 or 0x13.
+    desk_takes_streams: bool,
 }
 
 // UnixStream is !Debug on some platforms.
@@ -209,6 +213,7 @@ impl HubIpcClient {
             desk_pace: None,
             desk_health: None,
             last_stream_refusal: None,
+            desk_takes_streams: len != RegisteredMsg::WIRE_SIZE,
         })
     }
 
@@ -217,6 +222,14 @@ impl HubIpcClient {
     #[must_use]
     pub const fn registration(&self) -> &RegisteredMsg {
         &self.registration
+    }
+
+    /// Whether the desk takes named streams: it answered the registration
+    /// with a strip for each. One that did not would drop the instrument
+    /// for a named stream's audio, an add or a remove.
+    #[must_use]
+    pub const fn desk_takes_streams(&self) -> bool {
+        self.desk_takes_streams
     }
 
     /// The instrument ID assigned during construction.

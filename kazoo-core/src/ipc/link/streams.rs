@@ -1,10 +1,10 @@
 //! UI stream changes and registration snapshots; never used by the callback.
 
 use super::{
-    Arc, Duration, HubAddress, HubIpcClient, HubLink, HubMessage, LinkConfig, LinkWorker,
-    MAX_LINK_BLOCK_FRAMES, MAX_RETRY_INTERVAL, MAX_STREAMS, NO_STRIP, Ordering, Producer,
-    RETRY_INTERVAL, RegisterMsg, Request, RequestError, STREAM_NAME_LEN, SYNC_NOW, StreamAddMsg,
-    StreamId, StreamSpec, ToAudio, TransportSyncMsg, discovery, io,
+    Arc, Duration, HubAddress, HubIpcClient, HubLink, HubMessage, LinkConfig, LinkState,
+    LinkWorker, MAX_LINK_BLOCK_FRAMES, MAX_RETRY_INTERVAL, MAX_STREAMS, NO_STRIP, Ordering,
+    Producer, RETRY_INTERVAL, RegisterMsg, Request, RequestError, STREAM_NAME_LEN, SYNC_NOW,
+    StreamAddMsg, StreamId, StreamSpec, ToAudio, TransportSyncMsg, discovery, io,
 };
 use std::sync::Mutex;
 
@@ -206,9 +206,16 @@ impl LinkWorker {
             Ok(mut client) => {
                 // Registration implies contiguous ids. Surviving ids beyond a
                 // removed slot are re-announced explicitly to preserve their ids.
+                // A desk older than named streams is sent none of them.
+                let restore = if client.desk_takes_streams() {
+                    MAX_STREAMS
+                } else {
+                    0
+                };
                 for (id, spec) in streams
                     .iter()
                     .enumerate()
+                    .take(restore)
                     .skip(register.streams.len())
                     .filter_map(|(id, slot)| slot.as_ref().map(|slot| (id, slot.spec())))
                 {
@@ -301,4 +308,31 @@ pub(super) const fn table(
     slots: [Option<StreamConfig>; MAX_STREAMS],
 ) -> Mutex<[Option<StreamConfig>; MAX_STREAMS]> {
     Mutex::new(slots)
+}
+
+/// Why a stream added on a desk older than named streams has no strip.
+pub(super) const OLD_DESK_REFUSAL: &str = "the desk does not take named streams; it answered without strips, so the instrument plays this stream itself";
+
+/// What the callback must learn when a stream request goes out.
+pub(super) fn stream_update(request: &Request) -> Option<ToAudio> {
+    match *request {
+        Request::StreamAdd { stream, spec } => Some(ToAudio::Stream {
+            stream,
+            channels: Some(u16::from(spec.channels)),
+        }),
+        Request::StreamRemove { stream } => Some(ToAudio::Stream {
+            stream,
+            channels: None,
+        }),
+        Request::Transport { .. } | Request::Note(_) => None,
+    }
+}
+
+/// Keep the latest refusal of one stream for [`HubLink::last_stream_refusal`].
+pub(super) fn set_stream_refusal(state: &LinkState, stream: StreamId, reason: &str) {
+    let refusal = Some((stream, reason.to_string()));
+    match state.last_stream_refusal.lock() {
+        Ok(mut slot) => *slot = refusal,
+        Err(poisoned) => *poisoned.into_inner() = refusal,
+    }
 }
