@@ -137,10 +137,19 @@ fn wait_for_desk(
             }
             return Ok(());
         }
-        if !desk_alive(tmux, session, pid)? {
-            return Err(eyre!(
-                "studio desk PID {pid} exited before accepting connections"
-            ));
+        match panes(tmux, session)?.into_iter().find(|pane| pane.pid == pid) {
+            Some(pane) if !pane.dead => {}
+            Some(pane) => {
+                return Err(eyre!(
+                    "studio desk PID {pid} exited before accepting connections; it printed:\n{}",
+                    pane_text(tmux, &pane.id)?
+                ));
+            }
+            None => {
+                return Err(eyre!(
+                    "studio desk PID {pid} exited before accepting connections"
+                ));
+            }
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -165,6 +174,7 @@ fn parse_pid(text: &str) -> Result<u32> {
 
 /// One pane of a studio session, as tmux lists it.
 struct Pane {
+    id: String,
     pid: u32,
     dead: bool,
 }
@@ -176,7 +186,7 @@ fn panes(tmux: &Path, session: &str) -> Result<Vec<Pane>> {
         "-t".into(),
         format!("={session}"),
         "-F".into(),
-        "#{pane_pid}\t#{pane_dead}".into(),
+        "#{pane_id}\t#{pane_pid}\t#{pane_dead}".into(),
     ];
     let output = Command::new(tmux)
         .args(&args)
@@ -198,20 +208,41 @@ fn panes(tmux: &Path, session: &str) -> Result<Vec<Pane>> {
     std::str::from_utf8(&output.stdout)?
         .lines()
         .map(|line| {
-            let (pid, dead) = line
-                .split_once('\t')
-                .ok_or_else(|| eyre!("tmux returned an invalid pane line {line:?}"))?;
+            let mut fields = line.split('\t');
+            let (Some(id), Some(pid), Some(dead), None) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                return Err(eyre!("tmux returned an invalid pane line {line:?}"));
+            };
             let dead = match dead {
                 "0" => false,
                 "1" => true,
                 _ => return Err(eyre!("tmux returned an invalid pane state")),
             };
             Ok(Pane {
+                id: id.to_owned(),
                 pid: parse_pid(pid)?,
                 dead,
             })
         })
         .collect()
+}
+
+/// Everything a pane shows, its scrollback included, without trailing blank lines.
+fn pane_text(tmux: &Path, pane: &str) -> Result<String> {
+    let captured = output(
+        tmux,
+        &[
+            "capture-pane".into(),
+            "-p".into(),
+            "-J".into(),
+            "-S".into(),
+            "-".into(),
+            "-t".into(),
+            pane.into(),
+        ],
+    )?;
+    Ok(String::from_utf8_lossy(&captured.stdout).trim_end().to_owned())
 }
 
 /// Whether a live pane of `session` runs process `pid`. Only such a PID is

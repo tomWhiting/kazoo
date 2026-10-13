@@ -202,6 +202,15 @@ pub fn commands(
             window.clone(),
             DESK_OPTION.into(),
             "#{pane_pid}".into(),
+            // A pane whose program fails stays open with what it printed,
+            // so a desk or instrument that cannot start says why.
+            ";".into(),
+            "set-option".into(),
+            "-w".into(),
+            "-t".into(),
+            window.clone(),
+            "remain-on-exit".into(),
+            "failed".into(),
         ],
     }];
     for child in children.iter().skip(1) {
@@ -428,6 +437,13 @@ mod tests {
                 "=kazoo-demo:",
                 "@kazoo_studio_desk",
                 "#{pane_pid}",
+                ";",
+                "set-option",
+                "-w",
+                "-t",
+                "=kazoo-demo:",
+                "remain-on-exit",
+                "failed",
             ],
             vec![
                 "split-window",
