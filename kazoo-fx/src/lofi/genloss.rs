@@ -347,6 +347,7 @@ struct Lost {
 /// channel.
 #[derive(Debug, Clone)]
 struct Dub {
+    module_seed: Option<u64>,
     passes: [Pass; 2],
     wow: Wobble,
     flutter: Wobble,
@@ -357,15 +358,31 @@ struct Dub {
 }
 
 impl Dub {
-    fn new(index: usize) -> Self {
+    fn reseed(&mut self, seed: Option<u64>) {
+        self.module_seed = seed;
+        for (pass, salt) in self.passes.iter_mut().zip([self.seed + 1, self.seed + 2]) {
+            pass.hiss.reseed(crate::dsp::seeded(seed, salt));
+        }
+        self.wow.reseed(crate::dsp::seeded(seed, self.seed + 3));
+        self.flutter.reseed(crate::dsp::seeded(seed, self.seed + 4));
+        self.dropouts
+            .reseed(crate::dsp::seeded(seed, self.seed + 5));
+        self.ripple_noise = Noise::new(crate::dsp::seeded(seed, self.seed + 6));
+    }
+
+    fn new(index: usize, module_seed: Option<u64>) -> Self {
         let seed = 0x6E11_0000 + (index as u32) * 16;
         Self {
-            passes: [Pass::new(seed + 1), Pass::new(seed + 2)],
-            wow: Wobble::new(&WOW_PARTS, seed + 3),
-            flutter: Wobble::new(&FLUTTER_PARTS, seed + 4),
-            dropouts: Dropouts::new(seed + 5),
+            module_seed,
+            passes: [
+                Pass::new(crate::dsp::seeded(module_seed, seed + 1)),
+                Pass::new(crate::dsp::seeded(module_seed, seed + 2)),
+            ],
+            wow: Wobble::new(&WOW_PARTS, crate::dsp::seeded(module_seed, seed + 3)),
+            flutter: Wobble::new(&FLUTTER_PARTS, crate::dsp::seeded(module_seed, seed + 4)),
+            dropouts: Dropouts::new(crate::dsp::seeded(module_seed, seed + 5)),
             ripple: OnePole::default(),
-            ripple_noise: Noise::new(seed + 6),
+            ripple_noise: Noise::new(crate::dsp::seeded(module_seed, seed + 6)),
             seed,
         }
     }
@@ -378,13 +395,14 @@ impl Dub {
         self.flutter.reset();
         self.dropouts.reset();
         self.ripple.reset();
-        self.ripple_noise = Noise::new(self.seed + 6);
+        self.ripple_noise = Noise::new(crate::dsp::seeded(self.module_seed, self.seed + 6));
     }
 }
 
 /// Generation loss. See the module documentation for the model.
 #[derive(Debug, Clone)]
 pub struct GenLoss {
+    seed: Option<u64>,
     rate: f32,
     knobs: [Smoothed; COUNT],
     shape: [Smoothed; 6],
@@ -408,12 +426,14 @@ impl GenLoss {
     /// A chain at 48 kHz with every knob at its default.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let mut chain = Self {
+            seed,
             rate: 48_000.0,
             knobs: PARAMS.map(|spec| Smoothed::new(spec.default)),
             shape: [Smoothed::new(0.0); 6],
             taps: [Smoothed::new(0.0); DUBS],
-            dubs: std::array::from_fn(Dub::new),
+            dubs: std::array::from_fn(|index| Dub::new(index, seed)),
             awake: [false; DUBS],
             dry: [DelayLine::default(), DelayLine::default()],
             base: 0.0,
@@ -578,6 +598,13 @@ impl Default for GenLoss {
 }
 
 impl Effect for GenLoss {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        for dub in &mut self.dubs {
+            dub.reseed(self.seed);
+        }
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let rate = parts::sane_rate(sample_rate);
         self.rate = rate;

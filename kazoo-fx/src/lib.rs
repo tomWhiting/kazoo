@@ -32,6 +32,9 @@ pub mod space;
 pub mod time;
 mod wet;
 
+#[cfg(test)]
+mod seed_tests;
+
 use std::fmt;
 
 pub(crate) use wet::WetOut;
@@ -131,6 +134,11 @@ pub trait Effect: Send + fmt::Debug {
     /// Silence every tail and restart every internal oscillator, keeping the
     /// parameters. Real-time safe.
     fn reset(&mut self);
+
+    /// Restart every random source from `seed`. Called off the audio thread,
+    /// after `prepare`; `prepare` and `reset` keep it. An effect with no
+    /// randomness ignores it.
+    fn set_seed(&mut self, _seed: u64) {}
 
     /// Set parameter `index` to `value`. The value is clamped to the
     /// parameter's range; a NaN or an index the effect does not have is

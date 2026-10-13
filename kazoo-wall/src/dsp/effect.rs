@@ -50,6 +50,10 @@ impl EffectModule {
 }
 
 impl Module for EffectModule {
+    fn set_seed(&mut self, seed: u64) {
+        self.effect.set_seed(seed);
+    }
+
     fn process(&mut self, tick: &Tick, io: Io<'_>) {
         for index in 0..io.spec.knobs.len().min(MAX_KNOBS) {
             let value = io.knob(index);

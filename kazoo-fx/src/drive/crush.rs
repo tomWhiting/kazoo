@@ -564,6 +564,7 @@ impl Default for Channel {
 /// A bit crusher. See the module documentation for the converter.
 #[derive(Debug)]
 pub struct Crush {
+    seed: Option<u64>,
     knobs: Knobs<7>,
     rate: f64,
     clock: Clock,
@@ -592,12 +593,14 @@ impl Crush {
     /// A crusher at its default settings, ready for 48 kHz until prepared.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let mut crush = Self {
+            seed,
             knobs: Knobs::new(&PARAMS),
             rate: f64::from(DEFAULT_RATE),
             clock: Clock::default(),
-            clock_noise: Noise::new(0x51A7_0C1C),
-            dither_noise: Noise::new(0xD17E_4A11),
+            clock_noise: Noise::new(crate::dsp::seeded(seed, 0x51A7_0C1C)),
+            dither_noise: Noise::new(crate::dsp::seeded(seed, 0xD17E_4A11)),
             retune: Retune::new([PARAMS[RATE].default]),
             redesign_in: 0,
             channels: [Channel::default(); 2],
@@ -737,6 +740,12 @@ impl Crush {
 }
 
 impl Effect for Crush {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        self.clock_noise = Noise::new(crate::dsp::seeded(self.seed, 0x51A7_0C1C));
+        self.dither_noise = Noise::new(crate::dsp::seeded(self.seed, 0xD17E_4A11));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let base = sane_rate(sample_rate);
         self.rate = f64::from(base);
@@ -750,8 +759,8 @@ impl Effect for Crush {
         self.knobs.settle();
         self.retune_now();
         self.clock = Clock::default();
-        self.clock_noise = Noise::new(0x51A7_0C1C);
-        self.dither_noise = Noise::new(0xD17E_4A11);
+        self.clock_noise = Noise::new(crate::dsp::seeded(self.seed, 0x51A7_0C1C));
+        self.dither_noise = Noise::new(crate::dsp::seeded(self.seed, 0xD17E_4A11));
         for channel in &mut self.channels {
             let (mut before, mut after) = (channel.before, channel.after);
             let (mut line, mut clean_line) = (channel.line, channel.clean_line);

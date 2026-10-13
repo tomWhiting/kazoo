@@ -5,6 +5,53 @@ use crate::patch::Patch;
 use crate::{migrate, store};
 
 #[test]
+fn two_tapes_on_one_wall_do_not_wobble_together() {
+    use ringbuf::traits::Consumer;
+    let mut patch = Patch::empty(120.0);
+    patch.seed = 0x5EED;
+    for kind in ["vco", "tape", "tape", "scope", "scope", "out"] {
+        patch.add(kind, None, None).unwrap();
+    }
+    patch.turn("vco1", "shape", 0.0, Some(0.0)).unwrap();
+    for id in ["tape1", "tape2"] {
+        for knob in ["wow", "flutter", "mix"] {
+            patch.turn(id, knob, 1.0, Some(0.0)).unwrap();
+        }
+        patch.turn(id, "hiss", 0.0, Some(0.0)).unwrap();
+        patch
+            .plug("vco1.out", &format!("{id}.left"), None, None)
+            .unwrap();
+    }
+    for (from, to) in [
+        ("tape1.left", "scope1.a"),
+        ("tape2.left", "scope2.a"),
+        ("scope1.a", "out1.left"),
+        ("scope2.a", "out1.right"),
+    ] {
+        patch.plug(from, to, None, None).unwrap();
+    }
+    let (mut engine, mut control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let mut probes = control.take_probes().unwrap();
+    let wall = Wall::new(patch, control, None, Vec::new(), None);
+    let mut samples = vec![0.0; 96_000];
+    assert_no_alloc::assert_no_alloc(|| engine.render(&mut samples, 2));
+    let mut traces = std::collections::BTreeMap::<usize, Vec<u32>>::new();
+    while let Some(frame) = probes.try_pop() {
+        let points = usize::from(frame.capture.trace.points);
+        traces.entry(frame.slot).or_default().extend(
+            frame.capture.trace.low[0][..points]
+                .iter()
+                .map(|sample| sample.to_bits()),
+        );
+    }
+    assert_eq!(traces.len(), 2);
+    let traces: Vec<_> = traces.values().collect();
+    assert!(!traces[0].is_empty());
+    assert!(traces[0] != traces[1], "the two tapes wobbled together");
+    drop(wall);
+}
+
+#[test]
 fn seeds_are_pinned() {
     use kazoo_fx::dsp::{fold32, seeded, splitmix64, stream_seed};
     assert_eq!(splitmix64(0), 0xE220_A839_7B1D_CDAF);

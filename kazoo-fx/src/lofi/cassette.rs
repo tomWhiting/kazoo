@@ -452,6 +452,7 @@ impl NrTimes {
 /// A cassette deck. See the module documentation for the model.
 #[derive(Debug, Clone)]
 pub struct Cassette {
+    seed: Option<u64>,
     rate: f32,
     knobs: [Smoothed; COUNT],
     emphasis: Smoothed,
@@ -491,7 +492,9 @@ impl Cassette {
     /// A deck at 48 kHz with every knob at its default.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let mut deck = Self {
+            seed,
             rate: 48_000.0,
             knobs: PARAMS.map(|spec| Smoothed::new(spec.default)),
             emphasis: Smoothed::new(0.0),
@@ -502,17 +505,20 @@ impl Cassette {
             spacing: Smoothed::new(0.3e-6),
             encode: Smoothed::new(0.0),
             decode: Smoothed::new(0.0),
-            tracks: [Track::new(0x5EED_0001), Track::new(0x5EED_0002)],
-            wow: Wobble::new(&WOW_PARTS, 0xCA55_0001),
-            flutter: Wobble::new(&FLUTTER_PARTS, 0xCA55_0002),
-            chew: Wobble::new(&CHEW_PARTS, 0xCA55_0003),
+            tracks: [
+                Track::new(crate::dsp::seeded(seed, 0x5EED_0001)),
+                Track::new(crate::dsp::seeded(seed, 0x5EED_0002)),
+            ],
+            wow: Wobble::new(&WOW_PARTS, crate::dsp::seeded(seed, 0xCA55_0001)),
+            flutter: Wobble::new(&FLUTTER_PARTS, crate::dsp::seeded(seed, 0xCA55_0002)),
+            chew: Wobble::new(&CHEW_PARTS, crate::dsp::seeded(seed, 0xCA55_0003)),
             weave: Drift::new(),
-            weave_noise: Noise::new(0xCA55_0004),
-            dropouts: Dropouts::new(0xCA55_0005),
-            snags: Dropouts::new(0xCA55_0006),
+            weave_noise: Noise::new(crate::dsp::seeded(seed, 0xCA55_0004)),
+            dropouts: Dropouts::new(crate::dsp::seeded(seed, 0xCA55_0005)),
+            snags: Dropouts::new(crate::dsp::seeded(seed, 0xCA55_0006)),
             snag: OnePole::default(),
             crinkle: OnePole::default(),
-            crinkle_noise: Noise::new(0xCA55_0007),
+            crinkle_noise: Noise::new(crate::dsp::seeded(seed, 0xCA55_0007)),
             nr: NrTimes::at(48_000.0),
             base: 0.0,
             until_control: 0,
@@ -674,6 +680,23 @@ impl Default for Cassette {
 }
 
 impl Effect for Cassette {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        for (track, salt) in self.tracks.iter_mut().zip([0x5EED_0001, 0x5EED_0002]) {
+            track.hiss.reseed(crate::dsp::seeded(self.seed, salt));
+        }
+        self.wow.reseed(crate::dsp::seeded(self.seed, 0xCA55_0001));
+        self.flutter
+            .reseed(crate::dsp::seeded(self.seed, 0xCA55_0002));
+        self.chew.reseed(crate::dsp::seeded(self.seed, 0xCA55_0003));
+        self.weave_noise = Noise::new(crate::dsp::seeded(self.seed, 0xCA55_0004));
+        self.dropouts
+            .reseed(crate::dsp::seeded(self.seed, 0xCA55_0005));
+        self.snags
+            .reseed(crate::dsp::seeded(self.seed, 0xCA55_0006));
+        self.crinkle_noise = Noise::new(crate::dsp::seeded(self.seed, 0xCA55_0007));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let rate = parts::sane_rate(sample_rate);
         self.rate = rate;
@@ -726,12 +749,12 @@ impl Effect for Cassette {
         self.flutter.reset();
         self.chew.reset();
         self.weave = Drift::new();
-        self.weave_noise = Noise::new(0xCA55_0004);
+        self.weave_noise = Noise::new(crate::dsp::seeded(self.seed, 0xCA55_0004));
         self.dropouts.reset();
         self.snags.reset();
         self.snag.reset();
         self.crinkle.reset();
-        self.crinkle_noise = Noise::new(0xCA55_0007);
+        self.crinkle_noise = Noise::new(crate::dsp::seeded(self.seed, 0xCA55_0007));
         self.tilt = MAX_TILT * self.knobs[AZIMUTH].value() / 100.0;
         self.until_control = 0;
     }

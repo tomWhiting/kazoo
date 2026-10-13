@@ -203,21 +203,21 @@ struct Am {
 }
 
 impl Am {
-    fn new() -> Self {
+    fn new(seed: Option<u64>) -> Self {
         Self {
             rate: 48_000.0,
             tx_low: Biquad::new(),
             tx_band: Butterworth::default(),
             carrier: Turns::default(),
             neighbour: Turns::default(),
-            chatter: Hiss::new(0x0A01_0001),
+            chatter: Hiss::new(crate::dsp::seeded(seed, 0x0A01_0001)),
             chatter_gate: Drift::new(),
             if_re: Butterworth::default(),
             if_im: Butterworth::default(),
             agc: Follow::default(),
             audio_band: Butterworth::default(),
             audio_low: Biquad::new(),
-            noise: Noise::new(0x0A01_0002),
+            noise: Noise::new(crate::dsp::seeded(seed, 0x0A01_0002)),
         }
     }
 
@@ -238,7 +238,7 @@ impl Am {
         (0.3 * controls.drift).mul_add(-controls.fade.mul_add(1.0, 1.0), 1.0)
     }
 
-    fn reset(&mut self, controls: &Controls) {
+    fn reset(&mut self, controls: &Controls, seed: Option<u64>) {
         self.tx_low.reset();
         self.tx_band.reset();
         self.carrier = Turns::default();
@@ -249,7 +249,7 @@ impl Am {
         self.if_im.reset();
         self.audio_band.reset();
         self.audio_low.reset();
-        self.noise = Noise::new(0x0A01_0002);
+        self.noise = Noise::new(crate::dsp::seeded(seed, 0x0A01_0002));
         // Start tuned in: the carrier already through the IF filter and
         // the AGC already locked to it.
         let level = Self::carrier_level(controls);
@@ -314,7 +314,7 @@ struct Phone {
 }
 
 impl Phone {
-    fn new() -> Self {
+    fn new(seed: Option<u64>) -> Self {
         Self {
             rate: 48_000.0,
             low_cut: Butterworth::default(),
@@ -324,8 +324,8 @@ impl Phone {
             last: 0.0,
             rebuild: Butterworth::default(),
             hum: Turns::default(),
-            hiss: Hiss::new(0x0A02_0001),
-            noise: Noise::new(0x0A02_0002),
+            hiss: Hiss::new(crate::dsp::seeded(seed, 0x0A02_0001)),
+            noise: Noise::new(crate::dsp::seeded(seed, 0x0A02_0002)),
             level: Drift::new(),
         }
     }
@@ -344,7 +344,7 @@ impl Phone {
         self.rebuild.lowpass(4, 3_600.0f32.min(rate * 0.45), rate);
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self, seed: Option<u64>) {
         self.low_cut.reset();
         self.high_cut.reset();
         self.clock = 0.0;
@@ -353,7 +353,7 @@ impl Phone {
         self.rebuild.reset();
         self.hum = Turns::default();
         self.hiss.reset();
-        self.noise = Noise::new(0x0A02_0002);
+        self.noise = Noise::new(crate::dsp::seeded(seed, 0x0A02_0002));
         self.level = Drift::new();
     }
 
@@ -423,7 +423,7 @@ struct Walkie {
 const DEVIATION: f32 = 2_500.0;
 
 impl Walkie {
-    fn new() -> Self {
+    fn new(seed: Option<u64>) -> Self {
         Self {
             rate: 48_000.0,
             mic_low: Butterworth::default(),
@@ -443,7 +443,7 @@ impl Walkie {
             deemphasis: Biquad::new(),
             out_low: Butterworth::default(),
             out_high: Butterworth::default(),
-            noise: Noise::new(0x0A03_0001),
+            noise: Noise::new(crate::dsp::seeded(seed, 0x0A03_0001)),
         }
     }
 
@@ -459,9 +459,9 @@ impl Walkie {
         self.out_high.lowpass(2, 3_000.0, rate);
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self, seed: Option<u64>) {
         let rate = self.rate;
-        *self = Self::new();
+        *self = Self::new(seed);
         self.prepare(rate);
     }
 
@@ -547,7 +547,7 @@ struct Megaphone {
 }
 
 impl Megaphone {
-    fn new() -> Self {
+    fn new(seed: Option<u64>) -> Self {
         Self {
             rate: 48_000.0,
             mic: Butterworth::default(),
@@ -556,7 +556,7 @@ impl Megaphone {
             high_cut: Butterworth::default(),
             first: Biquad::new(),
             second: Biquad::new(),
-            hiss: Hiss::new(0x0A04_0001),
+            hiss: Hiss::new(crate::dsp::seeded(seed, 0x0A04_0001)),
         }
     }
 
@@ -605,6 +605,7 @@ impl Megaphone {
 /// The radio. See the module documentation for the model.
 #[derive(Debug, Clone)]
 pub struct Radio {
+    seed: Option<u64>,
     rate: f32,
     knobs: [Smoothed; COUNT],
     weights: [Smoothed; MODELS],
@@ -630,18 +631,20 @@ impl Radio {
     /// A radio at 48 kHz with every knob at its default.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let mut radio = Self {
+            seed,
             rate: 48_000.0,
             knobs: PARAMS.map(|spec| Smoothed::new(spec.default)),
             weights: [Smoothed::new(0.0); MODELS],
-            am: Am::new(),
-            phone: Phone::new(),
-            walkie: Walkie::new(),
-            megaphone: Megaphone::new(),
+            am: Am::new(seed),
+            phone: Phone::new(seed),
+            walkie: Walkie::new(seed),
+            megaphone: Megaphone::new(seed),
             dry: [DelayLine::default(), DelayLine::default()],
             wander: Drift::new(),
             fade: Drift::new(),
-            noise: Noise::new(0x0A00_0001),
+            noise: Noise::new(crate::dsp::seeded(seed, 0x0A00_0001)),
             controls: Controls {
                 tune: 0.0,
                 drift: 0.0,
@@ -733,6 +736,23 @@ impl Default for Radio {
 }
 
 impl Effect for Radio {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        self.am
+            .chatter
+            .reseed(crate::dsp::seeded(self.seed, 0x0A01_0001));
+        self.am.noise = Noise::new(crate::dsp::seeded(self.seed, 0x0A01_0002));
+        self.phone
+            .hiss
+            .reseed(crate::dsp::seeded(self.seed, 0x0A02_0001));
+        self.phone.noise = Noise::new(crate::dsp::seeded(self.seed, 0x0A02_0002));
+        self.walkie.noise = Noise::new(crate::dsp::seeded(self.seed, 0x0A03_0001));
+        self.megaphone
+            .hiss
+            .reseed(crate::dsp::seeded(self.seed, 0x0A04_0001));
+        self.noise = Noise::new(crate::dsp::seeded(self.seed, 0x0A00_0001));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let rate = parts::sane_rate(sample_rate);
         self.rate = rate;
@@ -768,13 +788,13 @@ impl Effect for Radio {
         self.read_controls();
         self.wander = Drift::new();
         self.fade = Drift::new();
-        self.noise = Noise::new(0x0A00_0001);
+        self.noise = Noise::new(crate::dsp::seeded(self.seed, 0x0A00_0001));
         self.controls.wander = 0.0;
         self.controls.fade = 0.0;
-        self.am.reset(&self.controls);
-        self.phone.reset();
+        self.am.reset(&self.controls, self.seed);
+        self.phone.reset(self.seed);
         self.phone.control(&self.controls);
-        self.walkie.reset();
+        self.walkie.reset(self.seed);
         self.megaphone.reset();
         self.megaphone.control(&self.controls);
         for line in &mut self.dry {

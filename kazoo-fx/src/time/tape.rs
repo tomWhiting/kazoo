@@ -282,6 +282,7 @@ impl Track {
 /// The tape echo.
 #[derive(Debug)]
 pub struct Tape {
+    seed: Option<u64>,
     rate: f32,
     prepared: bool,
     settled: bool,
@@ -327,9 +328,11 @@ impl Tape {
     /// A tape echo at its defaults, unprepared.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let values = defaults(&PARAMS);
         let heads = head_gains(values[HEADS]);
         Self {
+            seed,
             rate: 48_000.0,
             prepared: false,
             settled: false,
@@ -352,7 +355,7 @@ impl Tape {
             drift_target: 0.0,
             drift_coeff: 1.0,
             drift_countdown: 0,
-            noise: Noise::new(0x7A9E_0201),
+            noise: Noise::new(crate::dsp::seeded(seed, 0x7A9E_0201)),
             tracks: [Track::default(), Track::default()],
             sinc: Sinc::default(),
             record_latency: 0.0,
@@ -535,6 +538,11 @@ fn head_gains(step: f32) -> [f32; 3] {
 }
 
 impl Effect for Tape {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        self.noise = Noise::new(crate::dsp::seeded(self.seed, 0x7A9E_0201));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let rate = sane_rate(sample_rate);
         self.rate = rate;

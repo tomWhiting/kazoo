@@ -505,6 +505,7 @@ impl Governor {
 /// The spring tank.
 #[derive(Debug, Clone)]
 pub struct Spring {
+    seed: Option<u64>,
     rate: f32,
     prepared: bool,
     knobs: Knobs<6>,
@@ -551,7 +552,9 @@ impl Spring {
     /// A tank at the default settings, unprepared.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         Self {
+            seed,
             rate: 0.0,
             prepared: false,
             knobs: Knobs::new(&PARAMS),
@@ -777,6 +780,17 @@ impl Spring {
 }
 
 impl Effect for Spring {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        for (coil, salt) in self
+            .coils
+            .iter_mut()
+            .zip([0x5EED_0000, 0x5EED_0001, 0x5EED_0002])
+        {
+            coil.wander.reset(crate::dsp::seeded(self.seed, salt));
+        }
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let Some(rate) = usable_rate(sample_rate) else {
             self.prepared = false;
@@ -852,7 +866,10 @@ impl Effect for Spring {
         self.highs.clear();
         for (index, coil) in self.coils.iter_mut().enumerate() {
             coil.clear();
-            coil.wander.reset(0x5EED_0000 + index as u32);
+            coil.wander.reset(crate::dsp::seeded(
+                self.seed,
+                [0x5EED_0000, 0x5EED_0001, 0x5EED_0002][index],
+            ));
             coil.sweep.set(index as f32 / 3.0);
         }
         self.input_filter.reset();
