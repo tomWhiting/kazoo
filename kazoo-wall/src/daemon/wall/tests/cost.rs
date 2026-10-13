@@ -70,6 +70,13 @@ fn last_output(ids: &[String], kind: Kind) -> String {
     format!("{}.{}", ids.last().unwrap(), kind.spec().outputs[0].name)
 }
 
+/// The load a refusal says the change would take the wall to, in percent.
+fn projected_percent(message: &str) -> f32 {
+    let (_, after) = message.split_once("to about ").unwrap();
+    let (number, _) = after.split_once('%').unwrap();
+    number.parse().unwrap()
+}
+
 fn guarded(wall: &mut Wall, load: f32) {
     wall.set_load_guard(true);
     measured_long_enough(wall);
@@ -96,6 +103,7 @@ fn one_cable_waking_forty_heavy_unheard_modules_is_refused() {
         let err = request(&mut wall, &patch(&last_output(&ids, heavy()), &to)).unwrap_err();
         assert_eq!(err.code, ErrorCode::Full);
         assert!(err.message.contains("wake 40 modules"), "{}", err.message);
+        assert!(projected_percent(&err.message) > 80.0, "{}", err.message);
         eprintln!("{}", err.message);
         assert_eq!(wall.patch.to_file(), before);
         assert!(
@@ -122,6 +130,7 @@ fn one_cable_waking_forty_heavy_unheard_modules_is_refused() {
     .unwrap_err();
     assert_eq!(err.code, ErrorCode::Full);
     assert!(err.message.contains("wake 40 modules"), "{}", err.message);
+    assert!(projected_percent(&err.message) > 80.0, "{}", err.message);
 }
 
 #[test]
@@ -209,6 +218,7 @@ fn a_save_too_heavy_to_render_is_not_put_up() {
         "{}",
         err.message
     );
+    assert!(projected_percent(&err.message) > 80.0, "{}", err.message);
     assert_eq!(wall.patch.to_file(), before);
     assert_eq!(
         wall.load_buckets["Loader"].tokens.to_bits(),
@@ -216,6 +226,12 @@ fn a_save_too_heavy_to_render_is_not_put_up() {
     );
     let err = request(&mut wall, &Request::Undo { change: emptied }).unwrap_err();
     assert_eq!(err.code, ErrorCode::Full);
+    assert!(
+        err.message.contains("renders 80 modules"),
+        "{}",
+        err.message
+    );
+    assert_eq!(wall.patch.to_file(), before);
     save(&mut wall, "empty", false).unwrap();
     wall.engine.shared().set_render_load(2.0);
     request(
