@@ -149,6 +149,55 @@ pub struct LoopModule {
     spliced_here: bool,
 }
 
+/// The tape a loop built at `rate` holds: `(capacity, tail)` in frames.
+/// A rate outside 8 kHz to 768 kHz is taken as 48 kHz, as the module does.
+#[must_use]
+pub fn geometry(rate: f32) -> (usize, usize) {
+    let rate = if rate.is_finite() && (8_000.0..=768_000.0).contains(&rate) {
+        rate
+    } else {
+        48_000.0
+    };
+    let capacity = (MAX_LOOP_SECONDS * f64::from(rate))
+        .round()
+        .min(MAX_LOOP_FRAMES as f64) as usize;
+    (capacity, (SEAM_SECONDS * rate).round() as usize)
+}
+
+/// Whether a loop takes `splice` on a tape of `len` interleaved samples:
+/// the geometry an install is checked against, for the control side to
+/// check first.
+#[must_use]
+pub fn splice_fits(splice: Splice, len: usize) -> bool {
+    splice.beats.is_finite()
+        && (4.0..=259.0).contains(&splice.beats)
+        && splice.anchor.is_finite()
+        && splice.rate.is_finite()
+        && (8_000.0..=768_000.0).contains(&splice.rate)
+        && splice.frames > 0
+        && splice.frames <= MAX_LOOP_FRAMES
+        && splice.tail > 0
+        && splice.tail <= splice.frames
+        && splice.tail <= (SEAM_SECONDS * splice.rate).round() as usize
+        && 2 * (splice.frames + splice.tail + 1) <= len
+}
+
+/// The 256 peak thresholds of the level bins' 60 dB scale (see
+/// [`level_bin`]).
+#[must_use]
+pub fn bin_thresholds() -> [f32; 256] {
+    std::array::from_fn(|i| 10.0_f32.powf((-60.0 + i as f32 * 60.0 / 255.0) / 20.0))
+}
+
+/// A peak's level bin: the highest threshold it reaches, 0 below -60 dB.
+#[must_use]
+pub fn level_bin(thresholds: &[f32; 256], peak: f32) -> u8 {
+    let value = thresholds
+        .partition_point(|threshold| *threshold <= peak)
+        .saturating_sub(1);
+    u8::try_from(value).unwrap_or(u8::MAX)
+}
+
 fn resident(len: usize) -> Box<[f32]> {
     let mut tape = Vec::new();
     if tape.try_reserve_exact(len).is_err() {
@@ -171,10 +220,7 @@ impl LoopModule {
         } else {
             48_000.0
         };
-        let capacity = (MAX_LOOP_SECONDS * f64::from(rate))
-            .round()
-            .min(MAX_LOOP_FRAMES as f64) as usize;
-        Self::allocate(rate, capacity)
+        Self::allocate(rate, geometry(rate).0)
     }
 
     #[cfg(test)]
@@ -228,9 +274,7 @@ impl LoopModule {
                 bars: [false; MAX_LOOP_BARS],
             },
             sine: std::array::from_fn(|i| (i as f32 / 63.0 * std::f32::consts::FRAC_PI_2).sin()),
-            bin_threshold: std::array::from_fn(|i| {
-                10.0_f32.powf((-60.0 + i as f32 * 60.0 / 255.0) / 20.0)
-            }),
+            bin_threshold: bin_thresholds(),
             pending_take: false,
             spliced_here: false,
         };
@@ -300,20 +344,6 @@ impl LoopModule {
         }
     }
 
-    fn valid_splice(splice: Splice, len: usize) -> bool {
-        splice.beats.is_finite()
-            && (4.0..=259.0).contains(&splice.beats)
-            && splice.anchor.is_finite()
-            && splice.rate.is_finite()
-            && (8_000.0..=768_000.0).contains(&splice.rate)
-            && splice.frames > 0
-            && splice.frames <= MAX_LOOP_FRAMES
-            && splice.tail > 0
-            && splice.tail <= splice.frames
-            && splice.tail <= (SEAM_SECONDS * splice.rate).round() as usize
-            && 2 * (splice.frames + splice.tail + 1) <= len
-    }
-
     fn requests(&mut self, tick: &Tick) {
         // Leave room for a snapshot completion and a punch mark in this block.
         if self.held.iter().filter(|slot| slot.is_none()).count() < 2 {
@@ -334,7 +364,7 @@ impl LoopModule {
             } => {
                 let len = tape.samples.len();
                 if (only_if_blank && (self.splice.is_some() || self.spliced_here))
-                    || tape.splice.is_some_and(|s| !Self::valid_splice(s, len))
+                    || tape.splice.is_some_and(|s| !splice_fits(s, len))
                     || len > 2 * (MAX_LOOP_FRAMES + (SEAM_SECONDS * 768_000.0).round() as usize + 1)
                 {
                     self.gauges.refused.fetch_add(1, Ordering::Relaxed);
@@ -630,23 +660,29 @@ impl LoopModule {
             } else {
                 k
             };
-            let into_tail = matches!(
+            // A post-roll past the seam belongs after the loop's end: it
+            // writes the tail and its guard, never the loop's own cells.
+            // The write head rounds to the nearest cell, so beat arithmetic
+            // a hair short of the seam lets the fade start a cell late and
+            // reach cell `tail`; that cell is the guard's, not bar 0's.
+            let post_tail = matches!(
                 self.rec,
                 Rec::PostRoll {
                     into_tail: true,
                     ..
                 }
-            ) && k < splice.tail;
+            );
+            let into_tail = post_tail && k < splice.tail;
             if into_tail {
                 self.write_cell(splice.frames + k, input, keep);
-            } else {
+            } else if !post_tail {
                 self.write_cell(k, input, keep);
             }
             if self.seam_carry && k < splice.tail && !into_tail {
                 self.write_cell(splice.frames + k, input, keep);
             }
             // The guard continues the tail's interpolation at its final frame.
-            if (into_tail || self.seam_carry) && k == splice.tail {
+            if (post_tail || self.seam_carry) && k == splice.tail {
                 self.write_cell(splice.frames + splice.tail, input, keep);
             }
             if k == splice.frames - 1 && matches!(self.rec, Rec::Rolling) {
@@ -663,20 +699,13 @@ impl LoopModule {
                 self.bar_pass[h.bar] = h.pass;
                 self.written[h.bar] = true;
             }
-            if into_tail {
+            if post_tail {
                 // The tail is not in the loop's level bins.
                 continue;
             }
             let bin = (k * LOOP_BINS / splice.frames).min(LOOP_BINS - 1);
             let peak = self.tape[2 * k].abs().max(self.tape[2 * k + 1].abs());
-            let value = self
-                .bin_threshold
-                .partition_point(|threshold| *threshold <= peak)
-                .saturating_sub(1);
-            let Ok(value) = u8::try_from(value) else {
-                continue;
-            };
-            self.bins[bin] = self.bins[bin].max(value);
+            self.bins[bin] = self.bins[bin].max(level_bin(&self.bin_threshold, peak));
         }
         self.last_cell = Some(w);
     }

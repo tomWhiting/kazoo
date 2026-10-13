@@ -143,3 +143,12 @@ START KZ-V04 base=538cfbe branch=lane/kz-V04 df=64GB at 03:26
 START KZ-B01c base=538cfbe branch=lane/kz-B01c df=64GB at 03:26
 START KZ-A03c base=538cfbe branch=lane/kz-A03c df=63GB at 03:26
 - KZ-T02a merged (review READY 0607f1c: kazoo-mcp Change literals, a refused load no longer starts a clock line). Merge check on main 1617372: fmt 0, clippy 0, nextest 3977/3977, doc 0, ast-grep 0 (full-T02a-0326.log).
+START KZ-T02b base=da446f9 branch=lane/kz-T02b df=61GB at 04:20
+START KZ-P04 base=da446f9 branch=lane/kz-P04 df=61GB at 04:21
+START KZ-P10 base=da446f9 branch=lane/kz-P10 df=61GB at 04:22
+- Follow-up to brief (V04 review finding 4): the cycle tracker moving an octave from our own hint or slipping mid-note counts as a sung leap and turns folding off for ~43 ms; no suite take triggers it.
+- Follow-up (A03c review finding 7): a desk link dropped on an early return (stream open or terminal enter failing) is not reported on exit; report on those paths or from each main after run.
+- KZ-V04 merged (review READY d5083ee: hot input no longer resets the tracker; one re-sung syllable no longer two onsets; tests tightened). Merge check on main 382ee42: fmt 0, clippy 0, nextest 3992/3992, doc 0, ast-grep 0 (full-V04-0437.log).
+- Follow-ups from L03's review (to brief): L04 should store the guard frame in a reel so a restored tape is exact at the seam; L02 defect: recording fades linearly over the seam and playback crossfades equal-power on top, so a sustained sound dips about 3 dB for 8 ms at every seam; L02: the write position rounds to the nearest cell, so a pass's last frame can land on cell 0. Size: daemon/wall.rs 4804 lines, store.rs 3394.
+- KZ-B01c merged (review READY 455f153: woken bound kept, ticked reported only) and KZ-A03c merged (review READY f11af29). Merge check on main 430e0ed: fmt 0, clippy 0, nextest 3996/3996, doc 0, ast-grep 0 (full-B01c-A03c-0534.log).
+- KZ-P01 merged (review READY e4972ed: full 1 ms crossfade on every jump, reset_slack at once, tests strengthened, 22 mutants caught; holds the last sample at zero lag, accepted) and KZ-L03 merged (review READY 8ee6e7c; tick conflict kept both). Merge check on main 83eeda7: fmt 0, clippy 0, nextest 4041/4041, doc 0, ast-grep 0 (full-P01-L03-0556.log).

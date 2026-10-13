@@ -672,3 +672,135 @@ fn cycle_meets_its_targets() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A tracker under test that keeps what it said at every scoring step, so
+/// one pass both scores a take and shows where any octave error fell.
+struct Recorded<T> {
+    tracker: T,
+    said: Vec<Option<f32>>,
+}
+
+impl<T: TrackerUnderTest> TrackerUnderTest for Recorded<T> {
+    fn name(&self) -> &'static str {
+        self.tracker.name()
+    }
+    fn push(&mut self, block: &[f32]) {
+        self.tracker.push(block);
+        self.said.push(self.tracker.hz());
+    }
+    fn hz(&self) -> Option<f32> {
+        self.tracker.hz()
+    }
+}
+
+/// The scoreboard's own octave error (`metrics.rs`): within 100 cents of a
+/// whole, nonzero number of octaves from the truth.
+fn is_octave_error(hz: f32, truth: f32) -> bool {
+    let cents = 1200.0 * (hz / truth).log2();
+    let octaves = (cents / 1200.0).round();
+    octaves != 0.0 && 1200.0_f32.mul_add(-octaves, cents).abs() <= 100.0
+}
+
+#[test]
+fn voice_meets_its_targets() -> crate::Result<()> {
+    use super::{EventKind, FusedUnderTest};
+    let mut failures = Vec::new();
+    for take in signals::suite(48_000) {
+        let mut recorded = Recorded {
+            tracker: FusedUnderTest::new(48_000)?,
+            said: Vec::with_capacity(take.truth.len()),
+        };
+        let result = score(&mut recorded, &take);
+        let accurate = match take.name.as_str() {
+            "sine_ladder" | "steps" | "hum_low" | "whistle" => {
+                result.onsets_missed == 0
+                    && result.cents_median <= 3.0
+                    && result.cents_p95 <= 10.0
+                    && result.octave_pct <= f32::EPSILON
+                    && result.missed_pct <= 2.0
+                    && (take.name != "steps" || result.steps_missed == 0)
+            }
+            "vibrato" => result.cents_median <= 8.0 && result.cents_p95 <= 20.0,
+            "glide" => result.cents_median <= 10.0 && result.cents_p95 <= 25.0,
+            "vowel_ah" | "octave_bait" => result.octave_pct <= 2.0,
+            "noise_bursts" => result.false_pct <= 1.0,
+            _ => true,
+        };
+        if !accurate {
+            failures.push(format!("{} accuracy: {result:?}", take.name));
+        }
+        let periods = match take.name.as_str() {
+            "sine_ladder" | "steps" | "hum_low" | "whistle" => Some(2.0),
+            "vowel_ah" | "octave_bait" => Some(3.0),
+            _ => None,
+        };
+        if let Some(periods) = periods {
+            for event in &result.events {
+                if event.kind == EventKind::Step && take.name != "steps" {
+                    continue;
+                }
+                let limit = periods * 1_000.0 / event.truth_hz + 1.0;
+                if !event.latency_ms.is_some_and(|ms| ms <= limit) {
+                    failures.push(format!("{}: {event:?}, limit {limit}", take.name));
+                }
+            }
+        }
+        if matches!(take.name.as_str(), "octave_bait" | "vowel_ah") {
+            // No octave error later than 100 ms after the note's onset.
+            let settled = usize::try_from(take.rate / 10).unwrap_or(usize::MAX);
+            for (step, (said, truth)) in recorded.said.iter().zip(&take.truth).enumerate() {
+                let start = step * SCORE_STEP;
+                let note = take.onsets.iter().rev().find(|&&onset| onset <= start);
+                if let (Some(&onset), Some(hz), Some(truth)) = (note, *said, *truth) {
+                    if start >= onset + settled && is_octave_error(hz, truth) {
+                        failures.push(format!(
+                            "{}: octave error {hz} Hz for {truth} Hz at sample {start}",
+                            take.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
+#[test]
+fn voice_gate_meets_its_targets() -> crate::Result<()> {
+    use super::{FusedUnderTest, gate::score_gate};
+    let mut failures = Vec::new();
+    for take in signals::suite(48_000) {
+        let onsets = match take.name.as_str() {
+            "noise_bursts" => Some((3, 3)),
+            "rearticulate" => Some((5, 5)),
+            "sine_ladder" => Some((6, 6)),
+            _ => None,
+        };
+        let edges = matches!(
+            take.name.as_str(),
+            "sine_ladder" | "steps" | "hum_low" | "whistle"
+        );
+        if onsets.is_none() && !edges {
+            continue;
+        }
+        let result = score_gate(&mut FusedUnderTest::new(48_000)?, &take);
+        if edges && !(result.rise_targets_met && result.fall_targets_met) {
+            failures.push(format!("{} edges: {result:?}", take.name));
+        }
+        if take.name == "noise_bursts" && result.noise_high_pct > 1.0 {
+            failures.push(format!("{} noise: {result:?}", take.name));
+        }
+        // The take's own count and the brief's must agree, and the gate
+        // must count exactly that many.
+        if let Some((counted, expected)) = onsets {
+            if result.onsets_counted != counted || result.onsets_expected != expected {
+                failures.push(format!(
+                    "{} onsets, expected {expected}: {result:?}",
+                    take.name
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}

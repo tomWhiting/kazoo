@@ -20,6 +20,7 @@
 
 pub mod audio;
 pub mod control;
+pub mod loops;
 pub mod record;
 pub mod server;
 pub mod speech;

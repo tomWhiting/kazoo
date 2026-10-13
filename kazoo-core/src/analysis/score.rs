@@ -1,6 +1,10 @@
 //! Offline pitch tracker measurements against analytic or centred pYIN truth.
 
+mod fused;
+pub mod gate;
 mod metrics;
+
+pub use fused::FusedUnderTest;
 pub mod signals;
 pub mod wav;
 

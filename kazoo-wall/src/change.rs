@@ -47,6 +47,8 @@ pub fn describe(what: &What) -> String {
 /// load that brought a wall back from one that cleared it).
 fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind>) -> String {
     match what {
+        What::Erase { module, was, tape } => erased(module, was.as_ref(), tape.as_ref()),
+        What::LoopFrom { module, from, .. } => loop_from(module, from.as_deref()),
         What::Chain { name, changes } => format!(
             "changed chain {name}: {}",
             changes
@@ -384,6 +386,33 @@ const fn civil_from_days(days: u64) -> (u64, u64, u64) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + if month <= 2 { 1 } else { 0 };
     (year, month, day)
+}
+
+fn erased(
+    module: &str,
+    was: Option<&crate::patch::TapeRecord>,
+    tape: Option<&crate::patch::TapeRecord>,
+) -> String {
+    let held = |tape: &crate::patch::TapeRecord| {
+        format!(
+            "{} {}, reel {}",
+            tape.bars.len(),
+            if tape.bars.len() == 1 { "bar" } else { "bars" },
+            tape.reel.chars().take(8).collect::<String>()
+        )
+    };
+    match (tape, was) {
+        (Some(tape), _) => format!("put {module}'s tape back ({})", held(tape)),
+        (None, Some(was)) => format!("erased {module} (it held {})", held(was)),
+        (None, None) => format!("erased {module} (it was blank)"),
+    }
+}
+
+fn loop_from(module: &str, from: Option<&str>) -> String {
+    from.map_or_else(
+        || format!("set {module} to record what is patched into it"),
+        |from| format!("set {module} to record from {from}"),
+    )
 }
 
 #[cfg(test)]

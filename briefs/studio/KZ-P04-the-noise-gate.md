@@ -34,7 +34,7 @@ Why: Tom's old trick was screaming into the guitar's pickups through heavy disto
 
 ### Per sample
 
-1. Detector: `d = max(|hp(L)|, |hp(R)|)`, with `hp` a one-pole high-pass at `key` (`dsp::OnePole`, `kazoo-fx/src/dsp.rs:183`), and a peak follower `env = max(d, env · r)` with a 10 ms release (fast, because the hold does the bridging; a slow detector would make the hold meaningless).
+1. Detector: `d = max(|hp(L)|, |hp(R)|)`, with `hp` two one-pole high-passes at `key` in series (`dsp::OnePole`, `kazoo-fx/src/dsp.rs:183`; 12 dB an octave). Why two (corrected by Cassio, 14 Oct 06:3x, after the builder found test 5 could not pass): one pole at 120 Hz takes only 8.3 dB off 50 Hz, so a −45 dBFS hum reads −53 and opens a −55 gate; two take 16.6 dB, and the hum reads −61.6. With `key` at 20 Hz the two take 1.3 dB, so the same hum opens it, as test 5 asks. and a peak follower `env = max(d, env · r)` with a 10 ms release (fast, because the hold does the bridging; a slow detector would make the hold meaningless).
 2. State: open when `env ≥ threshold`. While open, every sample with `env ≥ threshold − hysteresis` restarts the hold counter. When the counter runs out, release starts, and it moves back to open the moment `env ≥ threshold` again.
 3. Gain, in dB: towards 0 dB at `−range / attack` dB per second while open, and towards `range` at `range / release` dB per second while releasing. It is held at 0 dB during the hold. It is linear in dB, so the release sounds like a fade, and at most 90 dB of travel always takes exactly `release`.
 4. Output: both channels multiplied by `10^(g/20)` (computed through `exp2` with a precomputed factor, never `powf` per sample).

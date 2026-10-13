@@ -116,6 +116,9 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Stop audio, then leave the desk.
     drop(stream);
     drop(hub);
+    if let Some(report) = kazoo_core::host::link::exit_report() {
+        eprintln!("{report}");
+    }
 
     match (result, restored) {
         (Ok(()), restored) => restored.map_err(Into::into),

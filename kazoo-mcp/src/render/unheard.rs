@@ -16,7 +16,7 @@ pub(super) fn line(out: &mut String, ids: &[String]) {
     super::line(
         out,
         format_args!(
-            "{} {modules} {reach} no out, scope or readout and {are} not rendered: \
+            "{} {modules} {reach} no out, scope, readout or loop and {are} not rendered: \
              {shown}{more}.",
             ids.len()
         ),
@@ -33,16 +33,15 @@ mod tests {
         assert!(!look(&wall).contains("are not rendered:"));
         wall.timing.unheard = vec!["vco3".to_string(), "vcf2".to_string()];
         assert!(look(&wall).contains(
-            "2 modules reach no out, scope or readout and are not rendered: vco3, vcf2."
+            "2 modules reach no out, scope, readout or loop and are not rendered: vco3, vcf2."
         ));
         wall.timing.unheard = (1..=23).map(|index| format!("vco{index}")).collect();
         let text = look(&wall);
         assert!(text.contains("vco20 and 3 more."));
         assert!(!text.contains("vco21"));
         wall.timing.unheard = vec!["lfo1".to_string()];
-        assert!(
-            look(&wall)
-                .contains("1 module reaches no out, scope or readout and is not rendered: lfo1.")
-        );
+        assert!(look(&wall).contains(
+            "1 module reaches no out, scope, readout or loop and is not rendered: lfo1."
+        ));
     }
 }

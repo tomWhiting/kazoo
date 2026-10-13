@@ -13,10 +13,15 @@ struct Connection {
 
 impl Connection {
     fn new() -> Self {
+        Self::with_config(LinkConfig::new("kazoo-test", 2, 48_000, 256))
+    }
+
+    fn with_config(mut config: LinkConfig) -> Self {
         let path = socket();
         let listener = UnixListener::bind(&path).unwrap();
+        config.address = HubAddress::Socket(path.clone());
         // Measure the same scheduling request every instrument makes.
-        let (link, mut audio) = hub_link(config(&path)).unwrap();
+        let (link, mut audio) = hub_link(config).unwrap();
         let (mut stream, mut buffer) = accept(&listener);
         wait("the link to connect", || link.is_connected());
         // A round trip establishes that registration has finished serving.
@@ -59,11 +64,58 @@ impl Drop for Connection {
     }
 }
 
+/// Whether at least 99% of the sends were followed by a woken park.
+///
+/// `ticked` is reported, never bounded: between one frame arriving and the
+/// next send, the link thread rightly times out on its tick whenever the
+/// sending thread is off the processor for a tick, so its count measures the
+/// machine's load, not the wake.
+fn check_wake_counts(blocks: u64, woken: u64, ticked: u64) -> Result<(), String> {
+    let minimum_woken = blocks * 99 / 100;
+    if woken < minimum_woken {
+        return Err(format!(
+            "blocks={blocks}, woken={woken} (minimum {minimum_woken}), ticked={ticked}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_descheduled_sender_is_not_a_lost_wake() {
+    // The counts of a run at load 141 to 312 on Tom's Mac (KZ-B01c): every
+    // send was served by a woken park, and the link also timed out on its
+    // tick whenever the sending thread was off the processor for a tick.
+    check_wake_counts(10_000, 9_949, 2_225).unwrap();
+}
+
+#[test]
+fn a_lost_wake_is_seen() {
+    const LOST_BLOCKS: u64 = 200;
+    let mut connection = Connection::with_config(LinkConfig::for_test_without_wake(
+        "kazoo-test",
+        2,
+        48_000,
+        256,
+    ));
+    let (woken_before, ticked_before) = connection.link.wake_counts();
+    for _ in 0..LOST_BLOCKS {
+        assert!(connection.audio.send_audio(256, &[0.25; 512]));
+        assert_eq!(connection.read_frame().msg_type, MSG_AUDIO);
+    }
+    let (woken_after, ticked_after) = connection.link.wake_counts();
+    let woken = woken_after - woken_before;
+    let ticked = ticked_after - ticked_before;
+    assert!(woken <= LOST_BLOCKS / 100, "woken={woken}, ticked={ticked}");
+    let failure = check_wake_counts(LOST_BLOCKS, woken, ticked).unwrap_err();
+    eprintln!("lost wake rejected: {failure}");
+}
+
 #[test]
 fn a_queued_block_wakes_the_link_thread_at_once() {
     let mut connection = Connection::new();
     let block = [0.25; 512];
     let mut elapsed = Vec::with_capacity(BLOCKS);
+    let (woken_before, ticked_before) = connection.link.wake_counts();
     for _ in 0..BLOCKS {
         let start = Instant::now();
         assert!(connection.audio.send_audio(256, &block));
@@ -72,16 +124,21 @@ fn a_queued_block_wakes_the_link_thread_at_once() {
         assert_eq!(header.msg_type, MSG_AUDIO);
         assert_eq!(header.payload_len as usize, AUDIO_PAYLOAD_HEADER + 512 * 4);
     }
+    let (woken_after, ticked_after) = connection.link.wake_counts();
+    let woken = woken_after - woken_before;
+    let ticked = ticked_after - ticked_before;
     elapsed.sort_unstable();
     let p50 = elapsed[BLOCKS / 2];
     let p99 = elapsed[BLOCKS * 99 / 100];
     eprintln!(
-        "BENCH instrument blocks={BLOCKS} p50_us={:.3} p99_us={:.3} real_time={:?}",
+        "BENCH instrument blocks={BLOCKS} p50_us={:.3} p99_us={:.3} woken={woken} ticked={ticked} real_time={:?}",
         p50.as_secs_f64() * 1_000_000.0,
         p99.as_secs_f64() * 1_000_000.0,
         connection.link.real_time()
     );
-    assert!(p50 < Duration::from_micros(200), "p50={p50:?}, p99={p99:?}");
+    if let Err(why) = check_wake_counts(BLOCKS as u64, woken, ticked) {
+        panic!("{why}; p50={p50:?}, p99={p99:?}");
+    }
 }
 
 #[test]

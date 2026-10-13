@@ -78,6 +78,24 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'_' | b'.' | b'-'))
 }
 
+/// Whether a desk strip label fits the loop source contract.
+#[must_use]
+pub fn valid_from(name: &str) -> bool {
+    (1..=MAX_NAME).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/_.-".contains(&byte))
+}
+/// An undoable choice for a loop's tape or recording source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum LoopOp {
+    /// Clear the tape.
+    Erase,
+    /// Choose a desk strip, or return to the patched inputs.
+    From { from: Option<String> },
+}
+
 /// Longest save name: long enough for a label and a date, as in
 /// `jam-2026-09-27-before-fresh-start`.
 pub const MAX_SAVE_NAME: usize = 64;
@@ -278,6 +296,12 @@ pub enum Request {
         /// The change's sequence number.
         change: u64,
     },
+    /// Erase a loop or choose its recording source.
+    Loop {
+        module: String,
+        #[serde(rename = "loop_op")]
+        op: LoopOp,
+    },
     /// Give a `speak` module words to say, rendered off the audio thread
     /// (macOS `say`). Answered once the words are ready to play (the
     /// module plays them on its gate), which can take a few seconds. The
@@ -396,6 +420,7 @@ impl Request {
             Self::Chains => "chains",
             Self::Undo { .. } => "undo",
             Self::Speak { .. } => "speak",
+            Self::Loop { .. } => "loop",
             Self::Log { .. } => "log",
             Self::Listen => "listen",
             Self::Probe { .. } => "probe",
@@ -430,6 +455,7 @@ impl Request {
                 | Self::ChainSave { .. }
                 | Self::ChainAdd { .. }
                 | Self::Speak { .. }
+                | Self::Loop { .. }
         )
     }
 
@@ -451,6 +477,7 @@ impl Request {
                 | Self::Undo { .. }
                 | Self::Tempo { .. }
                 | Self::Speak { .. }
+                | Self::Loop { .. }
                 | Self::Record { .. }
                 | Self::Save { .. }
                 | Self::Load { .. }
@@ -699,6 +726,22 @@ pub struct Change {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum What {
+    /// A loop's tape erased (`tape` none), or put back by the erase's
+    /// undo (`tape` the reel put back). Undone, the loop holds `was` again.
+    Erase {
+        module: String,
+        was: Option<crate::patch::TapeRecord>,
+        /// What the loop holds after: none for an erase.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tape: Option<crate::patch::TapeRecord>,
+    },
+    /// The desk strip a loop records from (`from`; none: what is patched
+    /// into it), which was `was`.
+    LoopFrom {
+        module: String,
+        from: Option<String>,
+        was: Option<String>,
+    },
     Chain {
         name: String,
         changes: Vec<Self>,
@@ -1312,8 +1355,8 @@ pub struct Timings {
     /// for the knob as set.
     #[serde(default)]
     pub unsteady: Vec<String>,
-    /// Modules from which no cable path reaches an out, scope or readout;
-    /// they are not rendered.
+    /// Modules from which no cable path reaches an out, scope, readout or
+    /// loop; they are not rendered.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unheard: Vec<String>,
 }

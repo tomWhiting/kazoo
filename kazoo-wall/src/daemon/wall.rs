@@ -6,7 +6,8 @@
 
 mod chains;
 mod cost;
-mod unheard;
+mod loops;
+pub(super) mod unheard;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,6 +17,7 @@ use kazoo_fx::Effect;
 use ringbuf::HeapCons;
 use ringbuf::traits::{Consumer, Observer};
 
+use super::loops::Loops;
 use super::record::{Ending, Finished, Recorder};
 use super::speech::Speech;
 use super::timing::{Timing, timing};
@@ -568,19 +570,21 @@ pub struct Wall {
     fresh_from: HashMap<String, [u64; MAX_INPUTS]>,
     fingerprints: Fingerprints,
     speech: Speech,
+    loops: Loops,
     recorder: Recorder,
     /// Changes the daemon made on its own (to a recording), for the next
     /// [`Self::tick`] to tell everyone.
     told: Vec<Event>,
     /// Latency and delays as the tables were last sent.
     timing: Timing,
-    /// Ids with no cable path to an out, scope or readout, in added order.
+    /// Ids with no cable path to an out, scope, readout or loop, in added
+    /// order.
     /// They are not rendered: knob glides freeze, with look reporting the
     /// target and frozen value, and resume when heard again. State (tails,
     /// envelope stages and sequencer steps) is held, never reset. Outputs
     /// keep the last block; no heard module can read an unheard source, and
     /// cables into a module heard again start with empty delay lines (see
-    /// `engine::tables`). A scope or readout makes its sources heard. An unheard speaker's
+    /// `engine::tables`). A scope, readout or loop makes its sources heard. An unheard speaker's
     /// phrase feed waits for rendering; speech synthesis completion answers
     /// the request without waiting for playback.
     unheard: Vec<String>,
@@ -1302,6 +1306,7 @@ impl Wall {
         let mut wall = Self {
             chain_batch: None,
             speech: Speech::new(speech_cache),
+            loops: Loops::new(),
             recorder,
             told: Vec::new(),
             timing: Timing::default(),
@@ -1485,6 +1490,7 @@ impl Wall {
     }
 
     fn load_engine(&mut self) {
+        self.loops.replace_wall();
         self.restart_load_watch();
         self.rack = Rack::default();
         // What the old engine's modules measured is gone with them.
@@ -1533,6 +1539,7 @@ impl Wall {
             self.engine.send(Command::Remove { slot });
         }
         self.speech.replace_wall();
+        self.loops.replace_wall();
         self.lines.clear();
         self.settled.clear();
         self.settling.clear();
@@ -1610,6 +1617,17 @@ impl Wall {
             let (built, feed) = adapters::build_speaker(rate);
             let needs = self.speech.attach(&module.id, feed);
             (built, needs)
+        } else if module.kind == Kind::LOOP {
+            let (built, feed) = dsp::looper::build_loop(rate);
+            self.loops.attach(&module.id, feed, rate);
+            if let Some(tape) = self
+                .patch
+                .loop_record(&module.id)
+                .and_then(|record| record.tape.clone())
+            {
+                self.loops.put_back(&module.id, tape);
+            }
+            (built, false)
         } else {
             (
                 dsp::build(
@@ -1989,6 +2007,7 @@ impl Wall {
             }
             What::Remove { module, .. } => {
                 self.speech.forget(&module.id);
+                self.loops.forget(&module.id);
                 // What it measured goes with it: brought back, it measures
                 // afresh.
                 self.readings.remove(&module.id);
@@ -1998,10 +2017,21 @@ impl Wall {
                     self.engine.send(Command::Remove { slot });
                 }
             }
+            // The loop takes what the patch now says it holds, over what
+            // it recorded.
+            What::Erase { module, .. } => {
+                let tape = self
+                    .patch
+                    .loop_record(module)
+                    .and_then(|record| record.tape.clone());
+                self.loops.replace(module, tape, false);
+            }
             // Applied before the engine was loaded, (new words) already
-            // handed to the player, or (a recording) started or stopped by
-            // the recorder itself: nothing to mirror.
-            What::Migrate { .. }
+            // handed to the player, (a recording) started or stopped by
+            // the recorder itself, or (a loop's desk strip) asked of the
+            // desk by KZ-L09: nothing to mirror.
+            What::LoopFrom { .. }
+            | What::Migrate { .. }
             | What::Speak { .. }
             | What::Record { .. }
             | What::Abandoned { .. }
@@ -2442,7 +2472,8 @@ impl Wall {
             | Request::Unpatch { .. }
             | Request::Add { .. }
             | Request::Remove { .. }
-            | Request::ChainAdd { .. } => Before::Whole(Box::new(self.patch.clone())),
+            | Request::ChainAdd { .. }
+            | Request::Loop { .. } => Before::Whole(Box::new(self.patch.clone())),
             Request::Undo { change } => {
                 match self.log.iter().find(|logged| logged.seq == *change) {
                     Some(Change {
@@ -2456,7 +2487,9 @@ impl Wall {
                             | What::Add { .. }
                             | What::Remove { .. }
                             | What::Restore { .. }
-                            | What::Chain { .. },
+                            | What::Chain { .. }
+                            | What::Erase { .. }
+                            | What::LoopFrom { .. },
                         ..
                     }) => Before::Whole(Box::new(self.patch.clone())),
                     // A tempo, a load and words touch nothing before they
@@ -2602,6 +2635,7 @@ impl Wall {
             Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change),
             Request::Tempo { bpm } => self.tempo(seat, *bpm, None),
+            Request::Loop { module, op } => self.loop_change(seat, module, op),
             Request::Speak {
                 module,
                 text,
@@ -2659,7 +2693,11 @@ impl Wall {
         name: Option<&str>,
         place: Option<&Place>,
     ) -> Result<Outcome, WallError> {
-        Patch::check_add(kind, name)?;
+        let checked_kind = Patch::check_add(kind, name)?;
+        if checked_kind == Kind::LOOP {
+            self.patch.loop_room()?;
+            self.file_room(crate::store::WORST_LOOP_BYTES)?;
+        }
         let growth = Growth {
             modules: 1,
             ..Growth::NONE
@@ -4572,6 +4610,7 @@ impl Wall {
         let shared = self.engine.shared();
         self.clock_line
             .check(shared.beat(), shared.following_desk());
+        self.loops.poll();
         self.settle(now);
         // The saves not read yet since the start, one a tick, so the first
         // listing finds them read (see `Store::list_saves`).

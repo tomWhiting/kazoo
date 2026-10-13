@@ -6,7 +6,8 @@ use std::{
 };
 
 use kazoo_core::analysis::score::{
-    CycleUnderTest, PyinUnderTest, TrackerUnderTest, score, signals, table, wav,
+    CycleUnderTest, FusedUnderTest, PyinUnderTest, TrackerUnderTest, gate, score, signals, table,
+    wav,
 };
 
 const USAGE: &str = "Usage: voice_score [--rate <hz>] [<wav>...]";
@@ -15,6 +16,7 @@ fn trackers(rate: u32) -> kazoo_core::Result<Vec<Box<dyn TrackerUnderTest>>> {
     Ok(vec![
         Box::new(PyinUnderTest::new(rate)?),
         Box::new(CycleUnderTest::new(rate)),
+        Box::new(FusedUnderTest::new(rate)?),
     ])
 }
 
@@ -68,7 +70,15 @@ fn main() -> kazoo_core::Result<()> {
             ));
         }
     }
-    let output = table(&rows);
+    let mut gate_rows = Vec::new();
+    for take in &takes {
+        gate_rows.push((
+            "voice",
+            take.name.as_str(),
+            gate::score_gate(&mut FusedUnderTest::new(take.rate)?, take),
+        ));
+    }
+    let output = format!("{}\n{}", table(&rows), gate::table(&gate_rows));
     std::io::stdout().lock().write_all(output.as_bytes())?;
     let logs = manifest.join("../target/kz-logs");
     std::fs::create_dir_all(&logs)?;

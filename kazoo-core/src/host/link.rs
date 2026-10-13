@@ -183,6 +183,31 @@ pub fn connect_or_direct(setup: &LinkSetup) -> Result<(HubLink, HubLinkAudio), E
     connect_config_or_direct(config(setup)?)
 }
 
+/// Read after every [`HubLink`] this process made has dropped, because shutdown
+/// updates these counts during drop, after the instrument's screen has gone.
+#[must_use]
+pub fn exit_report() -> Option<String> {
+    exit_report_from(
+        crate::ipc::link::stuck_shutdowns(),
+        crate::ipc::link::undelivered_completions(),
+    )
+}
+
+/// The exit line for these counts, or `None` when every link stopped in time.
+#[must_use]
+pub(crate) fn exit_report_from(stuck: u64, late: u64) -> Option<String> {
+    if stuck == 0 && late == 0 {
+        return None;
+    }
+    let plural = if stuck == 1 { "" } else { "s" };
+    let report = format!("kazoo: {stuck} desk link{plural} did not stop within 500 ms");
+    Some(if late > 0 {
+        format!("{report}; {late} finished later")
+    } else {
+        report
+    })
+}
+
 // Playing direct keeps the link thread looking, so a desk started after the
 // instrument still picks it up, as the link always has.
 pub fn connect_config_or_direct(config: LinkConfig) -> Result<(HubLink, HubLinkAudio), Error> {
