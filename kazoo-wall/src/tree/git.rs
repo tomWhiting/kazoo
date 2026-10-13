@@ -490,7 +490,8 @@ impl Importer {
             checked(git_command("rev-parse", Some(&self.dir)).args(["--verify", &self.branch]))?;
         if tip != sha {
             return Err(TreeError::Git(format!(
-                "the branch is at {tip} but the tree wrote {sha}"
+                "{} is at {tip} but the tree wrote {sha}",
+                self.branch
             )));
         }
         Ok(sha)
