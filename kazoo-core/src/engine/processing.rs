@@ -465,10 +465,17 @@ pub(super) fn process_block(
 }
 
 /// Render one chunk of at most the engine's buffer size, splitting it on
-/// the exact frames where the desk's transport changes fall due. Returns
-/// the input level (dB) of the last part rendered.
+/// the exact frames where the desk's transport changes fall due and on the
+/// voice tracker's frames (see [`voice::render_hops`]). Returns the input
+/// level (dB) of the last part rendered.
 fn render_chunk(state: &mut ProcessingState, io: &mut ProcessingIO, chunk: &mut [f32]) -> f32 {
     let frames = chunk.len() / 2;
+    // Skip stale mic once per chunk, so every piece it renders in reads on.
+    let excess = io
+        .mic_cons
+        .occupied_len()
+        .saturating_sub(frames.min(state.mic_block.len()));
+    io.mic_cons.skip(excess);
     let mut start = 0;
     if state.desk.connected && !state.desk.follower.is_idle() {
         // Stream frame of this chunk's first frame, as the desk counts them:
@@ -479,13 +486,13 @@ fn render_chunk(state: &mut ProcessingState, io: &mut ProcessingIO, chunk: &mut 
                 continue;
             };
             if frame > start {
-                render_segment(state, io, &mut chunk[start * 2..frame * 2]);
+                voice::render_hops(state, io, &mut chunk[start * 2..frame * 2]);
             }
             apply_desk_transport(state, io, change);
             start = frame;
         }
     }
-    render_segment(state, io, &mut chunk[start * 2..])
+    voice::render_hops(state, io, &mut chunk[start * 2..])
 }
 
 /// Render `output` (interleaved stereo, at most the engine's buffer size)
@@ -784,27 +791,15 @@ fn place_recorded_clip(
 
 /// Read mic samples from the ring buffer into the state's mic block.
 ///
-/// Always reads the **newest** samples available, discarding any stale
-/// data that has accumulated in the ring buffer. This prevents latency
-/// from growing when the output callback runs slightly behind the input
-/// callback — we always process the most recent audio rather than a
-/// backlog of old samples.
+/// [`render_chunk`] has already skipped any stale backlog, so the newest
+/// audio is read and latency cannot grow when the output callback runs
+/// behind the input callback.
 ///
 /// Reads at most `max_read` samples to match the output buffer size. Any
 /// remaining slots up to `max_read` are zero-padded (silence). Returns
 /// the number of samples actually read from the ring buffer.
 fn read_mic_input(io: &mut ProcessingIO, state: &mut ProcessingState, max_read: usize) -> usize {
     let limit = max_read.min(state.mic_block.len());
-    let available = io.mic_cons.occupied_len();
-
-    // If more than one block has accumulated, skip stale samples so we
-    // always process the newest audio. This is the key latency reduction:
-    // without this, accumulated samples add proportional latency.
-    if available > limit {
-        let excess = available - limit;
-        io.mic_cons.skip(excess);
-    }
-
     let num_read = io.mic_cons.pop_slice(&mut state.mic_block[..limit]);
     for sample in &mut state.mic_block[num_read..limit] {
         *sample = 0.0;
