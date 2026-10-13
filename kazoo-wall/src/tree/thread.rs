@@ -237,6 +237,9 @@ impl TreeHandle {
             News::Committed { through } => {
                 self.through = Some(through);
                 self.error = None;
+                if self.behind_from.is_some_and(|first| through >= first) {
+                    self.behind_from = None;
+                }
             }
             News::Gap { first, last } => {
                 self.through = Some(last);
@@ -251,8 +254,6 @@ impl TreeHandle {
                 );
                 self.error = Some(error);
                 self.through = through;
-                self.behind_from
-                    .get_or_insert_with(|| through.map_or(1, |n| n.saturating_add(1)));
                 self.resync = true;
             }
             News::NeedWhole => self.resync = true,
@@ -394,9 +395,15 @@ impl Writer {
             } => {
                 self.checkpoint(dir, news)?;
                 self.accepted = generation;
-                if matches!(kind, WholeKind::Gap) && seq <= self.through.unwrap_or(0) {
-                    self.base = Some(files);
-                    return Ok(());
+                // A gap item that covers nothing the tree lacks is the base
+                // of the next change commit, not a commit; the tree already
+                // holds every change through `through`, so say so.
+                if let (WholeKind::Gap, Some(through)) = (kind, self.through) {
+                    if seq <= through {
+                        self.base = Some(files);
+                        tell(news, News::Committed { through });
+                        return Ok(());
+                    }
                 }
                 self.base = None;
                 let kind = match kind {
