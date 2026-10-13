@@ -670,8 +670,8 @@ present. Receipt: `target/kz-logs/review/voice-score-final.md`.
 
 ## KZ-P10 sidestep
 
-2026-10-14, source head `dae8a42`, base `da446f9`, with uncommitted
-`lane/kz-P10` resume changes.
+2026-10-14, source head `1233bcf`, base `da446f9`, with uncommitted
+`lane/kz-P10` write-only review fixes.
 The fixture processes 512 frames at 48 kHz with square, sub1, sub2, ring,
 half and fold at 50%, and the remaining controls at their defaults.
 
@@ -679,6 +679,7 @@ half and fold at 50%, and the remaining controls at their defaults.
 |---|---:|---|---|---|
 | fx/sidestep | 512 | not measured | 143.31 / 153.73 / 157.58 | queued command cancelled before execution, exit 130 |
 | fx/sidestep resume | 512 | not measured | 260.72 / 233.51 / 184.05 | owned exec session cancelled while waiting for the cargo lock, exit 130; benchmark did not run |
+| fx/sidestep write-only | 512 | to be measured in the build round | not sampled | not run: write-only round |
 
 The required cargo lock and dependency compilation consumed the allocation.
 The benchmark never started. The 100 microsecond budget is not verified.
@@ -688,3 +689,9 @@ The resume load was read while waiting for the cargo lock on 2026-10-14.
 It is also a queue observation, not a benchmark load sample. The resume
 has not obtained a timing result, so the 100 microsecond budget remains
 unverified.
+
+The `circuit_models` bench target registers `fx/sidestep` through the
+effect catalogue. No benchmark ran in the write-only round. The wall's
+sidestep cost provisionally uses ringmod's 379,420 ns per 512-frame block
+until `fx/sidestep` is measured on a quiet machine; this is a scheduling
+estimate, not a sidestep measurement.

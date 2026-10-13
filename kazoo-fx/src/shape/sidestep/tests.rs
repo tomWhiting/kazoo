@@ -445,3 +445,103 @@ fn a_silence_is_not_a_period() {
     println!("longest period {longest} samples, expected {expected}");
     assert!(longest < expected * 1.01, "longest period {longest}");
 }
+
+fn sine(frames: usize, amplitude: f32) -> Vec<f32> {
+    (0..frames)
+        .map(|frame| {
+            (std::f64::consts::TAU * 220.0 * frame as f64 / f64::from(RATE)).sin() as f32
+                * amplitude
+        })
+        .collect()
+}
+
+#[test]
+fn a_silence_keeps_the_clock_while_the_gate_releases() {
+    let mut effect = inspected(&[("track", 100.0)]);
+    let mut held = 0.0;
+    for sample in sine(14_400, 0.25) {
+        held = effect.test_sample(sample).1[2];
+    }
+    for frame in 0..14_400 {
+        let trace = effect.test_sample(0.0).1;
+        if frame == 0 {
+            assert!(20.0 * trace[1].log10() > -45.0, "gate already closed");
+        }
+        assert!(
+            (trace[2] - held).abs() < 1e-6,
+            "silence frame {frame}: period {} changed from {held}",
+            trace[2]
+        );
+    }
+}
+
+#[test]
+fn a_gate_opening_restarts_after_a_slow_rise() {
+    let mut effect = inspected(&[("sense", -45.0), ("attack", 2.0)]);
+    let threshold = 10.0_f64.powf(-45.0 / 20.0);
+    let ramp: Vec<f32> = (0..144_000)
+        .map(|frame| {
+            let time = f64::from(frame) / f64::from(RATE);
+            let db = 10.0_f64.mul_add(time, -60.0);
+            ((std::f64::consts::TAU * 220.0 * time).sin() * 10.0_f64.powf(db / 20.0)) as f32
+        })
+        .collect();
+    for opening in 0..2 {
+        let mut opened = false;
+        for sample in &ramp {
+            let trace = effect.test_sample(*sample).1;
+            if !opened && trace[1] >= threshold {
+                assert!(trace[0] > 0.0, "gate {opening}: ADSR did not attack");
+                assert!(trace[3] < 1.0, "gate {opening}: no onset at the opening");
+                opened = true;
+            }
+        }
+        assert!(opened, "gate {opening} never opened");
+        let mut tail = 0.0;
+        for _ in 0..14_400 {
+            tail = effect.test_sample(0.0).1[1];
+        }
+        assert!(tail < threshold, "gate {opening} never closed");
+    }
+}
+
+#[test]
+fn ring_and_half_follow_the_input_level() {
+    let input = sine(8192, 0.25);
+    let quieter: Vec<_> = input.iter().map(|sample| sample * 0.5).collect();
+    for wave in ["ring", "half"] {
+        let loud = render(isolated(wave).as_mut(), &input);
+        let quiet = render(isolated(wave).as_mut(), &quieter);
+        let peak = loud[2048..]
+            .iter()
+            .copied()
+            .map(f32::abs)
+            .fold(0.0, f32::max);
+        assert!(peak > 0.01, "{wave}: silent fixture");
+        let error = loud
+            .iter()
+            .zip(&quiet)
+            .skip(2048)
+            .map(|(loud, quiet)| (-0.5_f32).mul_add(*loud, *quiet).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            error < 1e-5,
+            "{wave}: half the input level has error {error}"
+        );
+    }
+}
+
+#[test]
+fn the_output_obeys_the_wet_ceiling() {
+    let output = render(
+        isolated("dry").as_mut(),
+        &[16.0, -16.0, f32::MAX, -f32::MAX],
+    );
+    assert!(output.iter().any(|sample| sample.abs() > 1.0));
+    assert!(
+        output
+            .iter()
+            .all(|sample| sample.is_finite() && sample.abs() <= 2.0),
+        "wet ceiling exceeded: {output:?}"
+    );
+}

@@ -129,6 +129,19 @@ enum Stage {
     Release,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    Closed,
+    Open,
+    Triggered,
+}
+
+impl Gate {
+    const fn is_open(self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+}
+
 #[derive(Debug, Default)]
 struct Comparators {
     positive: bool,
@@ -155,6 +168,7 @@ pub(super) struct Sidestep {
     peak_input: f64,
     charge: f64,
     discharge: f64,
+    previous_input: f32,
     previous_s: f64,
     previous_negative: f64,
     comparators: Comparators,
@@ -163,7 +177,7 @@ pub(super) struct Sidestep {
     edges: [EdgeWave; 3],
     edge_age: f64,
     have_edge: bool,
-    gate: bool,
+    gate: Gate,
     period: f64,
     clock: f64,
     clock_coeff: f64,
@@ -203,6 +217,7 @@ impl Sidestep {
             peak_input: 0.0,
             charge: 0.0,
             discharge: 0.0,
+            previous_input: 0.0,
             previous_s: 0.0,
             previous_negative: 0.0,
             comparators: Comparators::default(),
@@ -211,7 +226,7 @@ impl Sidestep {
             edges: [EdgeWave::new(); 3],
             edge_age: 0.0,
             have_edge: false,
-            gate: false,
+            gate: Gate::Closed,
             period: 48_000.0 / 220.0,
             clock: 220.0,
             clock_coeff: 0.0,
@@ -260,7 +275,7 @@ impl Sidestep {
         }
     }
 
-    fn clock_waves(&mut self, s: f64) -> [f64; 3] {
+    fn clock_waves(&mut self, s: f64, input: f32) -> [f64; 3] {
         let alpha = if s <= self.peak {
             self.charge
         } else {
@@ -289,16 +304,19 @@ impl Sidestep {
                 (self.previous_negative / (self.previous_negative - difference)).clamp(0.0, 1.0);
         }
         self.edge_age += 1.0;
-        if !self.gate || self.edge_age > self.rate * LONGEST_PERIOD {
+        if !self.gate.is_open() || self.edge_age > self.rate * LONGEST_PERIOD {
             // A rest, or a gap no input below the lowest `low` corner can
             // make, is not a cycle: the next edge starts a new count.
             self.have_edge = false;
         }
         if self.latch && !was_high {
-            if self.have_edge {
+            // Filter memory can cross zero while both input samples around
+            // the edge are silent. Those edges shape the tail, not a period.
+            let measuring = self.gate.is_open() && (input != 0.0 || self.previous_input != 0.0);
+            if measuring && self.have_edge {
                 self.period = (self.edge_age + fraction - 1.0).max(1.0);
             }
-            self.have_edge = true;
+            self.have_edge = measuring;
             self.edge_age = 1.0 - fraction;
             self.dividers.sub1 = !self.dividers.sub1;
             if self.dividers.sub1 {
@@ -307,6 +325,7 @@ impl Sidestep {
         }
         self.comparators.positive = positive;
         self.comparators.negative = negative;
+        self.previous_input = input;
         self.previous_s = s;
         self.previous_negative = difference;
         [
@@ -327,7 +346,11 @@ impl Sidestep {
         flush64(&mut self.envelope);
         let db = 20.0 * self.envelope.max(1e-8).log10();
         let gate = db >= f64::from(p[18]);
-        self.gate = gate;
+        if !gate {
+            self.gate = Gate::Closed;
+        } else if self.gate == Gate::Closed {
+            self.gate = Gate::Open;
+        }
         if db < self.valley || self.onset_age < self.rate * 0.04 {
             // The same attack can keep rising during the refractory period.
             self.valley = db;
@@ -335,7 +358,9 @@ impl Sidestep {
             self.valley = self.valley_coeff.mul_add(db - self.valley, self.valley);
         }
         self.onset_age += 1.0;
-        if gate && db - self.valley >= 6.0 && self.onset_age >= self.rate * 0.04 {
+        let onset = self.gate == Gate::Open || db - self.valley >= 6.0;
+        if gate && onset && self.onset_age >= self.rate * 0.04 {
+            self.gate = Gate::Triggered;
             self.stage = Stage::Attack;
             self.adsr = 0.0;
             self.valley = db;
@@ -388,12 +413,14 @@ impl Sidestep {
         for allpass in &mut self.allpasses {
             d = allpass.allpass(d, self.a);
         }
-        let waves = self.clock_waves(s);
         self.envelope(x, &params);
+        let waves = self.clock_waves(s, mono);
         let dry = self.previous_x;
         let aligned = self.previous_d;
         self.previous_x = x;
         self.previous_d = d;
+        // Divide before the amplitude stage so following the input stays linear.
+        let normalised = aligned / self.previous_env.max(1e-4);
         let folded = if params[7] > 0.0 {
             (FRAC_PI_2
                 * (f64::from(params[8]) * aligned / self.previous_env.max(1e-4)).clamp(-8.0, 8.0))
@@ -408,8 +435,8 @@ impl Sidestep {
         );
         let processors = f64::from(params[7]).mul_add(
             folded,
-            (f64::from(params[6]) * aligned * (waves[1] + 1.0))
-                .mul_add(0.5, f64::from(params[5]) * aligned * waves[1]),
+            (f64::from(params[6]) * normalised * (waves[1] + 1.0))
+                .mul_add(0.5, f64::from(params[5]) * normalised * waves[1]),
         );
         let w = 0.01_f64.mul_add(processors, 0.005 * divided);
         let clock_target = (self.rate / self.period).clamp(1.0, self.rate * 0.45);
@@ -429,7 +456,7 @@ impl Sidestep {
             if output.abs() < 1e-30 {
                 0.0
             } else {
-                output.clamp(-4.0, 4.0) as f32
+                output.clamp(-2.0, 2.0) as f32
             }
         } else {
             self.clear_audio();
@@ -457,6 +484,7 @@ impl Sidestep {
         self.allpasses = [Pole::default(); 2];
         self.peak = 0.0;
         self.peak_input = 0.0;
+        self.previous_input = 0.0;
         self.previous_s = 0.0;
         self.previous_negative = 0.0;
         self.comparators = Comparators::default();
@@ -465,7 +493,7 @@ impl Sidestep {
         self.edges = [EdgeWave::new(); 3];
         self.edge_age = 0.0;
         self.have_edge = false;
-        self.gate = false;
+        self.gate = Gate::Closed;
         self.period = self.rate / 220.0;
         self.clock = 220.0;
         self.envelope = 0.0;

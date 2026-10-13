@@ -33,6 +33,8 @@ pub(super) const BUSY_SAID: f32 = 1.25;
 /// needs a phrase feed): it takes the `vca` row. Rows taken with the machine
 /// near a load of 100 came out three to six times these, and costed walls
 /// that render at 57% of real time at 251%.
+/// Sidestep provisionally takes the ringmod row until `fx/sidestep` is
+/// measured on a quiet machine.
 pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
     ("vco", 133_880),
     ("lfo", 72_895),
@@ -64,6 +66,7 @@ pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
     ("fold", 836_620),
     ("crush", 279_640),
     ("ringmod", 379_420),
+    ("sidestep", 379_420),
     ("comp", 592_430),
     ("tape", 491_630),
     ("bbd", 162_010),
