@@ -308,6 +308,10 @@ impl Stepper for Grids {
 }
 
 impl Rhythm for Grids {
+    fn set_seed(&mut self, seed: u64) {
+        self.dice = Noise::new(kazoo_fx::dsp::seeded(Some(seed), 0x4752_4944));
+    }
+
     /// The map counts clock edges only, so the rate needs no sizing.
     fn prepare(&mut self, _sample_rate: f32) {
         self.restart();

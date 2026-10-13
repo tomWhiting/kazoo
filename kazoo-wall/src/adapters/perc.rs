@@ -62,6 +62,10 @@ impl VoiceModule {
 }
 
 impl Module for VoiceModule {
+    fn set_seed(&mut self, seed: u64) {
+        self.voice.set_seed(seed);
+    }
+
     fn process(&mut self, _tick: &Tick, io: Io<'_>) {
         let voice = &mut self.voice;
         apply(&io, &mut self.applied, |index, value| {
@@ -123,6 +127,10 @@ impl RhythmModule {
 }
 
 impl Module for RhythmModule {
+    fn set_seed(&mut self, seed: u64) {
+        self.rhythm.set_seed(seed);
+    }
+
     fn process(&mut self, _tick: &Tick, io: Io<'_>) {
         let rhythm = &mut self.rhythm;
         apply(&io, &mut self.applied, |index, value| {

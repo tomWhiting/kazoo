@@ -39,7 +39,8 @@ const FIRST_CHANCE: usize = 6;
 /// How many steps there are.
 pub const MAX_STEPS: usize = 16;
 
-/// The seed the dice are reloaded with when locked.
+/// The dice's seed when the sequencer is never seeded, and the salt its
+/// own seed is stirred with when it is (see [`Rhythm::set_seed`]).
 const SEED: u32 = 0x5052_4F42;
 
 const fn chance(name: &'static str, default: f32) -> ParamSpec {
@@ -148,6 +149,8 @@ pub struct Prob {
     inputs: Inputs,
     meter: Meter,
     dice: Noise,
+    /// The seed the dice are reloaded with at the top of every locked cycle.
+    lock_seed: u32,
     next: usize,
     fire: bool,
     accent: bool,
@@ -173,6 +176,7 @@ impl Prob {
             inputs: Inputs::default(),
             meter: Meter::default(),
             dice: Noise::new(SEED),
+            lock_seed: SEED,
             next: 0,
             fire: false,
             accent: false,
@@ -187,7 +191,7 @@ impl Prob {
         let step = self.next % steps;
         self.next = (step + 1) % steps;
         if step == 0 && self.knobs.count(LOCK) == 1 {
-            self.dice = Noise::new(SEED);
+            self.dice = Noise::new(self.lock_seed);
         }
         // Always roll all three dice, so a locked loop stays the same
         // whichever of them matter this time.
@@ -235,6 +239,11 @@ impl Stepper for Prob {
 }
 
 impl Rhythm for Prob {
+    fn set_seed(&mut self, seed: u64) {
+        self.lock_seed = kazoo_fx::dsp::seeded(Some(seed), SEED);
+        self.dice = Noise::new(self.lock_seed);
+    }
+
     /// The sequencer counts clock edges and measures them in samples, so
     /// the rate needs no sizing.
     fn prepare(&mut self, _sample_rate: f32) {

@@ -197,6 +197,10 @@ impl Circuit for Tom {
 }
 
 impl Voice for Tom {
+    fn set_seed(&mut self, seed: u64) {
+        self.noise = Noise::new(kazoo_fx::dsp::seeded(Some(seed), 0x544F_4D53));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         self.rate = sane_rate(sample_rate);
         self.params.prepare(self.rate);

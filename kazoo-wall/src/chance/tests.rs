@@ -191,3 +191,67 @@ fn a_different_wall_seed_moves_the_randomness() {
         "the wall seed did not move the randomness"
     );
 }
+
+#[test]
+fn two_hats_on_one_wall_do_not_hiss_together() {
+    let mut patch = Patch::empty(120.0);
+    patch.seed = 0x5EED;
+    for kind in ["clock", "hat", "hat", "scope", "scope", "out"] {
+        patch.add(kind, None, None).unwrap();
+    }
+    for (module, knob, value) in [
+        ("hat1", "metal", 0.0),
+        ("hat2", "metal", 0.0),
+        ("hat1", "decay", 0.5),
+        ("hat2", "decay", 0.5),
+        ("scope1", "mode", 1.0),
+        ("scope2", "mode", 1.0),
+        ("scope1", "time", 0.05),
+        ("scope2", "time", 0.05),
+    ] {
+        patch.turn(module, knob, value, Some(0.0)).unwrap();
+    }
+    for (from, to) in [
+        ("clock1.out", "hat1.trigger"),
+        ("clock1.out", "hat2.trigger"),
+        ("hat1.out", "scope1.a"),
+        ("hat2.out", "scope2.a"),
+        ("scope1.a", "out1.left"),
+        ("scope2.a", "out1.right"),
+    ] {
+        patch.plug(from, to, None, None).unwrap();
+    }
+    let bytes = store::encode(&patch).unwrap();
+    let samples = render(reload(&bytes));
+    assert!(
+        samples == render(reload(&bytes)),
+        "hat save changed on reload"
+    );
+    assert!(
+        samples.chunks_exact(2).any(|frame| frame[0] != frame[1]),
+        "two hats on one wall hiss in lockstep"
+    );
+    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    let mut wall = Wall::new(reload(&bytes), control, None, Vec::new(), None);
+    let mut buffer = [0.0; 512];
+    for _ in 0..40 {
+        assert_no_alloc::assert_no_alloc(|| engine.render(&mut buffer, 2));
+        assert!(wall.tick(std::time::Instant::now()).is_empty());
+    }
+    let snapshot = wall.snapshot();
+    let traces: Vec<_> = ["scope1", "scope2"]
+        .map(|id| {
+            let probe = snapshot
+                .probes
+                .iter()
+                .find(|probe| probe.module == id)
+                .unwrap();
+            let scope = probe.scope.as_ref().unwrap();
+            assert!(!scope.a.is_empty());
+            assert!(scope.a.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+            scope.a.clone()
+        })
+        .into_iter()
+        .collect();
+    assert!(traces[0] != traces[1], "hat scope traces match");
+}
