@@ -228,6 +228,7 @@ impl Grain {
 /// The granular delay.
 #[derive(Debug)]
 pub struct Granular {
+    seed: Option<u64>,
     rate: f32,
     prepared: bool,
     values: [f32; 12],
@@ -258,8 +259,10 @@ impl Granular {
     /// A granular delay at its defaults, unprepared.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let values = defaults(&PARAMS);
         Self {
+            seed,
             rate: 48_000.0,
             prepared: false,
             values,
@@ -272,7 +275,7 @@ impl Granular {
             settling: 0,
             grains: [Grain::default(); GRAINS],
             until_next: 0.0,
-            noise: Noise::new(0xC10D_5EED),
+            noise: Noise::new(crate::dsp::seeded(seed, 0xC10D_5EED)),
             last_cloud: [0.0; 2],
             clips: [Saturator::default(); 2],
         }
@@ -477,6 +480,11 @@ fn heard_divisor(gains: f32, squares: f32) -> f32 {
 }
 
 impl Effect for Granular {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        self.noise = Noise::new(crate::dsp::seeded(self.seed, 0xC10D_5EED));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let rate = sane_rate(sample_rate);
         self.rate = rate;
@@ -502,7 +510,7 @@ impl Effect for Granular {
         for clip in &mut self.clips {
             clip.reset();
         }
-        self.noise = Noise::new(0xC10D_5EED);
+        self.noise = Noise::new(crate::dsp::seeded(self.seed, 0xC10D_5EED));
         self.feedback.snap(self.feedback.target());
         self.mix.snap(self.mix.target());
     }

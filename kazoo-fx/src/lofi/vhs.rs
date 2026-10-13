@@ -194,13 +194,13 @@ struct Linear {
 }
 
 impl Linear {
-    fn new() -> Self {
+    fn new(seed: Option<u64>) -> Self {
         Self {
             level: 0.0,
             alc: Ramp::new(db_to_gain(6.0), CONTROL),
             oversampler: Oversampler2::new(),
             tape: Magnetic::default(),
-            hiss: Hiss::new(0x0005_0001),
+            hiss: Hiss::new(crate::dsp::seeded(seed, 0x0005_0001)),
             dropout: OnePole::default(),
             head: Butterworth::default(),
             low_cut: Butterworth::default(),
@@ -259,20 +259,20 @@ struct HiFi {
 }
 
 impl HiFi {
-    fn new(seed: u32) -> Self {
+    fn new(seed: Option<u64>, salt: u32) -> Self {
         Self {
             level: 0.0,
-            hiss: Hiss::new(seed),
-            burst: Noise::new(seed ^ 0x00FF_00FF),
+            hiss: Hiss::new(crate::dsp::seeded(seed, salt)),
+            burst: Noise::new(crate::dsp::seeded(seed, salt ^ 0x00FF_00FF)),
             band: Butterworth::default(),
             low_cut: Biquad::new(),
         }
     }
 
-    fn reset(&mut self, seed: u32) {
+    fn reset(&mut self, seed: Option<u64>, salt: u32) {
         self.level = 0.0;
         self.hiss.reset();
-        self.burst = Noise::new(seed ^ 0x00FF_00FF);
+        self.burst = Noise::new(crate::dsp::seeded(seed, salt ^ 0x00FF_00FF));
         self.band.reset();
         self.low_cut.reset();
     }
@@ -307,6 +307,7 @@ struct Frame {
 /// VHS audio. See the module documentation for the model.
 #[derive(Debug, Clone)]
 pub struct Vhs {
+    seed: Option<u64>,
     rate: f32,
     knobs: [Smoothed; COUNT],
     speed: Smoothed,
@@ -339,24 +340,26 @@ impl Vhs {
     /// A deck at 48 kHz with every knob at its default.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let mut deck = Self {
+            seed,
             rate: 48_000.0,
             knobs: PARAMS.map(|spec| Smoothed::new(spec.default)),
             speed: Smoothed::new(0.0),
             hifi: Smoothed::new(0.0),
             lines: [DelayLine::default(), DelayLine::default()],
-            linear: Linear::new(),
-            stereo: [HiFi::new(0x0005_0002), HiFi::new(0x0005_0003)],
-            transport: Wobble::new(&TRANSPORT, 0x0005_0004),
-            drum: Wobble::new(&DRUM, 0x0005_0005),
-            warble: Wobble::new(&WARBLE, 0x0005_0006),
-            dropouts: Dropouts::new(0x0005_0007),
-            bursts: Dropouts::new(0x0005_0008),
+            linear: Linear::new(seed),
+            stereo: [HiFi::new(seed, 0x0005_0002), HiFi::new(seed, 0x0005_0003)],
+            transport: Wobble::new(&TRANSPORT, crate::dsp::seeded(seed, 0x0005_0004)),
+            drum: Wobble::new(&DRUM, crate::dsp::seeded(seed, 0x0005_0005)),
+            warble: Wobble::new(&WARBLE, crate::dsp::seeded(seed, 0x0005_0006)),
+            dropouts: Dropouts::new(crate::dsp::seeded(seed, 0x0005_0007)),
+            bursts: Dropouts::new(crate::dsp::seeded(seed, 0x0005_0008)),
             burst: OnePole::default(),
             switch: Phasor::default(),
             tick: 0.0,
             tick_decay: 0.0,
-            tick_noise: Noise::new(0x0005_0009),
+            tick_noise: Noise::new(crate::dsp::seeded(seed, 0x0005_0009)),
             base: 0.0,
             output_gain: Decibels::new(),
             until_control: 0,
@@ -485,6 +488,27 @@ impl Default for Vhs {
 }
 
 impl Effect for Vhs {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        self.linear
+            .hiss
+            .reseed(crate::dsp::seeded(self.seed, 0x0005_0001));
+        for (channel, salt) in self.stereo.iter_mut().zip([0x0005_0002, 0x0005_0003]) {
+            channel.hiss.reseed(crate::dsp::seeded(self.seed, salt));
+            channel.burst = Noise::new(crate::dsp::seeded(self.seed, salt ^ 0x00FF_00FF));
+        }
+        self.transport
+            .reseed(crate::dsp::seeded(self.seed, 0x0005_0004));
+        self.drum.reseed(crate::dsp::seeded(self.seed, 0x0005_0005));
+        self.warble
+            .reseed(crate::dsp::seeded(self.seed, 0x0005_0006));
+        self.dropouts
+            .reseed(crate::dsp::seeded(self.seed, 0x0005_0007));
+        self.bursts
+            .reseed(crate::dsp::seeded(self.seed, 0x0005_0008));
+        self.tick_noise = Noise::new(crate::dsp::seeded(self.seed, 0x0005_0009));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let rate = parts::sane_rate(sample_rate);
         self.rate = rate;
@@ -535,7 +559,7 @@ impl Effect for Vhs {
         }
         self.linear.reset();
         for (channel, seed) in self.stereo.iter_mut().zip([0x0005_0002, 0x0005_0003]) {
-            channel.reset(seed);
+            channel.reset(self.seed, seed);
         }
         self.transport.reset();
         self.drum.reset();
@@ -545,7 +569,7 @@ impl Effect for Vhs {
         self.burst.reset();
         self.switch.set(0.0);
         self.tick = 0.0;
-        self.tick_noise = Noise::new(0x0005_0009);
+        self.tick_noise = Noise::new(crate::dsp::seeded(self.seed, 0x0005_0009));
         self.until_control = 0;
     }
 

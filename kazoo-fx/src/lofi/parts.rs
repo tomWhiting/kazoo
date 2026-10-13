@@ -662,6 +662,12 @@ pub struct Wobble {
 }
 
 impl Wobble {
+    /// Restart from a new seed, keeping the configured shape.
+    pub fn reseed(&mut self, seed: u32) {
+        self.seed = seed;
+        self.reset();
+    }
+
     /// A transport made of the parts in `table` (at most six), with its own
     /// random `seed`.
     #[must_use]
@@ -767,6 +773,12 @@ pub struct Dropouts {
 }
 
 impl Dropouts {
+    /// Restart from a new seed, keeping the configured shape.
+    pub const fn reseed(&mut self, seed: u32) {
+        self.seed = seed;
+        self.reset();
+    }
+
     /// Seeded dropouts.
     #[must_use]
     pub const fn new(seed: u32) -> Self {
@@ -824,6 +836,12 @@ pub struct Hiss {
 }
 
 impl Hiss {
+    /// Restart from a new seed, keeping the configured shape.
+    pub const fn reseed(&mut self, seed: u32) {
+        self.seed = seed;
+        self.reset();
+    }
+
     /// Seeded hiss, unshaped until [`Self::band`] is called.
     #[must_use]
     pub fn new(seed: u32) -> Self {

@@ -252,6 +252,7 @@ impl Groove {
 /// A record on a turntable. See the module documentation for the model.
 #[derive(Debug, Clone)]
 pub struct Vinyl {
+    seed: Option<u64>,
     rate: f32,
     knobs: [Smoothed; COUNT],
     rpm: Smoothed,
@@ -281,21 +282,26 @@ impl Vinyl {
     /// A record at 48 kHz with every knob at its default.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let mut record = Self {
+            seed,
             rate: 48_000.0,
             knobs: PARAMS.map(|spec| Smoothed::new(spec.default)),
             rpm: Smoothed::new(SPEEDS[0]),
-            grooves: [Groove::new(0x0071_0001), Groove::new(0x0071_0002)],
+            grooves: [
+                Groove::new(crate::dsp::seeded(seed, 0x0071_0001)),
+                Groove::new(crate::dsp::seeded(seed, 0x0071_0002)),
+            ],
             side_cut: Biquad::new(),
-            warp: Wobble::new(&OFF_CENTRE, 0x0071_0003),
-            wow: Wobble::new(&DRIVE, 0x0071_0004),
+            warp: Wobble::new(&OFF_CENTRE, crate::dsp::seeded(seed, 0x0071_0003)),
+            wow: Wobble::new(&DRIVE, crate::dsp::seeded(seed, 0x0071_0004)),
             platter: 1.0,
             lags: [0.0; 2],
             active: 0,
             fade: 1.0,
             angle: 0.0,
             sites: [Site::default(); SITES],
-            noise: Noise::new(0x0071_0005),
+            noise: Noise::new(crate::dsp::seeded(seed, 0x0071_0005)),
             base: 0.0,
             output_gain: Decibels::new(),
             until_control: 0,
@@ -530,6 +536,16 @@ impl Default for Vinyl {
 }
 
 impl Effect for Vinyl {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        for (groove, salt) in self.grooves.iter_mut().zip([0x0071_0001, 0x0071_0002]) {
+            groove.surface.reseed(crate::dsp::seeded(self.seed, salt));
+        }
+        self.warp.reseed(crate::dsp::seeded(self.seed, 0x0071_0003));
+        self.wow.reseed(crate::dsp::seeded(self.seed, 0x0071_0004));
+        self.noise = Noise::new(crate::dsp::seeded(self.seed, 0x0071_0005));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let rate = parts::sane_rate(sample_rate);
         self.rate = rate;
@@ -579,7 +595,7 @@ impl Effect for Vinyl {
         self.fade = 1.0;
         self.angle = 0.0;
         self.sites = [Site::default(); SITES];
-        self.noise = Noise::new(0x0071_0005);
+        self.noise = Noise::new(crate::dsp::seeded(self.seed, 0x0071_0005));
         self.until_control = 0;
         self.shellac = 0.0;
     }

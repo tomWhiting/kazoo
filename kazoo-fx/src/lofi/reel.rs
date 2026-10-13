@@ -313,6 +313,7 @@ impl Channel {
 /// model.
 #[derive(Debug, Clone)]
 pub struct Reel {
+    seed: Option<u64>,
     rate: f32,
     knobs: [Smoothed; COUNT],
     ips: Smoothed,
@@ -337,13 +338,18 @@ impl Reel {
     /// A machine at 48 kHz with every knob at its default.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let mut machine = Self {
+            seed,
             rate: 48_000.0,
             knobs: PARAMS.map(|spec| Smoothed::new(spec.default)),
             ips: Smoothed::new(15.0),
             ghost: Smoothed::new(0.0),
-            channels: [Channel::new(0x0EE1_0001), Channel::new(0x0EE1_0002)],
-            flutter: Wobble::new(&PARTS, 0x0EE1_0003),
+            channels: [
+                Channel::new(crate::dsp::seeded(seed, 0x0EE1_0001)),
+                Channel::new(crate::dsp::seeded(seed, 0x0EE1_0002)),
+            ],
+            flutter: Wobble::new(&PARTS, crate::dsp::seeded(seed, 0x0EE1_0003)),
             programme: Tap::at(0.0),
             echo: Tap::at(0.0),
             base: 0.0,
@@ -476,6 +482,15 @@ impl Default for Reel {
 }
 
 impl Effect for Reel {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        for (channel, salt) in self.channels.iter_mut().zip([0x0EE1_0001, 0x0EE1_0002]) {
+            channel.hiss.reseed(crate::dsp::seeded(self.seed, salt));
+        }
+        self.flutter
+            .reseed(crate::dsp::seeded(self.seed, 0x0EE1_0003));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let rate = parts::sane_rate(sample_rate);
         self.rate = rate;

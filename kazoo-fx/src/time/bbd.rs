@@ -239,6 +239,7 @@ impl Chip {
 /// The bucket-brigade delay.
 #[derive(Debug)]
 pub struct Bbd {
+    seed: Option<u64>,
     rate: f32,
     prepared: bool,
     time: Smoothed,
@@ -263,8 +264,10 @@ impl Bbd {
     /// A bucket-brigade delay at its defaults, unprepared.
     #[must_use]
     pub fn new() -> Self {
+        let seed = None;
         let values = defaults(&PARAMS);
         Self {
+            seed,
             rate: 48_000.0,
             prepared: false,
             time: Smoothed::new(values[TIME]),
@@ -274,7 +277,7 @@ impl Bbd {
             level: Smoothed::new(values[LEVEL]),
             mix: Smoothed::new(values[MIX]),
             lfo: Phasor::default(),
-            noise: Noise::new(0x0DD5_3005),
+            noise: Noise::new(crate::dsp::seeded(seed, 0x0DD5_3005)),
             chips: [Chip::default(), Chip::default()],
             refresh: 0,
         }
@@ -363,6 +366,11 @@ fn cascade(filters: &mut [Biquad; 2], input: f32) -> f32 {
 }
 
 impl Effect for Bbd {
+    fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        self.noise = Noise::new(crate::dsp::seeded(self.seed, 0x0DD5_3005));
+    }
+
     fn prepare(&mut self, sample_rate: f32) {
         let rate = sane_rate(sample_rate);
         self.rate = rate;
