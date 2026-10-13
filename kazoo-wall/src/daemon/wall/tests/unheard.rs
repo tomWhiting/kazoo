@@ -266,5 +266,5 @@ fn a_held_back_cable_heard_again_plays_nothing_from_before_it_was_unheard() {
     assert_eq!(wall.snapshot().timing.cables[&dry] as usize, delay);
     let mut block = vec![0.0; SUB_BLOCK * 2];
     engine.render(&mut block, 2);
-    assert_eq!(f32::from_bits(loudest.load(Ordering::Relaxed)), 0.0);
+    assert_eq!(loudest.load(Ordering::Relaxed), 0.0_f32.to_bits());
 }
