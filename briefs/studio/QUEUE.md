@@ -156,3 +156,7 @@ START KZ-P10 base=da446f9 branch=lane/kz-P10 df=61GB at 04:22
 START KZ-V05 base=cf3cac7 branch=lane/kz-V05 df=66GB at 06:33
 START KZ-V06 base=cf3cac7 branch=lane/kz-V06 df=65GB at 06:33
 - KZ-T02b merged (review READY 948b422: the tree's packs are repacked, not kept). Merge check on main e241b75: fmt 0, clippy 0, nextest 4057/4057, doc 0, ast-grep 0 (full-T02b-0632.log).
+START KZ-T03 base=1c2dbfb branch=lane/kz-T03 df=60GB at 07:18
+START KZ-D04 base=1c2dbfb branch=lane/kz-D04 df=60GB at 07:20
+- Follow-up from V05's review (decided by Cassio, to brief as V05b): on an onset frame the quantiser's hysteresis must not hold the previous note's target; a new note picks its nearest scale note (hold A, silence, sing A# -40 cents -> A#, not A). Hysteresis is for wobble within a held note, not across notes.
+- KZ-V05 merged (review READY 3a2a7b2: a scale change retargets a held note; off is Hz for Hz through silence; 11 mutants caught). Merge check on main c19a52a: fmt 0, clippy 0, nextest 4072/4072, doc 0, ast-grep 0 (full-V05-0727.log).
