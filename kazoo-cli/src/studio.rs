@@ -17,10 +17,13 @@
 //! args = ["--phrase", "c4/8 e4/8 g4/8"]
 //! ```
 //!
-//! `desk` and `args` are optional. The desk opens at its native device rate;
-//! a supplied rate is verified during startup, and a mismatch aborts the session.
-//! Detaching leaves the session running. `kazoo studio down demo` sends SIGTERM
-//! to the desk before killing the instrument panes. Graceful link teardown
+//! `desk` and `args` are optional; at most as many instruments as the desk has
+//! strips. The desk opens at its native device rate; a supplied rate is
+//! verified during startup, and a mismatch aborts the session. A pane whose
+//! program fails stays open showing what it printed. Detaching leaves the
+//! session running. `kazoo studio down demo` stops only a session that
+//! `up` started: it sends SIGTERM to the desk, waits up to 5 s, then kills
+//! the session and every instrument pane in it. Graceful link teardown
 //! requires the desk to handle SIGTERM, which its current entry point does not.
 //! Without tmux on PATH, `up` prints exact child commands and returns exit code 2.
 
