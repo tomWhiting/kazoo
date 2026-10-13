@@ -141,3 +141,54 @@ transition matrix on every call. At three frames one run costs more CPU than
 the 10.7 ms hop it judges, so on a live 48 kHz device the analysis thread
 cannot keep up. The 2.1 ms budget is out of reach at this range and
 resolution with any frame count.
+
+### Amendment 1
+
+Source head: d52bb81, with Amendment 1 uncommitted in lane/kz-V01. Both
+detectors use three pYIN frames and return the newest frame. The voice
+judge uses 50–4000 Hz, resolution 0.34 and a 512-sample hop. The engine
+uses its default 60–1000 Hz range, resolution 0.1 and a 2048-sample hop.
+
+CPU costs below use `/usr/bin/time -p` on the release voice bench's
+`--cpu-judge` and `--cpu-engine` modes, each making 100 consecutive
+hop-sized pushes after 4096 samples of the same saw. Matching
+`--cpu-judge-setup` and `--cpu-engine-setup` modes construct and prime the
+detector and prepare the identical signal without those 100 pushes. The
+setup-only user time is subtracted before dividing by 100. All four
+commands exited 0. The timer reports hundredths of a second, giving about
+0.1 ms precision per run after subtraction.
+
+| bench | N | ns per block (user CPU) | blocks per second | % of real time |
+|---|---|---|---|---|
+| judge/hop/48k | 3 | 1,500,000 | 666.667 | 14.063 |
+| engine/hop/48k | 3 | 6,300,000 | 158.730 | 14.766 |
+
+Judge user time was 0.17 s for 100 runs plus setup and 0.02 s for setup:
+1.5 ms per run, below 2.1 ms. Even including setup gives 1.7 ms per run.
+Engine user time was 0.66 s and 0.03 s: 6.3 ms per run, below 8.533 ms
+(20% of its 42.667 ms hop); including setup gives 6.6 ms. The judge's
+recorded review cost at resolution 0.1 was 14.8–15.5 ms above. Resolution
+0.34 meets the CPU budget, so resolution 0.5 was not needed or measured.
+CPU-run load averages were 120.60/107.71/98.92 before and
+120.55/107.92/99.04 after. These runs were serial, with this lane's tests
+and builds finished.
+
+Criterion wall-time results, each with 100 samples and exit 0:
+
+| bench | N | ns per block | blocks per second | % of real time |
+|---|---|---|---|---|
+| judge/hop/48k | 3 | 1,987,300 | 503.195 | 18.631 |
+| engine/hop/48k | 3 | 6,811,500 | 146.810 | 15.964 |
+
+The judge interval was 1.8073–2.2104 ms, with load averages
+124.09/105.76/97.70 before the command. The engine interval was
+6.5374–7.1340 ms, with load averages 95.98/103.62/97.86 before and
+87.78/99.22/96.56 after. These are loaded wall times; CPU time is the
+amendment's budget gate. pYIN rounds `1 / resolution` upward, so 0.34
+actually produces 456 voiced/unvoiced states rather than the brief's 446.
+
+Logs: target/kz-logs/amendment-cpu-{judge,engine}.txt,
+target/kz-logs/amendment-cpu-{judge,engine}-setup.txt,
+target/kz-logs/amendment-cpu-load-{before,after}.txt,
+target/kz-logs/amendment-bench-{judge,engine}.txt and
+target/kz-logs/amendment-bench{,-engine}-load-before.txt.

@@ -13,6 +13,11 @@ use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
 /// pYIN frames per run; the HMM picks the newest frame's octave with two frames of context behind it.
 pub const JUDGE_FRAMES: usize = 3;
 
+/// The judge only rules on octave and voicing: fusion folds within 300 cents
+/// and flags disagreement past 100. 34-cent bins stay inside both and cut
+/// pYIN's states from 1518 to 456, about 1.4 ms at three frames, under 2.1 ms.
+pub const JUDGE_RESOLUTION: f64 = 0.34;
+
 /// Configuration for the pitch detector.
 #[derive(Debug, Clone)]
 pub struct PitchDetectorConfig {
@@ -26,6 +31,8 @@ pub struct PitchDetectorConfig {
     pub frame_length: usize,
     /// Samples between judge runs.
     pub hop_length: usize,
+    /// Semitones per pitch bin; pYIN requires a finite value in 0.01..1.0.
+    pub resolution: f64,
     /// Probability threshold above which a frame is considered voiced (default 0.3).
     pub voiced_threshold: f32,
 }
@@ -49,7 +56,20 @@ impl PitchDetectorConfig {
             sample_rate: rate,
             frame_length: 2048 * scale,
             hop_length: 512 * scale,
+            resolution: JUDGE_RESOLUTION,
             voiced_threshold: 0.3,
+        }
+    }
+
+    /// Configure the engine's accurate, once-per-window detector until it is retired.
+    #[must_use]
+    pub const fn engine_default() -> Self {
+        Self {
+            min_frequency: 60.0,
+            max_frequency: 1000.0,
+            hop_length: 2048,
+            resolution: 0.1,
+            ..Self::for_rate(44_100)
         }
     }
 }
@@ -142,6 +162,12 @@ impl PitchDetector {
             return Err(crate::Error::Config("sample_rate must be > 0".into()));
         }
 
+        if !config.resolution.is_finite() || !(0.01..=1.0).contains(&config.resolution) {
+            return Err(crate::Error::Config(
+                "resolution must be finite and between 0.01 and 1.0".into(),
+            ));
+        }
+
         check_pyin_limits(&config)?;
 
         let history_len = (JUDGE_FRAMES - 1)
@@ -156,7 +182,7 @@ impl PitchDetector {
             config.frame_length,
             None, // win_length: default frame_length / 2
             Some(config.hop_length),
-            None, // resolution: default 0.1
+            Some(config.resolution),
         );
 
         // A full silent history makes startup use the same path as every later hop.
@@ -253,12 +279,17 @@ impl PitchDetector {
 
 /// Refuse a configuration that pyin's `PYINExecutor::new` would panic on.
 ///
-/// Mirrors pyin 1.2.0's own arithmetic (`pyin.rs:135-177`) with its defaults
-/// of `win_length = frame_length / 2` and a resolution of 0.1 semitone (10
-/// bins per semitone), so the two never disagree. The caller has already
+/// Mirrors pYIN's arithmetic with `win_length = frame_length / 2` and
+/// the configured resolution, so the two never disagree. The caller has already
 /// checked the range, the Nyquist limit, a `frame_length` of at least 4 and a
 /// hop in `1..=frame_length`.
 fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
+    // The executor asserts a strict upper bound even though one semitone is a valid bin size.
+    if config.resolution >= 1.0 {
+        return Err(crate::Error::Config(
+            "pyin requires resolution strictly below 1.0".into(),
+        ));
+    }
     let rate = f64::from(config.sample_rate);
     let fmin = f64::from(config.min_frequency);
     let fmax = f64::from(config.max_frequency);
@@ -278,7 +309,8 @@ fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
         )));
     }
 
-    let pitch_bins = (12.0 * 10.0 * (fmax / fmin).log2()).floor() + 1.0;
+    let bins_per_semitone = (1.0 / config.resolution).ceil();
+    let pitch_bins = (12.0 * bins_per_semitone * (fmax / fmin).log2()).floor() + 1.0;
     if pitch_bins < 2.0 {
         return Err(crate::Error::Config(format!(
             "range [{fmin}, {fmax}] Hz holds fewer than 2 pyin pitch bins"
@@ -288,7 +320,9 @@ fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
     let hop = u32::try_from(config.hop_length)
         .map(f64::from)
         .map_err(|_| crate::Error::Config("hop_length too large for pyin".into()))?;
-    let transition_width = (35.92 * 12.0 * hop / rate).round().mul_add(10.0, 1.0);
+    let transition_width = (35.92 * 12.0 * hop / rate)
+        .round()
+        .mul_add(bins_per_semitone, 1.0);
     if pitch_bins < transition_width {
         return Err(crate::Error::Config(format!(
             "hop_length {} at {rate} Hz lets a pitch move {transition_width} bins \

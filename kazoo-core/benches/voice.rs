@@ -1,10 +1,11 @@
 use std::hint::black_box;
 
-use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion};
 use kazoo_core::analysis::{PitchDetector, PitchDetectorConfig};
+use kazoo_core::engine::{EngineConfig, judge_config};
 
-fn judge(c: &mut Criterion) {
-    let mut saw: Vec<f64> = (0..4608_u32)
+fn saw_samples(length: u32) -> Vec<f32> {
+    let mut saw: Vec<f64> = (0..length)
         .map(|index| {
             let phase = std::f64::consts::TAU * 130.81 * f64::from(index) / 48_000.0;
             (1..=20_u32)
@@ -16,13 +17,18 @@ fn judge(c: &mut Criterion) {
     for sample in &mut saw {
         *sample *= 0.5 / peak;
     }
-    let samples: Vec<f32> = saw.into_iter().map(|sample| sample as f32).collect();
-    let mut group = c.benchmark_group("judge");
+    saw.into_iter().map(|sample| sample as f32).collect()
+}
+
+fn judge(c: &mut Criterion, name: &str, config: &PitchDetectorConfig) {
+    let hop = config.hop_length;
+    let samples = saw_samples(u32::try_from(4096 + hop).expect("small bench signal"));
+    let mut group = c.benchmark_group(name);
     group.bench_function(BenchmarkId::new("hop", "48k"), |b| {
         b.iter_batched_ref(
             || {
-                let mut detector = PitchDetector::new(PitchDetectorConfig::for_rate(48_000))
-                    .expect("valid judge configuration");
+                let mut detector =
+                    PitchDetector::new(config.clone()).expect("valid detector configuration");
                 black_box(detector.push_samples(&samples[..4096]));
                 detector
             },
@@ -33,5 +39,43 @@ fn judge(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, judge);
-criterion_main!(benches);
+fn cpu_runs(config: PitchDetectorConfig, setup_only: bool) {
+    let hop = config.hop_length;
+    // Both modes prepare the same signal so their user-CPU difference excludes setup.
+    let samples = saw_samples(u32::try_from(4096 + 100 * hop).expect("small bench signal"));
+    let mut detector = PitchDetector::new(config).expect("valid detector configuration");
+    black_box(detector.push_samples(&samples[..4096]));
+    if !setup_only {
+        for chunk in samples[4096..].chunks_exact(hop) {
+            black_box(detector.push_samples(black_box(chunk)));
+        }
+    }
+    println!("CPU runs: {}", if setup_only { 0 } else { 100 });
+}
+
+fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("--cpu-judge") => cpu_runs(PitchDetectorConfig::for_rate(48_000), false),
+        Some("--cpu-judge-setup") => cpu_runs(PitchDetectorConfig::for_rate(48_000), true),
+        Some("--cpu-engine") => {
+            cpu_runs(judge_config(&EngineConfig::default().pitch, 48_000), false);
+        }
+        Some("--cpu-engine-setup") => {
+            cpu_runs(judge_config(&EngineConfig::default().pitch, 48_000), true);
+        }
+        _ => {
+            let mut criterion = Criterion::default().configure_from_args();
+            judge(
+                &mut criterion,
+                "judge",
+                &PitchDetectorConfig::for_rate(48_000),
+            );
+            judge(
+                &mut criterion,
+                "engine",
+                &judge_config(&EngineConfig::default().pitch, 48_000),
+            );
+            criterion.final_summary();
+        }
+    }
+}

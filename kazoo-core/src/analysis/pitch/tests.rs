@@ -18,6 +18,7 @@ fn detects_440hz_sine() {
         sample_rate: 44_100,
         frame_length: 2048,
         hop_length: 512,
+        resolution: 0.1,
         voiced_threshold: 0.15,
     };
     let mut detector = PitchDetector::new(config).expect("valid config");
@@ -164,6 +165,7 @@ fn cents_error(frequency: f32, expected: f32) -> f32 {
     (1200.0 * (frequency / expected).log2()).abs()
 }
 
+/// Twenty cents allows half of a 34-cent judge bin (17 cents).
 #[test]
 fn estimates_come_every_hop() {
     let samples = generate_sine(440.0, 48_000.0, 48_000);
@@ -176,8 +178,13 @@ fn estimates_come_every_hop() {
     for pair in estimates.windows(2) {
         assert_eq!(pair[1].0 - pair[0].0, 512);
     }
+    for (_, estimate) in estimates.iter().filter(|(end, _)| *end > 4096) {
+        let frequency = estimate.frequency.expect("settled sine must be voiced");
+        assert!(cents_error(frequency, 440.0) <= 20.0);
+    }
 }
 
+/// Twenty cents allows half of a 34-cent judge bin (17 cents).
 #[test]
 fn a_note_change_reads_the_new_note_not_an_average() {
     let mut phase = 0.0_f64;
@@ -205,7 +212,7 @@ fn a_note_change_reads_the_new_note_not_an_average() {
             if end >= 24_000 + 4096 {
                 settled += 1;
                 assert!(
-                    cents_error(frequency, 330.0) <= 10.0,
+                    cents_error(frequency, 330.0) <= 20.0,
                     "run ending at {end} read {frequency} Hz after the change"
                 );
             }
@@ -223,16 +230,17 @@ fn assert_voiced_take(samples: &[f32], expected: f32) {
         .filter(|(_, estimate)| {
             estimate
                 .frequency
-                .is_some_and(|frequency| cents_error(frequency, expected) <= 10.0)
+                .is_some_and(|frequency| cents_error(frequency, expected) <= 20.0)
         })
         .count();
     assert!(
         accurate * 10 >= settled.len() * 9,
-        "{accurate}/{} settled estimates voiced within 10 cents of {expected} Hz",
+        "{accurate}/{} settled estimates voiced within 20 cents of {expected} Hz",
         settled.len()
     );
 }
 
+/// Twenty cents allows half of a 34-cent judge bin (17 cents).
 #[test]
 fn a_whistle_is_voiced() {
     let mut seed = 0x1234_5678_u32;
@@ -249,6 +257,7 @@ fn a_whistle_is_voiced() {
     assert_voiced_take(&samples, 2500.0);
 }
 
+/// Twenty cents allows half of a 34-cent judge bin (17 cents).
 #[test]
 fn a_low_hum_is_voiced() {
     let fundamental = generate_sine(55.0, 48_000.0, 48_000);
@@ -278,6 +287,7 @@ fn config_for_rate_scales_the_window() {
         assert_eq!(config.hop_length, hop_length);
         assert!((config.min_frequency - 50.0).abs() < f32::EPSILON);
         assert!((config.max_frequency - 4000.0).abs() < f32::EPSILON);
+        assert!((config.resolution - JUDGE_RESOLUTION).abs() < f64::EPSILON);
     }
 }
 
@@ -294,6 +304,50 @@ fn a_bad_hop_is_refused() {
             Err(crate::Error::Config(_))
         ));
     }
+}
+
+#[test]
+fn a_bad_resolution_is_refused() {
+    for resolution in [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        0.009,
+        1.001,
+    ] {
+        let config = PitchDetectorConfig {
+            resolution,
+            ..device_config()
+        };
+        let built = std::panic::catch_unwind(|| PitchDetector::new(config));
+        assert!(matches!(built, Ok(Err(crate::Error::Config(_)))));
+    }
+}
+
+/// Coarser bins change both the pitch grid and its transition width.
+#[test]
+fn resolution_is_used_by_the_pyin_safety_checks() {
+    let config = PitchDetectorConfig {
+        min_frequency: 440.0,
+        max_frequency: 450.0,
+        hop_length: 1,
+        resolution: 0.5,
+        ..device_config()
+    };
+    let built = std::panic::catch_unwind(|| PitchDetector::new(config));
+    assert!(matches!(built, Ok(Err(crate::Error::Config(_)))));
+}
+
+/// The dependency's strict upper bound must be reported without panicking.
+#[test]
+fn pyins_resolution_boundary_is_refused_without_panicking() {
+    let config = PitchDetectorConfig {
+        resolution: 1.0,
+        ..device_config()
+    };
+    let built = std::panic::catch_unwind(|| PitchDetector::new(config));
+    assert!(matches!(built, Ok(Err(crate::Error::Config(_)))));
 }
 
 /// Each of these passed `new`'s checks and then panicked inside pyin's

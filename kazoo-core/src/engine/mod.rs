@@ -70,6 +70,7 @@ pub struct EngineConfig {
     pub stream: StreamConfig,
 
     /// Pitch detector configuration; rate, frame and hop are taken from the device.
+    /// The cycle tracker replaces this detector in V06.
     pub pitch: PitchDetectorConfig,
 
     /// FFT size for spectrum analysis (default 2048).
@@ -99,7 +100,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             stream: StreamConfig::default(),
-            pitch: PitchDetectorConfig::default(),
+            pitch: PitchDetectorConfig::engine_default(),
             spectrum_fft_size: SPECTRUM_FFT_SIZE,
             spectrum_smoothing: 0.8,
             onset_fft_size: 1024,
@@ -110,13 +111,17 @@ impl Default for EngineConfig {
 }
 
 /// Preserve the requested range and voicing threshold at the device's rate.
+/// Run once per window at 0.1-semitone resolution until V06 retires this detector.
 #[must_use]
 pub const fn judge_config(asked: &PitchDetectorConfig, rate: u32) -> PitchDetectorConfig {
+    let device = PitchDetectorConfig::for_rate(rate);
     PitchDetectorConfig {
         min_frequency: asked.min_frequency,
         max_frequency: asked.max_frequency,
         voiced_threshold: asked.voiced_threshold,
-        ..PitchDetectorConfig::for_rate(rate)
+        hop_length: device.frame_length,
+        resolution: 0.1,
+        ..device
     }
 }
 
@@ -569,14 +574,16 @@ mod tests {
         let config = judge_config(&EngineConfig::default().pitch, 48_000);
         assert_eq!(config.sample_rate, 48_000);
         assert_eq!(config.frame_length, 2048);
-        assert_eq!(config.hop_length, 512);
+        assert_eq!(config.hop_length, 2048);
         let mut detector = PitchDetector::new(config).expect("valid device judge");
         let samples: Vec<_> = (0..48_000_u32)
             .map(|index| (std::f64::consts::TAU * 440.0 * f64::from(index) / 48_000.0).sin() as f32)
             .collect();
         let mut settled = 0;
+        let mut estimates = 0;
         for (index, chunk) in samples.chunks(128).enumerate() {
             if let Some(estimate) = detector.push_samples(chunk) {
+                estimates += 1;
                 if (index + 1) * 128 > 4096 {
                     let frequency = estimate.frequency.expect("settled sine must be voiced");
                     let cents = (1200.0 * (frequency / 440.0).log2()).abs();
@@ -588,12 +595,16 @@ mod tests {
                 }
             }
         }
+        assert_eq!(estimates, 23, "one estimate per device-rate window");
         assert!(settled > 0);
     }
 
     #[test]
     fn engine_config_default_values() {
         let config = EngineConfig::default();
+        assert!((config.pitch.min_frequency - 60.0).abs() < f32::EPSILON);
+        assert!((config.pitch.max_frequency - 1000.0).abs() < f32::EPSILON);
+        assert!((config.pitch.resolution - 0.1).abs() < f64::EPSILON);
         assert_eq!(config.spectrum_fft_size, SPECTRUM_FFT_SIZE);
         assert!((config.spectrum_smoothing - 0.8).abs() < f32::EPSILON);
         assert_eq!(config.onset_fft_size, 1024);
