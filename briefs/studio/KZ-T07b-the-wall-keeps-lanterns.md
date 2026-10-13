@@ -161,3 +161,8 @@ NOT CONFIRMED: what was not proven
 BLOCKED ON: step, what you tried, time spent
 If this code were used in a hospital, the worst credible failure is ___, and it could harm about ___ people.
 ```
+
+
+## Note: fire steps do not dim lanterns (Cassio, 13 Oct evening)
+
+A lantern dims by the changes the wall has made since anyone touched it (KZ-T07a). A fire (KZ-T06) logs one `What::Fired` per step, and replaying the past is not new work. So the `revision` the wall passes to the tree thread's lantern jobs (`Write`, `Notes`, `Shape`) is the **work revision**: the wall's revision less the number of `What::Fired` changes in the log. `Wall` keeps `fired_steps: u64`, counted from the log at start (in the same pass that reads it) and raised by one for each `Fired` applied. Each lantern's own `change` field is written in the same work revision, so `since` stays consistent. Whichever of KZ-T06b and KZ-T07b lands second adds this, with a test: a lantern, then a fire of 50 steps, leaves `since` at 0.
