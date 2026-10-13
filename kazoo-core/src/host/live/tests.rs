@@ -463,3 +463,37 @@ fn profiles_parse_and_say_their_ranges() {
     assert_eq!(InputProfile::Bass.range_hz(), (29.0, 500.0));
     assert_eq!(InputProfile::parse("unknown"), None);
 }
+
+fn largest_step(previous: f32, block: &[f32]) -> f32 {
+    block
+        .iter()
+        .scan(previous, |last, &sample| {
+            let step = (sample - *last).abs();
+            *last = sample;
+            Some(step)
+        })
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn an_underrun_with_a_short_lag_still_crossfades_for_a_millisecond() {
+    let (mut writer, mut reader) = live_pair(RATE, BLOCK);
+    let mut input = [0.0; BLOCK];
+    let mut output = [0.0; BLOCK];
+    let mut written = 0_u64;
+    for _ in 0..20 {
+        fill(written, &mut input, 400.0);
+        writer.write(&input);
+        written += BLOCK as u64;
+        reader.read(&mut output);
+    }
+    let previous = output[BLOCK - 1];
+    let mut short = [0.0; 8];
+    fill(written, &mut short, 400.0);
+    writer.write(&short);
+    assert_eq!(reader.read(&mut output), ReadReport::Underrun);
+    // A 0.5 sine at 400 Hz moves at most 0.027 a sample; a 1 ms crossfade
+    // between two points of it adds at most 1.0 / 48 more.
+    let step = largest_step(previous, &output);
+    assert!(step <= 0.05, "largest step {step}");
+}
