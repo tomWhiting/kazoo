@@ -1174,12 +1174,20 @@ impl Wall {
     /// first) and saving to `store`.
     #[must_use]
     pub fn new(
-        patch: Patch,
+        mut patch: Patch,
         mut engine: EngineControl,
         desk: Option<HubLink>,
         history: Vec<Change>,
         store: Option<Store>,
     ) -> Self {
+        // A seed is built by plain adds, never numbered as changes: its
+        // modules are found here, as a file's are as it loads. Every module
+        // on a wall has a birth from here on.
+        let mut birth_notes = Vec::new();
+        patch.find_births(&mut birth_notes);
+        for note in birth_notes {
+            eprintln!("kazoo-wall: {note}");
+        }
         let last_logged = history.last().map_or(0, |change| change.seq);
         let next_seq = patch.last_seq.max(last_logged) + 1;
         let skip = history.len().saturating_sub(MEMORY_CHANGES);
@@ -1932,7 +1940,22 @@ impl Wall {
         what: What,
         undoes: Option<u64>,
     ) -> Result<(Change, Option<Event>), WallError> {
-        let change = self.next_change(seat, what, undoes)?;
+        let mut change = self.next_change(seat, what, undoes)?;
+        if crate::tree::has_add(&change.what) {
+            let print = self.patch.fingerprint_word();
+            let salt = crate::chance::fresh_wall_seed();
+            for (id, birth) in
+                crate::tree::stamp_births(&mut change.what, change.seq, &change.at, print, salt)
+            {
+                if !self.patch.mark_birth(&id, birth) {
+                    self.unmade = true;
+                    return Err(WallError {
+                        code: ErrorCode::Internal,
+                        message: format!("newborn module '{id}' is missing"),
+                    });
+                }
+            }
+        }
         self.record(&change)?;
         Ok(self.apply(change))
     }

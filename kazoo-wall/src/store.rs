@@ -2010,6 +2010,13 @@ mod tests {
     use super::*;
     use crate::protocol::What;
 
+    // Direct model fixtures have no numbered daemon change to stamp them.
+    fn mark_fixture_births(patch: &mut Patch) {
+        let mut notes = Vec::new();
+        patch.find_births(&mut notes);
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
     fn change(seq: u64) -> Change {
         Change {
             seq,
@@ -2041,6 +2048,7 @@ mod tests {
         assert!(matches!(store.load_patch().unwrap(), Loaded::Missing));
         let mut patch = Patch::empty(97.0);
         patch.add("vco", Some("drone"), None).unwrap();
+        mark_fixture_births(&mut patch);
         store.save_patch(&patch).unwrap();
         store.save_patch(&patch).unwrap();
         match store.load_patch().unwrap() {
@@ -2171,6 +2179,7 @@ mod tests {
         let mut patch = Patch::empty(97.0);
         patch.add("vco", Some("drone"), None).unwrap();
         patch.add("out", None, None).unwrap();
+        mark_fixture_births(&mut patch);
         patch
             .plug("vco1.out", "out1.left", Some(0.5), None)
             .unwrap();
@@ -2259,6 +2268,7 @@ mod tests {
         store.write_save("Jam", &first, false).unwrap();
         let mut second = a_wall();
         second.add("lfo", None, None).unwrap();
+        mark_fixture_births(&mut second);
         // Refused, in any case, and the save is untouched.
         for name in ["Jam", "jam", "JAM"] {
             let Err(SaveError::Exists(there)) = store.write_save(name, &second, false) else {
@@ -2284,6 +2294,7 @@ mod tests {
         let saves = root.path().join(SAVES_DIR);
         let mut second = a_wall();
         second.add("lfo", None, None).unwrap();
+        mark_fixture_births(&mut second);
         store.fail_once(FailAt::WriteSave);
         let failed = store.write_save("keep", &second, true);
         store.fail_once(FailAt::WriteSave);
@@ -2438,6 +2449,7 @@ mod tests {
         // One came in before the import was cut short; its save is kept.
         let mut other = a_wall();
         other.add("lfo", None, None).unwrap();
+        mark_fixture_births(&mut other);
         store.write_save("one", &other, false).unwrap();
         let said = store.import_copies().unwrap();
         assert!(
@@ -3022,6 +3034,7 @@ mod tests {
         store.write_save("keep", &first, false).unwrap();
         let mut second = a_wall();
         second.add("lfo", None, None).unwrap();
+        mark_fixture_births(&mut second);
         // Saved over: the new save is in place, the flush said failed.
         store.fail_once(FailAt::SyncDir);
         let written = store.write_save("keep", &second, true).unwrap();
@@ -3305,6 +3318,7 @@ mod tests {
         // that name made otherwise is still said to be there already.
         let mut other = a_wall();
         other.add("lfo", None, None).unwrap();
+        mark_fixture_births(&mut other);
         fs::write(dir.join("patch.c.json"), encode(&a_wall()).unwrap()).unwrap();
         store.write_save("c", &other, false).unwrap();
         let said = store.import_copies().unwrap();

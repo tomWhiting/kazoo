@@ -1,0 +1,2234 @@
+{
+  "version": 2,
+  "tempo": 120.0,
+  "last_seq": 6363,
+  "wall": 3217,
+  "seed": 15325402214781944465,
+  "next_ids": {
+    "bbd": 2,
+    "burst": 2,
+    "chorus": 2,
+    "clock": 9,
+    "crush": 3,
+    "digital": 4,
+    "env": 8,
+    "euclid": 4,
+    "fuzz": 5,
+    "grids": 2,
+    "hall": 3,
+    "kick": 3,
+    "klon": 3,
+    "lfo": 18,
+    "math": 6,
+    "metal": 2,
+    "mix": 13,
+    "noise": 3,
+    "out": 10,
+    "pitch": 4,
+    "plate": 3,
+    "quant": 5,
+    "radio": 3,
+    "readout": 4,
+    "scope": 6,
+    "seq": 9,
+    "slew": 8,
+    "tape": 4,
+    "vca": 13,
+    "vcf": 10,
+    "vco": 21
+  },
+  "next_cable": 281,
+  "modules": [
+    {
+      "id": "clock5",
+      "kind": "clock",
+      "name": "chord clock",
+      "knobs": {
+        "division": 6.0,
+        "swing": 0.0,
+        "width": 0.8
+      }
+    },
+    {
+      "id": "seq3",
+      "kind": "seq",
+      "name": "low brass",
+      "knobs": {
+        "chance": 1.0,
+        "gate": 0.5,
+        "step1": -10.0,
+        "step10": 0.0,
+        "step11": 0.0,
+        "step12": 0.0,
+        "step13": 0.0,
+        "step14": 0.0,
+        "step15": 0.0,
+        "step16": 0.0,
+        "step2": -14.0,
+        "step3": -17.0,
+        "step4": -15.0,
+        "step5": -19.0,
+        "step6": -20.0,
+        "step7": -14.0,
+        "step8": -15.0,
+        "step9": 0.0,
+        "steps": 8.0
+      }
+    },
+    {
+      "id": "seq4",
+      "kind": "seq",
+      "name": "mid brass",
+      "knobs": {
+        "chance": 1.0,
+        "gate": 0.5,
+        "step1": 5.0,
+        "step10": 0.0,
+        "step11": 0.0,
+        "step12": 0.0,
+        "step13": 0.0,
+        "step14": 0.0,
+        "step15": 0.0,
+        "step16": 0.0,
+        "step2": 2.0,
+        "step3": -2.0,
+        "step4": 2.0,
+        "step5": 4.0,
+        "step6": 0.0,
+        "step7": 2.0,
+        "step8": 1.0,
+        "step9": 0.0,
+        "steps": 8.0
+      }
+    },
+    {
+      "id": "seq5",
+      "kind": "seq",
+      "name": "high brass",
+      "knobs": {
+        "chance": 1.0,
+        "gate": 0.5,
+        "step1": 9.0,
+        "step10": 0.0,
+        "step11": 0.0,
+        "step12": 0.0,
+        "step13": 0.0,
+        "step14": 0.0,
+        "step15": 0.0,
+        "step16": 0.0,
+        "step2": 9.0,
+        "step3": 9.0,
+        "step4": 7.0,
+        "step5": 9.0,
+        "step6": 7.0,
+        "step7": 7.0,
+        "step8": 4.0,
+        "step9": 0.0,
+        "steps": 8.0
+      }
+    },
+    {
+      "id": "slew1",
+      "kind": "slew",
+      "name": "low glide",
+      "knobs": {
+        "fall": 0.5,
+        "rise": 0.5
+      }
+    },
+    {
+      "id": "slew2",
+      "kind": "slew",
+      "name": "mid glide",
+      "knobs": {
+        "fall": 0.4,
+        "rise": 0.4
+      }
+    },
+    {
+      "id": "slew3",
+      "kind": "slew",
+      "name": "high glide",
+      "knobs": {
+        "fall": 0.6,
+        "rise": 0.6
+      }
+    },
+    {
+      "id": "vco9",
+      "kind": "vco",
+      "name": "low a",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 0.0,
+        "shape": 2.0,
+        "tune": -0.06,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "vco10",
+      "kind": "vco",
+      "name": "low b",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 0.0,
+        "shape": 2.6,
+        "tune": 0.1,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "vco11",
+      "kind": "vco",
+      "name": "mid a",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 0.0,
+        "shape": 2.0,
+        "tune": -0.08,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "vco12",
+      "kind": "vco",
+      "name": "mid b",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 0.0,
+        "shape": 2.0,
+        "tune": 0.12,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "vco13",
+      "kind": "vco",
+      "name": "high a",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 0.0,
+        "shape": 2.0,
+        "tune": -0.1,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "vco14",
+      "kind": "vco",
+      "name": "high b",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 0.0,
+        "shape": 2.0,
+        "tune": 0.09,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "lfo6",
+      "kind": "lfo",
+      "name": "drift",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 0.07,
+        "shape": 5.0,
+        "sync": 0.0
+      }
+    },
+    {
+      "id": "lfo7",
+      "kind": "lfo",
+      "name": "swell 16 bars",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 0.5,
+        "shape": 0.0,
+        "sync": 9.0
+      }
+    },
+    {
+      "id": "lfo8",
+      "kind": "lfo",
+      "name": "wander",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 0.01,
+        "shape": 5.0,
+        "sync": 0.0
+      }
+    },
+    {
+      "id": "lfo9",
+      "kind": "lfo",
+      "name": "progression length",
+      "knobs": {
+        "depth": 0.5,
+        "offset": -0.5,
+        "rate": 0.01,
+        "shape": 4.0,
+        "sync": 0.0
+      }
+    },
+    {
+      "id": "noise1",
+      "kind": "noise",
+      "name": "breath",
+      "knobs": {
+        "colour": 1.0,
+        "level": 0.5
+      }
+    },
+    {
+      "id": "mix5",
+      "kind": "mix",
+      "name": "low and mid",
+      "knobs": {
+        "level_a": 0.45,
+        "level_b": 0.45,
+        "level_c": 0.4,
+        "level_d": 0.4
+      }
+    },
+    {
+      "id": "mix6",
+      "kind": "mix",
+      "name": "high and breath",
+      "knobs": {
+        "level_a": 0.35,
+        "level_b": 0.35,
+        "level_c": 0.06,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "mix7",
+      "kind": "mix",
+      "name": "section",
+      "knobs": {
+        "level_a": 0.5,
+        "level_b": 0.5,
+        "level_c": 0.5,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "vcf3",
+      "kind": "vcf",
+      "name": "brass filter",
+      "knobs": {
+        "cutoff": 720.0,
+        "drive": 0.25,
+        "mode": 0.0,
+        "resonance": 0.2
+      }
+    },
+    {
+      "id": "env3",
+      "kind": "env",
+      "name": "brass swell",
+      "knobs": {
+        "attack": 3.5,
+        "decay": 4.0,
+        "release": 6.0,
+        "sustain": 0.65
+      }
+    },
+    {
+      "id": "vca5",
+      "kind": "vca",
+      "name": "brass amp",
+      "knobs": {
+        "bias": 0.05,
+        "gain": 0.9
+      }
+    },
+    {
+      "id": "chorus1",
+      "kind": "chorus",
+      "name": "ensemble",
+      "knobs": {
+        "depth": 1.0,
+        "mix": 0.45,
+        "mode": 3.0,
+        "rate": 0.4,
+        "width": 1.0
+      }
+    },
+    {
+      "id": "tape3",
+      "kind": "tape",
+      "name": "echo",
+      "knobs": {
+        "drive": 0.15,
+        "feedback": 0.45,
+        "flutter": 0.1,
+        "heads": 2.0,
+        "hiss": 0.05,
+        "mix": 0.25,
+        "sync": 0.0,
+        "time": 0.75,
+        "wear": 0.3,
+        "wow": 0.35
+      }
+    },
+    {
+      "id": "hall2",
+      "kind": "hall",
+      "name": "rain hall",
+      "knobs": {
+        "decay": 12.0,
+        "diffusion": 0.85,
+        "early": 0.5,
+        "freeze": 0.0,
+        "high": 3.0,
+        "low": 10.0,
+        "mix": 0.45,
+        "mod": 0.5,
+        "predelay": 0.06,
+        "size": 1.5
+      }
+    },
+    {
+      "id": "out7",
+      "kind": "out",
+      "name": "brass out",
+      "knobs": {
+        "level": 0.5,
+        "pan": 0.0
+      }
+    },
+    {
+      "id": "clock6",
+      "kind": "clock",
+      "name": "flutter clock",
+      "knobs": {
+        "division": 1.0,
+        "swing": 0.0,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "seq6",
+      "kind": "seq",
+      "name": "flutter notes",
+      "knobs": {
+        "chance": 0.4,
+        "gate": 0.3,
+        "step1": 12.0,
+        "step10": 12.0,
+        "step11": 10.0,
+        "step12": 7.0,
+        "step13": 5.0,
+        "step14": 3.0,
+        "step15": 7.0,
+        "step16": 0.0,
+        "step2": 15.0,
+        "step3": 19.0,
+        "step4": 14.0,
+        "step5": 12.0,
+        "step6": 10.0,
+        "step7": 7.0,
+        "step8": 15.0,
+        "step9": 14.0,
+        "steps": 16.0
+      }
+    },
+    {
+      "id": "math1",
+      "kind": "math",
+      "name": "follow the root",
+      "knobs": {
+        "offset_a": 0.0,
+        "offset_b": 0.0,
+        "scale_a": 1.0,
+        "scale_b": 1.0
+      }
+    },
+    {
+      "id": "quant2",
+      "kind": "quant",
+      "name": "d minor",
+      "knobs": {
+        "root": 2.0,
+        "scale": 2.0
+      }
+    },
+    {
+      "id": "vco15",
+      "kind": "vco",
+      "name": "flutter voice",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 1.0,
+        "shape": 1.0,
+        "tune": 0.0,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "env4",
+      "kind": "env",
+      "name": "flutter env",
+      "knobs": {
+        "attack": 0.004,
+        "decay": 1.2,
+        "release": 1.5,
+        "sustain": 0.0
+      }
+    },
+    {
+      "id": "vcf4",
+      "kind": "vcf",
+      "name": "flutter tone",
+      "knobs": {
+        "cutoff": 2200.0,
+        "drive": 0.0,
+        "mode": 0.0,
+        "resonance": 0.2
+      }
+    },
+    {
+      "id": "vca6",
+      "kind": "vca",
+      "name": "flutter amp",
+      "knobs": {
+        "bias": 0.0,
+        "gain": 0.35
+      }
+    },
+    {
+      "id": "digital2",
+      "kind": "digital",
+      "name": "flutter echo",
+      "knobs": {
+        "cross": 0.3,
+        "duck": 0.0,
+        "feedback": 0.5,
+        "freeze": 0.0,
+        "highcut": 3000.0,
+        "lowcut": 200.0,
+        "lsync": 10.0,
+        "ltime": 0.375,
+        "mix": 0.45,
+        "routing": 1.0,
+        "rsync": 12.0,
+        "rtime": 0.5
+      }
+    },
+    {
+      "id": "lfo10",
+      "kind": "lfo",
+      "name": "flutter density",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 0.02,
+        "shape": 5.0,
+        "sync": 0.0
+      }
+    },
+    {
+      "id": "mix8",
+      "kind": "mix",
+      "name": "hall in left",
+      "knobs": {
+        "level_a": 1.0,
+        "level_b": 0.6,
+        "level_c": 0.9,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "mix9",
+      "kind": "mix",
+      "name": "hall in right",
+      "knobs": {
+        "level_a": 1.0,
+        "level_b": 0.6,
+        "level_c": 0.9,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "clock7",
+      "kind": "clock",
+      "name": "lonely clock",
+      "knobs": {
+        "division": 5.0,
+        "swing": 0.0,
+        "width": 0.7
+      }
+    },
+    {
+      "id": "seq7",
+      "kind": "seq",
+      "name": "lonely line",
+      "knobs": {
+        "chance": 0.6,
+        "gate": 0.7,
+        "step1": 7.0,
+        "step10": 0.0,
+        "step11": 0.0,
+        "step12": 0.0,
+        "step13": 0.0,
+        "step14": 0.0,
+        "step15": 0.0,
+        "step16": 0.0,
+        "step2": 10.0,
+        "step3": 8.0,
+        "step4": 0.0,
+        "step5": 5.0,
+        "step6": 3.0,
+        "step7": -2.0,
+        "step8": 0.0,
+        "step9": 0.0,
+        "steps": 8.0
+      }
+    },
+    {
+      "id": "math2",
+      "kind": "math",
+      "name": "lonely on the root",
+      "knobs": {
+        "offset_a": 0.0,
+        "offset_b": 0.0,
+        "scale_a": 1.0,
+        "scale_b": 1.0
+      }
+    },
+    {
+      "id": "quant3",
+      "kind": "quant",
+      "name": "lonely d minor",
+      "knobs": {
+        "root": 2.0,
+        "scale": 2.0
+      }
+    },
+    {
+      "id": "slew4",
+      "kind": "slew",
+      "name": "lonely glide",
+      "knobs": {
+        "fall": 0.6,
+        "rise": 0.9
+      }
+    },
+    {
+      "id": "vco16",
+      "kind": "vco",
+      "name": "lonely voice",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 2.0,
+        "shape": 1.15,
+        "tune": 0.0,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "lfo11",
+      "kind": "lfo",
+      "name": "lonely vibrato",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 4.6,
+        "shape": 0.0,
+        "sync": 0.0
+      }
+    },
+    {
+      "id": "env5",
+      "kind": "env",
+      "name": "lonely env",
+      "knobs": {
+        "attack": 1.6,
+        "decay": 2.0,
+        "release": 7.5,
+        "sustain": 0.6
+      }
+    },
+    {
+      "id": "vcf5",
+      "kind": "vcf",
+      "name": "lonely tone",
+      "knobs": {
+        "cutoff": 1250.0,
+        "drive": 0.0,
+        "mode": 0.0,
+        "resonance": 0.45
+      }
+    },
+    {
+      "id": "vca7",
+      "kind": "vca",
+      "name": "lonely amp",
+      "knobs": {
+        "bias": 0.0,
+        "gain": 0.42
+      }
+    },
+    {
+      "id": "scope5",
+      "kind": "scope",
+      "knobs": {
+        "mode": 1.0,
+        "time": 0.02517851,
+        "trigger": 0.0,
+        "zoom": 1.0
+      }
+    },
+    {
+      "id": "vco17",
+      "kind": "vco",
+      "name": "floor",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": -1.0,
+        "shape": 0.6,
+        "tune": 0.0,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "slew5",
+      "kind": "slew",
+      "name": "floor glide",
+      "knobs": {
+        "fall": 2.0,
+        "rise": 2.0
+      }
+    },
+    {
+      "id": "vcf6",
+      "kind": "vcf",
+      "name": "floor warmth",
+      "knobs": {
+        "cutoff": 320.0,
+        "drive": 0.0,
+        "mode": 0.0,
+        "resonance": 0.0
+      }
+    },
+    {
+      "id": "vca8",
+      "kind": "vca",
+      "name": "floor amp",
+      "knobs": {
+        "bias": 0.35,
+        "gain": 0.7
+      }
+    },
+    {
+      "id": "lfo12",
+      "kind": "lfo",
+      "name": "tide",
+      "knobs": {
+        "depth": 0.5,
+        "offset": 0.5,
+        "rate": 0.5,
+        "shape": 0.0,
+        "sync": 9.0
+      }
+    },
+    {
+      "id": "out8",
+      "kind": "out",
+      "name": "floor out",
+      "knobs": {
+        "level": 0.3,
+        "pan": 0.0
+      }
+    },
+    {
+      "id": "noise2",
+      "kind": "noise",
+      "name": "rain",
+      "knobs": {
+        "colour": 1.0,
+        "level": 0.5
+      }
+    },
+    {
+      "id": "vcf7",
+      "kind": "vcf",
+      "name": "rain window",
+      "knobs": {
+        "cutoff": 1100.0,
+        "drive": 0.0,
+        "mode": 1.0,
+        "resonance": 0.25
+      }
+    },
+    {
+      "id": "lfo13",
+      "kind": "lfo",
+      "name": "rain gusts",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 0.08,
+        "shape": 5.0,
+        "sync": 0.0
+      }
+    },
+    {
+      "id": "vca9",
+      "kind": "vca",
+      "name": "rain amp",
+      "knobs": {
+        "bias": 0.45,
+        "gain": 0.8
+      }
+    },
+    {
+      "id": "out9",
+      "kind": "out",
+      "name": "rain out",
+      "knobs": {
+        "level": 0.15,
+        "pan": 0.0
+      }
+    },
+    {
+      "id": "math3",
+      "kind": "math",
+      "name": "a fifth up",
+      "knobs": {
+        "offset_a": 0.5833,
+        "offset_b": 0.0,
+        "scale_a": 1.0,
+        "scale_b": 1.0
+      }
+    },
+    {
+      "id": "slew6",
+      "kind": "slew",
+      "name": "fifth glide",
+      "knobs": {
+        "fall": 3.0,
+        "rise": 3.0
+      }
+    },
+    {
+      "id": "vco18",
+      "kind": "vco",
+      "name": "held fifth",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 0.0,
+        "shape": 0.0,
+        "tune": 0.0,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "vcf8",
+      "kind": "vcf",
+      "name": "fifth tone",
+      "knobs": {
+        "cutoff": 900.0,
+        "drive": 0.0,
+        "mode": 0.0,
+        "resonance": 0.1
+      }
+    },
+    {
+      "id": "vca10",
+      "kind": "vca",
+      "name": "fifth amp",
+      "knobs": {
+        "bias": 0.3,
+        "gain": 0.3
+      }
+    },
+    {
+      "id": "lfo14",
+      "kind": "lfo",
+      "name": "fifth tide",
+      "knobs": {
+        "depth": 0.5,
+        "offset": 0.5,
+        "rate": 0.5,
+        "shape": 0.0,
+        "sync": 8.0
+      }
+    },
+    {
+      "id": "lfo15",
+      "kind": "lfo",
+      "name": "season",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 0.01,
+        "shape": 5.0,
+        "sync": 0.0
+      }
+    },
+    {
+      "id": "math4",
+      "kind": "math",
+      "name": "swell plus season",
+      "knobs": {
+        "offset_a": 0.0,
+        "offset_b": 0.0,
+        "scale_a": 1.0,
+        "scale_b": 1.0
+      }
+    },
+    {
+      "id": "slew7",
+      "kind": "slew",
+      "name": "blade ribbon",
+      "knobs": {
+        "fall": 1.5,
+        "rise": 1.2
+      }
+    },
+    {
+      "id": "vco19",
+      "kind": "vco",
+      "name": "blade saw",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 2.0,
+        "shape": 2.0,
+        "tune": -0.07,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "vco20",
+      "kind": "vco",
+      "name": "blade pulse",
+      "knobs": {
+        "fm_depth": 0.25,
+        "level": 0.8,
+        "octave": 2.0,
+        "shape": 2.5,
+        "tune": 0.08,
+        "width": 0.5
+      }
+    },
+    {
+      "id": "mix10",
+      "kind": "mix",
+      "name": "blade pair",
+      "knobs": {
+        "level_a": 0.5,
+        "level_b": 0.5,
+        "level_c": 0.5,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "vcf9",
+      "kind": "vcf",
+      "name": "blade filter",
+      "knobs": {
+        "cutoff": 2000.0,
+        "drive": 0.45,
+        "mode": 0.0,
+        "resonance": 0.5
+      }
+    },
+    {
+      "id": "env6",
+      "kind": "env",
+      "name": "blade env",
+      "knobs": {
+        "attack": 1.2,
+        "decay": 2.5,
+        "release": 9.0,
+        "sustain": 0.75
+      }
+    },
+    {
+      "id": "vca11",
+      "kind": "vca",
+      "name": "blade amp",
+      "knobs": {
+        "bias": 0.0,
+        "gain": 0.1
+      }
+    },
+    {
+      "id": "lfo16",
+      "kind": "lfo",
+      "name": "blade vibrato",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 5.3,
+        "shape": 0.0,
+        "sync": 0.0
+      }
+    },
+    {
+      "id": "env7",
+      "kind": "env",
+      "name": "vibrato bloom",
+      "knobs": {
+        "attack": 2.0,
+        "decay": 0.3,
+        "release": 1.5,
+        "sustain": 1.0
+      }
+    },
+    {
+      "id": "vca12",
+      "kind": "vca",
+      "name": "vibrato depth",
+      "knobs": {
+        "bias": 0.0,
+        "gain": 1.0
+      }
+    },
+    {
+      "id": "digital3",
+      "kind": "digital",
+      "name": "blade echo",
+      "knobs": {
+        "cross": 0.3,
+        "duck": 0.0,
+        "feedback": 0.4,
+        "freeze": 0.0,
+        "highcut": 4500.0,
+        "lowcut": 300.0,
+        "lsync": 10.0,
+        "ltime": 0.375,
+        "mix": 1.0,
+        "routing": 1.0,
+        "rsync": 12.0,
+        "rtime": 0.5
+      }
+    },
+    {
+      "id": "mix11",
+      "kind": "mix",
+      "name": "hall in left 2",
+      "knobs": {
+        "level_a": 1.0,
+        "level_b": 0.55,
+        "level_c": 0.35,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "mix12",
+      "kind": "mix",
+      "name": "hall in right 2",
+      "knobs": {
+        "level_a": 1.0,
+        "level_b": 0.55,
+        "level_c": 0.35,
+        "level_d": 0.5
+      }
+    },
+    {
+      "id": "readout3",
+      "kind": "readout",
+      "name": "blade check",
+      "knobs": {
+        "mode": 0.0
+      }
+    },
+    {
+      "id": "lfo17",
+      "kind": "lfo",
+      "name": "blade comes and goes",
+      "knobs": {
+        "depth": 1.0,
+        "offset": 0.0,
+        "rate": 0.011,
+        "shape": 0.0,
+        "sync": 0.0
+      }
+    }
+  ],
+  "cables": [
+    {
+      "id": 141,
+      "from": "clock5.out",
+      "to": "seq3.clock",
+      "amount": 1.0
+    },
+    {
+      "id": 142,
+      "from": "clock5.out",
+      "to": "seq4.clock",
+      "amount": 1.0
+    },
+    {
+      "id": 143,
+      "from": "clock5.out",
+      "to": "seq5.clock",
+      "amount": 1.0
+    },
+    {
+      "id": 144,
+      "from": "clock5.out",
+      "to": "env3.gate",
+      "amount": 1.0
+    },
+    {
+      "id": 145,
+      "from": "seq3.pitch",
+      "to": "slew1.in",
+      "amount": 1.0
+    },
+    {
+      "id": 146,
+      "from": "seq4.pitch",
+      "to": "slew2.in",
+      "amount": 1.0
+    },
+    {
+      "id": 147,
+      "from": "seq5.pitch",
+      "to": "slew3.in",
+      "amount": 1.0
+    },
+    {
+      "id": 148,
+      "from": "slew1.out",
+      "to": "vco9.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 149,
+      "from": "slew1.out",
+      "to": "vco10.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 150,
+      "from": "slew2.out",
+      "to": "vco11.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 151,
+      "from": "slew2.out",
+      "to": "vco12.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 152,
+      "from": "slew3.out",
+      "to": "vco13.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 153,
+      "from": "slew3.out",
+      "to": "vco14.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 154,
+      "from": "lfo6.out",
+      "to": "vco10.tune",
+      "amount": 0.01
+    },
+    {
+      "id": 155,
+      "from": "lfo6.out",
+      "to": "vco12.tune",
+      "amount": -0.01
+    },
+    {
+      "id": 156,
+      "from": "lfo6.out",
+      "to": "vco14.tune",
+      "amount": 0.012
+    },
+    {
+      "id": 157,
+      "from": "vco9.out",
+      "to": "mix5.a",
+      "amount": 1.0
+    },
+    {
+      "id": 158,
+      "from": "vco10.out",
+      "to": "mix5.b",
+      "amount": 1.0
+    },
+    {
+      "id": 159,
+      "from": "vco11.out",
+      "to": "mix5.c",
+      "amount": 1.0
+    },
+    {
+      "id": 160,
+      "from": "vco12.out",
+      "to": "mix5.d",
+      "amount": 1.0
+    },
+    {
+      "id": 161,
+      "from": "vco13.out",
+      "to": "mix6.a",
+      "amount": 1.0
+    },
+    {
+      "id": 162,
+      "from": "vco14.out",
+      "to": "mix6.b",
+      "amount": 1.0
+    },
+    {
+      "id": 163,
+      "from": "noise1.out",
+      "to": "mix6.c",
+      "amount": 1.0
+    },
+    {
+      "id": 164,
+      "from": "mix5.out",
+      "to": "mix7.a",
+      "amount": 1.0
+    },
+    {
+      "id": 165,
+      "from": "mix6.out",
+      "to": "mix7.b",
+      "amount": 1.0
+    },
+    {
+      "id": 166,
+      "from": "mix7.out",
+      "to": "vcf3.in",
+      "amount": 1.0
+    },
+    {
+      "id": 167,
+      "from": "vcf3.out",
+      "to": "vca5.in",
+      "amount": 1.0
+    },
+    {
+      "id": 168,
+      "from": "env3.out",
+      "to": "vca5.cv",
+      "amount": 1.0
+    },
+    {
+      "id": 170,
+      "from": "lfo7.out",
+      "to": "vcf3.resonance",
+      "amount": 0.15
+    },
+    {
+      "id": 171,
+      "from": "lfo8.out",
+      "to": "vcf3.drive",
+      "amount": 0.3
+    },
+    {
+      "id": 172,
+      "from": "vca5.out",
+      "to": "chorus1.left",
+      "amount": 1.0
+    },
+    {
+      "id": 173,
+      "from": "chorus1.left",
+      "to": "tape3.left",
+      "amount": 1.0
+    },
+    {
+      "id": 174,
+      "from": "chorus1.right",
+      "to": "tape3.right",
+      "amount": 1.0
+    },
+    {
+      "id": 177,
+      "from": "hall2.left",
+      "to": "out7.left",
+      "amount": 1.0
+    },
+    {
+      "id": 178,
+      "from": "hall2.right",
+      "to": "out7.right",
+      "amount": 1.0
+    },
+    {
+      "id": 179,
+      "from": "lfo9.out",
+      "to": "seq3.steps",
+      "amount": 0.4
+    },
+    {
+      "id": 180,
+      "from": "lfo9.out",
+      "to": "seq4.steps",
+      "amount": 0.4
+    },
+    {
+      "id": 181,
+      "from": "lfo9.out",
+      "to": "seq5.steps",
+      "amount": 0.4
+    },
+    {
+      "id": 182,
+      "from": "lfo8.out",
+      "to": "hall2.decay",
+      "amount": 0.1
+    },
+    {
+      "id": 183,
+      "from": "lfo8.out",
+      "to": "tape3.mix",
+      "amount": 0.15
+    },
+    {
+      "id": 184,
+      "from": "clock6.out",
+      "to": "seq6.clock",
+      "amount": 1.0
+    },
+    {
+      "id": 185,
+      "from": "seq6.pitch",
+      "to": "math1.a",
+      "amount": 1.0
+    },
+    {
+      "id": 186,
+      "from": "seq3.pitch",
+      "to": "math1.b",
+      "amount": 1.0
+    },
+    {
+      "id": 187,
+      "from": "math1.sum",
+      "to": "quant2.in",
+      "amount": 1.0
+    },
+    {
+      "id": 188,
+      "from": "quant2.out",
+      "to": "vco15.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 189,
+      "from": "seq6.gate",
+      "to": "env4.gate",
+      "amount": 1.0
+    },
+    {
+      "id": 190,
+      "from": "vco15.out",
+      "to": "vcf4.in",
+      "amount": 1.0
+    },
+    {
+      "id": 191,
+      "from": "vcf4.out",
+      "to": "vca6.in",
+      "amount": 1.0
+    },
+    {
+      "id": 192,
+      "from": "env4.out",
+      "to": "vca6.cv",
+      "amount": 1.0
+    },
+    {
+      "id": 193,
+      "from": "vca6.out",
+      "to": "digital2.left",
+      "amount": 1.0
+    },
+    {
+      "id": 194,
+      "from": "lfo10.out",
+      "to": "seq6.chance",
+      "amount": 0.5
+    },
+    {
+      "id": 195,
+      "from": "tape3.left",
+      "to": "mix8.a",
+      "amount": 1.0
+    },
+    {
+      "id": 196,
+      "from": "tape3.right",
+      "to": "mix9.a",
+      "amount": 1.0
+    },
+    {
+      "id": 197,
+      "from": "digital2.left",
+      "to": "mix8.b",
+      "amount": 1.0
+    },
+    {
+      "id": 198,
+      "from": "digital2.right",
+      "to": "mix9.b",
+      "amount": 1.0
+    },
+    {
+      "id": 201,
+      "from": "clock7.out",
+      "to": "seq7.clock",
+      "amount": 1.0
+    },
+    {
+      "id": 202,
+      "from": "seq7.pitch",
+      "to": "math2.a",
+      "amount": 1.0
+    },
+    {
+      "id": 203,
+      "from": "seq3.pitch",
+      "to": "math2.b",
+      "amount": 1.0
+    },
+    {
+      "id": 204,
+      "from": "math2.sum",
+      "to": "quant3.in",
+      "amount": 1.0
+    },
+    {
+      "id": 205,
+      "from": "quant3.out",
+      "to": "slew4.in",
+      "amount": 1.0
+    },
+    {
+      "id": 206,
+      "from": "slew4.out",
+      "to": "vco16.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 208,
+      "from": "seq7.gate",
+      "to": "env5.gate",
+      "amount": 1.0
+    },
+    {
+      "id": 209,
+      "from": "vco16.out",
+      "to": "vcf5.in",
+      "amount": 1.0
+    },
+    {
+      "id": 211,
+      "from": "vcf5.out",
+      "to": "vca7.in",
+      "amount": 1.0
+    },
+    {
+      "id": 212,
+      "from": "env5.out",
+      "to": "vca7.cv",
+      "amount": 1.0
+    },
+    {
+      "id": 213,
+      "from": "vca7.out",
+      "to": "mix8.c",
+      "amount": 1.0
+    },
+    {
+      "id": 214,
+      "from": "vca7.out",
+      "to": "mix9.c",
+      "amount": 1.0
+    },
+    {
+      "id": 215,
+      "from": "env5.out",
+      "to": "vcf5.cutoff",
+      "amount": 0.35
+    },
+    {
+      "id": 216,
+      "from": "lfo11.out",
+      "to": "vco16.tune",
+      "amount": 0.025
+    },
+    {
+      "id": 218,
+      "from": "seq3.pitch",
+      "to": "slew5.in",
+      "amount": 1.0
+    },
+    {
+      "id": 219,
+      "from": "slew5.out",
+      "to": "vco17.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 220,
+      "from": "vco17.out",
+      "to": "vcf6.in",
+      "amount": 1.0
+    },
+    {
+      "id": 221,
+      "from": "vcf6.out",
+      "to": "vca8.in",
+      "amount": 1.0
+    },
+    {
+      "id": 222,
+      "from": "lfo12.out",
+      "to": "vca8.cv",
+      "amount": 1.0
+    },
+    {
+      "id": 223,
+      "from": "vca8.out",
+      "to": "out8.left",
+      "amount": 1.0
+    },
+    {
+      "id": 224,
+      "from": "vca8.out",
+      "to": "out8.right",
+      "amount": 1.0
+    },
+    {
+      "id": 225,
+      "from": "noise2.out",
+      "to": "vcf7.in",
+      "amount": 1.0
+    },
+    {
+      "id": 226,
+      "from": "lfo13.out",
+      "to": "vcf7.cutoff",
+      "amount": 0.3
+    },
+    {
+      "id": 227,
+      "from": "vcf7.out",
+      "to": "vca9.in",
+      "amount": 1.0
+    },
+    {
+      "id": 229,
+      "from": "vca9.out",
+      "to": "out9.left",
+      "amount": 1.0
+    },
+    {
+      "id": 230,
+      "from": "vca9.out",
+      "to": "out9.right",
+      "amount": 1.0
+    },
+    {
+      "id": 231,
+      "from": "seq3.pitch",
+      "to": "math3.a",
+      "amount": 1.0
+    },
+    {
+      "id": 232,
+      "from": "math3.sum",
+      "to": "slew6.in",
+      "amount": 1.0
+    },
+    {
+      "id": 233,
+      "from": "slew6.out",
+      "to": "vco18.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 234,
+      "from": "vco18.out",
+      "to": "vcf8.in",
+      "amount": 1.0
+    },
+    {
+      "id": 235,
+      "from": "vcf8.out",
+      "to": "vca10.in",
+      "amount": 1.0
+    },
+    {
+      "id": 236,
+      "from": "lfo14.out",
+      "to": "vca10.cv",
+      "amount": 1.0
+    },
+    {
+      "id": 237,
+      "from": "vca10.out",
+      "to": "mix8.d",
+      "amount": 1.0
+    },
+    {
+      "id": 238,
+      "from": "vca10.out",
+      "to": "mix9.d",
+      "amount": 1.0
+    },
+    {
+      "id": 241,
+      "from": "lfo15.out",
+      "to": "hall2.mix",
+      "amount": 0.15
+    },
+    {
+      "id": 242,
+      "from": "lfo15.out",
+      "to": "vca6.gain",
+      "amount": 0.2
+    },
+    {
+      "id": 243,
+      "from": "lfo15.out",
+      "to": "vca7.gain",
+      "amount": -0.2
+    },
+    {
+      "id": 244,
+      "from": "env3.out",
+      "to": "math4.a",
+      "amount": 0.25
+    },
+    {
+      "id": 245,
+      "from": "lfo15.out",
+      "to": "math4.b",
+      "amount": 0.35
+    },
+    {
+      "id": 246,
+      "from": "math4.sum",
+      "to": "vcf3.cutoff",
+      "amount": 1.0
+    },
+    {
+      "id": 252,
+      "from": "slew7.out",
+      "to": "vco19.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 253,
+      "from": "slew7.out",
+      "to": "vco20.pitch",
+      "amount": 1.0
+    },
+    {
+      "id": 254,
+      "from": "vco19.out",
+      "to": "mix10.a",
+      "amount": 1.0
+    },
+    {
+      "id": 255,
+      "from": "vco20.out",
+      "to": "mix10.b",
+      "amount": 1.0
+    },
+    {
+      "id": 256,
+      "from": "mix10.out",
+      "to": "vcf9.in",
+      "amount": 1.0
+    },
+    {
+      "id": 257,
+      "from": "vcf9.out",
+      "to": "vca11.in",
+      "amount": 1.0
+    },
+    {
+      "id": 260,
+      "from": "env6.out",
+      "to": "vca11.cv",
+      "amount": 1.0
+    },
+    {
+      "id": 261,
+      "from": "env6.out",
+      "to": "vcf9.cutoff",
+      "amount": 0.35
+    },
+    {
+      "id": 262,
+      "from": "lfo16.out",
+      "to": "vca12.in",
+      "amount": 1.0
+    },
+    {
+      "id": 263,
+      "from": "env7.out",
+      "to": "vca12.cv",
+      "amount": 1.0
+    },
+    {
+      "id": 264,
+      "from": "vca12.out",
+      "to": "vco19.tune",
+      "amount": 0.02
+    },
+    {
+      "id": 265,
+      "from": "vca12.out",
+      "to": "vco20.tune",
+      "amount": 0.02
+    },
+    {
+      "id": 266,
+      "from": "vca11.out",
+      "to": "digital3.left",
+      "amount": 1.0
+    },
+    {
+      "id": 267,
+      "from": "mix8.out",
+      "to": "mix11.a",
+      "amount": 1.0
+    },
+    {
+      "id": 268,
+      "from": "mix9.out",
+      "to": "mix12.a",
+      "amount": 1.0
+    },
+    {
+      "id": 269,
+      "from": "vca11.out",
+      "to": "mix11.b",
+      "amount": 1.0
+    },
+    {
+      "id": 270,
+      "from": "vca11.out",
+      "to": "mix12.b",
+      "amount": 1.0
+    },
+    {
+      "id": 271,
+      "from": "digital3.wet_left",
+      "to": "mix11.c",
+      "amount": 1.0
+    },
+    {
+      "id": 272,
+      "from": "digital3.wet_right",
+      "to": "mix12.c",
+      "amount": 1.0
+    },
+    {
+      "id": 273,
+      "from": "mix11.out",
+      "to": "hall2.left",
+      "amount": 1.0
+    },
+    {
+      "id": 274,
+      "from": "mix12.out",
+      "to": "hall2.right",
+      "amount": 1.0
+    },
+    {
+      "id": 275,
+      "from": "vca11.out",
+      "to": "readout3.in",
+      "amount": 1.0
+    },
+    {
+      "id": 277,
+      "from": "seq5.pitch",
+      "to": "slew7.in",
+      "amount": 1.0
+    },
+    {
+      "id": 278,
+      "from": "clock5.out",
+      "to": "env6.gate",
+      "amount": 1.0
+    },
+    {
+      "id": 279,
+      "from": "clock5.out",
+      "to": "env7.gate",
+      "amount": 1.0
+    },
+    {
+      "id": 280,
+      "from": "lfo17.out",
+      "to": "vca11.gain",
+      "amount": 0.55
+    }
+  ],
+  "dye": {
+    "chorus1": {
+      "Cassio": 3.21
+    },
+    "clock5": {
+      "Cassio": 2.166666671357773
+    },
+    "clock6": {
+      "Cassio": 1.0
+    },
+    "clock7": {
+      "Buckley": 1.8888888920162932
+    },
+    "digital2": {
+      "Cassio": 5.411568842497528
+    },
+    "digital3": {
+      "Cassio": 5.829887656863885
+    },
+    "env3": {
+      "Cassio": 3.1440856578823224
+    },
+    "env4": {
+      "Cassio": 2.640611561031646
+    },
+    "env5": {
+      "Buckley": 2.7790504041677675
+    },
+    "env6": {
+      "Cassio": 4.014055154455511
+    },
+    "env7": {
+      "Cassio": 3.7490224021162692
+    },
+    "hall2": {
+      "Cassio": 8.689956642292373,
+      "Waffles": 0.15
+    },
+    "lfo10": {
+      "Cassio": 2.0160053351115845
+    },
+    "lfo11": {
+      "Buckley": 1.1767255751904135
+    },
+    "lfo12": {
+      "Waffles": 2.75
+    },
+    "lfo13": {
+      "Waffles": 2.0140046682226367
+    },
+    "lfo14": {
+      "Waffles": 2.638888888888889
+    },
+    "lfo15": {
+      "Waffles": 2.016338779593076
+    },
+    "lfo16": {
+      "Cassio": 1.1600533511158462
+    },
+    "lfo17": {
+      "Cassio": 1.0163054351449268
+    },
+    "lfo6": {
+      "Cassio": 2.0143381127041278
+    },
+    "lfo7": {
+      "Cassio": 2.0
+    },
+    "lfo8": {
+      "Cassio": 2.016338779593076
+    },
+    "lfo9": {
+      "Cassio": 2.5663387795930763
+    },
+    "math1": {
+      "Cassio": 3.0
+    },
+    "math2": {
+      "Buckley": 3.0
+    },
+    "math3": {
+      "Waffles": 2.2916499999999997
+    },
+    "math4": {
+      "Waffles": 1.6
+    },
+    "mix10": {
+      "Cassio": 3.0
+    },
+    "mix11": {
+      "Cassio": 4.7
+    },
+    "mix12": {
+      "Cassio": 4.7
+    },
+    "mix5": {
+      "Cassio": 5.300000000000001
+    },
+    "mix6": {
+      "Cassio": 4.74
+    },
+    "mix7": {
+      "Cassio": 3.0
+    },
+    "mix8": {
+      "Buckley": 1.4,
+      "Cassio": 3.6,
+      "Waffles": 1.0
+    },
+    "mix9": {
+      "Buckley": 1.4,
+      "Cassio": 3.6,
+      "Waffles": 1.0
+    },
+    "noise1": {
+      "Cassio": 1.5
+    },
+    "noise2": {
+      "Waffles": 1.5
+    },
+    "out7": {
+      "Cassio": 3.2
+    },
+    "out8": {
+      "Waffles": 4.0200000000000005
+    },
+    "out9": {
+      "Tom": 0.05000000000000002,
+      "Waffles": 4.1
+    },
+    "quant2": {
+      "Cassio": 2.404040404040404
+    },
+    "quant3": {
+      "Buckley": 2.404040404040404
+    },
+    "readout3": {
+      "Cassio": 2.0
+    },
+    "scope5": {
+      "Tom": 5.5809586531657
+    },
+    "seq3": {
+      "Cassio": 4.983333333333334
+    },
+    "seq4": {
+      "Cassio": 2.775
+    },
+    "seq5": {
+      "Cassio": 3.6708333333333334
+    },
+    "seq6": {
+      "Cassio": 7.218859649287916
+    },
+    "seq7": {
+      "Buckley": 3.83969298262125
+    },
+    "slew1": {
+      "Cassio": 2.16
+    },
+    "slew2": {
+      "Cassio": 2.12
+    },
+    "slew3": {
+      "Cassio": 2.2
+    },
+    "slew4": {
+      "Buckley": 2.26
+    },
+    "slew5": {
+      "Waffles": 2.76
+    },
+    "slew6": {
+      "Waffles": 3.16
+    },
+    "slew7": {
+      "Cassio": 4.5
+    },
+    "tape3": {
+      "Cassio": 4.006713212167775
+    },
+    "vca10": {
+      "Waffles": 4.0
+    },
+    "vca11": {
+      "Cassio": 5.1499999999999995
+    },
+    "vca12": {
+      "Cassio": 3.0
+    },
+    "vca5": {
+      "Cassio": 3.1500000000000004
+    },
+    "vca6": {
+      "Cassio": 3.65,
+      "Waffles": 0.2
+    },
+    "vca7": {
+      "Buckley": 4.98,
+      "Waffles": 0.2
+    },
+    "vca8": {
+      "Waffles": 4.05
+    },
+    "vca9": {
+      "Waffles": 4.5
+    },
+    "vcf3": {
+      "Buckley": 0.006674082313681869,
+      "Cassio": 2.972246941045606,
+      "Waffles": 1.35
+    },
+    "vcf4": {
+      "Cassio": 2.0667408231368185
+    },
+    "vcf5": {
+      "Buckley": 3.032492247465999
+    },
+    "vcf6": {
+      "Waffles": 2.2661436710452465
+    },
+    "vcf7": {
+      "Waffles": 3.861998721925792
+    },
+    "vcf8": {
+      "Waffles": 2.110824894477017
+    },
+    "vcf9": {
+      "Cassio": 3.171406830260862
+    },
+    "vco10": {
+      "Cassio": 2.2141666666666664
+    },
+    "vco11": {
+      "Cassio": 2.0033333333333334
+    },
+    "vco12": {
+      "Cassio": 2.0149999999999997
+    },
+    "vco13": {
+      "Cassio": 2.0041666666666664
+    },
+    "vco14": {
+      "Cassio": 2.01575
+    },
+    "vco15": {
+      "Cassio": 2.458333333333333
+    },
+    "vco16": {
+      "Buckley": 3.203666666666667
+    },
+    "vco17": {
+      "Waffles": 3.2416666666666667
+    },
+    "vco18": {
+      "Waffles": 2.6666666666666665
+    },
+    "vco19": {
+      "Cassio": 2.2729166666666667
+    },
+    "vco20": {
+      "Cassio": 2.44
+    },
+    "vco9": {
+      "Cassio": 2.0025
+    }
+  },
+  "rack": [
+    [
+      "clock5",
+      "seq3",
+      "seq4",
+      "seq5",
+      "slew1",
+      "slew2",
+      "slew3",
+      "lfo6",
+      "lfo7",
+      "lfo8",
+      "lfo9",
+      "env3",
+      "clock6",
+      "seq6",
+      "quant2",
+      "env4",
+      "lfo10",
+      "clock7",
+      "seq7",
+      "quant3",
+      "slew4",
+      "lfo11",
+      "env5",
+      "scope5",
+      "slew5",
+      "lfo12",
+      "out8",
+      "lfo13",
+      "out9",
+      "slew6",
+      "lfo14",
+      "lfo15",
+      "slew7",
+      "mix10",
+      "env6",
+      "lfo16",
+      "env7",
+      "mix11",
+      "mix12",
+      "readout3",
+      "lfo17"
+    ],
+    [
+      "vco9",
+      "vco10",
+      "vco11",
+      "vco12",
+      "vco13",
+      "vco14",
+      "noise1",
+      "vco15",
+      "vco16",
+      "vco17",
+      "noise2",
+      "vco18",
+      "vco19",
+      "vco20"
+    ],
+    [
+      "mix5",
+      "mix6",
+      "mix7",
+      "out7",
+      "mix8",
+      "mix9"
+    ],
+    [
+      "vcf3",
+      "vca5",
+      "vcf4",
+      "vca6",
+      "vcf5",
+      "vca7",
+      "vcf6",
+      "vca8",
+      "vcf7",
+      "vca9",
+      "vcf8",
+      "vca10",
+      "vcf9",
+      "vca11",
+      "vca12"
+    ],
+    [
+      "chorus1",
+      "tape3",
+      "hall2",
+      "digital2",
+      "digital3"
+    ],
+    [
+      "math1",
+      "math2",
+      "math3",
+      "math4"
+    ]
+  ],
+  "groups": {
+    "brass": [
+      "clock5",
+      "seq3",
+      "seq4",
+      "seq5",
+      "slew1",
+      "slew2",
+      "slew3",
+      "vco9",
+      "vco10",
+      "vco11",
+      "vco12",
+      "vco13",
+      "vco14",
+      "lfo6",
+      "lfo7",
+      "lfo8",
+      "lfo9",
+      "noise1",
+      "mix5",
+      "mix6",
+      "mix7",
+      "vcf3",
+      "env3",
+      "vca5",
+      "chorus1",
+      "tape3",
+      "hall2",
+      "out7"
+    ],
+    "fifth": [
+      "math3",
+      "slew6",
+      "vco18",
+      "vcf8",
+      "vca10",
+      "lfo14"
+    ],
+    "floor": [
+      "vco17",
+      "slew5",
+      "vcf6",
+      "vca8",
+      "lfo12",
+      "out8"
+    ],
+    "flutter": [
+      "clock6",
+      "seq6",
+      "math1",
+      "quant2",
+      "vco15",
+      "env4",
+      "vcf4",
+      "vca6",
+      "digital2",
+      "lfo10",
+      "mix8",
+      "mix9"
+    ],
+    "rain": [
+      "noise2",
+      "vcf7",
+      "lfo13",
+      "vca9",
+      "out9"
+    ],
+    "season": [
+      "lfo15",
+      "math4"
+    ]
+  }
+}

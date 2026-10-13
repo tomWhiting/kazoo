@@ -41,6 +41,7 @@ pub mod probe;
 pub mod protocol;
 pub mod seed;
 pub mod store;
+pub mod tree;
 pub mod tui;
 
 mod run;
