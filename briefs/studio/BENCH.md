@@ -53,6 +53,21 @@ all `wall/kind/*`; wall chains 10 and 100; unplugged 100 and 1000; cables 10,
 8, 64 and 512; link encode and decode 512; control build 1000 and look 100,
 1000 and 10000.
 
+Two rows taken later, on 13 Oct 2026 at `7f4b334` (the D01 merge) by the
+KZ-D03b review, in its worktree, with
+`nice lockf -k ~/.kazoo-cargo.lock cargo bench -p kazoo-wall --bench wall_render -j 4 -- 'wall/culled|wall/chains/10$'`,
+one-minute load average 12.59 at the start and 20.98 at the end (5- and
+15-minute 29.98/56.19 and 29.17/53.29), on the same machine; log
+`target/kz-logs/review-bench-d01.log`:
+
+| bench | ns per block | interval ns | % of real time |
+|---|---:|---|---:|
+| wall/chains/10 | 560,460 | [558,580, 562,540] | 5.254 |
+| wall/culled/1000 | 13,936,000 | [13,747,000, 14,140,000] | 130.650 |
+
+Criterion's lines: `wall/chains/10 time: [558.58 µs 560.46 µs 562.54 µs]`
+and `wall/culled/1000 time: [13.747 ms 13.936 ms 14.140 ms]`.
+
 The look's size is a count of bytes, not a timing, so load does not move it.
 The review's one-pass run of the control bench (`-- --test`, at 3ab9adb)
 printed the serialised `look` result as 90,133 bytes for 100 vcos, 900,837
@@ -101,8 +116,8 @@ Criterion interval midpoints, ns per 512-frame block at 48 kHz:
 
 | bench | D01 ns per block | D03 before ns per block | D03 after ns per block |
 |---|---:|---:|---:|
-| wall/chains/10 | not measured | 1,538,300 | 2,529,700 |
-| wall/culled/1000 | not measured | 29,436,000 | 2,295,500 |
+| wall/chains/10 | 560,460 | 1,538,300 | 2,529,700 |
+| wall/culled/1000 | 13,936,000 | 29,436,000 | 2,295,500 |
 
 The measured ratio is 0.9074x after, within the 1.2x limit, versus
 19.1354x before. After intervals: chains/10 [2,132,500, 2,981,300] ns;
@@ -111,9 +126,9 @@ other lane work and scoped validation builds. Their broad intervals and
 the chains/10 variation do not establish isolated render costs or a quiet
 machine baseline. The limit above compares the observed midpoints.
 
-The D01 section has no measurements for either requested row; its
-chains/1000 row is 291,080,000 ns under load and explicitly not a baseline.
-No missing D01 value has been inferred.
+The D01 column was filled by the KZ-D03b review from its run at `7f4b334`
+(see the D01 section): a far lighter load than these D03 runs, so the
+columns are not comparable with each other.
 
 Receipts: target/kz-logs/bench-before.txt and
 target/kz-logs/bench-after.txt. Both commands exited 0.
@@ -274,15 +289,142 @@ reads a pre-rendered buffer with gain, but also handles gate edges, fades,
 varispeed interpolation and granular stretch. This exceeds a vca buffer
 read; the mandated vca fallback is retained and this limitation is reported.
 
-D01's missing historical rows were not run: the mandated checkout at
-`7f4b334` conflicts with the stack rule forbidding branch/check-out changes.
-D03's D01 column remains explicitly not measured.
+D01's missing rows were not run by the builder (it read the stack rules as
+forbidding the checkout at `7f4b334`; they do not); the review took them,
+in the D01 section and D03's D01 column.
 
 The requested cheap-set precondition cannot hold for the measured
 audio-throughput rows at 48 kHz: even trem's 243,690 ns midpoint makes
 40 modules consume 91.38375% of real time, before the 30% load and
 addition average. A measured cheap-set regression covers allowance and
 recent wake accounting without altering these benchmark values.
+
+### KZ-D03b review: the kind rows again, and the render path
+
+The kind rows above were taken with the machine near a load of 100 and are
+three to six times what the same bench reads on a lighter machine (vco
+315,280 against 133,880; klon 4,950,700 against 782,260). With them the
+guard costed Tom's live patch of 13 Oct (41 modules, KZ-D14's bench patch,
+57% of real time on the wall) at about 251%, so no seat could load any of
+Tom's saves and every console load warned at three to four times its cost.
+They are superseded by the rows below, which are in `KIND_BENCH_NS`; with
+them the live patch is costed at 61%.
+
+Kind run at `42664d7`, 13 Oct 2026, 20:38 to 20:48, filter `wall/kind/`,
+exit 0. The load beside each row is the one-, five- and fifteen-minute
+load average sampled every ten seconds during the run, the sample at or
+before the row finished. Log `target/kz-logs/review-bench-kind-base.log`,
+load samples `target/kz-logs/review-bench-load.log`.
+
+| kind | lower ns | midpoint ns | upper ns | real time at 48 kHz % | finished | load |
+|---|---:|---:|---:|---:|---|---|
+| vco | 124,100 | 133,880 | 145,900 | 1.2551 | 20:39:07 | 15.37/26.77/51.31 |
+| lfo | 71,463 | 72,895 | 74,747 | 0.6834 | 20:39:15 | 18.64/27.06/51.12 |
+| noise | 39,375 | 39,575 | 39,813 | 0.3710 | 20:39:24 | 24.69/28.08/51.20 |
+| vcf | 101,410 | 102,190 | 103,170 | 0.9580 | 20:39:31 | 29.03/28.90/51.22 |
+| vca | 91,359 | 91,703 | 92,156 | 0.8597 | 20:39:40 | 29.03/28.90/51.22 |
+| env | 67,779 | 67,967 | 68,187 | 0.6372 | 20:39:48 | 29.32/28.95/50.98 |
+| clock | 70,453 | 71,175 | 72,024 | 0.6673 | 20:39:56 | 27.60/28.61/50.60 |
+| seq | 98,818 | 99,326 | 99,968 | 0.9312 | 20:40:02 | 38.18/30.75/51.10 |
+| sh | 69,282 | 69,456 | 69,642 | 0.6512 | 20:40:10 | 38.18/30.75/51.10 |
+| quant | 96,524 | 97,784 | 99,841 | 0.9167 | 20:40:17 | 33.44/29.98/50.59 |
+| slew | 71,038 | 71,237 | 71,478 | 0.6678 | 20:40:25 | 29.00/29.14/50.05 |
+| mix | 72,226 | 73,098 | 74,105 | 0.6853 | 20:40:33 | 26.02/28.50/49.57 |
+| out | 88,499 | 88,709 | 88,949 | 0.8316 | 20:40:43 | 23.40/27.85/49.10 |
+| compare | 104,130 | 106,340 | 108,830 | 0.9969 | 20:40:50 | 23.40/27.85/49.10 |
+| logic | 93,698 | 95,147 | 96,851 | 0.8920 | 20:40:56 | 21.05/27.20/48.62 |
+| branch | 94,555 | 95,226 | 95,911 | 0.8927 | 20:41:03 | 21.97/27.21/48.37 |
+| switch | 110,610 | 112,510 | 114,660 | 1.0548 | 20:41:10 | 21.97/27.21/48.37 |
+| select | 100,350 | 101,270 | 102,320 | 0.9494 | 20:41:17 | 21.27/26.89/48.01 |
+| divide | 86,167 | 88,433 | 90,708 | 0.8291 | 20:41:26 | 20.08/26.44/47.61 |
+| math | 111,820 | 113,050 | 114,540 | 1.0598 | 20:41:34 | 18.94/25.99/47.19 |
+| scope | 110,610 | 112,080 | 113,670 | 1.0508 | 20:41:41 | 18.82/25.72/46.85 |
+| readout | 96,793 | 97,724 | 98,964 | 0.9162 | 20:41:48 | 18.82/25.72/46.85 |
+| loop | 69,790 | 70,485 | 71,314 | 0.6608 | 20:41:56 | 23.73/26.57/46.91 |
+| klon | 777,210 | 782,260 | 787,580 | 7.3337 | 20:42:04 | 22.39/26.19/46.53 |
+| screamer | 1,541,400 | 1,551,300 | 1,563,100 | 14.5434 | 20:42:11 | 21.07/25.78/46.15 |
+| fuzz | 368,530 | 370,870 | 373,520 | 3.4769 | 20:42:18 | 21.07/25.78/46.15 |
+| amp | 1,194,200 | 1,209,300 | 1,226,700 | 11.3372 | 20:42:27 | 19.82/25.36/45.77 |
+| fold | 817,830 | 836,620 | 861,670 | 7.8433 | 20:42:33 | 21.65/25.59/45.61 |
+| crush | 276,470 | 279,640 | 283,040 | 2.6216 | 20:42:42 | 20.73/25.27/45.26 |
+| ringmod | 376,300 | 379,420 | 383,840 | 3.5571 | 20:42:48 | 20.73/25.27/45.26 |
+| comp | 590,390 | 592,430 | 594,820 | 5.5540 | 20:42:57 | 19.00/24.68/44.70 |
+| tape | 488,000 | 491,630 | 495,560 | 4.6090 | 20:43:04 | 17.54/24.18/44.29 |
+| bbd | 161,510 | 162,010 | 162,580 | 1.5188 | 20:43:13 | 16.75/23.80/43.92 |
+| digital | 133,450 | 133,860 | 134,270 | 1.2549 | 20:43:21 | 16.21/23.45/43.56 |
+| chorus | 231,970 | 233,340 | 234,960 | 2.1876 | 20:43:29 | 16.21/23.45/43.56 |
+| flanger | 210,590 | 212,400 | 214,570 | 1.9912 | 20:43:36 | 16.20/23.21/43.24 |
+| phaser | 157,480 | 159,110 | 160,930 | 1.4917 | 20:43:44 | 16.06/22.95/42.92 |
+| trem | 116,430 | 117,200 | 118,040 | 1.0988 | 20:43:51 | 15.12/22.53/42.53 |
+| shift | 337,660 | 344,140 | 352,050 | 3.2263 | 20:44:00 | 15.12/22.53/42.53 |
+| granular | 152,510 | 153,700 | 154,860 | 1.4409 | 20:44:09 | 14.81/22.21/42.19 |
+| pitch | 305,990 | 314,290 | 325,400 | 2.9465 | 20:44:18 | 13.92/21.78/41.80 |
+| plate | 209,690 | 217,740 | 229,000 | 2.0413 | 20:44:25 | 15.46/21.84/41.58 |
+| hall | 342,670 | 353,440 | 368,090 | 3.3135 | 20:44:34 | 16.33/21.80/41.34 |
+| spring | 596,420 | 604,340 | 614,240 | 5.6657 | 20:44:42 | 16.14/21.59/41.03 |
+| shimmer | 653,320 | 657,380 | 663,550 | 6.1629 | 20:44:52 | 14.66/21.09/40.63 |
+| resonator | 158,800 | 160,690 | 163,360 | 1.5065 | 20:45:00 | 14.66/21.09/40.63 |
+| eq | 119,710 | 120,420 | 121,200 | 1.1289 | 20:45:07 | 14.18/20.77/40.29 |
+| vhs | 259,240 | 261,110 | 263,230 | 2.4479 | 20:45:15 | 13.46/20.40/39.93 |
+| cassette | 381,090 | 385,510 | 391,000 | 3.6142 | 20:45:22 | 13.92/20.27/39.65 |
+| reel | 528,290 | 534,100 | 541,730 | 5.0072 | 20:45:30 | 13.92/20.27/39.65 |
+| vinyl | 203,580 | 208,800 | 215,610 | 1.9575 | 20:45:37 | 13.61/20.00/39.33 |
+| genloss | 360,300 | 374,890 | 395,560 | 3.5146 | 20:45:47 | 13.60/19.78/39.03 |
+| radio | 155,130 | 158,740 | 163,450 | 1.4882 | 20:45:55 | 12.96/19.45/38.68 |
+| sampler12 | 129,630 | 131,510 | 134,020 | 1.2329 | 20:46:03 | 13.10/19.26/38.39 |
+| kick | 81,676 | 81,975 | 82,345 | 0.7685 | 20:46:12 | 12.16/18.86/38.03 |
+| snare | 82,993 | 83,282 | 83,626 | 0.7808 | 20:46:21 | 12.16/18.86/38.03 |
+| clap | 74,918 | 75,216 | 75,567 | 0.7052 | 20:46:29 | 13.27/18.87/37.80 |
+| hat | 88,891 | 89,219 | 89,587 | 0.8364 | 20:46:38 | 12.61/18.54/37.47 |
+| cymbal | 110,240 | 111,510 | 112,940 | 1.0454 | 20:46:45 | 12.24/18.26/37.15 |
+| tom | 84,062 | 84,614 | 85,203 | 0.7933 | 20:46:54 | 12.18/18.05/36.85 |
+| conga | 89,059 | 89,861 | 90,961 | 0.8424 | 20:47:03 | 12.33/17.89/36.57 |
+| rim | 87,324 | 89,555 | 92,132 | 0.8396 | 20:47:12 | 12.63/17.77/36.31 |
+| cowbell | 77,913 | 78,316 | 78,812 | 0.7342 | 20:47:21 | 12.63/17.77/36.31 |
+| shaker | 79,257 | 79,641 | 80,116 | 0.7466 | 20:47:30 | 11.81/17.43/35.98 |
+| membrane | 88,988 | 89,672 | 90,487 | 0.8407 | 20:47:39 | 11.88/17.26/35.70 |
+| modal | 78,189 | 78,788 | 79,476 | 0.7386 | 20:47:47 | 11.43/16.98/35.38 |
+| metal | 79,621 | 79,826 | 80,048 | 0.7484 | 20:47:56 | 13.50/17.26/35.27 |
+| noiseperc | 84,846 | 85,272 | 85,787 | 0.7994 | 20:48:05 | 12.68/16.96/34.95 |
+| euclid | 76,486 | 77,447 | 78,670 | 0.7261 | 20:48:13 | 12.53/16.78/34.67 |
+| prob | 80,398 | 81,155 | 81,902 | 0.7608 | 20:48:22 | 13.90/16.93/34.52 |
+| grids | 77,002 | 82,980 | 91,792 | 0.7779 | 20:48:30 | 13.90/16.93/34.52 |
+| poly | 80,632 | 80,973 | 81,355 | 0.7591 | 20:48:39 | 14.52/16.97/34.33 |
+| burst | 69,333 | 69,658 | 69,981 | 0.6530 | 20:48:47 | 16.30/17.28/34.23 |
+| vocoder | 140,480 | 140,790 | 141,130 | 1.3199 | 20:48:55 | 16.60/17.30/34.04 |
+
+`speak` takes the vca midpoint (91,703 ns), as the brief says; the builder
+read the speaker adapter (it applies its knobs and hands a gate block to
+the phrase player, which also handles gate edges, fades, varispeed and
+granular stretch, more than a vca's buffer read), and the brief's choice is
+kept.
+
+The render path, base `42664d7` then head alternately, filter
+`wall/chains/1000$|wall/chains/10$|wall/culled`, ns per block (five rounds:
+three from 20:48 to 20:54, two more from 20:55 to 21:02; one-minute load at
+the start of each run in brackets). Logs `target/kz-logs/review-bench-base-N.log`,
+`review-bench-head-N.log` (head `52eda51`) and `review-bench2-base-N.log`,
+`review-bench2-head-N.log`.
+
+| round | chains/1000 base | chains/1000 head | chains/10 base | chains/10 head | culled/1000 base | culled/1000 head |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 (16.6 / 13.8) | 49,179,000 | 48,219,000 | 515,640 | 512,530 | 158,820 | 171,230 |
+| 2 (12.3 / 11.2) | 48,278,000 | 50,585,000 | 504,080 | 512,270 | 157,640 | 181,720 |
+| 3 (15.1 / 20.2) | 52,106,000 | 50,900,000 | 633,630 | 626,520 | 160,310 | 194,950 |
+| 4 (17.9 / 20.4) | 50,286,000 | 56,152,000 | 551,050 | 654,580 | 163,200 | 208,290 |
+| 5 (25.3 / 43.3) | 52,680,000 | 50,974,000 | 607,590 | 556,850 | 175,600 | 193,620 |
+| median | 50,286,000 | 50,900,000 | 551,050 | 556,850 | 160,310 | 193,620 |
+
+The head's chains/1000 median is 1.2% over the base's over five rounds, and
+2.9% over the brief's three (49,179,000 against 50,585,000): within 3%.
+culled/1000 is not: every head run is above the base run of its round, 20.8% at
+the median, about 33,000 ns a block. The two clock reads cost 16.7 ns each
+on this machine (`clock_gettime(CLOCK_UPTIME_RAW)` timed in a loop), about
+0.5 us a block, so they do not account for it; chains/10, with as many heard
+modules, does not move beyond its noise. A third set at loads of 37 to 83
+(`review-bench3-*.log`, with variants that drop the timing or call
+`render_module` once) is too noisy to attribute it. Not confirmed either way;
+a quiet machine is needed.
 
 ### Head render receipt
 
@@ -294,5 +436,5 @@ One head round exited 0. Uptime at launch: 19:22  6 users, load averages: 115.49
 | wall/chains/1000 | 277,200,000 | 307,150,000 | 341,270,000 |
 | wall/culled/1000 | 226,100 | 232,310 | 240,210 |
 
-The three alternating base/head rounds were not completed in the lane's
-25-minute time box. No within-3% acceptance claim follows from this row.
+The builder did not complete the three alternating base/head rounds; the
+review's five are in the review section above.
