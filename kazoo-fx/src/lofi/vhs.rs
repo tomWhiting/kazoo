@@ -194,13 +194,13 @@ struct Linear {
 }
 
 impl Linear {
-    fn new() -> Self {
+    fn new(seed: Option<u64>) -> Self {
         Self {
             level: 0.0,
             alc: Ramp::new(db_to_gain(6.0), CONTROL),
             oversampler: Oversampler2::new(),
             tape: Magnetic::default(),
-            hiss: Hiss::new(crate::dsp::seeded(None, 0x0005_0001)),
+            hiss: Hiss::new(crate::dsp::seeded(seed, 0x0005_0001)),
             dropout: OnePole::default(),
             head: Butterworth::default(),
             low_cut: Butterworth::default(),
@@ -348,7 +348,7 @@ impl Vhs {
             speed: Smoothed::new(0.0),
             hifi: Smoothed::new(0.0),
             lines: [DelayLine::default(), DelayLine::default()],
-            linear: Linear::new(),
+            linear: Linear::new(seed),
             stereo: [HiFi::new(seed, 0x0005_0002), HiFi::new(seed, 0x0005_0003)],
             transport: Wobble::new(&TRANSPORT, crate::dsp::seeded(seed, 0x0005_0004)),
             drum: Wobble::new(&DRUM, crate::dsp::seeded(seed, 0x0005_0005)),
