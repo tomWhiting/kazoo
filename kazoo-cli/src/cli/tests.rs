@@ -35,6 +35,7 @@ fn every_instrument_is_a_subcommand() {
             Command::Mix(args) => name == "mix" && !args.demo,
             Command::Wall { command } => name == "wall" && command.is_none(),
             Command::Mcp(args) => name == "mcp" && args.seat == "Tom",
+            Command::Studio { .. } => false,
         };
         assert!(matched, "wrong command for {name}");
     }
