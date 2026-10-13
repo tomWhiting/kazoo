@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `247ca07`, and may hav
 
 Time: about 30 minutes of a builder's work. One mechanism: two new directions on the existing link, desk-to-instrument audio ("returns") and the loop-take notice, on the wire and in kazoo-core's client and link. The desk's side is KZ-L07; the wall's are KZ-L09 and KZ-L10. Crates: kazoo-core only (`ipc/types.rs`, `ipc/protocol.rs`, `ipc/client.rs`, `ipc/link.rs`, and a new `ipc/returns.rs` so `link.rs` does not grow past where B03a leaves it). Depends: KZ-B03a (named streams; same files, and its `StreamReady` pattern is copied here) and KZ-V07a (`MSG_DESK_FEATURES`, `RequestError::Unsupported`, `LinkState.desk_features`).
 
-Read by Cassio, 14 Oct 00:5x. Checked: 24 + 32 + 4 + 4 + 4 + 8 + 8 + 4 is 88; a second of stereo f32 at 48 kHz is 384,000 bytes. Change: the checks are written out in the lane form. Opens only after B03a and V07a have landed.
+Read by Cassio, 13 Oct evening. Checked: 24 + 32 + 4 + 4 + 4 + 8 + 8 + 4 is 88; a second of stereo f32 at 48 kHz is 384,000 bytes. Change: the checks are written out in the lane form. Opens only after B03a and V07a have landed.
 
 ## Why returns exist
 

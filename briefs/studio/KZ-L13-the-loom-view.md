@@ -12,7 +12,7 @@ Time: about 30 minutes of a builder's work. One mechanism: a per-`out` level fro
 
 Depends: KZ-L12 (the view plumbing: `View::Tape`, the tape keys, plain glyphs; this lane adds `View::Loom` the same way, with `W` from List, Rack or Tape) and KZ-L05 (`LoopView`, `beat_now`, `loops_meet`).
 
-Read by Cassio, 14 Oct 01:5x. Checked: loops of 2 and 3 bars meet on bar 6, and of 3 and 4 bars on bar 12. Changes: the checks and bench are written out in the lane form; the out levels carry the order's sequence so a level is never credited to the wrong out between an order being sent and applied; the live check is Cassio's. Opens only after L05 and L12 have landed.
+Read by Cassio, 13 Oct evening. Checked: loops of 2 and 3 bars meet on bar 6, and of 3 and 4 bars on bar 12. Changes: the checks and bench are written out in the lane form; the out levels carry the order's sequence so a level is never credited to the wrong out between an order being sent and applied; the live check is Cassio's. Opens only after L05 and L12 have landed.
 
 ## Tom's words
 

@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `816c021`, and may hav
 
 Third of PLAN.md's T04 split in four (T04a the tree thread, T04b the wall, **T04c** the seats' tools, T04d the console's keys).
 
-Read by Cassio, 13 Oct 22:2x. Accepted as written.
+Read by Cassio, 13 Oct evening. Accepted as written.
 
 Time: about 25 minutes of a builder's work. One mechanism: three tools over T04b's requests. Crates: kazoo-mcp. Depends: T04b (landed): `Request::{Mark, Go, Tree}`, `MarkResult`, `TreeResult`, `LoadResult` for a go, `Event::Marked`.
 

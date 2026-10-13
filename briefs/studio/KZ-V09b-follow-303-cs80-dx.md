@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `fa3c8d8`, and may hav
 
 Crates: kazoo-303, kazoo-cs80, kazoo-dx, kazoo-cli (their `--follow` flags only). Time: about 30 to 40 minutes. Depends: KZ-V09a. May run beside KZ-V09c, V09d and V10. The only file these lanes share is `kazoo-cli/src/cli.rs`, where each adds its own flags: a line-level merge.
 
-Read by Cassio, 13 Oct 23:5x. Changes: the checks take the lane form, and the by-hand listen is Cassio's and Tom's after landing. "May run beside" is limited by the lane rules: at most two lanes build at once. Opens only after V09a has landed.
+Read by Cassio, 13 Oct evening. Changes: the checks take the lane form, and the by-hand listen is Cassio's and Tom's after landing. "May run beside" is limited by the lane rules: at most two lanes build at once. Opens only after V09a has landed.
 
 Why: Tom asked for this: "i'd like voice to able to drive all the engines we have". KZ-V09a decided how an instrument follows the voice and built the mini on it. This lane does the same for one mono instrument and two poly instruments, following V09a's "Decided for every instrument" and "The pattern each instrument follows" exactly: the `Follows` trait, `drain_voice` beside the hub drain, `AudioCommand::Follow`, `i`, `FollowStatus` in the footer, `--follow`, `snapped_hz`, the gain and the 2 ms pitch smoother.
 

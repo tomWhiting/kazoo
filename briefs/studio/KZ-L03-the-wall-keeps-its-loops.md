@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `247ca07`, and may hav
 
 Time: about 30 minutes of a builder's work. One mechanism: the loop's place in the patch, and the tape thread that moves reels between the store and the loops. Crates: kazoo-wall only (new `src/daemon/loops.rs`, `src/daemon/loops/worker.rs`, `src/daemon/loops/tests.rs`; small additions to `patch.rs`, `migrate.rs`, `store.rs`, `protocol/mod.rs`, `change.rs`, `daemon/wall.rs`). Depends: KZ-L01 (the reel store), KZ-L02 (the loop module), KZ-D03 (sinks; landed at `247ca07`) and KZ-W01a (landed at `779e316`; its `seed` field sits beside the new ones in the same `PatchFile` literals).
 
-Read by Cassio, 14 Oct 00:2x. Changes: the checks are written out in the lane form, and the live-wall listen is Cassio's and Tom's after landing.
+Read by Cassio, 13 Oct evening. Changes: the checks are written out in the lane form, and the live-wall listen is Cassio's and Tom's after landing.
 
 **The tree (Track T, PLAN.md) and this lane.** Since this brief was written, Tom decided the wall is one tree versioned in git (KZ-T01 to T04). A loop's line in the patch names its reel by content hash, which is exactly what a tree commit should carry: the tree stores the patch text, never the audio. Two consequences:
 - If KZ-T01 has landed when this lane branches, `PatchFile` already has T01's birth-mark fields; add `loops` and `retired_loops` beside them, and every `PatchFile { .. }` literal T01 touched gains the two fields too.

@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `247ca07`, and may hav
 
 Time: about 20 minutes of a builder's work. One mechanism: a second named stream from the mouth. Crates: kazoo-mouth only (`src/engine.rs`, `src/run.rs`, and V08b's screen line). Depends: KZ-V08a (the crate), KZ-V08b (its screen), KZ-B03a (named streams on the link) and KZ-B03b (the desk seats them).
 
-Read by Cassio, 14 Oct 01:1x. Changes: the checks are written out in the lane form; the live check is Cassio's and Tom's; and, decided here, the desk seats a `dry` stream muted so the laptop speakers cannot feed back into the mic (one small kazoo-mix change, below; KZ-L07 taps before mute so loops still hear it). Opens only after V08a, V08b, B03a and B03b have landed.
+Read by Cassio, 13 Oct evening. Changes: the checks are written out in the lane form; the live check is Cassio's and Tom's; and, decided here, the desk seats a `dry` stream muted so the laptop speakers cannot feed back into the mic (one small kazoo-mix change, below; KZ-L07 taps before mute so loops still hear it). Opens only after V08a, V08b, B03a and B03b have landed.
 
 ## Why
 
@@ -24,7 +24,7 @@ V08a's mouth sends the desk its synth only: "when the desk link is connected, se
 - The mic's own latency, from the time Tom's sound reaches the mic to when its block is popped, is not compensated here. That is the input buffer plus at most one output block, a few milliseconds at the sizes V08a uses. It is the same for the synth, so Tom hears the two together. A loop that records `mouth/dry` places it where the desk played it, and the loop's `nudge` knob (KZ-L02, KZ-L09) moves it by ear if Tom ever hears it late.
 - The screen (V08b): the link line becomes "on the desk: mouth/main strip 3, mouth/dry strip 4". When `dry` is refused it reads "on the desk: mouth/main strip 3; dry refused: every strip is taken" (B03b's reason, from `HubLink::last_stream_refusal`). `dry_unsent` shows when it is above zero.
 
-### The dry strip is seated muted (kazoo-mix, decided 14 Oct by Cassio)
+### The dry strip is seated muted (kazoo-mix, decided 13 Oct by Cassio)
 
 Tom plays the wall on the MacBook's own speakers. A dry mic strip at unity on those speakers feeds back into the same mic: a howl, and a loud one. So:
 - When the desk seats a stream named `dry` (B03b's seating, wherever it builds the strip's `ChannelControls`), the strip starts with `muted: true`. Every other stream is seated as today.

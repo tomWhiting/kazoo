@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `fa3c8d8`, and may hav
 
 Crates: kazoo-mix. Time: about 30 minutes. Depends: KZ-V07a (the wire and the instrument side) and KZ-B03b landed (B03b edits `hub.rs` and `hub/instrument.rs`).
 
-Read by Cassio, 13 Oct 23:2x. Changes: the checks take the lane form, the by-hand check after V08a is Cassio's and Tom's, and the once-a-second refusal notice is kept on the `Instrument`. Opens only after V07a has landed.
+Read by Cassio, 13 Oct evening. Changes: the checks take the lane form, the by-hand check after V08a is Cassio's and Tom's, and the once-a-second refusal notice is kept on the `Instrument`. Opens only after V07a has landed.
 
 Why: Tom wants his voice "to drive all the engines we have". V07a gave instruments a way to send and receive voice frames. This lane is the desk in the middle: the one place that knows which program is singing and which programs are listening. Today the desk disconnects an instrument for any message type it does not know (`kazoo-mix/src/hub/instrument.rs:260`). Notes go to everyone or to one UUID (`hub.rs:916-935`), and nothing subscribes.
 

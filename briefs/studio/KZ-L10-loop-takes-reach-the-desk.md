@@ -10,7 +10,7 @@ Time: about 30 minutes of a builder's work. One mechanism: the take notice from 
 - KZ-C06 (take players, the `T` list, `TakeClip`);
 - KZ-C08a (`session.json`, `HubCommand::Reserve`).
 
-Read by Cassio, 14 Oct 01:3x. Checked: anchor 0, 68 beats, take at beat 140 gives a pass start of 136 and repeats at 136, 204 and 272. Changes: the checks are written out in the lane form, and the live check is Cassio's and Tom's. Opens only after L01, L04, L06, L07, C06 and C08a have landed.
+Read by Cassio, 13 Oct evening. Checked: anchor 0, 68 beats, take at beat 140 gives a pass start of 136 and repeats at 136, 204 and 272. Changes: the checks are written out in the lane form, and the live check is Cassio's and Tom's. Opens only after L01, L04, L06, L07, C06 and C08a have landed.
 
 ## Outcome
 

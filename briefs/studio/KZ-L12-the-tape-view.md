@@ -10,7 +10,7 @@ Time: about 30 minutes of a builder's work. One mechanism: a new console view dr
 
 Depends: KZ-L05 (`LoopView`, `beat_now`).
 
-Read by Cassio, 14 Oct 01:4x. Checked: a time constant of 300 ms / ln 100 reaches 99% of a step in 300 ms. Changes: the checks and the bench are written out in the lane form, and the live check is Cassio's. KZ-T08b (the little tree) reuses this lane's `Dots` move and plain-glyph switch, so it waits for this lane. Opens only after L05 has landed.
+Read by Cassio, 13 Oct evening. Checked: a time constant of 300 ms / ln 100 reaches 99% of a step in 300 ms. Changes: the checks and the bench are written out in the lane form, and the live check is Cassio's. KZ-T08b (the little tree) reuses this lane's `Dots` move and plain-glyph switch, so it waits for this lane. Opens only after L05 has landed.
 
 ## Tom's words, and the rule
 

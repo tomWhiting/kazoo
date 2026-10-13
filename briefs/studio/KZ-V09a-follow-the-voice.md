@@ -7,7 +7,7 @@ Crates: kazoo-core (`voice/follow.rs`), kazoo-host (`keys.rs`), kazoo-mini, kazo
 - KZ-V08a, so there is a voice to follow for the by-hand proof;
 - KZ-A05, because `kazoo-host/src/keys.rs` is on main once its merge lands.
 
-Read by Cassio, 13 Oct 23:5x. Changes: the checks take the lane form, and the by-hand listen is Cassio's and Tom's after landing. In `the_mini_follows_a_voice_legato`, "at most 3 ms behind" means: the measured pitch of each 20 ms window is within 10 cents of the reference slide's pitch over the same window shifted back by some lag of at most 3 ms; print the best lag. Opens only after V07b and V08a have landed.
+Read by Cassio, 13 Oct evening. Changes: the checks take the lane form, and the by-hand listen is Cassio's and Tom's after landing. In `the_mini_follows_a_voice_legato`, "at most 3 ms behind" means: the measured pitch of each 20 ms window is within 10 cents of the reference slide's pitch over the same window shifted back by some lag of at most 3 ms; print the best lag. Opens only after V07b and V08a have landed.
 
 Why: Tom asked for this: "i'd like voice to able to drive all the engines we have". Each instrument must decide the same things the same way: when to start a note, which pitch, when to retrigger, how loud, and when to let go. That logic is written once, in kazoo-core, and each instrument only maps it onto its own voice. KZ-V09b, V09c and V09d bring the other seven pitched instruments onto it.
 

@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `fa3c8d8`, and may hav
 
 Crates: kazoo-juno, kazoo-prophet, kazoo-cli (their `--follow` flags only). Time: about 30 minutes. Depends: KZ-V09a. May run beside KZ-V09b, V09d and V10 (shared file: `kazoo-cli/src/cli.rs` only, a line-level merge).
 
-Read by Cassio, 13 Oct 23:5x. Changes: the checks take the lane form, and the by-hand listen is Cassio's and Tom's after landing. At most two lanes build at once. Opens only after V09a has landed.
+Read by Cassio, 13 Oct evening. Changes: the checks take the lane form, and the by-hand listen is Cassio's and Tom's after landing. At most two lanes build at once. Opens only after V09a has landed.
 
 Why: Tom: "i'd like voice to able to drive all the engines we have". The two analogue polys get V09a's pattern and V09b's poly rule exactly ("The poly rule": one voice through the normal allocator, `(index, serial)` with a steal guard, a per-voice `follow_hz` override with the 2 ms smoother under drift and detune, a per-voice smoothed gain, release by index, retrigger without reallocating). Read both briefs first; this one only names where each piece goes.
 

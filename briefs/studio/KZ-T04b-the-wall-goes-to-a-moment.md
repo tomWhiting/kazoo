@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `816c021`, and may hav
 
 Second of PLAN.md's T04 split in four (T04a the tree thread, **T04b** the wall, T04c the seats' tools, T04d the console's keys).
 
-Read by Cassio, 13 Oct 22:2x. Accepted as written: seats may go as they may load (Tom: "we'll do more or less everything for this project together"); marks never move for anyone.
+Read by Cassio, 13 Oct evening. Accepted as written: seats may go as they may load (Tom: "we'll do more or less everything for this project together"); marks never move for anyone.
 
 Time: about 45 minutes of a builder's work. One mechanism: the wall asking its tree thread and acting on the answer. Crates: kazoo-wall, and one arm each in kazoo-mcp and the console. Depends: T04a (landed): `What::Go`, `TreePlace`, `TreeResult`, `MarkResult`, `TreeHandle::ask`, the jobs `Mark`, `SaveMark`, `Resolve`, `Here`, `List`, `News::Answer`, `HereError`, `Wall::tree_answered`, and the go's own handling in `Wall::apply`.
 

@@ -2,7 +2,7 @@
 
 Line numbers are from the sweep that wrote this brief, at `816c021`, and may have moved; find each item by what it does, never rename. Items from KZ-T01, KZ-T02a and KZ-T02b are named as those briefs name them (`tree::to_files`, `tree::Birth`, `tree::git::Importer`, …); if a lane landed a name differently, use what landed. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list and the cargo form below.
 
-Read by Cassio, 13 Oct 22:0x. One change at reading: the dry run grows beside the tree, not in the system temp folder. Runs after T01, T02a and T02b land, and before T04a.
+Read by Cassio, 13 Oct evening. One change at reading: the dry run grows beside the tree, not in the system temp folder. Runs after T01, T02a and T02b land, and before T04a.
 
 Time: about 45 minutes of a builder's work, plus the measured runs. One mechanism: replaying the log into commits. Crates: kazoo-wall (a new `tree::rings` module) and kazoo-cli (one subcommand). Depends: KZ-T01 (`tree::to_files`, `tree::Birth`, `Patch::mark_birth`, `Patch::fingerprint_word`), KZ-T02a (`Change::clock`) and KZ-T02b (`tree::git::{plant, read, Importer}`, the change commit's form, where the tree is), all landed. T04a also edits `tree/git.rs` and `tree/thread.rs`, so this lane lands first and T04a starts from it.
 

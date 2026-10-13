@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `247ca07`, and may hav
 
 Time: about 20 minutes of a builder's work. One mechanism: drawing and editing a loop clip on C07's timeline. Crates: kazoo-mix only (`src/ui/timeline.rs` from C07a, the clip editing from C07b, `src/tape.rs`'s peaks request). Depends: KZ-L10 (loop clips), KZ-C07a (the timeline view) and KZ-C07b (clip editing).
 
-Read by Cassio, 14 Oct 01:3x. Changes: the checks are written out in the lane form, test 1's length text is exact, and the live check is Cassio's. The view keeps Tom's rule as written. Opens only after L10, C07a and C07b have landed.
+Read by Cassio, 13 Oct evening. Changes: the checks are written out in the lane form, test 1's length text is exact, and the live check is Cassio's. The view keeps Tom's rule as written. Opens only after L10, C07a and C07b have landed.
 
 ## Tom's rule for this view
 

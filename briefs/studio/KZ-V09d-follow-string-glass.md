@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `fa3c8d8`, and may hav
 
 Crates: kazoo-string, kazoo-glass, kazoo-cli (their `--follow` flags only). Time: about 30 to 40 minutes. Depends: KZ-V09a. May run beside KZ-V09b, V09c and V10. The only file they share is `kazoo-cli/src/cli.rs`, and the merge there is line by line.
 
-Read by Cassio, 14 Oct 00:0x. Changes: the checks take the lane form, and the by-hand listen is Cassio's and Tom's after landing. At most two lanes build at once. Opens only after V09a has landed.
+Read by Cassio, 13 Oct evening. Changes: the checks take the lane form, and the by-hand listen is Cassio's and Tom's after landing. At most two lanes build at once. Opens only after V09a has landed.
 
 Why: Tom said "i'd like voice to able to drive all the engines we have". These two are the hard ones. A Karplus-Strong string fixes its delay line at the pluck (`kazoo-string/src/synth.rs:163-171`), and the modal glass fixes its mode rotations at the strike (`kazoo-glass/src/synth.rs:202`, `:224`). For them, following means a slide guitar and a bowed glass: the voice plucks or strikes, and its pitch retunes the ringing voice live. Follow V09a's pattern and V09b's poly rule exactly, except for what this brief changes.
 

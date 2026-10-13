@@ -9,7 +9,7 @@ Time: about 30 minutes of a builder's work. One mechanism: a return tap on the d
 - KZ-C04 (the post-fader block each strip, group and the master keep per chunk: `strip.out`, the tap point C04 defines);
 - KZ-V07b (the hub sends `MSG_DESK_FEATURES`).
 
-Read by Cassio, 14 Oct 01:0x. Changes: the checks are written out in the lane form, and the live check is Cassio's and Tom's after L09 lands. Opens only after L06, B03b, C01, C04 and V07b have landed.
+Read by Cassio, 13 Oct evening. Changes: the checks are written out in the lane form, and the live check is Cassio's and Tom's after L09 lands. Opens only after L06, B03b, C01, C04 and V07b have landed.
 
 ## Outcome
 
@@ -28,7 +28,7 @@ The wall asks the desk for `mouth/dry` (KZ-L09). The desk answers "yes", and fro
 - `MixerEngine` gains `taps: [Option<Tap>; DESK_RETURNS]`, set and cleared only through the patchbay, so nothing is allocated or freed on the callback.
 - After a chunk's samples are final, for each tap, push the source's post-fader stereo block as one or more `AudioBlock`s of at most 256 frames, with `start_frame` = the studio frame of their first sample.
   - For a strip that is C04's `strip.out`; for a group, the group's post-fader sum; for the master, the limited output.
-  - **A strip's tap is after its fader and pan but before its mute and solo**, decided 14 Oct by Cassio. The engine already renders a muted strip (`render_into(.., audible)`, `engine.rs:503`), so the tap takes the block whether or not the room hears it. Reason: mute means "not in the room"; a return feeds a recorder. KZ-L08 seats Tom's dry voice muted so the laptop's mic and speakers cannot feed back, and a loop must still be able to record it. Red test 1 gains a case: A's strip muted, and B still receives its post-fader sound.
+  - **A strip's tap is after its fader and pan but before its mute and solo**, decided 13 Oct by Cassio. The engine already renders a muted strip (`render_into(.., audible)`, `engine.rs:503`), so the tap takes the block whether or not the room hears it. Reason: mute means "not in the room"; a return feeds a recorder. KZ-L08 seats Tom's dry voice muted so the laptop's mic and speakers cannot feed back, and a loop must still be able to record it. Red test 1 gains a case: A's strip muted, and B still receives its post-fader sound.
   - These are the same three places C04 pushes its deck lanes from: push from there, once per chunk, never per frame.
   - A `Full` ring adds one to `SharedState::return_dropped[tap]` (an `AtomicU64` per tap).
   - A disconnected strip (C01) renders silence, and its tap sends that silence: a return keeps the asker's timeline whole.

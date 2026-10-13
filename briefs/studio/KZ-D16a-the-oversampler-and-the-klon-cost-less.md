@@ -2,7 +2,7 @@
 
 Line numbers are from the sweep that wrote this brief, at `820ccc5`, and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md's STACK RULES, except that every cargo command takes the form under **Checks** below.
 
-Read by Cassio, 13 Oct 22:5x. Accepted as written. The branch is whatever `lane.sh open` names (`lane/kz-D16a`). Tom has not yet answered whether the fuzz may drop to 4x; this lane keeps 8x either way.
+Read by Cassio, 13 Oct evening. Accepted as written. The branch is whatever `lane.sh open` names (`lane/kz-D16a`). Tom has not yet answered whether the fuzz may drop to 4x; this lane keeps 8x either way.
 
 Time: about 90 minutes of a builder's work. Crates: kazoo-fx (the oversampler, the klon, its networks and its diode), kazoo-wall (one new bench target, no source change). Depends: nothing in flight. Base: main at dispatch (`820ccc5` when written). **KZ-D16b** (fuzz, tape, crush) branches from this lane's reviewed head and uses its harness and its bench; the two lanes together are judged against Tom's grimy save (below). D15 is taken by "the wall keeps its deadline"; D16 is the next free D number.
 

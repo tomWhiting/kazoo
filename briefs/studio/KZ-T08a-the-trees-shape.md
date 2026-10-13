@@ -2,7 +2,7 @@
 
 Line numbers are from main at `820ccc5` and may have moved; find each item by what it does, never rename. Items from KZ-T02b, KZ-T04a, KZ-T04b and KZ-T07a are named as those briefs name them; if a lane landed a name differently, use what landed. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list and the cargo form below.
 
-Read by Cassio, 14 Oct 02:4x, line by line. Checked: 20,000 commits over 8,192 samples is a stride of 3; 1,002 branches kept to 1,000 limbs drops the two oldest buds. Changes: the lane opens only after T07b, T04b and T04a have landed; `MAX_RINGS`'s doc gives the measured bytes a ring takes with its index entry (print `size_of` of both and the bench tree's total under BENCH) rather than the drafted 40. Accepted otherwise as written.
+Read by Cassio, 13 Oct evening, line by line. Checked: 20,000 commits over 8,192 samples is a stride of 3; 1,002 branches kept to 1,000 limbs drops the two oldest buds. Changes: the lane opens only after T07b, T04b and T04a have landed; `MAX_RINGS`'s doc gives the measured bytes a ring takes with its index entry (print `size_of` of both and the bench tree's total under BENCH) rather than the drafted 40. Accepted otherwise as written.
 
 PLAN.md's T08 ("the console's tree view: branches, thickness, marks, lanterns, where the wall is") is two lanes, because it touches more than ten files: **T08a** (this: the shape, from the tree thread through the wall's socket) and **T08b** (the console view that draws it). The Bevy tree (T09) will read the same answer.
 

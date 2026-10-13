@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `fa3c8d8`, and may hav
 
 Crates: kazoo-mouth. Time: about 30 minutes. Depends: KZ-V08a.
 
-Read by Cassio, 13 Oct 23:4x. Changes: the checks take the lane form, the listen is Cassio's and Tom's after landing, and the trail's height is stated plainly. The 4 s trail lives in the UI's own deque; V08a's 1.4 s display ring only has to cover one redraw (33 ms), so it is enough. Opens only after V08a has landed.
+Read by Cassio, 13 Oct evening. Changes: the checks take the lane form, the listen is Cassio's and Tom's after landing, and the trail's height is stated plainly. The 4 s trail lives in the UI's own deque; V08a's 1.4 s display ring only has to cover one redraw (33 ms), so it is enough. Opens only after V08a has landed.
 
 Why: Tom gets frustrated when a program does not show what it is doing (his standing note: "always show what's happening"). Singing into a quantiser is only playable if you can see the note you are on, the note it is pulling you to, and how far off you are, as you sing. And every quantiser setting Tom asked for (scale, root, snap speed, keep vibrato, hysteresis, blend between direct and snapped) needs a key, so nothing has to be set by a flag.
 

@@ -2,7 +2,7 @@
 
 Line numbers are from main at `820ccc5` and may have moved; find each item by what it does, never rename. Items from KZ-T04d, KZ-T07a and KZ-T07b are named as those briefs name them (`TreeList`, `tree_rows`, `TreeRow`, `RowKind`, `tree_key`, `Mode::{Tree, Go}`, `NoteView`, `Visited`, `commands`, `text_problem`, …); if a lane landed a name differently, use what landed. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list and the cargo form below.
 
-Read by Cassio, 14 Oct 02:3x, line by line. Changes: the lane opens only after T07b and T04d have landed; the by-hand check is Cassio's and Tom's after landing. If the terminal cannot tell Alt-Enter from Enter (crossterm reports the modifier on Ghostty and Terminal.app; say under FOUND if a test shows otherwise), `Ctrl-J` also puts a line break in the words. Accepted otherwise as written.
+Read by Cassio, 13 Oct evening, line by line. Changes: the lane opens only after T07b and T04d have landed; the by-hand check is Cassio's and Tom's after landing. If the terminal cannot tell Alt-Enter from Enter (crossterm reports the modifier on Ghostty and Terminal.app; say under FOUND if a test shows otherwise), `Ctrl-J` also puts a line break in the words. Accepted otherwise as written.
 
 Last of PLAN.md's T07 split in four (T07a the tree thread, T07b the wall, T07c the seats' tools, **T07d** the console). The little tree drawn as a tree is T08b, which puts the same lanterns on its branches. Runs beside T07c: they share no file.
 

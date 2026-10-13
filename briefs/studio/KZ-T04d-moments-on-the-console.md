@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `816c021`, and may hav
 
 Last of PLAN.md's T04 split in four (T04a the tree thread, T04b the wall, T04c the seats' tools, **T04d** the console's keys). The little tree drawn as a tree is T08; this is the list a go is chosen from.
 
-Read by Cassio, 13 Oct 22:3x. Accepted as written.
+Read by Cassio, 13 Oct evening. Accepted as written.
 
 Time: about 35 minutes of a builder's work. One mechanism: the console's tree list and its two keys. Crates: kazoo-wall (`tui/` only). Depends: T04b (landed). Runs beside T04c: they share no file.
 

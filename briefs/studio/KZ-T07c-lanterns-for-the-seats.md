@@ -2,11 +2,11 @@
 
 Line numbers are from main at `820ccc5` and may have moved; find each item by what it does, never rename. Items from KZ-T04c, KZ-T07a and KZ-T07b are named as those briefs name them; if a lane landed a name differently, use what landed. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list and the cargo form below.
 
-Read by Cassio, 14 Oct 02:2x, line by line. Changes:
+Read by Cassio, 13 Oct evening, line by line. Changes:
 - The lane opens only after T07b, T07a and T04c have landed.
 - `find_way` reads other conversations' files (a helper's, and in "Moved" up to eight others in the folder). It must only parse a line that contains both the tool suffix `__wall_lantern` and the call's words as JSON would write them; every other line is skipped unparsed. So kazoo never decodes another conversation's content, and the scan stays cheap. T07a's `find_call` does the same filtering; test 5 gains a line of another conversation that would fail to parse, and passes.
 - The by-hand proof (a Claude seat on the wall, and running the fork commands) is Cassio's after landing, not the builder's: the builder never touches the live wall and never starts a Claude session.
-- Tom has been asked (14 Oct 01:1x) whether a seat may be told the file and lines of his words. Until he answers, build it as written; if he says no, the `<lines> lines in <path>, seq …` line becomes `<lines> lines kept by Dot for <seat>`, a one-line change at review.
+- Tom has been asked (13 Oct evening) whether a seat may be told the file and lines of his words. Until he answers, build it as written; if he says no, the `<lines> lines in <path>, seq …` line becomes `<lines> lines kept by Dot for <seat>`, a one-line change at review.
 
 Third of PLAN.md's T07 split in four (T07a the tree thread, T07b the wall, **T07c** the seats' tools, T07d the console). Runs beside T07d: they share no file.
 

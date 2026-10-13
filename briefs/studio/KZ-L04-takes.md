@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `247ca07`, and may hav
 
 Time: about 30 minutes of a builder's work. One mechanism: the path from a finished recording to a durable, logged, undoable reel, and keeping the store tidy. Crates: kazoo-wall only (`daemon/loops.rs` and a new `daemon/loops/takes.rs`, `daemon/loops/pins.rs`; small additions to `protocol/mod.rs`, `change.rs`, `daemon/wall.rs`, `daemon/control.rs`). Depends: KZ-L03.
 
-Read by Cassio, 14 Oct 00:3x. Changes: the checks are written out in the lane form; the live-wall check is Cassio's and Tom's after landing; and one pin source is added for the tree, below.
+Read by Cassio, 13 Oct evening. Changes: the checks are written out in the lane form; the live-wall check is Cassio's and Tom's after landing; and one pin source is added for the tree, below.
 
 **The tree keeps every take (Track T, PLAN.md).** Tom decided the wall is one tree in git that keeps every moment forever, and that going back to a moment (KZ-T04b) and replaying (KZ-T06, "the fire") must work for any moment. The log rotates and saves are pruned, so the five sources below would one day let the sweep delete a reel that a moment in the tree still names. So, decided:
 - `pins/wall-history.txt` is a sixth pin source, written by this lane. Every `Take` whose `why` is `Punch`, `Save` or `Rebuild` appends its reel id there (one hex id a line, fsynced, the append done on the worker before the change is told to seats, like the main pin). It is append-only: nothing in the wall ever rewrites or shortens it.

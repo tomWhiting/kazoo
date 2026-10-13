@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `fa3c8d8`, and may hav
 
 Crates: kazoo-core (`engine/`, `synthesis/pitch_tracked.rs`). Time: about 30 minutes. Depends: KZ-V04. May run beside KZ-V05 (no shared files). If KZ-A03b is in flight it also edits `engine/mod.rs` (`start_desk_link`, `:366-384`); run after it or keep to the lines named here.
 
-Read by Cassio, 13 Oct 23:2x. Changes: the checks take the lane form (cargo lock, four jobs), and the by-hand listen is Cassio's and Tom's after landing, not the builder's. Opens only after V04 has landed and A03b has landed or been closed (both edit `engine/mod.rs`).
+Read by Cassio, 13 Oct evening. Changes: the checks take the lane form (cargo lock, four jobs), and the by-hand listen is Cassio's and Tom's after landing, not the builder's. Opens only after V04 has landed and A03b has landed or been closed (both edit `engine/mod.rs`).
 
 Why: the voice synth Tom has today is kazoo-tui's engine (`kazoo mouth` runs it until V08a). Its armed tracks get their pitch from `drain_analysis_results` (`kazoo-core/src/engine/processing.rs:865-903`): the newest pYIN estimate, which after V01 arrives every 10.7 ms about 50 ms late, then a 20 ms portamento (`synthesis/pitch_tracked.rs:128`). With V04's tracker on the callback, the same tracks can follow within two cycles of the note.
 

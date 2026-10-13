@@ -2,7 +2,7 @@
 
 Line numbers are from main at `820ccc5` and may have moved; find each item by what it does, never rename. Items from KZ-T04a, KZ-T04b and KZ-T07a are named as those briefs name them; if a lane landed a name differently, use what landed. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list and the cargo form below.
 
-Read by Cassio, 14 Oct 02:1x, line by line. Changes: the lane opens only after T07a and T04b have landed; `ErrorCode::ALL` grows by one from whatever the base holds (19 at T04b's count; another lane may have added one since). The window is computed from the seconds `change::utc` is given (`now − WORDS_BEFORE`, `now + WORDS_AFTER`), never by parsing `at` back. Accepted otherwise as written.
+Read by Cassio, 13 Oct evening, line by line. Changes: the lane opens only after T07a and T04b have landed; `ErrorCode::ALL` grows by one from whatever the base holds (19 at T04b's count; another lane may have added one since). The window is computed from the seconds `change::utc` is given (`now − WORDS_BEFORE`, `now + WORDS_AFTER`), never by parsing `at` back. Accepted otherwise as written.
 
 Second of PLAN.md's T07 split in four (T07a the tree thread, **T07b** the wall, T07c the seats' tools, T07d the console).
 

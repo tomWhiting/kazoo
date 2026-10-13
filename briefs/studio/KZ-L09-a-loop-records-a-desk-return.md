@@ -10,7 +10,7 @@ Time: about 30 minutes of a builder's work. One mechanism: returns arrive at the
 
 Its by-hand check needs KZ-L07 and KZ-L08.
 
-Read by Cassio, 14 Oct 01:2x. Checked: 0.5 s is under the shortest loop (4 beats at 300 BPM, 0.8 s); a nudge of 0.02 s is 960 frames at 48 kHz. Changes: the checks are written out in the lane form, and the live check is Cassio's and Tom's. If `MAX_CHUNK_FRAMES` on the base makes the line longer than 32,768 frames, the power of two rounds up and the size in the doc follows; say so under CHANGED. Opens only after L02, L03, L05 and L06 have landed.
+Read by Cassio, 13 Oct evening. Checked: 0.5 s is under the shortest loop (4 beats at 300 BPM, 0.8 s); a nudge of 0.02 s is 960 frames at 48 kHz. Changes: the checks are written out in the lane form, and the live check is Cassio's and Tom's. If `MAX_CHUNK_FRAMES` on the base makes the line longer than 32,768 frames, the power of two rounds up and the size in the doc follows; say so under CHANGED. Opens only after L02, L03, L05 and L06 have landed.
 
 ## Outcome
 

@@ -2,7 +2,7 @@
 
 Line numbers are from the sweep that wrote this brief, at `1400f3c`, and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list below.
 
-Read by Cassio, 13 Oct 23:1x. Two changes: the checks take the lane form (cargo lock, four jobs), and test 3 reads `windows` through a named reader. The branch is whatever `lane.sh open` names (`lane/kz-D15`). Since this brief was written, a second cause of crackles was measured: the grimy save overruns the deadline on efficiency cores (KZ-D16a's first section). That makes this lane more useful, not less: its worst and late figures are exactly what tells that case from the simulator one. Base on the latest main; if D16a or D16b has landed and touched `engine/mod.rs`, rebase onto it.
+Read by Cassio, 13 Oct evening. Two changes: the checks take the lane form (cargo lock, four jobs), and test 3 reads `windows` through a named reader. The branch is whatever `lane.sh open` names (`lane/kz-D15`). Since this brief was written, a second cause of crackles was measured: the grimy save overruns the deadline on efficiency cores (KZ-D16a's first section). That makes this lane more useful, not less: its worst and late figures are exactly what tells that case from the simulator one. Base on the latest main; if D16a or D16b has landed and touched `engine/mod.rs`, rebase onto it.
 
 Time: about 40 minutes of a builder's work. One mechanism: the wall measuring and reporting its own audio deadline. Crates: kazoo-wall, kazoo-mcp (the `Rendering:` line in `render.rs`). Depends: nothing in flight. (D05 to D14 are taken; this is the next free D number.)
 

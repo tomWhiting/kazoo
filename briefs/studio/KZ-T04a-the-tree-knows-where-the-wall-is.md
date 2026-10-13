@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `816c021`, and may hav
 
 PLAN.md's T04 ("moments, marks and buds; `wall_mark`, `wall_go`, `wall_tree`; console keys") is four lanes, because it touches more than ten files: **T04a** (this: the tree thread's side, and the change kind a go is), **T04b** (the wall: the requests, the go itself, marks for seats and saves), **T04c** (the seats' tools), **T04d** (the console's keys). They run in that order; T04c and T04d may run side by side.
 
-Read by Cassio, 13 Oct 22:1x. Accepted as written. A go here is a cut (a swap, as a load); KZ-T05 makes it a crossing.
+Read by Cassio, 13 Oct evening. Accepted as written. A go here is a cut (a swap, as a load); KZ-T05 makes it a crossing.
 
 Time: about 45 minutes of a builder's work. One mechanism: the tree thread keeping `HEAD` as the wall's place. Crates: kazoo-wall. Depends: KZ-T01, KZ-T02a, KZ-T02b and KZ-T03 (landed). T03 may edit `tree/thread.rs` (to share the change commit), so this lane starts from it. Nothing here is reachable from a seat yet; T04b wires it.
 

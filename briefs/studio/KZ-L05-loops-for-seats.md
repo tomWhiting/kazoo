@@ -4,7 +4,7 @@ Line numbers are from the sweep that wrote this brief, at `247ca07`, and may hav
 
 Time: about 30 minutes of a builder's work. One mechanism: a loop's state in the snapshot, and its words in the MCP and the console's list view. Crates: kazoo-wall (`protocol/mod.rs`, `daemon/wall.rs`'s `snapshot`, `daemon/loops.rs`, `tui/draw/wall.rs`, `tui/layout.rs`) and kazoo-mcp (`render.rs`, `tools.rs`). Depends: KZ-L04.
 
-Read by Cassio, 14 Oct 00:4x. The arithmetic was checked: 17 and 23 bars are 68 and 92 beats, whose least common multiple is 1,564 beats, 391 bars, 782 s at 120 BPM; the eight-loop product is about 3.6 × 10^18 bars and fits in `i128`; 8 and 16 beats anchored at 0 and 4 never meet. Changes: the checks are written out in the lane form, the live check is Cassio's and Tom's after landing, the tool count is relative to the base, and `bars` includes 4 in its least common multiple.
+Read by Cassio, 13 Oct evening. The arithmetic was checked: 17 and 23 bars are 68 and 92 beats, whose least common multiple is 1,564 beats, 391 bars, 782 s at 120 BPM; the eight-loop product is about 3.6 × 10^18 bars and fits in `i128`; 8 and 16 beats anchored at 0 and 4 never meet. Changes: the checks are written out in the lane form, the live check is Cassio's and Tom's after landing, the tool count is relative to the base, and `bars` includes 4 in its least common multiple.
 
 ## Outcome
 

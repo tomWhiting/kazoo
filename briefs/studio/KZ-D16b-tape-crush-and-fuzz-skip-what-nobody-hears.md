@@ -2,7 +2,7 @@
 
 Line numbers are from the sweep that wrote this brief, at `820ccc5`, and may have moved; find each item by what it does, never rename. Checks, code quality and the END block are as PLAN.md's STACK RULES, except that every cargo command takes the form under **Checks** below.
 
-Read by Cassio, 13 Oct 23:0x. Accepted as written. The branch is whatever `lane.sh open` names (`lane/kz-D16b`); put that name in START and END. The study's estimate was about 3.3 ms, so the 3.0 ms target may be missed; a miss with every null holding still lands, as the definition of done says.
+Read by Cassio, 13 Oct evening. Accepted as written. The branch is whatever `lane.sh open` names (`lane/kz-D16b`); put that name in START and END. The study's estimate was about 3.3 ms, so the 3.0 ms target may be missed; a miss with every null holding still lands, as the definition of done says.
 
 Time: about 75 minutes of a builder's work. Crate: kazoo-fx (tape, crush, fuzz, one noise method). Depends: **KZ-D16a**. Branch from D16a's reviewed head (or from main once D16a has landed). This lane uses D16a's harness (`kazoo-fx/src/drive/nulls.rs`), its switches and its `save_profile` bench, and it does the final measurement of the grimy save for both lanes.
 

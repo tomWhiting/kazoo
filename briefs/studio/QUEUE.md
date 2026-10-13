@@ -114,3 +114,7 @@ START KZ-A03b base=42664d7 branch=lane/kz-A03b df=29GB at 19:50
 
 ## Merged 13 Oct, about 20:3x
 - KZ-W01b (review head 26526da), KZ-W01c (review head a86327d), KZ-V01 amendment 1 (review head dc5777a; judge 1.5 ms of 2.1, engine 6.4 of 8.53; engine starts at every rate from 8 kHz). Merge check on main: fmt 0, clippy 0, nextest 3880/3880, doc tests 0. BENCH.md kept both sections.
+START KZ-V02 base=96051a2 branch=lane/kz-V02 df=10GB at 20:25
+START KZ-V07a base=96051a2 branch=lane/kz-V07a df=9GB at 20:26
+START KZ-F01 base=96051a2 branch=lane/kz-F01 df=6GB at 20:27
+START KZ-T01 base=acf8b92 branch=lane/kz-T01 df=1GB at 20:29
