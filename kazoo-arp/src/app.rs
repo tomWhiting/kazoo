@@ -247,6 +247,12 @@ impl App {
         }
     }
 
+    /// The MIDI octave the typing-keyboard piano plays (`a` is its C).
+    #[must_use]
+    pub const fn octave(&self) -> kazoo_host::keys::Octave {
+        self.octave
+    }
+
     /// Notes whose release has not reached the engine yet.
     #[must_use]
     pub fn pending_note_offs(&self) -> usize {
