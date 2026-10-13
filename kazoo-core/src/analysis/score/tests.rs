@@ -518,6 +518,24 @@ fn a_float_take_louder_than_full_scale_is_read() -> crate::Result<()> {
     let take = wav::read_take(&path)?;
     assert!(take.samples.iter().any(|sample| *sample > 1.0));
     write_float_wav(&path, 44_100, &[0.0, f32::NAN, 0.0])?;
-    assert!(matches!(wav::read_take(&path), Err(crate::Error::Config(_))));
+    assert!(matches!(
+        wav::read_take(&path),
+        Err(crate::Error::Config(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_linked_take_in_the_fixtures_folder_is_read() -> crate::Result<()> {
+    let dir = logs_dir();
+    std::fs::create_dir_all(&dir)?;
+    let folder = tempfile::tempdir_in(&dir)?;
+    let elsewhere = tempfile::tempdir_in(&dir)?;
+    let target = elsewhere.path().join("hum.wav");
+    write_float_wav(&target, 44_100, &short_tone(0.5))?;
+    std::os::unix::fs::symlink(&target, folder.path().join("hum-low.wav"))?;
+    let takes = wav::fixture_takes(folder.path())?;
+    assert_eq!(takes.len(), 1);
+    assert_eq!(takes[0].name, "hum-low.wav");
     Ok(())
 }
