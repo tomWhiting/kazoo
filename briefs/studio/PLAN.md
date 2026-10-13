@@ -127,6 +127,7 @@ Tom's words, 13 Oct 2026, about 15:10 to 15:20: "I would really love to be able 
 | V03 the cycle tracker | `analysis::cycle::CycleTracker`: a pitch per cycle on the callback, allocation-free, meeting the latency budget on the scoreboard | kazoo-core | V02 |
 | V04 the voice frame | `kazoo_core::voice`: `VoiceFrame` every 64 samples (Hz, 1 V/oct with 0 = C4, gate, onset, loudness, breath, confidence); the judge thread (pYIN plus the onset detector, which is no longer thrown away); the fusion that folds octaves and vetoes false voicing | kazoo-core | V03 |
 | V05 the quantiser | `voice::quantise`: scale and root, snap speed 0 to 400 ms, keep-vibrato, hysteresis, blend; the wall's scale tables as the one source | kazoo-core | V04 |
+| V05b a new note picks its own | on an onset the quantiser chooses the nearest note afresh; hysteresis only holds a sounding note | kazoo-core | V05 |
 | V06 kazoo-tui plays Hz for Hz | the tui engine's armed tracks follow the voice frame, not the 46 ms pYIN; the judge thread replaces pitch and onset on the analysis thread; portamento default 3 ms | kazoo-core | V04 |
 | V07a voice on the wire | `MSG_VOICE`, `MSG_VOICE_FOLLOW` and `MSG_DESK_FEATURES`; `HubLinkAudio::send_voice` and `drain_voice` on rings of their own; `HubLink::follow_voice` | kazoo-core | V04, B03a |
 | V07b the desk carries the voice | the hub announces the feature, forwards voice only to followers, keeps one voice at a time, and the strip heads say `voice` and `follows` | kazoo-mix | V07a, B03b |
