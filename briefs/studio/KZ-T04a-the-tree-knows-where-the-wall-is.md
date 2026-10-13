@@ -79,7 +79,7 @@ The exhaustive matches on `What` gain an arm, each with a load's meaning, and no
 - `patch.rs` `never_undone` (`:234`): `What::Go { .. }` joins the arms returning `None` (`:262–269`).
 - `patch.rs` `Patch::undo` (`:1107`): `What::Go { .. } => Err(error(ErrorCode::Internal, "goes are undone by the daemon"))`, beside the load's arm (`:1141`).
 - `fingerprints.rs` `Dye::touch` (`:180`): `What::Go { .. }` joins the arms that leave nothing (`:220–228`): the wall put up brings its own dye.
-- `tree.rs` `stamp_births` (KZ-T01, written with no `_` arm): `What::Go` stamps nothing (a go adds no module; its modules keep the births their files carry).
+- `tree.rs` `stamp_births` and `has_add` (KZ-T01, both written with no `_` arm, so both meet a new `What`): `What::Go` stamps nothing and has no add (a go adds no module; its modules keep the births their files carry).
 - `daemon/wall.rs` `mirror` (`:1819`): `What::Go { .. } => self.swap_engine()`, as the load's arm (`:1899`).
 
 ### The line (`tree/thread.rs`, and the new `tree/thread/here.rs` declared from it)

@@ -13,7 +13,7 @@ Files (ten):
 2. `kazoo-wall/src/change.rs`: a step's words.
 3. `kazoo-wall/src/patch.rs`: `never_undone` and `Patch::undo` arms.
 4. `kazoo-wall/src/fingerprints.rs`: `Dye::touch` arm.
-5. `kazoo-wall/src/tree.rs`: `stamp_births` arm.
+5. `kazoo-wall/src/tree.rs`: `stamp_births` and `has_add` arms (both written with no `_` arm by KZ-T01).
 6. `kazoo-wall/src/daemon/wall.rs`: `mirror`'s arm; the step's tree offer; `fired_files`; a step that puts up a wall of its own, in the places that pick those out.
 7. `kazoo-wall/src/tree/thread.rs`: steps taken without a commit; `Moved::through`; `HEAD` written lazily; the `Walk` and `Steps` jobs.
 8. `kazoo-wall/src/tree/thread/walk.rs` (new): `walk`, `read_steps`, `Walk`, `Step`, `StepHead`, `BlobCache`.
