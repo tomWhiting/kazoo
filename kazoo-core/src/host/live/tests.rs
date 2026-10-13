@@ -133,6 +133,7 @@ fn jitter_grows_the_slack_and_then_holds() {
     }
     assert!(settled > 0);
     assert_eq!(schedule.reader.stats().underruns, settled);
+    assert!(schedule.reader.slack() >= SLACK_STEP);
     assert!(schedule.reader.slack() <= BLOCK);
     assert_eq!(schedule.reader.slack() % SLACK_STEP, 0);
 }
@@ -544,4 +545,56 @@ fn reset_slack_takes_the_latency_back_at_a_crossfaded_jump() {
     writer.write(&input);
     assert_eq!(reader.read(&mut output), ReadReport::Audio);
     assert_eq!(input.map(f32::to_bits), output.map(f32::to_bits));
+}
+
+/// Each click comes back after its own delay, scaled by `gain`, over noise
+/// at -60 dBFS; no ring, so the arrivals are exactly the delays.
+fn round_trip_with_delays(
+    delays: [usize; 8],
+    gain: f32,
+) -> std::result::Result<RoundTripResult, RoundTripError> {
+    let spacing = RATE as usize / 2;
+    let mut meter = RoundTrip::new(RATE);
+    let mut played = vec![0.0; spacing * 10];
+    for block in played.chunks_mut(BLOCK) {
+        meter.play(block);
+    }
+    let heard: Vec<f32> = (0..played.len())
+        .map(|frame| {
+            let click = frame / spacing;
+            let returned = match click.checked_sub(1).and_then(|index| delays.get(index)) {
+                Some(&delay) if frame >= delay => played[frame - delay] * gain,
+                Some(_) | None => 0.0,
+            };
+            returned + if frame % 2 == 0 { 0.001 } else { -0.001 }
+        })
+        .collect();
+    for block in heard.chunks(BLOCK) {
+        meter.hear(block);
+    }
+    meter.result().expect("every click window was heard")
+}
+
+#[test]
+fn the_round_trip_reports_the_median_and_the_spread() {
+    let result = round_trip_with_delays([306, 300, 340, 303, 301, 305, 302, 304], 1.0).unwrap();
+    assert_eq!(result.frames, 303);
+    assert_eq!(result.spread, 40);
+    assert!((result.ms - 303.0 / 48.0).abs() < 1e-4, "{result:?}");
+}
+
+#[test]
+fn the_round_trip_refuses_arrivals_spread_over_a_millisecond() {
+    assert_eq!(
+        round_trip_with_delays([300, 300, 300, 300, 300, 300, 300, 360], 1.0),
+        Err(RoundTripError::TooUneven { spread: 60 })
+    );
+}
+
+#[test]
+fn the_round_trip_refuses_a_clipped_return() {
+    assert_eq!(
+        round_trip_with_delays([300; 8], 4.0),
+        Err(RoundTripError::Clipped)
+    );
 }
