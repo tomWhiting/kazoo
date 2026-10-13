@@ -33,7 +33,12 @@ pub struct Take {
     pub exact: bool,
 }
 
-/// Unshifted errors and latency; empty latency/error lists give NaN.
+/// One tracker's figures on one take. Errors are unshifted: they include the
+/// tracker's latency the way a listener hears it. A latency runs from the
+/// event's sample to the reading at which the tracker lands and stays, and
+/// a reading is taken after each whole step, so a latency is never shorter
+/// than the tracker's own and at most one step (0.67 ms at 48 kHz) longer.
+/// Medians and maxima of an empty list are NaN.
 #[derive(Debug, Clone)]
 pub struct Score {
     pub onset_ms_median: f32,
