@@ -497,3 +497,36 @@ fn an_underrun_with_a_short_lag_still_crossfades_for_a_millisecond() {
     let step = largest_step(previous, &output);
     assert!(step <= 0.05, "largest step {step}");
 }
+
+#[test]
+fn reset_slack_takes_the_latency_back_at_a_crossfaded_jump() {
+    let (mut writer, mut reader) = live_pair(RATE, BLOCK);
+    let mut input = [0.0; BLOCK];
+    let mut output = [0.0; BLOCK];
+    let mut written = 0_u64;
+    for cycle in 0..30 {
+        fill(written, &mut input, 100.0);
+        writer.write(&input);
+        written += BLOCK as u64;
+        reader.read(&mut output);
+        if cycle % 10 == 9 {
+            assert_eq!(reader.read(&mut output), ReadReport::Underrun);
+        }
+    }
+    assert_eq!(reader.slack(), 48);
+    assert_eq!(reader.latency_frames(), 176);
+    reader.reset_slack();
+    let previous = output[BLOCK - 1];
+    fill(written, &mut input, 100.0);
+    writer.write(&input);
+    written += BLOCK as u64;
+    assert_eq!(reader.read(&mut output), ReadReport::Jump);
+    assert_eq!(reader.slack(), 0);
+    assert_eq!(reader.latency_frames(), 128);
+    let step = largest_step(previous, &output);
+    assert!(step <= 0.03, "largest step {step}");
+    fill(written, &mut input, 100.0);
+    writer.write(&input);
+    assert_eq!(reader.read(&mut output), ReadReport::Audio);
+    assert_eq!(input.map(f32::to_bits), output.map(f32::to_bits));
+}
