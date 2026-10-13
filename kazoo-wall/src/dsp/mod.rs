@@ -20,6 +20,7 @@ pub mod effect;
 mod env;
 mod lfo;
 mod logic;
+pub mod looper;
 mod math;
 pub mod measure;
 mod mix;
@@ -60,6 +61,8 @@ pub struct Tick {
     pub beat: f64,
     /// Beats per frame.
     pub beat_step: f64,
+    /// Frames rendered before this sub-block.
+    pub frame: u64,
 }
 
 impl Tick {
@@ -68,10 +71,18 @@ impl Tick {
     pub fn new(sample_rate: f32, bpm: f64, beat: f64) -> Self {
         Self {
             sample_rate,
+            frame: 0,
             bpm,
             beat,
             beat_step: kazoo_core::ipc::follow::beats_in(1.0, bpm, f64::from(sample_rate)),
         }
+    }
+
+    /// Stamp the clock with the engine frame at the sub-block boundary.
+    #[must_use]
+    pub const fn at_frame(mut self, frame: u64) -> Self {
+        self.frame = frame;
+        self
     }
 
     /// Song position at frame `frame` of the sub-block.
@@ -254,9 +265,13 @@ pub fn build(kind: Kind, sample_rate: f32, seed: u64) -> Box<dyn Module> {
 /// Builders for the wall's own modules, as the catalogue names them.
 pub(crate) mod native {
     use super::{
-        Module, branch, clock, compare, divide, env, lfo, logic, math, mix, noise, out, quant,
-        readout, scope, select, seq, sh, slew, switch, vca, vcf, vco,
+        Module, branch, clock, compare, divide, env, lfo, logic, looper, math, mix, noise, out,
+        quant, readout, scope, select, seq, sh, slew, switch, vca, vcf, vco,
     };
+
+    pub fn looper(sample_rate: f32) -> Box<dyn Module> {
+        Box::new(looper::LoopModule::new(sample_rate))
+    }
 
     pub fn vco(sample_rate: f32) -> Box<dyn Module> {
         Box::new(vco::Vco::new(sample_rate))
@@ -474,6 +489,7 @@ pub(crate) mod testing {
         pub bpm: f64,
         pub beat: f64,
         pub rate: f32,
+        pub frame: u64,
     }
 
     impl Bench {
@@ -506,6 +522,7 @@ pub(crate) mod testing {
                 bpm: 120.0,
                 beat: 0.0,
                 rate,
+                frame: 0,
             }
         }
 
@@ -540,7 +557,7 @@ pub(crate) mod testing {
 
         /// Render one sub-block.
         pub fn step(&mut self) {
-            let tick = Tick::new(self.rate, self.bpm, self.beat);
+            let tick = Tick::new(self.rate, self.bpm, self.beat).at_frame(self.frame);
             self.module.process(
                 &tick,
                 Io {
@@ -556,6 +573,7 @@ pub(crate) mod testing {
                 },
             );
             self.beat = tick.beat_at(SUB_BLOCK);
+            self.frame += SUB_BLOCK as u64;
         }
 
         /// Render `frames` frames (whole sub-blocks) of output `port`, with

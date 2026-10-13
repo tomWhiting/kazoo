@@ -83,6 +83,8 @@ impl Kind {
     pub const SCOPE: Self = Self(20);
     /// Numerical readout.
     pub const READOUT: Self = Self(21);
+    /// Beat-slaved recording tape loop.
+    pub const LOOP: Self = Self(22);
 
     /// The kind's catalogue entry.
     #[must_use]
@@ -463,7 +465,7 @@ pub fn group(family: &str, kind: &str, audio_in: bool, audio_out: bool, outputs:
     }
     if family == "synth" {
         match kind {
-            "vco" | "noise" => return 0,
+            "vco" | "noise" | "loop" => return 0,
             "lfo" | "env" | "clock" | "seq" | "sh" | "slew" | "quant" => return 1,
             "compare" | "logic" | "branch" | "divide" | "switch" | "select" | "math" => return 2,
             "vcf" | "vca" => return 3,
@@ -972,6 +974,7 @@ fn native_kinds() -> Vec<KindSpec> {
     kinds.extend(decision_kinds());
     kinds.extend(routing_kinds());
     kinds.extend(measuring_kinds());
+    kinds.extend(recording_kinds());
     kinds
 }
 
@@ -1379,6 +1382,34 @@ fn measuring_kinds() -> Vec<KindSpec> {
     ]
 }
 
+fn recording_kinds() -> Vec<KindSpec> {
+    vec![native(
+        "loop",
+        "tape loop: records what is patched in, on bar lines, and plays it round in the wall's time; overdubs keeping `keep`, wears by `wear`",
+        vec![
+            KnobSpec::stepped("bars", 1.0, 64.0, 4.0, Unit::None),
+            KnobSpec::stepped("beats", 0.0, 3.0, 0.0, Unit::None),
+            KnobSpec::stepped("record", 0.0, 1.0, 0.0, Unit::None).named(&["off", "on"]),
+            KnobSpec::linear("keep", 0.0, 1.0, 1.0, Unit::None),
+            KnobSpec::linear("wear", 0.0, 1.0, 0.0, Unit::None),
+            KnobSpec::linear("level", 0.0, 1.0, 0.8, Unit::None),
+            KnobSpec::linear("nudge", -0.1, 0.1, 0.0, Unit::Seconds),
+        ],
+        vec![
+            audio("left", "incoming recording"),
+            audio("right", "left when unplugged"),
+            gate("rec", "record while high or while record is on"),
+        ],
+        vec![
+            audio("left", "tape times level"),
+            audio("right", "tape times level"),
+            gate("pass", "five millisecond gate at the seam"),
+            cv("phase", "zero to one across the loop"),
+        ],
+        crate::dsp::native::looper,
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1433,6 +1464,7 @@ mod tests {
             (Kind::MATH, "math"),
             (Kind::SCOPE, "scope"),
             (Kind::READOUT, "readout"),
+            (Kind::LOOP, "loop"),
         ] {
             assert_eq!(kind.name(), name);
             assert_eq!(kind.spec().family, "synth");
@@ -1528,25 +1560,25 @@ mod tests {
     #[test]
     fn the_wall_s_own_kinds_come_first_and_end_with_the_readout() {
         // The constants index the registry: the wall's own kinds must fill
-        // it from 0 up to the last constant (READOUT), in order, and every
+        // it from 0 up to the last constant (LOOP), in order, and every
         // effect and adapted kind come after them.
         let kinds: Vec<Kind> = Kind::all().collect();
         let own = kinds
             .iter()
             .take_while(|kind| kind.spec().family == "synth")
             .count();
-        assert_eq!(own, usize::from(Kind::READOUT.0) + 1, "{kinds:?}");
+        assert_eq!(own, usize::from(Kind::LOOP.0) + 1, "{kinds:?}");
         assert_eq!(own, native_kinds().len());
         for (index, kind) in kinds.iter().enumerate() {
             assert_eq!(usize::from(kind.0), index);
             if index < own {
                 assert_eq!(kind.spec().name, native_kinds()[index].name);
             } else {
-                assert_ne!(kind.spec().family, "synth", "{kind:?} after the readout");
+                assert_ne!(kind.spec().family, "synth", "{kind:?} after the loop");
             }
         }
-        assert_eq!(kinds[own - 1], Kind::READOUT);
-        assert_eq!(kinds[own - 2], Kind::SCOPE);
+        assert_eq!(kinds[own - 1], Kind::LOOP);
+        assert_eq!(kinds[own - 2], Kind::READOUT);
     }
 
     #[test]

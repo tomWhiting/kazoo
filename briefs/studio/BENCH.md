@@ -136,3 +136,30 @@ chains/10 did not regress: its patch has no unheard module, so its order
 is the same on both sides and the engine is unchanged; the builder's 1.54
 to 2.53 ms was load. culled/1000 after is 0.32 to 0.36 times chains/10
 after, inside the 1.2 limit; before it was about 20 times.
+
+## KZ-L02 loop
+
+Target: each of `wall/loop/play` and `wall/loop/record` costs at most
+106,667 ns per 512-frame block at 48 kHz (1% of real time). Eight loops
+then consume less than a tenth of one core, leaving room for circuit models.
+The fixture holds eight bars; the record row overdubs with keep 0.7.
+As in the existing module fixtures, the measured wall also has an input
+oscillator and a stereo output.
+
+These measurements are under load, not a quiet-machine baseline. The
+one-minute host load was 267.84 before the initial run, 380.65 during the
+second run, and 410.18 before the final checks. Package checks ran during
+the first two measurements. No performance acceptance is established.
+
+| revision measured | play ns/block | record ns/block | play real time | record real time |
+|---|---:|---:|---:|---:|
+| initial implementation | 113,490 | 124,340 | 1.064% | 1.166% |
+| wrapped-index and knob caching revision | 565,260 | 708,050 | 5.299% | 6.638% |
+| finite-marker snapshot revision | 136,450 | 128,240 | 1.279% | 1.202% |
+
+All three runs exited 0. None met the target. The final observed one-minute
+host load was 312.92. The last change preserving delayed punch stamps
+was made after the final benchmark, so that small change was not measured. Their different host load
+prevents attributing the timing change to the implementation. Logs:
+`target/kz-logs/bench-loop.txt`, `target/kz-logs/bench-loop-final.txt`, and
+`target/kz-logs/bench-loop-current.txt`.
