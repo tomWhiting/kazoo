@@ -457,3 +457,224 @@ fn a_save_the_wall_renders_inside_the_guard_is_put_up() {
     assert!(loaded.is_ok(), "{:?}", loaded.err());
     assert_eq!(wall.patch.modules().len(), 41);
 }
+
+fn heard_chain(wall: &mut Wall, count: usize) -> Vec<String> {
+    wall.set_load_guard(false);
+    request(wall, &Request::New).unwrap();
+    let mut ids = chain(wall, heavy(), count);
+    let out = changed(request(wall, &add("out")).unwrap().result)
+        .module
+        .unwrap();
+    request(
+        wall,
+        &patch(&last_output(&ids, heavy()), &format!("{out}.left")),
+    )
+    .unwrap();
+    ids.push(out);
+    ids
+}
+
+fn bench_sum(wall: &Wall) -> f32 {
+    wall.patch
+        .modules()
+        .iter()
+        .map(|module| super::super::cost::kind_share(module.kind, wall.engine.sample_rate()))
+        .sum()
+}
+
+fn measured_chain(wall: &mut Wall) -> f32 {
+    let ids = heard_chain(wall, 2);
+    let rate = wall.engine.sample_rate();
+    for id in ids {
+        let kind = wall.patch.module(&id).unwrap().kind;
+        let share = super::super::cost::kind_share(kind, rate);
+        wall.engine.set_cost(
+            wall.rack.slot_of(&id).unwrap(),
+            share * SUB_BLOCK as f32 * 1e9 / rate as f32,
+        );
+    }
+    let bench = bench_sum(wall);
+    assert!((bench - 0.30).abs() < 0.01, "{bench}");
+    bench
+}
+
+fn incoming_save(wall: &mut Wall) -> (Patch, Request) {
+    heard_chain(wall, 3);
+    save(wall, "busy-save", false).unwrap();
+    let incoming = wall.patch.clone();
+    let load = Request::Load {
+        name: "busy-save".to_string(),
+    };
+    (incoming, load)
+}
+
+#[test]
+fn a_busy_machine_costs_new_modules_higher() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let (incoming, load) = incoming_save(&mut wall);
+    let bench = measured_chain(&mut wall);
+    guarded(&mut wall, 2.0 * bench);
+    let busy = wall.busy();
+    assert!((busy - 2.0).abs() < f32::EPSILON);
+    let current: f32 = wall
+        .patch
+        .modules()
+        .iter()
+        .map(|module| wall.module_share(&module.id, module.kind, busy))
+        .sum();
+    let rest = (wall.engine.shared().render_load() - current).max(0.0);
+    let sum: f32 = incoming
+        .modules()
+        .iter()
+        .map(|module| super::super::cost::kind_share(module.kind, wall.engine.sample_rate()))
+        .sum();
+    assert!(rest + sum < LOAD_GUARD);
+    let projected = 2.0f32.mul_add(sum, rest);
+    assert!(projected > LOAD_GUARD);
+    let before = wall.patch.to_file();
+    let err = request(&mut wall, &load).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Full);
+    assert!((projected_percent(&err.message) - (projected * 100.0).round()).abs() < f32::EPSILON);
+    assert!(
+        err.message.contains("2.0× its quiet cost"),
+        "{}",
+        err.message
+    );
+    assert_eq!(wall.patch.to_file(), before);
+}
+
+#[test]
+fn a_quiet_machine_is_costed_at_the_bench() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let (incoming, load) = incoming_save(&mut wall);
+    measured_chain(&mut wall);
+    guarded(&mut wall, 0.25);
+    assert!((wall.busy() - 1.0).abs() < f32::EPSILON);
+    assert_eq!(
+        wall.wake_refusal(0.25, 0.9).message,
+        "this would wake 0 modules nobody heard (), taking the wall from 25% to about 90% of its time rendering, past the 80% it keeps to; take something away first, or wake them a few at a time"
+    );
+    let sum: f32 = incoming
+        .modules()
+        .iter()
+        .map(|module| super::super::cost::kind_share(module.kind, wall.engine.sample_rate()))
+        .sum();
+    // A larger bench sum keeps the factor quiet while exercising refusal text.
+    heard_chain(&mut wall, 6);
+    guarded(&mut wall, 0.75);
+    for module in wall.patch.modules() {
+        wall.engine
+            .set_cost(wall.rack.slot_of(&module.id).unwrap(), 0.0);
+    }
+    assert!((wall.busy() - 1.0).abs() < f32::EPSILON);
+    let err = wall.load_room(&incoming).unwrap_err();
+    assert_eq!(
+        err.message,
+        format!(
+            "the wall this would put up renders 4 modules, taking it to about {:.0}% of its time rendering, past the 80% it keeps to, so it was not put up",
+            (0.75 + sum) * 100.0
+        )
+    );
+    let mut notes = Vec::new();
+    let warning = wall
+        .load_room_as(true, &incoming, &Source::Empty, &mut notes)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        warning,
+        format!(
+            "Tom loaded \"new\": about {:.0}% of the wall's time, past the 80% guard",
+            (0.75 + sum) * 100.0
+        )
+    );
+    assert_eq!(notes, [warning]);
+    measured_chain(&mut wall);
+    guarded(&mut wall, 0.25);
+    request(&mut wall, &load).unwrap();
+    assert_eq!(wall.patch.to_file().modules, incoming.to_file().modules);
+}
+
+#[test]
+fn a_small_wall_says_nothing_of_the_machine() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    request(&mut wall, &Request::New).unwrap();
+    request(&mut wall, &add("out")).unwrap();
+    assert!(bench_sum(&wall) < super::super::cost::BUSY_MIN_BENCH);
+    for load in [0.0, 0.6, 9.0, f32::NAN, f32::INFINITY] {
+        guarded(&mut wall, load);
+        assert!((wall.busy() - 1.0).abs() < f32::EPSILON, "{load}");
+        assert!(
+            !wall
+                .wake_refusal(load, 0.9)
+                .message
+                .contains("machine is busy")
+        );
+    }
+}
+
+#[test]
+fn the_factor_is_held_to_eight() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let bench = measured_chain(&mut wall);
+    guarded(&mut wall, 9.0);
+    assert!((wall.busy() - super::super::cost::BUSY_MAX).abs() < f32::EPSILON);
+    for load in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        wall.engine.shared().set_render_load(load);
+        assert!((wall.busy() - 1.0).abs() < f32::EPSILON);
+    }
+    for factor in [1.24, super::super::cost::BUSY_SAID] {
+        wall.engine.shared().set_render_load(bench * factor);
+        assert_eq!(
+            wall.wake_refusal(0.6, 0.9)
+                .message
+                .contains("machine is busy"),
+            factor >= super::super::cost::BUSY_SAID
+        );
+    }
+}
+
+#[test]
+fn a_measured_module_is_not_scaled() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let bench = measured_chain(&mut wall);
+    let heard = wall.patch.modules()[0].id.clone();
+    let kind = wall.patch.module(&heard).unwrap().kind;
+    let share = 0.02;
+    wall.engine.set_cost(
+        wall.rack.slot_of(&heard).unwrap(),
+        share * SUB_BLOCK as f32 * 1e9 / wall.engine.sample_rate() as f32,
+    );
+    let dormant = chain(&mut wall, heavy(), 1).pop().unwrap();
+    wall.engine.set_cost(
+        wall.rack.slot_of(&dormant).unwrap(),
+        share * SUB_BLOCK as f32 * 1e9 / wall.engine.sample_rate() as f32,
+    );
+    guarded(&mut wall, 2.0 * bench);
+    let busy = wall.busy();
+    assert!((busy - 2.0).abs() < f32::EPSILON);
+    assert!(
+        wall.wake_refusal(2.0 * bench, 1.12)
+            .message
+            .contains("2.0× its quiet cost")
+    );
+    assert!((wall.module_share(&heard, kind, busy) - share).abs() < 1e-6);
+    assert!(wall.unheard.contains(&dormant));
+    let stale_share = 2.0 * share;
+    assert!((wall.module_share(&dormant, heavy(), busy) - stale_share).abs() < 1e-6);
+    wall.engine.forget_cost(wall.rack.slot_of(&heard).unwrap());
+    let new_share = 2.0 * super::super::cost::kind_share(kind, wall.engine.sample_rate());
+    assert!((wall.module_share(&heard, kind, busy) - new_share).abs() < 1e-6);
+}
+
+#[test]
+fn tom_hears_the_machine_is_busy() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let (incoming, load) = incoming_save(&mut wall);
+    let bench = measured_chain(&mut wall);
+    guarded(&mut wall, 2.0 * bench);
+    assert!((wall.busy() - 2.0).abs() < f32::EPSILON);
+    let loaded = wall.request_as("Tom", true, &load, Instant::now()).unwrap();
+    let result: LoadResult = serde_json::from_value(loaded.result).unwrap();
+    assert!(result.notes.iter().any(|note| note.contains("the machine is busy: the wall up now renders at 2.0× its quiet cost, and the new modules are costed the same")), "{:?}", result.notes);
+    assert_eq!(wall.patch.to_file().modules, incoming.to_file().modules);
+}
