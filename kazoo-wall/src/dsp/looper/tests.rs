@@ -176,8 +176,9 @@ fn wear_darkens_and_quietens_each_pass_and_zero_wear_is_exact() {
             / 23_000.0)
             .sqrt()
     };
-    // Remove the specified 6 dB level loss after the post-roll marks pass one to measure the additional top loss.
-    assert!(rms(&worn) * 10.0_f32.powf(6.0 / 20.0) < rms(&fresh) * 0.95);
+    // Pass 3 of a recording made in pass 0 is three passes old: take away
+    // its 9 dB level loss to measure the top it lost as well.
+    assert!(rms(&worn) * 10.0_f32.powf(9.0 / 20.0) < rms(&fresh) * 0.95);
 }
 
 #[test]

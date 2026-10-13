@@ -583,8 +583,18 @@ impl LoopModule {
             if k >= splice.tail && k < splice.frames - 1 {
                 self.seam_carry = false;
             }
-            self.bar_pass[h.bar] = h.pass;
-            self.written[h.bar] = true;
+            // The post-roll's fade belongs to the punch that ended at the bar
+            // line: it marks no bar (the next bar, or bar 0 of the next pass
+            // when it runs into the tail), so the take names the bars punched
+            // and wear ages every bar of one recording together.
+            if matches!(self.rec, Rec::Rolling) {
+                self.bar_pass[h.bar] = h.pass;
+                self.written[h.bar] = true;
+            }
+            if into_tail {
+                // The tail is not in the loop's level bins.
+                continue;
+            }
             let bin = (k * LOOP_BINS / splice.frames).min(LOOP_BINS - 1);
             let peak = self.tape[2 * k].abs().max(self.tape[2 * k + 1].abs());
             let value = self
