@@ -1073,9 +1073,8 @@ impl LinkWorker {
     /// Drop audio and requests the halves queued before they saw the link
     /// go down.
     fn discard_backlog(&mut self) {
-        let bytes = self.wire.occupied_len();
-        self.wire.clear();
-        if bytes > 0 {
+        // Count what `clear` removed: a frame may land after any earlier look.
+        if self.wire.clear() > 0 {
             self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
         }
         while self.callback_requests.try_pop().is_some() {
