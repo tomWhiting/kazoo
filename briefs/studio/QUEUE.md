@@ -127,3 +127,5 @@ START KZ-T01 base=acf8b92 branch=lane/kz-T01 df=1GB at 20:29
 - KZ-A03b (review READY at 0229a01; the review fixed: one stuck link counted twice, hub_link left public as a second setup path, a footer test widened). Merge check on main efef1b6: fmt 0, clippy 0, nextest 3905/3905, doc 0, ast-grep 0 (target/kz-logs/full-A03b-2227.log).
 - Follow-up to brief (A03b review finding 4): `stuck_shutdowns` can never be above 0 while an instrument runs, so the 808's badge never shows; instruments should print the stuck and undelivered counts on exit, and the badge go.
 - Held: KZ-A08 (its Justfile gate is a per-repository gate script, against Tom's rule 9; to ask Tom).
+- Briefs written for the two follow-ups above: KZ-B01c (the wake test counts woken parks instead of a 200 us bound) and KZ-A03c (stuck link counts printed on exit; the 808 badge goes). Both ready, no dependencies.
+- Track P: all 17 briefs read by Cassio and committed; Track P merged into PLAN.md (P08's key is `v`, P15's is `C`: `t` is tap tempo and `c` the click on the desk). Openable now: P01, P04, P10.
