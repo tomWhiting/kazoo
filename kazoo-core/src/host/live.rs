@@ -12,20 +12,30 @@ use cpal::traits::DeviceTrait;
 pub use ring::{LiveInput, LiveStats, LiveWriter, ReadReport, live_pair};
 pub use round_trip::{RoundTrip, RoundTripError, RoundTripResult};
 
-/// 170 ms at 48 kHz and 43 ms at 192 kHz cover slack, drift and fades;
-/// a power of two permits masking every history index.
+/// 170 ms at 48 kHz and 43 ms at 192 kHz: more than the largest slack (one
+/// 256-frame buffer) plus the drift window's excess plus the crossfade, at
+/// every rate; a power of two so every history index is masked.
 pub const LIVE_RING_FRAMES: usize = 8192;
-/// Keep a stalled reader 1024 frames away from samples being overwritten.
+/// The reader never goes within 1024 frames of being overwritten, so a
+/// stalled reader is caught as an overrun, not read torn.
 pub const GUARD: usize = 1024;
-/// Add 0.33 ms at 48 kHz per underrun, enough to absorb small callback jitter.
+/// An underrun adds 16 frames (0.33 ms at 48 kHz) of slack: small enough
+/// that one bad callback costs little latency, large enough that a machine
+/// with real jitter settles within a few steps. The slack is capped at the
+/// output buffer: more would hide a buffer size the machine cannot keep.
 pub const SLACK_STEP: usize = 16;
-/// One millisecond is shorter than a pick attack and smooths discontinuities.
+/// Every jump crossfades over 1 ms (48 frames at 48 kHz): shorter than a
+/// pick attack, long enough that a jump is not a click.
 pub const FADE_MS: f32 = 1.0;
-/// Require sustained excess lag for 250 ms before correcting clock drift.
+/// The reader jumps forward when its lag has stayed more than half a buffer
+/// over target for 250 ms (drift), or at once when it is more than 4 buffers
+/// over (a stall or a burst).
 pub const DRIFT_WINDOW_MS: u64 = 250;
-/// Match the desk's converter clipping threshold before applying any gain.
+/// The desk's `CLIP_THRESHOLD` (`kazoo-mix/src/engine.rs`): a raw sample at
+/// or above it, before any gain, means the converter has clipped.
 pub const CLIP_RAW: f32 = 0.999;
-/// Eight interface strips are the most that can be tuned by ear together.
+/// One interface's inputs; eight strips are the most anyone will tune by
+/// ear at once.
 pub const MAX_LIVE_CHANNELS: usize = 8;
 
 /// Labels and fundamental ranges for input tracking.
@@ -62,7 +72,8 @@ impl InputProfile {
         }
     }
 
-    /// Fundamental ranges in Hz. Voice uses 50..4000 for the voice tracker.
+    /// Fundamental ranges in Hz. Voice is the voice tracker's own range
+    /// (`VOICE_MIN_HZ`, `VOICE_MAX_HZ`).
     /// Guitar covers B1 (61.7 Hz), drop C (65.4 Hz), and top E's 24th fret
     /// (1318.5 Hz) with bends. Bass covers detuned B0 (29.1 Hz) and G's
     /// 24th fret (392 Hz) with bends. Line covers the tracker's widest range
@@ -71,7 +82,7 @@ impl InputProfile {
     pub const fn range_hz(self) -> (f32, f32) {
         match self {
             Self::Line => (30.0, 4000.0),
-            Self::Voice => (50.0, 4000.0),
+            Self::Voice => (crate::analysis::VOICE_MIN_HZ, crate::analysis::VOICE_MAX_HZ),
             Self::Guitar => (60.0, 1400.0),
             Self::Bass => (29.0, 500.0),
         }
@@ -148,6 +159,10 @@ fn check_channels(name: &str, count: u16, channels: &[u16]) -> Result<()> {
     Ok(())
 }
 
+/// Open the asked channels of an input device at the desk's rate and a
+/// fixed buffer, one [`LiveInput`] per channel in the order asked, each to be
+/// moved into the output callback. Fails on a request out of range, a device
+/// that cannot run at the rate, or a channel the device does not have.
 pub fn open_live_input(request: &LiveInputRequest) -> Result<(LiveInputStream, Vec<LiveInput>)> {
     let channels = validate(request)?;
     let prepared = OutputRequest {

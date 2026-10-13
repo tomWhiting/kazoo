@@ -15,27 +15,44 @@ struct LiveRing {
     in_callback_max: AtomicUsize,
 }
 
+/// What a read did to fill its output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadReport {
+    /// Not yet one buffer captured: the output is silence.
     Priming,
+    /// The next frames in order, or the start with its fade in.
     Audio,
+    /// Too few frames: a crossfaded repeat from the past, and more slack.
     Underrun,
+    /// Too far behind (drift, a burst, or `reset_slack`): a crossfaded jump
+    /// forward.
     Jump,
+    /// The reader stalled past the ring's guard: a restart with a fade in.
     Overrun,
 }
 
+/// One channel's counts since it opened.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LiveStats {
+    /// Frames the input callback has written.
     pub captured: u64,
+    /// Reads that found fewer frames than they needed.
     pub underruns: u64,
+    /// Drift corrections: crossfaded jumps forward.
     pub jumps: u64,
+    /// Restarts after the reader fell past the guard.
     pub overruns: u64,
+    /// NaN or infinite samples, written as 0.
     pub nonfinite: u64,
+    /// Finite samples at or above `CLIP_RAW` before any gain.
     pub raw_clips: u64,
+    /// The largest finite magnitude seen before it was held to 1.0.
     pub raw_peak: f32,
+    /// The longest input callback seen, in frames.
     pub in_callback_max: usize,
 }
 
+/// The input callback's half of one channel's ring.
 #[derive(Debug)]
 pub struct LiveWriter {
     ring: Arc<LiveRing>,
@@ -45,6 +62,8 @@ pub struct LiveWriter {
     raw_peak: f32,
 }
 
+/// The output callback's half of one channel's ring; move it into the
+/// callback that reads it.
 #[derive(Debug)]
 pub struct LiveInput {
     ring: Arc<LiveRing>,
@@ -74,8 +93,9 @@ pub struct LiveInput {
     last_sample: f32,
 }
 
-/// Allocate the real stream's history off the audio thread.
-/// Rate must be nonzero and frames must be 32, 64, 128 or 256.
+/// The real ring's two halves without a device: the stream uses this, and
+/// so do the desk's tests. Not a fake. It allocates, so call it off the audio
+/// thread. Panics unless `rate` is nonzero and `frames` is 32, 64, 128 or 256.
 #[must_use]
 pub fn live_pair(rate: u32, frames: usize) -> (LiveWriter, LiveInput) {
     assert!(rate > 0 && matches!(frames, 32 | 64 | 128 | 256));
@@ -125,6 +145,8 @@ impl LiveWriter {
             .fetch_max(frames, Ordering::Relaxed);
     }
 
+    /// Store one channel's samples: a non-finite sample becomes 0 and is
+    /// counted, a raw clip is counted, and every sample is held to ±1.0.
     pub fn write(&mut self, mono: &[f32]) {
         self.observe_callback(mono.len());
         for &raw in mono {
@@ -253,6 +275,8 @@ impl LiveInput {
         report
     }
 
+    /// The software latency in frames: the longest input callback measured,
+    /// plus the output buffer, plus the slack.
     #[must_use]
     pub fn latency_frames(&self) -> usize {
         self.ring.in_callback_max.load(Ordering::Relaxed) + self.frames + self.slack
