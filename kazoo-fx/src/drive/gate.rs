@@ -1,22 +1,48 @@
-//! A stereo-linked gate whose short peak detector leaves bridging to the hold.
+//! Gate: a stereo-linked noise gate with no lookahead, for heavy gain.
+//!
+//! Through heavy distortion the hum and hiss of a pickup and its preamp
+//! between notes come up as loud as the notes. In front of the drives this
+//! silences them between notes.
+//!
+//! The detector hears the louder of the two channels through the `key`,
+//! two one-pole high-passes in series (12 dB an octave) on the detector
+//! only, so mains hum can be ignored without thinning the sound. A peak
+//! follower with a 10 ms release reads it; the release is short because
+//! the hold does the bridging. The gate opens when the follower reaches
+//! the `threshold`; while open, every sample at or above the threshold
+//! less the `hysteresis` restarts the `hold`. When the hold runs out the
+//! gain falls towards `range`, and the gate opens again the moment the
+//! follower reaches the threshold. The gain moves in decibels at a fixed
+//! rate, so `attack` and `release` are the times for the whole travel
+//! between 0 dB and `range`, and a release sounds like a fade.
+//!
+//! There is no lookahead and the latency is zero: a lookahead would cost
+//! its length on every input's round trip. The 0.3 ms attack is the price.
 
 use super::kit::{DEFAULT_RATE, Knobs, Retune, ceiling, for_each_frame};
 use crate::dsp::{OnePole, sane_rate};
 use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
 
-/// Pickup hum is normally below -60 dBFS, while soft picking exceeds -40.
+/// `threshold`, -55 dB by default: a single-coil's hum through a preamp at
+/// a sensible gain sits around -60 to -70 dBFS, and a soft pick attack is
+/// above -40.
 const THRESHOLD: usize = 0;
-/// Closing six decibels below opening keeps a decaying note from fluttering.
+/// `hysteresis`, 6 dB by default: the gate closes 6 dB under where it
+/// opened, so a note decaying through the threshold does not flutter.
 const HYSTERESIS: usize = 1;
-/// A 0.3 ms ramp preserves the pick while avoiding an instantaneous gain jump.
+/// `attack`, 0.3 ms by default (about 15 samples): fast enough not to
+/// blunt a pick, slow enough not to click.
 const ATTACK: usize = 2;
-/// Fifty milliseconds bridges the lowest bass note's 32.4 ms period.
+/// `hold`, 50 ms by default: longer than one period of the lowest bass
+/// note (B0, 32.4 ms), so the gaps between its peaks never start a release.
 const HOLD: usize = 3;
-/// A 150 ms fade lets a guitar tail decay instead of stopping abruptly.
+/// `release`, 150 ms by default: a guitar's tail fades rather than stops.
 const RELEASE: usize = 4;
-/// Ninety decibels of attenuation makes the closed gate effectively silent.
+/// `range`, -90 dB by default: closed means silent; less is a downward
+/// expander, for those who want the room.
 const RANGE: usize = 5;
-/// A 20 Hz detector high-pass preserves bass; raising it rejects more hum.
+/// `key`, 20 Hz by default: a high-pass on the detector only, two poles;
+/// raise it to ignore mains hum (50 or 100 Hz) without thinning the sound.
 const KEY: usize = 6;
 
 static PARAMS: [ParamSpec; 7] = [
@@ -229,9 +255,27 @@ impl Effect for Gate {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::{CONTEXT, RATE, render, render_mono, sine};
+    use super::super::testkit::{CONTEXT, Limits, RATE, conformance, render, render_mono, sine};
+    use super::{KIND, THRESHOLD};
     use crate::dsp::OnePole;
     use crate::{Curve, Effect};
+
+    conformance!(
+        KIND,
+        Limits {
+            // Open, the gate multiplies by exactly one: nothing it adds.
+            worst_spur_db: Some(-80.0),
+            hot: &[],
+            hot_spur_db: None,
+            unity: true,
+            // The threshold's way from one end to the other crosses the
+            // tone's level, where the gate opens at its attack or closes at
+            // its release: what it does to every note, rougher than either
+            // end at rest, not a click in the knob's glide.
+            rough_glides: &[THRESHOLD],
+            latency_knobs: &[],
+        }
+    );
 
     fn built() -> Box<dyn Effect> {
         let Some(kind) = crate::find("gate") else {
@@ -326,10 +370,21 @@ mod tests {
         );
     }
 
+    /// At the default hold the hold alone would bridge the detector's
+    /// ripple; with no hold (`hold` 0) only the hysteresis keeps the 2 dB
+    /// ripple between a 220 Hz tone's peaks from reopening the gate, so the
+    /// test runs both.
     #[test]
     fn hysteresis_stops_flutter() {
+        for hold in [50.0, 0.0] {
+            decays_through_the_threshold_once(hold);
+        }
+    }
+
+    fn decays_through_the_threshold_once(hold: f32) {
         let mut gate = built();
         gate.set_param(0, -30.0);
+        gate.set_param(3, hold);
         gate.reset();
         let input: Vec<f32> = sine(220.0, 0.1, 12.0)
             .into_iter()
@@ -353,27 +408,38 @@ mod tests {
             } else {
                 2
             };
-            assert!(now >= stage, "gate reopened from {stage} to {now}");
+            assert!(
+                now >= stage,
+                "hold {hold} ms: gate reopened from {stage} to {now}"
+            );
             if now != stage {
                 transitions.push(now);
                 stage = now;
             }
         }
-        assert_eq!(transitions, [1, 2]);
+        assert_eq!(transitions, [1, 2], "hold {hold} ms");
     }
 
+    /// At the default 6 dB hysteresis the B0's detector, about 14 dB down
+    /// between its peaks, would stay above the closing level on its own;
+    /// with no hysteresis it falls below between every pair of peaks, and
+    /// only the 50 ms hold keeps the gate open, so the test runs both.
     #[test]
     fn the_lowest_bass_note_does_not_chatter() {
-        let mut gate = built();
-        let input = sine(30.87, 0.01, 2.0);
-        let output = render_mono(&mut *gate, &input);
-        for (i, (x, y)) in input.iter().zip(&output).enumerate().skip(480) {
-            if x.abs() > 1e-8 {
-                assert!(
-                    gain_db(*x, *y) >= -0.1,
-                    "B0 gain at sample {i}: {}",
-                    gain_db(*x, *y)
-                );
+        for hysteresis in [6.0, 0.0] {
+            let mut gate = built();
+            gate.set_param(1, hysteresis);
+            gate.reset();
+            let input = sine(30.87, 0.01, 2.0);
+            let output = render_mono(&mut *gate, &input);
+            for (i, (x, y)) in input.iter().zip(&output).enumerate().skip(480) {
+                if x.abs() > 1e-8 {
+                    assert!(
+                        gain_db(*x, *y) >= -0.1,
+                        "hysteresis {hysteresis} dB: B0 gain at sample {i}: {}",
+                        gain_db(*x, *y)
+                    );
+                }
             }
         }
     }
