@@ -532,6 +532,9 @@ impl ClockLine {
 /// The daemon's state.
 #[derive(Debug)]
 pub struct Wall {
+    tree: Option<crate::tree::thread::TreeHandle>,
+    tree_mirror: crate::tree::Files,
+    tree_error: Option<String>,
     chain_batch: Option<Vec<What>>,
     patch: Patch,
     rack: Rack,
@@ -1300,6 +1303,9 @@ impl Wall {
         let recorder = Recorder::new(recordings, &mut engine);
         let probe_ring = engine.take_probes().map(ProbeRing);
         let mut wall = Self {
+            tree: None,
+            tree_mirror: crate::tree::Files::new(),
+            tree_error: None,
             chain_batch: None,
             speech: Speech::new(speech_cache),
             recorder,
@@ -2261,7 +2267,111 @@ impl Wall {
                 _ => {}
             }
         }
+        self.feed_tree(&change);
         (change, moved)
+    }
+
+    /// Attach only to an already planted bare repository.
+    pub fn find_tree(&mut self, dir: &std::path::Path) {
+        match crate::tree::git::is_bare(dir) {
+            Ok(true) => match crate::tree::thread::TreeHandle::attach(dir) {
+                Ok(handle) => self.attach_tree(handle),
+                Err(err) => self.tree_error = Some(err.to_string()),
+            },
+            Ok(false) => {}
+            Err(err) => self.tree_error = Some(err.to_string()),
+        }
+        if let Some(err) = &self.tree_error {
+            eprintln!("kazoo-wall: the tree could not attach: {err}");
+        }
+    }
+
+    pub fn attach_tree(&mut self, handle: crate::tree::thread::TreeHandle) {
+        self.tree = Some(handle);
+        self.whole_tree(crate::tree::thread::WholeKind::Start);
+    }
+
+    fn whole_tree(&mut self, kind: crate::tree::thread::WholeKind) {
+        let files = match crate::tree::to_files(&self.patch.to_file()) {
+            Ok(files) => files,
+            Err(err) => {
+                self.tree_failed(&err);
+                return;
+            }
+        };
+        let shared = self.engine.shared();
+        let clock = self
+            .clock_line
+            .stamp(shared.beat(), shared.bpm(), shared.following_desk());
+        if let Some(tree) = self.tree.as_mut() {
+            self.tree_mirror = files.clone();
+            let accepted = tree.offer(crate::tree::thread::TreeItem::Whole {
+                kind,
+                seq: self.made,
+                clock,
+                files,
+                generation: tree.generation,
+            });
+            if accepted {
+                tree.resync = false;
+            }
+        }
+    }
+
+    fn tree_failed(&mut self, err: &crate::tree::TreeError) {
+        if let Some(tree) = self.tree.as_mut() {
+            tree.error = Some(err.to_string());
+            tree.resync = true;
+            tree.behind_from.get_or_insert(self.made);
+        }
+        eprintln!(
+            "kazoo-wall: the tree could not encode change {}: {err}",
+            self.made
+        );
+    }
+
+    fn feed_tree(&mut self, change: &Change) {
+        if self.tree.as_ref().is_none_or(|tree| tree.resync) {
+            return;
+        }
+        let diff =
+            match crate::tree::thread::files_diff(&self.patch.to_file(), &mut self.tree_mirror) {
+                Ok(diff) => diff,
+                Err(err) => {
+                    self.tree_failed(&err);
+                    return;
+                }
+            };
+        if let Some(tree) = self.tree.as_mut() {
+            tree.offer(crate::tree::thread::TreeItem::Change {
+                change: Box::new(change.clone()),
+                files: diff,
+                generation: tree.generation,
+            });
+        }
+    }
+
+    fn tick_tree(&mut self) {
+        if let Some(tree) = self.tree.as_mut() {
+            tree.poll();
+            if !tree.resync {
+                return;
+            }
+            tree.generation = tree.generation.saturating_add(1);
+        } else {
+            return;
+        }
+        self.whole_tree(crate::tree::thread::WholeKind::Gap);
+    }
+
+    #[cfg(test)]
+    pub fn wait_for_tree(&mut self) {
+        self.tick_tree();
+        match self.tree.as_mut() {
+            Some(tree) => tree.wait_event(),
+            None => panic!("no tree attached"),
+        }
+        self.tick_tree();
     }
 
     // -----------------------------------------------------------------
@@ -4052,6 +4162,13 @@ impl Wall {
     /// on from what was written and nothing told is ever numbered again.
     pub fn close(&mut self, now: Instant) -> Vec<Event> {
         self.save(now);
+        self.tick_tree();
+        if let Some(tree) = self.tree.as_mut() {
+            match tree.finish() {
+                Ok(()) => eprintln!("kazoo-wall: the tree finished"),
+                Err(err) => eprintln!("kazoo-wall: the tree did not finish: {err}"),
+            }
+        }
         if !self.owed.is_empty() {
             eprintln!(
                 "kazoo-wall: stopping with {} of the wall's own changes the change log could not \
@@ -4146,6 +4263,13 @@ impl Wall {
                 ..mark.clone()
             }),
             log: self.log_health(),
+            tree: Some(self.tree.as_ref().map_or_else(
+                || crate::protocol::TreeHealth {
+                    error: self.tree_error.clone(),
+                    ..crate::protocol::TreeHealth::default()
+                },
+                crate::tree::thread::TreeHandle::health,
+            )),
             probes: self.probes_now(Instant::now()).0,
             engine: Some(EngineHealth {
                 load: f64::from(shared.render_load()),
@@ -4569,6 +4693,7 @@ impl Wall {
     /// if it is due. Returns the events to tell everyone: faults, and the
     /// changes the daemon made on its own.
     pub fn tick(&mut self, now: Instant) -> Vec<Event> {
+        self.tick_tree();
         let shared = self.engine.shared();
         self.clock_line
             .check(shared.beat(), shared.following_desk());

@@ -1165,6 +1165,9 @@ pub struct Snapshot {
     /// Whether the change log is taking changes: left out while it is.
     #[serde(default, skip_serializing_if = "LogHealth::is_ok")]
     pub log: LogHealth,
+    /// The tree writer, absent from older walls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<TreeHealth>,
     /// What the scopes and readouts on the wall measured, at most
     /// [`MAX_PROBES`] of them (the first in the wall's order; `probe` reads
     /// the rest). Left out when there are none, and from a wall older than
@@ -1893,3 +1896,21 @@ pub struct ShutdownResult {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether the planted tree durably holds the wall's changes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TreeHealth {
+    pub planted: bool,
+    pub through: Option<u64>,
+    pub waiting: u32,
+    pub behind_from: Option<u64>,
+    pub error: Option<String>,
+}
+
+impl TreeHealth {
+    #[must_use]
+    pub const fn is_ok(&self) -> bool {
+        self.planted && self.error.is_none() && self.behind_from.is_none()
+    }
+}

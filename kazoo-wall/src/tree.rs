@@ -6,6 +6,13 @@
 //! into `wall.toml` and one `modules/<id>.toml` per module and back, byte
 //! for byte, with no I/O.
 
+pub mod git;
+pub mod thread;
+
+#[cfg(test)]
+#[path = "tree/thread/tests.rs"]
+mod thread_tests;
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -274,6 +281,8 @@ pub type Files = BTreeMap<String, Vec<u8>>;
 /// A malformed identity or wall text form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeError {
+    /// The requested git operation failed.
+    Git(String),
     /// A birth mark that does not read, as given (made printable).
     BadBirth(String),
     /// A save or set of files that is not one wall, and why.
@@ -306,6 +315,7 @@ pub enum TreeError {
 impl fmt::Display for TreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Git(reason) => write!(f, "git: {reason}"),
             Self::BadBirth(text) => write!(f, "birth mark does not read ('{text}')"),
             Self::NotOneWall(reason) => write!(f, "not one wall: {reason}"),
             Self::NotANumber { path, key } => write!(f, "{path}: '{key}' is not a finite number"),
@@ -743,3 +753,102 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
 
 #[cfg(test)]
 mod tests;
+
+/// Musical trailers on one tree commit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stamp {
+    pub kind: String,
+    pub seq: u64,
+    pub beat: Option<f64>,
+    pub tempo: Option<f64>,
+    pub clock: Option<String>,
+    pub gap: Option<(u64, u64)>,
+}
+
+impl Stamp {
+    /// Read a trailer block, rejecting ambiguous or non-finite stamps.
+    pub fn parse(message: &str) -> Result<Self, TreeError> {
+        let mut values = BTreeMap::new();
+        for line in message
+            .trim_end()
+            .rsplit_once("\n\n")
+            .map_or_else(|| message.trim_end(), |(_, block)| block)
+            .lines()
+        {
+            if let Some((key, value)) = line.split_once(": ") {
+                if key.starts_with("Kazoo-") && values.insert(key, value).is_some() {
+                    return Err(TreeError::Git(format!("duplicate trailer {key}")));
+                }
+            }
+        }
+        let required = |key| {
+            values
+                .get(key)
+                .copied()
+                .ok_or_else(|| TreeError::Git(format!("missing trailer {key}")))
+        };
+        let number = |key: &str| -> Result<Option<f64>, TreeError> {
+            values
+                .get(key)
+                .map(|text| {
+                    let value: f64 = text
+                        .parse()
+                        .map_err(|err| TreeError::Git(format!("{key}: {err}")))?;
+                    if !value.is_finite() {
+                        return Err(TreeError::Git(format!("{key} is not finite")));
+                    }
+                    Ok(value)
+                })
+                .transpose()
+        };
+        let kind = required("Kazoo-Kind")?;
+        if !matches!(kind, "start" | "change" | "gap") {
+            return Err(TreeError::Git(format!("unknown tree kind {kind}")));
+        }
+        let seq = required("Kazoo-Seq")?
+            .parse()
+            .map_err(|err| TreeError::Git(format!("Kazoo-Seq: {err}")))?;
+        let gap = values
+            .get("Kazoo-Gap")
+            .map(|text| {
+                let (first, last) = text
+                    .split_once('-')
+                    .ok_or_else(|| TreeError::Git("invalid Kazoo-Gap".into()))?;
+                let first: u64 = first
+                    .parse()
+                    .map_err(|err| TreeError::Git(format!("Kazoo-Gap: {err}")))?;
+                let last: u64 = last
+                    .parse()
+                    .map_err(|err| TreeError::Git(format!("Kazoo-Gap: {err}")))?;
+                if first > last {
+                    return Err(TreeError::Git("reversed Kazoo-Gap".into()));
+                }
+                Ok((first, last))
+            })
+            .transpose()?;
+        let beat = number("Kazoo-Beat")?;
+        let tempo = number("Kazoo-Tempo")?;
+        let clock = values.get("Kazoo-Clock").map(|s| (*s).to_string());
+        if beat.is_some() != tempo.is_some() || beat.is_some() != clock.is_some() {
+            return Err(TreeError::Git("incomplete clock trailers".into()));
+        }
+        Ok(Self {
+            kind: kind.into(),
+            seq,
+            beat,
+            tempo,
+            clock,
+            gap,
+        })
+    }
+}
+
+/// Beats are comparable only within one continuous clock line.
+#[must_use]
+pub fn beats_between(a: &Stamp, b: &Stamp) -> Option<f64> {
+    if a.clock.is_some() && a.clock == b.clock {
+        Some(b.beat? - a.beat?)
+    } else {
+        None
+    }
+}

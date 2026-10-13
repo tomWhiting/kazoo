@@ -188,6 +188,10 @@ impl Daemon {
             patch.cables().len(),
             config.socket.display()
         );
+        let tree_dir = std::env::var_os("KAZOO_TREE_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| config.state_dir.parent().map(|dir| dir.join("tree")));
         let recordings = config.recordings;
         let load_guard = config.load_guard;
         let setup = control::Setup {
@@ -199,6 +203,9 @@ impl Daemon {
             accept,
             build: Box::new(move |engine, link| {
                 let mut wall = Wall::new(patch, engine, link, changes, Some(store));
+                if let Some(dir) = &tree_dir {
+                    wall.find_tree(dir);
+                }
                 wall.set_recordings_dir(recordings);
                 wall.set_load_guard(load_guard);
                 if let Some(why) = &too_large {

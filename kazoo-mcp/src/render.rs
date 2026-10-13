@@ -1198,6 +1198,7 @@ mod tests {
             log: kazoo_wall::protocol::LogHealth::default(),
             probes: Vec::new(),
             engine: None,
+            tree: None,
         }
     }
 
