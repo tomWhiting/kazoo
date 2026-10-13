@@ -102,7 +102,7 @@ fn the_backlog_holds_a_quarter_second_then_counts_drops() {
     let total_bytes = accepted_blocks as usize * (HEADER_SIZE + AUDIO_PAYLOAD_HEADER + 4_096);
     let waiting = observer.occupied_len();
     let socket_accepted = total_bytes - waiting;
-    let ring_bytes = wire::link_ring_bytes(48_000, 2, 512);
+    let ring_bytes = wire::link_ring_bytes(48_000, 2, 1, 512);
     assert!(
         accepted_blocks * 512 >= 12_000,
         "only {accepted_blocks} blocks before dropping"

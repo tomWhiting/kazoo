@@ -1,10 +1,23 @@
 //! Fixed-size callback stream clocks and audio wire encoding.
 
 use super::super::protocol::{AUDIO_STREAM_PAYLOAD_HEADER, encode_audio_stream_head};
+use super::wire::link_ring_bytes;
 use super::{
     AUDIO_PAYLOAD_HEADER, FrameHeader, HEADER_SIZE, HubLinkAudio, MAX_STREAMS, MSG_AUDIO,
     MSG_STREAM_AUDIO, Observer, Ordering, Producer, StreamId, encode_header, sanitize_sample,
 };
+
+/// What may wait in the link's ring for these streams: a quarter second of
+/// each. Arithmetic only, so the callback may call it.
+pub(super) fn ring_budget(
+    sample_rate: u32,
+    stream_channels: &[Option<u16>; MAX_STREAMS],
+    block_frames: u32,
+) -> usize {
+    let channels = stream_channels.iter().flatten().sum();
+    let streams = stream_channels.iter().flatten().count();
+    link_ring_bytes(sample_rate, channels, streams, block_frames)
+}
 
 impl HubLinkAudio {
     pub(super) fn update_streams(&mut self) {
@@ -18,6 +31,7 @@ impl HubLinkAudio {
             let channels = value as u16;
             self.stream_channels[id] = (channels != 0).then_some(channels);
         }
+        self.ring_budget = ring_budget(self.sample_rate, &self.stream_channels, self.block_frames);
     }
 
     /// A stream's next frame; unknown ids have no rendered frames.
@@ -96,7 +110,7 @@ impl HubLinkAudio {
         };
         let payload = audio_head + samples.len() * 4;
         let total = HEADER_SIZE + payload;
-        if self.wire.vacant_len() < total {
+        if self.wire.vacant_len() < total || self.wire.occupied_len() + total > self.ring_budget {
             self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
             return;
         }

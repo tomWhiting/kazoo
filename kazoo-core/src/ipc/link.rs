@@ -399,6 +399,9 @@ pub struct HubLinkAudio {
     stream_channels: [Option<u16>; MAX_STREAMS],
     stream_updates: Arc<[AtomicU64; MAX_STREAMS]>,
     stream_versions: [u64; MAX_STREAMS],
+    /// Bytes that may wait in `wire` at once: a quarter second of the
+    /// streams there are now (see [`wire::link_ring_capacity`]).
+    ring_budget: usize,
     sample_rate: u32,
 }
 
@@ -432,9 +435,9 @@ pub(crate) fn start_link(
         std::array::from_fn(|id| slots[id].as_ref().map(|slot| u16::from(slot.channels)));
     let channels = stream_channels[0]
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "stream 0 is missing"))?;
-    let ring_channels = stream_channels.iter().flatten().copied().sum();
     let block_frames = config.max_block_frames.clamp(1, MAX_LINK_BLOCK_FRAMES);
-    let wire_bytes = wire::link_ring_bytes(config.sample_rate, ring_channels, block_frames);
+    let wire_bytes = wire::link_ring_capacity(config.sample_rate, block_frames);
+    let ring_budget = audio::ring_budget(config.sample_rate, &stream_channels, block_frames);
     let (wire_tx, wire_rx) = HeapRb::<u8>::new(wire_bytes).split();
     let (message_tx, message_rx) = HeapRb::<ToAudio>::new(MESSAGE_BACKLOG).split();
     let (callback_tx, callback_rx) = HeapRb::<Request>::new(REQUEST_BACKLOG).split();
@@ -523,6 +526,7 @@ pub(crate) fn start_link(
             stream_channels,
             stream_updates,
             stream_versions: [0; MAX_STREAMS],
+            ring_budget,
             sample_rate,
         },
     ))
