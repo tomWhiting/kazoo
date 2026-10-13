@@ -1,7 +1,10 @@
 //! An instrument's link to the hub, split so its audio callback stays
 //! real-time safe.
 //!
-//! [`hub_link`] returns two halves:
+//! A program starts its link with
+//! [`crate::host::link::connect_or_direct`] (or
+//! [`crate::host::link::connect_config_or_direct`] for a full
+//! [`LinkConfig`]), the one setup path, which returns two halves:
 //!
 //! - [`HubLink`] stays with the instrument's UI. It owns a link thread that
 //!   finds the hub, registers, sends the audio, reads the hub's messages, and
@@ -420,13 +423,17 @@ impl fmt::Debug for HubLinkAudio {
     }
 }
 
-/// Start an instrument's link to the hub.
+/// Start a link that looks for the hub on its own thread.
+///
+/// Only kazoo-core's tests call this. Programs go through
+/// [`crate::host::link::connect_or_direct`], the one setup path.
 ///
 /// # Errors
 ///
 /// Fails only if the link thread cannot be started. Not finding a hub is not
 /// an error: the link keeps looking.
-pub fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)> {
+#[cfg(test)]
+pub(crate) fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)> {
     start_link(config, None, true)
 }
 

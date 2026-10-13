@@ -8,18 +8,20 @@ use std::sync::mpsc::SyncSender;
 static STUCK_SHUTDOWNS: AtomicU64 = AtomicU64::new(0);
 static UNDELIVERED_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
 
-/// How many desk link shutdowns in this process gave up waiting (500 ms)
-/// and left the link thread running. Each stuck link counts once, however
+/// How many desk link shutdowns in this process left the thread running.
+///
+/// A shutdown gives up after 500 ms. Each stuck link counts once, however
 /// it ends.
 #[must_use]
 pub fn stuck_shutdowns() -> u64 {
     STUCK_SHUTDOWNS.load(Ordering::Relaxed)
 }
 
-/// How many desk link threads in this process finished with nobody left to
-/// tell: the handle had already been dropped. That happens only after a
-/// shutdown gave up on the thread, so it counts stuck links that did end
-/// later, not further stuck links.
+/// How many desk link threads in this process finished with nobody to tell.
+///
+/// The handle had already been dropped, which happens only after a shutdown
+/// gave up on the thread, so this counts stuck links that did end later,
+/// not further stuck links.
 #[must_use]
 pub fn undelivered_completions() -> u64 {
     UNDELIVERED_COMPLETIONS.load(Ordering::Relaxed)
