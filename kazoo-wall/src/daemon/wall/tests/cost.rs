@@ -323,3 +323,97 @@ fn a_cable_waking_a_cheap_set_is_allowed() {
     let err = request(&mut wall, &add("mix")).unwrap_err();
     assert_eq!(err.code, ErrorCode::Full);
 }
+
+/// Undoing a patch that replaced a cable puts the old cable back (an
+/// unplugging that replugs): when the old cable leads from modules nobody
+/// hears, the undo wakes them, and is costed at what it wakes.
+#[test]
+fn undoing_a_replacing_patch_is_costed_at_what_it_wakes() {
+    let (mut wall, _engine) = wall();
+    let mixer = changed(request(&mut wall, &add("mix")).unwrap().result)
+        .module
+        .unwrap();
+    let ids = chain(&mut wall, heavy(), 40);
+    // Into a mix nobody hears: nothing wakes.
+    request(
+        &mut wall,
+        &patch(&last_output(&ids, heavy()), &format!("{mixer}.a")),
+    )
+    .unwrap();
+    // A cheap cable replaces it, and the mix is heard.
+    let replacing = request(&mut wall, &patch("vco1.out", &format!("{mixer}.a")))
+        .unwrap()
+        .change
+        .unwrap()
+        .seq;
+    request(&mut wall, &patch(&format!("{mixer}.out"), "out1.left")).unwrap();
+    assert!(
+        ids.iter()
+            .all(|id| wall.snapshot().timing.unheard.contains(id))
+    );
+    guarded(&mut wall, 0.30);
+    let before = wall.patch.to_file();
+    let err = request(&mut wall, &Request::Undo { change: replacing }).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Full);
+    assert!(err.message.contains("wake 40 modules"), "{}", err.message);
+    assert_eq!(wall.patch.to_file(), before);
+    assert!(
+        ids.iter()
+            .all(|id| wall.snapshot().timing.unheard.contains(id))
+    );
+}
+
+/// Undoing a module brought back (a removal undone) takes it away again
+/// and plugs back the cables its own had replaced: when one of those leads
+/// from modules nobody hears, the undo wakes them, and is costed at what
+/// it wakes.
+#[test]
+fn undoing_a_restore_that_replaced_a_cable_is_costed_at_what_it_wakes() {
+    let (mut wall, _engine) = wall();
+    let mixer = changed(request(&mut wall, &add("mix")).unwrap().result)
+        .module
+        .unwrap();
+    let cheap = changed(request(&mut wall, &add("vco")).unwrap().result)
+        .module
+        .unwrap();
+    request(
+        &mut wall,
+        &patch(&format!("{cheap}.out"), &format!("{mixer}.a")),
+    )
+    .unwrap();
+    let removed = request(
+        &mut wall,
+        &Request::Remove {
+            module: cheap.clone(),
+        },
+    )
+    .unwrap()
+    .change
+    .unwrap()
+    .seq;
+    let ids = chain(&mut wall, heavy(), 40);
+    request(
+        &mut wall,
+        &patch(&last_output(&ids, heavy()), &format!("{mixer}.a")),
+    )
+    .unwrap();
+    // The cheap module comes back with its cable, which replaces the
+    // heavy chain's; then the mix is heard.
+    let restored = request(&mut wall, &Request::Undo { change: removed })
+        .unwrap()
+        .change
+        .unwrap()
+        .seq;
+    request(&mut wall, &patch(&format!("{mixer}.out"), "out1.left")).unwrap();
+    assert!(
+        ids.iter()
+            .all(|id| wall.snapshot().timing.unheard.contains(id))
+    );
+    guarded(&mut wall, 0.30);
+    let before = wall.patch.to_file();
+    let err = request(&mut wall, &Request::Undo { change: restored }).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Full);
+    assert!(err.message.contains("wake 40 modules"), "{}", err.message);
+    assert_eq!(wall.patch.to_file(), before);
+    assert!(wall.patch.module(&cheap).is_some());
+}
