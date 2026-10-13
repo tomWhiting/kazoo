@@ -9,7 +9,7 @@
 //! does socket I/O and is meant for a link thread, not an audio callback;
 //! [`super::link`] provides the callback-safe side.
 
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -261,6 +261,12 @@ impl HubIpcClient {
     /// [`OutboxError::Io`] if the connection failed.
     pub fn flush(&mut self) -> Result<(), OutboxError> {
         self.outbox.flush(&mut &self.stream)
+    }
+
+    /// Write bytes borrowed from the link's ring without copying them.
+    /// The caller preserves frame boundaries across partial writes.
+    pub fn write_audio_bytes(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        (&self.stream).write(bytes)
     }
 
     /// Bytes queued and not yet written.

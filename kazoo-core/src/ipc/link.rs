@@ -39,24 +39,23 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
 use ringbuf::HeapRb;
-use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 
 use super::client::{HubIpcClient, HubMessage};
 use super::discovery;
 use super::outbox::OutboxError;
+use super::protocol::{AUDIO_PAYLOAD_HEADER, FrameHeader, HEADER_SIZE, encode_header};
+use super::types::MSG_AUDIO;
 use super::types::{
     DeskHealthMsg, DeskPaceMsg, NOTE_CC, NOTE_OFF, NOTE_ON, NOTE_PITCH_BEND, NoteEventMsg,
     RegisterMsg, SYNC_NOW, TRANSPORT_PAUSED, TRANSPORT_PLAYING, TRANSPORT_RECORDING,
-    TRANSPORT_STOPPED, TRANSPORT_UNCHANGED, TransportSyncMsg,
+    TRANSPORT_STOPPED, TRANSPORT_UNCHANGED, TransportRequestMsg, TransportSyncMsg,
 };
-use crate::audio_transport::{
-    AudioBlock, AudioBlockConsumer, AudioBlockProducer, AudioRingConfig, AudioRingPopError,
-    AudioRingPushError, audio_block_ring,
-};
-use crate::protocol::{AudioBlockHeader, BlockFlags, BufferId};
 use crate::realtime::{NotRealTime, RealTime};
+use crate::sanitize_sample;
 
 mod priority;
+mod wire;
 
 /// How often the link looks for a hub while none is answering.
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -77,10 +76,10 @@ pub const LINK_TICK: Duration = Duration::from_millis(5);
 const IDLE_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Largest block sent to the hub, in frames; bigger callbacks are split.
-pub const MAX_LINK_BLOCK_FRAMES: u32 = 4096;
+pub const MAX_LINK_BLOCK_FRAMES: u32 = 16_384;
 
-/// Audio blocks buffered between the callback and the link thread.
-const AUDIO_BLOCKS: u32 = 64;
+/// Audio retained between the callback and link thread, in milliseconds.
+pub const LINK_BACKLOG_MS: u64 = 250;
 
 /// Hub messages buffered for the callback.
 const MESSAGE_BACKLOG: usize = 256;
@@ -352,7 +351,7 @@ pub struct LinkStatus {
     /// Audio blocks sent to the hub.
     pub blocks_sent: u64,
     /// Audio blocks lost: malformed, the link could not keep up, or the hub
-    /// stopped reading.
+    /// stopped reading. A discarded backlog counts once.
     pub blocks_dropped: u64,
     /// Messages lost in either direction: hub messages the callback did not
     /// read in time, and requests lost because the link went down or the hub
@@ -376,7 +375,8 @@ pub struct HubLink {
 
 /// The audio-callback half of the link.
 pub struct HubLinkAudio {
-    audio: AudioBlockProducer,
+    wire: ringbuf::HeapProd<u8>,
+    seq: u32,
     pub events: crate::host::link::EventRx,
     requests: ringbuf::HeapProd<Request>,
     waker: Thread,
@@ -414,12 +414,8 @@ pub(crate) fn start_link(
 ) -> io::Result<(HubLink, HubLinkAudio)> {
     let channels = u16::from(config.channels.clamp(1, 2));
     let block_frames = config.max_block_frames.clamp(1, MAX_LINK_BLOCK_FRAMES);
-    let (audio_tx, audio_rx) = audio_block_ring(AudioRingConfig::new(
-        BufferId(0),
-        channels,
-        block_frames,
-        AUDIO_BLOCKS,
-    ));
+    let wire_bytes = wire::link_ring_bytes(config.sample_rate, channels, block_frames);
+    let (wire_tx, wire_rx) = HeapRb::<u8>::new(wire_bytes).split();
     let (message_tx, message_rx) = HeapRb::<HubMessage>::new(MESSAGE_BACKLOG).split();
     let (callback_tx, callback_rx) = HeapRb::<Request>::new(REQUEST_BACKLOG).split();
     let (ui_tx, ui_rx) = mpsc::sync_channel(REQUEST_BACKLOG);
@@ -442,13 +438,12 @@ pub(crate) fn start_link(
     let mut worker = LinkWorker {
         config,
         state: Arc::clone(&state),
-        audio: audio_rx,
+        wire: wire_rx,
+        audio_frame_left: 0,
         messages: message_tx,
         callback_requests: callback_rx,
         ui_requests: ui_rx,
-        scratch: vec![0.0; block_frames as usize * usize::from(channels)],
         client: None,
-        pending: None,
         stuck_since: None,
         refusal_delay: RETRY_INTERVAL,
         health_before: DeskHealthMsg::default(),
@@ -488,7 +483,8 @@ pub(crate) fn start_link(
             finished,
         },
         HubLinkAudio {
-            audio: audio_tx,
+            wire: wire_tx,
+            seq: 0,
             events: crate::host::link::EventRx::new(message_rx),
             requests: callback_tx,
             waker,
@@ -692,22 +688,35 @@ impl HubLinkAudio {
     /// callback's sole permitted system call; it adds no allocation, lock or
     /// socket I/O.
     fn push(&mut self, start_frame: u64, frames: u32, samples: &[f32]) {
-        let pushed = self.audio.push_block(AudioBlock {
-            header: AudioBlockHeader {
-                start_frame,
-                frames,
-                channels: self.channels,
-                sequence: 0,
-                flags: BlockFlags::default(),
-            },
-            samples,
-        });
-        match pushed {
-            Ok(()) => self.waker.unpark(),
-            Err(AudioRingPushError::Full | AudioRingPushError::InvalidSampleCount { .. }) => {
-                self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
-            }
+        let payload = AUDIO_PAYLOAD_HEADER + samples.len() * 4;
+        let total = HEADER_SIZE + payload;
+        if self.wire.vacant_len() < total {
+            self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
+            return;
         }
+        let mut head = [0_u8; HEADER_SIZE + AUDIO_PAYLOAD_HEADER];
+        encode_header(
+            &FrameHeader {
+                msg_type: MSG_AUDIO,
+                payload_len: payload as u32,
+                seq: self.seq,
+            },
+            &mut head[..HEADER_SIZE],
+        );
+        head[HEADER_SIZE..HEADER_SIZE + 8].copy_from_slice(&start_frame.to_le_bytes());
+        head[HEADER_SIZE + 8..].copy_from_slice(&frames.to_le_bytes());
+        // Publish the header and samples together so a disconnect can never
+        // discard a header while its samples are still being encoded.
+        self.wire.push_iter(
+            head.into_iter().chain(
+                samples
+                    .iter()
+                    .flat_map(|sample| sanitize_sample(*sample).to_le_bytes()),
+            ),
+        );
+        self.seq = self.seq.wrapping_add(1);
+        self.state.blocks_sent.fetch_add(1, Ordering::Relaxed);
+        self.waker.unpark();
     }
 
     /// For an instrument that renders on a timer and asked the desk to pace
@@ -784,26 +793,17 @@ impl HubLinkAudio {
     }
 }
 
-/// An audio block in the link's scratch buffer that the hub has not taken.
-#[derive(Debug, Clone, Copy)]
-struct Pending {
-    stream_frame: u64,
-    frames: u32,
-    samples: usize,
-}
-
 /// The link thread's state.
 struct LinkWorker {
     config: LinkConfig,
     state: Arc<LinkState>,
-    audio: AudioBlockConsumer,
+    wire: ringbuf::HeapCons<u8>,
+    /// Bytes left in an audio frame already started on the socket.
+    audio_frame_left: usize,
     messages: ringbuf::HeapProd<HubMessage>,
     callback_requests: ringbuf::HeapCons<Request>,
     ui_requests: Receiver<Request>,
-    scratch: Vec<f32>,
     client: Option<HubIpcClient>,
-    /// The block in `scratch` waiting for room in the outbox.
-    pending: Option<Pending>,
     /// When the hub stopped taking audio.
     stuck_since: Option<Instant>,
     /// Wait after the next refusal; doubles on each one.
@@ -949,7 +949,7 @@ impl LinkWorker {
         self.state.connections.fetch_add(1, Ordering::Relaxed);
         self.set_refusal(None);
         self.refusal_delay = RETRY_INTERVAL;
-        self.pending = None;
+        self.audio_frame_left = 0;
         self.stuck_since = None;
         self.client = Some(client);
         self.state.connected.store(true, Ordering::Release);
@@ -968,66 +968,44 @@ impl LinkWorker {
         let Some(client) = self.client.as_mut() else {
             return Ok(());
         };
-        let source = *client.instrument_id();
-        while let Some(request) = self.callback_requests.try_pop() {
-            send_request(client, request, source, &self.state)?;
+        // Finish an audio frame before putting a control frame on the wire.
+        if self.audio_frame_left > 0 {
+            wire::write_wire(
+                &mut self.wire,
+                client,
+                &mut self.audio_frame_left,
+                &mut self.stuck_since,
+                true,
+            )?;
         }
-        // Stops when empty, or when the UI half is gone and the link is
-        // closing.
-        while let Ok(request) = self.ui_requests.try_recv() {
-            send_request(client, request, source, &self.state)?;
-        }
-        loop {
-            let pending = if let Some(pending) = self.pending {
-                pending
+        if self.audio_frame_left == 0 {
+            let source = *client.instrument_id();
+            while let Some(request) = self.callback_requests.try_pop() {
+                send_request(client, request, source, &self.state, &mut self.stuck_since)?;
+            }
+            while let Ok(request) = self.ui_requests.try_recv() {
+                send_request(client, request, source, &self.state, &mut self.stuck_since)?;
+            }
+            let before = client.pending_bytes();
+            client
+                .flush()
+                .map_err(|err| format!("sending to the desk failed: {err}"))?;
+            let after = client.pending_bytes();
+            if after < before {
+                self.stuck_since = None;
+            }
+            if after > 0 {
+                wire::check_stuck(&mut self.stuck_since)?;
             } else {
-                match self.audio.pop_block(&mut self.scratch) {
-                    Ok(block) => Pending {
-                        stream_frame: block.header.start_frame,
-                        frames: block.header.frames,
-                        samples: block.samples_copied,
-                    },
-                    Err(AudioRingPopError::Empty) => break,
-                    Err(AudioRingPopError::OutputTooSmall { required, .. }) => {
-                        self.scratch.resize(required, 0.0);
-                        continue;
-                    }
-                }
-            };
-            match client.send_audio(
-                pending.stream_frame,
-                pending.frames,
-                &self.scratch[..pending.samples],
-            ) {
-                Ok(()) => {
-                    self.state.blocks_sent.fetch_add(1, Ordering::Relaxed);
-                    self.pending = None;
-                    self.stuck_since = None;
-                }
-                Err(OutboxError::Stuck) => {
-                    self.pending = Some(pending);
-                    let now = Instant::now();
-                    let since = *self.stuck_since.get_or_insert(now);
-                    if now.duration_since(since) > STUCK_LIMIT {
-                        return Err(format!(
-                            "the desk stopped taking audio for over {} ms",
-                            STUCK_LIMIT.as_millis()
-                        ));
-                    }
-                    break;
-                }
-                Err(OutboxError::TooLarge) => {
-                    return Err(format!(
-                        "an audio block of {} frames is too large for the desk",
-                        pending.frames
-                    ));
-                }
-                Err(OutboxError::Io(err)) => return Err(format!("sending audio failed: {err}")),
+                wire::write_wire(
+                    &mut self.wire,
+                    client,
+                    &mut self.audio_frame_left,
+                    &mut self.stuck_since,
+                    false,
+                )?;
             }
         }
-        client
-            .flush()
-            .map_err(|err| format!("sending to the desk failed: {err}"))?;
         loop {
             match client.try_recv() {
                 Ok(Some(HubMessage::Shutdown)) => return Err("the desk closed".to_string()),
@@ -1071,9 +1049,8 @@ impl LinkWorker {
         };
         self.health_now = DeskHealthMsg::default();
         self.publish_health();
-        if self.pending.take().is_some() {
-            self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
-        }
+        self.discard_backlog();
+        self.audio_frame_left = 0;
         self.stuck_since = None;
     }
 
@@ -1096,16 +1073,10 @@ impl LinkWorker {
     /// Drop audio and requests the halves queued before they saw the link
     /// go down.
     fn discard_backlog(&mut self) {
-        loop {
-            match self.audio.pop_block(&mut self.scratch) {
-                Ok(_) => {
-                    self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
-                }
-                Err(AudioRingPopError::Empty) => break,
-                Err(AudioRingPopError::OutputTooSmall { required, .. }) => {
-                    self.scratch.resize(required, 0.0);
-                }
-            }
+        let bytes = self.wire.occupied_len();
+        self.wire.clear();
+        if bytes > 0 {
+            self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
         }
         while self.callback_requests.try_pop().is_some() {
             self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
@@ -1121,6 +1092,23 @@ impl LinkWorker {
         let Some(client) = self.client.as_mut() else {
             return;
         };
+        if self.audio_frame_left > 0 {
+            if let Err(why) = wire::write_wire(
+                &mut self.wire,
+                client,
+                &mut self.audio_frame_left,
+                &mut self.stuck_since,
+                true,
+            ) {
+                self.set_refusal(Some(why));
+                self.client = None;
+                return;
+            }
+            if self.audio_frame_left > 0 {
+                self.client = None;
+                return;
+            }
+        }
         if client.send_shutdown().is_err() {
             // The connection is already gone or wedged; closing it below
             // tells the hub the same thing.
@@ -1144,13 +1132,24 @@ fn send_request(
     request: Request,
     source: [u8; 16],
     state: &LinkState,
+    stuck_since: &mut Option<Instant>,
 ) -> Result<(), String> {
+    let before = client.pending_bytes();
+    let payload_len = match &request {
+        Request::Transport { .. } => TransportRequestMsg::WIRE_SIZE,
+        Request::Note(_) => NoteEventMsg::WIRE_SIZE,
+    };
     let sent = match request {
         Request::Transport { state, bpm } => client.send_transport_request(state, bpm),
         Request::Note(event) => client.send_note_event(&NoteEventMsg { source, ..event }),
     };
     match sent {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            if client.pending_bytes() < before + HEADER_SIZE + payload_len {
+                *stuck_since = None;
+            }
+            Ok(())
+        }
         // The hub is not reading; the audio path decides when to give up.
         Err(OutboxError::Stuck) => {
             state.messages_dropped.fetch_add(1, Ordering::Relaxed);
