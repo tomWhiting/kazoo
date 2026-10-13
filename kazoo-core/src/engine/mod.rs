@@ -111,18 +111,21 @@ impl Default for EngineConfig {
 }
 
 /// Preserve the requested range and voicing threshold at the device's rate.
-/// Run once per window at 0.1-semitone resolution until V06 retires this detector.
+///
+/// Run once per window at 0.1-semitone resolution until V06 retires this
+/// detector. Below about 18 kHz pYIN cannot hold a one-window hop over the
+/// default range, so there the hop halves until it can (to 1024 samples at
+/// 16 kHz and 512 at 8 kHz): the engine starts at every device rate.
 #[must_use]
-pub const fn judge_config(asked: &PitchDetectorConfig, rate: u32) -> PitchDetectorConfig {
-    let device = PitchDetectorConfig::for_rate(rate);
+pub fn judge_config(asked: &PitchDetectorConfig, rate: u32) -> PitchDetectorConfig {
     PitchDetectorConfig {
         min_frequency: asked.min_frequency,
         max_frequency: asked.max_frequency,
         voiced_threshold: asked.voiced_threshold,
-        hop_length: device.frame_length,
         resolution: 0.1,
-        ..device
+        ..PitchDetectorConfig::for_rate(rate)
     }
+    .with_longest_hop()
 }
 
 // ---------------------------------------------------------------------------

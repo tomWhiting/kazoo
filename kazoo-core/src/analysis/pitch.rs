@@ -72,6 +72,28 @@ impl PitchDetectorConfig {
             ..Self::for_rate(44_100)
         }
     }
+
+    /// This configuration with the longest hop pYIN can hold: one run per
+    /// window where it can, halving towards a quarter of the frame (pYIN's own
+    /// hop) where it cannot. A long window at a low rate (2048 samples is 128 ms
+    /// at 16 kHz) lets a pitch move further per hop than the range holds, and
+    /// pYIN refuses that. If no hop down to a quarter frame builds, the hop
+    /// stays the whole frame and [`PitchDetector::new`] reports why.
+    #[must_use]
+    pub fn with_longest_hop(self) -> Self {
+        let mut hop_length = self.frame_length;
+        while hop_length > 0 && hop_length >= self.frame_length / 4 {
+            let candidate = Self { hop_length, ..self };
+            if validate(&candidate).is_ok() {
+                return candidate;
+            }
+            hop_length /= 2;
+        }
+        Self {
+            hop_length: self.frame_length,
+            ..self
+        }
+    }
 }
 
 impl Default for PitchDetectorConfig {
@@ -127,48 +149,7 @@ impl PitchDetector {
     /// range, or a range, frame and hop that pyin cannot build a detector
     /// for).
     pub fn new(config: PitchDetectorConfig) -> crate::Result<Self> {
-        if !config.min_frequency.is_finite()
-            || !config.max_frequency.is_finite()
-            || config.min_frequency <= 0.0
-            || config.min_frequency >= config.max_frequency
-        {
-            return Err(crate::Error::Config(format!(
-                "invalid frequency range: [{}, {}]",
-                config.min_frequency, config.max_frequency
-            )));
-        }
-
-        let nyquist = f64::from(config.sample_rate) / 2.0;
-        if f64::from(config.max_frequency) > nyquist {
-            return Err(crate::Error::Config(format!(
-                "max_frequency {} exceeds Nyquist {}",
-                config.max_frequency, nyquist
-            )));
-        }
-
-        if config.frame_length < 4 {
-            return Err(crate::Error::Config(
-                "frame_length must be at least 4".into(),
-            ));
-        }
-
-        if config.hop_length == 0 || config.hop_length > config.frame_length {
-            return Err(crate::Error::Config(
-                "hop_length must be between 1 and frame_length".into(),
-            ));
-        }
-
-        if config.sample_rate == 0 {
-            return Err(crate::Error::Config("sample_rate must be > 0".into()));
-        }
-
-        if !config.resolution.is_finite() || !(0.01..=1.0).contains(&config.resolution) {
-            return Err(crate::Error::Config(
-                "resolution must be finite and between 0.01 and 1.0".into(),
-            ));
-        }
-
-        check_pyin_limits(&config)?;
+        validate(&config)?;
 
         let history_len = (JUDGE_FRAMES - 1)
             .checked_mul(config.hop_length)
@@ -275,6 +256,52 @@ impl PitchDetector {
             midi_note: frequency.and_then(frequency_to_midi_note),
         }
     }
+}
+
+/// Refuse a configuration [`PitchDetector::new`] cannot build a detector for.
+fn validate(config: &PitchDetectorConfig) -> crate::Result<()> {
+    if !config.min_frequency.is_finite()
+        || !config.max_frequency.is_finite()
+        || config.min_frequency <= 0.0
+        || config.min_frequency >= config.max_frequency
+    {
+        return Err(crate::Error::Config(format!(
+            "invalid frequency range: [{}, {}]",
+            config.min_frequency, config.max_frequency
+        )));
+    }
+
+    let nyquist = f64::from(config.sample_rate) / 2.0;
+    if f64::from(config.max_frequency) > nyquist {
+        return Err(crate::Error::Config(format!(
+            "max_frequency {} exceeds Nyquist {}",
+            config.max_frequency, nyquist
+        )));
+    }
+
+    if config.frame_length < 4 {
+        return Err(crate::Error::Config(
+            "frame_length must be at least 4".into(),
+        ));
+    }
+
+    if config.hop_length == 0 || config.hop_length > config.frame_length {
+        return Err(crate::Error::Config(
+            "hop_length must be between 1 and frame_length".into(),
+        ));
+    }
+
+    if config.sample_rate == 0 {
+        return Err(crate::Error::Config("sample_rate must be > 0".into()));
+    }
+
+    if !config.resolution.is_finite() || !(0.01..=1.0).contains(&config.resolution) {
+        return Err(crate::Error::Config(
+            "resolution must be finite and between 0.01 and 1.0".into(),
+        ));
+    }
+
+    check_pyin_limits(config)
 }
 
 /// Refuse a configuration that pyin's `PYINExecutor::new` would panic on.
