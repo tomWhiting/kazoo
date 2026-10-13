@@ -211,7 +211,7 @@ Doc tests, because `What::Go` and `Rack` docs change: `nice lockf -k /Users/tom/
 3. An input that changes source goes quiet at the half (old out over 8 beats, new in over 8), because one jack holds one cable.
 4. Shared modules keep running through a crossing (their phase, step and tails), so a crossing to a moment never sounds bit for bit like a cut to it; a cut (beats 0) is still there for that.
 5. A crossing that would overload the wall becomes a cut, for Tom's console too.
-6. Loads of saves stay cuts. If Tom wants loads to cross too, it is a small lane after T05c (a save's modules carry their births since T01).
+6. Loads of saves stay cuts in this lane. Superseded 13 Oct evening: KZ-T05d and KZ-T05e make loads cross as goes do (a save is a mark on the tree; the verb must not change the sound).
 
 ## Code quality
 
