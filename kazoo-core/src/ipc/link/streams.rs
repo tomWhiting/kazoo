@@ -321,7 +321,7 @@ pub(super) fn stream_update(request: &Request) -> Option<ToAudio> {
             stream,
             channels: None,
         }),
-        Request::Transport { .. } | Request::Note(_) => None,
+        Request::Transport { .. } | Request::Note(_) | Request::VoiceFollow(_) => None,
     }
 }
 

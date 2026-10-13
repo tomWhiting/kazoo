@@ -249,6 +249,7 @@ fn blocks_dropped_counts_a_discarded_backlog_once() {
     }
     let before = link.status().blocks_dropped;
     let mut worker = LinkWorker {
+        voice: super::super::voice::rings().2,
         config: config(&path),
         state: Arc::clone(&link.state),
         wire: consumer,

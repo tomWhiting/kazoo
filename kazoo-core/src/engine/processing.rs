@@ -682,7 +682,7 @@ fn ask_desk(io: &mut ProcessingIO, state: &mut ProcessingState, cmd: TransportCo
             }
             true
         }
-        Err(RequestError::Invalid) => {
+        Err(RequestError::Invalid | RequestError::Unsupported) => {
             state.stats.desk_request_dropped();
             true
         }

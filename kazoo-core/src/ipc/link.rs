@@ -36,7 +36,7 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
@@ -61,6 +61,8 @@ use crate::realtime::{NotRealTime, RealTime};
 use crate::sanitize_sample;
 
 mod audio;
+mod voice;
+pub use voice::{VOICE_RING, VoiceLinkStats, VoiceRx};
 mod streams;
 pub use streams::StreamConfig;
 use streams::{OLD_DESK_REFUSAL, set_stream_refusal, stream_update};
@@ -197,6 +199,8 @@ pub enum RequestError {
     /// The request is not valid: an unknown transport state or note event,
     /// a value out of MIDI range, or a tempo that is not a positive number.
     Invalid,
+    /// The connected desk has not announced voice support.
+    Unsupported,
 }
 
 impl fmt::Display for RequestError {
@@ -205,6 +209,7 @@ impl fmt::Display for RequestError {
             Self::NotConnected => "not plugged into the desk",
             Self::Full => "too many requests waiting for the hub",
             Self::Invalid => "invalid request",
+            Self::Unsupported => "this desk is too old to carry the voice",
         })
     }
 }
@@ -218,6 +223,7 @@ enum Request {
     Note(NoteEventMsg),
     StreamAdd { stream: StreamId, spec: StreamSpec },
     StreamRemove { stream: StreamId },
+    VoiceFollow(bool),
 }
 
 impl Request {
@@ -251,6 +257,12 @@ impl Request {
 #[derive(Debug)]
 struct LinkState {
     connected: Arc<AtomicBool>,
+    desk_features: AtomicU32,
+    follow_voice: AtomicBool,
+    voice_sent: AtomicU64,
+    voice_dropped: AtomicU64,
+    voice_received: AtomicU64,
+    voice_overflow: AtomicU64,
     strips: [AtomicU8; MAX_STREAMS],
     streams: std::sync::Mutex<[Option<StreamConfig>; MAX_STREAMS]>,
     stream_live: AtomicU64,
@@ -388,6 +400,10 @@ impl PaceSlot {
 /// Counters for the instrument's UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkStatus {
+    /// The instrument's persistent follow wish.
+    pub follows_voice: bool,
+    /// The connected desk announced voice support.
+    pub desk_carries_voice: bool,
     /// The link was refused real-time scheduling.
     pub normal_priority: bool,
     /// Plugged into the desk.
@@ -421,6 +437,8 @@ pub struct HubLink {
 
 /// The audio-callback half of the link.
 pub struct HubLinkAudio {
+    voice_out: ringbuf::HeapProd<crate::voice::VoiceFrame>,
+    pub voice: VoiceRx,
     wire: ringbuf::HeapProd<u8>,
     seq: u32,
     pub events: crate::host::link::EventRx,
@@ -483,9 +501,16 @@ pub(crate) fn start_link(
     let (wire_tx, wire_rx) = HeapRb::<u8>::new(wire_bytes).split();
     let (message_tx, message_rx) = HeapRb::<ToAudio>::new(MESSAGE_BACKLOG).split();
     let (callback_tx, callback_rx) = HeapRb::<Request>::new(REQUEST_BACKLOG).split();
+    let (voice_out, voice, worker_voice) = voice::rings();
     let (ui_tx, ui_rx) = mpsc::sync_channel(REQUEST_BACKLOG);
     let state = Arc::new(LinkState {
         connected: Arc::new(AtomicBool::new(false)),
+        desk_features: AtomicU32::new(0),
+        follow_voice: AtomicBool::new(false),
+        voice_sent: AtomicU64::new(0),
+        voice_dropped: AtomicU64::new(0),
+        voice_received: AtomicU64::new(0),
+        voice_overflow: AtomicU64::new(0),
         strips: std::array::from_fn(|_| AtomicU8::new(NO_STRIP)),
         stream_live: AtomicU64::new((1 << slots.iter().flatten().count()) - 1),
         streams: streams::table(slots),
@@ -508,6 +533,7 @@ pub(crate) fn start_link(
     let wake_audio = config.wake_audio;
     let running = Arc::new(AtomicBool::new(start));
     let mut worker = LinkWorker {
+        voice: worker_voice,
         config,
         state: Arc::clone(&state),
         wire: wire_rx,
@@ -552,6 +578,8 @@ pub(crate) fn start_link(
             finished,
         },
         HubLinkAudio {
+            voice_out,
+            voice,
             wire: wire_tx,
             seq: 0,
             events,
@@ -624,6 +652,8 @@ impl HubLink {
             Err(poisoned) => poisoned.into_inner().clone(),
         };
         LinkStatus {
+            follows_voice: self.state.follow_voice.load(Ordering::Acquire),
+            desk_carries_voice: self.desk_carries_voice(),
             normal_priority: self.real_time().is_some_and(Result::is_err),
             connected: self.is_connected(),
             strip: (strip != NO_STRIP).then_some(strip),
@@ -811,6 +841,7 @@ impl HubLinkAudio {
 
 /// The link thread's state.
 struct LinkWorker {
+    voice: voice::VoiceWorker,
     config: LinkConfig,
     state: Arc<LinkState>,
     wire: ringbuf::HeapCons<u8>,
@@ -940,6 +971,8 @@ impl LinkWorker {
                     &mut self.stuck_since,
                 )?;
             }
+            self.voice
+                .send(client, &self.state, &mut self.stuck_since)?;
             let before = client.pending_bytes();
             client
                 .flush()
@@ -960,46 +993,15 @@ impl LinkWorker {
                 )?;
             }
         }
-        loop {
-            match client.try_recv() {
-                Ok(Some(HubMessage::Shutdown)) => return Err("the desk closed".to_string()),
-                Ok(Some(message)) => {
-                    if let HubMessage::StreamReady { stream, strip } = &message {
-                        let id = usize::from(*stream);
-                        if self.state.stream_live.load(Ordering::Acquire) & (1 << id) != 0 {
-                            self.state.strips[id]
-                                .store(strip.unwrap_or(NO_STRIP), Ordering::Release);
-                        }
-                        if let Some(reason) = client.take_stream_refusal() {
-                            match self.state.last_stream_refusal.lock() {
-                                Ok(mut slot) => *slot = Some(reason),
-                                Err(poisoned) => *poisoned.into_inner() = Some(reason),
-                            }
-                        }
-                    }
-                    if self.messages.try_push(ToAudio::Hub(message)).is_err() {
-                        self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-                Ok(None) => {
-                    if let Some(pace) = client.take_desk_pace() {
-                        self.state.pace.store(Some((pace, Instant::now())));
-                    }
-                    if let Some(health) = client.take_desk_health() {
-                        self.health_now = health;
-                        self.publish_health();
-                    }
-                    return Ok(());
-                }
-                Err(err) => return Err(format!("the desk connection failed: {err}")),
-            }
-        }
+        self.read_hub()
     }
 
     fn disconnect(&mut self, why: String) {
         // The reason goes first: anyone who sees the link down can read why.
         self.set_refusal(Some(why));
         self.state.connected.store(false, Ordering::Release);
+        self.state.desk_features.store(0, Ordering::Release);
+        self.voice.discard(self.client.as_ref(), &self.state);
         for strip in &self.state.strips {
             strip.store(NO_STRIP, Ordering::Release);
         }
@@ -1042,6 +1044,7 @@ impl LinkWorker {
     /// Drop audio and requests the halves queued before they saw the link
     /// go down.
     fn discard_backlog(&mut self) {
+        self.voice.discard(self.client.as_ref(), &self.state);
         // Count what `clear` removed: a frame may land after any earlier look.
         if self.wire.clear() > 0 {
             self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
@@ -1054,7 +1057,7 @@ impl LinkWorker {
             // is built from: nothing is lost.
             if !matches!(
                 request,
-                Request::StreamAdd { .. } | Request::StreamRemove { .. }
+                Request::StreamAdd { .. } | Request::StreamRemove { .. } | Request::VoiceFollow(_)
             ) {
                 self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
             }
@@ -1064,6 +1067,8 @@ impl LinkWorker {
     /// Tell the hub the instrument is leaving, and give it a moment to go.
     fn say_goodbye(&mut self) {
         self.state.connected.store(false, Ordering::Release);
+        self.state.desk_features.store(0, Ordering::Release);
+        self.voice.discard(self.client.as_ref(), &self.state);
         let Some(client) = self.client.as_mut() else {
             return;
         };
@@ -1130,6 +1135,7 @@ fn send_request(
         Request::Note(_) => NoteEventMsg::WIRE_SIZE,
         Request::StreamAdd { .. } => StreamAddMsg::WIRE_SIZE,
         Request::StreamRemove { .. } => StreamRemoveMsg::WIRE_SIZE,
+        Request::VoiceFollow(_) => 1,
     };
     let sent = match request {
         Request::Transport { state, bpm } => client.send_transport_request(state, bpm),
@@ -1138,6 +1144,7 @@ fn send_request(
             client.send_stream_add(&StreamAddMsg { stream, spec })
         }
         Request::StreamRemove { stream } => client.send_stream_remove(stream),
+        Request::VoiceFollow(on) => voice::send_follow(client, state, on),
     };
     match sent {
         Ok(()) => {
@@ -1155,10 +1162,10 @@ fn send_request(
         Err(OutboxError::Stuck)
             if matches!(
                 request,
-                Request::StreamAdd { .. } | Request::StreamRemove { .. }
+                Request::StreamAdd { .. } | Request::StreamRemove { .. } | Request::VoiceFollow(_)
             ) =>
         {
-            Err("stream request outbox is full".to_string())
+            Err("stream or voice follow request outbox is full".to_string())
         }
         Err(OutboxError::Stuck) => {
             state.messages_dropped.fetch_add(1, Ordering::Relaxed);
