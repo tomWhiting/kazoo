@@ -851,15 +851,9 @@ impl Effect for Spring {
         // spring, by at most MAX_SLEW samples a sample.
         let reach = 2.0 * (TRIP_SLACK - TRIP_TIGHT) * SPRINGS[1].0 * rate;
         self.tension.set_speed(MAX_SLEW / reach);
-        self.tension.snap(self.knobs.get(TENSION));
-        self.knobs.prepare(rate, &GLIDES);
-        let third = if self.knobs.target(SPRING_COUNT) >= 2.5 {
-            1.0
-        } else {
-            0.0
-        };
-        self.third.snap(third);
         self.prepared = true;
+        // The knobs, the tension and the third spring settle in `reset`, so a
+        // reset tank and a freshly prepared one start from the same place.
         self.reset();
     }
 

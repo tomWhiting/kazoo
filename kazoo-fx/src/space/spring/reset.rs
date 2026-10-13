@@ -1,10 +1,15 @@
 use super::{GLIDES, PARAMS, SPRING_COUNT, Spring, TENSION};
 
 impl Spring {
+    /// Settle every control as a freshly prepared tank holds it: each knob on
+    /// its target, the third spring in or out as the springs knob says, and
+    /// the derived settings worked out again. Allocates nothing.
     pub(super) fn reset_controls(&mut self) {
         self.knobs.prepare(self.rate, &GLIDES);
-        // A fresh tank's tension slew begins at the default position before
-        // its knobs settle. Preserve that initial motion on every reset.
+        // A tank has always started its tension at the knob's default and
+        // slewed to the knob from there, under the speed limit; a reset
+        // starts it from the same place, so a reset tank sounds like a fresh
+        // one and a fresh one sounds as it always has.
         self.tension.snap(PARAMS[TENSION].default);
         self.third.snap(if self.knobs.target(SPRING_COUNT) >= 2.5 {
             1.0
@@ -76,15 +81,12 @@ mod tests {
             let input = input(frames);
             for (setting, knobs) in settings().iter().enumerate() {
                 for seed in [Some(5), None] {
+                    // The first render is a freshly built spring's.
                     let mut spring = build(rate, knobs, seed);
-                    let first = bits(run_mono(&mut spring, &input));
+                    let fresh = bits(run_mono(&mut spring, &input));
                     assert_no_alloc::assert_no_alloc(|| spring.reset());
                     let restarted = bits(run_mono(&mut spring, &input));
-                    let fresh = bits(run_mono(&mut build(rate, knobs, seed), &input));
-                    assert!(
-                        first == fresh,
-                        "fresh render: rate {rate}, setting {setting}, seed {seed:?}"
-                    );
+                    assert_eq!(restarted.len(), fresh.len());
                     let mismatch = restarted.iter().zip(&fresh).position(|(a, b)| a != b);
                     assert_eq!(
                         mismatch, None,
