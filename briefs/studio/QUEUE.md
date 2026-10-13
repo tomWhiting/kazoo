@@ -98,3 +98,6 @@ REVIEWED KZ-D03 READY head=cc0a97a (Opus fixed 3: stale delay-line replay when a
 END KZ-B02 head=797e59c reviewed=READY(fixed refusal Display panic, uncounted backlog drop, docs; p99 A/B overlaps base) merged=1140b44 at 13:48
 START KZ-B03a base=1872329 branch=lane/kz-B03a df=53GB at 15:10
 MERGED KZ-A05 as 6214771 (+ fmt c-commit), with A04 part 2 fa3c8d8; merged tree clippy clean, nextest 3752/3752; pushed at 15:50 on Tom's 'move through it as best we can'
+START KZ-V01 base=1e616d7 branch=lane/kz-V01 df=28GB at 15:50
+START KZ-L01 base=1e616d7 branch=lane/kz-L01 df=22GB at 16:05
+MERGED KZ-W01a 779e316, KZ-A07 4369e77, KZ-D03 247ca07 (render.rs clash resolved); combined fmt/clippy/nextest green; pushed at 16:19
