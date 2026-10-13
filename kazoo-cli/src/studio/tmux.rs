@@ -64,10 +64,43 @@ pub(super) fn up(tmux: &Path, plan: &LaunchPlan, rate: Option<u32>) -> Result<()
         Ok(pid) => pid,
         Err(error) => return abandon(tmux, &plan.session, None, error),
     };
-    match start_children(tmux, plan, rate, &socket, pid) {
-        Ok(()) => Ok(()),
-        Err(error) => abandon(tmux, &plan.session, Some(pid), error),
+    let attach = match start_children(tmux, plan, rate, &socket, pid) {
+        Ok(attach) => attach,
+        Err(error) => return abandon(tmux, &plan.session, Some(pid), error),
+    };
+    // Every pane is up. An attach that fails (no terminal, or a tmux
+    // client that refuses to nest) leaves the studio running, says so and
+    // says how to reach it, instead of tearing down a working studio.
+    let nested = std::env::var_os("TMUX").is_some_and(|value| !value.is_empty());
+    let args = attach_args(attach, nested);
+    let status = Command::new(tmux)
+        .args(&args)
+        .status()
+        .wrap_err_with(|| format!("starting tmux {args:?}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        let name = plan
+            .session
+            .strip_prefix("kazoo-")
+            .unwrap_or(&plan.session);
+        Err(eyre!(
+            "the studio is running but tmux {} exited {status}; reach it with \
+             tmux attach -t ={}, stop it with kazoo studio down {name}",
+            args[0],
+            plan.session
+        ))
     }
+}
+
+/// Attach from a plain terminal; from inside tmux, switch this client to
+/// the studio, since tmux refuses to nest an attach.
+fn attach_args(attach: &TmuxCommand, nested: bool) -> Vec<String> {
+    let mut args = attach.args.clone();
+    if nested && args.first().is_some_and(|verb| verb == "attach") {
+        args[0] = "switch-client".into();
+    }
+    args
 }
 
 /// Stop a studio that failed to start, keeping the failure that stopped it.
@@ -83,13 +116,15 @@ fn abandon(
     }
 }
 
-fn start_children(
+/// Wait for the desk, then open every instrument pane; answers the attach
+/// command still to run.
+fn start_children<'plan>(
     tmux: &Path,
-    plan: &LaunchPlan,
+    plan: &'plan LaunchPlan,
     rate: Option<u32>,
     socket: &Path,
     pid: u32,
-) -> Result<()> {
+) -> Result<&'plan TmuxCommand> {
     wait_for_desk(tmux, &plan.session, socket, pid, rate)?;
     let (attach, children) = plan.commands[1..]
         .split_last()
@@ -97,15 +132,7 @@ fn start_children(
     for command in children {
         invoke(tmux, command)?;
     }
-    let status = Command::new(tmux)
-        .args(&attach.args)
-        .status()
-        .wrap_err("attaching to the studio")?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(eyre!("tmux attach exited {status}"))
-    }
+    Ok(attach)
 }
 
 fn wait_for_desk(
@@ -496,6 +523,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(String::from_utf8(listed.stdout).unwrap(), "0\n0\n0\n");
+    }
+
+    #[test]
+    fn inside_tmux_the_studio_is_switched_to_instead_of_nested() {
+        let attach = TmuxCommand {
+            args: vec!["attach".into(), "-t".into(), "=kazoo-demo".into()],
+        };
+        assert_eq!(attach_args(&attach, false), ["attach", "-t", "=kazoo-demo"]);
+        assert_eq!(
+            attach_args(&attach, true),
+            ["switch-client", "-t", "=kazoo-demo"]
+        );
     }
 
     #[test]
