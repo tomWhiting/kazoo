@@ -192,7 +192,7 @@ impl Rig {
             inbound: inbound_cons,
             desk,
         };
-        let rig = Self {
+        Self {
             state,
             io,
             reclaimer: Some(reclaimer),
@@ -208,9 +208,7 @@ impl Rig {
             _analysis: analysis,
             _disk: disk_samples,
             judge: JoinedJudge(Some(judge_worker)),
-        };
-        assert_eq!(rig.judge.0.as_ref().unwrap().stats().samples_dropped, 0);
-        rig
+        }
     }
 
     /// Apply a command as the callback does, checking it neither

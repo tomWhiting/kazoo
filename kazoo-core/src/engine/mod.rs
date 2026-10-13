@@ -113,10 +113,10 @@ impl Default for EngineConfig {
 
 /// Preserve the requested range and voicing threshold at the device's rate.
 ///
-/// Run once per window at 0.1-semitone resolution. Below about 18 kHz
-/// pYIN cannot hold a one-window hop over the
-/// default range, so there the hop halves until it can (to 1024 samples at
-/// 16 kHz and 512 at 8 kHz): the engine starts at every device rate.
+/// The judge runs once per window at 0.1-semitone resolution. Below about
+/// 18 kHz pYIN cannot hold a one-window hop over the default range, so
+/// there the hop halves until it can (to 1024 samples at 16 kHz and 512 at
+/// 8 kHz): the engine starts at every device rate.
 #[must_use]
 pub fn judge_config(asked: &PitchDetectorConfig, rate: u32) -> PitchDetectorConfig {
     PitchDetectorConfig {

@@ -414,6 +414,10 @@ fn a_busy_session_never_allocates_or_frees_on_the_audio_thread() {
     handle
         .add_synth_layer(ids[1], SynthesisMode::Wavetable, "Pad".into())
         .unwrap();
+    // A voice-following synth, so the sung pitch reaches a synth that uses it.
+    handle
+        .set_track_synthesis_mode(ids[5], SynthesisMode::PitchTracked)
+        .unwrap();
 
     // Three takes on every track, long enough to cross chunks.
     for _ in 0..3 {
@@ -519,12 +523,6 @@ fn an_armed_track_follows_a_note_change_within_two_periods() {
     let mut rig = Rig::build(RATE, 128, OUTBOUND_CAPACITY, None);
     let id = rig.add_track("Voice", SynthesisMode::PitchTracked);
     rig.apply(EngineCommand::SetTrackArm(id, true));
-    rig.state
-        .mixer
-        .track_mut(id)
-        .unwrap()
-        .synth_mut()
-        .set_pitch(220.0);
     let mut curve = vec![220.0; 113];
     curve.extend_from_slice(&[330.0; 4]);
     let targets = sing(&mut rig, &curve);
