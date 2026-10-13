@@ -358,3 +358,19 @@ fn malformed_files_are_errors_never_panics() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn a_new_nested_directory_is_created_private() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    let reels = dir.path().join("home/.kazoo/reels");
+    let store = ReelStore::open(&reels)?;
+    assert_eq!(fs::metadata(&reels)?.permissions().mode() & 0o777, 0o700);
+    assert_eq!(
+        fs::metadata(reels.join("pins"))?.permissions().mode() & 0o777,
+        0o700
+    );
+    let id = store.put(48_000, &[0.25, -0.25])?;
+    assert_eq!(store.get(&id)?.rate, 48_000);
+    Ok(())
+}

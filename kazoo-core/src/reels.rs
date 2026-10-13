@@ -345,21 +345,32 @@ impl ReelStore {
     /// Create the store and its pin directory with private directory modes.
     /// A directory that already exists is made private too, as the wall's
     /// state directory is.
+    /// Each directory it creates is flushed into its parent, so a pin list
+    /// or a reel is never written into a directory a power cut can take back.
     pub fn open(dir: &Path) -> io::Result<Self> {
+        let mut created = Vec::new();
+        for ancestor in dir.ancestors() {
+            if ancestor.as_os_str().is_empty() || ancestor.exists() {
+                break;
+            }
+            created.push(ancestor.to_owned());
+        }
         DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
         let pins = dir.join("pins");
-        DirBuilder::new()
-            .mode(0o700)
-            .create(&pins)
-            .or_else(|error| {
-                if error.kind() == io::ErrorKind::AlreadyExists && pins.is_dir() {
-                    Ok(())
-                } else {
-                    Err(error)
-                }
-            })?;
+        let pins_created = match DirBuilder::new().mode(0o700).create(&pins) {
+            Ok(()) => true,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && pins.is_dir() => false,
+            Err(error) => return Err(error),
+        };
         fs::set_permissions(&pins, fs::Permissions::from_mode(0o700))?;
+        if pins_created {
+            sync_dir(dir)?;
+        }
+        // Each new directory's name is made durable in its parent.
+        for path in &created {
+            sync_dir(parent_dir(path))?;
+        }
         Ok(Self {
             dir: dir.to_owned(),
         })
@@ -666,6 +677,17 @@ fn old_enough(metadata: &fs::Metadata, grace: Duration, now: SystemTime) -> io::
         .modified()?
         .checked_add(grace)
         .is_some_and(|deadline| deadline < now))
+}
+
+/// The directory holding `path`; a bare relative name lives in `.`.
+fn parent_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    File::open(dir)?.sync_all()
 }
 
 fn remove_if_present(path: &Path) -> io::Result<()> {
