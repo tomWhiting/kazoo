@@ -433,3 +433,27 @@ fn undoing_a_restore_that_replaced_a_cable_is_costed_at_what_it_wakes() {
     assert_eq!(wall.patch.to_file(), before);
     assert!(wall.patch.module(&cheap).is_some());
 }
+
+/// Tom's live patch of the morning of 13 Oct (41 modules, KZ-D14's bench
+/// patch), which the wall rendered at 57% of its time: on an idle wall it
+/// is inside the guard, and a seat can put it up. Bench costs taken on a
+/// machine too busy to measure (a load average near 100 on ten cores)
+/// costed it at about 251%, so no seat could load any of Tom's saves.
+#[test]
+fn a_save_the_wall_renders_inside_the_guard_is_put_up() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    let saves = wall.store.as_ref().unwrap().saves_dir();
+    std::fs::create_dir_all(&saves).unwrap();
+    std::fs::write(
+        saves.join("live patch.json"),
+        include_bytes!("../../../../benches/live-patch-2026-10-13.json"),
+    )
+    .unwrap();
+    guarded(&mut wall, 0.05);
+    let load = Request::Load {
+        name: "live patch".to_string(),
+    };
+    let loaded = wall.request_as("Loader", false, &load, Instant::now());
+    assert!(loaded.is_ok(), "{:?}", loaded.err());
+    assert_eq!(wall.patch.modules().len(), 41);
+}
