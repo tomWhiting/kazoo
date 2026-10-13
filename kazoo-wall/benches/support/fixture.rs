@@ -1,8 +1,10 @@
 use kazoo_wall::catalogue::Kind;
 use kazoo_wall::dsp::build;
+use kazoo_wall::engine::tables::heard;
 use kazoo_wall::engine::{
     CableTable, Command, Engine, EngineConfig, EngineControl, Route, engine, processing_order,
 };
+use kazoo_wall::probe;
 use kazoo_wall::{MAX_INPUTS, MAX_JACKS, MAX_KNOBS};
 
 pub type Cable = (usize, usize, usize, usize, f32);
@@ -97,9 +99,17 @@ impl Fixture {
             .collect();
         let edges: Vec<(usize, usize)> =
             self.cables.iter().map(|cable| (cable.0, cable.2)).collect();
+        let sinks: Vec<usize> = self
+            .slots
+            .iter()
+            .filter_map(|(slot, kind)| {
+                (*kind == Kind::OUT || probe::measures(*kind)).then_some(*slot)
+            })
+            .collect();
+        let kept = heard(&slots, &edges, &sinks);
         self.control.send(Command::Cables(Box::new(table)));
         self.control.send(Command::Order(Box::new(processing_order(
-            &slots, &edges, &outs,
+            &kept, &edges, &outs,
         ))));
         let mut buffer = [0.0; 512 * 2];
         // Large fixtures outgrow the command ring before the first callback.

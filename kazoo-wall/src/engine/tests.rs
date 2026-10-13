@@ -5,6 +5,7 @@ use super::*;
 use crate::dsp::{Rng, build};
 
 mod sparse;
+mod unheard;
 
 const RATE: u32 = 48_000;
 

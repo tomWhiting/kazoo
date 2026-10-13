@@ -882,6 +882,8 @@ fn a_dry_path_is_held_back_to_meet_a_drive() {
     plug(&mut wall, "vco1.out", "klon1.left");
     let wet = plug(&mut wall, "klon1.left", "mix1.a").unwrap();
     let dry = plug(&mut wall, "vco1.out", "mix1.b").unwrap();
+    wall.request("Tom", &add("readout"), now).unwrap();
+    plug(&mut wall, "mix1.out", "readout1.in");
     let timing = wall.snapshot().timing;
     assert_eq!(timing.sample_rate, 48_000);
     let klon = timing.modules["klon1"];
@@ -902,8 +904,9 @@ fn a_dry_path_is_held_back_to_meet_a_drive() {
     let timing = wall.snapshot().timing;
     assert!(timing.cables.is_empty());
     assert!(!timing.modules.contains_key("mix1"));
-    // The drive still says what it costs.
-    assert_eq!(timing.modules["klon1"].latency_frames, klon.latency_frames);
+    // The disconnected drive is no longer measured or rendered.
+    assert!(!timing.modules.contains_key("klon1"));
+    assert_eq!(timing.unheard, ["klon1"]);
 }
 
 /// The flanger's own latency at `rate` with its `mode` knob at `mode`, as
@@ -961,6 +964,9 @@ fn built(kinds: &[&str], cables: &[(&str, &str)], now: Instant) -> (Wall, Vec<u3
             other => panic!("{from} → {to}: {other:?}"),
         }
     }
+    wall.request("Tom", &add("readout"), now).unwrap();
+    wall.request("Tom", &patch("mix1.out", "readout1.in"), now)
+        .unwrap();
     (wall, ids)
 }
 
@@ -5068,3 +5074,5 @@ fn a_small_heavy_wall_takes_additions_apart_and_says_when_it_is_full() {
     wall.engine.shared().set_render_load(SMALL_WALL_SETTLE);
     assert!(!wall.snapshot().engine.unwrap().refusing);
 }
+
+mod unheard;

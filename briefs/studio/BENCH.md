@@ -87,3 +87,52 @@ measured: the after run did not finish inside the builder's time box, and
 the review did not run benches under that load. The 5x speedup, the below
 25% of real time, and the chains within 3% requirements are not verified;
 both columns are to be measured on a quiet machine.
+
+
+## KZ-D03
+
+Base: 158d731, lane/kz-D03, uncommitted. The same prescribed filter ran
+before and after, serially: `wall/culled|wall/chains/10$`. The before
+fixture rendered every slot. The after fixture applies the same `heard`
+reachability as the wall before sorting its order. The engine render code
+is unchanged. Both fixtures retain every cable.
+
+Criterion interval midpoints, ns per 512-frame block at 48 kHz:
+
+| bench | D01 ns per block | D03 before ns per block | D03 after ns per block |
+|---|---:|---:|---:|
+| wall/chains/10 | not measured | 1,538,300 | 2,529,700 |
+| wall/culled/1000 | not measured | 29,436,000 | 2,295,500 |
+
+The measured ratio is 0.9074x after, within the 1.2x limit, versus
+19.1354x before. After intervals: chains/10 [2,132,500, 2,981,300] ns;
+culled/1000 [1,881,700, 2,722,700] ns. These runs shared the machine with
+other lane work and scoped validation builds. Their broad intervals and
+the chains/10 variation do not establish isolated render costs or a quiet
+machine baseline. The limit above compares the observed midpoints.
+
+The D01 section has no measurements for either requested row; its
+chains/1000 row is 291,080,000 ns under load and explicitly not a baseline.
+No missing D01 value has been inferred.
+
+Receipts: target/kz-logs/bench-before.txt and
+target/kz-logs/bench-after.txt. Both commands exited 0.
+
+### KZ-D03 review: base and head alternately
+
+The reviewer ran `cargo bench -p kazoo-wall --bench wall_render --
+'wall/culled|wall/chains/10$'` three rounds, base 158d731 then head
+44c08e5 each round, 14:13 to 14:18 on 13 October, load average 100 to
+130 (the builder's run shared the machine at about 190 to 260). Criterion
+midpoints, per 512 frame block; log `target/kz-logs/review-bench-ab.log`.
+
+| round | chains/10 base | chains/10 head | culled/1000 base | culled/1000 head |
+|---|---:|---:|---:|---:|
+| 1 | 884.23 µs | 538.28 µs | 10.408 ms | 166.95 µs |
+| 2 | 520.93 µs | 518.70 µs | 10.946 ms | 166.04 µs |
+| 3 | 538.15 µs | 525.40 µs | 9.7957 ms | 189.20 µs |
+
+chains/10 did not regress: its patch has no unheard module, so its order
+is the same on both sides and the engine is unchanged; the builder's 1.54
+to 2.53 ms was load. culled/1000 after is 0.32 to 0.36 times chains/10
+after, inside the 1.2 limit; before it was about 20 times.
