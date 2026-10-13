@@ -1,5 +1,5 @@
-pub use kazoo_host::terminal::KeyReleases;
 use kazoo_host::keys::{self, DEFAULT_REPEAT_DELAY, Octave, PianoKey};
+pub use kazoo_host::terminal::KeyReleases;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
