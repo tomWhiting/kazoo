@@ -1101,7 +1101,7 @@ impl Engine {
             self.drain_commands();
         }
         self.follow_desk();
-        let tick = Tick::new(self.sample_rate, self.bpm, self.beat);
+        let tick = Tick::new(self.sample_rate, self.bpm, self.beat).at_frame(self.rendered);
         for index in 0..self.order.slots().len() {
             // u32 into usize: lossless.
             let slot = self.order.slots()[index] as usize;
