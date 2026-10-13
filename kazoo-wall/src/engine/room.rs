@@ -102,8 +102,12 @@ impl Page {
     }
 
     /// Follow real cost increases slowly and discard preempted timings quickly.
+    /// A timing of nothing (both clock reads in one tick of the clock, about
+    /// 42 ns on Apple silicon) measured nothing and is ignored: held, it
+    /// would pin the cost at zero for good, a rise being clamped to
+    /// [`super::COST_CLAMP`] times what is held.
     pub(super) fn note_cost(&self, at: usize, ns: f32) {
-        if !ns.is_finite() {
+        if !ns.is_finite() || ns <= 0.0 {
             return;
         }
         let cell = &self.costs[at];
