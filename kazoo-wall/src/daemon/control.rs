@@ -257,8 +257,8 @@ struct Control {
     counts: AudioCounts,
     /// Whether the scheduling refusal has already been logged.
     told_link_refused: bool,
-    /// Process-wide shutdown failures already reported by this daemon.
-    reported_link_shutdowns: u64,
+    /// The process-wide desk link shutdown counts already logged.
+    reported_link_shutdowns: link_diagnostics::LinkShutdowns,
 }
 
 /// Run the control thread until stopped.
@@ -288,7 +288,7 @@ pub fn run(setup: Setup) {
         awaiting: HashMap::new(),
         counts: AudioCounts::new(Instant::now()),
         told_link_refused: false,
-        reported_link_shutdowns: 0,
+        reported_link_shutdowns: link_diagnostics::LinkShutdowns::default(),
     };
     while !control.stopping {
         match setup.inbox.recv_timeout(TICK) {
@@ -309,7 +309,7 @@ pub fn run(setup: Setup) {
     drop(control);
     link_diagnostics::report_shutdowns(
         &mut reported_link_shutdowns,
-        kazoo_core::ipc::link::stuck_shutdowns(),
+        link_diagnostics::LinkShutdowns::now(),
         |line| eprintln!("{line}"),
     );
     if setup.accept.join().is_err() {
@@ -817,7 +817,7 @@ impl Control {
         );
         link_diagnostics::report_shutdowns(
             &mut self.reported_link_shutdowns,
-            kazoo_core::ipc::link::stuck_shutdowns(),
+            link_diagnostics::LinkShutdowns::now(),
             |line| eprintln!("{line}"),
         );
         let now = Instant::now();

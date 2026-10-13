@@ -399,7 +399,7 @@ mod priority_tests;
 fn shutdown_span(count: u64) -> Option<Span<'static>> {
     (count > 0).then(|| {
         Span::styled(
-            format!(" {count} desk link shutdown failures  "),
+            format!(" desk link stuck at shutdown: {count}  "),
             Style::new().fg(Color::Yellow),
         )
     })
@@ -414,7 +414,7 @@ mod shutdown_tests {
         assert!(shutdown_span(0).is_none());
         assert_eq!(
             shutdown_span(2).unwrap().content,
-            " 2 desk link shutdown failures  "
+            " desk link stuck at shutdown: 2  "
         );
     }
 }

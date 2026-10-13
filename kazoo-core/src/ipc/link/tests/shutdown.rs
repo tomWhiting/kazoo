@@ -29,7 +29,8 @@ fn wedged_worker_shutdown_is_counted_after_link_drop() {
 fn undelivered_worker_completion_is_counted() {
     let directory = tempfile::tempdir().unwrap();
     let (mut link, audio) = hub_link(config(&directory.path().join("missing.sock"))).unwrap();
-    let before = stuck_shutdowns();
+    let stuck = stuck_shutdowns();
+    let before = undelivered_completions();
     let (sender, receiver) = mpsc::sync_channel(1);
     drop(sender);
     drop(std::mem::replace(&mut link.finished, receiver));
@@ -39,7 +40,8 @@ fn undelivered_worker_completion_is_counted() {
     worker.join().unwrap();
     drop(audio);
     drop(link);
-    assert_eq!(stuck_shutdowns(), before + 1);
+    assert_eq!(undelivered_completions(), before + 1);
+    assert_eq!(stuck_shutdowns(), stuck);
 }
 
 #[test]
@@ -57,9 +59,11 @@ fn a_wedged_worker_that_finishes_after_the_drop_is_counted_once() {
         done.send(()).unwrap();
     }));
     let before = stuck_shutdowns();
+    let late = undelivered_completions();
     drop(link);
     release.send(()).unwrap();
     completed.recv().unwrap();
     drop(audio);
     assert_eq!(stuck_shutdowns(), before + 1);
+    assert_eq!(undelivered_completions(), late + 1);
 }

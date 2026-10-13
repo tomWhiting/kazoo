@@ -66,7 +66,7 @@ mod priority;
 mod shutdown;
 #[cfg(test)]
 pub(crate) use shutdown::LINK_CONSTRUCTIONS;
-pub use shutdown::stuck_shutdowns;
+pub use shutdown::{stuck_shutdowns, undelivered_completions};
 mod wire;
 
 /// How often the link looks for a hub while none is answering.
@@ -650,7 +650,7 @@ impl HubLink {
             if self.finished.recv_timeout(Duration::from_millis(500))
                 == Err(mpsc::RecvTimeoutError::Timeout)
             {
-                shutdown::record_failure();
+                shutdown::record_stuck();
                 return;
             }
             if let Err(payload) = join.join() {

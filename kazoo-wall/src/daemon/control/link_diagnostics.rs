@@ -15,12 +15,44 @@ pub(super) fn report_refusal(
     }
 }
 
-pub(super) fn report_shutdowns(reported: &mut u64, count: u64, mut log: impl FnMut(String)) {
-    if count > *reported {
+/// The process-wide desk link shutdown counts this daemon has logged.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct LinkShutdowns {
+    /// Shutdowns that gave up and left the link thread running.
+    pub stuck: u64,
+    /// Link threads that finished after their shutdown had given up.
+    pub late: u64,
+}
+
+impl LinkShutdowns {
+    /// The counts as kazoo-core holds them now.
+    pub(super) fn now() -> Self {
+        Self {
+            stuck: kazoo_core::ipc::link::stuck_shutdowns(),
+            late: kazoo_core::ipc::link::undelivered_completions(),
+        }
+    }
+}
+
+/// Log each count that has grown since it was last logged.
+pub(super) fn report_shutdowns(
+    reported: &mut LinkShutdowns,
+    now: LinkShutdowns,
+    mut log: impl FnMut(String),
+) {
+    if now.stuck > reported.stuck {
         log(format!(
-            "kazoo-wall: {count} desk link shutdown failures so far (timeout or undelivered completion)"
+            "kazoo-wall: desk link shutdowns that left the link thread running: {}",
+            now.stuck
         ));
-        *reported = count;
+        reported.stuck = now.stuck;
+    }
+    if now.late > reported.late {
+        log(format!(
+            "kazoo-wall: desk link threads that finished after their shutdown gave up: {}",
+            now.late
+        ));
+        reported.late = now.late;
     }
 }
 
@@ -48,14 +80,22 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_failures_are_logged_when_the_process_count_grows() {
-        let mut reported = 0;
+    fn shutdown_counts_are_logged_when_they_grow() {
+        let mut reported = LinkShutdowns::default();
         let mut lines = Vec::new();
-        for count in [0, 1, 1, 2, 2] {
-            report_shutdowns(&mut reported, count, |line| lines.push(line));
+        for (stuck, late) in [(0, 0), (1, 0), (1, 0), (1, 1), (2, 1), (2, 1)] {
+            report_shutdowns(&mut reported, LinkShutdowns { stuck, late }, |line| {
+                lines.push(line);
+            });
         }
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("1 desk link shutdown failures"));
-        assert!(lines[1].contains("2 desk link shutdown failures"));
+        assert_eq!(
+            lines,
+            [
+                "kazoo-wall: desk link shutdowns that left the link thread running: 1",
+                "kazoo-wall: desk link threads that finished after their shutdown gave up: 1",
+                "kazoo-wall: desk link shutdowns that left the link thread running: 2",
+            ]
+        );
+        assert_eq!(reported, LinkShutdowns { stuck: 2, late: 1 });
     }
 }
