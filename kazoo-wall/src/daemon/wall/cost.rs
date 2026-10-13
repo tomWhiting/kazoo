@@ -112,6 +112,20 @@ pub(super) fn kind_share(kind: Kind, rate: u32) -> f32 {
     ns as f32 / (512.0 * 1e9 / rate as f32)
 }
 
+/// Whether `what` can make a module heard: a cable or a module put on the
+/// wall, a module brought back, a chain, or an undo that plugs back the
+/// cables it had replaced (an unplugging or a removal that replugs). Every
+/// other change (a knob, a tempo, a plain unplugging or removal) only ever
+/// takes work away, and is never costed.
+pub(super) const fn can_wake(what: &What) -> bool {
+    match what {
+        What::Patch { .. } | What::Add { .. } | What::Restore { .. } | What::Chain { .. } => true,
+        What::Unpatch { replugged, .. } => replugged.is_some(),
+        What::Remove { replugged, .. } => !replugged.is_empty(),
+        _ => false,
+    }
+}
+
 fn heard_modules(patch: &Patch) -> Vec<usize> {
     let positions: HashMap<&str, usize> = patch
         .modules()

@@ -2821,10 +2821,7 @@ impl Wall {
             What::Patch { cable, .. } => Some(cable.id),
             _ => None,
         });
-        if matches!(
-            what,
-            What::Patch { .. } | What::Add { .. } | What::Restore { .. } | What::Chain { .. }
-        ) {
+        if cost::can_wake(&what) {
             self.wake_room()?;
         }
         let (change, fingerprints) = self.commit(seat, what, undoes)?;
