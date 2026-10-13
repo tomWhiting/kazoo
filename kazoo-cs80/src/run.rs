@@ -152,7 +152,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let result = event_loop(&mut tui, &mut app, &mut channels, &stream);
 
     // -----------------------------------------------------------------------
-    // Cleanup: always restore the even if the loop failed.
+    // Cleanup: always restore the terminal, even if the loop failed.
     // -----------------------------------------------------------------------
 
     drop(stream);
