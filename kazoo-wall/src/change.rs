@@ -442,6 +442,7 @@ mod tests {
             kind: "lfo".to_string(),
             name: Some("slow wobble".to_string()),
             knobs: BTreeMap::new(),
+            birth: None,
         };
         assert_eq!(
             summarise(

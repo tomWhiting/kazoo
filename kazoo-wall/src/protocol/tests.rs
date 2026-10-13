@@ -279,6 +279,7 @@ fn changes_undo_and_every_what_round_trip() {
         kind: "lfo".to_string(),
         name: None,
         knobs: std::iter::once(("rate".to_string(), 0.5)).collect(),
+        birth: None,
     };
     let cable = CableRecord {
         id: 3,

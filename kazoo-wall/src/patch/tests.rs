@@ -13,6 +13,13 @@ fn added(patch: &mut Patch, kind: &str) -> String {
     }
 }
 
+// Direct model fixtures have no numbered daemon change to stamp them.
+fn mark_fixture_births(patch: &mut Patch) {
+    let mut notes = Vec::new();
+    patch.find_births(&mut notes);
+    assert!(notes.is_empty(), "{notes:?}");
+}
+
 fn plugged(what: &What) -> u32 {
     match what {
         What::Patch { cable, .. } => cable.id,
@@ -212,6 +219,7 @@ fn undo_round_trip(patch: &mut Patch, what: &What, before: &Patch) {
 #[test]
 fn every_change_undoes_and_redoes() {
     let mut patch = small();
+    mark_fixture_births(&mut patch);
     let before = patch.clone();
     let what = patch.turn("vcf1", "cutoff", 300.0, Some(0.0)).unwrap();
     undo_round_trip(&mut patch, &what, &before);
@@ -228,6 +236,7 @@ fn every_change_undoes_and_redoes() {
 
     let before = patch.clone();
     let what = patch.add("env", Some("swell"), None).unwrap();
+    mark_fixture_births(&mut patch);
     undo_round_trip(&mut patch, &what, &before);
 
     let before = patch.clone();
@@ -302,6 +311,7 @@ fn files_round_trip() {
     patch.add("lfo", Some("slow wobble"), None).unwrap();
     patch.turn("vcf1", "cutoff", 612.0, None).unwrap();
     patch.last_seq = 57;
+    mark_fixture_births(&mut patch);
     let file = patch.to_file();
     let text = serde_json::to_string_pretty(&file).unwrap();
     let back: PatchFile = serde_json::from_str(&text).unwrap();
@@ -336,6 +346,7 @@ fn decisions_and_routers_round_trip_through_a_file() {
     patch
         .plug("select1.out", "math1.b", Some(0.7), None)
         .unwrap();
+    mark_fixture_births(&mut patch);
     let text = serde_json::to_string_pretty(&patch.to_file()).unwrap();
     let back: PatchFile = serde_json::from_str(&text).unwrap();
     assert_eq!(Patch::from_file(&back).unwrap(), patch);

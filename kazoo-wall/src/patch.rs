@@ -25,6 +25,7 @@ use crate::fingerprints::Dye;
 use crate::protocol::{
     CableRecord, ErrorCode, ModuleRecord, Place, WallError, What, valid_name, widen,
 };
+use crate::tree::Birth;
 
 /// Glide used when a turn names none, in beats.
 pub const DEFAULT_GLIDE_BEATS: f64 = 2.0;
@@ -50,6 +51,8 @@ pub struct Module {
     pub name: Option<String>,
     /// Knob targets, in catalogue order.
     pub knobs: Vec<f32>,
+    /// The module's lasting birth mark.
+    pub birth: Option<Birth>,
 }
 
 impl Module {
@@ -60,6 +63,7 @@ impl Module {
             id: self.id.clone(),
             kind: self.kind.name().to_string(),
             name: self.name.clone(),
+            birth: self.birth.as_ref().map(ToString::to_string),
             knobs: self
                 .kind
                 .spec()
@@ -804,6 +808,7 @@ impl Patch {
             kind,
             name: name.map(str::to_string),
             knobs: kind.spec().defaults(),
+            birth: None,
         };
         let record = module.record();
         let place = place.cloned().unwrap_or_else(|| self.usual_place(kind));
@@ -899,7 +904,40 @@ impl Patch {
                 format!("{} is on the wall already", record.id),
             ));
         }
-        let (module, _) = module_from_record(record)?;
+        let (mut module, ignored, bad_birth) = module_from_record(record)?;
+        for knob in ignored {
+            eprintln!(
+                "{} has no knob '{}'; its value was dropped",
+                module.id,
+                printable(&knob)
+            );
+        }
+        if let Some(why) = bad_birth {
+            eprintln!(
+                "module '{}' had a birth mark that does not read ('{why}'); it is found afresh",
+                module.id
+            );
+        }
+        if let Some(birth) = &module.birth {
+            if let Some(holder) = self
+                .modules
+                .iter()
+                .find(|existing| existing.birth.as_ref() == Some(birth))
+            {
+                eprintln!(
+                    "module '{}' had the birth mark of {}; it is found afresh",
+                    module.id, holder.id
+                );
+                module.birth = None;
+            }
+        }
+        if module.birth.is_none() {
+            module.birth = Some(Birth::Found {
+                wall: self.wall,
+                seed: self.seed,
+                id: module.id.clone(),
+            });
+        }
         self.count_id(&module.id);
         let restored = module.record();
         if let Some(at) = self
@@ -1257,15 +1295,39 @@ impl Patch {
     /// [`hash_bytes`] of the save's file as it is on disk.
     #[must_use]
     pub fn fingerprint(&self) -> String {
+        hash_bytes(&self.print_bytes())
+    }
+
+    /// The fingerprint as the stable 64-bit word used by birth marks.
+    #[must_use]
+    pub fn fingerprint_word(&self) -> u64 {
+        crate::chance::fnv1a64(&self.print_bytes())
+    }
+
+    fn print_bytes(&self) -> Vec<u8> {
         let file = PatchFile {
             last_seq: 0,
             wall: 0,
             ..self.to_file()
         };
-        // A PatchFile is plain data: encoding it cannot fail. Were it ever
-        // to, the empty fingerprint matches no wall, so nothing is skipped
-        // on its strength.
-        serde_json::to_vec(&file).map_or_else(|_| String::new(), |bytes| hash_bytes(&bytes))
+        match serde_json::to_vec(&file) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("wall fingerprint could not be encoded: {err}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Set a newborn module's identity; return whether it is on the wall.
+    pub fn mark_birth(&mut self, id: &str, birth: Birth) -> bool {
+        match self.module_mut(id) {
+            Some(module) => {
+                module.birth = Some(birth);
+                true
+            }
+            None => false,
+        }
     }
 
     /// [`Self::fingerprint`] of everything but the tempo: what the wall is
@@ -1344,6 +1406,7 @@ impl Patch {
                 ));
             }
         }
+        patch.find_births(&mut notes);
         let mut plugged = HashSet::with_capacity(file.cables.len());
         for record in &file.cables {
             if let Err(why) = patch.load_cable(record, &mut plugged) {
@@ -1466,6 +1529,30 @@ impl Patch {
         dye
     }
 
+    pub(crate) fn find_births(&mut self, notes: &mut Vec<String>) {
+        let mut seen = HashSet::new();
+        let mut holders = BTreeMap::new();
+        for module in &mut self.modules {
+            if let Some(birth) = &module.birth {
+                if seen.contains(birth) {
+                    let id = holders.get(birth).map_or("another module", String::as_str);
+                    notes.push(format!(
+                        "module '{}' had the birth mark of {id}; it is found afresh",
+                        module.id
+                    ));
+                    module.birth = None;
+                }
+            }
+            let birth = module.birth.get_or_insert_with(|| Birth::Found {
+                wall: self.wall,
+                seed: self.seed,
+                id: module.id.clone(),
+            });
+            seen.insert(birth.clone());
+            holders.insert(birth.clone(), module.id.clone());
+        }
+    }
+
     fn load_module(
         &mut self,
         record: &ModuleRecord,
@@ -1474,7 +1561,13 @@ impl Patch {
         if self.module(&record.id).is_some() {
             return Err("its id appears twice".to_string());
         }
-        let (module, ignored) = module_from_record(record).map_err(|err| err.message)?;
+        let (module, ignored, bad_birth) = module_from_record(record).map_err(|err| err.message)?;
+        if let Some(why) = bad_birth {
+            notes.push(format!(
+                "module '{}' had a birth mark that does not read ('{why}'); it is found afresh",
+                module.id
+            ));
+        }
         for knob in ignored {
             notes.push(format!(
                 "{} has no knob '{}'; its value was dropped",
@@ -1605,7 +1698,9 @@ fn put(rows: &mut Vec<Vec<String>>, id: &str, place: &Place) {
 /// kind does not have (ignored). The id must be well formed and the name
 /// valid; knobs are held to their ranges, and missing ones take their
 /// defaults.
-fn module_from_record(record: &ModuleRecord) -> Result<(Module, Vec<String>), WallError> {
+fn module_from_record(
+    record: &ModuleRecord,
+) -> Result<(Module, Vec<String>, Option<String>), WallError> {
     let kind = Kind::from_name(&record.kind).ok_or_else(|| {
         error(
             ErrorCode::UnknownKind,
@@ -1644,14 +1739,22 @@ fn module_from_record(record: &ModuleRecord) -> Result<(Module, Vec<String>), Wa
                 })
         })
         .collect();
+    let (birth, bad_birth) = record.birth.as_ref().map_or((None, None), |text| {
+        text.parse::<Birth>().map_or_else(
+            |_| (None, Some(printable(text))),
+            |birth| (Some(birth), None),
+        )
+    });
     Ok((
         Module {
             id: record.id.clone(),
             kind,
             name: record.name.clone(),
             knobs,
+            birth,
         },
         ignored,
+        bad_birth,
     ))
 }
 
