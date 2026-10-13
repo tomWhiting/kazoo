@@ -340,3 +340,33 @@ fn non_finite_pitch_resets_without_poisoning_the_next_note() {
         assert!(nearest(0.0, SCALES[0], value).is_finite());
     }
 }
+
+#[test]
+fn a_scale_change_retargets_a_held_note() {
+    let mut quantiser = Quantiser::new(RATE);
+    quantiser.set(instant(false));
+    quantiser.process(&mut frame(1.0, true));
+    quantiser.set(QuantiseSettings {
+        scale: 1,
+        ..instant(false)
+    });
+    let mut input = frame(1.0, false);
+    quantiser.process(&mut input);
+    assert!(
+        input.snapped_volts.mul_add(12.0, -0.0).abs() < 1e-5,
+        "C# held outside C major"
+    );
+
+    quantiser.process(&mut frame(4.0, true));
+    quantiser.set(QuantiseSettings {
+        scale: 1,
+        root: 1,
+        ..instant(false)
+    });
+    let mut input = frame(4.0, false);
+    quantiser.process(&mut input);
+    assert!(
+        input.snapped_volts.mul_add(12.0, -3.0).abs() < 1e-5,
+        "E held outside C# major"
+    );
+}

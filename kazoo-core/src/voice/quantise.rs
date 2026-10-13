@@ -172,9 +172,18 @@ impl Quantiser {
     }
 
     /// Hold controls to their ranges without allocating or resetting the note.
+    ///
+    /// A new scale or root moves a held target to the new scale's nearest
+    /// note at once, so hysteresis never keeps a note the scale lacks; the
+    /// correction still glides there at the snap speed.
     pub fn set(&mut self, settings: QuantiseSettings) {
-        self.settings = settings.held();
-        self.snap_coefficient = coefficient(self.frame_seconds, self.settings.snap_ms);
+        let held = settings.held();
+        let retune = held.scale != self.settings.scale || held.root != self.settings.root;
+        self.settings = held;
+        self.snap_coefficient = coefficient(self.frame_seconds, held.snap_ms);
+        if retune && self.target.is_some() {
+            self.target = Some(self.nearest_note());
+        }
     }
 
     /// The held controls currently used by the callback.
@@ -200,12 +209,7 @@ impl Quantiser {
             return;
         }
         self.update_centre(semitones, frame.onset);
-        let note = 12.0
-            * nearest(
-                self.centre / 12.0,
-                SCALES[self.settings.scale],
-                f32::from(self.settings.root),
-            );
+        let note = self.nearest_note();
         let target = match self.target {
             Some(target)
                 if (self.centre - target).abs() - (self.centre - note).abs()
@@ -246,6 +250,15 @@ impl Quantiser {
             frame.snapped_volts = self.last_volts;
             frame.snapped_hz = self.last_hz;
         }
+    }
+
+    /// The current scale's note nearest the centre, in semitones from C4.
+    fn nearest_note(&self) -> f32 {
+        12.0 * nearest(
+            self.centre / 12.0,
+            SCALES[self.settings.scale],
+            f32::from(self.settings.root),
+        )
     }
 
     fn update_centre(&mut self, semitones: f32, onset: bool) {
