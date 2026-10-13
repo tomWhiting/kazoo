@@ -65,7 +65,7 @@ impl Wall {
             if !again.contains(cable.to_module.as_str()) {
                 continue;
             }
-            if let Some((_, tag)) = self.lines.get_mut(&cable.id) {
+            if let Some(tag) = self.lined.get_mut(&cable.id) {
                 self.line_tags = self.line_tags.wrapping_add(1).max(1);
                 *tag = self.line_tags;
             }

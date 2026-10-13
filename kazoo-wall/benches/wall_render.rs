@@ -16,6 +16,12 @@ fn measure(
     for _ in 0..64 {
         fixture.render(&mut buffer);
     }
+    if id == "cables/10000" {
+        eprintln!(
+            "wall/cables/10000 lines={}",
+            fixture.control.shared().lines()
+        );
+    }
     group.bench_function(id, |b| b.iter(|| fixture.render(&mut buffer)));
 }
 

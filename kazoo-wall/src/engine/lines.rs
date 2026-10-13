@@ -8,8 +8,8 @@
 //! latest (see [`super::tables::Route::delay`]); this is where the delay
 //! is applied.
 //!
-//! Every cable has a line of its own, written every time its signal passes,
-//! so its history is always there. When a cable's delay changes (an effect
+//! A jack whose cable has needed delay keeps a line, written every time its
+//! signal passes, so its history survives changes back to zero delay. When a cable's delay changes (an effect
 //! added or taken away upstream), the signal never breaks:
 //!
 //! - Audio and control voltages are read from a point that glides from the
@@ -25,14 +25,8 @@
 //!   out is whole (one may be skipped). A gate held high for longer than a
 //!   line remembers has no edge to break, and switches while high.
 //!
-//! Every line is allocated on the control side, in pages of
-//! [`LINES_PER_PAGE`]. The engine starts with room for a modest wall; when
-//! the wall needs more, the control side makes a larger page table
-//! ([`MoreLines`]) with fresh pages past the engine's own, and the engine
-//! moves its pages into it ([`Lines::grow`]): one pointer per page, never a
-//! line's history, so the audio thread's share of growing is a few hundred
-//! pointer moves at most. The emptied old table goes back to be freed off
-//! the audio thread.
+//! Lines are allocated on the control side and live in the destination
+//! slot's page, so a room move preserves their history.
 
 use super::slice_of;
 use super::tables::{MAX_CABLE_DELAY, Route};
@@ -108,142 +102,25 @@ pub struct Line {
     /// [`LINE_LEN`] frames.
     samples: Box<[f32]>,
     tap: Tap,
-}
-
-impl Line {
-    /// A silent line nobody owns yet, or `None` when there is no memory
-    /// for it (control side only).
-    fn fresh() -> Option<Self> {
-        Some(Self {
-            samples: slice_of(LINE_LEN, || 0.0)?,
-            tap: Tap::EMPTY,
-        })
-    }
-}
-
-/// Lines in a page: the unit the line table grows by.
-pub const LINES_PER_PAGE: usize = 64;
-
-/// Pages holding `lines` lines, rounded up.
-#[must_use]
-pub const fn pages_for(lines: usize) -> usize {
-    lines.div_ceil(LINES_PER_PAGE)
-}
-
-/// [`LINES_PER_PAGE`] lines.
-type Page = Box<[Line]>;
-
-/// A fresh page, or `None` when there is no memory for it.
-fn fresh_page() -> Option<Page> {
-    let mut lines = Vec::new();
-    if lines.try_reserve_exact(LINES_PER_PAGE).is_err() {
-        return None;
-    }
-    for _ in 0..LINES_PER_PAGE {
-        lines.push(Line::fresh()?);
-    }
-    Some(lines.into_boxed_slice())
-}
-
-/// A larger page table, made on the control side for an engine that needs
-/// more lines (see [`Lines::grow`]).
-#[derive(Debug)]
-pub struct MoreLines {
-    pages: Box<[Option<Page>]>,
-}
-
-impl MoreLines {
-    /// Room for at least `want` lines in all, in whole pages, for an engine
-    /// holding `have`: the places of the engine's own pages are left empty
-    /// for them, and every place past them gets a fresh page. `None` when
-    /// there is no memory for them.
-    #[must_use]
-    pub fn new(have: usize, want: usize) -> Option<Self> {
-        let mut pages = slice_of(pages_for(want), || None)?;
-        for place in pages.iter_mut().skip(pages_for(have)) {
-            *place = Some(fresh_page()?);
-        }
-        Some(Self { pages })
-    }
-
-    /// Lines the table has places for.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.pages.len() * LINES_PER_PAGE
-    }
-
-    /// Whether the table has no places.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.pages.is_empty()
-    }
-
-    /// Whether every page place is empty (as an outgrown table is, once
-    /// the engine has moved its pages out).
-    #[must_use]
-    pub fn is_emptied(&self) -> bool {
-        self.pages.iter().all(Option::is_none)
-    }
-}
-
-/// Every cable's delay line.
-#[derive(Debug)]
-pub struct Lines {
-    pages: Box<[Option<Page>]>,
-    /// The shortest and longest glide, in frames.
     shortest: u32,
     longest: u32,
 }
 
-impl Lines {
-    /// At least `count` lines, in whole pages, at `sample_rate`, or none
-    /// when there is no memory for them (this allocates).
+impl Line {
+    /// A silent line at `sample_rate`, or `None` when there is no memory
+    /// for its history (control side only).
     #[must_use]
-    pub fn new(sample_rate: f32, count: usize) -> Self {
-        // Rates are at most a few hundred kHz, so both are well inside
-        // u32 (and a nonsense rate saturates to 0, then 1).
+    pub fn new(sample_rate: f32) -> Option<Self> {
         let shortest = ((sample_rate * SHORTEST_FADE_SECONDS).round() as u32).max(1);
         let longest = ((sample_rate * LONGEST_FADE_SECONDS).round() as u32)
             .max(u32::from(MAX_CABLE_DELAY) * FADE_PER_FRAME)
             .max(shortest);
-        // A machine with no memory for a modest wall starts with no lines,
-        // and grows as the wall asks.
-        let pages = MoreLines::new(0, count).map_or_else(Box::default, |more| more.pages);
-        Self {
-            pages,
+        Some(Self {
+            samples: slice_of(LINE_LEN, || 0.0)?,
+            tap: Tap::EMPTY,
             shortest,
             longest,
-        }
-    }
-
-    /// Lines held.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.pages.len() * LINES_PER_PAGE
-    }
-
-    /// Whether no lines are held.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.pages.is_empty()
-    }
-
-    /// Move into `more`'s larger table: every line keeps its number, its
-    /// buffer and its history, and `more` is left holding the old table,
-    /// emptied, to be freed off the audio thread. A table no larger than
-    /// the one in place is left as it is. Returns whether the lines grew.
-    /// Real-time safe: it moves one pointer per page.
-    pub fn grow(&mut self, more: &mut MoreLines) -> bool {
-        if more.pages.len() <= self.pages.len() {
-            return false;
-        }
-        for (mine, place) in self.pages.iter_mut().zip(more.pages.iter_mut()) {
-            // The control side left this place empty for the page; were it
-            // not, what it held goes back with the old table to be freed.
-            std::mem::swap(mine, place);
-        }
-        std::mem::swap(&mut self.pages, &mut more.pages);
-        true
+        })
     }
 
     /// How many frames a glide of `moved` frames takes, between `shortest`
@@ -257,20 +134,9 @@ impl Lines {
     /// Pass one sub-block of `source` through `route`'s line into `out`,
     /// scaled by the cable's amount. Real-time safe.
     pub fn carry(&mut self, route: &Route, source: &Block, out: &mut Block) {
-        // u32 into usize: lossless.
-        let number = route.line as usize;
-        let line = self
-            .pages
-            .get_mut(number / LINES_PER_PAGE)
-            .and_then(Option::as_mut)
-            .and_then(|page| page.get_mut(number % LINES_PER_PAGE));
-        let Some(line) = line else {
-            *out = [0.0; SUB_BLOCK];
-            return;
-        };
-        let mut tap = line.tap;
+        let mut tap = self.tap;
         let (shortest, longest) = (self.shortest, self.longest);
-        let Some(samples) = line.samples.get_mut(..LINE_LEN) else {
+        let Some(samples) = self.samples.get_mut(..LINE_LEN) else {
             *out = [0.0; SUB_BLOCK];
             return;
         };
@@ -304,7 +170,7 @@ impl Lines {
             *sample = finite(*sample * route.amount);
         }
         tap.write = (tap.write + SUB_BLOCK) & (LINE_LEN - 1);
-        line.tap = tap;
+        self.tap = tap;
     }
 }
 

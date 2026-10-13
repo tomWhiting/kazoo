@@ -2,7 +2,7 @@
 //!
 //! [`engine`] returns two halves. The [`Engine`] moves into the audio
 //! callback (or the headless render loop): it owns the module slots and
-//! their port buffers (its [`Room`]), a delay line per cable, the cable and
+//! their port buffers and delayed jacks (its [`Room`]), the cable and
 //! order tables, the master chain and the wall's clock, and renders in
 //! sub-blocks of [`SUB_BLOCK`] frames. It never allocates, frees, locks or
 //! does I/O.
@@ -14,15 +14,9 @@
 //! through atomics ([`Shared`], and the room's knob cells), and what the
 //! scopes and readouts measured as [`ProbeFrame`]s over a ring of its own.
 //!
-//! There is no fixed number of slots or lines. The engine starts with room
-//! for [`INITIAL_SLOTS`] modules and [`INITIAL_LINES`] cables; when a
-//! command needs more, [`EngineControl::send`] first builds a larger room
-//! or line table on the control side (twice the size, or what is needed if
-//! more) and sends it ahead of the command. Slots and lines live in pages
-//! ([`room::SLOTS_PER_PAGE`], [`lines::LINES_PER_PAGE`]); the engine moves
-//! its pages into the new table, one pointer each, and retires the old
-//! table, so growing costs the audio thread a few hundred pointer moves at
-//! most, and never a copy of anything a slot or line holds.
+//! The engine starts with room for [`INITIAL_SLOTS`] modules. The control
+//! side builds larger rooms ahead of commands needing more slots. Delay
+//! lines live at destination jacks in those pages and move with them.
 //!
 //! The engine tolerates any order of commands: a cable or order entry naming
 //! an empty slot reads silence or is skipped, so the control side never needs
@@ -30,6 +24,7 @@
 //! brackets the swap with [`Command::Hush`] and [`Command::Unhush`]: the
 //! master fades out, the swap is applied in silence, and it fades back in.
 
+mod line_commands;
 pub mod lines;
 pub mod master;
 pub mod room;
@@ -49,17 +44,14 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 use crate::catalogue::{Kind, KnobSpec};
 use crate::dsp::measure::Capture;
 use crate::dsp::{Block, Io, Module, Sweep, Tick};
-use crate::{MAX_INPUTS, MAX_KNOBS, MAX_OUTPUTS, SUB_BLOCK};
-pub use lines::MoreLines;
+use crate::{MAX_INPUTS, MAX_JACKS, MAX_KNOBS, MAX_OUTPUTS, SUB_BLOCK};
+pub use lines::Line;
 pub use master::CEILING;
 pub use room::{CostCells, KnobCells, Room};
 pub use tables::{CableTable, MAX_CABLE_DELAY, Order, Route, processing_order};
 
 /// Module slots a new engine has room for before it first grows.
 pub const INITIAL_SLOTS: usize = 64;
-
-/// Delay lines (one per cable) a new engine has before it first grows.
-pub const INITIAL_LINES: usize = 256;
 
 /// Seconds over which the render load is averaged (see
 /// [`Shared::render_load`]): long enough that one slow block (a room
@@ -77,9 +69,9 @@ pub const COST_CLAMP: f32 = 4.0;
 /// Commands waiting for the engine.
 const COMMAND_BACKLOG: usize = 512;
 
-/// Items waiting to be freed: every command retires at most one (see
+/// Items waiting to be freed: removal retires a module and its jack lines (see
 /// [`EngineControl::flush`]).
-const RETIRE_BACKLOG: usize = COMMAND_BACKLOG * 2;
+const RETIRE_BACKLOG: usize = COMMAND_BACKLOG * (MAX_JACKS + 1) * 2;
 
 /// Fault reports waiting for the control side.
 const FAULT_BACKLOG: usize = 64;
@@ -127,17 +119,28 @@ pub enum Command {
         slot: usize,
     },
     /// Swap in a new cable table; the old one is retired.
-    /// [`EngineControl::send`] makes sure there is a line for every cable
-    /// in it first.
     Cables(Box<CableTable>),
     /// Swap in a new render order; the old one is retired.
     Order(Box<Order>),
     /// Move every slot into a larger room; the old room is retired, empty.
     /// Sent by [`EngineControl`] as it needs more slots.
     Room(Box<Room>),
-    /// Move every delay line into a larger table; the old table is
-    /// retired, empty. Sent by [`EngineControl`] as it needs more lines.
-    Lines(Box<MoreLines>),
+    /// Place a delay line at a destination jack, retiring any prior line.
+    Line {
+        /// Destination slot; room is reserved before sending.
+        slot: usize,
+        /// Destination jack.
+        jack: usize,
+        /// History allocated on the control side.
+        line: Box<Line>,
+    },
+    /// Take a jack's delay line away and retire it.
+    Unline {
+        /// Destination slot.
+        slot: usize,
+        /// Destination jack.
+        jack: usize,
+    },
     /// Glide a knob to `target` over `glide_frames` frames.
     Knob {
         /// Slot.
@@ -172,9 +175,8 @@ pub enum Retired {
     Order(Box<Order>),
     /// A room outgrown (its modules moved on), or one too small to use.
     Room(Box<Room>),
-    /// A line table outgrown (its lines moved on), or one too small to
-    /// use.
-    Lines(Box<MoreLines>),
+    /// A delay line taken away or replaced.
+    Line(Box<Line>),
 }
 
 /// What a scope or readout measured, from engine slot `slot`.
@@ -311,7 +313,7 @@ impl Shared {
         self.slots.load(Ordering::Acquire)
     }
 
-    /// Delay lines (one per cable) the engine holds now.
+    /// Delay lines currently placed at destination jacks.
     #[must_use]
     pub fn lines(&self) -> usize {
         self.lines.load(Ordering::Acquire)
@@ -555,7 +557,6 @@ pub struct Engine {
     following_desk: bool,
     rendered: u64,
     master: master::Master,
-    lines: lines::Lines,
     carry: [Block; 2],
     carry_used: usize,
     stereo: Box<[f32]>,
@@ -586,7 +587,7 @@ impl std::fmt::Debug for Engine {
             .field("following_desk", &self.following_desk)
             .field("rendered", &self.rendered)
             .field("slots", &self.room.len())
-            .field("lines", &self.lines.len())
+            .field("lines", &self.shared.lines())
             .finish_non_exhaustive()
     }
 }
@@ -604,8 +605,6 @@ pub struct EngineControl {
     shared: Arc<Shared>,
     /// Slots in the largest room sent to the engine (or its first).
     slots: usize,
-    /// Lines in the largest line table sent to the engine (or its first).
-    lines: usize,
     /// The knob cells of every page sent to the engine, by page number.
     /// A page's cells never move, so they read the same before and after
     /// the engine puts the page in place (NaN until it publishes to them).
@@ -618,7 +617,7 @@ impl std::fmt::Debug for EngineControl {
         f.debug_struct("EngineControl")
             .field("sample_rate", &self.sample_rate)
             .field("slots", &self.slots)
-            .field("lines", &self.lines)
+            .field("lines", &self.shared.lines())
             .field("backlog", &self.backlog.len())
             .field("listen_taken", &self.listen.is_none())
             .field("record_taken", &self.record.is_none())
@@ -658,14 +657,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
     let costs = room.costs().into_iter().map(|(_, cells)| cells).collect();
     // 8 kHz to a few hundred kHz: exact in f32.
     let rate = sample_rate as f32;
-    let lines = lines::Lines::new(rate, INITIAL_LINES);
-    let shared = Arc::new(Shared::new(
-        bpm,
-        beat,
-        config.audible,
-        room.len(),
-        lines.len(),
-    ));
+    let shared = Arc::new(Shared::new(bpm, beat, config.audible, room.len(), 0));
     let engine = Engine {
         sample_rate: rate,
         sweeps: [Sweep::REST; MAX_KNOBS],
@@ -702,7 +694,6 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         hush_step: 1.0 / (rate * SWAP_FADE_SECONDS),
         load: 0.0,
         room,
-        lines,
     };
     let control = EngineControl {
         sample_rate,
@@ -714,7 +705,6 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         record: Some(record_rx),
         probes: Some(probe_rx),
         slots: shared.slots(),
-        lines: shared.lines(),
         shared,
         knobs,
         costs,
@@ -899,14 +889,8 @@ impl Engine {
                     self.retire(Retired::Order(old));
                 }
                 Command::Room(room) => self.grow_room(room),
-                Command::Lines(mut more) => {
-                    if self.lines.grow(&mut more) {
-                        self.shared.lines.store(self.lines.len(), Ordering::Release);
-                    } else {
-                        self.shared.ignored.fetch_add(1, Ordering::Relaxed);
-                    }
-                    self.retire(Retired::Lines(more));
-                }
+                Command::Line { slot, jack, line } => self.place_line(slot, jack, line),
+                Command::Unline { slot, jack } => self.unline(slot, jack),
                 Command::Knob {
                     slot,
                     knob,
@@ -1014,6 +998,9 @@ impl Engine {
         page.outputs[at] = [[0.0; SUB_BLOCK]; MAX_OUTPUTS];
         if let Some(old) = old {
             self.retire(Retired::Module(old));
+        }
+        for jack in 0..MAX_JACKS {
+            self.unline(slot, jack);
         }
     }
 
@@ -1189,14 +1176,21 @@ impl Engine {
             } else {
                 &mut self.knob_cv[jack - MAX_INPUTS]
             };
+            let mut line = self
+                .room
+                .page_mut(slot)
+                .and_then(|(page, at)| page.lines[at * MAX_JACKS + jack].take());
             gather(
                 &self.cables,
                 &self.room,
-                &mut self.lines,
+                line.as_deref_mut(),
                 slot,
                 jack,
                 buffer,
             );
+            if let Some((page, at)) = self.room.page_mut(slot) {
+                page.lines[at * MAX_JACKS + jack] = line;
+            }
             pending &= pending - 1;
         }
         let connected = std::array::from_fn(|input| mask & (1 << input) != 0);
@@ -1332,12 +1326,12 @@ pub const fn follow(
 }
 
 /// Fill `buffer` with what arrives at `slot`'s `jack`: the cable's source,
-/// through its delay line, scaled by its amount; silence when unplugged.
+/// through its line when present, scaled by its amount; silence when unplugged.
 /// Returns whether a cable is in.
 fn gather(
     cables: &CableTable,
     room: &Room,
-    lines: &mut lines::Lines,
+    line: Option<&mut Line>,
     slot: usize,
     jack: usize,
     buffer: &mut Block,
@@ -1348,7 +1342,13 @@ fn gather(
             .map(|source| (source, route))
     });
     if let Some((source, route)) = source {
-        lines.carry(&route, source, buffer);
+        if let Some(line) = line {
+            line.carry(&route, source, buffer);
+        } else {
+            for (out, sample) in buffer.iter_mut().zip(source) {
+                *out = crate::dsp::finite(*sample * route.amount);
+            }
+        }
         true
     } else {
         *buffer = [0.0; SUB_BLOCK];
@@ -1376,11 +1376,10 @@ impl EngineControl {
         self.slots
     }
 
-    /// Delay lines the engine holds, or will once the tables sent so far
-    /// are in place.
+    /// Delay lines currently placed in the engine.
     #[must_use]
-    pub const fn lines(&self) -> usize {
-        self.lines
+    pub fn lines(&self) -> usize {
+        self.shared.lines()
     }
 
     /// Make sure the engine will have room for `slots` module slots, by
@@ -1409,26 +1408,6 @@ impl EngineControl {
         }
         self.slots = room.len();
         self.push(Command::Room(Box::new(room)));
-        true
-    }
-
-    /// Make sure the engine will have `lines` delay lines, by sending it a
-    /// larger table when it needs one: twice its size, or `lines` if that
-    /// is more (or just `lines`, when there is no memory for twice).
-    /// Returns whether it will have them; `false` when there is no memory
-    /// for them.
-    pub fn reserve_lines(&mut self, lines: usize) -> bool {
-        if lines <= self.lines {
-            return true;
-        }
-        let have = self.lines;
-        let Some(more) =
-            MoreLines::new(have, doubled(have, lines)).or_else(|| MoreLines::new(have, lines))
-        else {
-            return false;
-        };
-        self.lines = more.len();
-        self.push(Command::Lines(Box::new(more)));
         true
     }
 
@@ -1477,15 +1456,15 @@ impl EngineControl {
         }
     }
 
-    /// Send a command, making room for it first: a module's slot, or a
-    /// line for every cable in a table. With no memory for the room, the
+    /// Send a command, making room for its destination slot first. With no memory for the room, the
     /// command goes anyway and the engine refuses it (counting it in
     /// [`Shared::ignored`]). If the ring is full it waits in order on this
     /// side and goes with the next [`Self::pump`].
     pub fn send(&mut self, command: Command) {
         let room = match &command {
-            Command::Insert { slot, .. } => self.reserve_slots(slot.saturating_add(1)),
-            Command::Cables(table) => self.reserve_lines(table.lines()),
+            Command::Insert { slot, .. } | Command::Line { slot, .. } => {
+                self.reserve_slots(slot.saturating_add(1))
+            }
             _ => true,
         };
         if !room {

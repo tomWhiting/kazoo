@@ -88,7 +88,7 @@ fn an_unplugged_jack_reads_silence_and_the_table_knows_it() {
     });
     control.send(Command::Order(Box::new(Order::new(&[0, 1], &[]))));
     let mut table = CableTable::with_slots(2).unwrap();
-    assert!(table.set(1, 0, Some(Route::new(0, 0, 1.0, 0, 1))));
+    assert!(table.set(1, 0, Some(Route::new(0, 0, 1.0, 1))));
     assert_eq!(table.plugged(1), 1);
     assert_eq!(table.plugged(2), 0);
     control.send(Command::Cables(Box::new(table.clone())));
@@ -102,7 +102,7 @@ fn an_unplugged_jack_reads_silence_and_the_table_knows_it() {
     assert_eq!(mask.load(Ordering::Relaxed), 0);
     assert_eq!(signal.load(Ordering::Relaxed), 0.0_f32.to_bits());
     let jack = MAX_INPUTS + MAX_KNOBS - 1;
-    assert!(table.set(1, jack, Some(Route::new(0, 0, 1.0, 0, 2))));
+    assert!(table.set(1, jack, Some(Route::new(0, 0, 1.0, 2))));
     assert_eq!(table.plugged(1), 1 << jack);
     control.send(Command::Cables(Box::new(table.clone())));
     render(&mut engine, SUB_BLOCK, &mut Vec::new());

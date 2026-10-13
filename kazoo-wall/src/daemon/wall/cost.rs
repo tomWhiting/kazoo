@@ -370,7 +370,7 @@ impl Wall {
                 .patch
                 .cables()
                 .iter()
-                .filter(|cable| !self.lines.contains_key(&cable.id))
+                .filter(|cable| !self.sent_cables.contains_key(&cable.id))
                 .count();
         if let Err(err) = self.render_room(units, Some(&waking)) {
             self.unmade = true;
