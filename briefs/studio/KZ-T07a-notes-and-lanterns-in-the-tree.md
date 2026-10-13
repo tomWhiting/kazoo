@@ -1,4 +1,4 @@
-# KZ-T07a: a note on any moment is a git note in `refs/notes/lanterns` that only ever grows; a lantern is a note with a way back to the seat that lit it and to Tom's spoken words around it; the tree thread writes them, lists them, counts visits, and dims the lanterns nobody visits
+# KZ-T07a: a note on any moment is a git note in `refs/notes/lanterns` that only ever grows; a lantern is a note with a way back to the seat that lit it and to Tom's spoken words around it; the tree thread writes them, lists them, counts visits, and dims each lantern as the wall moves on from it
 
 Line numbers are from main at `820ccc5` and may have moved; find each item by what it does, never rename. Items from KZ-T01 to KZ-T04d are named as those briefs name them (`tree::git::Importer`, `Planted`, `TreeItem`, `News::Answer`, `Answered`, `HereError`, `here::resolve`, `Line`, `TreePlace`, `MomentView`, `MAX_LISTED`, …); if a lane landed a name differently, use what landed. Checks, code quality and the END block are as PLAN.md's STACK RULES, with the `-p` list and the cargo form below.
 
