@@ -232,6 +232,7 @@ impl JamEngine {
                 // handles the desk closing.
                 HubMessage::NoteEvent(_)
                 | HubMessage::ParameterChange(_)
+                | HubMessage::StreamReady { .. }
                 | HubMessage::Shutdown => {}
             }
         }

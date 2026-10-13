@@ -37,6 +37,7 @@ fn scheduled_notes_reach_the_real_link_with_the_selected_destination() {
         );
         let source = RegisterMsg::decode(buffer.payload()).instrument_id;
         RegisteredMsg {
+            strips: Vec::new(),
             strip_index: 1,
             hub_sample_rate: 48_000,
             hub_buffer_size: 256,

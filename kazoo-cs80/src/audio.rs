@@ -149,7 +149,10 @@ fn apply_hub_message(synth: &mut Cs80Synth, msg: &HubMessage) {
             _ => {}
         },
         // The CS-80 has no tempo-synced modulation and no remote parameters.
-        HubMessage::TransportSync(_) | HubMessage::ParameterChange(_) | HubMessage::Shutdown => {}
+        HubMessage::TransportSync(_)
+        | HubMessage::ParameterChange(_)
+        | HubMessage::StreamReady { .. }
+        | HubMessage::Shutdown => {}
     }
 }
 
