@@ -5,7 +5,9 @@ mod tests;
 
 use super::{Io, Module, Tick, finite};
 use crate::SUB_BLOCK;
-pub use feed::{LoopFeed, LoopGauges, LoopIn, LoopOut, LoopState, TakeMark};
+pub use feed::{
+    LoopFeed, LoopGauges, LoopIn, LoopOut, LoopSnapshot, LoopState, LoopTape, TakeMark,
+};
 use ringbuf::{
     HeapCons, HeapProd,
     traits::{Consumer, Observer, Producer},
@@ -100,12 +102,11 @@ pub(crate) fn head(beat: f64, anchor: f64, beats: f64) -> Option<Head> {
 
 #[derive(Debug)]
 struct Snap {
-    into: Box<[f32]>,
+    /// The control side's box: its tape is the destination, and it goes
+    /// back whole as `Snapped`, so nothing is allocated or freed here.
+    job: Box<LoopSnapshot>,
     copied: usize,
     len: usize,
-    at: TakeMark,
-    splice: Option<Splice>,
-    bar_pass: [i64; MAX_LOOP_BARS],
 }
 
 /// A loop owns every buffer before it reaches the realtime engine.
@@ -254,6 +255,16 @@ impl LoopModule {
         }
     }
 
+    /// Hand `item` back, into the ring or a held slot. Every caller has
+    /// made sure a slot is free; were none, the item is leaked and counted,
+    /// as the engine's retire ring does, never freed on the audio thread.
+    fn hand_back(&mut self, item: LoopOut) {
+        if let Some(item) = self.emit(item) {
+            self.gauges.leaked.fetch_add(1, Ordering::Relaxed);
+            std::mem::forget(item);
+        }
+    }
+
     fn flush(&mut self) {
         for slot in &mut self.held {
             if let Some(item) = slot.take() {
@@ -318,19 +329,19 @@ impl LoopModule {
         };
         let item = match request {
             LoopIn::Install {
-                tape,
-                splice,
-                bar_pass,
-                bins,
+                mut tape,
                 only_if_blank,
             } => {
+                let len = tape.samples.len();
                 if (only_if_blank && (self.splice.is_some() || self.spliced_here))
-                    || splice.is_some_and(|s| !Self::valid_splice(s, tape.len()))
-                    || tape.len()
-                        > 2 * (MAX_LOOP_FRAMES + (SEAM_SECONDS * 768_000.0).round() as usize + 1)
+                    || tape.splice.is_some_and(|s| !Self::valid_splice(s, len))
+                    || len > 2 * (MAX_LOOP_FRAMES + (SEAM_SECONDS * 768_000.0).round() as usize + 1)
                 {
                     self.gauges.refused.fetch_add(1, Ordering::Relaxed);
-                    LoopOut::Refused(tape)
+                    LoopOut::Refused(LoopIn::Install {
+                        tape,
+                        only_if_blank,
+                    })
                 } else {
                     // A punch the install interrupts ends here, on the tape
                     // it was made on: its mark goes first (admission kept a
@@ -340,13 +351,15 @@ impl LoopModule {
                         self.finish_take();
                     }
                     self.written.fill(false);
-                    let old = std::mem::replace(&mut self.tape, tape);
+                    // Swapped, not moved: the box goes back holding what
+                    // the loop held, to be freed on the control side.
+                    std::mem::swap(&mut self.tape, &mut tape.samples);
+                    std::mem::swap(&mut self.splice, &mut tape.splice);
+                    std::mem::swap(&mut self.bar_pass, &mut tape.bar_pass);
+                    std::mem::swap(&mut self.bins, &mut tape.bins);
                     self.capacity = (self.tape.len() / 2)
                         .saturating_sub(self.tail + 1)
                         .min(MAX_LOOP_FRAMES);
-                    self.splice = splice;
-                    self.bar_pass = bar_pass;
-                    self.bins = bins;
                     self.rec = Rec::Idle;
                     self.gain = 0.0;
                     self.last_cell = None;
@@ -354,40 +367,38 @@ impl LoopModule {
                     self.wear_bar = None;
                     self.filter = [0.0; 2];
                     self.seam_carry = false;
-                    LoopOut::Retired(old)
+                    LoopOut::Retired(tape)
                 }
             }
-            LoopIn::Snapshot { into } => {
+            LoopIn::Snapshot { mut into } => {
                 let len = self.splice.map_or(0, |s| s.frames + s.tail + 1);
-                if into.len() < 2 * len || self.snapshot.is_some() {
+                if into.tape.len() < 2 * len || self.snapshot.is_some() {
                     self.gauges.refused.fetch_add(1, Ordering::Relaxed);
-                    LoopOut::Refused(into)
+                    LoopOut::Refused(LoopIn::Snapshot { into })
                 } else {
                     let pass = self
                         .splice
                         .and_then(|s| head(tick.beat, s.anchor, s.beats))
                         .map_or(0, |h| h.pass);
+                    into.at = TakeMark {
+                        frame: tick.frame,
+                        beat: tick.beat,
+                        pass,
+                        bars: self.written,
+                    };
+                    into.splice = self.splice;
+                    into.bar_pass = self.bar_pass;
                     self.snapshot = Some(Snap {
-                        into,
+                        job: into,
                         copied: 0,
                         len,
-                        at: TakeMark {
-                            frame: tick.frame,
-                            beat: tick.beat,
-                            pass,
-                            bars: self.written,
-                        },
-                        splice: self.splice,
-                        bar_pass: self.bar_pass,
                     });
                     return;
                 }
             }
         };
         // Request admission reserved an ownership slot before popping.
-        if let Some(item) = self.emit(item) {
-            self.held[2] = Some(item);
-        }
+        self.hand_back(item);
     }
 
     fn copy_snapshot(&mut self) {
@@ -396,22 +407,14 @@ impl LoopModule {
         };
         let end = (snap.copied + COPY_FRAMES_PER_BLOCK).min(snap.len);
         for k in snap.copied..end {
-            if snap.into[2 * k].is_nan() {
-                snap.into[2 * k..2 * k + 2].copy_from_slice(&self.tape[2 * k..2 * k + 2]);
+            if snap.job.tape[2 * k].is_nan() {
+                snap.job.tape[2 * k..2 * k + 2].copy_from_slice(&self.tape[2 * k..2 * k + 2]);
             }
         }
         snap.copied = end;
         if end == snap.len && self.free_slot() {
             if let Some(snap) = self.snapshot.take() {
-                let item = LoopOut::Snapped {
-                    tape: snap.into,
-                    at: snap.at,
-                    splice: snap.splice,
-                    bar_pass: snap.bar_pass,
-                };
-                if let Some(item) = self.emit(item) {
-                    self.held[2] = Some(item);
-                }
+                self.hand_back(LoopOut::Snapped(snap.job));
             }
         }
     }
@@ -545,6 +548,32 @@ impl LoopModule {
         }
     }
 
+    /// The read at `h` as worn tape plays it: filtered and quietened by its
+    /// age, or untouched when it has none.
+    fn worn(&mut self, mut out: [f32; 2], h: Head, wear: f32) -> [f32; 2] {
+        self.wear_glide();
+        let aged = self.bar_pass[h.bar] != i64::MIN && h.pass > self.bar_pass[h.bar];
+        if wear > 0.0 && aged {
+            for (ch, sample) in out.iter_mut().enumerate() {
+                self.filter[ch] = finite(
+                    self.coefficient
+                        .mul_add(*sample - self.filter[ch], self.filter[ch]),
+                );
+                *sample = self.filter[ch] * self.wear_level;
+            }
+        } else {
+            self.filter = out;
+            // Fresh or unworn tape is read bit-exact once the gain has
+            // glided home to exactly 1.
+            if self.wear_level.to_bits() != 1.0_f32.to_bits() {
+                for sample in &mut out {
+                    *sample *= self.wear_level;
+                }
+            }
+        }
+        out
+    }
+
     /// One frame of the wear gain's glide; it lands exactly on its target.
     fn wear_glide(&mut self) {
         if self.wear_left == 0 {
@@ -560,8 +589,8 @@ impl LoopModule {
 
     fn write_cell(&mut self, k: usize, input: [f32; 2], keep: f32) {
         if let Some(snap) = &mut self.snapshot {
-            if k >= snap.copied && k < snap.len && snap.into[2 * k].is_nan() {
-                snap.into[2 * k..2 * k + 2].copy_from_slice(&self.tape[2 * k..2 * k + 2]);
+            if k >= snap.copied && k < snap.len && snap.job.tape[2 * k].is_nan() {
+                snap.job.tape[2 * k..2 * k + 2].copy_from_slice(&self.tape[2 * k..2 * k + 2]);
             }
         }
         for (ch, x) in input.iter().enumerate() {
@@ -804,28 +833,9 @@ impl Module for LoopModule {
                 self.mark.pass = h.pass;
             }
             let pos = h.phase * splice.frames as f64;
-            let mut out = self.read(pos, splice).map(finite);
+            let read = self.read(pos, splice).map(finite);
             self.wear(h, wear, tick.sample_rate, splice.tail);
-            self.wear_glide();
-            let aged = self.bar_pass[h.bar] != i64::MIN && h.pass > self.bar_pass[h.bar];
-            if wear > 0.0 && aged {
-                for (ch, sample) in out.iter_mut().enumerate() {
-                    self.filter[ch] = finite(
-                        self.coefficient
-                            .mul_add(*sample - self.filter[ch], self.filter[ch]),
-                    );
-                    *sample = self.filter[ch] * self.wear_level;
-                }
-            } else {
-                self.filter = out;
-                // Fresh or unworn tape is read bit-exact once the gain has
-                // glided home to exactly 1.
-                if self.wear_level.to_bits() != 1.0_f32.to_bits() {
-                    for sample in &mut out {
-                        *sample *= self.wear_level;
-                    }
-                }
-            }
+            let out = self.worn(read, h, wear);
             let level = if level_moves { io.knob_at(5, f) } else { level };
             for (ch, sample) in out.iter().enumerate() {
                 io.outputs[ch][f] = finite(*sample * level);

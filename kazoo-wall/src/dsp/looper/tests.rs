@@ -44,8 +44,8 @@ fn snap(b: &mut Bench, feed: &mut LoopFeed) -> Box<[f32]> {
     loop {
         render(b, 32, |_| 0.0);
         for item in feed.collect() {
-            if let LoopOut::Snapped { tape, .. } = item {
-                return tape;
+            if let LoopOut::Snapped(snapshot) = item {
+                return snapshot.tape;
             }
         }
     }
@@ -275,7 +275,7 @@ fn a_snapshot_is_the_tape_at_the_frame_it_began() {
     let actual = loop {
         render(&mut b, 32, |_| 0.9);
         if let Some(tape) = feed.collect().into_iter().find_map(|item| match item {
-            LoopOut::Snapped { tape, .. } => Some(tape),
+            LoopOut::Snapped(snapshot) => Some(snapshot.tape),
             _ => None,
         }) {
             break tape;
@@ -327,7 +327,7 @@ fn install_hands_the_old_tape_back_and_never_drops_it() {
     assert!(
         feed.collect()
             .iter()
-            .any(|item| matches!(item, LoopOut::Retired(tape) if tape.as_ptr() == pointer))
+            .any(|item| matches!(item, LoopOut::Retired(tape) if tape.samples.as_ptr() == pointer))
     );
 }
 
@@ -559,9 +559,9 @@ fn a_post_roll_into_the_tail_does_not_make_the_first_bar_younger() {
         (samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32).sqrt()
     };
     for pass in 2..=3 {
-        b.beat = f64::from(pass) * 8.0 + 1.0;
+        b.beat = f64::from(pass).mul_add(8.0, 1.0);
         let first = render(&mut b, BAR / 2, |_| 0.0);
-        b.beat = f64::from(pass) * 8.0 + 5.0;
+        b.beat = f64::from(pass).mul_add(8.0, 5.0);
         let second = render(&mut b, BAR / 2, |_| 0.0);
         let (first, second) = (rms(&first[1000..]), rms(&second[1000..]));
         assert!(

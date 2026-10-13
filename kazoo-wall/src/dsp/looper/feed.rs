@@ -40,49 +40,68 @@ pub struct TakeMark {
     pub bars: [bool; MAX_LOOP_BARS],
 }
 
+/// A tape and its record, boxed on the control side to cross the rings whole.
+///
+/// The loop swaps it for what it held and sends the same box back, so the
+/// audio thread never allocates or frees.
+#[derive(Debug)]
+pub struct LoopTape {
+    /// Interleaved stereo including the splice tail and guard frame.
+    pub samples: Box<[f32]>,
+    /// Recording geometry, or blank tape.
+    pub splice: Option<Splice>,
+    /// Most recent written pass of each bar.
+    pub bar_pass: [i64; MAX_LOOP_BARS],
+    /// Stored level bins.
+    pub bins: [u8; LOOP_BINS],
+}
+
+/// A snapshot's box: the destination going in, the copy coming out.
+#[derive(Debug)]
+pub struct LoopSnapshot {
+    /// Interleaved stereo copy.
+    pub tape: Box<[f32]>,
+    /// Beginning of the snapshot.
+    pub at: TakeMark,
+    /// Geometry at the beginning of the snapshot.
+    pub splice: Option<Splice>,
+    /// Written passes at the beginning of the snapshot.
+    pub bar_pass: [i64; MAX_LOOP_BARS],
+}
+
 /// Control-side requests; buffers are allocated before entering the ring.
+///
+/// The tape and its record travel boxed: the brief's inline arrays made
+/// every ring slot over 600 bytes, which clippy's `large_enum_variant` and
+/// `result_large_err` refuse, and an unboxed copy cannot cross back without
+/// the audio thread freeing its box.
 #[derive(Debug)]
 pub enum LoopIn {
-    /// Replace the tape, returning the previous allocation.
+    /// Replace the tape; the box comes back as `Retired` holding the old one.
     Install {
-        /// Interleaved stereo including the splice tail and guard frame.
-        tape: Box<[f32]>,
-        /// Recording geometry, or blank tape.
-        splice: Option<Splice>,
-        /// Most recent written pass of each bar.
-        bar_pass: [i64; MAX_LOOP_BARS],
-        /// Stored level bins.
-        bins: [u8; LOOP_BINS],
+        /// The tape to put on, with its geometry, passes and bins.
+        tape: Box<LoopTape>,
         /// Refuse a late restore after the module has spliced.
         only_if_blank: bool,
     },
     /// Copy the tape as it exists at the next sub-block boundary.
     Snapshot {
         /// Destination allocation, prepared by the control side.
-        into: Box<[f32]>,
+        into: Box<LoopSnapshot>,
     },
 }
 
 /// Returned ownership and completed punch marks.
 #[derive(Debug)]
 pub enum LoopOut {
-    /// An allocation replaced by an install.
-    Retired(Box<[f32]>),
-    /// A request the processor could not accept.
-    Refused(Box<[f32]>),
+    /// The install's box, now holding the tape the loop held before.
+    Retired(Box<LoopTape>),
+    /// A request the processor could not accept, handed back whole.
+    Refused(LoopIn),
     /// A completed recording punch.
     Took(TakeMark),
     /// A completed copy at a precise engine frame.
-    Snapped {
-        /// Interleaved stereo copy.
-        tape: Box<[f32]>,
-        /// Beginning of the snapshot.
-        at: TakeMark,
-        /// Geometry at the beginning of the snapshot.
-        splice: Option<Splice>,
-        /// Written passes at the beginning of the snapshot.
-        bar_pass: [i64; MAX_LOOP_BARS],
-    },
+    Snapped(Box<LoopSnapshot>),
 }
 
 /// Atomic observations; readers may see adjacent sub-blocks together.
@@ -112,6 +131,9 @@ pub struct LoopGauges {
     pub shortened: AtomicBool,
     /// Number of refused requests.
     pub refused: AtomicU64,
+    /// Items leaked rather than freed on the audio thread because no slot
+    /// was free to hand them back. Never expected: admission keeps slots.
+    pub leaked: AtomicU64,
 }
 
 impl Default for LoopGauges {
@@ -129,6 +151,7 @@ impl Default for LoopGauges {
             bins: std::array::from_fn(|_| AtomicU8::new(0)),
             shortened: AtomicBool::new(false),
             refused: AtomicU64::new(0),
+            leaked: AtomicU64::new(0),
         }
     }
 }
@@ -150,23 +173,21 @@ impl LoopFeed {
         bins: [u8; LOOP_BINS],
         only_if_blank: bool,
     ) -> Result<(), LoopIn> {
-        // Validate samples before ownership reaches the render thread.
-        if tape.iter().any(|sample| !sample.is_finite()) {
-            return Err(LoopIn::Install {
-                tape,
+        let finite = tape.iter().all(|sample| sample.is_finite());
+        let request = LoopIn::Install {
+            tape: Box::new(LoopTape {
+                samples: tape,
                 splice,
                 bar_pass,
                 bins,
-                only_if_blank,
-            });
-        }
-        self.inbox.try_push(LoopIn::Install {
-            tape,
-            splice,
-            bar_pass,
-            bins,
+            }),
             only_if_blank,
-        })
+        };
+        // Validate samples before ownership reaches the render thread.
+        if !finite {
+            return Err(request);
+        }
+        self.inbox.try_push(request)
     }
 
     /// Queue a snapshot, returning its allocation when the ring is full.
@@ -174,10 +195,23 @@ impl LoopFeed {
         // Tape is finite, so a NaN destination identifies a cell not yet preserved.
         // Preparing the destination here keeps both page writes and bookkeeping off the renderer.
         into.fill(f32::NAN);
-        match self.inbox.try_push(LoopIn::Snapshot { into }) {
+        let request = LoopIn::Snapshot {
+            into: Box::new(LoopSnapshot {
+                tape: into,
+                at: TakeMark {
+                    frame: 0,
+                    beat: 0.0,
+                    pass: 0,
+                    bars: [false; MAX_LOOP_BARS],
+                },
+                splice: None,
+                bar_pass: [i64::MIN; MAX_LOOP_BARS],
+            }),
+        };
+        match self.inbox.try_push(request) {
             Ok(()) => Ok(()),
-            Err(LoopIn::Snapshot { into }) => Err(into),
-            Err(LoopIn::Install { tape, .. }) => Err(tape),
+            Err(LoopIn::Snapshot { into }) => Err(into.tape),
+            Err(LoopIn::Install { tape, .. }) => Err(tape.samples),
         }
     }
 
@@ -186,11 +220,12 @@ impl LoopFeed {
         self.outbox
             .pop_iter()
             .map(|mut item| {
-                if let LoopOut::Snapped { tape, splice, .. } = &mut item {
-                    let len =
-                        splice.map_or(0, |geometry| 2 * (geometry.frames + geometry.tail + 1));
+                if let LoopOut::Snapped(snapshot) = &mut item {
+                    let len = snapshot
+                        .splice
+                        .map_or(0, |geometry| 2 * (geometry.frames + geometry.tail + 1));
                     // Extra destination capacity is not tape; remove its copy markers here.
-                    tape[len..].fill(0.0);
+                    snapshot.tape[len..].fill(0.0);
                 }
                 item
             })
