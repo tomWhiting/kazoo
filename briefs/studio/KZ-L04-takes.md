@@ -4,6 +4,15 @@ Line numbers are from the sweep that wrote this brief, at `247ca07`, and may hav
 
 Time: about 30 minutes of a builder's work. One mechanism: the path from a finished recording to a durable, logged, undoable reel, and keeping the store tidy. Crates: kazoo-wall only (`daemon/loops.rs` and a new `daemon/loops/takes.rs`, `daemon/loops/pins.rs`; small additions to `protocol/mod.rs`, `change.rs`, `daemon/wall.rs`, `daemon/control.rs`). Depends: KZ-L03.
 
+Read by Cassio, 14 Oct 00:3x. Changes: the checks are written out in the lane form; the live-wall check is Cassio's and Tom's after landing; and one pin source is added for the tree, below.
+
+**The tree keeps every take (Track T, PLAN.md).** Tom decided the wall is one tree in git that keeps every moment forever, and that going back to a moment (KZ-T04b) and replaying (KZ-T06, "the fire") must work for any moment. The log rotates and saves are pruned, so the five sources below would one day let the sweep delete a reel that a moment in the tree still names. So, decided:
+- `pins/wall-history.txt` is a sixth pin source, written by this lane. Every `Take` whose `why` is `Punch`, `Save` or `Rebuild` appends its reel id there (one hex id a line, fsynced, the append done on the worker before the change is told to seats, like the main pin). It is append-only: nothing in the wall ever rewrites or shortens it.
+- Checkpoint reels are not added to it. They stay prunable under the budget rule below. When the tree goes to a moment whose checkpoint reel was pruned, that loop is blank and the wall says "that checkpoint's reel was pruned for space at <time>", as an undo would.
+- `ReelRefs` reads the file at start, and the pin the worker writes is the union of the six sources.
+- Red test 7 gains a reel named only in `pins/wall-history.txt`: the sweep keeps it.
+- This holds whichever of Track T and this lane lands first: the file is the tree's promise and needs nothing from T.
+
 ## Outcome
 
 Tom sings four bars into `loop1` and turns `record` off. A moment after the post-roll, the log says "kazoo-wall: loop1 took 4 bars (pass 0, reel 9f3c01ab)". The take is change 812, and it is in `patch.json`. Undoing change 812 puts back what `loop1` held before: blank tape, or the take before. A `wall_save` waits up to five seconds for every loop that is recording to hand over its tape, then saves, so a save is the music at the moment it was asked for. A loop left overdubbing for an hour is checkpointed at its seam once a minute, so a crash loses at most a minute. The reel store never grows past 4 GiB because of checkpoints. It never deletes a reel any save, the log or a desk session names. It never deletes anything while it cannot read every pin list.
@@ -97,20 +106,22 @@ In `daemon/loops/tests.rs` and `daemon/wall/tests.rs`, offline walls with a temp
 
 ## Checks
 
-As PLAN.md, with `-p kazoo-wall`, and `ast-grep scan kazoo-wall/src`. Run doc tests for kazoo-wall.
+Every cargo command runs under the kazoo cargo lock, niced, with four jobs. Read `df -h /System/Volumes/Data` before each and put it in START and END.
+
+```
+nice lockf -k /Users/tom/.kazoo-cargo.lock cargo nextest run -p kazoo-wall --build-jobs 4 -j 4
+nice lockf -k /Users/tom/.kazoo-cargo.lock cargo clippy -p kazoo-wall --all-targets -j 4 -- -D warnings
+nice lockf -k /Users/tom/.kazoo-cargo.lock cargo test --doc -p kazoo-wall -j 4
+cargo fmt --all --check
+ast-grep scan kazoo-wall/src
+```
 
 ## Definition of done
 
 - [ ] The nine tests fail first (paste each under RED), then pass.
 - [ ] Every reel write is on the worker thread. Every buffer handed back is freed on the control side. Name the lines.
 - [ ] `What::Take`, `TakeWhy`, `CHECKPOINT_SECONDS`, `SAVE_WAIT`, `ReelRefs`, `Wall::saved` and `checkpoints_paused` exist as named.
-- [ ] By hand on the live wall, after the landing reinstall:
-  - record a loop and see the take in `wall_log`;
-  - `wall_save` it, `wall_load` another save, then `wall_load` it back, and hear the loop;
-  - undo the take and hear the tape before it;
-  - `ls ~/.kazoo/reels` shows one file per take, and `pins/wall.txt` names them.
-
-  Say what you heard and saw.
+- [ ] Not the builder's: the builder never touches the live wall (no MCP call, load, save or daemon restart). After landing and reinstalling, Cassio records a loop and sees the take in `wall_log`; saves it, loads another save and loads it back, and asks Tom to listen; undoes the take and asks Tom to listen for the tape before it; and checks that `~/.kazoo/reels` holds one file per take and that `pins/wall.txt` and `pins/wall-history.txt` name them. The builder lists this under NOT CONFIRMED and does not claim it.
 
 ## Code quality
 
