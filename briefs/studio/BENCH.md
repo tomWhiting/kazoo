@@ -671,12 +671,14 @@ present. Receipt: `target/kz-logs/review/voice-score-final.md`.
 
 ## KZ-V04 voice trackers
 
-Date: 2026-10-13T16:47:59+00:00. HEAD: `538cfbef8ad56d5db4fe63badabdafdd4e794a7f` on `lane/kz-V04`, with the uncommitted V04 tree.
-Load at completion: 3:47  6 users, load averages: 305.04 268.31 221.67.
+Date: 2026-10-13T17:35:22Z (14 Oct 04:35 AEDT), after review. HEAD: `3154dcd` on `lane/kz-V04`.
+Load at completion: load averages 178.66 165.03 161.13.
 
-`nice -n 10 env CARGO_BUILD_JOBS=4 NEXTEST_STATE_DIR=target/kz-logs/nextest cargo run --release -p kazoo-core --example voice_score` exited 0.
-Complete analytic takes at 48,000 Hz; no recorded fixtures were present.
-Receipt: `target/kz-logs/voice-score-complete.txt`; tables: `target/kz-logs/voice-score.md`.
+`nice lockf -k ~/.kazoo-cargo.lock cargo run --release -j 4 -p kazoo-core --example voice_score` exited 0.
+Complete analytic takes at 48,000 Hz; no recorded fixtures were present. The review's fixes (a hot
+input is clipped rather than reset; a recovery's remaining climb is not a second rise) leave every
+row below identical to the builder's run at the uncommitted tree.
+Receipt: `target/kz-logs/review-voice-score.txt`; tables: `target/kz-logs/voice-score.md`.
 Latency measures sample counts, independently of the shared machine load.
 
 | tracker | take | onset median ms | onset max ms | onsets missed | step median ms | step max ms | steps | steps missed | cents median | cents p95 | octave % | gross % | missed % | false % | aligned lag ms |
