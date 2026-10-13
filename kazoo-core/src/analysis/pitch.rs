@@ -103,8 +103,9 @@ impl PitchDetector {
     /// # Errors
     ///
     /// Returns an error if the configuration is invalid (e.g.
-    /// `min_frequency >= max_frequency`, or frequencies outside the Nyquist
-    /// range).
+    /// `min_frequency >= max_frequency`, frequencies outside the Nyquist
+    /// range, or a range, frame and hop that pyin cannot build a detector
+    /// for).
     pub fn new(config: PitchDetectorConfig) -> crate::Result<Self> {
         if !config.min_frequency.is_finite()
             || !config.max_frequency.is_finite()
@@ -140,6 +141,8 @@ impl PitchDetector {
         if config.sample_rate == 0 {
             return Err(crate::Error::Config("sample_rate must be > 0".into()));
         }
+
+        check_pyin_limits(&config)?;
 
         let history_len = (JUDGE_FRAMES - 1)
             .checked_mul(config.hop_length)
@@ -246,6 +249,54 @@ impl PitchDetector {
             midi_note: frequency.and_then(frequency_to_midi_note),
         }
     }
+}
+
+/// Refuse a configuration that pyin's `PYINExecutor::new` would panic on.
+///
+/// Mirrors pyin 1.2.0's own arithmetic (`pyin.rs:135-177`) with its defaults
+/// of `win_length = frame_length / 2` and a resolution of 0.1 semitone (10
+/// bins per semitone), so the two never disagree. The caller has already
+/// checked the range, the Nyquist limit, a `frame_length` of at least 4 and a
+/// hop in `1..=frame_length`.
+fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
+    let rate = f64::from(config.sample_rate);
+    let fmin = f64::from(config.min_frequency);
+    let fmax = f64::from(config.max_frequency);
+
+    // The longest period pyin searches is `frame_length - win_length - 1`.
+    let longest = config.frame_length - config.frame_length / 2 - 1;
+    let longest = u32::try_from(longest)
+        .map(f64::from)
+        .map_err(|_| crate::Error::Config("frame_length too large for pyin".into()))?;
+    let min_period = (rate / fmax).floor().max(1.0);
+    let max_period = (rate / fmin).ceil().min(longest);
+    if max_period < min_period + 2.0 {
+        return Err(crate::Error::Config(format!(
+            "frame_length {} is too short for {fmin} Hz at {rate} Hz: pyin needs \
+             periods {min_period} to {max_period} to span at least 2 samples",
+            config.frame_length
+        )));
+    }
+
+    let pitch_bins = (12.0 * 10.0 * (fmax / fmin).log2()).floor() + 1.0;
+    if pitch_bins < 2.0 {
+        return Err(crate::Error::Config(format!(
+            "range [{fmin}, {fmax}] Hz holds fewer than 2 pyin pitch bins"
+        )));
+    }
+
+    let hop = u32::try_from(config.hop_length)
+        .map(f64::from)
+        .map_err(|_| crate::Error::Config("hop_length too large for pyin".into()))?;
+    let transition_width = (35.92 * 12.0 * hop / rate).round() * 10.0 + 1.0;
+    if pitch_bins < transition_width {
+        return Err(crate::Error::Config(format!(
+            "hop_length {} at {rate} Hz lets a pitch move {transition_width} bins \
+             per hop, more than the range's {pitch_bins} bins",
+            config.hop_length
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -326,3 +326,16 @@ fn a_config_pyin_cannot_hold_is_refused() {
         );
     }
 }
+
+/// The pyin limits refuse only what pyin cannot build: every device rate the
+/// voice judge can hold under Nyquist still gets a detector.
+#[test]
+fn every_device_rate_builds_a_judge() {
+    for rate in [
+        8001, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000,
+        384_000,
+    ] {
+        let built = PitchDetector::new(PitchDetectorConfig::for_rate(rate));
+        assert!(built.is_ok(), "rate {rate} was refused: {built:?}");
+    }
+}
