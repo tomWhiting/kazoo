@@ -348,7 +348,7 @@ mod tests {
 
     /// Start a studio whose desk is `desk`, exactly as `up` starts one.
     fn start_desk(harness: &Harness, desk: &Path) -> (LaunchPlan, u32) {
-        let plan = commands("demo", &StudioFile::default(), desk).unwrap();
+        let plan = commands("demo", &StudioFile::default(), desk, &harness.directory).unwrap();
         let started = output(&harness.tmux, &plan.commands[0].args).unwrap();
         let pid = parse_pid(std::str::from_utf8(&started.stdout).unwrap().trim()).unwrap();
         (plan, pid)
@@ -396,7 +396,8 @@ mod tests {
         )
         .unwrap();
         let desk = harness.script("desk", "exit 0\n");
-        let plan = commands("demo", &StudioFile::default(), &desk).unwrap();
+        let plan =
+            commands("demo", &StudioFile::default(), &desk, &harness.directory).unwrap();
         let error = down(&harness.tmux, &plan.session, &plan.children[0]).unwrap_err();
         assert!(error.to_string().contains("not started by kazoo studio"), "{error}");
         assert!(harness.session_exists("kazoo-demo"));

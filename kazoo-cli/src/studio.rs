@@ -137,11 +137,35 @@ pub struct LaunchPlan {
 }
 
 /// Build all launch commands using the same executable for every child.
-pub fn commands(name: &str, file: &StudioFile, executable: &Path) -> Result<LaunchPlan> {
+///
+/// Every pane runs with `XDG_RUNTIME_DIR` set to `runtime`, the directory
+/// this process resolves the desk socket under. A pane otherwise inherits
+/// the tmux server's environment, which can name a different directory and
+/// so a different socket than the one `up` waits on.
+pub fn commands(
+    name: &str,
+    file: &StudioFile,
+    executable: &Path,
+    runtime: &Path,
+) -> Result<LaunchPlan> {
     validate_name(name)?;
     let executable = executable
         .to_str()
         .ok_or_else(|| eyre!("kazoo executable path is not valid UTF-8"))?;
+    if !runtime.is_absolute() {
+        return Err(eyre!(
+            "XDG_RUNTIME_DIR {} is not an absolute path",
+            runtime.display()
+        ));
+    }
+    let environment = shell_command([format!(
+        "XDG_RUNTIME_DIR={}",
+        runtime
+            .to_str()
+            .ok_or_else(|| eyre!("XDG_RUNTIME_DIR is not valid UTF-8"))?
+    )
+    .as_str()])?;
+    let pane = |child: &str| format!("exec /usr/bin/env {environment} {child}");
     let session = format!("kazoo-{name}");
     let target = format!("={session}");
     let mut children = vec![shell_command([executable, "mix"])?];
@@ -161,7 +185,7 @@ pub fn commands(name: &str, file: &StudioFile, executable: &Path) -> Result<Laun
             "-P".into(),
             "-F".into(),
             "#{pane_pid}".into(),
-            format!("exec {}", children[0]),
+            pane(&children[0]),
         ],
     }];
     for child in children.iter().skip(1) {
@@ -170,7 +194,7 @@ pub fn commands(name: &str, file: &StudioFile, executable: &Path) -> Result<Laun
                 "split-window".into(),
                 "-t".into(),
                 target.clone(),
-                format!("exec {child}"),
+                pane(child),
             ],
         });
         commands.push(TmuxCommand {
@@ -230,6 +254,22 @@ fn session_path(name: &str) -> Result<PathBuf> {
         .join(format!("{name}.toml")))
 }
 
+/// The `XDG_RUNTIME_DIR` value under which this process finds the desk
+/// socket: the variable itself, or `/tmp` when it is unset.
+fn runtime_parent() -> Result<PathBuf> {
+    let runtime = kazoo_core::ipc::discovery::runtime_dir();
+    runtime
+        .parent()
+        .filter(|parent| parent.is_absolute())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            eyre!(
+                "the kazoo runtime directory {} is not under an absolute XDG_RUNTIME_DIR",
+                runtime.display()
+            )
+        })
+}
+
 fn find_tmux(path: Option<&OsStr>) -> Result<Option<PathBuf>> {
     if let Some(path) = path {
         for directory in std::env::split_paths(path) {
@@ -274,7 +314,7 @@ pub fn run(command: &StudioCommand) -> Result<ExitCode> {
                 &fs::read_to_string(&session_path)
                     .wrap_err_with(|| format!("reading {}", session_path.display()))?,
             )?;
-            let plan = commands(name, &file, &std::env::current_exe()?)?;
+            let plan = commands(name, &file, &std::env::current_exe()?, &runtime_parent()?)?;
             if let Some(tmux) = tmux {
                 tmux::up(&tmux, &plan, file.desk.rate)?;
                 Ok(ExitCode::SUCCESS)
@@ -346,7 +386,13 @@ mod tests {
         let file =
             StudioFile::parse("[[instrument]]\nname = '808'\n[[instrument]]\nname = 'mini'\n")
                 .unwrap();
-        let plan = commands("demo", &file, Path::new("/path with spaces/kazoo")).unwrap();
+        let plan = commands(
+            "demo",
+            &file,
+            Path::new("/path with spaces/kazoo"),
+            Path::new("/run/user/501"),
+        )
+        .unwrap();
         assert_eq!(
             plan.children,
             [
@@ -364,20 +410,20 @@ mod tests {
                 "-P",
                 "-F",
                 "#{pane_pid}",
-                "exec '/path with spaces/kazoo' 'mix'",
+                "exec /usr/bin/env 'XDG_RUNTIME_DIR=/run/user/501' '/path with spaces/kazoo' 'mix'",
             ],
             vec![
                 "split-window",
                 "-t",
                 "=kazoo-demo",
-                "exec '/path with spaces/kazoo' '808'",
+                "exec /usr/bin/env 'XDG_RUNTIME_DIR=/run/user/501' '/path with spaces/kazoo' '808'",
             ],
             vec!["select-layout", "-t", "=kazoo-demo", "tiled"],
             vec![
                 "split-window",
                 "-t",
                 "=kazoo-demo",
-                "exec '/path with spaces/kazoo' 'mini'",
+                "exec /usr/bin/env 'XDG_RUNTIME_DIR=/run/user/501' '/path with spaces/kazoo' 'mini'",
             ],
             vec!["select-layout", "-t", "=kazoo-demo", "tiled"],
             vec!["attach", "-t", "=kazoo-demo"],
