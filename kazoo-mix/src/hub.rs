@@ -231,6 +231,8 @@ pub enum RefuseReason {
         frames: u32,
         /// Most frames that fit twice at its channel count.
         most: u32,
+        /// Its channel count, which sets `most`.
+        channels: u16,
     },
     /// Every strip is taken.
     DeskFull,
@@ -277,15 +279,14 @@ impl fmt::Display for RefuseReason {
                 "it runs at {instrument} Hz, the desk at {desk} Hz (use the same device)"
             ),
             Self::Channels(n) => write!(f, "{n} channels (mono or stereo only)"),
-            Self::BlockTooLarge { frames, most } => {
-                let channels = MAX_SOURCE_RING_SAMPLES
-                    .checked_div(*most as usize * 2)
-                    .ok_or(fmt::Error)?;
-                write!(
-                    f,
-                    "blocks of {frames} frames (at most {most} at {channels} channels)"
-                )
-            }
+            Self::BlockTooLarge {
+                frames,
+                most,
+                channels,
+            } => write!(
+                f,
+                "blocks of {frames} frames (at most {most} at {channels} channels)"
+            ),
             Self::DeskFull => write!(f, "every strip is taken"),
             Self::Handshake(why) => write!(f, "{why}"),
         }
@@ -798,6 +799,7 @@ impl Server {
                 RefuseReason::BlockTooLarge {
                     frames: register.buffer_size,
                     most,
+                    channels,
                 },
             );
             return;

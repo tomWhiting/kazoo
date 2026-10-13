@@ -56,7 +56,8 @@ fn an_instrument_whose_blocks_would_not_fit_its_strip_twice_is_refused() {
         HubNotice::Refused {
             reason: RefuseReason::BlockTooLarge {
                 frames: 32_768,
-                most: 16_384
+                most: 16_384,
+                channels: 2
             },
             ..
         }
@@ -116,12 +117,16 @@ fn extra_lead_is_held_to_the_instruments_own_block_size() {
 fn a_block_too_large_refusal_always_reads_as_text() {
     // Any value of the public reason renders: a Display error would panic
     // the hub thread inside `to_string`.
-    for most in [0, 40_000] {
+    for (most, channels) in [(0, 2), (40_000, 1)] {
         let text = RefuseReason::BlockTooLarge {
             frames: 50_000,
             most,
+            channels,
         }
         .to_string();
-        assert!(text.starts_with("blocks of 50000 frames"), "{text}");
+        assert_eq!(
+            text,
+            format!("blocks of 50000 frames (at most {most} at {channels} channels)")
+        );
     }
 }
