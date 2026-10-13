@@ -199,7 +199,7 @@ impl fmt::Display for ReelError {
             Self::NoMemory => f.write_str("there is not enough memory to read the reel"),
             Self::Corrupt(id) => write!(
                 f,
-                "reel {} is damaged: its samples do not match its name; moved aside as {id}.corrupt-<unix>.wav",
+                "reel {} is damaged: its samples do not match its name; moved aside as {id}.corrupt-*.wav in the reels directory",
                 id.short()
             ),
             Self::PinUnreadable { holder } => write!(
