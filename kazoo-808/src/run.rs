@@ -114,6 +114,9 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     }
 }
 
+/// Leave the screen, stop the audio, drop the desk link, and only then
+/// report: a link's shutdown counts are true only once it has dropped, and
+/// standard error is readable only once the screen has gone.
 fn teardown<R>(
     leave: impl FnOnce() -> R,
     stop_stream: impl FnOnce(),
