@@ -204,6 +204,48 @@ Tom's words, 13 Oct 2026, about 15:25 to 15:35:
 | L12 the tape view | `T`: eight channel strips with braille needles, reels turning with the beat whose packs grow with the take, the tape's bars, the counter; 30 fps cap, ASCII fallback | kazoo-wall | L05 |
 | L13 the loom view | `W`: per-out levels from the engine; outs as warp, loops as weft, over/under by loudness, pass diamonds, past and predicted future; 10 fps cap, ASCII fallback | kazoo-wall | L12, L05 |
 
+### Track T: the tree
+
+Tom's words, 13 Oct 2026, about 19:20 to 20:10:
+- "What happens if you don't have different songs? You just have the wall, and the wall branches, and it changes over time. But you can go back to any moment in time and skip timelines ... different branches, and the music just grows as a tree. And ... when we move from one branch to another, we transition the patches."
+- "We're actually making the most of it being not just digital, but effectively text-based. And you start your song, and your song stays with you forever. And you can't ever change it, because you can't change what's happening in your life. But you can change the future."
+- "Can we just use Git to version it? ... a little bit more like JJ ... contributions become commits ... and then we just replay the commits ... and if we store a time and all the settings and all that kind of stuff with them."
+- "Tracks is just a complete misnomer for what this is ... It's all one journey that branches and forks ... come back to a bookmark and the second you change one dial ... it's another branch, like a little bud comes out. And if you leave it at that, you leave it at that ... the tree only grows as you make changes."
+- On the thought experiments: "that solves a problem that I didn't even realize that we had ... with the birthmarks, I feel like if every patch, every module, every change all has a timestamp and every module has a birthmark ... that helps us just get the order of things right ... it might need to be built in early on."
+- On the view: "The bevy stuff I'm less concerned about. I'd be happy with just some other kind of thing to begin with ... not required to play the music. But I do like the idea of a tree visualization of some kind, even if it's just a little one." Later, a Bevy tree you explore (thicker branches where more modules lived, dive in to see the graph, pull strings to play, "set the tree on fire ... all the smoke that comes off it is the music"). Reference: his Bevy project Meridian Life.
+- On lanterns (Norn's design, `ablative/stack/norn/docs/design/norn-memory/DESIGN.md` and `MEMORY-AND-LANTERNS.md`; memory as songlines): "if that was tagged, you could go back and you could talk to yourself from then ... talk to the ancestors ... how was Tom feeling at that? How did that make him react?" Tom's definition (8 Aug): "A memory is a way of storing a note against something ... A lantern comes with an annotation like the note, but is a pathway back to have a conversation with the previous self through a fork."
+- "Let's get all this stuff written down and done."
+
+**Where we are (sweep at main after W01b, W01c and V01).**
+- Every change is already logged, in order, append-only: `~/.kazoo/wall/log.jsonl`, 6,373 entries since 26 Sep (5,055 turns, 642 patches, 364 adds, 206 removes, 63 unpatches, 26 records, 11 tempos, 3 loads, 2 migrates, 1 speak). Each has `seq`, UTC `at`, `seat`, `what` and a summary. Not stamped with beats or frames (KZ-W02 is not written).
+- A save is one JSON file (`~/.kazoo/wall/saves/<name>.json`, `MAX_WALL_FILE`). Loading replaces the whole wall at once; there is no transition.
+- Module ids (`vcf9`) are unique on one wall but reused across walls and loads. Nothing gives a module a lasting identity.
+- `toml` 0.9 is already a workspace dependency (kazoo-cli). No git crate is.
+
+**Decisions for the whole track** (each is argued in its brief):
+- **Real git, worked the jj way.** The tree is a git repository at `~/.kazoo/tree`, readable with `git log` and `jj log`, clonable and forkable. Nothing in it is ever rewritten: no reset of a branch backwards, no force, no merges. The tree only grows.
+- **One text file per module.** `modules/<id>.toml`: kind, name, every knob one line, its birth mark, and its inputs (a cable lives in the file of the module it feeds, because an input takes one cable). `wall.toml` holds tempo, seed and rows. Each file round-trips exactly with the save format.
+- **Birth marks, built in first.** Every module gets a birth mark when it is born: the seq and UTC instant of the change that added it plus the wall's fingerprint, unique across every tree. It never changes while the module lives, survives save and load, and is how a crossing matches modules (not by id). Every change and every commit carries its UTC time and the wall's beat.
+- **A commit for every change.** Author is the seat, date is the change's UTC time, message is the log summary, trailers carry `Kazoo-Seq`, `Kazoo-Beat`, `Kazoo-Tempo` and the change as JSON. A glide is one commit (target and glide beats), not its steps. Commits are written by a tree thread off the control thread, never the audio thread, from a bounded queue; a full queue or a git failure is shown on the console and logged, and never stops the wall.
+- **Moments, marks and buds.** Any commit is a moment. A mark is a named moment (a lightweight tag, `mark/<name>`); a branch is a line of growth. Going to a moment puts the wall there; the first change after that grows a bud, a new branch named for its moment and time. Leave it and it stays a bud.
+- **The crossing.** Going to another moment is a transition, not a cut: matched modules (by birth) glide their knobs, modules only the destination has fade in, modules it lacks fade out and are then removed, changed cables crossfade. Default 16 beats; 0 is a cut.
+- **The fire.** Replay walks a branch forward from a moment, applying each commit at its beat offset, at any speed. A change during the fire grows a bud at the commit the fire had reached; the past is never changed.
+- **The first rings.** The existing log since 26 Sep is imported as the trunk, as far as it can be reconstructed exactly; any gap is a commit that says so.
+- **Lanterns.** A note on a moment is a git note (`refs/notes/lanterns`), so notes grow later without changing the music. A lantern is a note plus a way back: the seat's Claude session id and message at that moment (resumed with `claude --resume <id> --fork-session`) and the span of Tom's spoken words around it from Dot's transcript, so anyone can ask the moment how it felt.
+- **Views.** First a small tree in the wall console (branches as lines, thickness by modules alive, marks and lanterns on them, the wall's place). The Bevy tree, explorable and maybe VR, comes later and is not needed to play.
+
+| Lane | Outcome | Crates | Depends |
+|---|---|---|---|
+| T01 the tree's files and birth marks | `modules/<id>.toml` and `wall.toml`, exact round trip with the save; every module born with a birth mark that survives save, load and undo | kazoo-wall | — |
+| T02 a commit for every change | the tree thread writes one git commit per logged change, seat as author, UTC date, beat and seq trailers; bounded queue, failures shown, the wall never waits | kazoo-wall | T01 |
+| T03 the first rings | the log since 26 Sep imported as the trunk, exact where it can be, gaps stated | kazoo-wall (tool) | T02 |
+| T04 moments, marks and buds | `wall_mark`, `wall_go` (a cut), buds on the first change, `wall_tree`; console keys | kazoo-wall, kazoo-mcp | T02 |
+| T05 the crossing | going to a moment glides, fades and crossfades by birth mark over N beats | kazoo-wall | T04 |
+| T06 the fire | replay of a branch at its beats and any speed; a change mid-fire grows a bud | kazoo-wall, kazoo-mcp | T05 |
+| T07 lanterns | notes on moments as git notes; lanterns with session and transcript pointers; ask a moment | kazoo-wall, kazoo-mcp | T04 |
+| T08 the little tree | the console's tree view: branches, thickness, marks, lanterns, where the wall is | kazoo-wall | T04 |
+| T09 the Bevy tree | an explorable tree (native and wasm), after Meridian Life | new crate | T08 |
+
 ## Order of play
 
 1. D01 (benchmarks first, so every later number is against a baseline) and A01 side by side.
@@ -213,6 +255,7 @@ Tom's words, 13 Oct 2026, about 15:25 to 15:35:
 5. B05, B06, E01, E02 fill gaps.
 6. Track V: V01, V02, V03, V04 in order (each scores on the last one's scoreboard). Then V05 and V06 side by side, since they share no files. V07a waits for B03a and V07b waits for B03b, because they edit the same wire files. V08a follows V05 and V07a. Then V08b, V09a and V10 run side by side. After V09a, V09b, V09c and V09d run side by side; they share only `kazoo-cli/src/cli.rs`, where each adds its own `--follow` flags, so the merge is line by line.
 7. Track L: L01 and L02 side by side (different crates), then L03, L04 and L05 in order (each edits `daemon/loops/`). L06 waits for B03a and V07a, because they edit the same wire files, and L07 waits for L06, C04 and V07b. L08 runs once V08b has landed. L09 follows L05 and L06. L12 can run beside L06 to L09 (console files only), then L13. L10 waits for L07 and C08a, then L11 after C07b. The first thing Tom can play is after L05: a loop on the wall recording any wall signal, saved and undoable. Singing into it needs L06 to L09.
+8. Track T: T01, T02 in order, then T03 and T04 side by side (T03 is an import tool, T04 the live wall), then T05, T06 in order; T07 and T08 can run beside T05 and T06. T09 waits for T08. T01 goes first among new wall work because birth marks must be in before anything else saves modules.
 
 ## How a lane runs
 
