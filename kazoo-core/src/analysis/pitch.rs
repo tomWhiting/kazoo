@@ -2,36 +2,105 @@
 //!
 //! Wraps the [`pyin`] crate's `PYINExecutor` to provide an incremental,
 //! frame-based pitch detector suitable for real-time audio analysis. Incoming
-//! samples are accumulated into an internal buffer; when a full frame is
-//! available the pYIN algorithm runs and produces a [`PitchEstimate`].
+//! samples enter a sliding history window; every hop the pYIN algorithm
+//! judges the newest frame with preceding frames as context.
 
 use crate::{frequency_to_midi_note, sanitize_sample};
-use pyin::{Framing, PYINExecutor, PadMode};
+use pyin::{Framing, PYINExecutor};
+
+use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
+
+/// pYIN frames per run; the HMM picks the newest frame's octave with two frames of context behind it.
+pub const JUDGE_FRAMES: usize = 3;
+
+/// The judge only rules on octave and voicing: fusion folds within 300 cents
+/// and flags disagreement past 100. pYIN rounds `1 / 0.34` up to three bins a
+/// semitone, so the bins are 33.3 cents: inside both, and they cut pYIN's
+/// states from 1518 to 456, measured at 1.5 ms CPU a run at three frames,
+/// under the 2.1 ms budget.
+pub const JUDGE_RESOLUTION: f64 = 0.34;
 
 /// Configuration for the pitch detector.
 #[derive(Debug, Clone)]
 pub struct PitchDetectorConfig {
-    /// Minimum detectable frequency in Hz (default 60.0).
+    /// Minimum detectable frequency in Hz (default 50.0).
     pub min_frequency: f32,
-    /// Maximum detectable frequency in Hz (default 1000.0).
+    /// Maximum detectable frequency in Hz (default 4000.0).
     pub max_frequency: f32,
-    /// Audio sample rate in Hz (default 44100).
+    /// The stream's rate; [`crate::engine::start`] replaces it with the device's.
     pub sample_rate: u32,
     /// FFT frame length in samples (default 2048).
     pub frame_length: usize,
+    /// Samples between judge runs.
+    pub hop_length: usize,
+    /// Semitones per pitch bin; pYIN requires a finite value in 0.01..1.0.
+    pub resolution: f64,
     /// Probability threshold above which a frame is considered voiced (default 0.3).
     pub voiced_threshold: f32,
 }
 
-impl Default for PitchDetectorConfig {
-    fn default() -> Self {
+impl PitchDetectorConfig {
+    /// Configure the voice judge with a window and hop scaled for the stream's rate.
+    #[must_use]
+    pub const fn for_rate(rate: u32) -> Self {
+        let scale = if rate <= 48_000 {
+            1
+        } else if rate <= 96_000 {
+            2
+        } else if rate <= 192_000 {
+            4
+        } else {
+            8
+        };
+        Self {
+            min_frequency: VOICE_MIN_HZ,
+            max_frequency: VOICE_MAX_HZ,
+            sample_rate: rate,
+            frame_length: 2048 * scale,
+            hop_length: 512 * scale,
+            resolution: JUDGE_RESOLUTION,
+            voiced_threshold: 0.3,
+        }
+    }
+
+    /// Configure the engine's accurate, once-per-window detector until it is retired.
+    #[must_use]
+    pub const fn engine_default() -> Self {
         Self {
             min_frequency: 60.0,
             max_frequency: 1000.0,
-            sample_rate: 44_100,
-            frame_length: 2048,
-            voiced_threshold: 0.3,
+            hop_length: 2048,
+            resolution: 0.1,
+            ..Self::for_rate(44_100)
         }
+    }
+
+    /// This configuration with the longest hop pYIN can hold: one run per
+    /// window where it can, halving towards a quarter of the frame (pYIN's own
+    /// hop) where it cannot. A long window at a low rate (2048 samples is 128 ms
+    /// at 16 kHz) lets a pitch move further per hop than the range holds, and
+    /// pYIN refuses that. If no hop down to a quarter frame builds, the hop
+    /// stays the whole frame and [`PitchDetector::new`] reports why.
+    #[must_use]
+    pub fn with_longest_hop(self) -> Self {
+        let mut hop_length = self.frame_length;
+        while hop_length > 0 && hop_length >= self.frame_length / 4 {
+            let candidate = Self { hop_length, ..self };
+            if validate(&candidate).is_ok() {
+                return candidate;
+            }
+            hop_length /= 2;
+        }
+        Self {
+            hop_length: self.frame_length,
+            ..self
+        }
+    }
+}
+
+impl Default for PitchDetectorConfig {
+    fn default() -> Self {
+        Self::for_rate(44_100)
     }
 }
 
@@ -50,21 +119,24 @@ pub struct PitchEstimate {
 /// Incremental pitch detector built on the pYIN algorithm.
 ///
 /// Samples are pushed via [`push_samples`](Self::push_samples) and
-/// accumulated into an internal ring buffer. Once a full frame is available
-/// the detector runs pYIN and returns a [`PitchEstimate`].
+/// accumulated into an internal ring buffer. Every hop the detector runs
+/// pYIN and returns a [`PitchEstimate`] for the newest frame.
 pub struct PitchDetector {
     executor: PYINExecutor<f64>,
     config: PitchDetectorConfig,
-    buffer: Vec<f64>,
+    history: Vec<f64>,
+    scratch: Vec<f64>,
     buffer_pos: usize,
+    since_run: usize,
 }
 
 impl std::fmt::Debug for PitchDetector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PitchDetector")
             .field("config", &self.config)
-            .field("buffer_len", &self.buffer.len())
+            .field("history_len", &self.history.len())
             .field("buffer_pos", &self.buffer_pos)
+            .field("since_run", &self.since_run)
             .finish_non_exhaustive()
     }
 }
@@ -75,37 +147,16 @@ impl PitchDetector {
     /// # Errors
     ///
     /// Returns an error if the configuration is invalid (e.g.
-    /// `min_frequency >= max_frequency`, or frequencies outside the Nyquist
-    /// range).
+    /// `min_frequency >= max_frequency`, frequencies outside the Nyquist
+    /// range, or a range, frame and hop that pyin cannot build a detector
+    /// for).
     pub fn new(config: PitchDetectorConfig) -> crate::Result<Self> {
-        if !config.min_frequency.is_finite()
-            || !config.max_frequency.is_finite()
-            || config.min_frequency <= 0.0
-            || config.min_frequency >= config.max_frequency
-        {
-            return Err(crate::Error::Config(format!(
-                "invalid frequency range: [{}, {}]",
-                config.min_frequency, config.max_frequency
-            )));
-        }
+        validate(&config)?;
 
-        let nyquist = f64::from(config.sample_rate) / 2.0;
-        if f64::from(config.max_frequency) > nyquist {
-            return Err(crate::Error::Config(format!(
-                "max_frequency {} exceeds Nyquist {}",
-                config.max_frequency, nyquist
-            )));
-        }
-
-        if config.frame_length < 4 {
-            return Err(crate::Error::Config(
-                "frame_length must be at least 4".into(),
-            ));
-        }
-
-        if config.sample_rate == 0 {
-            return Err(crate::Error::Config("sample_rate must be > 0".into()));
-        }
+        let history_len = (JUDGE_FRAMES - 1)
+            .checked_mul(config.hop_length)
+            .and_then(|context| config.frame_length.checked_add(context))
+            .ok_or_else(|| crate::Error::Config("pitch history length overflow".into()))?;
 
         let executor = PYINExecutor::new(
             f64::from(config.min_frequency),
@@ -113,40 +164,45 @@ impl PitchDetector {
             config.sample_rate,
             config.frame_length,
             None, // win_length: default frame_length / 2
-            None, // hop_length: default frame_length / 4
-            None, // resolution: default 0.1
+            Some(config.hop_length),
+            Some(config.resolution),
         );
 
-        // The pYIN algorithm needs at least one full frame of audio.
-        // With Center framing, the minimum input length is effectively 1 sample
-        // (zero-padding handles the rest), but we accumulate a full frame to
-        // provide a complete analysis window.
-        let buffer = vec![0.0_f64; config.frame_length];
+        // A full silent history makes startup use the same path as every later hop.
+        let history = vec![0.0_f64; history_len];
+        let scratch = vec![0.0_f64; history_len];
 
         Ok(Self {
             executor,
             config,
-            buffer,
+            history,
+            scratch,
             buffer_pos: 0,
+            since_run: 0,
         })
     }
 
     /// Push audio samples into the detector.
     ///
-    /// Returns `Some(PitchEstimate)` when a complete frame has been
-    /// accumulated and analysed, or `None` if more samples are needed.
+    /// Returns `Some(PitchEstimate)` every hop, or `None` if more samples
+    /// are needed. A call spanning several hops runs the judge several
+    /// times and returns only the newest estimate.
     /// NaN/Inf samples are sanitized to `0.0`.
     pub fn push_samples(&mut self, samples: &[f32]) -> Option<PitchEstimate> {
         let mut result = None;
 
         for &s in samples {
             let safe = f64::from(sanitize_sample(s));
-            self.buffer[self.buffer_pos] = safe;
+            self.history[self.buffer_pos] = safe;
             self.buffer_pos += 1;
-
-            if self.buffer_pos >= self.config.frame_length {
-                result = Some(self.analyze_frame());
+            if self.buffer_pos == self.history.len() {
                 self.buffer_pos = 0;
+            }
+            self.since_run += 1;
+
+            if self.since_run == self.config.hop_length {
+                result = Some(self.analyze_frame());
+                self.since_run = 0;
             }
         }
 
@@ -155,8 +211,9 @@ impl PitchDetector {
 
     /// Reset the detector, clearing the internal buffer.
     pub fn reset(&mut self) {
-        self.buffer.fill(0.0);
+        self.history.fill(0.0);
         self.buffer_pos = 0;
+        self.since_run = 0;
     }
 
     /// Return the current configuration.
@@ -165,219 +222,145 @@ impl PitchDetector {
         &self.config
     }
 
-    /// Run the pYIN algorithm on the current buffer contents.
+    /// Judge the newest valid frame with earlier frames as HMM context.
     fn analyze_frame(&mut self) -> PitchEstimate {
-        let framing = Framing::Center(PadMode::Constant(0.0));
-        let fill_unvoiced = f64::NAN;
-
-        let (_timestamps, f0, _voiced_flag, voiced_prob) =
-            self.executor.pyin(&self.buffer, fill_unvoiced, framing);
-
-        // The pYIN output contains one or more frame estimates. We take the
-        // last one as the most representative for the current buffer position.
-        if f0.is_empty() {
+        let oldest_len = self.history.len() - self.buffer_pos;
+        self.scratch[..oldest_len].copy_from_slice(&self.history[self.buffer_pos..]);
+        self.scratch[oldest_len..].copy_from_slice(&self.history[..self.buffer_pos]);
+        let (_, f0, voiced_flag, voiced_prob) =
+            self.executor.pyin(&self.scratch, f64::NAN, Framing::Valid);
+        let (Some(&frequency), Some(&voiced), Some(&probability)) =
+            (f0.last(), voiced_flag.last(), voiced_prob.last())
+        else {
             return PitchEstimate {
                 frequency: None,
                 voiced_probability: 0.0,
                 midi_note: None,
             };
-        }
-
-        // Average over all returned frames (typically 1-4 for a single frame of audio).
-        let mut sum_freq = 0.0_f64;
-        let mut sum_prob = 0.0_f64;
-        let mut voiced_count = 0usize;
-        let total = f0.len();
-
-        for (i, &freq) in f0.iter().enumerate() {
-            let prob = if i < voiced_prob.len() {
-                voiced_prob[i]
-            } else {
-                0.0
-            };
-            sum_prob += prob;
-            if freq.is_finite() && freq > 0.0 {
-                sum_freq += freq;
-                voiced_count += 1;
-            }
-        }
-
-        let avg_prob = if total > 0 {
-            (sum_prob / total as f64) as f32
+        };
+        let voiced_probability = if probability.is_finite() {
+            probability.clamp(0.0, 1.0) as f32
         } else {
             0.0
         };
-        let avg_prob = if avg_prob.is_finite() {
-            avg_prob.clamp(0.0, 1.0)
+        let frequency = if voiced
+            && probability >= f64::from(self.config.voiced_threshold)
+            && frequency.is_finite()
+            && frequency > 0.0
+        {
+            Some(frequency as f32)
         } else {
-            0.0
+            None
         };
-
-        if voiced_count > 0 && avg_prob >= self.config.voiced_threshold {
-            let avg_freq = (sum_freq / voiced_count as f64) as f32;
-            let freq = if avg_freq.is_finite() && avg_freq > 0.0 {
-                Some(avg_freq)
-            } else {
-                None
-            };
-            PitchEstimate {
-                frequency: freq,
-                voiced_probability: avg_prob,
-                midi_note: freq.and_then(frequency_to_midi_note),
-            }
-        } else {
-            PitchEstimate {
-                frequency: None,
-                voiced_probability: avg_prob,
-                midi_note: None,
-            }
+        PitchEstimate {
+            frequency,
+            voiced_probability,
+            midi_note: frequency.and_then(frequency_to_midi_note),
         }
     }
+}
+
+/// Refuse a configuration [`PitchDetector::new`] cannot build a detector for.
+fn validate(config: &PitchDetectorConfig) -> crate::Result<()> {
+    if !config.min_frequency.is_finite()
+        || !config.max_frequency.is_finite()
+        || config.min_frequency <= 0.0
+        || config.min_frequency >= config.max_frequency
+    {
+        return Err(crate::Error::Config(format!(
+            "invalid frequency range: [{}, {}]",
+            config.min_frequency, config.max_frequency
+        )));
+    }
+
+    let nyquist = f64::from(config.sample_rate) / 2.0;
+    if f64::from(config.max_frequency) > nyquist {
+        return Err(crate::Error::Config(format!(
+            "max_frequency {} exceeds Nyquist {}",
+            config.max_frequency, nyquist
+        )));
+    }
+
+    if config.frame_length < 4 {
+        return Err(crate::Error::Config(
+            "frame_length must be at least 4".into(),
+        ));
+    }
+
+    if config.hop_length == 0 || config.hop_length > config.frame_length {
+        return Err(crate::Error::Config(
+            "hop_length must be between 1 and frame_length".into(),
+        ));
+    }
+
+    if config.sample_rate == 0 {
+        return Err(crate::Error::Config("sample_rate must be > 0".into()));
+    }
+
+    if !config.resolution.is_finite() || !(0.01..=1.0).contains(&config.resolution) {
+        return Err(crate::Error::Config(
+            "resolution must be finite and between 0.01 and 1.0".into(),
+        ));
+    }
+
+    check_pyin_limits(config)
+}
+
+/// Refuse a configuration that pyin's `PYINExecutor::new` would panic on.
+///
+/// Mirrors pYIN's arithmetic with `win_length = frame_length / 2` and
+/// the configured resolution, so the two never disagree. The caller has already
+/// checked the range, the Nyquist limit, a `frame_length` of at least 4 and a
+/// hop in `1..=frame_length`.
+fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
+    // The executor asserts a strict upper bound even though one semitone is a valid bin size.
+    if config.resolution >= 1.0 {
+        return Err(crate::Error::Config(
+            "pyin requires resolution strictly below 1.0".into(),
+        ));
+    }
+    let rate = f64::from(config.sample_rate);
+    let fmin = f64::from(config.min_frequency);
+    let fmax = f64::from(config.max_frequency);
+
+    // The longest period pyin searches is `frame_length - win_length - 1`.
+    let longest = config.frame_length - config.frame_length / 2 - 1;
+    let longest = u32::try_from(longest)
+        .map(f64::from)
+        .map_err(|_| crate::Error::Config("frame_length too large for pyin".into()))?;
+    let min_period = (rate / fmax).floor().max(1.0);
+    let max_period = (rate / fmin).ceil().min(longest);
+    if max_period < min_period + 2.0 {
+        return Err(crate::Error::Config(format!(
+            "frame_length {} is too short for {fmin} Hz at {rate} Hz: pyin needs \
+             periods {min_period} to {max_period} to span at least 2 samples",
+            config.frame_length
+        )));
+    }
+
+    let bins_per_semitone = (1.0 / config.resolution).ceil();
+    let pitch_bins = (12.0 * bins_per_semitone * (fmax / fmin).log2()).floor() + 1.0;
+    if pitch_bins < 2.0 {
+        return Err(crate::Error::Config(format!(
+            "range [{fmin}, {fmax}] Hz holds fewer than 2 pyin pitch bins"
+        )));
+    }
+
+    let hop = u32::try_from(config.hop_length)
+        .map(f64::from)
+        .map_err(|_| crate::Error::Config("hop_length too large for pyin".into()))?;
+    let transition_width = (35.92 * 12.0 * hop / rate)
+        .round()
+        .mul_add(bins_per_semitone, 1.0);
+    if pitch_bins < transition_width {
+        return Err(crate::Error::Config(format!(
+            "hop_length {} at {rate} Hz lets a pitch move {transition_width} bins \
+             per hop, more than the range's {pitch_bins} bins",
+            config.hop_length
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::f32::consts::PI;
-
-    fn generate_sine(frequency: f32, sample_rate: f32, num_samples: usize) -> Vec<f32> {
-        (0..num_samples)
-            .map(|i| {
-                let t = i as f32 / sample_rate;
-                (2.0 * PI * frequency * t).sin()
-            })
-            .collect()
-    }
-
-    #[test]
-    fn detects_440hz_sine() {
-        let config = PitchDetectorConfig {
-            min_frequency: 60.0,
-            max_frequency: 1000.0,
-            sample_rate: 44_100,
-            frame_length: 2048,
-            voiced_threshold: 0.15,
-        };
-        let mut detector = PitchDetector::new(config).expect("valid config");
-
-        // Generate several frames worth of 440 Hz sine.
-        let samples = generate_sine(440.0, 44100.0, 2048 * 4);
-
-        let mut estimates = Vec::new();
-        for chunk in samples.chunks(512) {
-            if let Some(est) = detector.push_samples(chunk) {
-                estimates.push(est);
-            }
-        }
-
-        // We should have gotten at least one estimate.
-        assert!(
-            !estimates.is_empty(),
-            "should have produced at least one pitch estimate"
-        );
-
-        // Find any voiced estimate.
-        let voiced: Vec<_> = estimates.iter().filter(|e| e.frequency.is_some()).collect();
-        assert!(
-            !voiced.is_empty(),
-            "at least one estimate should be voiced for a clean sine"
-        );
-
-        for est in &voiced {
-            let freq = est.frequency.unwrap();
-            // pYIN should be within 5% of the true frequency.
-            let error_pct = ((freq - 440.0) / 440.0).abs() * 100.0;
-            assert!(
-                error_pct < 5.0,
-                "detected {freq} Hz, expected ~440 Hz (error {error_pct:.1}%)"
-            );
-        }
-
-        // Check MIDI note for the voiced estimate closest to 440.
-        let best = voiced
-            .iter()
-            .min_by(|a, b| {
-                let da = (a.frequency.unwrap() - 440.0).abs();
-                let db = (b.frequency.unwrap() - 440.0).abs();
-                da.partial_cmp(&db).unwrap()
-            })
-            .unwrap();
-        if let Some(midi) = best.midi_note {
-            // A4 = MIDI 69
-            assert!(
-                (67..=71).contains(&midi),
-                "MIDI note should be near 69, got {midi}"
-            );
-        }
-    }
-
-    #[test]
-    fn silence_is_unvoiced() {
-        let config = PitchDetectorConfig::default();
-        let mut detector = PitchDetector::new(config).expect("valid config");
-
-        let silence = vec![0.0_f32; 2048 * 4];
-        let mut estimates = Vec::new();
-        for chunk in silence.chunks(512) {
-            if let Some(est) = detector.push_samples(chunk) {
-                estimates.push(est);
-            }
-        }
-
-        for est in &estimates {
-            assert!(
-                est.frequency.is_none(),
-                "silence should be unvoiced, got freq {:?}",
-                est.frequency
-            );
-        }
-    }
-
-    #[test]
-    fn reset_clears_buffer() {
-        let config = PitchDetectorConfig::default();
-        let mut detector = PitchDetector::new(config).expect("valid config");
-
-        // Push partial frame.
-        detector.push_samples(&[0.5; 100]);
-        assert!(detector.buffer_pos > 0);
-
-        detector.reset();
-        assert_eq!(detector.buffer_pos, 0);
-    }
-
-    #[test]
-    fn invalid_config_returns_error() {
-        // min >= max
-        let config = PitchDetectorConfig {
-            min_frequency: 1000.0,
-            max_frequency: 100.0,
-            ..PitchDetectorConfig::default()
-        };
-        assert!(PitchDetector::new(config).is_err());
-
-        // max > Nyquist
-        let config = PitchDetectorConfig {
-            max_frequency: 30000.0,
-            sample_rate: 44100,
-            ..PitchDetectorConfig::default()
-        };
-        assert!(PitchDetector::new(config).is_err());
-    }
-
-    #[test]
-    fn nan_samples_are_sanitized() {
-        let config = PitchDetectorConfig::default();
-        let mut detector = PitchDetector::new(config).expect("valid config");
-
-        let mut samples = vec![f32::NAN; 2048];
-        samples.extend_from_slice(&[f32::INFINITY; 2048]);
-        // Should not panic, and any estimate must be finite.
-        for chunk in samples.chunks(512) {
-            if let Some(estimate) = detector.push_samples(chunk) {
-                assert!(estimate.voiced_probability.is_finite());
-                assert!(estimate.frequency.is_none_or(f32::is_finite));
-            }
-        }
-    }
-}
+mod tests;

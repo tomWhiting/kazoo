@@ -107,3 +107,6 @@ REVIEWED KZ-L01 READY head=2203f2d (Opus fixed 7: existing dirs to 0700, new dir
 ## Merged 13 Oct, about 18:4x
 - KZ-L01 the reel store (review head 2203f2d), KZ-L02 the loop module (review head 652404d; feed messages boxed, see the note in L03/L04), KZ-B03a named streams (review head 1b81a1c; old desks fall back, ring for 16 stereo streams). Merge check on main: fmt 0, clippy 0, nextest 3855/3855, doc tests 0.
 - To re-measure on a quiet Mac: L02's loop bench rows (113–123 µs per 512-frame block against 106.7 µs, measured at load 48–68).
+START KZ-W01b base=42664d7 branch=lane/kz-W01b df=43GB at 18:24
+START KZ-W01c base=42664d7 branch=lane/kz-W01c df=41GB at 18:24
+START KZ-D03b base=42664d7 branch=lane/kz-D03b df=41GB at 18:25

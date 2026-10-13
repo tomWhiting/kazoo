@@ -153,19 +153,27 @@ impl Listener {
     pub fn new(sample_rate: u32) -> Self {
         // 8 kHz to a few hundred kHz: exact in f32.
         let rate = sample_rate.max(8_000) as f32;
-        let pitch = PitchDetector::new(PitchDetectorConfig {
-            min_frequency: 50.0,
-            max_frequency: 1_000.0,
-            sample_rate: sample_rate.max(8_000),
-            frame_length: PITCH_FRAME,
-            voiced_threshold: 0.3,
-        });
+        // One run per listening where pYIN can hold a whole-frame hop (from
+        // about 34 kHz); below that the hop halves, down to a quarter frame.
+        let pitch = PitchDetector::new(
+            PitchDetectorConfig {
+                min_frequency: 50.0,
+                max_frequency: 1_000.0,
+                sample_rate: sample_rate.max(8_000),
+                frame_length: PITCH_FRAME,
+                hop_length: PITCH_FRAME,
+                resolution: 0.1,
+                voiced_threshold: 0.3,
+            }
+            .with_longest_hop(),
+        );
         Self {
             sample_rate: rate,
             spectrum: SpectrumAnalyzer::new(SPECTRUM_SIZE, rate, 0.0),
             onsets: Onsets::new(rate),
-            // Its configuration is fixed and valid for any rate from 8 kHz:
-            // without it the wall is still described, with no pitch.
+            // Its configuration builds at every rate from about 8.6 kHz (at
+            // 8 kHz even a quarter-frame hop is refused): without it the wall
+            // is still described, with no pitch.
             pitch: match pitch {
                 Ok(detector) => Some(detector),
                 Err(err) => {
@@ -406,6 +414,30 @@ mod tests {
                 amplitude * (std::f32::consts::TAU * hz * (i + offset) as f32 / RATE as f32).sin()
             })
             .collect()
+    }
+
+    /// The listener's pitch configuration must build at every common device
+    /// rate, and analyse one frame per listening where pyin can hold that hop.
+    /// At 8 kHz even pyin's own quarter-frame hop is refused (main panicked
+    /// there): the wall then listens without pitch, and says so.
+    #[test]
+    fn the_listener_hears_pitch_at_every_rate() {
+        assert!(Listener::new(8000).pitch.is_none());
+        for rate in [11_025, 16_000, 22_050, 44_100, 48_000, 96_000, 192_000] {
+            let listener = Listener::new(rate);
+            let hop = listener
+                .pitch
+                .as_ref()
+                .map(|pitch| pitch.config().hop_length);
+            assert!(hop.is_some(), "rate {rate} listens without pitch");
+            if rate >= 44_100 {
+                assert_eq!(
+                    hop,
+                    Some(PITCH_FRAME),
+                    "rate {rate}: one frame per listening"
+                );
+            }
+        }
     }
 
     #[test]

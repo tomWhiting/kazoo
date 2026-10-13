@@ -69,7 +69,8 @@ pub struct EngineConfig {
     /// Audio stream configuration (device selection, sample rate, buffer size).
     pub stream: StreamConfig,
 
-    /// Pitch detector configuration.
+    /// Pitch detector configuration; rate, frame and hop are taken from the device.
+    /// The cycle tracker replaces this detector in V06.
     pub pitch: PitchDetectorConfig,
 
     /// FFT size for spectrum analysis (default 2048).
@@ -99,7 +100,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             stream: StreamConfig::default(),
-            pitch: PitchDetectorConfig::default(),
+            pitch: PitchDetectorConfig::engine_default(),
             spectrum_fft_size: SPECTRUM_FFT_SIZE,
             spectrum_smoothing: 0.8,
             onset_fft_size: 1024,
@@ -107,6 +108,24 @@ impl Default for EngineConfig {
             desk_instrument_name: None,
         }
     }
+}
+
+/// Preserve the requested range and voicing threshold at the device's rate.
+///
+/// Run once per window at 0.1-semitone resolution until V06 retires this
+/// detector. Below about 18 kHz pYIN cannot hold a one-window hop over the
+/// default range, so there the hop halves until it can (to 1024 samples at
+/// 16 kHz and 512 at 8 kHz): the engine starts at every device rate.
+#[must_use]
+pub fn judge_config(asked: &PitchDetectorConfig, rate: u32) -> PitchDetectorConfig {
+    PitchDetectorConfig {
+        min_frequency: asked.min_frequency,
+        max_frequency: asked.max_frequency,
+        voiced_threshold: asked.voiced_threshold,
+        resolution: 0.1,
+        ..PitchDetectorConfig::for_rate(rate)
+    }
+    .with_longest_hop()
 }
 
 // ---------------------------------------------------------------------------
@@ -180,16 +199,14 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // Validate the pitch configuration up front: an invalid config is a
     // caller error, not something to discover later on the analysis thread.
     let analysis = analysis_config(&config, sample_rate, buffer_size);
-    let pitch_detector = PitchDetector::new(config.pitch)?;
+    let pitch_detector = PitchDetector::new(judge_config(&config.pitch, sample_rate))?;
     let stats = Arc::new(EngineStats::new());
 
     // The desk link is created before the streams so its audio half can be
     // moved into the output callback with the rest of the processing state.
-    let (desk, desk_audio) = start_desk_link(
-        config.desk_instrument_name.as_deref(),
-        sample_rate,
-        buffer_size,
-    )?;
+    let desk_instrument_name = config.desk_instrument_name;
+    let (desk, desk_audio) =
+        start_desk_link(desk_instrument_name.as_deref(), sample_rate, buffer_size)?;
 
     // -----------------------------------------------------------------------
     // 1. Create ring buffers
@@ -554,9 +571,68 @@ fn spawn_disk_thread(
 mod tests {
     use super::*;
 
+    /// A 48 kHz sine judged at the default 44.1 kHz rate used to read about 404 Hz.
+    #[test]
+    fn the_engine_judges_at_the_device_rate() {
+        let config = judge_config(&EngineConfig::default().pitch, 48_000);
+        assert_eq!(config.sample_rate, 48_000);
+        assert_eq!(config.frame_length, 2048);
+        assert_eq!(config.hop_length, 2048);
+        let mut detector = PitchDetector::new(config).expect("valid device judge");
+        let samples: Vec<_> = (0..48_000_u32)
+            .map(|index| (std::f64::consts::TAU * 440.0 * f64::from(index) / 48_000.0).sin() as f32)
+            .collect();
+        let mut settled = 0;
+        let mut estimates = 0;
+        for (index, chunk) in samples.chunks(128).enumerate() {
+            if let Some(estimate) = detector.push_samples(chunk) {
+                estimates += 1;
+                if (index + 1) * 128 > 4096 {
+                    let frequency = estimate.frequency.expect("settled sine must be voiced");
+                    let cents = (1200.0 * (frequency / 440.0).log2()).abs();
+                    assert!(
+                        cents <= 5.0,
+                        "device-rate sine read {frequency} Hz ({cents} cents)"
+                    );
+                    settled += 1;
+                }
+            }
+        }
+        assert_eq!(estimates, 23, "one estimate per device-rate window");
+        assert!(settled > 0);
+    }
+
+    /// A one-window hop is 128 ms at 16 kHz: pyin's transition band then
+    /// spans more semitones than the 60 to 1000 Hz range holds, and the
+    /// detector is refused, so `start` failed on a Bluetooth headset's 16 kHz
+    /// output. Main built its detector at 44.1 kHz on every device and
+    /// always started. The engine must start at every device rate, and still
+    /// run once per window wherever pyin can hold that.
+    #[test]
+    fn the_engine_builds_its_judge_at_every_device_rate() {
+        for rate in [
+            8000, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000,
+            176_400, 192_000, 384_000,
+        ] {
+            let config = judge_config(&EngineConfig::default().pitch, rate);
+            let shown = format!("{config:?}");
+            let built = PitchDetector::new(config);
+            assert!(built.is_ok(), "rate {rate} was refused: {shown} {built:?}");
+            if rate >= 22_050 {
+                let once_per_window = built.as_ref().is_ok_and(|detector| {
+                    detector.config().hop_length == detector.config().frame_length
+                });
+                assert!(once_per_window, "rate {rate} must run once per window");
+            }
+        }
+    }
+
     #[test]
     fn engine_config_default_values() {
         let config = EngineConfig::default();
+        assert!((config.pitch.min_frequency - 60.0).abs() < f32::EPSILON);
+        assert!((config.pitch.max_frequency - 1000.0).abs() < f32::EPSILON);
+        assert!((config.pitch.resolution - 0.1).abs() < f64::EPSILON);
         assert_eq!(config.spectrum_fft_size, SPECTRUM_FFT_SIZE);
         assert!((config.spectrum_smoothing - 0.8).abs() < f32::EPSILON);
         assert_eq!(config.onset_fft_size, 1024);

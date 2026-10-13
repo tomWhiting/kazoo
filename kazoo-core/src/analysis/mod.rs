@@ -24,3 +24,8 @@ pub use formant::{FormantData, FormantExtractor};
 pub use onset::{OnsetDetector, OnsetEvent};
 pub use pitch::{PitchDetector, PitchDetectorConfig, PitchEstimate};
 pub use spectrum::{SpectrumAnalyzer, SpectrumData};
+
+/// The lowest pitch the voice trackers look for: G1 is 49 Hz, the bottom of a low male hum.
+pub const VOICE_MIN_HZ: f32 = 50.0;
+/// The highest: a whistle tops out near B7 (3951 Hz).
+pub const VOICE_MAX_HZ: f32 = 4000.0;
