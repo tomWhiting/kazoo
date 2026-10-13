@@ -163,3 +163,20 @@ was made after the final benchmark, so that small change was not measured. Their
 prevents attributing the timing change to the implementation. Logs:
 `target/kz-logs/bench-loop.txt`, `target/kz-logs/bench-loop-final.txt`, and
 `target/kz-logs/bench-loop-current.txt`.
+
+Review at 16faf61, 13 Oct 2026, back to back with the builder's head
+ae15e80, under load (one-minute load 68.39 before the ae15e80 run, 48.29
+before the 16faf61 run). The filter `wall/(loop|kind/vco$)` adds
+`wall/kind/vco` (two vcos and an out) beside the loop rows (one vco, the
+loop and an out), as a measure of what the fixture costs:
+
+| revision | play ns/block | record ns/block | kind/vco ns/block |
+|---|---:|---:|---:|
+| ae15e80 (builder) | 119,680 | 120,930 | 119,510 |
+| 16faf61 (review) | 113,110 | 122,760 | 120,320 |
+
+The review's changes do not move the rows beyond the run's spread. Each
+loop row costs about what two vcos do, so the loop itself costs less than
+its fixture's vco; the rows as measured still sit above the 106,667 ns
+target, and no quiet-machine measurement exists. Logs:
+`target/kz-logs/review-bench-lane.log`, `review-bench-head-2.log`.
