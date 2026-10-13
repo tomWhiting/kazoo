@@ -1275,6 +1275,10 @@ pub struct Timings {
     /// for the knob as set.
     #[serde(default)]
     pub unsteady: Vec<String>,
+    /// Modules from which no cable path reaches an out, scope or readout;
+    /// they are not rendered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unheard: Vec<String>,
 }
 
 /// One module's timing.

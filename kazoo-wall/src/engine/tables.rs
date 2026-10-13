@@ -2,10 +2,23 @@
 //! modules render in. Both are built on the control side and swapped in
 //! whole.
 //!
+//! Only modules with a cable path to an out, scope or readout are heard.
+//! Unheard modules are omitted from the order. Their knob glides stop:
+//! when heard again they continue from the frozen value toward the target
+//! that look reports. Their state, including tails, envelope stages and
+//! sequencer steps, is held rather than reset. Output buffers keep their
+//! last rendered block; reachability prevents a heard module reading an
+//! unheard source, so those stale blocks are never read.
+//!
+//! Plugging a scope or readout into a module makes it heard. An unheard
+//! speaker does not consume its phrase feed: words wait there until it is
+//! heard. Speech requests are answered when synthesis finishes and the
+//! phrase is handed over, independently of playback.
+//!
 //! Slots and delay lines are numbered in `u32`: the wall holds as many as
 //! the machine can render, and the tables are as long as the wall is.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::dsp::Block;
 use crate::{MAX_INPUTS, MAX_JACKS, MAX_KNOBS, MAX_OUTPUTS};
@@ -269,6 +282,55 @@ impl Order {
     }
 }
 
+/// Slots with a cable path to any sink, in their preferred order.
+///
+/// Sinks keep themselves even without cables. Unknown endpoints, repeated
+/// slots, slots an order cannot hold, and self-cables are ignored.
+/// A reverse breadth-first walk costs O(V + E), on the control side only.
+#[must_use]
+pub fn heard(slots: &[usize], edges: &[(usize, usize)], sinks: &[usize]) -> Vec<usize> {
+    let mut index = HashMap::with_capacity(slots.len());
+    let mut pending = Vec::with_capacity(slots.len());
+    for &slot in slots {
+        if u32::try_from(slot).is_ok() && !index.contains_key(&slot) {
+            index.insert(slot, pending.len());
+            pending.push(slot);
+        }
+    }
+    let mut fed_by = vec![Vec::new(); pending.len()];
+    for &(from, to) in edges {
+        if from == to {
+            continue;
+        }
+        if let (Some(&from), Some(&to)) = (index.get(&from), index.get(&to)) {
+            fed_by[to].push(from);
+        }
+    }
+    let mut marked = vec![false; pending.len()];
+    let mut queue = VecDeque::with_capacity(pending.len());
+    for sink in sinks {
+        if let Some(&sink) = index.get(sink) {
+            if !marked[sink] {
+                marked[sink] = true;
+                queue.push_back(sink);
+            }
+        }
+    }
+    while let Some(to) = queue.pop_front() {
+        for &from in &fed_by[to] {
+            if !marked[from] {
+                marked[from] = true;
+                queue.push_back(from);
+            }
+        }
+    }
+    pending
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, slot)| marked[index].then_some(slot))
+        .collect()
+}
+
 /// The render order for modules in `slots` (preferred order: the order they
 /// were added) joined by `edges` (source slot → destination slot).
 ///
@@ -350,6 +412,18 @@ pub(super) fn clear_jacks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heard_keeps_only_what_reaches_a_sink() {
+        let slots: Vec<usize> = (0..6).collect();
+        let edges = [(0, 1), (1, 2), (3, 4), (5, 5)];
+        assert_eq!(heard(&slots, &edges, &[2]), [0, 1, 2]);
+        assert_eq!(heard(&slots, &edges, &[2, 4, 99]), [0, 1, 2, 3, 4]);
+        assert_eq!(heard(&slots, &[], &[4, 99]), [4]);
+        assert!(heard(&slots, &edges, &[]).is_empty());
+        assert_eq!(heard(&[5, 4, 3, 2, 1, 0], &edges, &[2]), [2, 1, 0]);
+        assert_eq!(heard(&slots, &[(0, 1), (1, 0), (1, 2)], &[2]), [0, 1, 2]);
+    }
 
     fn position(order: &Order, slot: usize) -> usize {
         order

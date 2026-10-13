@@ -113,6 +113,7 @@ pub fn look(snapshot: &Snapshot) -> String {
             ),
         );
     }
+    unheard::line(&mut out, &snapshot.timing.unheard);
     timing(&mut out, &snapshot.timing);
     out.push_str(
         "\nEvery knob is also a jack: patch an output into `module.knob` to move it. \
@@ -1116,7 +1117,7 @@ mod tests {
         }
     }
 
-    fn snapshot() -> Snapshot {
+    pub(super) fn snapshot() -> Snapshot {
         Snapshot {
             revision: 58,
             wall: 0,
@@ -1294,6 +1295,7 @@ mod tests {
             cables: std::collections::BTreeMap::from([("3".to_string(), 480)]),
             uncompensated: vec![5],
             unsteady: vec!["flanger1".to_string()],
+            unheard: Vec::new(),
         };
         let text = look(&wall);
         assert!(
@@ -1914,3 +1916,5 @@ mod tests {
         ));
     }
 }
+
+mod unheard;

@@ -1,7 +1,7 @@
 //! The wall: cream module panels on a dark rack, each with its knobs as
 //! black dials and its jacks in the colours of their cables.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -89,12 +89,14 @@ pub fn wall(buf: &mut Buffer, rack: Rect, app: &mut App) {
         return;
     };
     let (outputs, inputs) = jack_cables(&snapshot.cables);
+    let unheard: HashSet<&str> = snapshot.timing.unheard.iter().map(String::as_str).collect();
     let (hot, from) = app.patch_marks();
     let marks = Marks {
         hot: hot.as_ref(),
         from: from.as_ref(),
         outputs: &outputs,
         inputs: &inputs,
+        unheard: &unheard,
     };
     let selected = app.selected_index();
     let view = Sheet {
@@ -166,6 +168,7 @@ struct Marks<'a> {
     from: Option<&'a JackRef>,
     outputs: &'a JackCables,
     inputs: &'a JackCables,
+    unheard: &'a HashSet<&'a str>,
 }
 
 impl Marks<'_> {
@@ -216,6 +219,7 @@ struct Panel<'a> {
     module: &'a ModuleView,
     focus: PanelFocus,
     faulted: bool,
+    unheard: bool,
     /// Its columns, clipped to the view.
     limit: Rect,
     edge: Style,
@@ -254,6 +258,7 @@ fn panel(
         module,
         focus,
         faulted,
+        unheard: context.marks.unheard.contains(module.id.as_str()),
         limit: Rect::new(x0, view.area.y, width, view.area.height),
         edge: if focus == PanelFocus::None {
             plain(INK_DIM, CREAM)
@@ -343,10 +348,24 @@ fn top_edge(buf: &mut Buffer, panel: &Panel<'_>, y: u16) {
     } else {
         (format!(" {} ", module.kind), plain(INK_DIM, CREAM))
     };
-    let kind_x = x0 + width - 1 - text_width(&kind).min(inner.saturating_sub(4));
+    let mut right = x0 + width - 1;
+    if panel.unheard {
+        let marker = " unheard ";
+        let marker_width = text_width(marker).min(inner.saturating_sub(2));
+        right -= marker_width;
+        put(
+            buf,
+            Rect::new(right, y, marker_width, 1),
+            right,
+            y,
+            marker,
+            plain(TEXT_DIM, CREAM),
+        );
+    }
+    let kind_x = right.saturating_sub(text_width(&kind).min(right.saturating_sub(x0 + 4)));
     put(
         buf,
-        Rect::new(x0, y, width - 1, 1),
+        Rect::new(x0, y, right - x0, 1),
         kind_x,
         y,
         &kind,

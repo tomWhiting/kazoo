@@ -5,6 +5,7 @@
 //! methods, so it can be tested without any.
 
 mod chains;
+mod unheard;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,7 +25,6 @@ use crate::dsp;
 use crate::dsp::measure::{Capture, Reading};
 use crate::engine::{
     CableTable, Command, EngineControl, LOAD_SECONDS, Order, ProbeFrame, Route, clamp_bpm,
-    processing_order,
 };
 use crate::fingerprints::Fingerprints;
 use crate::format;
@@ -61,10 +61,10 @@ pub const FLOOD_REFILL_PER_SECOND: f64 = 3.0;
 /// the wall takes no more modules or cables, answering `full`.
 ///
 /// The wall has no fixed number of modules or cables: it holds as many as
-/// the machine can render. Every module renders every sub-block, and every
-/// cable carries its signal through a delay line, so each one added costs
-/// the audio thread time. Past this share of the time it has, a busy
-/// moment elsewhere on the machine would leave the device waiting and the
+/// the machine can render. Heard modules render every sub-block, and their
+/// cables carry signals through delay lines. Unheard modules and cables
+/// still count as held when costing additions against the measured load.
+/// Past this share of the time it has, a busy moment elsewhere on the machine would leave the device waiting and the
 /// wall would drop out for everyone listening, so a change that would add
 /// more work is refused until something is taken away (or a heavy module
 /// swapped for a light one). Changes that add nothing (turning a knob,
@@ -471,6 +471,15 @@ pub struct Wall {
     told: Vec<Event>,
     /// Latency and delays as the tables were last sent.
     timing: Timing,
+    /// Ids with no cable path to an out, scope or readout, in added order.
+    /// They are not rendered: knob glides freeze, with look reporting the
+    /// target and frozen value, and resume when heard again. State (tails,
+    /// envelope stages and sequencer steps) is held, never reset. Outputs
+    /// keep the last block; no heard module can read an unheard source.
+    /// A scope or readout makes its sources heard. An unheard speaker's
+    /// phrase feed waits for rendering; speech synthesis completion answers
+    /// the request without waiting for playback.
+    unheard: Vec<String>,
     /// Each cable's delay line and the tag it owns it under, by cable id.
     lines: BTreeMap<u32, (u32, u32)>,
     /// The last tag given to a delay line.
@@ -1181,6 +1190,7 @@ impl Wall {
             recorder,
             told: Vec::new(),
             timing: Timing::default(),
+            unheard: Vec::new(),
             lines: BTreeMap::new(),
             line_tags: 0,
             probes: HashMap::new(),
@@ -1518,7 +1528,7 @@ impl Wall {
             .filter(|module| module.kind == Kind::OUT)
             .filter_map(|module| self.rack.slot_of(&module.id))
             .collect();
-        let order: Order = processing_order(&slots, &edges, &outs);
+        let order: Order = self.heard_order(&slots, &edges, &outs);
         let rendered: Vec<String> = order
             .slots()
             .iter()
@@ -1681,12 +1691,20 @@ impl Wall {
     fn latencies(&mut self) -> BTreeMap<String, u32> {
         let rate = self.engine.sample_rate();
         let modules = self.patch.modules();
-        let kinds: HashSet<Kind> = modules.iter().map(|module| module.kind).collect();
+        let unheard: HashSet<&str> = self.unheard.iter().map(String::as_str).collect();
+        let kinds: HashSet<Kind> = modules
+            .iter()
+            .filter(|module| !unheard.contains(module.id.as_str()))
+            .map(|module| module.kind)
+            .collect();
         let ids: HashSet<&str> = modules.iter().map(|module| module.id.as_str()).collect();
         self.probes.retain(|kind, _| kinds.contains(kind));
         self.settled.retain(|id, _| ids.contains(id.as_str()));
         let mut latencies = BTreeMap::new();
-        for module in modules {
+        for module in modules
+            .iter()
+            .filter(|module| !unheard.contains(module.id.as_str()))
+        {
             let knobs = self
                 .settled
                 .entry(module.id.clone())
@@ -1716,7 +1734,13 @@ impl Wall {
             }
         }
         let mut unsteady = Vec::new();
-        for module in self.patch.modules() {
+        let unheard: HashSet<&str> = self.unheard.iter().map(String::as_str).collect();
+        for module in self
+            .patch
+            .modules()
+            .iter()
+            .filter(|module| !unheard.contains(module.id.as_str()))
+        {
             let spec = module.kind.spec();
             let (Some(knobs), Some(patched)) = (
                 self.settled.get(&module.id),
@@ -4281,6 +4305,7 @@ impl Wall {
                 .collect(),
             uncompensated: self.timing.uncompensated.clone(),
             unsteady: self.timing.unsteady.clone(),
+            unheard: self.unheard.clone(),
         }
     }
 

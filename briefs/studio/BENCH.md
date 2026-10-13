@@ -87,3 +87,33 @@ measured: the after run did not finish inside the builder's time box, and
 the review did not run benches under that load. The 5x speedup, the below
 25% of real time, and the chains within 3% requirements are not verified;
 both columns are to be measured on a quiet machine.
+
+
+## KZ-D03
+
+Base: 158d731, lane/kz-D03, uncommitted. The same prescribed filter ran
+before and after, serially: `wall/culled|wall/chains/10$`. The before
+fixture rendered every slot. The after fixture applies the same `heard`
+reachability as the wall before sorting its order. The engine render code
+is unchanged. Both fixtures retain every cable.
+
+Criterion interval midpoints, ns per 512-frame block at 48 kHz:
+
+| bench | D01 ns per block | D03 before ns per block | D03 after ns per block |
+|---|---:|---:|---:|
+| wall/chains/10 | not measured | 1,538,300 | 2,529,700 |
+| wall/culled/1000 | not measured | 29,436,000 | 2,295,500 |
+
+The measured ratio is 0.9074x after, within the 1.2x limit, versus
+19.1354x before. After intervals: chains/10 [2,132,500, 2,981,300] ns;
+culled/1000 [1,881,700, 2,722,700] ns. These runs shared the machine with
+other lane work and scoped validation builds. Their broad intervals and
+the chains/10 variation do not establish isolated render costs or a quiet
+machine baseline. The limit above compares the observed midpoints.
+
+The D01 section has no measurements for either requested row; its
+chains/1000 row is 291,080,000 ns under load and explicitly not a baseline.
+No missing D01 value has been inferred.
+
+Receipts: target/kz-logs/bench-before.txt and
+target/kz-logs/bench-after.txt. Both commands exited 0.
