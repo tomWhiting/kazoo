@@ -17,7 +17,7 @@ pub use run::run;
 
 #[cfg(test)]
 pub(crate) use run::KeyReleases;
-pub(crate) use run::{App, PhraseState, ROWS, VOLUME_ROW, piano_offset};
+pub(crate) use run::{App, PhraseState, ROWS, VOLUME_ROW};
 
 /// Fail audio-thread tests if the DSP allocates or frees heap memory.
 #[cfg(test)]

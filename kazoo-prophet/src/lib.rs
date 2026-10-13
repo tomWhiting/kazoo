@@ -7,7 +7,6 @@
 
 mod app;
 mod audio;
-mod input;
 mod run;
 pub mod synth;
 mod ui;

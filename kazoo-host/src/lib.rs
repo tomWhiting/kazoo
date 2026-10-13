@@ -5,5 +5,6 @@
 //! the alternate screen, and puts the terminal back on every way out:
 //! returning, an error, or a panic.
 
+pub mod keys;
 pub mod reports;
 pub mod terminal;

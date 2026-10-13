@@ -183,11 +183,14 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
             ),
             Span::styled(" Piano: ", Style::new().fg(DIM)),
             Span::styled("a s d f g h j k l ; ", Style::new().fg(CREAM)),
-            Span::styled("(C3-E4)  ", Style::new().fg(DIM)),
+            Span::styled(
+                format!("(oct {})  ", app.octave.number()),
+                Style::new().fg(DIM),
+            ),
             Span::styled("w e t y u o p ", Style::new().fg(CREAM)),
             Span::styled("(sharps)  ", Style::new().fg(DIM)),
-            Span::styled("z x c v b n m ", Style::new().fg(CREAM)),
-            Span::styled("(C4-B4)", Style::new().fg(DIM)),
+            Span::styled("z/x ", Style::new().fg(CREAM)),
+            Span::styled("(octave)", Style::new().fg(DIM)),
         ]),
         Line::from(vec![
             Span::styled(" Tab", Style::new().fg(MOOG_RED)),

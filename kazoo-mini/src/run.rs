@@ -228,12 +228,28 @@ fn poll_audio(app: &mut App, channels: &mut UiChannels<'_>) {
 fn handle_key_event(app: &mut App, key: KeyEvent, commands: &mut CommandLink) {
     match key.kind {
         KeyEventKind::Press => {
-            if let Some(note) = input::key_to_midi_note(key.code) {
-                // Ignore key repeat — only trigger on initial press.
-                let held = &mut app.held_notes[usize::from(note)];
-                if !*held {
-                    *held = true;
-                    commands.note_on(note);
+            let piano = match key.code {
+                KeyCode::Char(ch) => kazoo_host::keys::piano_key(ch, app.octave),
+                _ => None,
+            };
+            if let Some(piano) = piano {
+                match piano {
+                    kazoo_host::keys::PianoKey::Note(note) => {
+                        let held = &mut app.held_notes[usize::from(note)];
+                        if !*held {
+                            *held = true;
+                            commands.note_on(note);
+                        }
+                    }
+                    direction => {
+                        app.release_all_notes();
+                        commands.all_notes_off();
+                        app.octave = match direction {
+                            kazoo_host::keys::PianoKey::OctaveDown => app.octave.down(),
+                            kazoo_host::keys::PianoKey::OctaveUp => app.octave.up(),
+                            kazoo_host::keys::PianoKey::Note(_) => app.octave,
+                        };
+                    }
                 }
             } else if key.code == KeyCode::Backspace {
                 // Panic: silence the voice, forget every held key.
@@ -246,7 +262,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent, commands: &mut CommandLink) {
             }
         }
         KeyEventKind::Release => {
-            if let Some(note) = input::key_to_midi_note(key.code) {
+            if let KeyCode::Char(ch) = key.code
+                && let Some(note) = kazoo_host::keys::note(ch, app.octave)
+            {
                 let held = &mut app.held_notes[usize::from(note)];
                 if *held {
                     *held = false;
@@ -277,6 +295,44 @@ mod tests {
     fn link() -> (CommandLink, Receiver<AudioCommand>) {
         let (tx, rx) = crossbeam_channel::bounded(16);
         (CommandLink::new(tx), rx)
+    }
+
+    #[test]
+    fn octave_moves_release_held_notes_and_change_the_note() {
+        let (mut commands, rx) = link();
+        let mut app = App::new(44100);
+        let ch = 'a';
+        handle_key_event(
+            &mut app,
+            key(KeyCode::Char(ch), KeyEventKind::Press),
+            &mut commands,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 48, .. })
+        ));
+        let ch = 'x';
+        handle_key_event(
+            &mut app,
+            key(KeyCode::Char(ch), KeyEventKind::Press),
+            &mut commands,
+        );
+        assert_eq!(app.octave, kazoo_host::keys::Octave::new(4));
+        assert!(
+            rx.try_iter()
+                .any(|cmd| matches!(cmd, AudioCommand::AllNotesOff))
+        );
+        assert!(app.held_notes.iter().all(|held| !held));
+        let ch = 'a';
+        handle_key_event(
+            &mut app,
+            key(KeyCode::Char(ch), KeyEventKind::Press),
+            &mut commands,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 60, .. })
+        ));
     }
 
     #[test]

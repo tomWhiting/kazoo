@@ -15,4 +15,4 @@ mod ui;
 pub use args::{Args, USAGE, cli, parse_args};
 pub use run::run;
 
-pub(crate) use run::{App, Focus, GLOBAL_FIELDS, PhraseState, piano_offset};
+pub(crate) use run::{App, Focus, GLOBAL_FIELDS, PhraseState};

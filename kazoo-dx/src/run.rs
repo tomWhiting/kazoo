@@ -1,6 +1,7 @@
 use crate::{Args, ui};
 use kazoo_host::terminal::KeyReleases;
 
+use kazoo_host::keys::{self, DEFAULT_REPEAT_DELAY, Octave, PianoKey};
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -22,8 +23,6 @@ use kazoo_core::ipc::link::{HubLink, LinkStatus};
 /// Without key-release reporting, a key auto-repeating is released this long
 /// after its last repeat.
 const REPEAT_HOLD: Duration = Duration::from_millis(140);
-/// Fallback OS key-repeat delay when the system setting can't be read.
-const DEFAULT_REPEAT_DELAY: Duration = Duration::from_millis(250);
 
 /// Start the synthesizer with an optional looped notation phrase.
 pub fn run(args: Args) -> color_eyre::Result<()> {
@@ -135,7 +134,7 @@ pub struct App {
     pub patch_index: usize,
     pub master: f32,
     pub focus: Focus,
-    pub octave: i8,
+    pub octave: Octave,
     pub velocity: u8,
     pub show_help: bool,
     pub release_events: bool,
@@ -168,7 +167,7 @@ impl App {
         let (repeat_delay, delay_note) = if release_events {
             (DEFAULT_REPEAT_DELAY, String::new())
         } else {
-            match system_repeat_delay() {
+            match keys::system_repeat_delay() {
                 Ok(delay) => (delay, String::new()),
                 Err(why) => (
                     DEFAULT_REPEAT_DELAY,
@@ -195,7 +194,7 @@ impl App {
             patch_index: 0,
             master: 0.8,
             focus: Focus::Operator(0, 0),
-            octave: 4,
+            octave: Octave::DEFAULT,
             velocity: 100,
             show_help: false,
             release_events,
@@ -295,15 +294,8 @@ impl App {
         self.status.push_str(text);
     }
 
-    fn note_for(&self, key: char) -> Option<u8> {
-        let offset = piano_offset(key)?;
-        let note = i16::from(self.octave + 1) * 12 + i16::from(offset);
-        // Outside the MIDI range the key simply plays nothing.
-        if (0..=127).contains(&note) {
-            Some(note as u8)
-        } else {
-            None
-        }
+    const fn note_for(&self, key: char) -> Option<u8> {
+        keys::note(key, self.octave)
     }
 
     /// A key-down. With release reporting, every press is a new note. Without
@@ -464,60 +456,6 @@ fn send_command(
     }
 }
 
-/// The OS key-repeat delay: the macOS `InitialKeyRepeat` setting. The error
-/// says why it could not be read, for the status line.
-fn system_repeat_delay() -> Result<Duration, String> {
-    if !cfg!(target_os = "macos") {
-        return Err("not readable on this OS".to_owned());
-    }
-    let out = std::process::Command::new("defaults")
-        .args(["read", "-g", "InitialKeyRepeat"])
-        .output()
-        .map_err(|e| format!("could not run `defaults`: {e}"))?;
-    if !out.status.success() {
-        // An unset key is the normal case on a fresh system.
-        return Err("InitialKeyRepeat is not set".to_owned());
-    }
-    let text = String::from_utf8(out.stdout)
-        .map_err(|_| "InitialKeyRepeat is not valid text".to_owned())?;
-    parse_initial_key_repeat(&text)
-}
-
-/// Parse `InitialKeyRepeat` (units of 15 ms), clamped to a sane range.
-fn parse_initial_key_repeat(text: &str) -> Result<Duration, String> {
-    let ticks = text
-        .trim()
-        .parse::<u64>()
-        .map_err(|e| format!("InitialKeyRepeat {:?} is not a number: {e}", text.trim()))?;
-    Ok(Duration::from_millis(ticks.saturating_mul(15))
-        .clamp(Duration::from_millis(100), Duration::from_secs(2)))
-}
-
-/// Tracker-style piano: the home row is white keys, the row above is black keys.
-#[must_use]
-pub const fn piano_offset(key: char) -> Option<u8> {
-    Some(match key {
-        'a' => 0,
-        'w' => 1,
-        's' => 2,
-        'e' => 3,
-        'd' => 4,
-        'f' => 5,
-        't' => 6,
-        'g' => 7,
-        'y' => 8,
-        'h' => 9,
-        'u' => 10,
-        'j' => 11,
-        'k' => 12,
-        'o' => 13,
-        'l' => 14,
-        'p' => 15,
-        ';' => 16,
-        _ => return None,
-    })
-}
-
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -563,7 +501,21 @@ fn handle_key(app: &mut App, key: KeyEvent, tx: &crossbeam_channel::Sender<Audio
 
     if let KeyCode::Char(c) = key.code {
         let c = c.to_ascii_lowercase();
-        if piano_offset(c).is_some() {
+        if let Some(piano) = keys::piano_key(c, app.octave) {
+            if matches!(piano, PianoKey::OctaveDown | PianoKey::OctaveUp) {
+                if key.kind == KeyEventKind::Press && !ctrl {
+                    while let Some(code) = app.held.last().map(|held| held.code) {
+                        app.release_note(code, tx);
+                    }
+                    app.release_all(tx);
+                    app.octave = match piano {
+                        PianoKey::OctaveDown => app.octave.down(),
+                        PianoKey::OctaveUp => app.octave.up(),
+                        PianoKey::Note(_) => app.octave,
+                    };
+                }
+                return false;
+            }
             // Releases always count, whatever modifiers are held by then,
             // so a note can never stick.
             match key.kind {
@@ -610,14 +562,6 @@ fn handle_key(app: &mut App, key: KeyEvent, tx: &crossbeam_channel::Sender<Audio
                 app.load_patch(usize::from(c as u8 - b'1'), tx);
             }
         }
-        KeyCode::Char('z' | 'Z') => {
-            app.release_all(tx);
-            app.octave = (app.octave - 1).max(0);
-        }
-        KeyCode::Char('x' | 'X') => {
-            app.release_all(tx);
-            app.octave = (app.octave + 1).min(8);
-        }
         KeyCode::Char('c' | 'C') => app.velocity = app.velocity.saturating_sub(10).max(10),
         KeyCode::Char('v' | 'V') => app.velocity = app.velocity.saturating_add(10).min(127),
         KeyCode::Char(' ') => {
@@ -661,12 +605,25 @@ mod tests {
     }
 
     #[test]
-    fn piano_maps_an_octave_and_a_third() {
-        let app = app();
-        assert_eq!(app.note_for('a'), Some(60));
-        assert_eq!(app.note_for('k'), Some(72));
-        assert_eq!(app.note_for(';'), Some(76));
-        assert_eq!(app.note_for('q'), None);
+    fn octave_moves_release_held_notes_and_change_the_note() {
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        let mut app = app();
+        let key = |ch| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
+        assert!(!handle_key(&mut app, key('a'), &tx));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 48, .. })
+        ));
+        assert!(!handle_key(&mut app, key('x'), &tx));
+        assert_eq!(app.octave, Octave::new(4));
+        assert_eq!(rx.try_recv(), Ok(AudioCommand::NoteOff { note: 48 }));
+        assert_eq!(rx.try_recv(), Ok(AudioCommand::AllNotesOff));
+        assert!(app.held.is_empty());
+        assert!(!handle_key(&mut app, key('a'), &tx));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AudioCommand::NoteOn { note: 60, .. })
+        ));
     }
 
     #[test]
@@ -679,7 +636,7 @@ mod tests {
         app.release_note('a', &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AudioCommand::NoteOff { note: 60 })
+            Ok(AudioCommand::NoteOff { note: 48 })
         ));
     }
 
@@ -698,7 +655,7 @@ mod tests {
         assert!(app.held.is_empty());
         assert!(
             rx.try_iter()
-                .any(|c| matches!(c, AudioCommand::NoteOff { note: 60 }))
+                .any(|c| matches!(c, AudioCommand::NoteOff { note: 48 }))
         );
     }
 
@@ -757,7 +714,7 @@ mod tests {
         app.press_note('a', &tx);
         let cmds: Vec<_> = rx.try_iter().collect();
         assert_eq!(cmds.len(), 3, "{cmds:?}");
-        assert!(matches!(cmds[2], AudioCommand::NoteOn { note: 60, .. }));
+        assert!(matches!(cmds[2], AudioCommand::NoteOn { note: 48, .. }));
     }
 
     #[test]
@@ -787,7 +744,7 @@ mod tests {
         assert!(app.held.is_empty());
         assert!(
             rx.try_iter()
-                .any(|c| matches!(c, AudioCommand::NoteOff { note: 60 }))
+                .any(|c| matches!(c, AudioCommand::NoteOff { note: 48 }))
         );
     }
 
@@ -849,32 +806,5 @@ mod tests {
         app.bpm = MIN_BPM;
         assert!(!handle_key(&mut app, key('{'), &tx));
         assert_eq!(rx.try_recv(), Ok(AudioCommand::SetBpm(MIN_BPM)));
-    }
-
-    #[test]
-    fn key_repeat_setting_parses() {
-        assert_eq!(
-            parse_initial_key_repeat("15\n"),
-            Ok(Duration::from_millis(225))
-        );
-        // Clamped to a sane range.
-        assert_eq!(
-            parse_initial_key_repeat("1"),
-            Ok(Duration::from_millis(100))
-        );
-        assert_eq!(
-            parse_initial_key_repeat("100000"),
-            Ok(Duration::from_secs(2))
-        );
-        assert!(parse_initial_key_repeat("fast").is_err());
-    }
-
-    #[test]
-    fn out_of_range_notes_play_nothing() {
-        let mut app = app();
-        app.octave = 8;
-        assert_eq!(app.note_for(';'), Some(124));
-        app.octave = 9;
-        assert_eq!(app.note_for(';'), None);
     }
 }

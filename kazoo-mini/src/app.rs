@@ -109,6 +109,8 @@ pub struct App {
     /// QWERTY notes currently held (for note-off on key release and to
     /// ignore key repeat).
     pub held_notes: [bool; 128],
+    /// MIDI octave of the typing-keyboard piano.
+    pub octave: kazoo_host::keys::Octave,
     /// Latest message for the status line.
     pub status: Option<StatusLine>,
     /// Delivery problems between the UI and the audio callback.
@@ -130,6 +132,7 @@ impl App {
             param_index: 0,
             sample_rate,
             held_notes: [false; 128],
+            octave: kazoo_host::keys::Octave::DEFAULT,
             status: None,
             health: EngineHealth::default(),
             key_releases: KeyReleases::Reported,

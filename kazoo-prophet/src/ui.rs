@@ -88,7 +88,7 @@ fn footer_line(app: &App) -> Line<'static> {
         ));
     }
     spans.push(Span::styled(
-        "Esc/Ctrl+Q quit  Tab section  ↑↓ select  ←→ adjust  Space all notes off  keys z..i play",
+        format!("Esc/Ctrl+Q quit  Tab section  ↑↓ select  ←→ adjust  Space all notes off  a..; play  z/x octave  oct {}", app.octave.number()),
         Style::new().fg(Color::DarkGray),
     ));
     Line::from(spans)

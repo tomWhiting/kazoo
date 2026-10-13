@@ -83,6 +83,8 @@ pub struct App {
     pub voice_status: [VoiceStatus; NUM_VOICES],
     pub waveform_buf: [f32; WAVEFORM_BUF_SIZE],
     pub held_notes: [Option<u8>; 16],
+    /// MIDI octave of the typing-keyboard piano.
+    pub octave: kazoo_host::keys::Octave,
     /// Commands the audio thread refused (queue full or engine stopped).
     pub commands_dropped: u64,
     /// Why the most recent command was refused, until one gets through.
@@ -118,6 +120,7 @@ impl App {
             }; NUM_VOICES],
             waveform_buf: [0.0; WAVEFORM_BUF_SIZE],
             held_notes: [None; 16],
+            octave: kazoo_host::keys::Octave::DEFAULT,
             commands_dropped: 0,
             delivery_warning: None,
             params_pending: false,

@@ -14,7 +14,7 @@
 //! +--- POOL ---------------------------------------------------+
 //! |  C4  E4  G4  (3 notes × 2 oct = 6 steps)                  |
 //! +------------------------------------------------------------+
-//! | Z-M:notes  ←→:param  ↑↓:adjust  Space:latch  Esc:quit     |
+//! | a-;:notes  ←→:param  ↑↓:adjust  Space:latch  Esc:quit     |
 //! | (alerts: lost audio, undelivered edits, desk drops)        |
 //! +------------------------------------------------------------+
 //! ```
@@ -279,13 +279,21 @@ fn draw_note_pool(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
 fn draw_footer(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let piano_hint = match app.key_mode {
-        KeyMode::Hold => "  (chromatic C4-C5)",
-        KeyMode::Toggle => "  (chromatic C4-C5, tap to hold / tap again to release)",
+        KeyMode::Hold => "",
+        KeyMode::Toggle => "  (tap to hold / tap again to release)",
     };
     let lines = vec![
         Line::from(vec![
             Span::styled(" Piano: ", Style::new().fg(SILVER)),
-            Span::styled("z s x d c v g b h n j m ,", Style::new().fg(Color::White)),
+            Span::styled(
+                "a w s e d f t g y h u j k o l p ;",
+                Style::new().fg(Color::White),
+            ),
+            Span::styled("  z/x", Style::new().fg(BLUE)),
+            Span::styled(
+                format!(":octave  oct {}", app.octave().number()),
+                Style::new().fg(DIM),
+            ),
             Span::styled(piano_hint, Style::new().fg(DIM)),
         ]),
         Line::from(vec![
@@ -448,5 +456,44 @@ pub fn param_value_style(selected: Param, current: Param) -> Style {
             .add_modifier(Modifier::BOLD)
     } else {
         Style::new().fg(Color::White)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::CommandSender;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ringbuf::traits::Split;
+
+    fn screen(key_mode: KeyMode) -> String {
+        let (tx, _rx) = crossbeam_channel::bounded(4);
+        let (_display, cons) = ringbuf::HeapRb::new(4).split();
+        let app = App::new(48_000.0, CommandSender::new(tx), cons, key_mode);
+        let mut terminal = Terminal::new(TestBackend::new(140, 30)).expect("test backend");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw to the test backend");
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn the_footer_names_the_shared_piano_and_its_octave() {
+        for key_mode in [KeyMode::Hold, KeyMode::Toggle] {
+            let text = screen(key_mode);
+            assert!(text.contains("a w s e d f t g y h u j k o l p ;"), "{text}");
+            assert!(text.contains("z/x"), "{text}");
+            assert!(text.contains("oct 3"), "{text}");
+            assert!(!text.contains("C4-C5"), "{text}");
+        }
     }
 }

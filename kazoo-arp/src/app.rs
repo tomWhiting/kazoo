@@ -129,6 +129,8 @@ pub struct App {
     pub release_waiting: bool,
     /// Keyboard notes currently pressed.
     held: [bool; 128],
+    /// MIDI octave of the typing-keyboard piano.
+    octave: kazoo_host::keys::Octave,
     /// Note-offs the engine has not received yet (its queue was full);
     /// retried every frame so no note is left hanging.
     pending_off: [bool; 128],
@@ -184,6 +186,7 @@ impl App {
             note_failure: 0,
             release_waiting: false,
             held: [false; 128],
+            octave: kazoo_host::keys::Octave::DEFAULT,
             pending_off: [false; 128],
             display_cons,
         }
@@ -244,6 +247,12 @@ impl App {
         }
     }
 
+    /// The MIDI octave the typing-keyboard piano plays (`a` is its C).
+    #[must_use]
+    pub const fn octave(&self) -> kazoo_host::keys::Octave {
+        self.octave
+    }
+
     /// Notes whose release has not reached the engine yet.
     #[must_use]
     pub fn pending_note_offs(&self) -> usize {
@@ -264,7 +273,7 @@ impl App {
             KeyEventKind::Press | KeyEventKind::Repeat => self.handle_press(key),
             KeyEventKind::Release => {
                 if let KeyCode::Char(ch) = key.code {
-                    if let Some(note) = Self::key_to_note(ch) {
+                    if let Some(note) = kazoo_host::keys::note(ch, self.octave) {
                         self.release_note(note);
                     }
                 }
@@ -273,6 +282,35 @@ impl App {
     }
 
     fn handle_press(&mut self, key: KeyEvent) {
+        if let KeyCode::Char(ch) = key.code {
+            match kazoo_host::keys::piano_key(ch, self.octave) {
+                Some(kazoo_host::keys::PianoKey::Note(note)) => {
+                    let is_held = self.held[usize::from(note)];
+                    match (self.key_mode, is_held) {
+                        (KeyMode::Toggle, true) => self.release_note(note),
+                        (KeyMode::Hold | KeyMode::Toggle, false) => self.press_note(note),
+                        (KeyMode::Hold, true) => {}
+                    }
+                    return;
+                }
+                Some(direction) => {
+                    if key.kind == KeyEventKind::Press {
+                        for note in 0..128 {
+                            if self.held[usize::from(note)] {
+                                self.release_note(note);
+                            }
+                        }
+                        self.octave = match direction {
+                            kazoo_host::keys::PianoKey::OctaveDown => self.octave.down(),
+                            kazoo_host::keys::PianoKey::OctaveUp => self.octave.up(),
+                            kazoo_host::keys::PianoKey::Note(_) => self.octave,
+                        };
+                    }
+                    return;
+                }
+                None => {}
+            }
+        }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
@@ -298,18 +336,7 @@ impl App {
                 let idx = usize::from(c as u8 - b'1');
                 self.send_and_apply(ArpCommand::SetMode(ArpMode::ALL[idx]));
             }
-            // Piano keys.
-            KeyCode::Char(ch) => {
-                if let Some(note) = Self::key_to_note(ch) {
-                    let is_held = self.held[usize::from(note)];
-                    match (self.key_mode, is_held) {
-                        (KeyMode::Toggle, true) => self.release_note(note),
-                        (KeyMode::Hold | KeyMode::Toggle, false) => self.press_note(note),
-                        // Auto-repeat of a key already held.
-                        (KeyMode::Hold, true) => {}
-                    }
-                }
-            }
+
             _ => {}
         }
     }
@@ -409,28 +436,6 @@ impl App {
         self.send_and_apply(cmd);
     }
 
-    /// Map a keyboard character to a MIDI note (computer piano layout).
-    /// Returns `None` if the key isn't mapped.
-    #[must_use]
-    pub const fn key_to_note(ch: char) -> Option<u8> {
-        match ch {
-            'z' => Some(60), // C4
-            's' => Some(61), // C#4
-            'x' => Some(62), // D4
-            'd' => Some(63), // D#4
-            'c' => Some(64), // E4
-            'v' => Some(65), // F4
-            'g' => Some(66), // F#4
-            'b' => Some(67), // G4
-            'h' => Some(68), // G#4
-            'n' => Some(69), // A4
-            'j' => Some(70), // A#4
-            'm' => Some(71), // B4
-            ',' => Some(72), // C5
-            _ => None,
-        }
-    }
-
     /// Ordered list of recent note-on MIDI values for pattern display.
     pub fn recent_note_list(&self) -> Vec<u8> {
         let len = self.recent_notes.len();
@@ -500,6 +505,28 @@ mod tests {
     }
 
     #[test]
+    fn octave_moves_release_held_notes_and_change_the_note() {
+        let mut rig = rig(16, KeyMode::Hold);
+        press(&mut rig.app, KeyCode::Char('a'));
+        assert!(matches!(
+            rig.rx.try_recv(),
+            Ok(AudioCommand::Arp(ArpCommand::NoteOn { midi_note: 48, .. }))
+        ));
+        press(&mut rig.app, KeyCode::Char('x'));
+        assert_eq!(rig.app.octave, kazoo_host::keys::Octave::new(4));
+        assert_eq!(
+            rig.rx.try_recv(),
+            Ok(AudioCommand::Arp(ArpCommand::NoteOff { midi_note: 48 }))
+        );
+        assert!(rig.app.held.iter().all(|held| !held));
+        press(&mut rig.app, KeyCode::Char('a'));
+        assert!(matches!(
+            rig.rx.try_recv(),
+            Ok(AudioCommand::Arp(ArpCommand::NoteOn { midi_note: 60, .. }))
+        ));
+    }
+
+    #[test]
     fn param_changes_send_only_the_changed_value() {
         let mut rig = rig(8, KeyMode::Hold);
         press(&mut rig.app, KeyCode::Up);
@@ -523,7 +550,7 @@ mod tests {
         assert_eq!(rig.app.arp.mode, ArpMode::Down);
         press(&mut rig.app, KeyCode::Char('3'));
         press(&mut rig.app, KeyCode::Char(' '));
-        press(&mut rig.app, KeyCode::Char('z'));
+        press(&mut rig.app, KeyCode::Char('k'));
         assert_eq!(rig.app.arp.mode, ArpMode::Down);
         assert!(!rig.app.arp.latch);
         assert!(!rig.app.arp.has_notes());
@@ -533,10 +560,10 @@ mod tests {
     #[test]
     fn hold_mode_plays_while_held() {
         let mut rig = rig(8, KeyMode::Hold);
-        press(&mut rig.app, KeyCode::Char('z'));
-        press(&mut rig.app, KeyCode::Char('z')); // auto-repeat
+        press(&mut rig.app, KeyCode::Char('k'));
+        press(&mut rig.app, KeyCode::Char('k')); // auto-repeat
         assert_eq!(rig.app.arp.note_count(), 1);
-        release(&mut rig.app, KeyCode::Char('z'));
+        release(&mut rig.app, KeyCode::Char('k'));
         assert!(!rig.app.arp.has_notes());
         let sent: Vec<_> = rig.rx.try_iter().collect();
         assert_eq!(
@@ -554,9 +581,9 @@ mod tests {
     #[test]
     fn toggle_mode_taps_press_and_release() {
         let mut rig = rig(8, KeyMode::Toggle);
-        press(&mut rig.app, KeyCode::Char('z'));
+        press(&mut rig.app, KeyCode::Char('k'));
         assert!(rig.app.arp.has_notes());
-        press(&mut rig.app, KeyCode::Char('z'));
+        press(&mut rig.app, KeyCode::Char('k'));
         assert!(!rig.app.arp.has_notes());
         assert_eq!(rig.rx.try_iter().count(), 2);
     }
@@ -564,8 +591,8 @@ mod tests {
     #[test]
     fn refused_note_off_is_retried_until_delivered() {
         let mut rig = rig(1, KeyMode::Hold);
-        press(&mut rig.app, KeyCode::Char('z')); // fills the queue
-        release(&mut rig.app, KeyCode::Char('z'));
+        press(&mut rig.app, KeyCode::Char('k')); // fills the queue
+        release(&mut rig.app, KeyCode::Char('k'));
         assert_eq!(rig.app.pending_note_offs(), 1);
         assert_eq!(rig.app.commands.failed(), 1);
 
@@ -588,7 +615,8 @@ mod tests {
     #[test]
     fn played_events_sync_the_display_cursor() {
         let mut rig = rig(8, KeyMode::Hold);
-        for ch in ['z', 'c', 'b'] {
+        rig.app.octave = kazoo_host::keys::Octave::new(4);
+        for ch in ['a', 'd', 'g'] {
             press(&mut rig.app, KeyCode::Char(ch));
         }
         // An engine copy with the same notes plays two steps.

@@ -112,8 +112,8 @@ pub struct App {
     pub section: Section,
     /// Currently selected parameter index within the section.
     pub param_index: usize,
-    /// Current keyboard octave offset.
-    pub octave: i8,
+    /// MIDI octave of the typing-keyboard piano.
+    pub octave: kazoo_host::keys::Octave,
     /// Set of currently held note keys (for note-off tracking).
     pub held_notes: [bool; 128],
     /// Maps keyboard character (ASCII byte) to the MIDI note that was
@@ -155,7 +155,7 @@ impl App {
             should_quit: false,
             section: Section::Layer1,
             param_index: 0,
-            octave: 0,
+            octave: kazoo_host::keys::Octave::DEFAULT,
             held_notes: [false; 128],
             key_note_map: [None; 128],
             voice_status,
@@ -319,12 +319,14 @@ impl App {
 
     /// Octave up.
     pub fn octave_up(&mut self) {
-        self.octave = (self.octave + 1).min(4);
+        self.release_all_notes();
+        self.octave = self.octave.up();
     }
 
     /// Octave down.
     pub fn octave_down(&mut self) {
-        self.octave = (self.octave - 1).max(-4);
+        self.release_all_notes();
+        self.octave = self.octave.down();
     }
 
     /// Toggle between synth editor and modular view.
