@@ -200,3 +200,69 @@ fn processing_never_allocates() {
     assert_no_alloc::assert_no_alloc(|| tracker.process(&signal));
     assert_eq!(assert_no_alloc::violation_count(), before);
 }
+
+#[test]
+fn a_hint_overrides_a_reading_an_octave_up() {
+    // A weak fundamental under a loud second harmonic: the NSDF at half the
+    // period is about 0.92, past the half check, so the tracker reads 300 Hz.
+    let signal: Vec<_> = (0..9_600)
+        .map(|i| {
+            let phase = TAU * 150.0 * i as f32 / 48_000.0;
+            0.2_f32.mul_add(phase.sin(), (2.0 * phase).sin()) * 0.4
+        })
+        .collect();
+    let mut tracker = CycleTracker::new(48_000);
+    tracker.process(&signal[..4_800]);
+    assert!(
+        tracker.estimate().is_some_and(|e| cents(e.hz, 300.0) < 3.0),
+        "{:?}",
+        tracker.estimate()
+    );
+    tracker.hint(48_000.0 / 150.0);
+    let before = tracker.marks();
+    let mut corrected = false;
+    for sample in &signal[4_800..] {
+        tracker.push(*sample);
+        corrected |= tracker
+            .estimate()
+            .is_some_and(|e| cents(e.hz, 150.0) < 3.0);
+        if tracker.marks() >= before + 4 {
+            break;
+        }
+    }
+    assert!(corrected, "{:?}", tracker.estimate());
+}
+
+#[test]
+fn a_low_hum_stays_locked_once_found() {
+    let take = named("hum_low");
+    let mut tracker = CycleTracker::new(48_000);
+    let mut first = None;
+    let mut lost = 0;
+    for (i, sample) in take.samples[9_600..38_400].iter().enumerate() {
+        tracker.push(*sample);
+        match tracker.estimate() {
+            Some(estimate) => {
+                first.get_or_insert(i);
+                assert!(cents(estimate.hz, 65.406) <= 10.0, "{i}: {estimate:?}");
+            }
+            None if first.is_some() => lost += 1,
+            None => {}
+        }
+    }
+    assert!(first.is_some(), "never locked");
+    assert_eq!(lost, 0, "unlocked for {lost} samples after locking at {first:?}");
+}
+
+#[test]
+fn a_candidate_off_its_peak_is_climbed_to_the_peak() {
+    // 220 Hz is 218.18 samples at 48 kHz; a candidate 11 samples short sits
+    // on the rising flank of the NSDF, where the three lags all climb.
+    let mut tracker = CycleTracker::new(48_000);
+    tracker.process(&sine(220.0, 48_000, 4_800, 0.0));
+    let refined = tracker.refine(207.0);
+    assert!(
+        refined.is_none_or(|e| (e.period - 48_000.0 / 220.0).abs() < 0.05),
+        "{refined:?}"
+    );
+}
