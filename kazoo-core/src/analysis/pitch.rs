@@ -14,8 +14,10 @@ use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
 pub const JUDGE_FRAMES: usize = 3;
 
 /// The judge only rules on octave and voicing: fusion folds within 300 cents
-/// and flags disagreement past 100. 34-cent bins stay inside both and cut
-/// pYIN's states from 1518 to 456, about 1.4 ms at three frames, under 2.1 ms.
+/// and flags disagreement past 100. pYIN rounds `1 / 0.34` up to three bins a
+/// semitone, so the bins are 33.3 cents: inside both, and they cut pYIN's
+/// states from 1518 to 456, measured at 1.5 ms CPU a run at three frames,
+/// under the 2.1 ms budget.
 pub const JUDGE_RESOLUTION: f64 = 0.34;
 
 /// Configuration for the pitch detector.

@@ -165,7 +165,7 @@ fn cents_error(frequency: f32, expected: f32) -> f32 {
     (1200.0 * (frequency / expected).log2()).abs()
 }
 
-/// Twenty cents allows half of a 34-cent judge bin (17 cents).
+/// Twenty cents allows half of a judge bin: 0.34 rounds to 33.3-cent bins, half is 16.7.
 #[test]
 fn estimates_come_every_hop() {
     let samples = generate_sine(440.0, 48_000.0, 48_000);
@@ -184,7 +184,7 @@ fn estimates_come_every_hop() {
     }
 }
 
-/// Twenty cents allows half of a 34-cent judge bin (17 cents).
+/// Twenty cents allows half of a judge bin: 0.34 rounds to 33.3-cent bins, half is 16.7.
 #[test]
 fn a_note_change_reads_the_new_note_not_an_average() {
     let mut phase = 0.0_f64;
@@ -240,7 +240,7 @@ fn assert_voiced_take(samples: &[f32], expected: f32) {
     );
 }
 
-/// Twenty cents allows half of a 34-cent judge bin (17 cents).
+/// Twenty cents allows half of a judge bin: 0.34 rounds to 33.3-cent bins, half is 16.7.
 #[test]
 fn a_whistle_is_voiced() {
     let mut seed = 0x1234_5678_u32;
@@ -257,7 +257,7 @@ fn a_whistle_is_voiced() {
     assert_voiced_take(&samples, 2500.0);
 }
 
-/// Twenty cents allows half of a 34-cent judge bin (17 cents).
+/// Twenty cents allows half of a judge bin: 0.34 rounds to 33.3-cent bins, half is 16.7.
 #[test]
 fn a_low_hum_is_voiced() {
     let fundamental = generate_sine(55.0, 48_000.0, 48_000);
