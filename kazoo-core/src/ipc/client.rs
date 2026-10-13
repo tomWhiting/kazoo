@@ -176,15 +176,18 @@ impl HubIpcClient {
             ));
         }
         let payload = &read_buf.payload()[..len];
+        // A desk that knows streams answers one strip per stream registered
+        // (a register without a list is one stream), and stream 0's strip
+        // is the one byte 0 names. An old desk answers the 22 bytes alone.
+        let expected = reg.streams.len().max(1);
         if len != RegisteredMsg::WIRE_SIZE
-            && (len < 24
-                || payload[22] == 0
-                || usize::from(payload[22]) > types::MAX_STREAMS
-                || len != 23 + usize::from(payload[22]))
+            && (len != 23 + expected
+                || usize::from(payload[22]) != expected
+                || payload[23] != payload[0])
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "invalid registered stream tail",
+                format!("the desk answered {len} bytes of strips for {expected} streams"),
             ));
         }
         let resp = RegisteredMsg::decode(payload);
