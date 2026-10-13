@@ -15,6 +15,7 @@ pub mod mixer;
 pub mod notation;
 pub mod protocol;
 pub mod realtime;
+pub mod reels;
 pub mod synthesis;
 pub mod transport;
 

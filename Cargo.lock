@@ -1539,6 +1539,8 @@ dependencies = [
  "ringbuf",
  "rubato",
  "rustfft",
+ "serde",
+ "sha2",
  "symphonia",
  "tempfile",
  "thiserror 2.0.18",
