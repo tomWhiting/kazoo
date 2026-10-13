@@ -540,8 +540,11 @@ mod tests {
         fs::create_dir_all(directory.join("bin")).unwrap();
         fs::write(directory.join("file"), "").unwrap();
         fs::write(directory.join("bin/tmux"), "#!/bin/sh\n").unwrap();
-        fs::set_permissions(directory.join("bin/tmux"), fs::Permissions::from_mode(0o755))
-            .unwrap();
+        fs::set_permissions(
+            directory.join("bin/tmux"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
         let path = std::env::join_paths([directory.join("file"), directory.join("bin")]).unwrap();
         let found = find_tmux(Some(&path));
         fs::remove_dir_all(&directory).unwrap();

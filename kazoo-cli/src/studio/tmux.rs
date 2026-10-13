@@ -80,10 +80,7 @@ pub(super) fn up(tmux: &Path, plan: &LaunchPlan, rate: Option<u32>) -> Result<()
     if status.success() {
         Ok(())
     } else {
-        let name = plan
-            .session
-            .strip_prefix("kazoo-")
-            .unwrap_or(&plan.session);
+        let name = plan.session.strip_prefix("kazoo-").unwrap_or(&plan.session);
         Err(eyre!(
             "the studio is running but tmux {} exited {status}; reach it with \
              tmux attach -t ={}, stop it with kazoo studio down {name}",
@@ -104,12 +101,7 @@ fn attach_args(attach: &TmuxCommand, nested: bool) -> Vec<String> {
 }
 
 /// Stop a studio that failed to start, keeping the failure that stopped it.
-fn abandon(
-    tmux: &Path,
-    session: &str,
-    desk: Option<u32>,
-    error: color_eyre::Report,
-) -> Result<()> {
+fn abandon(tmux: &Path, session: &str, desk: Option<u32>, error: color_eyre::Report) -> Result<()> {
     match stop(tmux, session, desk) {
         Ok(()) => Err(error),
         Err(cleanup) => Err(eyre!("{error:#}; studio cleanup also failed: {cleanup:#}")),
@@ -164,7 +156,10 @@ fn wait_for_desk(
             }
             return Ok(());
         }
-        match panes(tmux, session)?.into_iter().find(|pane| pane.pid == pid) {
+        match panes(tmux, session)?
+            .into_iter()
+            .find(|pane| pane.pid == pid)
+        {
             Some(pane) if !pane.dead => {}
             Some(pane) => {
                 return Err(eyre!(
@@ -269,7 +264,9 @@ fn pane_text(tmux: &Path, pane: &str) -> Result<String> {
             pane.into(),
         ],
     )?;
-    Ok(String::from_utf8_lossy(&captured.stdout).trim_end().to_owned())
+    Ok(String::from_utf8_lossy(&captured.stdout)
+        .trim_end()
+        .to_owned())
 }
 
 /// Whether a live pane of `session` runs process `pid`. Only such a PID is
@@ -306,9 +303,7 @@ pub(super) fn down(tmux: &Path, session: &str) -> Result<()> {
         return Err(eyre!("tmux studio session {session:?} does not exist"));
     }
     let desk = studio_desk(tmux, session)?.ok_or_else(|| {
-        eyre!(
-            "tmux session {session:?} was not started by kazoo studio up, so it was left running"
-        )
+        eyre!("tmux session {session:?} was not started by kazoo studio up, so it was left running")
     })?;
     stop(tmux, session, Some(desk))
 }
@@ -344,13 +339,12 @@ fn stop(tmux: &Path, session: &str, desk: Option<u32>) -> Result<()> {
             &["kill-session".into(), "-t".into(), format!("={session}")],
         )?;
     }
-    match lingering {
-        Some(pid) => Err(eyre!(
+    lingering.map_or(Ok(()), |pid| {
+        Err(eyre!(
             "studio desk PID {pid} did not exit within 5 seconds of SIGTERM, \
              so the session was killed with it still running"
-        )),
-        None => Ok(()),
-    }
+        ))
+    })
 }
 
 /// Wait up to five seconds for the desk to leave; `Some(pid)` if it did not.
@@ -571,10 +565,12 @@ mod tests {
         )
         .unwrap();
         let desk = harness.script("desk", "exit 0\n");
-        let plan =
-            commands("demo", &StudioFile::default(), &desk, &harness.directory).unwrap();
+        let plan = commands("demo", &StudioFile::default(), &desk, &harness.directory).unwrap();
         let error = down(&harness.tmux, &plan.session).unwrap_err();
-        assert!(error.to_string().contains("not started by kazoo studio"), "{error}");
+        assert!(
+            error.to_string().contains("not started by kazoo studio"),
+            "{error}"
+        );
         assert!(harness.session_exists("kazoo-demo"));
     }
 
