@@ -5,7 +5,7 @@
 //! between the last two clocks. A rising `reset` makes the next clock play
 //! step 1.
 
-use super::{Edge, Io, Module, Rng, Tick, seed};
+use super::{Edge, Io, Module, Rng, Tick};
 use crate::SUB_BLOCK;
 
 const STEPS: usize = 0;
@@ -44,14 +44,14 @@ pub struct Seq {
 }
 
 impl Seq {
-    pub fn new(sample_rate: f32) -> Self {
+    pub const fn new(sample_rate: f32) -> Self {
         // Positive and bounded: the casts are exact enough.
         let longest = (sample_rate * LONGEST_PERIOD_SECONDS) as u32;
         Self {
             step: None,
             clock: Edge::new(),
             reset: Edge::new(),
-            rng: Rng::new(seed()),
+            rng: Rng::new(kazoo_fx::dsp::stream_seed(0, 0)),
             since_clock: 0,
             period: (sample_rate * 0.25) as u32,
             longest,
@@ -73,6 +73,10 @@ impl Seq {
 }
 
 impl Module for Seq {
+    fn set_seed(&mut self, seed: u64) {
+        self.rng = Rng::new(kazoo_fx::dsp::stream_seed(seed, 0));
+    }
+
     fn process(&mut self, _tick: &Tick, io: Io<'_>) {
         let gate_knob = io.knob(GATE);
         for frame in 0..SUB_BLOCK {

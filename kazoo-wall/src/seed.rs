@@ -101,6 +101,7 @@ pub fn seed() -> Result<Patch, WallError> {
 /// As [`seed`].
 pub fn seed_from(delays: &[&str], reverbs: &[&str]) -> Result<Patch, WallError> {
     let mut patch = Patch::empty(SEED_TEMPO);
+    patch.seed = crate::chance::fresh_wall_seed();
     for (kind, name) in [
         ("clock", "eighths"),
         ("seq", "melody"),
@@ -170,6 +171,13 @@ pub fn seed_from(delays: &[&str], reverbs: &[&str]) -> Result<Patch, WallError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_wall_gets_its_own_seed() {
+        let first = seed().unwrap();
+        let second = seed().unwrap();
+        assert_ne!(first.seed, second.seed);
+    }
 
     fn count(patch: &Patch, kind: Kind) -> usize {
         patch.modules().iter().filter(|m| m.kind == kind).count()

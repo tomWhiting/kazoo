@@ -11,7 +11,7 @@
 //! like those of the wall's other random modules (`noise`, `sh`, `seq`); a
 //! reset forgets the gate and the side but the coin rolls on.
 
-use super::{Edge, Io, Module, Rng, Tick, seed};
+use super::{Edge, Io, Module, Rng, Tick};
 use crate::SUB_BLOCK;
 
 const CHANCE: usize = 0;
@@ -37,8 +37,8 @@ pub struct Branch {
 }
 
 impl Branch {
-    pub fn new() -> Self {
-        Self::seeded(seed())
+    pub const fn new() -> Self {
+        Self::seeded(kazoo_fx::dsp::stream_seed(0, 0))
     }
 
     /// A Bernoulli gate whose coin is seeded with `seed`.
@@ -58,6 +58,10 @@ const fn level(high: bool) -> f32 {
 }
 
 impl Module for Branch {
+    fn set_seed(&mut self, seed: u64) {
+        self.rng = Rng::new(kazoo_fx::dsp::stream_seed(seed, 0));
+    }
+
     fn process(&mut self, _tick: &Tick, io: Io<'_>) {
         // Clamped and rounded: the cast is exact.
         let mode = io.knob(MODE) as usize;
@@ -223,8 +227,16 @@ mod tests {
 
     #[test]
     fn modules_built_one_after_another_toss_differently() {
-        let mut one = Bench::new(Kind::BRANCH);
-        let mut two = Bench::new(Kind::BRANCH);
+        let mut one = Bench::seeded(
+            Kind::BRANCH,
+            super::super::testing::RATE,
+            crate::chance::module_seed(0x5EED, "branch1"),
+        );
+        let mut two = Bench::seeded(
+            Kind::BRANCH,
+            super::super::testing::RATE,
+            crate::chance::module_seed(0x5EED, "branch2"),
+        );
         assert_ne!(sides(&mut one, 500), sides(&mut two, 500));
     }
 

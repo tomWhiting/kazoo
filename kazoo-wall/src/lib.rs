@@ -26,6 +26,7 @@
 
 pub mod adapters;
 pub mod catalogue;
+pub mod chance;
 pub mod change;
 pub mod daemon;
 pub mod dsp;

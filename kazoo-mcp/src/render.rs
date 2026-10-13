@@ -27,9 +27,10 @@ pub fn look(snapshot: &Snapshot) -> String {
     line(
         &mut out,
         format_args!(
-            "The wall at revision {}: {} BPM, bar {} beat {:.2} ({} beats in), clock {}, sound to {}.",
+            "The wall at revision {}: {} BPM, seed {:016x}, bar {} beat {:.2} ({} beats in), clock {}, sound to {}.",
             snapshot.revision,
             snapshot.tempo,
+            snapshot.seed,
             bar + 1.0,
             beat_in_bar + 1.0,
             round(snapshot.beat, 2),
@@ -1116,10 +1117,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn look_shows_the_seed() {
+        let mut wall = snapshot();
+        wall.seed = 0x5EED;
+        let text = look(&wall);
+        assert!(
+            text.lines()
+                .next()
+                .unwrap()
+                .contains("seed 0000000000005eed")
+        );
+    }
+
     fn snapshot() -> Snapshot {
         Snapshot {
             revision: 58,
             wall: 0,
+            seed: 0,
             tempo: 96.0,
             beat: 13.5,
             clock: ClockSource::Own,
@@ -1189,7 +1204,7 @@ mod tests {
     fn the_wall_reads_as_a_listing_with_exact_numbers() {
         let text = look(&snapshot());
         assert!(text.starts_with(
-            "The wall at revision 58: 96 BPM, bar 4 beat 2.50 (13.5 beats in), clock its own, \
+            "The wall at revision 58: 96 BPM, seed 0000000000000000, bar 4 beat 2.50 (13.5 beats in), clock its own, \
              sound to the audio device.\n"
         ));
         assert!(text.contains("Seats here: Tom, Waffles.\n"));

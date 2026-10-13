@@ -115,12 +115,21 @@ pub fn read(bytes: &[u8]) -> Result<(PatchFile, Vec<String>), String> {
         .remove("wall")
         .and_then(|wall| wall.as_u64())
         .unwrap_or(0);
+    let seed = fields.remove("seed").and_then(|seed| seed.as_u64());
+    let seed = seed.unwrap_or_else(|| {
+        let seed = crate::chance::fnv1a64(bytes);
+        notes.push(format!(
+            "the patch had no seed; it is {seed:016x}, from the file's bytes"
+        ));
+        seed
+    });
     Ok((
         PatchFile {
             version,
             tempo,
             last_seq,
             wall,
+            seed,
             next_ids,
             next_cable,
             modules,

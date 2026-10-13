@@ -15,7 +15,15 @@ const AIRPORTS: &str = include_str!("../../tests/fixtures/airports-v1.json");
 
 fn airports() -> (PatchFile, Vec<String>) {
     let (mut file, mut notes) = read(AIRPORTS.as_bytes()).unwrap();
-    assert!(notes.is_empty(), "{notes:?}");
+    let expected = crate::chance::fnv1a64(AIRPORTS.as_bytes());
+    assert_eq!(
+        notes,
+        [format!(
+            "the patch had no seed; it is {expected:016x}, from the file's bytes"
+        )]
+    );
+    assert_eq!(file.seed, expected);
+    notes.clear();
     notes.extend(migrate(&mut file).unwrap());
     (file, notes)
 }
@@ -184,7 +192,7 @@ fn a_current_patch_needs_nothing() {
 
 #[test]
 fn old_knob_names_are_renamed() {
-    let text = r#"{"version":1,"tempo":90.0,"last_seq":0,"next_ids":{},"next_cable":1,
+    let text = r#"{"version":1,"seed":0,"tempo":90.0,"last_seq":0,"next_ids":{},"next_cable":1,
         "modules":[{"id":"mix1","kind":"mix","knobs":{"a":0.2,"d":0.9}},
                    {"id":"vco1","kind":"vco","knobs":{"fm":0.7}}],
         "cables":[]}"#;
@@ -205,7 +213,7 @@ fn reading_keeps_whatever_it_can() {
             .unwrap_err()
             .contains("no version")
     );
-    let text = r#"{"version":2,"tempo":90.0,"last_seq":4,"next_ids":{"vco":2,"lfo":"x"},
+    let text = r#"{"version":2,"seed":0,"tempo":90.0,"last_seq":4,"next_ids":{"vco":2,"lfo":"x"},
         "next_cable":3,
         "modules":[{"id":"vco1","kind":"vco","knobs":{}}, {"oops":true},
                    {"id":"ghost1","kind":"ghost","knobs":{}},
@@ -239,7 +247,7 @@ fn reading_keeps_whatever_it_can() {
 
 #[test]
 fn reading_keeps_the_rack_s_rows() {
-    let text = r#"{"version":2,"tempo":90.0,"last_seq":4,"next_ids":{"vco":3,"lfo":2},
+    let text = r#"{"version":2,"seed":0,"tempo":90.0,"last_seq":4,"next_ids":{"vco":3,"lfo":2},
         "next_cable":1,
         "modules":[{"id":"vco1","kind":"vco","knobs":{}},{"id":"vco2","kind":"vco","knobs":{}},
                    {"id":"lfo1","kind":"lfo","knobs":{}}],
@@ -292,7 +300,7 @@ fn words_that_cannot_be_read_are_never_quoted() {
     // A speaker's words as a bare string, and a removed speaker's words
     // as one: serde would quote them in its error; the notes must not.
     let file = serde_json::json!({
-        "version": 2, "tempo": 90.0, "last_seq": 3, "next_ids": {}, "next_cable": 1,
+        "version": 2, "seed": 0, "tempo": 90.0, "last_seq": 3, "next_ids": {}, "next_cable": 1,
         "modules": [], "cables": [],
         "speech": {"speak1": "meet me at the station at nine"},
         "retired_speech": ["the password is swordfish"],
@@ -325,7 +333,7 @@ fn words_that_cannot_be_read_are_never_quoted() {
 fn a_saved_wall_of_effects_loads_unchanged_beside_the_wet_outputs() {
     // A wall saved before effects had wet outputs: an oscillator through a
     // digital delay into a plate, cabled by `left` and `right` only.
-    let text = r#"{"version":2,"tempo":100.0,"last_seq":9,
+    let text = r#"{"version":2,"seed":0,"tempo":100.0,"last_seq":9,
         "next_ids":{"vco":2,"digital":2,"plate":2,"out":2},"next_cable":6,
         "modules":[{"id":"vco1","kind":"vco","knobs":{}},
                    {"id":"digital1","kind":"digital","knobs":{"mix":0.3}},
@@ -367,4 +375,35 @@ fn a_saved_wall_of_effects_loads_unchanged_beside_the_wet_outputs() {
             .iter()
             .any(|cable| cable.from == "plate1.wet_left")
     );
+}
+
+#[test]
+fn old_save_without_seed_gets_one_and_keeps_it() {
+    let mut value = serde_json::to_value(Patch::empty(120.0).to_file()).unwrap();
+    value.as_object_mut().unwrap().remove("seed");
+    let bytes = serde_json::to_vec(&value).unwrap();
+    let expected = crate::chance::fnv1a64(&bytes);
+    let (file, notes) = read(&bytes).unwrap();
+    assert_eq!(file.seed, expected);
+    assert_eq!(
+        notes,
+        [format!(
+            "the patch had no seed; it is {expected:016x}, from the file's bytes"
+        )]
+    );
+    assert_eq!(read(&bytes).unwrap().0.seed, expected);
+    let patch = Patch::load(&file).unwrap().0;
+    let encoded = crate::store::encode(&patch).unwrap();
+    let (kept, notes) = read(&encoded).unwrap();
+    assert_eq!(kept.seed, expected);
+    assert!(notes.is_empty(), "{notes:?}");
+    for bad in [
+        serde_json::Value::Null,
+        serde_json::json!("bad"),
+        serde_json::json!(-1),
+    ] {
+        value["seed"] = bad;
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_eq!(read(&bytes).unwrap().0.seed, crate::chance::fnv1a64(&bytes));
+    }
 }

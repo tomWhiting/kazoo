@@ -130,6 +130,9 @@ pub struct PatchFile {
     /// and in patches saved before walls were replaced.
     #[serde(default)]
     pub wall: u64,
+    /// The seed from which every module derives its random streams.
+    #[serde(default)]
+    pub seed: u64,
     /// The next number for each kind's ids.
     pub next_ids: BTreeMap<String, u32>,
     /// The next cable number.
@@ -203,6 +206,8 @@ pub struct Patch {
     pub last_seq: u64,
     /// Which wall this is (see [`PatchFile::wall`]).
     pub wall: u64,
+    /// The saved seed for every module's random streams.
+    pub seed: u64,
     /// Who has touched which module, as saved.
     pub dye: Dye,
     /// What each `speak` module says, by module id.
@@ -342,11 +347,7 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
     }
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
+    let hash = crate::chance::fnv1a64(bytes);
     format!("{hash:016x}-{}", bytes.len())
 }
 
@@ -441,6 +442,7 @@ impl Patch {
             tempo,
             last_seq: 0,
             wall: 0,
+            seed: 0,
             dye: Dye::new(),
             speech: BTreeMap::new(),
             retired_speech: VecDeque::new(),
@@ -1227,6 +1229,7 @@ impl Patch {
             tempo: self.tempo,
             last_seq: self.last_seq,
             wall: self.wall,
+            seed: self.seed,
             next_ids: self.next_ids.clone(),
             next_cable: self.next_cable,
             modules: self.modules.iter().map(Module::record).collect(),
@@ -1330,6 +1333,7 @@ impl Patch {
         let mut patch = Self::empty(crate::engine::clamp_bpm(tempo));
         patch.last_seq = file.last_seq;
         patch.wall = file.wall;
+        patch.seed = file.seed;
         patch.next_cable = file.next_cable.max(1);
         patch.next_ids = numbering_in(&file.next_ids, &mut notes);
         for record in &file.modules {

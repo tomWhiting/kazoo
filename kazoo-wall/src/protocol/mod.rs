@@ -1077,6 +1077,9 @@ pub struct Snapshot {
     /// meant for this wall never lands on another.
     #[serde(default)]
     pub wall: u64,
+    /// The saved seed for the wall's random streams.
+    #[serde(default)]
+    pub seed: u64,
     /// Beats per minute.
     pub tempo: f64,
     /// Song position, in beats.

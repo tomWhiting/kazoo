@@ -325,6 +325,42 @@ impl Phasor {
     }
 }
 
+/// Mix all bits of a seed with the wrapping `SplitMix64` finaliser.
+#[must_use]
+pub const fn splitmix64(x: u64) -> u64 {
+    let z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Fold a seed's two halves into 32 bits for a xorshift generator.
+#[must_use]
+pub const fn fold32(x: u64) -> u32 {
+    let bytes = (x ^ (x >> 32)).to_le_bytes();
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+const fn widen(salt: u32) -> u64 {
+    let bytes = salt.to_le_bytes();
+    u64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], 0, 0, 0, 0])
+}
+
+/// Derive one generator's stream from its module seed and distinct salt.
+#[must_use]
+pub const fn stream_seed(seed: u64, salt: u32) -> u32 {
+    fold32(splitmix64(seed ^ widen(salt)))
+}
+
+/// Keep an unseeded generator's salt, or derive its seeded stream.
+#[must_use]
+pub const fn seeded(seed: Option<u64>, salt: u32) -> u32 {
+    match seed {
+        None => salt,
+        Some(seed) => stream_seed(seed, salt),
+    }
+}
+
 /// A small, fast, deterministic noise source (xorshift32).
 #[derive(Debug, Clone, Copy)]
 pub struct Noise {
@@ -414,6 +450,15 @@ pub fn sanitise(block: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seed_functions_are_pinned() {
+        assert_eq!(splitmix64(0), 0xE220_A839_7B1D_CDAF);
+        assert_eq!(fold32(0x1234_5678_9ABC_DEF0), 0x8888_8888);
+        assert_eq!(stream_seed(0xF7ED_B033_1822_2FF1, 0), 0xDEE0_7630);
+        assert_eq!(seeded(None, 0x1234), 0x1234);
+        assert_eq!(seeded(Some(0xF7ED_B033_1822_2FF1), 0), 0xDEE0_7630);
+    }
 
     #[test]
     fn a_delay_line_returns_what_went_in_that_long_ago() {

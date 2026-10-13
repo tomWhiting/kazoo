@@ -53,7 +53,7 @@ impl Fixture {
             slot,
             tag: self.next_tag,
             kind,
-            module: build(kind, 48_000.0),
+            module: build(kind, 48_000.0, u64::try_from(slot).unwrap()),
             knobs,
         });
         self.slots.push((slot, kind));

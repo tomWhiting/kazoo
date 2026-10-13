@@ -209,6 +209,12 @@ pub trait Module: Send + fmt::Debug {
     /// Forget all state: phases, filters, delay lines, envelopes.
     fn reset(&mut self);
 
+    /// Restart every random source from `seed`, as if the module had been
+    /// built with it. Called once by [`build`], before the module reaches
+    /// the engine; never on the audio thread. A module with no randomness
+    /// ignores it.
+    fn set_seed(&mut self, _seed: u64) {}
+
     /// The measurement it finished in the sub-block just rendered, once:
     /// a scope's trace or a readout's reading, for the engine to copy to
     /// the control side. Every other module has none. Must not allocate,
@@ -230,17 +236,19 @@ pub trait Module: Send + fmt::Debug {
 /// (delay lines, reverb tanks) and prepares effects: call it on the control
 /// side only.
 #[must_use]
-pub fn build(kind: Kind, sample_rate: f32) -> Box<dyn Module> {
+pub fn build(kind: Kind, sample_rate: f32, seed: u64) -> Box<dyn Module> {
     let sample_rate = if sample_rate.is_finite() && sample_rate >= 8_000.0 {
         sample_rate
     } else {
         48_000.0
     };
-    match kind.spec().build {
+    let mut module: Box<dyn Module> = match kind.spec().build {
         Builder::Native(build) => build(sample_rate),
         Builder::Effect(effect) => Box::new(effect::EffectModule::new(effect, sample_rate)),
         Builder::Adapted(adapter) => crate::adapters::build(adapter, sample_rate),
-    }
+    };
+    module.set_seed(seed);
+    module
 }
 
 /// Builders for the wall's own modules, as the catalogue names them.
@@ -437,13 +445,6 @@ impl Rng {
     }
 }
 
-/// A seed that differs between modules built at different moments.
-fn seed() -> u32 {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static NEXT: AtomicU32 = AtomicU32::new(0x2545_F491);
-    NEXT.fetch_add(0x9E37_79B9, Ordering::Relaxed)
-}
-
 #[cfg(test)]
 pub(crate) mod testing {
     //! Rendering modules outside the engine, for tests.
@@ -482,13 +483,18 @@ pub(crate) mod testing {
 
         /// A bench running at `rate`.
         pub fn at(kind: Kind, rate: f32) -> Self {
+            Self::seeded(kind, rate, 0)
+        }
+
+        /// A bench with a module's random streams restarted from `seed`.
+        pub fn seeded(kind: Kind, rate: f32, seed: u64) -> Self {
             let mut knobs = [0.0; MAX_KNOBS];
             for (slot, value) in knobs.iter_mut().zip(kind.spec().defaults()) {
                 *slot = value;
             }
             Self {
                 kind,
-                module: super::build(kind, rate),
+                module: super::build(kind, rate, seed),
                 knobs,
                 inputs: [[0.0; SUB_BLOCK]; MAX_INPUTS],
                 connected: [false; MAX_INPUTS],
@@ -768,13 +774,61 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_built_twice_with_one_seed_renders_the_same() {
+        use crate::catalogue::Signal;
+        for kind in Kind::all().filter(|kind| kind.name() != "speak") {
+            let mut first = testing::Bench::seeded(kind, testing::RATE, 7);
+            let mut second = testing::Bench::seeded(kind, testing::RATE, 7);
+            if kind == Kind::LFO {
+                first.knob("shape", 5.0);
+                second.knob("shape", 5.0);
+            }
+            if kind == Kind::SEQ {
+                first.knob("chance", 0.5);
+                second.knob("chance", 0.5);
+            }
+            let mut rng = Rng::new(3);
+            for block in 0..16 {
+                for (input, port) in kind.spec().inputs.iter().enumerate() {
+                    first.connected[input] = true;
+                    second.connected[input] = true;
+                    for frame in 0..SUB_BLOCK {
+                        let value = if port.signal == Signal::Gate {
+                            if (block * SUB_BLOCK + frame) % 24_000 < 12_000 {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            rng.bipolar()
+                        };
+                        first.inputs[input][frame] = value;
+                        second.inputs[input][frame] = value;
+                    }
+                }
+                first.step();
+                second.step();
+                for (output, port) in kind.spec().outputs.iter().enumerate() {
+                    assert_eq!(
+                        first.outputs[output].map(f32::to_bits),
+                        second.outputs[output].map(f32::to_bits),
+                        "{} {}",
+                        kind.name(),
+                        port.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_kind_builds() {
         for kind in Kind::all() {
             let mut bench = testing::Bench::new(kind);
             bench.step();
         }
         // A nonsense rate falls back to a usable one.
-        let mut module = build(Kind::SEQ, f32::NAN);
+        let mut module = build(Kind::SEQ, f32::NAN, 0);
         module.reset();
     }
 

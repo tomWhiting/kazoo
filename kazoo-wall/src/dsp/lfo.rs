@@ -3,7 +3,7 @@
 
 use std::f32::consts::TAU;
 
-use super::{Edge, Io, Module, Rng, Tick, finite, seed};
+use super::{Edge, Io, Module, Rng, Tick, finite};
 use crate::SUB_BLOCK;
 use crate::catalogue::{SYNC_DIVISIONS, sync_beats};
 
@@ -31,7 +31,7 @@ pub struct Lfo {
 
 impl Lfo {
     pub fn new() -> Self {
-        let mut rng = Rng::new(seed());
+        let mut rng = Rng::new(kazoo_fx::dsp::stream_seed(0, 0));
         let held = rng.bipolar();
         Self {
             phase: 0.0,
@@ -49,6 +49,11 @@ impl Lfo {
 }
 
 impl Module for Lfo {
+    fn set_seed(&mut self, seed: u64) {
+        self.rng = Rng::new(kazoo_fx::dsp::stream_seed(seed, 0));
+        self.held = self.rng.bipolar();
+    }
+
     fn process(&mut self, tick: &Tick, io: Io<'_>) {
         let shape = io.knob(SHAPE);
         let depth = io.knob(DEPTH);
