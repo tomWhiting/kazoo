@@ -6,7 +6,7 @@ use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, eyre};
 use kazoo_core::ipc::{client::HubIpcClient, discovery};
 
-use super::{LaunchPlan, TmuxCommand};
+use super::{DESK_OPTION, LaunchPlan, TmuxCommand};
 
 const DESK_WAIT: Duration = Duration::from_secs(5);
 const PROBE_INTERVAL: Duration = Duration::from_millis(20);
@@ -39,19 +39,48 @@ pub(super) fn up(tmux: &Path, plan: &LaunchPlan, rate: Option<u32>) -> Result<()
             socket.display()
         ));
     }
+    if session_exists(tmux, &plan.session)? {
+        return Err(eyre!(
+            "tmux session {:?} already exists; stop it before starting this studio",
+            plan.session
+        ));
+    }
     let first = plan
         .commands
         .first()
         .ok_or_else(|| eyre!("no desk launch command"))?;
-    let started = output(tmux, &first.args)?;
-    let result = start_children(tmux, plan, rate, &socket, &started.stdout);
-    if let Err(error) = result {
-        return match cleanup(tmux, &plan.session, &plan.children[0]) {
-            Ok(()) => Err(error),
-            Err(cleanup) => Err(eyre!("{error:#}; studio cleanup also failed: {cleanup:#}")),
-        };
+    // The session did not exist a moment ago, so whatever of it a failed
+    // creation left behind is this studio's own to remove.
+    let started = match output(tmux, &first.args) {
+        Ok(started) => started,
+        // Another client created the name since the check: theirs to keep.
+        Err(error) if error.to_string().contains("duplicate session") => return Err(error),
+        Err(error) => return abandon(tmux, &plan.session, None, error),
+    };
+    let pid = match std::str::from_utf8(&started.stdout)
+        .map_err(color_eyre::Report::from)
+        .and_then(|text| parse_pid(text.trim()))
+    {
+        Ok(pid) => pid,
+        Err(error) => return abandon(tmux, &plan.session, None, error),
+    };
+    match start_children(tmux, plan, rate, &socket, pid) {
+        Ok(()) => Ok(()),
+        Err(error) => abandon(tmux, &plan.session, Some(pid), error),
     }
-    Ok(())
+}
+
+/// Stop a studio that failed to start, keeping the failure that stopped it.
+fn abandon(
+    tmux: &Path,
+    session: &str,
+    desk: Option<u32>,
+    error: color_eyre::Report,
+) -> Result<()> {
+    match stop(tmux, session, desk) {
+        Ok(()) => Err(error),
+        Err(cleanup) => Err(eyre!("{error:#}; studio cleanup also failed: {cleanup:#}")),
+    }
 }
 
 fn start_children(
@@ -59,9 +88,8 @@ fn start_children(
     plan: &LaunchPlan,
     rate: Option<u32>,
     socket: &Path,
-    desk_output: &[u8],
+    pid: u32,
 ) -> Result<()> {
-    let pid = parse_pid(std::str::from_utf8(desk_output)?.trim())?;
     wait_for_desk(tmux, &plan.session, socket, pid, rate)?;
     let (attach, children) = plan.commands[1..]
         .split_last()
@@ -109,11 +137,7 @@ fn wait_for_desk(
             }
             return Ok(());
         }
-        let panes = pane_commands(tmux, session)?;
-        if !panes
-            .iter()
-            .any(|(pane_pid, _, dead)| *pane_pid == pid && !dead)
-        {
+        if !desk_alive(tmux, session, pid)? {
             return Err(eyre!(
                 "studio desk PID {pid} exited before accepting connections"
             ));
@@ -139,80 +163,116 @@ fn parse_pid(text: &str) -> Result<u32> {
     Ok(pid)
 }
 
-fn pane_commands(tmux: &Path, session: &str) -> Result<Vec<(u32, String, bool)>> {
+/// One pane of a studio session, as tmux lists it.
+struct Pane {
+    pid: u32,
+    dead: bool,
+}
+
+fn panes(tmux: &Path, session: &str) -> Result<Vec<Pane>> {
     let args = [
         "list-panes".into(),
         "-s".into(),
         "-t".into(),
         format!("={session}"),
         "-F".into(),
-        "#{pane_pid}\t#{pane_dead}\t#{pane_start_command}".into(),
+        "#{pane_pid}\t#{pane_dead}".into(),
     ];
     let output = Command::new(tmux)
         .args(&args)
         .output()
         .wrap_err("listing studio panes")?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if absent_server(&stderr) || stderr.trim() == format!("can't find session: {session}") {
+        // tmux words a vanished session several ways as it closes (can't
+        // find session, no current target, server exited unexpectedly), so
+        // the session list decides instead of the message.
+        if !session_exists(tmux, session)? {
             return Ok(Vec::new());
         }
         return Err(eyre!(
             "tmux {args:?} exited {}: {}",
             output.status,
-            stderr.trim()
+            String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
     std::str::from_utf8(&output.stdout)?
         .lines()
         .map(|line| {
-            let mut fields = line.splitn(3, '\t');
-            let pid = fields.next().ok_or_else(|| eyre!("missing pane PID"))?;
-            let dead = match fields.next() {
-                Some("0") => false,
-                Some("1") => true,
+            let (pid, dead) = line
+                .split_once('\t')
+                .ok_or_else(|| eyre!("tmux returned an invalid pane line {line:?}"))?;
+            let dead = match dead {
+                "0" => false,
+                "1" => true,
                 _ => return Err(eyre!("tmux returned an invalid pane state")),
             };
-            let command = fields.next().ok_or_else(|| eyre!("missing pane command"))?;
-            Ok((parse_pid(pid)?, command.to_owned(), dead))
+            Ok(Pane {
+                pid: parse_pid(pid)?,
+                dead,
+            })
         })
         .collect()
 }
 
-pub(super) fn down(tmux: &Path, session: &str, desk: &str) -> Result<()> {
+/// Whether a live pane of `session` runs process `pid`. Only such a PID is
+/// ever signalled, so a recycled PID outside the session is never touched.
+fn desk_alive(tmux: &Path, session: &str, pid: u32) -> Result<bool> {
+    Ok(panes(tmux, session)?
+        .iter()
+        .any(|pane| pane.pid == pid && !pane.dead))
+}
+
+/// The desk PID that `up` recorded on `session`, or `None` when the session
+/// does not carry the studio's mark.
+fn studio_desk(tmux: &Path, session: &str) -> Result<Option<u32>> {
+    let shown = output(
+        tmux,
+        &[
+            "display-message".into(),
+            "-p".into(),
+            "-t".into(),
+            format!("={session}:"),
+            format!("#{{{DESK_OPTION}}}"),
+        ],
+    )?;
+    let text = std::str::from_utf8(&shown.stdout)?.trim();
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        parse_pid(text).map(Some)
+    }
+}
+
+pub(super) fn down(tmux: &Path, session: &str) -> Result<()> {
     if !session_exists(tmux, session)? {
         return Err(eyre!("tmux studio session {session:?} does not exist"));
     }
-    cleanup(tmux, session, desk)
+    let desk = studio_desk(tmux, session)?.ok_or_else(|| {
+        eyre!(
+            "tmux session {session:?} was not started by kazoo studio up, so it was left running"
+        )
+    })?;
+    stop(tmux, session, Some(desk))
 }
 
-fn cleanup(tmux: &Path, session: &str, desk: &str) -> Result<()> {
-    let desk_command = format!("exec {desk}");
-    let panes = pane_commands(tmux, session)?;
-    let desk_pids: Vec<_> = panes
-        .iter()
-        .filter(|(_, command, dead)| *command == desk_command && !dead)
-        .map(|(pid, _, _)| *pid)
-        .collect();
-    for pid in &desk_pids {
-        let output = Command::new("/bin/kill")
-            .args(["-TERM", &pid.to_string()])
-            .output()
-            .wrap_err_with(|| format!("sending SIGTERM to studio desk PID {pid}"))?;
-        if !output.status.success() {
-            return Err(eyre!(
-                "SIGTERM to desk PID {pid} exited {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+/// SIGTERM the desk, wait for it, then kill whatever remains of the session.
+fn stop(tmux: &Path, session: &str, desk: Option<u32>) -> Result<()> {
+    if let Some(pid) = desk {
+        if desk_alive(tmux, session, pid)? {
+            let output = Command::new("/bin/kill")
+                .args(["-TERM", &pid.to_string()])
+                .output()
+                .wrap_err_with(|| format!("sending SIGTERM to studio desk PID {pid}"))?;
+            if !output.status.success() {
+                return Err(eyre!(
+                    "SIGTERM to desk PID {pid} exited {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
         }
-    }
-    let deadline = Instant::now() + DESK_WAIT;
-    for pid in &desk_pids {
-        while pane_commands(tmux, session)?
-            .iter()
-            .any(|(pane_pid, _, dead)| *pane_pid == *pid && !dead)
-        {
+        let deadline = Instant::now() + DESK_WAIT;
+        while desk_alive(tmux, session, pid)? {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(eyre!(
@@ -255,8 +315,11 @@ fn session_exists(tmux: &Path, session: &str) -> Result<bool> {
         .any(|name| name == session))
 }
 
+/// Whether tmux failed because no server is there: none running, or the
+/// server exiting as its last session closed while this client connected.
 fn absent_server(stderr: &str) -> bool {
     stderr.contains("no server running")
+        || stderr.contains("server exited unexpectedly")
         || stderr.contains("error connecting") && stderr.contains("No such file or directory")
 }
 
@@ -404,7 +467,7 @@ mod tests {
         );
         let (plan, _) = start_desk(&harness, &desk);
         harness.wait_for_file("ready");
-        down(&harness.tmux, &plan.session, &plan.children[0]).unwrap();
+        down(&harness.tmux, &plan.session).unwrap();
         assert_eq!(harness.wait_for_file("term"), "term\n");
         assert!(!harness.session_exists(&plan.session));
     }
@@ -426,7 +489,7 @@ mod tests {
         let desk = harness.script("desk", "exit 0\n");
         let plan =
             commands("demo", &StudioFile::default(), &desk, &harness.directory).unwrap();
-        let error = down(&harness.tmux, &plan.session, &plan.children[0]).unwrap_err();
+        let error = down(&harness.tmux, &plan.session).unwrap_err();
         assert!(error.to_string().contains("not started by kazoo studio"), "{error}");
         assert!(harness.session_exists("kazoo-demo"));
     }
@@ -445,7 +508,7 @@ mod tests {
         );
         let (plan, _) = start_desk(&harness, &desk);
         harness.wait_for_file("ready");
-        let error = down(&harness.tmux, &plan.session, &plan.children[0]).unwrap_err();
+        let error = down(&harness.tmux, &plan.session).unwrap_err();
         assert!(error.to_string().contains("SIGTERM"), "{error}");
         assert!(!harness.session_exists(&plan.session));
     }

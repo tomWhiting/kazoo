@@ -118,6 +118,10 @@ impl StudioFile {
     }
 }
 
+/// The session option holding the desk's PID. `up` sets it as it creates
+/// the session; `down` stops only a session that carries it.
+pub(crate) const DESK_OPTION: &str = "@kazoo_studio_desk";
+
 /// A tmux invocation, kept as data so launch order is testable without running tmux.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TmuxCommand {
@@ -190,6 +194,14 @@ pub fn commands(
             "-F".into(),
             "#{pane_pid}".into(),
             pane(&children[0]),
+            // Same command list, so the session is never without its mark.
+            ";".into(),
+            "set-option".into(),
+            "-F".into(),
+            "-t".into(),
+            window.clone(),
+            DESK_OPTION.into(),
+            "#{pane_pid}".into(),
         ],
     }];
     for child in children.iter().skip(1) {
@@ -337,13 +349,7 @@ pub fn run(command: &StudioCommand) -> Result<ExitCode> {
         StudioCommand::Down { name } => {
             validate_name(name)?;
             if let Some(tmux) = tmux {
-                let desk = shell_command([
-                    std::env::current_exe()?
-                        .to_str()
-                        .ok_or_else(|| eyre!("kazoo executable path is not valid UTF-8"))?,
-                    "mix",
-                ])?;
-                tmux::down(&tmux, &format!("kazoo-{name}"), &desk)?;
+                tmux::down(&tmux, &format!("kazoo-{name}"))?;
                 Ok(ExitCode::SUCCESS)
             } else {
                 eprintln!("kazoo: tmux is required for studio down");
@@ -415,6 +421,13 @@ mod tests {
                 "-F",
                 "#{pane_pid}",
                 "exec /usr/bin/env 'XDG_RUNTIME_DIR=/run/user/501' '/path with spaces/kazoo' 'mix'",
+                ";",
+                "set-option",
+                "-F",
+                "-t",
+                "=kazoo-demo:",
+                "@kazoo_studio_desk",
+                "#{pane_pid}",
             ],
             vec![
                 "split-window",
