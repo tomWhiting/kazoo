@@ -276,3 +276,85 @@ fn holders_are_checked() -> TestResult {
     );
     Ok(())
 }
+
+
+#[test]
+fn an_existing_directory_is_made_private() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    let reels = dir.path().join("reels");
+    fs::create_dir_all(reels.join("pins"))?;
+    fs::set_permissions(&reels, fs::Permissions::from_mode(0o755))?;
+    fs::set_permissions(reels.join("pins"), fs::Permissions::from_mode(0o755))?;
+    ReelStore::open(&reels)?;
+    assert_eq!(fs::metadata(&reels)?.permissions().mode() & 0o777, 0o700);
+    assert_eq!(
+        fs::metadata(reels.join("pins"))?.permissions().mode() & 0o777,
+        0o700
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reel_cut_short_is_the_wrong_format_not_a_disk_fault() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let store = ReelStore::open(dir.path())?;
+    let id = store.put(48_000, &[0.25, -0.25, 0.5, -0.5])?;
+    let bytes = fs::read(store.path(&id))?;
+    fs::write(store.path(&id), &bytes[..bytes.len() - 4])?;
+    let error = store.get(&id).expect_err("a cut-short reel must be refused");
+    assert!(matches!(error, ReelError::WrongFormat(_)), "{error:?}");
+    Ok(())
+}
+
+#[test]
+fn an_unreadable_pin_list_names_what_it_stops() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let store = ReelStore::open(dir.path())?;
+    fs::write(dir.path().join("pins/session-jam.txt"), "")?;
+    let error = store
+        .pinned_elsewhere("wall")
+        .expect_err("a list without end is unreadable");
+    let text = error.to_string();
+    assert!(!text.contains("swept"), "{text}");
+    assert!(text.contains("session-jam"), "{text}");
+    assert!(text.contains("no reel may be deleted"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_damaged_reel_says_where_it_went() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let store = ReelStore::open(dir.path())?;
+    let id = store.put(48_000, &[0.25, -0.25])?;
+    let text = ReelError::Corrupt(id).to_string();
+    assert!(!text.contains('<'), "{text}");
+    assert!(text.contains(&format!("{id}.corrupt-")), "{text}");
+    assert!(text.contains(&id.short()), "{text}");
+    Ok(())
+}
+
+#[test]
+fn malformed_files_are_errors_never_panics() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let store = ReelStore::open(dir.path())?;
+    let samples: Vec<f32> = (0_u16..16).map(|n| f32::from(n) / 16.0).collect();
+    let id = store.put(48_000, &samples)?;
+    let good = fs::read(store.path(&id))?;
+    for len in 0..good.len() {
+        fs::write(store.path(&id), &good[..len])?;
+        assert!(store.get(&id).is_err(), "cut to {len} bytes");
+    }
+    for at in 0..68 {
+        for value in [0_u8, 1, 0x7f, 0x80, 0xff] {
+            let mut bytes = good.clone();
+            bytes[at] = value;
+            fs::write(store.path(&id), &bytes)?;
+            match store.get(&id) {
+                Ok(reel) => assert_eq!(reel_id(reel.rate, &reel.samples), id),
+                Err(error) => assert!(!error.to_string().is_empty()),
+            }
+        }
+    }
+    Ok(())
+}
