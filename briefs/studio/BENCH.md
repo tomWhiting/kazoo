@@ -303,3 +303,27 @@ under budget (2.1 ms; 8.533 ms). Criterion wall time: judge/hop/48k
 1.3870 ms (1.3697–1.4050), engine/hop/48k 6.2770 ms (6.1513–6.4304).
 Logs: target/kz-logs/review-bench.log, review-cpu-*.log,
 review-bench-load-{before,after}.log, review-cpu-load.log.
+
+## KZ-V02 voice trackers (baseline: the judge alone)
+
+Date: 2026-10-13, 21:28 AEDT. HEAD: `96051a29e59cb8a11dafa405123619258546b849`
+with the KZ-V02 scoreboard implementation uncommitted in `lane/kz-V02`.
+Load average at launch (1/5/15 minutes): 158.70 / 93.78 / 74.39.
+
+Command: `nice -n 10 env CARGO_BUILD_JOBS=4 NEXTEST_STATE_DIR=target/kz-logs/nextest cargo run --release -p kazoo-core --example voice_score` (exit 0).
+Synthetic rate: 48,000 Hz. No recorded WAVs were present. Latency is measured
+in sample offsets; these figures do not measure CPU time or audible output.
+The identical printed table is saved at `target/kz-logs/voice-score.md`.
+
+| tracker | take | onset median ms | onset max ms | onsets missed | step median ms | step max ms | steps | cents median | cents p95 | octave % | gross % | missed % | false % | aligned lag ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pYIN | sine_ladder | 37.33 | 46.00 | 0 | - | - | 0 | 1.66 | 11.73 | 0.00 | 0.00 | 6.69 | 7.78 | - |
+| pYIN | hum_low | 44.67 | 44.67 | 0 | - | - | 0 | 1.67 | 1.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | steps | 44.67 | 44.67 | 0 | 44.33 | 48.67 | 6 | 1.66 | 1.66 | 0.00 | 4.72 | 4.52 | 0.00 | - |
+| pYIN | vibrato | 44.67 | 44.67 | 0 | - | - | 0 | 38.04 | 69.68 | 0.00 | 0.00 | 2.91 | 0.00 | - |
+| pYIN | glide | 44.67 | 44.67 | 0 | - | - | 0 | 1.66 | 65.00 | 0.00 | 55.67 | 1.76 | 2.88 | - |
+| pYIN | octave_bait | 44.67 | 44.67 | 0 | - | - | 0 | 1.96 | 1.96 | 0.00 | 0.00 | 3.92 | 0.00 | - |
+| pYIN | vowel_ah | 44.67 | 44.67 | 0 | - | - | 0 | 1.70 | 1.70 | 0.00 | 0.00 | 2.50 | 0.00 | - |
+| pYIN | noise_bursts | 44.67 | 46.00 | 0 | - | - | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 10.50 | 1.31 | - |
+| pYIN | whistle | 34.00 | 34.00 | 0 | - | - | 0 | 8.27 | 31.60 | 0.00 | 0.00 | 3.77 | 3.96 | - |
+| pYIN | rearticulate | 44.67 | 44.67 | 0 | - | - | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |
