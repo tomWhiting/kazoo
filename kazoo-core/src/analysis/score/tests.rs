@@ -672,3 +672,99 @@ fn cycle_meets_its_targets() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn voice_meets_its_targets() -> crate::Result<()> {
+    use super::{EventKind, FusedUnderTest};
+    for take in signals::suite(48_000) {
+        let result = score(&mut FusedUnderTest::new(48_000)?, &take);
+        match take.name.as_str() {
+            "sine_ladder" | "steps" | "hum_low" | "whistle" => {
+                assert_eq!(result.onsets_missed, 0, "{}: {result:?}", take.name);
+                assert!(
+                    result.cents_median <= 3.0
+                        && result.cents_p95 <= 10.0
+                        && result.octave_pct <= f32::EPSILON
+                        && result.missed_pct <= 2.0,
+                    "{}: {result:?}",
+                    take.name
+                );
+                if take.name == "steps" {
+                    assert_eq!(result.steps_missed, 0);
+                }
+            }
+            "vibrato" => assert!(
+                result.cents_median <= 8.0 && result.cents_p95 <= 20.0,
+                "{result:?}"
+            ),
+            "glide" => assert!(
+                result.cents_median <= 10.0 && result.cents_p95 <= 25.0,
+                "{result:?}"
+            ),
+            "vowel_ah" | "octave_bait" => assert!(result.octave_pct <= 2.0, "{result:?}"),
+            "noise_bursts" => assert!(result.false_pct <= 1.0, "{result:?}"),
+            _ => {}
+        }
+        let periods = match take.name.as_str() {
+            "sine_ladder" | "steps" | "hum_low" | "whistle" => Some(2.0),
+            "vowel_ah" | "octave_bait" => Some(3.0),
+            _ => None,
+        };
+        if let Some(periods) = periods {
+            for event in &result.events {
+                if event.kind == EventKind::Step && take.name != "steps" {
+                    continue;
+                }
+                let limit = periods * 1000.0 / event.truth_hz + 1.0;
+                assert!(
+                    event.latency_ms.is_some_and(|ms| ms <= limit),
+                    "{}: {event:?}, limit {limit}",
+                    take.name
+                );
+            }
+        }
+        if matches!(take.name.as_str(), "octave_bait" | "vowel_ah") {
+            let mut tracker = FusedUnderTest::new(48_000)?;
+            for (i, block) in take.samples.chunks(SCORE_STEP).enumerate() {
+                tracker.push(block);
+                if take.onsets.iter().any(|&at| i * SCORE_STEP >= at + 4800) {
+                    if let (Some(hz), Some(truth)) = (tracker.hz(), take.truth[i]) {
+                        assert!((1200.0 * (hz / truth).log2()).abs() < 600.0);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+#[test]
+fn voice_gate_meets_its_targets() -> crate::Result<()> {
+    use super::{FusedUnderTest, gate::score_gate};
+    for take in signals::suite(48_000) {
+        let result = score_gate(&mut FusedUnderTest::new(48_000)?, &take);
+        if matches!(
+            take.name.as_str(),
+            "sine_ladder" | "steps" | "hum_low" | "whistle"
+        ) {
+            assert!(
+                result.rise_targets_met && result.fall_targets_met,
+                "{}: {result:?}",
+                take.name
+            );
+        }
+        if take.name == "noise_bursts" {
+            assert!(result.noise_high_pct <= 1.0, "{result:?}");
+        }
+        if matches!(
+            take.name.as_str(),
+            "noise_bursts" | "rearticulate" | "sine_ladder"
+        ) {
+            assert_eq!(
+                result.onsets_counted, result.onsets_expected as u64,
+                "{}: {result:?}",
+                take.name
+            );
+        }
+    }
+    Ok(())
+}
