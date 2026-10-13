@@ -4,8 +4,7 @@ use crate::ipc::types::*;
 
 #[test]
 fn register_at_sends_its_streams_and_reads_their_strips() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!(".s{}.sock", std::process::id()));
+    let path = std::env::temp_dir().join(format!("kzc-streams-{}.sock", std::process::id()));
     let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
     let hub = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
