@@ -678,3 +678,124 @@ fn tom_hears_the_machine_is_busy() {
     assert!(result.notes.iter().any(|note| note.contains("the machine is busy: the wall up now renders at 2.0× its quiet cost, and the new modules are costed the same")), "{:?}", result.notes);
     assert_eq!(wall.patch.to_file().modules, incoming.to_file().modules);
 }
+
+/// The bench cost of the modules the engine renders now: those with a slot
+/// that are not culled.
+fn rendered_bench(wall: &Wall) -> f32 {
+    let rate = wall.engine.sample_rate();
+    wall.patch
+        .modules()
+        .iter()
+        .filter(|module| {
+            wall.rack.slot_of(&module.id).is_some() && !wall.unheard.contains(&module.id)
+        })
+        .map(|module| super::super::cost::kind_share(module.kind, rate))
+        .sum()
+}
+
+/// A second `out` beside the seed's: heard (an output hears itself), with
+/// both its inputs free.
+fn second_out(wall: &mut Wall) -> String {
+    changed(request(wall, &add("out")).unwrap().result)
+        .module
+        .unwrap()
+}
+
+/// A cable that wakes culled modules is costed at the factor of the wall
+/// the engine renders now. The modules it would wake render nothing yet:
+/// counted in the bench, they would lower the factor, and the busier the
+/// machine, the more a wake of heavy modules would be under-costed.
+#[test]
+fn a_wake_is_costed_at_the_machine_as_it_renders_now() {
+    let (mut wall, _engine) = wall();
+    wall.set_load_guard(false);
+    let out = second_out(&mut wall);
+    let dormant = chain(&mut wall, heavy(), 2);
+    assert!(dormant.iter().all(|id| wall.unheard.contains(id)));
+    let bench = rendered_bench(&wall);
+    assert!(bench >= super::super::cost::BUSY_MIN_BENCH, "{bench}");
+    guarded(&mut wall, 2.0 * bench);
+    assert!((wall.busy() - 2.0).abs() < 1e-5);
+    let woken = 2.0 * super::super::cost::kind_share(heavy(), wall.engine.sample_rate());
+    let before = wall.patch.to_file();
+    let refused = request(
+        &mut wall,
+        &patch(&last_output(&dormant, heavy()), &format!("{out}.left")),
+    );
+    let Err(err) = refused else {
+        panic!("the wake was put up: costed below twice its bench cost");
+    };
+    assert_eq!(err.code, ErrorCode::Full);
+    assert!(err.message.contains("wake 2 modules"), "{}", err.message);
+    assert!(
+        err.message.contains(
+            "(the machine is busy: the wall up now renders at 2.0× its quiet cost, and the new modules are costed the same)"
+        ),
+        "{}",
+        err.message
+    );
+    assert!(
+        projected_percent(&err.message) >= (2.0f32.mul_add(woken, 2.0 * bench) * 100.0).floor(),
+        "{}",
+        err.message
+    );
+    assert_eq!(wall.patch.to_file(), before);
+}
+
+/// Undoing a module brought back takes it away and plugs back the cable
+/// its own had replaced, waking what that cable leads from. The module
+/// taken away still renders until the change is made: its bench cost
+/// stays in the factor's bench, as its render time stays in the load.
+#[test]
+fn a_wake_that_takes_a_module_away_counts_it_as_rendered_now() {
+    let (mut wall, _engine) = wall();
+    wall.set_load_guard(false);
+    let out = second_out(&mut wall);
+    let taken = chain(&mut wall, heavy(), 1);
+    request(
+        &mut wall,
+        &patch(&last_output(&taken, heavy()), &format!("{out}.left")),
+    )
+    .unwrap();
+    let taken = taken[0].clone();
+    let removed = request(
+        &mut wall,
+        &Request::Remove {
+            module: taken.clone(),
+        },
+    )
+    .unwrap()
+    .change
+    .unwrap()
+    .seq;
+    let dormant = chain(&mut wall, heavy(), 2);
+    request(
+        &mut wall,
+        &patch(&last_output(&dormant, heavy()), &format!("{out}.left")),
+    )
+    .unwrap();
+    // The heavy module comes back with its cable, which replaces the
+    // dormant chain's.
+    let restored = request(&mut wall, &Request::Undo { change: removed })
+        .unwrap()
+        .change
+        .unwrap()
+        .seq;
+    assert!(dormant.iter().all(|id| wall.unheard.contains(id)));
+    assert!(!wall.unheard.contains(&taken));
+    let bench = rendered_bench(&wall);
+    guarded(&mut wall, 2.0 * bench);
+    assert!(2.0 * bench < LOAD_GUARD, "{bench}");
+    assert!((wall.busy() - 2.0).abs() < 1e-5);
+    let before = wall.patch.to_file();
+    let err = request(&mut wall, &Request::Undo { change: restored }).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Full);
+    assert!(err.message.contains("wake 2 modules"), "{}", err.message);
+    assert!(
+        err.message.contains("renders at 2.0× its quiet cost"),
+        "{}",
+        err.message
+    );
+    assert_eq!(wall.patch.to_file(), before);
+    assert!(wall.patch.module(&taken).is_some());
+}
