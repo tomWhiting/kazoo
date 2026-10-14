@@ -49,6 +49,15 @@ enum Asked {
     },
 }
 
+/// The parts of an undo of a go that the tree answers with the moment
+/// the go left.
+struct TreeBack<'a> {
+    go: u64,
+    backup: &'a String,
+    fingerprint: &'a String,
+    back_to: &'a TreePlace,
+}
+
 impl Asked {
     const fn label(&self) -> &'static str {
         match self {
@@ -462,31 +471,13 @@ impl Wall {
                 },
                 Answered::Resolved { to, here, wall },
             ) if backup.starts_with("tree:") => {
-                let (incoming, notes) =
-                    Patch::load(&wall).map_err(|err| error(ErrorCode::BrokenSave, err))?;
-                if to.commit != back_to.commit
-                    || fingerprint.is_empty()
-                    || incoming.fingerprint() != *fingerprint
-                {
-                    return Err(error(
-                        ErrorCode::BrokenSave,
-                        "the go's tree backup no longer holds the same wall; nothing was changed",
-                    ));
-                }
-                self.replace(
-                    seat,
-                    incoming,
-                    &Source::Back {
-                        go: *go,
-                        kept: Kept {
-                            name: backup.clone(),
-                            hash: fingerprint.clone(),
-                        },
-                        to: back_to.clone(),
-                        from: here,
-                    },
-                    notes,
-                )
+                let back = TreeBack {
+                    go: *go,
+                    backup,
+                    fingerprint,
+                    back_to,
+                };
+                self.back_from_tree(seat, &back, &to, here, &wall, now)
             }
             (
                 Asked::Back {
@@ -521,6 +512,47 @@ impl Wall {
                 "the tree answered a different request; nothing was changed",
             )),
         }
+    }
+
+    /// Undoes a go whose wall as it was is a moment in the tree: the moment
+    /// the tree resolved must be the one the go left and hold the wall the
+    /// go recorded, or nothing is changed.
+    fn back_from_tree(
+        &mut self,
+        seat: (&str, bool),
+        back: &TreeBack<'_>,
+        to: &TreePlace,
+        here: TreePlace,
+        wall: &crate::patch::PatchFile,
+        now: Instant,
+    ) -> Result<TreeOutcome, WallError> {
+        let (incoming, notes) =
+            Patch::load(wall).map_err(|err| error(ErrorCode::BrokenSave, err))?;
+        if to.commit != back.back_to.commit
+            || back.fingerprint.is_empty()
+            || incoming.fingerprint() != *back.fingerprint
+        {
+            return Err(error(
+                ErrorCode::BrokenSave,
+                "the go's tree backup no longer holds the same wall; nothing was changed",
+            ));
+        }
+        self.replace(
+            seat,
+            incoming,
+            &Source::Back {
+                go: back.go,
+                kept: Kept {
+                    name: back.backup.clone(),
+                    hash: back.fingerprint.clone(),
+                },
+                to: back.back_to.clone(),
+                from: here,
+            },
+            notes,
+            now,
+        )
+        .map(TreeOutcome::Loaded)
     }
 
     /// Complete tree requests without waiting; expired requests are answered once.
