@@ -7,6 +7,14 @@ use std::time::{Duration, Instant};
 
 const ANSWER_WITHIN: Duration = Duration::from_secs(1);
 
+/// Where an off-desk go's tempo is delivered when its answer settles.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum TempoDelivery {
+    Send,
+    /// `load_engine` sends the patch's tempo to the replacement engine.
+    Reload,
+}
+
 /// A replacement's typed answer, retained until its tempo is settled.
 #[derive(Debug)]
 pub(super) struct Loaded {
@@ -97,7 +105,7 @@ impl Wall {
     ) -> Vec<(u64, Result<Outcome, WallError>)> {
         let mut replies = self.settled_desk_go_answers();
         for (ticket, mut waiting) in std::mem::take(&mut self.desk_go_waiting) {
-            if self.on_desk() && self.engine.shared().unhushed() < waiting.serial {
+            if self.engine.shared().unhushed() < waiting.serial {
                 self.desk_go_waiting.insert(ticket, waiting);
                 continue;
             }
@@ -117,7 +125,7 @@ impl Wall {
                 replies.push((ticket, self.answer_load(waiting.loaded)));
                 continue;
             }
-            let result = self.finish_desk_go(waiting, bpm, answer, now);
+            let result = self.finish_desk_go(waiting, bpm, answer, now, TempoDelivery::Send);
             replies.push((ticket, result));
         }
         replies
@@ -129,11 +137,11 @@ impl Wall {
     }
 
     /// Settle every old-engine ask before rebuilding or closing the wall.
-    pub(super) fn settle_desk_go(&mut self, now: Instant) {
+    pub(super) fn settle_desk_go(&mut self, now: Instant, tempo: TempoDelivery) {
         let bpm = clamp_bpm(self.engine.shared().bpm());
         for (ticket, mut waiting) in std::mem::take(&mut self.desk_go_waiting) {
             self.announce_desk_go(&mut waiting.loaded.outcome);
-            let result = self.finish_desk_go(waiting, bpm, None, now);
+            let result = self.finish_desk_go(waiting, bpm, None, now, tempo);
             if let Err(error) = &result {
                 eprintln!(
                     "kazoo-wall: the go happened but its answer failed: {}",
@@ -161,6 +169,7 @@ impl Wall {
         bpm: f64,
         answer: Option<Result<(), RequestError>>,
         now: Instant,
+        tempo: TempoDelivery,
     ) -> Result<Outcome, WallError> {
         if self.on_desk() {
             waiting.loaded.result.notes.push(format!(
@@ -172,7 +181,9 @@ impl Wall {
                 self.desk_kept_tempo(bpm, now);
             }
         } else {
-            self.engine.send(Command::Tempo(self.patch.tempo));
+            if matches!(tempo, TempoDelivery::Send) {
+                self.engine.send(Command::Tempo(self.patch.tempo));
+            }
             waiting.loaded.result.notes.push(format!(
                 "the desk is not linked; the wall plays {}",
                 format::bpm(self.patch.tempo)
@@ -236,7 +247,13 @@ mod tests {
             started: None,
         };
         let result = wall
-            .finish_desk_go(waiting, 120.0, Some(Err(reason)), Instant::now())
+            .finish_desk_go(
+                waiting,
+                120.0,
+                Some(Err(reason)),
+                Instant::now(),
+                TempoDelivery::Send,
+            )
             .unwrap();
         let loaded: LoadResult = serde_json::from_value(result.result).unwrap();
         assert!(
@@ -291,6 +308,7 @@ mod tests {
             120.0,
             Some(Err(RequestError::NotConnected)),
             Instant::now(),
+            TempoDelivery::Send,
         );
         assert!(result.is_ok(), "{result:?}");
         let loaded: LoadResult = serde_json::from_value(result.unwrap().result).unwrap();

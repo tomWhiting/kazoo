@@ -1426,7 +1426,7 @@ impl Wall {
     /// before the swap counter resets, with replies at [`Self::tree_answers`].
     pub fn attach(&mut self, mut engine: EngineControl, desk: Option<HubLink>, now: Instant) {
         self.desk = desk;
-        self.settle_desk_go(now);
+        self.settle_desk_go(now, go_tempo::TempoDelivery::Reload);
         self.note_loop_restart();
         let before = self.recorder.sample_rate();
         let stopped = self.recorder.attach(&mut engine);
@@ -4449,7 +4449,7 @@ impl Wall {
     /// and `patch.json` stays where the log is, so the next start numbers
     /// on from what was written and nothing told is ever numbered again.
     pub fn close(&mut self, now: Instant) -> Vec<Event> {
-        self.settle_desk_go(now);
+        self.settle_desk_go(now, go_tempo::TempoDelivery::Send);
         self.finish_desk_tempo();
         self.save(now);
         self.finish_tree();

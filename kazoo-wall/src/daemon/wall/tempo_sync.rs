@@ -97,9 +97,12 @@ impl Wall {
     }
 
     pub(super) fn finish_desk_tempo(&mut self) {
-        if let Some(gesture) = self.desk_tempo.gesture.take()
-            && (gesture.to - gesture.from).abs() > TEMPO_THRESHOLD
-        {
+        let Some(gesture) = self.desk_tempo.gesture.take() else {
+            return;
+        };
+        if (gesture.to - gesture.from).abs() <= TEMPO_THRESHOLD {
+            self.desk_tempo.last = Some(gesture.from);
+        } else {
             let paid = self.commit_own(
                 "desk",
                 What::Tempo {

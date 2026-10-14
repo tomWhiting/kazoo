@@ -689,7 +689,7 @@ fn a_desk_gesture_with_a_net_move_of_point_zero_four_logs_nothing() {
     assert_eq!(
         wall.log.back().unwrap().what,
         What::Tempo {
-            from: 120.04,
+            from: 120.0,
             to: 125.0,
             desk: true
         }
@@ -856,4 +856,95 @@ fn a_disconnected_desk_during_a_go_plays_the_moments_tempo() {
                 ..
             }
         )));
+}
+
+#[test]
+fn a_dropped_desk_gesture_log_replays_through_rings_without_a_mismatch() {
+    for returned in [120.0, 120.04] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut wall, _engine) = wall();
+        wall.patch.tempo = 120.0;
+        let initial = wall.patch.to_file();
+        let now = Instant::now();
+        wall.sync_desk_tempo_at(121.0, now);
+        wall.sync_desk_tempo_at(returned, now + Duration::from_secs(1));
+        wall.settle_desk_tempo(now + Duration::from_secs(3));
+        wall.sync_desk_tempo_at(returned, now + Duration::from_secs(4));
+        assert!(wall.log.is_empty());
+        wall.sync_desk_tempo_at(125.0, now + Duration::from_secs(5));
+        wall.finish_desk_tempo();
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(state.join("saves")).unwrap();
+        std::fs::write(
+            state.join("patch.before-1.json"),
+            serde_json::to_vec(&initial).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            state.join("patch.json"),
+            serde_json::to_vec(&wall.patch.to_file()).unwrap(),
+        )
+        .unwrap();
+        let log = wall
+            .log
+            .iter()
+            .map(|change| serde_json::to_string(change).unwrap() + "\n")
+            .collect::<String>();
+        std::fs::write(state.join("log.jsonl"), log).unwrap();
+        let result =
+            crate::tree::rings::grow(&state, &dir.path().join("replayed-tree"), false).unwrap();
+        assert_eq!(result.gaps, 0, "{}", result.report);
+        assert_eq!(result.settles, 0, "{}", result.report);
+        assert_eq!(result.changes, 1, "{}", result.report);
+    }
+}
+
+#[test]
+fn a_desk_dropped_before_a_go_lands_waits_to_send_the_moments_tempo() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut wall, mut engine, stream, moment) = go_wall(dir.path());
+    let now = Instant::now();
+    let ticket = pending_go(&mut wall, moment, now);
+    drop(stream);
+    while wall.on_desk() {
+        std::thread::yield_now();
+    }
+    let answers = wall.tree_answers(now);
+    assert!(
+        answers.is_empty(),
+        "the go answered before landing: {answers:?}"
+    );
+    engine.render(&mut [0.0; SUB_BLOCK * 2], 2);
+    assert_eq!(wall.engine.shared().unhushed(), 0);
+    assert_eq!(wall.engine.shared().bpm().to_bits(), 120.0_f64.to_bits());
+    land(&wall, &mut engine);
+    assert_eq!(wall.engine.shared().bpm().to_bits(), 120.0_f64.to_bits());
+    let answers = wall.tree_answers(now);
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0].0, ticket);
+    assert!(answers[0].1.is_ok());
+    engine.render(&mut [0.0; SUB_BLOCK * 2], 2);
+    assert_eq!(wall.engine.shared().bpm().to_bits(), 96.0_f64.to_bits());
+}
+
+#[test]
+fn attaching_a_new_engine_sets_its_tempo_without_sending_to_the_old_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut wall, mut old_engine, stream, moment) = go_wall(dir.path());
+    let now = Instant::now();
+    let ticket = pending_go(&mut wall, moment, now);
+    let old_shared = std::sync::Arc::clone(wall.engine.shared());
+    let (mut new_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+    wall.attach(control, None, now);
+    let answers = wall.tree_answers(now);
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0].0, ticket);
+    assert!(answers[0].1.is_ok());
+    new_engine.render(&mut [0.0; SUB_BLOCK * 2], 2);
+    assert_eq!(wall.engine.shared().bpm().to_bits(), 96.0_f64.to_bits());
+    drop(stream);
+    while old_shared.unhushed() < 1 {
+        old_engine.render(&mut [0.0; SUB_BLOCK * 2], 2);
+    }
+    assert_eq!(old_shared.bpm().to_bits(), 120.0_f64.to_bits());
 }
