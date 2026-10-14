@@ -3,7 +3,11 @@ use std::collections::VecDeque;
 
 #[derive(Debug, Default)]
 pub(super) struct DeskTempo {
+    /// The desk's tempo as the log stands: what the next desk change is from.
     last: Option<f64>,
+    /// The desk's tempo as last heard, logged or not. A tick that hears it
+    /// again has heard no move: the desk may not have applied an ask yet.
+    heard: Option<f64>,
     asked: VecDeque<f64>,
 }
 
@@ -18,15 +22,22 @@ impl DeskTempo {
 
     pub(super) fn disconnected(&mut self) {
         self.last = None;
+        self.heard = None;
         self.asked.clear();
     }
 }
 
 impl Wall {
     pub(super) fn sync_desk_tempo(&mut self, bpm: f64) {
-        if !bpm.is_finite() {
+        if !bpm.is_finite()
+            || self
+                .desk_tempo
+                .heard
+                .is_some_and(|heard| heard.to_bits() == bpm.to_bits())
+        {
             return;
         }
+        self.desk_tempo.heard = Some(bpm);
         let from = self.desk_tempo.last.unwrap_or(self.patch.tempo);
         let requested = self
             .desk_tempo

@@ -3335,6 +3335,12 @@ impl Wall {
         } else {
             self.patch.tempo
         };
+        if desk {
+            // A desk move not yet heard by a tick is logged before the ask,
+            // so the tick after the ask hears nothing new until the desk
+            // answers it.
+            self.sync_desk_tempo(from);
+        }
         // The log first: the desk is asked only once the change is in it,
         // so a tempo the log cannot take never moves the desk (whose tempo
         // the wall then follows and saves).

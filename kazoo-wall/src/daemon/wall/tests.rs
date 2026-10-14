@@ -3696,13 +3696,11 @@ fn a_tempo_the_log_cannot_take_never_reaches_the_desk() {
     let store = Store::peek(dir.path()).unwrap();
     let (link, (_audio, mut stream)) = a_desk(dir.path(), 120.0);
     let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
-    let mut wall = Wall::new(
-        seed().unwrap(),
-        control,
-        Some(link),
-        Vec::new(),
-        Some(store),
-    );
+    // The wall and the desk agree at the start, so the one failure falls on
+    // the ask and not on logging the desk's own tempo first.
+    let mut patch = seed().unwrap();
+    patch.tempo = 120.0;
+    let mut wall = Wall::new(patch, control, Some(link), Vec::new(), Some(store));
     let tempo = wall.patch().tempo;
     fail_once(&mut wall, FailAt::AppendLog);
     let refused = ask(&mut wall, &Request::Tempo { bpm: 140.0 }).unwrap_err();

@@ -282,3 +282,39 @@ fn a_subthreshold_first_sync_keeps_the_next_log_continuous() {
         }
     );
 }
+
+#[test]
+fn a_tick_before_the_desk_hears_an_ask_logs_nothing() {
+    // The desk takes a few blocks to apply an ask and report it back; a
+    // tick in between still hears the old tempo, which is not a desk move.
+    let dir = tempfile::tempdir().unwrap();
+    let (link, (audio, mut stream)) = a_desk(dir.path(), 120.0);
+    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), Some(audio));
+    let mut patch = seed().unwrap();
+    patch.tempo = 120.0;
+    let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
+    wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
+        .unwrap();
+    for _ in 0..3 {
+        let events = wall.tick(Instant::now());
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::Change { .. })),
+            "{:?}",
+            wall.log
+        );
+    }
+    sync(&mut stream, 100.0);
+    hear(&wall, &mut engine, 100.0);
+    let events = wall.tick(Instant::now());
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::Change { .. })),
+        "{:?}",
+        wall.log
+    );
+    assert_eq!(wall.log.len(), 1, "{:?}", wall.log);
+    assert_eq!(wall.patch.tempo.to_bits(), 100.0_f64.to_bits());
+}
