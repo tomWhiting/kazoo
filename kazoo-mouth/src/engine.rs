@@ -16,7 +16,9 @@ use ringbuf::{HeapCons, HeapProd};
 use crate::synth::{SynthSettings, VoiceSynth};
 
 pub(crate) mod fx;
+pub(crate) mod looper;
 use fx::{FxChain, Slot};
+use looper::{LoopFeed, LoopLength, Looper};
 
 pub trait DeskOut {
     fn send_voice(&mut self, frame: &VoiceFrame) -> bool;
@@ -73,6 +75,12 @@ pub(crate) enum Command {
     },
     FxOrder([Slot; 5]),
     OwnTempo(f64),
+    LoopRecord,
+    LoopUndo,
+    LoopClear,
+    LoopLength(LoopLength),
+    LoopPlay(bool),
+    LoopVolume(f32),
 }
 
 #[derive(Debug, Default)]
@@ -124,6 +132,11 @@ pub struct MouthEngine<D> {
     own_bpm: f64,
     beat: Option<f64>,
     beats: Box<[f64]>,
+    looper: Looper,
+    loop_feed: Option<LoopFeed>,
+    loop_output: Box<[f32]>,
+    loop_commands: [Option<Command>; 64],
+    loop_command_count: usize,
     rate: u32,
     silent: bool,
     samples: u64,
@@ -178,6 +191,8 @@ impl<D: DeskOut> MouthEngine<D> {
             .stats
             .own_bpm
             .store(own_bpm.to_bits(), Ordering::Relaxed);
+        let (looper, loop_feed) =
+            Looper::new(setup.rate, settings.loop_length, settings.loop_volume);
         Ok(Self {
             mic_in: setup.mic,
             commands: setup.commands,
@@ -199,6 +214,11 @@ impl<D: DeskOut> MouthEngine<D> {
             own_bpm,
             beat: None,
             beats: vec![f64::NAN; block].into_boxed_slice(),
+            looper,
+            loop_feed: Some(loop_feed),
+            loop_output: vec![0.0; block].into_boxed_slice(),
+            loop_commands: [None; 64],
+            loop_command_count: 0,
             rate: setup.rate,
             silent: settings.silent,
             samples: 0,
@@ -209,6 +229,10 @@ impl<D: DeskOut> MouthEngine<D> {
     #[must_use]
     pub const fn desk(&self) -> &D {
         &self.desk
+    }
+
+    pub(crate) const fn take_loop_feed(&mut self) -> Option<LoopFeed> {
+        self.loop_feed.take()
     }
 
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
@@ -243,6 +267,15 @@ impl<D: DeskOut> MouthEngine<D> {
                     self.silent = true;
                     self.stats.shutdown.store(true, Ordering::Release);
                 }
+                command @ (Command::LoopRecord
+                | Command::LoopUndo
+                | Command::LoopClear
+                | Command::LoopLength(_)
+                | Command::LoopPlay(_)
+                | Command::LoopVolume(_)) => {
+                    self.loop_commands[self.loop_command_count] = Some(command);
+                    self.loop_command_count += 1;
+                }
             }
         }
         let follower = &mut self.follower;
@@ -261,7 +294,10 @@ impl<D: DeskOut> MouthEngine<D> {
         if self.desk.shutdown_requested() {
             self.stats.shutdown.store(true, Ordering::Release);
         }
-        if channels == 0 {
+        if channels == 0 || out.is_empty() {
+            let bpm = self.desk_bpm.unwrap_or(self.own_bpm);
+            self.apply_loop_commands(bpm);
+            self.looper.process(&[], &[], bpm, &mut []);
             return;
         }
         // Discard once per host call, so chunking a long callback keeps its audio.
@@ -276,14 +312,26 @@ impl<D: DeskOut> MouthEngine<D> {
         for chunk in out.chunks_mut(self.mic.len() * channels) {
             self.render_chunk(chunk, channels);
         }
+        self.looper.publish(self.desk_bpm.unwrap_or(self.own_bpm));
+    }
+
+    fn apply_loop_commands(&mut self, bpm: f64) {
+        for command in self.loop_commands[..self.loop_command_count].iter_mut() {
+            if let Some(command) = command.take() {
+                self.looper.command(command, bpm);
+            }
+        }
+        self.loop_command_count = 0;
     }
 
     fn render_chunk(&mut self, out: &mut [f32], channels: usize) {
         let count = out.len() / channels;
         if count == 0 {
+            self.apply_loop_commands(self.desk_bpm.unwrap_or(self.own_bpm));
             return;
         }
         let context = self.transport(count);
+        self.apply_loop_commands(context.bpm);
         let filled = self.mic_in.pop_slice(&mut self.mic[..count]);
         self.mic[filled..count].fill(0.0);
         for sample in &mut self.mic[..filled] {
@@ -318,6 +366,18 @@ impl<D: DeskOut> MouthEngine<D> {
         self.synth
             .render(&self.mic[start..count], &mut self.mono[start..count]);
         self.samples = self.samples.saturating_add(count as u64);
+        self.looper.process_audio(
+            &self.mono[..count],
+            &self.beats[..count],
+            context.bpm,
+            &mut self.loop_output[..count],
+        );
+        for (live, playback) in self.mono[..count]
+            .iter_mut()
+            .zip(&self.loop_output[..count])
+        {
+            *live = sanitize_sample(*live + *playback);
+        }
         self.fx.process(
             &context,
             &self.mono[..count],

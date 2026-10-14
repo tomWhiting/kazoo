@@ -9,8 +9,12 @@ use kazoo_core::synthesis::OscillatorShape;
 use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
 
 use crate::engine::fx::{FxSettings, Slot, mouth_default};
+use crate::engine::looper::{
+    BAR_CHOICES, LoopFeed, LoopGauges, LoopLength, Note, State, VOLUME_DEFAULT,
+};
 use crate::engine::{Command, Stats};
 use kazoo_fx::Curve;
+use ringbuf::traits::Producer;
 
 pub(crate) mod settings;
 use crate::synth::SynthSettings;
@@ -120,6 +124,8 @@ pub(crate) struct Settings {
     pub(crate) last_blend: f32,
     pub(crate) fx: FxSettings,
     pub(crate) own_bpm: f64,
+    pub(crate) loop_length: LoopLength,
+    pub(crate) loop_volume: f32,
 }
 
 impl Default for Settings {
@@ -131,6 +137,8 @@ impl Default for Settings {
             last_blend: 1.0,
             fx: FxSettings::default(),
             own_bpm: 120.0,
+            loop_length: LoopLength::Free,
+            loop_volume: VOLUME_DEFAULT,
         }
     }
 }
@@ -283,6 +291,10 @@ pub(crate) struct App {
     notes: Vec<String>,
     notes_at: Instant,
     published_own: u64,
+    pub(crate) loop_feed: Option<LoopFeed>,
+    loop_note_seq: u32,
+    save_pending: bool,
+    pub(crate) loop_sample_rate: u32,
 }
 
 impl App {
@@ -332,11 +344,173 @@ impl App {
             notes: loaded.notes,
             notes_at: now,
             published_own: loaded.settings.own_bpm.to_bits(),
+            loop_feed: None,
+            loop_note_seq: 0,
+            save_pending: false,
+            loop_sample_rate: 48_000,
         }
     }
 
     pub(crate) fn busy(&self, now: Instant) -> bool {
         self.busy_until.is_some_and(|until| now < until)
+    }
+
+    pub(crate) fn loop_gauges(&self) -> Option<&LoopGauges> {
+        self.loop_feed.as_ref().map(|feed| feed.gauges.as_ref())
+    }
+
+    pub(crate) fn message(&mut self, message: String, now: Instant) {
+        self.message = Some((message, now + Duration::from_secs(3)));
+    }
+
+    pub(crate) const fn save_returned(&mut self) {
+        self.save_pending = false;
+    }
+
+    pub(crate) const fn loop_save_pending(&self) -> bool {
+        self.save_pending
+    }
+
+    pub(crate) fn sync_loop(&mut self, rate: u32, now: Instant) {
+        let Some(gauges) = self.loop_gauges() else {
+            return;
+        };
+        let sequence = gauges.note_seq.load(Ordering::Relaxed);
+        if sequence == self.loop_note_seq {
+            return;
+        }
+        let note = gauges.note.load(Ordering::Relaxed);
+        let capacity = gauges.capacity.load(Ordering::Relaxed);
+        let message = if note == Note::NoTape as u8 {
+            "no tape: the loop could not get its memory".into()
+        } else if note == Note::TooShort as u8 {
+            "too short to loop".into()
+        } else if note == Note::DoesNotFit as u8 {
+            let bars = self.accepted.loop_length.bars();
+            let bpm = self.desk_bpm.unwrap_or(self.accepted.own_bpm);
+            format!(
+                "{bars} bars at {bpm:.1} BPM need {:.2} s; the loop holds {:.2} s",
+                f64::from(bars) * 240.0 / bpm,
+                capacity as f64 / f64::from(rate)
+            )
+        } else if note == Note::ClearFirst as u8 {
+            "clear the loop first (C) to change its length".into()
+        } else if note == Note::Merging as u8 {
+            "that layer is being merged into the one below and can no longer be undone".into()
+        } else if note == Note::SaveCancelled as u8 {
+            "save cancelled: the loop changed".into()
+        } else {
+            return;
+        };
+        self.loop_note_seq = sequence;
+        self.message(message, now);
+    }
+
+    fn loop_key(
+        &mut self,
+        key: char,
+        sender: &impl CommandSender,
+        now: Instant,
+    ) -> Result<Action, TrySendError<Command>> {
+        let state = self.loop_gauges().map_or(State::Blank as u8, |gauges| {
+            gauges.state.load(Ordering::Relaxed)
+        });
+        if state == State::NoTape as u8 {
+            self.message("no tape: the loop could not get its memory".into(), now);
+            return Ok(Action::Continue);
+        }
+        let mut proposed = self.accepted;
+        let command = match key {
+            'r' => Command::LoopRecord,
+            'u' => Command::LoopUndo,
+            'C' => Command::LoopClear,
+            'o' => Command::LoopPlay(state == State::Stopped as u8),
+            '-' | '=' | '_' | '+' => {
+                let step = if matches!(key, '_' | '+') { 0.25 } else { 0.05 };
+                let direction = if matches!(key, '-' | '_') { -1.0 } else { 1.0 };
+                proposed.loop_volume = (proposed.loop_volume + direction * step).clamp(0.0, 1.0);
+                Command::LoopVolume(proposed.loop_volume)
+            }
+            'l' => {
+                if state != State::Blank as u8 {
+                    self.message("clear the loop first (C) to change its length".into(), now);
+                    return Ok(Action::Continue);
+                }
+                proposed.loop_length = self.next_loop_length(now);
+                Command::LoopLength(proposed.loop_length)
+            }
+            'w' => {
+                let n = self
+                    .loop_gauges()
+                    .map_or(0, |gauges| gauges.n.load(Ordering::Relaxed));
+                if n == 0 {
+                    self.message("nothing to save".into(), now);
+                } else if self.save_pending
+                    || self
+                        .loop_gauges()
+                        .is_some_and(|gauges| gauges.saving.load(Ordering::Relaxed))
+                {
+                    self.message("already saving".into(), now);
+                } else if let Some(feed) = &mut self.loop_feed {
+                    match feed.bounce_in.try_push(vec![0.0; n].into_boxed_slice()) {
+                        Ok(()) => self.save_pending = true,
+                        Err(samples) => {
+                            drop(samples);
+                            self.message("busy: save not sent".into(), now);
+                        }
+                    }
+                }
+                return Ok(Action::Continue);
+            }
+            _ => return Ok(Action::Continue),
+        };
+        self.send_change(&proposed, command, sender, now)
+    }
+
+    fn next_loop_length(&mut self, now: Instant) -> LoopLength {
+        let mut length = self.accepted.loop_length;
+        let choices = [
+            0,
+            BAR_CHOICES[0],
+            BAR_CHOICES[1],
+            BAR_CHOICES[2],
+            BAR_CHOICES[3],
+            BAR_CHOICES[4],
+        ];
+        let current = choices
+            .iter()
+            .position(|bars| *bars == length.bars())
+            .unwrap_or(0);
+        let capacity = self.loop_gauges().map_or(32.0, |gauges| {
+            gauges.capacity.load(Ordering::Relaxed) as f64 / f64::from(self.loop_sample_rate)
+        });
+        let bpm = self.desk_bpm.unwrap_or(self.accepted.own_bpm);
+        let mut skipped = Vec::new();
+        for offset in 1..=choices.len() {
+            let bars = choices[(current + offset) % choices.len()];
+            if bars == 0 || f64::from(bars) * 240.0 / bpm <= capacity {
+                length = if bars == 0 {
+                    LoopLength::Free
+                } else {
+                    LoopLength::Bars(bars)
+                };
+                break;
+            }
+            skipped.push(format!(
+                "{bars} bars need {:.2} s",
+                f64::from(bars) * 240.0 / bpm
+            ));
+        }
+        if !skipped.is_empty() {
+            self.message(
+                format!(
+                    "skipped {} at {bpm:.1} BPM; the loop holds {capacity:.2} s",
+                    skipped.join(", ")
+                ),
+                now,
+            );
+        }
+        length
     }
 
     pub(crate) fn notice(&self, now: Instant) -> Option<&str> {
@@ -442,6 +616,11 @@ impl App {
             self.help = !self.help;
             self.help_scroll.set(0);
             return Ok(Action::Continue);
+        }
+        if let KeyCode::Char(key @ ('r' | 'u' | 'C' | 'l' | 'o' | '-' | '=' | '_' | '+' | 'w')) =
+            key.code
+        {
+            return self.loop_key(key, sender, now);
         }
         if self.help {
             match key.code {

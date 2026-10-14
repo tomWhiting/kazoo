@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) use super::Settings;
 use crate::engine::fx::{Slot, mouth_default, permutation};
+use crate::engine::looper::{BAR_CHOICES, LoopLength};
 
 #[derive(Debug)]
 pub(crate) struct Loaded {
@@ -37,6 +38,22 @@ struct Document {
     #[serde(deserialize_with = "number")]
     tempo: Option<f64>,
     fx: Effects,
+    #[serde(default, rename = "loop")]
+    looper: Option<LoopSettings>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum Length {
+    Free(String),
+    Bars(u8),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LoopSettings {
+    length: Length,
+    #[serde(deserialize_with = "number")]
+    volume: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -138,6 +155,13 @@ impl From<&Settings> for Document {
                 volume: Some(settings.synth.volume),
             },
             tempo: Some(settings.own_bpm),
+            looper: Some(LoopSettings {
+                length: match settings.loop_length {
+                    LoopLength::Free => Length::Free("free".into()),
+                    LoopLength::Bars(bars) => Length::Bars(bars),
+                },
+                volume: Some(settings.loop_volume),
+            }),
             fx: Effects {
                 order: settings.fx.order.map(|slot| slot.name().into()),
                 slots,
@@ -325,6 +349,25 @@ impl Document {
             loaded.notes.push("tempo is not finite: using 120".into());
         }
         self.fx.apply(&mut loaded.settings, &mut loaded.notes);
+        if let Some(looper) = self.looper {
+            match looper.length {
+                Length::Free(name) if name == "free" => {
+                    loaded.settings.loop_length = LoopLength::Free
+                }
+                Length::Bars(bars) if BAR_CHOICES.contains(&bars) => {
+                    loaded.settings.loop_length = LoopLength::Bars(bars)
+                }
+                _ => loaded.notes.push("unknown loop length: using free".into()),
+            }
+            loaded.settings.loop_volume = held(
+                looper.volume,
+                loaded.settings.loop_volume,
+                0.0,
+                1.0,
+                "loop.volume",
+                &mut loaded.notes,
+            );
+        }
     }
 }
 
@@ -544,6 +587,8 @@ mod tests {
         settings.synth.air = 0.4;
         settings.synth.volume = 0.3;
         settings.own_bpm = 147.3;
+        settings.loop_length = crate::engine::looper::LoopLength::Bars(4);
+        settings.loop_volume = 0.35;
         settings.fx.order.swap(1, 2);
         for slot in Slot::ALL {
             let saved = &mut settings.fx.slots[slot as usize];
@@ -566,6 +611,20 @@ mod tests {
         settings.silent = true;
         save(&path, &settings)?;
         assert!(!load(&path).settings.silent);
+        let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+        assert!(old.as_object_mut().unwrap().remove("loop").is_some());
+        fs::write(&path, serde_json::to_vec(&old)?)?;
+        let migrated = load(&path);
+        assert_eq!(
+            migrated.settings.loop_length,
+            crate::engine::looper::LoopLength::Free
+        );
+        assert!((migrated.settings.loop_volume - 0.8).abs() < f32::EPSILON);
+        assert!(migrated.notes.is_empty());
+        save(&path, &migrated.settings)?;
+        let upgraded: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+        assert_eq!(upgraded["version"], 1);
+        assert_eq!(upgraded["loop"]["length"], "free");
         Ok(())
     }
 
