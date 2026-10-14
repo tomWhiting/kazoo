@@ -835,6 +835,16 @@ impl App {
         };
         let moment = &self.history.moments[m];
         let mut lines = vec![(String::new(), moment.summary.clone())];
+        if let Some(batch) = moment.batch.as_deref() {
+            lines[0].1.clone_from(&batch.note);
+            lines.push((
+                "batch".to_owned(),
+                format!("{}, sent at once", crate::changes(batch.steps.len())),
+            ));
+            for (i, step) in batch.steps.iter().enumerate() {
+                lines.push((format!("{}", i + 1), step.clone()));
+            }
+        }
         lines.push(("who".to_owned(), moment.seat.clone()));
         lines.push(("when".to_owned(), local_time(moment.time)));
         if let Some(beat) = moment.beat {

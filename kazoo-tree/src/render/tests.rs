@@ -1,6 +1,6 @@
 use super::*;
 use crate::growth::Growth;
-use crate::test_support::{grown, mark};
+use crate::test_support::{batch, grown, mark};
 
 fn scene_parts(history: &History) -> (Growth, Vec<Gesture>, Vec<bool>) {
     (
@@ -274,4 +274,91 @@ fn a_tip_grown_in_the_last_hour_wears_a_light_and_its_limb_is_unchanged() {
             assert_eq!((a.dots, a.colour, a.text), (b.dots, b.colour, b.text));
         }
     }
+}
+
+const STEPS: [&str; 3] = [
+    "added lfo3",
+    "patched lfo3.out to vcf1.cutoff",
+    "turned vcf1 res 0.4",
+];
+
+#[test]
+fn a_batch_is_a_knot_with_its_note_and_opens_close_in() {
+    let mut history = grown(60, &[]);
+    batch(&mut history, 20, "the brass breathes", &STEPS);
+    let growth = Growth::grow(&history);
+    let p = growth.at[20].expect("placed");
+    let far = View {
+        centre: p,
+        scale: 0.5,
+    };
+    let text = picture(&history, None, Some(far), 80, 30).text();
+    assert!(text.contains('❖'), "{text}");
+    assert!(
+        !text.contains("the brass breathes"),
+        "far out a knot has no words: {text}"
+    );
+    let near = View {
+        centre: p,
+        scale: 1.0,
+    };
+    let text = picture(&history, None, Some(near), 80, 30).text();
+    assert!(
+        text.contains("❖ the brass breathes") || text.contains("the brass breathes"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("added lfo3"),
+        "near, the batch stays closed: {text}"
+    );
+    let every = View {
+        centre: p,
+        scale: 12.0,
+    };
+    assert_eq!(Level::of(every.scale), Level::Every);
+    let text = picture(&history, None, Some(every), 120, 40).text();
+    for step in STEPS {
+        assert!(text.contains(&format!("· {step}")), "{step}: {text}");
+    }
+    let note = text
+        .lines()
+        .position(|l| l.contains("the brass breathes"))
+        .expect("the note");
+    let first = text
+        .lines()
+        .position(|l| l.contains("· added lfo3"))
+        .expect("a step");
+    assert_eq!(first, note + 1, "the changes hang under the note: {text}");
+}
+
+#[test]
+fn a_selected_batch_says_its_note_and_its_changes() {
+    let mut history = grown(40, &[]);
+    batch(&mut history, 10, "the brass breathes", &STEPS);
+    let growth = Growth::grow(&history);
+    let view = View {
+        centre: growth.at[10].expect("placed"),
+        scale: 1.0,
+    };
+    let text = picture(&history, Some(10), Some(view), 80, 30).text();
+    assert!(text.contains("the brass breathes"), "{text}");
+    assert!(text.contains("· turned vcf1 res 0.4"), "{text}");
+}
+
+#[test]
+fn a_batch_with_more_changes_than_room_says_how_many_more() {
+    let mut history = grown(40, &[]);
+    let steps: Vec<String> = (0..30)
+        .map(|i| format!("turned vco{i} pitch 0.{i}"))
+        .collect();
+    let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
+    batch(&mut history, 10, "a long one", &steps);
+    let growth = Growth::grow(&history);
+    let view = View {
+        centre: growth.at[10].expect("placed"),
+        scale: 1.0,
+    };
+    let text = picture(&history, Some(10), Some(view), 80, 12).text();
+    assert!(text.contains("more"), "{text}");
+    assert!(text.contains("· turned vco0 pitch 0.0"), "{text}");
 }

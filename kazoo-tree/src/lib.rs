@@ -613,7 +613,10 @@ fn lanes(app: &mut App, area: Rect, buf: &mut Buffer) {
             Line::from(vec![
                 Span::styled(format!("{graph}{} ", " ".repeat(pad)), graph_style),
                 Span::styled("■ ", Style::new().fg(Color::Rgb(r, g, b))),
-                Span::raw(moment.summary.clone()),
+                Span::raw(moment.batch.as_deref().map_or_else(
+                    || moment.summary.clone(),
+                    |batch| format!("❖ {} ({})", batch.note, changes(batch.steps.len())),
+                )),
                 Span::styled(
                     format!("  {} {when}", moment.seat),
                     Style::new().fg(Color::DarkGray),
@@ -711,4 +714,13 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// `n` changes, in words.
+pub(crate) fn changes(n: usize) -> String {
+    if n == 1 {
+        "1 change".to_owned()
+    } else {
+        format!("{n} changes")
+    }
 }

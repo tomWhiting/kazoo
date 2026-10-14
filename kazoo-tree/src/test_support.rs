@@ -2,7 +2,7 @@
 //! one second apart in the order they are added, as a wall grows them.
 
 use crate::colour::Kinds;
-use crate::history::{History, Limb, Mark, Moment};
+use crate::history::{Batch, History, Limb, Mark, Moment};
 
 /// A moment `n`, made at second `time`, by `seat`, with `modules` alive.
 pub fn moment(
@@ -27,6 +27,7 @@ pub fn moment(
         modules,
         alive: Kinds::default(),
         touched: Kinds::default(),
+        batch: None,
         problems: Vec::new(),
     }
 }
@@ -99,4 +100,16 @@ pub fn mark(history: &mut History, m: usize, name: &str, save: bool) {
         save,
         moment: m,
     });
+}
+
+/// Make moment `m` a batch sent with `note`, its changes `steps`.
+pub fn batch(history: &mut History, m: usize, note: &str, steps: &[&str]) {
+    let moment = std::sync::Arc::make_mut(&mut history.moments[m]);
+    moment.kind = "batch".to_owned();
+    moment.batch = Some(Box::new(Batch {
+        note: note.to_owned(),
+        steps: steps.iter().map(|&step| step.to_owned()).collect(),
+    }));
+    history.batches.push(m);
+    history.batches.sort_unstable();
 }

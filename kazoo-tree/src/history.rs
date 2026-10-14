@@ -85,9 +85,21 @@ pub struct Moment {
     /// Modules this moment turned, repatched, added or took away, by
     /// family: what was being played with.
     pub touched: Kinds,
+    /// Several changes sent at once with a note, when the moment is one.
+    pub batch: Option<Box<Batch>>,
     /// What did not read in its commit: said in the details, never a
     /// reason not to open the tree.
     pub problems: Vec<String>,
+}
+
+/// Several changes a seat or Tom sent at once, with a note like a commit
+/// message (`Kazoo-Kind: batch`, KZ-T10a): one moment on the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Batch {
+    /// The sender's note (`Kazoo-Note`).
+    pub note: String,
+    /// Each change in it, in words, in the order applied (`Kazoo-Step`).
+    pub steps: Vec<String>,
 }
 
 /// A run of moments grown from one moment of an older limb.
@@ -124,6 +136,9 @@ pub struct History {
     pub place: Vec<Option<(usize, usize)>>,
     /// Every mark and save.
     pub marks: Vec<Mark>,
+    /// Every moment that is a batch, oldest first: the knots, found
+    /// without looking at every moment.
+    pub batches: Vec<usize>,
     /// The moment the wall is at.
     pub here: Option<usize>,
     /// What did not read in the tree's refs.
@@ -144,7 +159,7 @@ const BODY_END: char = '\u{1f}';
 /// only the wall's own trailers (never the whole message: a `Kazoo-Change`
 /// trailer holds a page of JSON, and a million of them would be most of
 /// the read).
-const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,unfold)%x1f";
+const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,key=Kazoo-Note,key=Kazoo-Step,unfold)%x1f";
 
 /// Git as the tree reads it: the wall's own way to run git, with the
 /// person's own settings that would change what `log` says held fixed.
@@ -429,6 +444,13 @@ impl History {
         }
         let added = fresh.len();
         let base = self.moments.len();
+        self.batches.extend(
+            fresh
+                .iter()
+                .enumerate()
+                .filter(|(_, moment)| moment.batch.is_some())
+                .map(|(i, _)| base + i),
+        );
         for (id, i) in fresh_index {
             self.index.insert(id, base + i);
         }
@@ -479,6 +501,9 @@ impl History {
     #[cfg(test)]
     pub(crate) fn push(&mut self, moment: Moment) -> usize {
         let m = self.moments.len();
+        if moment.batch.is_some() {
+            self.batches.push(m);
+        }
         self.index.insert(Arc::clone(&moment.id), m);
         self.moments.push(Arc::new(moment));
         self.place.push(None);
@@ -581,6 +606,8 @@ fn moment(
     let mut beat = None;
     let mut tempo = None;
     let mut sound = None;
+    let mut note = None;
+    let mut steps = Vec::new();
     for line in trailers.lines() {
         if let Some(value) = line.strip_prefix("Kazoo-Kind: ") {
             kind = clean(value.trim());
@@ -592,8 +619,13 @@ fn moment(
             tempo = keep(&mut problems, number("Kazoo-Tempo", value));
         } else if let Some(value) = line.strip_prefix("Kazoo-Sound: ") {
             sound = keep(&mut problems, sound_of(value));
+        } else if let Some(value) = line.strip_prefix("Kazoo-Note: ") {
+            note = Some(clean(value.trim()));
+        } else if let Some(value) = line.strip_prefix("Kazoo-Step: ") {
+            steps.push(clean(value.trim()));
         }
     }
+    let batch = batch_of(&kind, &summary, note, steps, &mut problems);
     let (before, alive) = parent.map_or_else(|| (0, Kinds::default()), &alive_at);
     let (modules, alive, touched) = files_of(files, before, alive, &mut problems);
     Ok(Moment {
@@ -610,8 +642,37 @@ fn moment(
         modules,
         alive,
         touched,
+        batch,
         problems,
     })
+}
+
+/// A moment's batch, from its kind and its `Kazoo-Note` and `Kazoo-Step`
+/// trailers. A batch with no note is shown by its subject (the wall
+/// writes it `{seat}: {note}`), and with no steps as one with none; each
+/// is said in `problems`. A note or steps on a moment that is not a batch
+/// are kept: the words are the sender's, and nothing is thrown away.
+fn batch_of(
+    kind: &str,
+    summary: &str,
+    note: Option<String>,
+    steps: Vec<String>,
+    problems: &mut Vec<String>,
+) -> Option<Box<Batch>> {
+    let batch = kind == "batch";
+    if !batch && note.is_none() && steps.is_empty() {
+        return None;
+    }
+    if batch && steps.is_empty() {
+        problems.push("a batch whose changes are not listed (no Kazoo-Step)".to_owned());
+    }
+    let note = note.unwrap_or_else(|| {
+        if batch {
+            problems.push("a batch without its note (no Kazoo-Note)".to_owned());
+        }
+        summary.to_owned()
+    });
+    Some(Box::new(Batch { note, steps }))
 }
 
 /// What a record's files did to the modules: how many are alive after it

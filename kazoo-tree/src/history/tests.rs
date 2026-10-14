@@ -22,13 +22,25 @@ impl Stream {
         files: &[(&str, Option<&str>)],
         sound: Option<&str>,
     ) -> u32 {
-        self.marks += 1;
         let sound = sound.map_or_else(String::new, |s| format!("Kazoo-Sound: {s}\n"));
         let message = format!(
             "Tom turned vcf1 cutoff {n}\n\nKazoo-Kind: change\nKazoo-Seq: {n}\nKazoo-Beat: {}\nKazoo-Tempo: 100\n{sound}",
             f64::from(n) * 4.0
         );
-        let at = 1_000 + n;
+        self.write(branch, from, 1_000 + n, &message, files)
+    }
+
+    /// Commit `message` on `branch` (after mark `from`) at second `at`,
+    /// with `files` written or (`None`) removed; answers its mark.
+    fn write(
+        &mut self,
+        branch: &str,
+        from: Option<u32>,
+        at: u32,
+        message: &str,
+        files: &[(&str, Option<&str>)],
+    ) -> u32 {
+        self.marks += 1;
         write!(
             self.text,
             "commit refs/heads/{branch}\nmark :{}\nauthor Tom <tom@kazoo.invalid> {at} +0000\ncommitter Tom <tom@kazoo.invalid> {at} +0000\ndata {}\n{message}\n",
@@ -721,4 +733,71 @@ fn one_commit_in_bytes_that_are_not_text_is_its_own_problem() {
     assert!(history.moments[0].problems.is_empty());
     assert!(history.moments[1].problems[0].contains("not all UTF-8"));
     assert!(history.moments[1].summary.contains('\u{fffd}'));
+}
+
+#[test]
+fn a_batch_reads_with_its_note_and_its_steps_in_order() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    kazoo_wall::tree::git::plant(dir.path()).expect("planted");
+    let mut stream = Stream::default();
+    let one = stream.commit("trunk", None, 1, &[("modules/vco1.toml", Some("a"))], None);
+    let message = "Cassio: the brass breathes\n\nKazoo-Kind: batch\nKazoo-Seq: 2\nKazoo-Beat: 8\nKazoo-Tempo: 100\nKazoo-Note: the brass breathes\nKazoo-Step: added lfo3\nKazoo-Step: patched lfo3.out to vcf1.cutoff\nKazoo-Step: turned vcf1 res 0.4\nKazoo-Change: {\"seq\":2}\n";
+    stream.write(
+        "trunk",
+        Some(one),
+        1_002,
+        message,
+        &[("modules/lfo3.toml", Some("b"))],
+    );
+    stream.import(dir.path());
+    let history = History::read(dir.path()).expect("it reads");
+    let batch = history.moments[1].batch.as_deref().expect("a batch");
+    assert_eq!(batch.note, "the brass breathes");
+    assert_eq!(
+        batch.steps,
+        [
+            "added lfo3",
+            "patched lfo3.out to vcf1.cutoff",
+            "turned vcf1 res 0.4"
+        ]
+    );
+    assert_eq!(history.moments[1].kind, "batch");
+    assert!(
+        history.moments[1].problems.is_empty(),
+        "{:?}",
+        history.moments[1].problems
+    );
+    assert_eq!(history.moments[0].batch, None);
+}
+
+#[test]
+fn a_batch_missing_its_words_is_said_and_still_shown() {
+    let log = [
+        record("a", "", "one", ""),
+        record(
+            "b",
+            "a",
+            "Cassio: lost note\n\nKazoo-Kind: batch\nKazoo-Seq: 2",
+            "",
+        ),
+        record(
+            "c",
+            "b",
+            "a change with a note\n\nKazoo-Kind: change\nKazoo-Note: kept",
+            "",
+        ),
+    ]
+    .concat();
+    let history = History::from_git(&log, "refs/heads/trunk\0c\0\n", None).expect("it opens");
+    let lost = &history.moments[1];
+    let batch = lost.batch.as_deref().expect("still a batch");
+    assert_eq!(batch.note, "Cassio: lost note");
+    assert!(batch.steps.is_empty());
+    assert_eq!(lost.problems.len(), 2, "{:?}", lost.problems);
+    let kept = history.moments[2]
+        .batch
+        .as_deref()
+        .expect("its note is kept");
+    assert_eq!(kept.note, "kept");
+    assert!(history.moments[2].problems.is_empty());
 }
