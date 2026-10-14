@@ -6,6 +6,9 @@
 //! are held and sent together at most once per window, up to
 //! [`MAX_LINES`] of them and a count of the rest; a fault goes at once. This
 //! seat's own changes are never news to it.
+//! Tree walks say at once that the wall is stale, then gather each actor's
+//! goes until five seconds of rest. Their summary joins waiting news or
+//! goes alone when nothing else is waiting.
 //!
 //! The content is fixed prose around the wall's own summaries, which the
 //! daemon builds only from sanitised ids, names, numbers and units; they are
@@ -21,6 +24,10 @@ use rmcp::{Peer, RoleServer};
 use serde_json::json;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
+
+mod walk;
+
+use walk::Walks;
 
 /// The notification's method.
 pub const METHOD: &str = "notifications/claude/channel";
@@ -71,6 +78,7 @@ pub struct News {
     since: Option<Instant>,
     last_sent: Option<Instant>,
     last_failed: Option<Instant>,
+    walks: Walks,
 }
 
 impl News {
@@ -87,11 +95,13 @@ impl News {
             since: None,
             last_sent: None,
             last_failed: None,
+            walks: Walks::new(),
         }
     }
 
     /// Take in what the event line heard, at `now`.
     pub fn take(&mut self, feed: Feed, now: Instant) {
+        self.rest(now);
         match feed {
             Feed::Up {
                 seats,
@@ -126,7 +136,7 @@ impl News {
             }
             Feed::Event(Event::Change { change }) => {
                 self.seq = self.seq.max(change.seq);
-                if change.seat != self.seat {
+                if change.seat != self.seat && !self.walks.changed(&change) {
                     self.push(clean(&change.summary), now);
                 }
             }
@@ -152,20 +162,11 @@ impl News {
                 self.urgent = true;
             }
             Feed::Event(Event::Log { log }) => self.log_said(&log, now),
-            // The whole wall replaced: its change is told as any other
-            // (above); this says at once that everything known of the wall
-            // is stale. A seat's own load is not news to it.
-            Feed::Event(Event::Loaded { seq, seat, .. }) => {
-                self.seq = self.seq.max(seq);
-                if seat != self.seat {
-                    self.push(
-                        "the whole wall was replaced: what this seat knew of it is stale"
-                            .to_string(),
-                        now,
-                    );
-                    self.urgent = true;
-                }
-            }
+            // A go's change precedes its replacement event. Only the first
+            // replacement of a walk adds new information about staleness.
+            Feed::Event(Event::Loaded {
+                seq, seat, save, ..
+            }) => self.loaded(seq, seat, save.is_some(), now),
             Feed::Event(Event::Saved {
                 seat,
                 name,
@@ -196,6 +197,37 @@ impl News {
             Feed::Event(
                 Event::Unknown | Event::Rack { .. } | Event::Groups { .. } | Event::Chains { .. },
             ) => {}
+        }
+    }
+
+    fn loaded(&mut self, seq: u64, seat: String, saved: bool, now: Instant) {
+        self.seq = self.seq.max(seq);
+        if seat != self.seat {
+            match self.walks.loaded(seq, &seat, now) {
+                Some(true) => {
+                    self.push(
+                        format!(
+                            "{} is moving the wall through the tree: what this seat knew \
+                             of it is stale",
+                            who(seat)
+                        ),
+                        now,
+                    );
+                    self.urgent = true;
+                }
+                Some(false) => {}
+                None => {
+                    self.end_walks(now);
+                    self.push(
+                        "the whole wall was replaced: what this seat knew of it is stale"
+                            .to_string(),
+                        now,
+                    );
+                    self.urgent = true;
+                }
+            }
+        } else if saved {
+            self.end_walks(now);
         }
     }
 
@@ -235,18 +267,40 @@ impl News {
         }
     }
 
-    /// When the next notification is due, if anything is waiting: a fault
-    /// at once, anything else a window after it arrived and a window after
-    /// the last notification; and a window after a send that failed.
+    fn rest(&mut self, now: Instant) {
+        let lines = self.walks.rest(now);
+        self.walk_lines(lines, now);
+    }
+
+    fn end_walks(&mut self, now: Instant) {
+        let lines = self.walks.end();
+        self.walk_lines(lines, now);
+    }
+
+    fn walk_lines(&mut self, lines: Vec<String>, now: Instant) {
+        if !lines.is_empty() && self.since.is_none() {
+            self.urgent = true;
+        }
+        for line in lines {
+            self.push(line, now);
+        }
+    }
+
+    /// When to wake for waiting news or a walk's rest: urgent news at once,
+    /// other news after its window and the last send's window, and walks
+    /// after five seconds of rest. A failed send delays retries a window.
     #[must_use]
     pub fn due(&self, window: Duration) -> Option<Instant> {
-        let since = self.since?;
-        let mut due = if self.urgent { since } else { since + window };
-        if !self.urgent {
-            if let Some(sent) = self.last_sent {
-                due = due.max(sent + window);
+        let ordinary = self.since.map(|since| {
+            let mut due = if self.urgent { since } else { since + window };
+            if !self.urgent {
+                if let Some(sent) = self.last_sent {
+                    due = due.max(sent + window);
+                }
             }
-        }
+            due
+        });
+        let mut due = ordinary.into_iter().chain(self.walks.due()).min()?;
         if let Some(failed) = self.last_failed {
             due = due.max(failed + window);
         }
@@ -351,6 +405,11 @@ pub async fn notify(
                 }
             }
             () = sleep_until(due), if due.is_some() => {
+                let now = Instant::now();
+                news.rest(now);
+                if news.due(window).is_none_or(|due| due > now) {
+                    continue;
+                }
                 let Some(session) = session else { continue };
                 if session.is_transport_closed() {
                     return;
@@ -382,6 +441,9 @@ async fn sleep_until(due: Option<Instant>) {
         None => std::future::pending().await,
     }
 }
+
+#[cfg(test)]
+mod walk_tests;
 
 #[cfg(test)]
 mod tests {
