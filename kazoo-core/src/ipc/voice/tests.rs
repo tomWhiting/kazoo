@@ -11,8 +11,10 @@ const fn frame() -> VoiceFrame {
         loudness: 0.5,
         breath: 0.25,
         confidence: 1.0,
-        gate: true,
-        onset: true,
+        events: crate::voice::VoiceEvents {
+            gate: true,
+            onset: true,
+        },
         voiced: true,
         provisional: false,
     }
@@ -35,8 +37,10 @@ fn bits(f: VoiceFrame) -> [u32; 7] {
 fn a_frame_round_trips_bit_for_bit() {
     for flags in 0..16 {
         let original = VoiceFrame {
-            gate: flags & 1 != 0,
-            onset: flags & 2 != 0,
+            events: crate::voice::VoiceEvents {
+                gate: flags & 1 != 0,
+                onset: flags & 2 != 0,
+            },
             voiced: flags & 4 != 0,
             provisional: flags & 8 != 0,
             ..frame()

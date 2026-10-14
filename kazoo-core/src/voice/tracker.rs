@@ -130,6 +130,7 @@ pub struct VoiceTracker {
     breath_coefficient: f32,
     invalid_frame: bool,
     provisional: bool,
+    previous_reading: Option<u64>,
 }
 
 impl VoiceTracker {
@@ -173,6 +174,7 @@ impl VoiceTracker {
             breath_coefficient: coefficient(BREATH_SMOOTH_MS, sr / VOICE_HOP as f32),
             invalid_frame: false,
             provisional: false,
+            previous_reading: None,
         }
     }
 
@@ -271,9 +273,7 @@ impl VoiceTracker {
                 self.samples.saturating_sub(at) as f32 <= HINT_LEAP_MS * self.rate / 1000.0
                     && (1200.0 * (hz / hinted_hz).log2()).abs() <= 50.0
             });
-            if hint_landed {
-                self.hinted = None;
-            }
+            self.hinted = self.hinted.filter(|_| !hint_landed);
             if !hint_landed
                 && self
                     .previous_cycle
@@ -346,8 +346,10 @@ impl VoiceTracker {
             volts,
             snapped_hz: hz,
             snapped_volts: volts,
-            gate: gate && valid_hz && !self.invalid_frame,
-            onset: onset && valid_hz && !self.invalid_frame,
+            events: super::VoiceEvents {
+                gate: gate && valid_hz && !self.invalid_frame,
+                onset: onset && valid_hz && !self.invalid_frame,
+            },
             voiced: voiced && valid_hz,
             provisional,
             loudness: sanitize_sample(
@@ -368,6 +370,11 @@ impl VoiceTracker {
     }
 
     fn gate_frame(&mut self, voiced: bool, fast_db: f32, provisional: bool) -> (bool, bool) {
+        let reading = voiced.then(|| self.cycle.reading_id());
+        if reading.is_some() && reading != self.previous_reading {
+            self.gate.reading();
+        }
+        self.previous_reading = reading;
         let correction = self.provisional && voiced && !provisional;
         if correction {
             self.gate.correct_pitch(self.hz);
@@ -410,6 +417,7 @@ impl VoiceTracker {
         self.breath = 0.0;
         self.invalid_frame = false;
         self.provisional = false;
+        self.previous_reading = None;
         self.release = coefficient(FAST_RELEASE_MIN_MS, self.rate);
     }
 }

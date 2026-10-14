@@ -43,6 +43,9 @@ pub(super) struct Gate {
     published: Option<f32>,
     onset_at: u64,
     amplitude_window: u64,
+    fresh_reading: bool,
+    jump_window: u64,
+    amplitude_at: Option<u64>,
 }
 
 impl Gate {
@@ -68,10 +71,16 @@ impl Gate {
             published: None,
             onset_at: 0,
             amplitude_window: 10 * rate / 1000,
+            fresh_reading: false,
+            jump_window: 2 * settings.judge_config(rate as u32).hop_length as u64,
+            amplitude_at: None,
         }
     }
     pub(super) const fn flux(&mut self, at: u64) {
         self.flux = Some(at);
+    }
+    pub(super) const fn reading(&mut self) {
+        self.fresh_reading = true;
     }
     #[cfg(test)]
     pub(super) fn frame(&mut self, at: u64, voiced: bool, db: f32, valley_db: f32) -> (bool, bool) {
@@ -86,6 +95,7 @@ impl Gate {
         valley_db: f32,
         hz: f32,
     ) -> (bool, bool) {
+        self.reading();
         self.frame_with_level(at, voiced, db, valley_db, hz, db)
     }
 
@@ -98,6 +108,7 @@ impl Gate {
         hz: f32,
         periodic_db: f32,
     ) -> (bool, bool) {
+        let reading = std::mem::replace(&mut self.fresh_reading, false);
         let was_high = self.high;
         if self.high {
             if !voiced || db < self.settings.gate_off_db {
@@ -143,26 +154,22 @@ impl Gate {
         self.pitch = [self.pitch[1], current];
         let mut confirmed = None;
         if let Some(mut pending) = self.pending.take() {
-            pending.steps += 1;
-            let stable =
-                current.is_some_and(|hz| (1200.0 * (hz / pending.hz).log2()).abs() <= 30.0);
-            let attacked = self
-                .flux
-                .is_some_and(|at| at.abs_diff(pending.at) <= self.amplitude_window)
+            pending.steps += u8::from(reading);
+            let stable = reading
+                && current.is_some_and(|hz| (1200.0 * (hz / pending.hz).log2()).abs() <= 30.0);
+            let attacked = self.amplitude_near(pending.at)
                 || (amplitude && at.abs_diff(pending.at) <= self.amplitude_window);
-            if self.high && (stable || attacked) && pending.steps <= 2 {
+            let timely = at.saturating_sub(pending.at) <= self.jump_window;
+            if self.high && timely && (stable || attacked) && pending.steps <= 2 {
                 confirmed = Some(pending.at);
                 self.published = current.or(Some(pending.hz));
-            } else if pending.steps < 2 {
+            } else if timely && pending.steps < 2 {
                 self.pending = Some(pending);
             }
         }
-        if self.high && jump && self.pending.is_none() && confirmed.is_none() {
+        if self.high && reading && jump && self.pending.is_none() && confirmed.is_none() {
             if let Some(hz) = current {
-                let attacked = amplitude
-                    || self
-                        .flux
-                        .is_some_and(|stamp| stamp.abs_diff(at) <= self.amplitude_window);
+                let attacked = amplitude || self.amplitude_near(at);
                 if attacked {
                     confirmed = Some(at);
                     self.published = current;
@@ -174,7 +181,18 @@ impl Gate {
             self.published = current.or(self.published);
         }
         let onset = self.high && ready && (amplitude || confirmed.is_some());
+        #[cfg(test)]
+        if crate::analysis::cycle::diagnostics::enabled() && (jump || onset || confirmed.is_some())
+        {
+            println!(
+                "gate at={at} hz={hz:.4} published={:?} jump={jump} amplitude={amplitude} ready={ready} pending={:?} confirmed={confirmed:?} onset={onset}",
+                self.published, self.pending
+            );
+        }
         if onset {
+            if amplitude {
+                self.amplitude_at = Some(at);
+            }
             self.onset_at = confirmed.unwrap_or(at);
             self.last_onset = Some(self.onset_at);
             self.flux = None;
@@ -190,6 +208,13 @@ impl Gate {
     }
     pub(super) const fn published_pitch(&self) -> Option<f32> {
         self.published
+    }
+    fn amplitude_near(&self, at: u64) -> bool {
+        self.flux
+            .is_some_and(|stamp| stamp.abs_diff(at) <= self.amplitude_window)
+            || self
+                .amplitude_at
+                .is_some_and(|stamp| stamp.abs_diff(at) <= self.amplitude_window)
     }
     pub(super) const fn onset_at(&self) -> u64 {
         self.onset_at
@@ -210,5 +235,7 @@ impl Gate {
         self.pending = None;
         self.published = None;
         self.onset_at = 0;
+        self.fresh_reading = false;
+        self.amplitude_at = None;
     }
 }

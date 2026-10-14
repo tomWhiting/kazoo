@@ -11,8 +11,10 @@ pub(super) const INITIAL_FRAME: VoiceFrame = VoiceFrame {
     volts: 0.0,
     snapped_hz: 0.0,
     snapped_volts: 0.0,
-    gate: false,
-    onset: false,
+    events: crate::voice::VoiceEvents {
+        gate: false,
+        onset: false,
+    },
     voiced: false,
     provisional: false,
     loudness: 0.0,

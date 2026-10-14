@@ -31,8 +31,10 @@ fn unvoiced_frames_hold_pitch_and_closed_gate_releases() -> kazoo_core::ParamRes
         volts: volts_from_hz(220.0),
         snapped_hz: 220.0,
         snapped_volts: volts_from_hz(220.0),
-        gate: true,
-        onset: true,
+        events: kazoo_core::voice::VoiceEvents {
+            gate: true,
+            onset: true,
+        },
         voiced: true,
         provisional: false,
         loudness: 1.0,

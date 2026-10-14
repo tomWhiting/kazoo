@@ -20,8 +20,10 @@ fn voice(at: u64, semitones: f32, snapped: f32) -> VoiceFrame {
         volts: semitones / 12.0,
         snapped_hz: hz_from_volts(snapped / 12.0),
         snapped_volts: snapped / 12.0,
-        gate: true,
-        onset: false,
+        events: kazoo_core::voice::VoiceEvents {
+            gate: true,
+            onset: false,
+        },
         voiced: true,
         provisional: false,
         loudness: 0.7,

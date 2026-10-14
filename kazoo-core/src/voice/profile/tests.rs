@@ -256,6 +256,7 @@ fn a_sweep_is_one_onset_per_note() {
     let take = named(&takes, "sweep");
     let output = frames(take, InputProfile::Guitar);
     let onsets: Vec<_> = output.iter().filter(|frame| frame.onset).collect();
+    println!("sweep onsets={onsets:?}");
     assert_eq!(onsets.len(), 6, "{onsets:?}");
     for (frame, &pluck) in onsets.iter().zip(&take.onsets) {
         let hz = truth_at(take, pluck + SCORE_STEP).expect("pluck truth");

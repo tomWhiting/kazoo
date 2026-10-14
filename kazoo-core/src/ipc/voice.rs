@@ -78,8 +78,10 @@ pub const fn decode_frame(b: &[u8; VOICE_FRAME_WIRE]) -> VoiceFrame {
         loudness: bounded(float_at(b, 24), 0.0, 1.0),
         breath: bounded(float_at(b, 28), 0.0, 1.0),
         confidence: bounded(float_at(b, 32), 0.0, 1.0),
-        gate: b[36] & 1 != 0 && hz.is_finite(),
-        onset: b[36] & 2 != 0,
+        events: crate::voice::VoiceEvents {
+            gate: b[36] & 1 != 0 && hz.is_finite(),
+            onset: b[36] & 2 != 0,
+        },
         voiced: b[36] & 4 != 0 && hz.is_finite(),
         provisional: b[36] & 8 != 0 && hz.is_finite(),
     }

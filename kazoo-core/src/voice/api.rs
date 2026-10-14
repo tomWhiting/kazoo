@@ -41,10 +41,7 @@ pub struct VoiceFrame {
     pub snapped_hz: f32,
     /// Direct voltage until a quantiser writes it.
     pub snapped_volts: f32,
-    /// A note is sounding, with level hysteresis and a release hold.
-    pub gate: bool,
-    /// A gate rise or re-sung syllable in this frame.
-    pub onset: bool,
+    pub events: VoiceEvents,
     /// A pitch is available in this frame, independent of the gate hold.
     pub voiced: bool,
     /// A worker's partial-cycle pitch awaiting normal acquisition.
@@ -55,4 +52,26 @@ pub struct VoiceFrame {
     pub breath: f32,
     /// Pitch certainty, 0..=1.
     pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceEvents {
+    /// A note is sounding, with level hysteresis and a release hold.
+    pub gate: bool,
+    /// A gate rise or re-sung syllable in this frame.
+    pub onset: bool,
+}
+
+impl std::ops::Deref for VoiceFrame {
+    type Target = VoiceEvents;
+
+    fn deref(&self) -> &Self::Target {
+        &self.events
+    }
+}
+
+impl std::ops::DerefMut for VoiceFrame {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.events
+    }
 }

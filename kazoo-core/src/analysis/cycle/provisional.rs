@@ -1,6 +1,10 @@
 use super::{CycleEstimate, CycleSettings, CycleTracker, Peak, SILENCE_PEAK, lag_from};
 use crate::voice::VOICE_HOP;
 
+#[cfg(test)]
+#[path = "provisional_tests.rs"]
+mod tests;
+
 /// Worker-owned history for the full-range partial-cycle search.
 #[derive(Debug)]
 pub struct ProvisionalJudge {
@@ -38,7 +42,12 @@ impl ProvisionalJudge {
             self.active = false;
             self.available = 0;
         }
+        let held = self.tracker.estimate.is_some();
         self.tracker.push(sample);
+        if held && self.tracker.estimate.is_none() {
+            // A new attack invalidates correlation with the previous note.
+            self.available = 0;
+        }
         if self.active {
             self.available = self
                 .available
@@ -100,6 +109,20 @@ impl CycleTracker {
             .iter()
             .enumerate()
             .find(|(_, peak)| peak.clarity >= 0.9 * highest)?;
+        #[cfg(test)]
+        if super::diagnostics::enabled() {
+            println!(
+                "provisional at={} available={available} maxima={maxima:?} chosen={chosen:?} rule={}",
+                self.position,
+                if chosen.clarity < 0.60 {
+                    "below-0.60"
+                } else if chosen.period <= self.rate / 120.0 {
+                    "short-period"
+                } else {
+                    "long-period"
+                }
+            );
+        }
         if chosen.clarity < 0.60 || chosen.period <= self.rate / 120.0 {
             return None;
         }

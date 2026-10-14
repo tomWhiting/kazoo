@@ -11,6 +11,8 @@ use std::f32::consts::TAU;
 use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
 use crate::{sanitize_sample, voice::VOICE_HOP};
 
+#[cfg(test)]
+pub(crate) mod diagnostics;
 mod early;
 mod level;
 mod motion;
@@ -440,6 +442,10 @@ impl CycleTracker {
         self.last_clarity
     }
 
+    pub(crate) const fn reading_id(&self) -> u64 {
+        self.last_accepted_mark.to_bits()
+    }
+
     /// A period (samples) to try as an extra candidate until 4 more cycles
     /// are marked;
     /// when its NSDF reaches `CLARITY_ON` it is taken over every other
@@ -670,9 +676,8 @@ impl CycleTracker {
             });
             let strong_hold = self.estimate.is_some_and(|estimate| {
                 !estimate.provisional
-                    && self
-                        .refine(estimate.period)
-                        .is_some_and(|own| own.clarity >= HOLD_CLARITY)
+                    && lag_from(f64::from(estimate.period))
+                        .is_some_and(|lag| self.nsdf(lag, self.window(lag)) >= HOLD_CLARITY)
             });
             let threshold = if held {
                 HOLD_CLARITY
@@ -691,6 +696,22 @@ impl CycleTracker {
                     held
                 }
             });
+            #[cfg(test)]
+            if diagnostics::enabled() {
+                println!(
+                    "candidate at={} start={period:.4} period={:.4} nsdf={:.6} held={held} strong_hold={strong_hold} floor={threshold:.2} replace={replace} rule={}",
+                    self.position,
+                    peak.period,
+                    peak.clarity,
+                    if peak.clarity < threshold {
+                        "below-floor"
+                    } else if replace {
+                        "select"
+                    } else {
+                        "held-or-shorter-wins"
+                    }
+                );
+            }
             if peak.clarity >= threshold && replace {
                 choice.chosen = Some(peak);
             }
@@ -708,6 +729,13 @@ impl CycleTracker {
     }
 
     fn accept(&mut self, peak: Peak, at: f64) {
+        #[cfg(test)]
+        if diagnostics::enabled() {
+            println!(
+                "accept at={} period={:.4} nsdf={:.6} previous={:?}",
+                self.position, peak.period, peak.clarity, self.estimate
+            );
+        }
         self.periodic_level = self.periodic_level_at(peak);
         let reading = Reading {
             log_period: f64::from(peak.period).log2(),

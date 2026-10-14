@@ -104,8 +104,10 @@ fn frame(at: u16) -> VoiceFrame {
         loudness: 0.5,
         breath: 0.25,
         confidence: 0.75,
-        gate: true,
-        onset: at % 2 == 0,
+        events: crate::voice::VoiceEvents {
+            gate: true,
+            onset: at % 2 == 0,
+        },
         voiced: true,
         provisional: false,
     }
