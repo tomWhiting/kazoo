@@ -10,7 +10,7 @@ use color_eyre::eyre::{WrapErr, eyre};
 use crossbeam_channel::Sender;
 use crossterm::event::{self, Event};
 use kazoo_core::analysis::PitchDetectorConfig;
-use kazoo_core::host::audio::{DeviceChoice, OpenedOutput, OutputRequest};
+use kazoo_core::host::audio::{DeviceChoice, InputNotices, OpenedOutput, OutputRequest};
 use kazoo_core::host::link::{LinkSetup, connect_or_direct};
 use kazoo_core::io::mic::{Mic, MicRequest, MicTarget};
 use kazoo_core::ipc::link::HubLink;
@@ -60,6 +60,7 @@ Space toggles the focused switch. w steps waveform. v toggles vibrato. s toggles
 Tab/Shift-Tab walks panels. 1..5 select FX. [/] choose slot; b bypasses; {/} move; d resets a knob.
 ,/. change own tempo by 1 BPM; </> by 10. The desk owns synced tempo.
 r records or punches; u undoes; C clears; l chooses length; o stops/starts.
+O cycles scope; k shows/hides spectrum; L shows latency breakdown.
 -/= change loop volume; _/+ make a big step; w saves ~/.kazoo/mouth/loops/.
 Esc closes help or quits. Ctrl-C quits.
 ";
@@ -228,7 +229,8 @@ impl Session {
             ..OutputRequest::default()
         }
         .prepare_output()?;
-        let input = prepared.input_pick(args.input.as_deref())?;
+        let notices = InputNotices::default();
+        let input = prepared.input_pick(args.input.as_deref(), &notices)?;
         let input_label = input.why.as_ref().map_or_else(
             || input.name.clone(),
             |why| format!("{} ({why})", input.name),
@@ -248,7 +250,7 @@ impl Session {
             info.frames,
             OnsetConfig::default(),
         )?;
-        let stats = Arc::new(Stats::default());
+        let stats = Arc::new(Stats::new(info.rate));
         let loop_directory = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or_else(|| eyre!("HOME is missing: cannot locate saved loops"))?
@@ -287,7 +289,7 @@ impl Session {
         session.output = Some(prepared.open(move |out, info| {
             engine.render(out, usize::from(info.channels));
         })?);
-        session.mic = Some(kazoo_core::io::mic::open_mic(
+        session.mic = Some(kazoo_core::io::mic::open_mic_with_notices(
             MicRequest {
                 device: DeviceChoice::Named(input.name),
                 channel: args.input_channel,
@@ -302,6 +304,7 @@ impl Session {
                     .mic_dropped
                     .fetch_add((offered - accepted) as u64, Ordering::Relaxed);
             }),
+            notices,
         )?);
         Ok(session)
     }
@@ -533,6 +536,10 @@ fn event_loop(
     app: &mut App,
 ) -> Result<()> {
     let mut display = Display::new(session.rate);
+    // Both copies are allocated here, once: a read lands in `fresh` and only a
+    // whole one is swapped into the app.
+    app.scope = session.stats.capture.frames();
+    let mut fresh = session.stats.capture.frames();
     let period = Duration::from_secs_f64(1.0 / 30.0);
     let mut draw_at = Instant::now();
     let mut quitting = false;
@@ -556,12 +563,51 @@ fn event_loop(
                 display.push(voice);
             }
             display.recentre();
+            if session.stats.capture.read(&mut fresh) {
+                std::mem::swap(&mut app.scope, &mut fresh);
+                if app.plots.spectrum_visible {
+                    app.spectrum.update(app.scope.voice(), session.rate);
+                }
+            }
+            let rate = f64::from(session.rate);
+            app.latency = ui::latency::Latency {
+                input: session.mic.as_ref().and_then(Mic::input_latency_ms),
+                resampler: session
+                    .mic
+                    .as_ref()
+                    .and_then(Mic::resampler_delay_frames)
+                    .map(|frames| frames as f64 * 1000.0 / rate),
+                block: session
+                    .output
+                    .as_ref()
+                    .map(|output| output.buffer_frames().min(4096) as f64 * 1000.0 / rate),
+                effects: Some(
+                    session.stats.fx_latency.load(Ordering::Relaxed) as f64 * 1000.0 / rate,
+                ),
+                device_buffers_only: kazoo_core::host::audio::LATENCY_COVERS
+                    == kazoo_core::host::audio::LatencyCovers::BufferOnly,
+                output: if session
+                    .hub
+                    .as_ref()
+                    .is_some_and(|hub| hub.status().connected)
+                {
+                    None
+                } else {
+                    session
+                        .output
+                        .as_ref()
+                        .and_then(|output| output.health().latency_ms())
+                },
+            };
             let link = link_state(session);
             let now = Instant::now();
             app.sync_stats(&session.stats, now);
             app.sync_loop(session.rate, now);
             session.loop_returns(app, now);
             app.save_if_due(now, false);
+            if let Some(mic) = &session.mic {
+                show_input_notice(app, mic.input_notices(), now);
+            }
             terminal.draw(|frame| ui::draw(frame, app, &display, &link, now))?;
             draw_at = Instant::now() + period;
         }
@@ -586,6 +632,12 @@ fn event_loop(
                 }
             }
         }
+    }
+}
+
+fn show_input_notice(app: &mut App, notices: &InputNotices, now: Instant) {
+    if let Some(message) = notices.take() {
+        app.message(message, now);
     }
 }
 

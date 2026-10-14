@@ -126,7 +126,7 @@ const HELP: &[(&str, &str)] = &[
     ),
     (
         "B",
-        "the tree: where the wall is, branches, marks, the latest moments; ⏎ then y puts the wall at one (z undoes it)",
+        "the tree: j k say how far from the wall, ⏎ goes there, z undoes",
     ),
     (
         "m",

@@ -29,7 +29,7 @@ pub(in crate::tree) fn missing_changes(
         let mut fields = row.split('|');
         let kind = fields.next().unwrap_or("");
         let seq = fields.next().unwrap_or("");
-        if kind == "change" {
+        if crate::tree::thread::here::is_change(kind) {
             committed.insert(
                 seq.parse::<u64>()
                     .map_err(|err| TreeError::Git(format!("commit sequence: {err}")))?,

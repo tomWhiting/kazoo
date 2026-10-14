@@ -207,11 +207,16 @@ impl Proofs {
             }
         }
         for change in changes {
-            let What::Load {
+            let (What::Load {
                 backup,
                 fingerprint,
                 ..
-            } = &change.what
+            }
+            | What::Go {
+                backup,
+                fingerprint,
+                ..
+            }) = &change.what
             else {
                 continue;
             };
@@ -267,15 +272,26 @@ impl Proofs {
         change: &Change,
         changes: &[Change],
     ) -> Result<(PatchFile, Option<String>), String> {
-        let What::Load {
-            save,
-            modules,
-            cables,
-            tempo,
-            ..
-        } = &change.what
-        else {
-            return Err(format!("change {} is not a load", change.seq));
+        let (save, modules, cables, tempo) = match &change.what {
+            What::Load {
+                save,
+                modules,
+                cables,
+                tempo,
+                ..
+            } => (save.as_deref(), modules, cables, tempo),
+            What::Go {
+                modules,
+                cables,
+                tempo,
+                ..
+            } => {
+                if let Some(undone) = change.undoes {
+                    return self.backup(undone);
+                }
+                (None, modules, cables, tempo)
+            }
+            _ => return Err(format!("change {} is not a load or go", change.seq)),
         };
         let next = changes
             .iter()
@@ -293,10 +309,7 @@ impl Proofs {
             .find(|e| e.after >= change.seq && e.after < next)
         {
             let mut file = e.file().map_err(|e| e.to_string())?;
-            if let Some(name) = save
-                .as_deref()
-                .filter(|_| file.modules.iter().any(|m| m.birth.is_none()))
-            {
+            if let Some(name) = save.filter(|_| file.modules.iter().any(|m| m.birth.is_none())) {
                 let source = saved_before(state, name, change, *modules, *cables, *tempo).and_then(
                     |source| {
                         let mismatches = differences(&source, &file, false);
@@ -335,7 +348,7 @@ impl Proofs {
             }
             return Ok((file, None));
         }
-        if save.is_none() && change.undoes.is_none() {
+        if save.is_none() && change.undoes.is_none() && matches!(change.what, What::Load { .. }) {
             let mut file = Patch::empty(*tempo).to_file();
             if let Some(e) = self.files.iter().find(|e| e.wall == change.seq && e.seeded) {
                 file.seed = e.file().map_err(|e| e.to_string())?.seed;
@@ -343,17 +356,24 @@ impl Proofs {
             return Ok((file, None));
         }
         if let Some(undone) = change.undoes {
-            return self.files.iter()
+            return self.backup(undone);
+        }
+        if matches!(change.what, What::Go { .. }) {
+            return Err("no kept file proves the wall after the go".into());
+        }
+        let name = save.unwrap_or_default();
+        saved_before(state, name, change, *modules, *cables, *tempo).map(|file| (file, None))
+    }
+
+    fn backup(&self, undone: u64) -> Result<(PatchFile, Option<String>), String> {
+        self.files.iter()
                 .find(|e| e.rank == 0 && e.after == undone.saturating_sub(1))
                 .map_or_else(
                     || Err(format!(
                         "the backup of the wall load {undone} replaced does not hold its fingerprint"
                     )),
                     |e| e.file().map(|file| (file, None)).map_err(|e| e.to_string()),
-                );
-        }
-        let name = save.as_deref().unwrap_or_default();
-        saved_before(state, name, change, *modules, *cables, *tempo).map(|file| (file, None))
+                )
     }
 }
 

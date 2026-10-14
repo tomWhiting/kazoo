@@ -11,6 +11,45 @@ use crate::tree::thread::{Answered, TREE_QUEUE, TreeHandle, TreeItem, WholeKind}
 
 const AT: &str = "2026-10-13T09:01:07Z";
 
+#[test]
+fn listed_parents_cover_buds_beyond_the_recent_rows() {
+    let mut rig = Rig::new();
+    let root = rig.here();
+    let first = rig.change(400.0);
+    let second = rig.change(500.0);
+    rig.go(first.clone(), None);
+    let bud = rig.change(600.0);
+    let line = read_line(rig.path()).unwrap().0;
+    let listing = super::list(rig.path(), &line, 4, Some(1)).unwrap();
+    assert_eq!(listing.recent.len(), 1);
+    let value = serde_json::to_value(listing).unwrap();
+    assert_eq!(value["parents"][&bud.commit], first.commit);
+    assert_eq!(value["parents"][&second.commit], first.commit);
+    assert_eq!(value["parents"][&first.commit], root.commit);
+    assert!(value["parents"][&root.commit].is_null());
+}
+
+#[test]
+fn a_tree_longer_than_the_bound_is_listed_with_its_newest_parents() {
+    // The listing never refuses a long tree: it sends the newest parents
+    // only, and the list says a moment further back is further than that.
+    let mut rig = Rig::new();
+    let root = rig.here();
+    let places: Vec<_> = (0..4).map(|n| rig.change(400.0 + f64::from(n))).collect();
+    let here = &places[3];
+    let parents = super::ancestry::within(rig.path(), &BTreeMap::new(), Some(here), 2).unwrap();
+    assert_eq!(parents.len(), 2, "{parents:?}");
+    assert_eq!(
+        parents[&here.commit].as_deref(),
+        Some(places[2].commit.as_str())
+    );
+    assert_eq!(
+        parents[&places[2].commit].as_deref(),
+        Some(places[1].commit.as_str())
+    );
+    assert!(!parents.contains_key(&root.commit));
+}
+
 fn command(tree: &Path, args: &[&str]) -> String {
     let result = git::git_command(args[0], Some(tree))
         .args(&args[1..])
@@ -120,6 +159,27 @@ impl Rig {
             from,
             to: value,
             glide_beats: 0.0,
+        };
+        let change = make_change(file.last_seq + 1, what);
+        self.wall.tree_test_apply(&file, change);
+        self.here()
+    }
+
+    /// A batch of one cutoff turn, committed as the live tree commits one
+    /// (`Kazoo-Kind: batch`).
+    fn batch(&mut self, value: f64) -> TreePlace {
+        let mut file = self.wall.tree_test_file();
+        let module = file.modules.iter_mut().find(|m| m.id == "vcf1").unwrap();
+        let from = module.knobs.insert("cutoff".into(), value).unwrap();
+        let what = What::Batch {
+            note: "one idea".into(),
+            changes: vec![What::Turn {
+                module: "vcf1".into(),
+                knob: "cutoff".into(),
+                from,
+                to: value,
+                glide_beats: 0.0,
+            }],
         };
         let change = make_change(file.last_seq + 1, what);
         self.wall.tree_test_apply(&file, change);
@@ -895,4 +955,47 @@ fn seq_map_benchmark_fixture_is_imported_changes() {
     let elapsed = started.elapsed();
     assert_eq!(map.len(), 20_000);
     println!("BENCH seq map: {elapsed:?}, 20,000 imported change commits");
+}
+
+#[test]
+fn a_batch_moment_is_a_change_with_its_number() {
+    // A batch is one change (T10a): its commit says `Kazoo-Kind: batch`,
+    // and the tree reads its number as any change's, so a go to it, a
+    // `#N` and a restart all know it.
+    let mut rig = Rig::new();
+    rig.change(400.0);
+    let place = rig.batch(500.0);
+    assert_eq!(
+        command(
+            rig.path(),
+            &[
+                "log",
+                "-1",
+                "--format=%(trailers:key=Kazoo-Kind,valueonly)",
+                &place.commit
+            ]
+        ),
+        "batch"
+    );
+    assert_eq!(place.change, Some(2));
+    let resolved = match rig
+        .ask(|ticket| TreeItem::Resolve {
+            ticket,
+            moment: "#2".into(),
+        })
+        .unwrap()
+    {
+        Answered::Resolved { to, .. } => to,
+        other => panic!("unexpected answer: {other:?}"),
+    };
+    assert_eq!(resolved.commit, place.commit);
+    assert_eq!(resolved.change, Some(2));
+    let line = read_line(rig.path()).unwrap().0;
+    let listing = super::list(rig.path(), &line, 2, Some(4)).unwrap();
+    assert_eq!(listing.recent[0].change, Some(2));
+    assert_eq!(
+        crate::tree::git::missing_changes(rig.path(), &[1, 2], Some(0)).unwrap(),
+        Vec::<u64>::new(),
+        "a restart finds the batch's own commit"
+    );
 }
