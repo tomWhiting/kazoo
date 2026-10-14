@@ -233,6 +233,7 @@ pub fn stamp_births(
             | What::Unpatch { .. }
             | What::Remove { .. }
             | What::Restore { .. }
+            | What::Take { .. }
             | What::Erase { .. }
             | What::LoopFrom { .. }
             | What::Speak { .. }
@@ -262,6 +263,7 @@ pub(crate) fn has_add(what: &What) -> bool {
         | What::Unpatch { .. }
         | What::Remove { .. }
         | What::Restore { .. }
+        | What::Take { .. }
         | What::Erase { .. }
         | What::LoopFrom { .. }
         | What::Speak { .. }

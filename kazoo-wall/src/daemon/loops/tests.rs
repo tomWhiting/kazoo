@@ -562,3 +562,287 @@ fn the_record_a_wall_keeps_is_checked_and_empty_ones_are_not_kept() {
         Err(refused) if refused.code == ErrorCode::NotAllowed
     ));
 }
+
+use super::pins::{ReelRefs, Retention};
+use crate::protocol::{Change, TakeWhy};
+use std::time::{Duration, Instant, SystemTime};
+
+fn short_tape(id: kazoo_core::reels::ReelId) -> TapeRecord {
+    TapeRecord {
+        reel: id.to_string(),
+        frames: 1,
+        tail: 0,
+        ..record()
+    }
+}
+
+fn take_change(seq: u64, module: &str, tape: TapeRecord, why: TakeWhy) -> Change {
+    Change {
+        seq,
+        at: crate::change::utc(seq),
+        seat: "kazoo-wall".into(),
+        what: What::Take {
+            module: module.into(),
+            tape: Some(tape),
+            was: None,
+            frame: seq * 96_000,
+            beat: seq as f64 * 4.0,
+            written: vec![0],
+            why,
+        },
+        summary: "take".into(),
+        undoes: None,
+        clock: None,
+    }
+}
+
+#[test]
+fn a_long_recording_is_checkpointed_once_a_minute() {
+    let dir = reels_dir();
+    assert_eq!(CHECKPOINT_SECONDS, 60);
+    let mut loops = Loops::with_limits(dir.path().to_path_buf(), 4, u64::MAX);
+    let mut bench = bench(&mut loops);
+    bench.knob("record", 1.0);
+    render(&mut bench, BAR, 0.25);
+    let start = Instant::now();
+    loops.checkpoint(start);
+    let mut checkpoints = Vec::new();
+    for pass in 1_u64..=6 {
+        render(&mut bench, BAR, pass as f32 / 16.0);
+        let now = start + Duration::from_secs(2 * pass);
+        loops.checkpoint(now);
+        let pending = loops.pending_for_test("loop1");
+        if let Some(ticket) = pending.first() {
+            loops.wait_snapshot_for_test(*ticket);
+            render(&mut bench, 4_096, 0.25);
+            let snapshot = loops.capture_snapshot_for_test("loop1");
+            let splice = snapshot.splice.unwrap();
+            let expected: Vec<_> = snapshot.tape[..2 * (splice.frames + splice.tail)]
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect();
+            let frame = snapshot.at.frame;
+            loops.store_snapshot_for_test("loop1", snapshot);
+            loops.wait_take_for_test(*ticket);
+            let take = loops.recordings.finished.pop_front().unwrap();
+            assert_eq!(take.why, TakeWhy::Checkpoint);
+            assert_eq!(take.mark.frame, frame);
+            let reel = ReelStore::open(dir.path())
+                .unwrap()
+                .get(&take.tape.reel.parse().unwrap())
+                .unwrap();
+            assert_eq!(
+                reel.samples
+                    .iter()
+                    .map(|sample| sample.to_bits())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            checkpoints.push((now, take.mark.pass, take.mark.frame));
+        }
+    }
+    assert_eq!(checkpoints.len(), 3);
+    assert!(
+        checkpoints
+            .windows(2)
+            .all(
+                |pair| pair[1].0.duration_since(pair[0].0) >= Duration::from_secs(4)
+                    && pair[1].1 > pair[0].1
+                    && pair[1].2.saturating_sub(pair[0].2) >= 4 * 48_000
+            )
+    );
+    assert_eq!(state(&loops), LoopState::Rolling as u8);
+}
+
+#[test]
+fn pins_name_every_reel_the_wall_names_and_the_sweep_keeps_them() {
+    let dir = reels_dir();
+    let state_dir = reels_dir();
+    let store = ReelStore::open(dir.path()).unwrap();
+    let tapes: Vec<_> = (1_u16..=6)
+        .map(|value| {
+            let id = store.put(48_000, &[f32::from(value) / 8.0; 2]).unwrap();
+            short_tape(id)
+        })
+        .collect();
+    let (patch, _) = saved(Some(tapes[0].clone()));
+    let (saved_patch, _) = saved(Some(tapes[1].clone()));
+    let mut wall_store = crate::store::Store::open(state_dir.path()).unwrap();
+    wall_store
+        .write_save("saved tape", &saved_patch, false)
+        .unwrap();
+    wall_store
+        .append_synced(&take_change(1, "loop1", tapes[2].clone(), TakeWhy::Punch))
+        .unwrap();
+    std::fs::write(
+        dir.path().join("pins/session-jam.txt"),
+        format!("{}\nend\n", tapes[4].reel),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("pins/wall-history.txt"),
+        format!("{}\n", tapes[5].reel),
+    )
+    .unwrap();
+    let refs = ReelRefs::read(&patch.to_file(), Some(&mut wall_store), &[]).unwrap();
+    let mut retention = Retention::new(dir.path(), u64::MAX).unwrap();
+    retention.pin(&store, refs).unwrap();
+    let now = SystemTime::now();
+    for tape in &tapes {
+        std::fs::File::open(store.path(&tape.reel.parse().unwrap()))
+            .unwrap()
+            .set_modified(now - Duration::from_secs(2 * 86_400))
+            .unwrap();
+    }
+    retention.sweep(&store, dir.path(), now).unwrap();
+    for (index, tape) in tapes.iter().enumerate() {
+        assert_eq!(store.contains(&tape.reel.parse().unwrap()), index != 3);
+    }
+    let pin = std::fs::read_to_string(dir.path().join("pins/wall.txt")).unwrap();
+    for index in [0, 1, 2, 5] {
+        assert!(pin.contains(&tapes[index].reel));
+    }
+    std::fs::write(dir.path().join("pins/session-broken.txt"), b"invalid reel").unwrap();
+    let orphan = store.put(48_000, &[0.875; 2]).unwrap();
+    std::fs::File::open(store.path(&orphan))
+        .unwrap()
+        .set_modified(now - Duration::from_secs(2 * 86_400))
+        .unwrap();
+    assert!(
+        retention
+            .sweep(&store, dir.path(), now)
+            .unwrap_err()
+            .contains("session-broken")
+    );
+    assert!(store.contains(&orphan));
+}
+
+#[test]
+fn checkpoints_are_pruned_for_space_but_takes_and_saves_never_are() {
+    let dir = reels_dir();
+    let store = ReelStore::open(dir.path()).unwrap();
+    let state_dir = reels_dir();
+    let mut wall_store = crate::store::Store::open(state_dir.path()).unwrap();
+    let bytes = 76;
+    let mut loops = Loops::with_limits(dir.path().to_path_buf(), 60, bytes * 3);
+    let mut retention = Retention::new(dir.path(), loops.recordings.budget).unwrap();
+    let mut changes = Vec::new();
+    let mut checkpoints = Vec::new();
+    for seq in 1_u16..=6 {
+        let id = store.put(48_000, &[f32::from(seq) / 16.0; 2]).unwrap();
+        let tape = short_tape(id);
+        changes.push(take_change(
+            u64::from(seq),
+            "loop1",
+            tape,
+            TakeWhy::Checkpoint,
+        ));
+        checkpoints.push(id);
+    }
+    let punch_id = store.put(48_000, &[0.75; 2]).unwrap();
+    let save_id = store.put(48_000, &[0.875; 2]).unwrap();
+    changes.push(take_change(
+        7,
+        "loop2",
+        short_tape(punch_id),
+        TakeWhy::Punch,
+    ));
+    changes.push(take_change(8, "loop3", short_tape(save_id), TakeWhy::Save));
+    let (saved_patch, _) = saved(Some(short_tape(save_id)));
+    wall_store
+        .write_save("kept music", &saved_patch, false)
+        .unwrap();
+    let refs = ReelRefs::read(
+        &Patch::empty(120.0).to_file(),
+        Some(&mut wall_store),
+        &changes,
+    )
+    .unwrap();
+    retention.pin(&store, refs.clone()).unwrap();
+    retention
+        .budget(&store, dir.path(), SystemTime::now())
+        .unwrap();
+    assert!(checkpoints[..5].iter().all(|id| !store.contains(id)));
+    assert!(store.contains(&checkpoints[5]));
+    assert!(store.contains(&punch_id));
+    assert!(store.contains(&save_id));
+    assert_eq!(retention.pruned.len(), 5);
+    assert!(!retention.paused);
+    let next_punch = store.put(48_000, &[0.9375; 2]).unwrap();
+    retention
+        .stored(&store, dir.path(), "loop2", next_punch, TakeWhy::Punch)
+        .unwrap();
+    assert!(store.contains(&next_punch));
+    retention
+        .budget(&store, dir.path(), SystemTime::now())
+        .unwrap();
+    assert!(retention.paused);
+    let restored = Retention::new(dir.path(), bytes * 3).unwrap();
+    assert_eq!(restored.pruned, retention.pruned);
+    let mut bench = bench(&mut loops);
+    loops.queue_pin(refs, false);
+    loops.poll();
+    loops.wait_for_test();
+    assert!(loops.checkpoints_paused);
+    bench.knob("record", 1.0);
+    render(&mut bench, BAR + BAR / 2, 0.375);
+    bench.knob("record", 0.0);
+    render(&mut bench, BAR, 0.375);
+    loops.poll();
+    let ticket = loops.pending_for_test("loop1")[0];
+    loops.wait_snapshot_for_test(ticket);
+    render(&mut bench, 4_096, 0.0);
+    loops.wait_take_for_test(ticket);
+    let take = loops.recordings.finished.pop_front().unwrap();
+    assert_eq!(take.why, TakeWhy::Punch);
+    let live_punch = take.tape.reel.parse().unwrap();
+    assert!(store.contains(&live_punch));
+    store.remove(&punch_id).unwrap();
+    store.remove(&save_id).unwrap();
+    store.remove(&next_punch).unwrap();
+    store.remove(&live_punch).unwrap();
+    retention
+        .budget(&store, dir.path(), SystemTime::now())
+        .unwrap();
+    assert!(!retention.paused);
+    loops.poll();
+    while loops.checkpoints_paused {
+        loops.wait_for_test();
+    }
+    assert!(!loops.checkpoints_paused);
+}
+
+#[test]
+fn a_take_whose_reel_cannot_be_written_says_so_and_the_loop_plays_on() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = reels_dir();
+    let mut loops = Loops::with_reels_dir(dir.path().to_path_buf());
+    let mut bench = bench(&mut loops);
+    loops.queue_pin(ReelRefs::default(), false);
+    loops.poll();
+    loops.wait_for_test();
+    bench.knob("record", 1.0);
+    render(&mut bench, BAR + BAR / 2, 0.25);
+    bench.knob("record", 0.0);
+    render(&mut bench, BAR, 0.25);
+    loops.poll();
+    let ticket = loops.pending_for_test("loop1")[0];
+    loops.wait_snapshot_for_test(ticket);
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    render(&mut bench, 4_096, 0.0);
+    loops.wait_take_for_test(ticket);
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(loops.recordings.finished.is_empty());
+    assert!(
+        loops
+            .notes()
+            .any(|note| note.contains("loop1's take could not be kept:")
+                && note.contains("it is still playing, and is only in memory"))
+    );
+    assert_eq!(state(&loops), LoopState::Holding as u8);
+    assert!(
+        render(&mut bench, BAR, 0.0)
+            .iter()
+            .any(|sample| sample.abs() > 0.1)
+    );
+}

@@ -698,6 +698,28 @@ impl Control {
         }
     }
 
+    /// Answer saves once their loops have logged their snapshots.
+    fn answer_saves(&mut self) {
+        for (ticket, answer) in self.wall.saved() {
+            let asker = self.awaiting.remove(&ticket);
+            let response = match answer {
+                Ok(outcome) => {
+                    self.announce("kazoo-wall", outcome.change, outcome.event);
+                    asker.map(|(_, id)| Response {
+                        id,
+                        ok: true,
+                        result: Some(outcome.result),
+                        error: None,
+                    })
+                }
+                Err(error) => asker.map(|(_, id)| Response::failure(id, error)),
+            };
+            if let (Some((conn, _)), Some(response)) = (asker, response) {
+                self.send(conn, &response);
+            }
+        }
+    }
+
     fn hello(
         &mut self,
         conn: u64,
@@ -829,6 +851,7 @@ impl Control {
             self.broadcast(&event, None);
         }
         self.answer_speech();
+        self.answer_saves();
         self.watch_audio(now);
     }
 

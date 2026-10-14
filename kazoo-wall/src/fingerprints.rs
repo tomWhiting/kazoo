@@ -211,7 +211,8 @@ impl Dye {
                 self.deposit(&module.id, seat, 1.0);
             }
             // New words are a whole touch on the speaker.
-            What::Erase { module, .. }
+            What::Take { module, .. }
+            | What::Erase { module, .. }
             | What::LoopFrom { module, .. }
             | What::Speak { module, .. } => self.deposit(module, seat, 1.0),
             What::Remove { module, .. } => self.forget(&module.id),

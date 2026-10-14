@@ -9,8 +9,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use kazoo_wall::protocol::{
-    CatalogueResult, ChangeResult, ListenResult, LoadResult, LogPage, ProbeResult, RecordResult,
-    Request, SaveResult, SavesResult, Snapshot, TempoResult,
+    CatalogueResult, ChangeResult, ListenResult, LoadResult, LogPage, LoopOp, ProbeResult,
+    RecordResult, Request, SaveResult, SavesResult, Snapshot, TempoResult,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -220,6 +220,44 @@ pub struct SpeakArgs {
     /// A macOS voice, e.g. `Samantha`; the system's own when left out.
     #[serde(default)]
     pub voice: Option<String>,
+}
+
+/// `wall_loop` preserves an explicit null source as patched inputs.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoopArgs {
+    /// The loop module's id, as listed by `wall_look`.
+    pub module: String,
+    /// True erases the tape; give this or `from`.
+    #[serde(default)]
+    pub erase: Option<bool>,
+    /// A desk strip label, or null to record the patched inputs.
+    #[serde(default, deserialize_with = "loop_from")]
+    pub from: Option<Option<String>>,
+}
+
+fn loop_from<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+impl LoopArgs {
+    fn request(self) -> Result<Request, &'static str> {
+        let op = match (self.erase == Some(true), self.from) {
+            (true, None) => LoopOp::Erase,
+            (false, Some(from)) => LoopOp::From { from },
+            (true, Some(_)) | (false, None) => {
+                return Err(
+                    "Give exactly one of erase: true or from (a desk strip label, or null for patched inputs).",
+                );
+            }
+        };
+        Ok(Request::Loop {
+            module: self.module,
+            op,
+        })
+    }
 }
 
 /// `wall_save`.
@@ -601,6 +639,17 @@ impl Seat {
     }
 
     #[tool(
+        name = "wall_loop",
+        description = "Erase a loop module's tape (undoable with wall_undo), or set which desk strip it records from (e.g. `mouth/dry` for Tom's voice; `null` to record what is patched into its left and right). To record, turn its `record` knob to 1 with wall_turn: it starts at the loop's next bar line and stops at the bar line after you turn it back to 0. Its `bars` and `beats` knobs set the length of a blank loop; two loops of unequal lengths (17 and 23 bars) drift against each other and meet again rarely."
+    )]
+    async fn wall_loop(&self, Parameters(args): Parameters<LoopArgs>) -> CallToolResult {
+        match args.request() {
+            Ok(request) => self.change(request).await,
+            Err(why) => bad(why),
+        }
+    }
+
+    #[tool(
         name = "wall_record",
         description = "Start (on: true) or stop (on: false) recording what the wall plays: a 32-bit float stereo WAV at the wall's rate, in Tom's ~/Music/kazoo-wall, named for the time it starts. It records the wall even while its sound is silenced. Answers with the file's path, and on a stop how long it is. Starting while a recording is under way, or stopping when none is, changes nothing and says so. wall_look shows a recording under way."
     )]
@@ -743,8 +792,51 @@ impl ServerHandler for Seat {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wall_loop_needs_exactly_one_of_erase_and_from() {
+        for json in [
+            r#"{"module":"loop1"}"#,
+            r#"{"module":"loop1","erase":false}"#,
+            r#"{"module":"loop1","erase":true,"from":"mouth/dry"}"#,
+            r#"{"module":"loop1","erase":true,"from":null}"#,
+        ] {
+            let args: LoopArgs = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                args.request().unwrap_err(),
+                "Give exactly one of erase: true or from (a desk strip label, or null for patched inputs)."
+            );
+        }
+        for (json, op) in [
+            (r#"{"module":"loop1","erase":true}"#, LoopOp::Erase),
+            (
+                r#"{"module":"loop1","from":"mouth/dry"}"#,
+                LoopOp::From {
+                    from: Some("mouth/dry".into()),
+                },
+            ),
+            (
+                r#"{"module":"loop1","from":null}"#,
+                LoopOp::From { from: None },
+            ),
+            (
+                r#"{"module":"loop1","erase":false,"from":null}"#,
+                LoopOp::From { from: None },
+            ),
+        ] {
+            let args: LoopArgs = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                args.request().unwrap(),
+                Request::Loop {
+                    module: "loop1".into(),
+                    op
+                }
+            );
+        }
+        assert!(serde_json::from_str::<LoopArgs>(r#"{"module":"loop1","from":42}"#).is_err());
+    }
+
     /// Every tool, in the router's order.
-    const TOOLS: [&str; 19] = [
+    const TOOLS: [&str; 20] = [
         "wall_add",
         "wall_catalogue",
         "wall_chain",
@@ -753,6 +845,7 @@ mod tests {
         "wall_load",
         "wall_log",
         "wall_look",
+        "wall_loop",
         "wall_patch",
         "wall_probe",
         "wall_record",

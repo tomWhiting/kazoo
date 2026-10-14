@@ -273,7 +273,8 @@ pub fn never_undone(what: &What) -> Option<WallError> {
             "that change was made by a newer wall and cannot be undone by this one".to_string(),
         ),
         What::Chain { changes, .. } => changes.iter().find_map(never_undone),
-        What::Erase { .. }
+        What::Take { .. }
+        | What::Erase { .. }
         | What::LoopFrom { .. }
         | What::Turn { .. }
         | What::Patch { .. }
@@ -1187,6 +1188,26 @@ impl Patch {
     /// cable already back.
     pub fn undo(&mut self, what: &What) -> Result<What, WallError> {
         match what {
+            What::Take {
+                module,
+                tape,
+                was,
+                frame,
+                beat,
+                why,
+                ..
+            } => {
+                self.undo_erase(module, was.as_ref())?;
+                Ok(What::Take {
+                    module: module.clone(),
+                    tape: was.clone(),
+                    was: tape.clone(),
+                    frame: *frame,
+                    beat: *beat,
+                    written: Vec::new(),
+                    why: *why,
+                })
+            }
             What::Erase { module, was, .. } => self.undo_erase(module, was.as_ref()),
             What::LoopFrom { module, was, .. } => {
                 self.loop_op(module, &crate::protocol::LoopOp::From { from: was.clone() })

@@ -1630,6 +1630,7 @@ name = "kazoo-mcp"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
+ "kazoo-core",
  "kazoo-host",
  "kazoo-wall",
  "rmcp",

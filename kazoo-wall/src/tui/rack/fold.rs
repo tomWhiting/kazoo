@@ -100,6 +100,7 @@ pub fn layout(
         projected.push(tiles.get(&index).map_or_else(
             || module.clone(),
             |tile| ModuleView {
+                tape: None,
                 id: module.id.clone(),
                 kind: KIND.to_string(),
                 name: Some(tile.group.clone()),

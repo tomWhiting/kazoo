@@ -19,6 +19,7 @@
 //! the wall's flood guard ([`flood`]); turns wait for it.
 
 mod chains;
+mod clock;
 mod command;
 mod flood;
 mod folds;
@@ -390,6 +391,7 @@ pub struct App {
     link: LinkState,
     feed: LinkState,
     snapshot: Option<Snapshot>,
+    look_at: Option<Instant>,
     catalogue: Vec<KindInfo>,
     log: Log,
     focus: Focus,
@@ -443,6 +445,7 @@ impl App {
             link: LinkState::Connecting,
             feed: LinkState::Connecting,
             snapshot: None,
+            look_at: None,
             catalogue: Vec::new(),
             log: Log::default(),
             focus: Focus::Wall,
@@ -1051,6 +1054,7 @@ impl App {
     }
 
     fn on_snapshot(&mut self, snapshot: Snapshot, now: Instant) {
+        self.look_at = Some(now);
         // What the console sends from now on is for the wall it shows: a
         // change asked of an older wall is refused, never lands on this
         // one's modules.

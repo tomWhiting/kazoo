@@ -18,6 +18,7 @@
 //! - [`kazoo_host::terminal`] takes over the terminal and gives it back.
 
 mod app;
+pub mod clock;
 mod draw;
 mod dye;
 mod knob;
