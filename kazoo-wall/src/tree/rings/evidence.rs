@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use super::model::{describe, differences, same};
 use crate::migrate;
 use crate::patch::{Patch, PatchFile, hash_bytes};
-use crate::protocol::{Change, What, valid_save_name};
+use crate::protocol::{Change, TreePlace, What, valid_save_name};
 use crate::store::MAX_WALL_FILE;
 use crate::tree::TreeError;
 
@@ -209,8 +209,13 @@ impl Proofs {
             }
         }
         for change in changes {
-            if matches!(&change.what, What::Go { backup, .. } if backup.starts_with("tree:")) {
-                proofs.tree_backups += 1;
+            if let What::Go { backup, .. } = &change.what
+                && backup.starts_with("tree:")
+            {
+                match proofs.backup(state, change.seq, changes) {
+                    Ok(_) => proofs.tree_backups += 1,
+                    Err(_) => proofs.bad_backups.push(backup.clone()),
+                }
                 continue;
             }
             let (What::Load {
@@ -377,7 +382,12 @@ impl Proofs {
         undone: u64,
         changes: &[Change],
     ) -> Result<(PatchFile, Option<String>), String> {
-        if let Some(What::Go { from, backup, .. }) = changes
+        if let Some(What::Go {
+            from,
+            backup,
+            fingerprint,
+            ..
+        }) = changes
             .iter()
             .find(|change| change.seq == undone)
             .map(|change| &change.what)
@@ -397,6 +407,7 @@ impl Proofs {
             let file = crate::tree::thread::here::wall(&tree, &from.commit).map_err(|error| {
                 format!("the tree backup of go {undone} could not be read: {error}")
             })?;
+            prove_tree_backup(from, backup, fingerprint, &file)?;
             return Ok((*file, None));
         }
         self.files.iter()
@@ -408,6 +419,25 @@ impl Proofs {
                     |e| e.file().map(|file| (file, None)).map_err(|e| e.to_string()),
                 )
     }
+}
+
+pub(super) fn prove_tree_backup(
+    from: &TreePlace,
+    backup: &str,
+    fingerprint: &str,
+    file: &PatchFile,
+) -> Result<(), String> {
+    if from.commit.len() != 40
+        || !from.commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || backup.strip_prefix("tree:") != from.commit.get(..12)
+    {
+        return Err("the tree backup does not name its source moment".into());
+    }
+    let (patch, _) = Patch::load(file)?;
+    if fingerprint.is_empty() || patch.fingerprint() != fingerprint {
+        return Err("the tree backup does not hold its go's fingerprint".into());
+    }
+    Ok(())
 }
 
 fn saved_before(

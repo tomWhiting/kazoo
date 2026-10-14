@@ -1,5 +1,7 @@
 use super::*;
 
+mod ratchet;
+
 fn noisy(count: usize) -> Patch {
     let mut patch = Patch::empty(120.0);
     let mut previous: Option<String> = None;

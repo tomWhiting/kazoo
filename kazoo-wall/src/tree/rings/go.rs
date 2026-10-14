@@ -259,21 +259,27 @@ impl Walk<'_> {
         change: &Change,
         held: Option<u64>,
     ) -> Result<(PatchFile, Option<String>), TreeError> {
-        let moment = change.undoes.map_or(held, |undone| {
-            self.log
+        if let Some(undone) = change.undoes {
+            if let Some(What::Go {
+                from,
+                backup,
+                fingerprint,
+                ..
+            }) = self
+                .log
                 .changes
                 .iter()
                 .find(|c| c.seq == undone)
-                .and_then(|original| {
-                    let What::Go { from, backup, .. } = &original.what else {
-                        return None;
-                    };
-                    from.change.filter(|seq| {
-                        backup.starts_with("tree:") && self.line.walls.contains_key(seq)
-                    })
-                })
-        });
-        if let Some(seq) = moment {
+                .map(|original| &original.what)
+                && backup.starts_with("tree:")
+                && let Some(files) = from.change.and_then(|seq| self.line.walls.get(&seq))
+            {
+                let file = from_files(files)?;
+                super::evidence::prove_tree_backup(from, backup, fingerprint, &file)
+                    .map_err(TreeError::Git)?;
+                return Ok((file, None));
+            }
+        } else if let Some(seq) = held {
             let files = self.line.walls.get(&seq).ok_or_else(|| {
                 TreeError::Git(format!(
                     "the import did not keep the wall of change {seq}, which a go went to"

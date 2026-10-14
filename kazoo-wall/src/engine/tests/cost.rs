@@ -15,33 +15,18 @@ fn module_cpu_is_read_twice_per_sub_block() {
             "frames={frames}"
         );
         assert!(engine.module_cpu > Duration::ZERO);
-    }
-}
-
-#[test]
-fn module_cpu_is_read_twice_per_callback_span() {
-    let (mut engine, mut control) = fresh();
-    let mut model = Model::default();
-    model.add(&mut control, 0, Kind::VCO);
-    model.send_tables(&mut control);
-    for frames in [SUB_BLOCK * 20, 1, SUB_BLOCK * 3, SUB_BLOCK * 40] {
-        let unspent = engine.carry_len - engine.carry_used;
-        let sub_blocks = frames.saturating_sub(unspent).div_ceil(SUB_BLOCK);
-        let mut buffer = vec![0.0; frames * 2];
-        on_audio_thread(|| engine.render(&mut buffer, 2));
-        let reads = engine.module_span.reads;
-        assert_eq!(reads, 2 * sub_blocks, "frames={frames}");
-        assert!(engine.module_cpu > Duration::ZERO);
         assert!(control.shared().fixed_load().is_finite());
         assert!(control.shared().fixed_load() <= control.shared().render_load());
+        if frames % SUB_BLOCK != 0 {
+            let mut carried = [0.0; 2];
+            on_audio_thread(|| engine.render(&mut carried, 2));
+            assert_eq!(engine.module_span.reads, 0);
+            assert_eq!(engine.module_cpu, Duration::ZERO);
+        }
+        engine.module_cpu = Duration::from_millis(3);
+        engine.measure_fixed(Duration::from_millis(10), 0.02, 1.0);
+        assert!((control.shared().fixed_load() - 0.35).abs() < 1e-6);
     }
-    let mut carried = [0.0; 2];
-    on_audio_thread(|| engine.render(&mut carried, 2));
-    assert_eq!(engine.module_span.reads, 0);
-    assert_eq!(engine.module_cpu, Duration::ZERO);
-    engine.module_cpu = Duration::from_millis(3);
-    engine.measure_fixed(Duration::from_millis(10), 0.02, 1.0);
-    assert!((control.shared().fixed_load() - 0.35).abs() < 1e-6);
 }
 
 #[test]

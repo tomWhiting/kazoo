@@ -11,6 +11,8 @@ use crate::daemon::wall::{Outcome, Wall};
 use crate::protocol::{Change, Request, TreePlace, What};
 use crate::tree::{git, thread::TreeHandle};
 
+mod backups;
+
 fn place(seq: Option<u64>) -> TreePlace {
     TreePlace {
         commit: "0123456789abcdef0123456789abcdef01234567".into(),
@@ -96,39 +98,23 @@ fn going_without_a_save() -> tempfile::TempDir {
 }
 
 #[test]
-fn tree_go_backups_are_counted_as_held_by_the_tree() {
+fn unproved_tree_go_backups_are_not_counted_as_held_by_the_tree() {
     let state = going_without_a_save();
     let tree = tempfile::tempdir().unwrap();
     let report = grow(state.path(), tree.path(), false).unwrap();
     assert!(
-        report.report.contains("2 go backups held by the tree"),
+        report.report.contains("0 go backups held by the tree"),
         "{report}"
     );
-    assert!(report.report.contains("0 do not ()"), "{report}");
+    assert!(report.report.contains("2 do not (tree:"), "{report}");
 }
 
 #[test]
-fn an_undone_tree_go_is_proved_without_a_save() {
+fn an_undone_tree_go_refuses_a_made_up_backup() {
     let state = going_without_a_save();
     let tree = tempfile::tempdir().unwrap();
     let report = grow(state.path(), tree.path(), false).unwrap();
-    assert_eq!(report.gaps, 0, "{report}");
-    assert_eq!(report.changes, 15, "{report}");
-    assert!(
-        !report.report.contains("does not hold its fingerprint"),
-        "{report}"
-    );
-    assert!(
-        (kept(tree.path(), "trunk")
-            .modules
-            .iter()
-            .find(|m| m.id == "vcf1")
-            .unwrap()
-            .knobs["cutoff"]
-            - 517.0)
-            .abs()
-            < f64::EPSILON
-    );
+    assert!(report.gaps > 0, "{report}");
 }
 
 #[test]
@@ -142,10 +128,20 @@ fn an_undone_tree_go_reads_its_unnumbered_source_moment() {
     grow(source_state.path(), &source_tree, false).unwrap();
     let commit = super::fixtures::commit_of(&source_tree, "change", 10);
     let mut original = go(11, Some(4), &before);
-    if let What::Go { from, backup, .. } = &mut original.what {
+    if let What::Go {
+        from,
+        backup,
+        fingerprint,
+        ..
+    } = &mut original.what
+    {
         from.commit.clone_from(&commit);
         from.change = None;
         *backup = format!("tree:{}", &commit[..12]);
+        *fingerprint = crate::patch::Patch::load(&kept(&source_tree, &commit))
+            .unwrap()
+            .0
+            .fingerprint();
     }
     let mut undone = go(12, None, &before);
     undone.undoes = Some(11);

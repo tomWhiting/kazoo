@@ -277,7 +277,15 @@ impl Wall {
     /// the modules it would wake render nothing yet. Counted, they would
     /// lower the factor, and the wake would be costed the less the busier
     /// the machine. With nothing staged the two are the same modules.
+    ///
+    /// Until the averaging window has taken in a replacement wall, use
+    /// 1.0: the old wall's load divided by the new wall's bench sum would
+    /// inflate the factor after a go to a smaller wall and ratchet up
+    /// the cost of every subsequent load or go.
     fn busy_beside(&self, taken: &[&ModuleRecord]) -> f32 {
+        if self.engine.shared().frames() < self.load_watch.measured_from {
+            return 1.0;
+        }
         let bench = self.bench_beside(taken);
         let load = self.engine.shared().render_load() - self.engine.shared().fixed_load();
         if bench < BUSY_MIN_BENCH || !load.is_finite() || load <= 0.0 {
