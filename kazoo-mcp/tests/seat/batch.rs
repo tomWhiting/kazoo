@@ -12,8 +12,11 @@ async fn batch_tool_lists_label_id_and_notifies_other_seat_once() {
     let result = works(&maker, "wall_batch", serde_json::json!({"note":"A moving voice","changes":[{"op":"add","kind":"lfo","as":"osc"},{"op":"turn","module":"@osc","knob":"rate","value":3.0,"glide_beats":4.0}]})).await;
     assert!(result.contains("osc"), "{result}");
     assert!(result.contains("lfo3"), "{result}");
-    assert!(result.contains("Step 1"), "{result}");
-    assert!(result.contains("Step 2"), "{result}");
+    // Steps are numbered as a refusal numbers them: from 0, the index in
+    // the changes the seat sent.
+    assert!(result.contains("Step 0: "), "{result}");
+    assert!(result.contains("Step 1: "), "{result}");
+    assert!(!result.contains("Step 2"), "{result}");
     loop {
         let told = notifications.recv().await.unwrap();
         let (content, _) = channel_shape(&told);
