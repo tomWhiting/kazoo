@@ -9,9 +9,15 @@ use ratatui::widgets::Paragraph;
 use crate::controls::App;
 
 mod board;
+pub mod latency;
 mod looper;
 mod pitch;
+pub mod scope;
+pub mod spectrum;
 mod trail;
+
+#[cfg(test)]
+mod voice_tests;
 
 pub use trail::Display;
 
@@ -77,8 +83,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     };
     let bpm = app.desk_bpm.unwrap_or(app.accepted.own_bpm);
     let title = format!(
-        "{gate} kazoo mouth · {} Hz · ♩{bpm:.1} · latency --{}",
+        "{gate} kazoo mouth · {} Hz · ♩{bpm:.1} · latency {}{}",
         app.loop_sample_rate,
+        app.latency.header(),
         if app.accepted.silent {
             " · silent"
         } else {
@@ -88,8 +95,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     let mic = format!("mic: {}", app.input_label);
     // Cut at the width, not at words, so the rows counted are the rows drawn.
     let width = usize::from(area.width);
+    let breakdown = app.latency.breakdown();
     let header: Vec<Line<'_>> = [title.as_str(), link, mic.as_str()]
         .into_iter()
+        .chain(app.plots.latency_open.then_some(breakdown.as_str()))
         .flat_map(|text| rows_of(text, width))
         .map(Line::from)
         .collect();
@@ -110,24 +119,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     let strip = areas[1];
     let meter_width = strip.width.min(38);
     let plot_width = strip.width.saturating_sub(meter_width);
+    let mut plots = Rect::new(strip.x, strip.y, plot_width, strip.height);
     if plot_width >= 40 && strip.height > 5 {
         pitch::draw(frame, Rect::new(strip.x, strip.y, plot_width, 5), display);
-        if strip.height > 5 {
-            trail::draw(
-                frame,
-                Rect::new(strip.x, strip.y + 5, plot_width, strip.height - 5),
-                display,
-                app.accepted.quantise,
-            );
-        }
-    } else if plot_width > 0 {
-        trail::draw(
-            frame,
-            Rect::new(strip.x, strip.y, plot_width, strip.height),
-            display,
-            app.accepted.quantise,
-        );
+        plots.y += 5;
+        plots.height -= 5;
     }
+    scope::strip(frame, plots, app, display);
     board::meters(
         frame,
         Rect::new(strip.x + plot_width, strip.y, meter_width, strip.height),

@@ -15,6 +15,7 @@ use ringbuf::{HeapCons, HeapProd};
 
 use crate::synth::{SynthSettings, VoiceSynth};
 
+pub(crate) mod capture;
 pub(crate) mod fx;
 pub(crate) mod looper;
 mod meters;
@@ -87,6 +88,8 @@ pub(crate) enum Command {
 
 #[derive(Debug, Default)]
 pub struct Stats {
+    pub capture: capture::Capture,
+    pub fx_latency: AtomicU64,
     pub mic_dropped: AtomicU64,
     pub mic_skipped: AtomicU64,
     pub display_dropped: AtomicU64,
@@ -104,6 +107,18 @@ pub struct Stats {
     pub fx_output: [AtomicU32; Slot::ALL.len()],
     pub mic_rms: AtomicU32,
     pub output_rms: AtomicU32,
+}
+
+impl Stats {
+    /// Stats whose scope capture is sized for an engine running at `rate`.
+    /// `Stats::default()` captures at 48 kHz.
+    #[must_use]
+    pub fn new(rate: u32) -> Self {
+        Self {
+            capture: capture::Capture::new(rate),
+            ..Self::default()
+        }
+    }
 }
 
 pub struct EngineSetup<D> {
@@ -184,6 +199,13 @@ impl<D: DeskOut> MouthEngine<D> {
             return Err(kazoo_core::Error::Config(
                 "mouth rate and block must be positive".into(),
             ));
+        }
+        if setup.stats.capture.rate() != setup.rate {
+            return Err(kazoo_core::Error::Config(format!(
+                "mouth stats capture at {} Hz, the engine runs at {} Hz",
+                setup.stats.capture.rate(),
+                setup.rate
+            )));
         }
         let block = setup.block.min(4096);
         let mut synth = VoiceSynth::new(setup.rate, block)?;
@@ -346,6 +368,15 @@ impl<D: DeskOut> MouthEngine<D> {
         );
     }
 
+    fn publish_capture(&self, count: usize) {
+        self.stats
+            .capture
+            .push(&self.mic[..count], &self.stereo[..count * 2]);
+        self.stats
+            .fx_latency
+            .store(self.fx.latency() as u64, Ordering::Relaxed);
+    }
+
     fn render_chunk(&mut self, out: &mut [f32], channels: usize) {
         let count = out.len() / channels;
         if count == 0 {
@@ -425,6 +456,7 @@ impl<D: DeskOut> MouthEngine<D> {
                 &self.stats.output_rms,
             );
         }
+        self.publish_capture(count);
         let connected = self.desk.is_connected();
         let accepted = self
             .desk
