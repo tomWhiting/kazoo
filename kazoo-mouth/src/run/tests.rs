@@ -123,12 +123,18 @@ fn desk_refusal_stays_in_the_mouth_status() {
         messages_dropped: 0,
         connections: 1,
         last_refusal: Some(
-            "it runs at 48000 Hz, the desk at 24000 Hz (use the same device)".into(),
+            "the desk refused mouth: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)"
+                .into(),
         ),
     };
     assert_eq!(
         super::desk_status(&state),
         "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)"
+    );
+    state.last_refusal = Some("the desk closed the connection".into());
+    assert_eq!(
+        super::desk_status(&state),
+        "not on the desk: the desk closed the connection"
     );
     state.last_refusal = None;
     assert_eq!(super::desk_status(&state), "playing direct: no desk");

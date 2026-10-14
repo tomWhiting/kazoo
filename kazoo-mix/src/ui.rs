@@ -130,10 +130,10 @@ pub struct StatusInfo {
 /// Draw the whole desk and rebuild the hit map.
 pub fn draw(frame: &mut Frame<'_>, desk: &mut Desk, shared: &SharedState, status: &StatusInfo) {
     draw_with_refusals(frame, desk, shared, status, &[]);
-    // The layout may have changed under a held fader (resize, bank change).
-    desk.release_drag_if_moved();
 }
 
+/// Draw the whole desk with the instruments it refused listed under the
+/// strips, newest first, and rebuild the hit map.
 pub fn draw_with_refusals(
     frame: &mut Frame<'_>,
     desk: &mut Desk,
@@ -142,6 +142,7 @@ pub fn draw_with_refusals(
     refused: &[String],
 ) {
     draw_desk(frame, desk, shared, status, refused);
+    // The layout may have changed under a held fader (resize, bank change).
     desk.release_drag_if_moved();
 }
 

@@ -14,7 +14,7 @@ use crate::{Error, Result};
 pub use super::audio_open::{open_input, open_output};
 
 mod input_pick;
-pub use input_pick::{InputPick, choose_input, explicit_input};
+pub use input_pick::{InputPick, choose_input, explicit_input, input_for};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DeviceChoice {
@@ -136,7 +136,7 @@ impl PreparedOutput {
             .description()
             .map_err(|error| Error::Device(format!("cannot name output device: {error}")))?;
         if let Some(name) = explicit {
-            return Ok(explicit_input(name, output.name()));
+            return input_for(Some(name), None, output.name(), &[]);
         }
         let host = cpal::default_host();
         let default = host
@@ -158,7 +158,7 @@ impl PreparedOutput {
             })
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|error| Error::Device(format!("cannot name input device: {error}")))?;
-        Ok(choose_input(default.as_deref(), output.name(), &inputs))
+        input_for(None, default.as_deref(), output.name(), &inputs)
     }
 }
 

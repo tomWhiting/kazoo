@@ -116,12 +116,14 @@ impl DeskRefusals {
             self.connections = status.connections;
             self.last = None;
         }
-        if let Some(reason) = &status.last_refusal {
-            if status.connected || self.last.as_ref() == Some(reason) {
+        // Only the desk turning the wall away is a refusal: a desk that is
+        // not running, or a link that came down, is not.
+        if let Some(reason) = status.desk_refusal() {
+            if status.connected || self.last.as_deref() == Some(reason) {
                 return;
             }
             log(format!("kazoo-wall: the desk refused the wall: {reason}"));
-            self.last = Some(reason.clone());
+            self.last = Some(reason.to_owned());
         }
     }
 }
@@ -142,13 +144,17 @@ mod desk_tests {
             blocks_dropped: 0,
             messages_dropped: 0,
             connections: 0,
-            last_refusal: Some("wrong rate".into()),
+            last_refusal: Some("the desk refused wall: wrong rate".into()),
         };
         for _ in 0..2 {
             reported.report(&status, |line| lines.push(line));
         }
         assert_eq!(lines, ["kazoo-wall: the desk refused the wall: wrong rate"]);
-        status.last_refusal = Some("desk full".into());
+        // A link that came down was not refused, and says nothing here.
+        status.last_refusal = Some("the desk closed the connection".into());
+        reported.report(&status, |line| lines.push(line));
+        assert_eq!(lines.len(), 1);
+        status.last_refusal = Some("the desk refused wall: desk full".into());
         reported.report(&status, |line| lines.push(line));
         assert_eq!(lines.len(), 2);
         status.connections = 1;
@@ -158,7 +164,7 @@ mod desk_tests {
         status.last_refusal = None;
         reported.report(&status, |line| lines.push(line));
         status.connected = false;
-        status.last_refusal = Some("desk full".into());
+        status.last_refusal = Some("the desk refused wall: desk full".into());
         reported.report(&status, |line| lines.push(line));
         assert_eq!(lines.len(), 4);
     }

@@ -580,3 +580,24 @@ fn mic_choice_and_desk_refusal_are_readable_together() {
         "mic: MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)"
     ));
 }
+
+#[test]
+fn a_narrow_header_keeps_every_word_of_the_mic_and_the_desk() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.input_label =
+        "MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)".into();
+    let link = "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)";
+    for width in [24, 41, 60] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+        let display = Display::new(RATE);
+        terminal
+            .draw(|frame| draw(frame, &app, &display, link, Instant::now()))
+            .unwrap();
+        let screen = text(terminal.backend().buffer()).replace('\n', "");
+        assert!(screen.contains(link), "width {width}: {screen}");
+        assert!(
+            screen.contains(&format!("mic: {}", app.input_label)),
+            "width {width}: {screen}"
+        );
+    }
+}

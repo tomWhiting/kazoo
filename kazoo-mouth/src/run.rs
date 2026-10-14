@@ -598,10 +598,13 @@ fn link_state(session: &Session) -> String {
 
 fn desk_status(state: &kazoo_core::ipc::link::LinkStatus) -> String {
     if !state.connected {
-        state.last_refusal.as_deref().map_or_else(
-            || "playing direct: no desk".into(),
-            |why| format!("not on the desk: {why}"),
-        )
+        state
+            .desk_refusal()
+            .or(state.last_refusal.as_deref())
+            .map_or_else(
+                || "playing direct: no desk".into(),
+                |why| format!("not on the desk: {why}"),
+            )
     } else if state.voice.desk_carries {
         state.strip.map_or_else(
             || "on the desk, awaiting strip".into(),

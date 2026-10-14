@@ -1,6 +1,6 @@
 //! Native-rate microphone capture and recovery, feeding engine-rate mono.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -42,6 +42,9 @@ pub const SINC_LEN: usize = 64;
 pub const OVERSAMPLING: usize = 256;
 pub const HEALTH_EVERY: Duration = Duration::from_millis(250);
 pub const FACTS_EVERY: Duration = Duration::from_secs(1);
+/// The longest wait between asking a device whose frames stay off its rate
+/// for facts that never change: asking creates host audio units.
+pub const RECHECK_MOST: Duration = Duration::from_secs(32);
 pub const RELEASE_WAIT: Duration = Duration::from_secs(1);
 /// Device names are cut to this many bytes (at a char boundary) in the status.
 pub const NAME_BYTES: usize = 48;
@@ -121,6 +124,9 @@ pub struct MicShared {
     status: Mutex<MicStatus>,
     glitches: AtomicU32,
     resample_errors: AtomicU32,
+    /// Device frames the callback has been handed, for the supervisor to
+    /// hold against the rate the mic was opened at.
+    frames: AtomicU64,
 }
 
 impl MicShared {
@@ -259,7 +265,11 @@ pub(crate) enum MicFault {
 
 pub(crate) trait MicBackend: Send + 'static {
     type Stream;
+    /// The device's facts. A backend may answer from what it read before,
+    /// for as long as the device keeps its identity.
     fn facts(&mut self, device: &DeviceChoice) -> Result<MicFacts>;
+    /// Drop what `facts` remembers, so its next answer asks the device.
+    fn forget(&mut self);
     fn open(
         &mut self,
         device: &DeviceChoice,
@@ -326,6 +336,11 @@ impl MicBackend for CpalMic {
         })
     }
 
+    fn forget(&mut self) {
+        self.facts.invalidate();
+        self.named = None;
+    }
+
     fn open(
         &mut self,
         device: &DeviceChoice,
@@ -364,10 +379,7 @@ impl MicBackend for CpalMic {
             Ok(()) => None,
             Err(error) => Some(fault.unwrap_or_else(|| MicFault::Lost(error.to_string()))),
         };
-        if matches!(outcome, Some(MicFault::Lost(_))) {
-            self.facts.invalidate();
-            self.named = None;
-        }
+        // A loss reaches the supervisor, whose `lose` makes this backend forget.
         outcome
     }
 }
@@ -397,6 +409,10 @@ impl MicCapture {
             shared,
             ..
         } = self;
+        shared.frames.fetch_add(
+            u64::try_from(data.len() / channels).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
         let Some(sink) = sink.as_mut() else {
             shared.resample_errors.fetch_add(1, Ordering::Relaxed);
             return;
@@ -602,6 +618,11 @@ struct Supervisor<B: MicBackend> {
     opened_facts: Option<MicFacts>,
     last_error: Option<String>,
     release_wait: Duration,
+    /// Since when, and from what count, the frames are being measured.
+    delivery: (Instant, u64),
+    /// When frames off the rate may next send the supervisor to the device.
+    recheck_at: Instant,
+    recheck_wait: Duration,
 }
 
 impl<B: MicBackend> Supervisor<B> {
@@ -614,6 +635,7 @@ impl<B: MicBackend> Supervisor<B> {
         shared: Arc<MicShared>,
     ) -> Self {
         let (home, returned) = crossbeam_channel::bounded(1);
+        let now = Instant::now();
         Self {
             backend,
             request,
@@ -625,11 +647,14 @@ impl<B: MicBackend> Supervisor<B> {
             counted,
             shared,
             status: MicStatus::default(),
-            last_facts: Instant::now(),
+            last_facts: now,
             ever_opened: false,
             opened_facts: None,
             last_error: None,
             release_wait: RELEASE_WAIT,
+            delivery: (now, 0),
+            recheck_at: now,
+            recheck_wait: FACTS_EVERY,
         }
     }
 
@@ -638,7 +663,8 @@ impl<B: MicBackend> Supervisor<B> {
             .backend
             .facts(&self.request.device)
             .map_err(|error| Error::Device(format!("{error}{LIST_HINT}")))?;
-        self.open_facts(&facts).map_err(|error| match error {
+        let now = self.last_facts;
+        self.open_facts(&facts, now).map_err(|error| match error {
             Error::Device(reason) => Error::Device(format!("{reason}{LIST_HINT}")),
             other => Error::Device(format!("input device '{}': {other}{LIST_HINT}", facts.name)),
         })?;
@@ -646,7 +672,7 @@ impl<B: MicBackend> Supervisor<B> {
         Ok(())
     }
 
-    fn open_facts(&mut self, facts: &MicFacts) -> Result<()> {
+    fn open_facts(&mut self, facts: &MicFacts, now: Instant) -> Result<()> {
         if !(MIC_MIN_RATE..=MIC_MAX_RATE).contains(&facts.rate) {
             return Err(Error::Device(format!(
                 "input device '{}' runs at {} Hz, which kazoo cannot resample (8000 to 192000)",
@@ -717,6 +743,9 @@ impl<B: MicBackend> Supervisor<B> {
         self.ever_opened = true;
         self.opened_facts = Some(facts.clone());
         self.last_error = None;
+        self.delivery = (now, self.shared.frames.load(Ordering::Relaxed));
+        self.recheck_at = now;
+        self.recheck_wait = FACTS_EVERY;
         Ok(())
     }
 
@@ -736,6 +765,8 @@ impl<B: MicBackend> Supervisor<B> {
     }
 
     fn lose(&mut self, now: Instant, reason: String) {
+        // A device that went may come back as another object: look it up afresh.
+        self.backend.forget();
         self.last_error = Some(reason);
         self.status.state = MicState::Lost;
         self.last_facts = now;
@@ -761,6 +792,12 @@ impl<B: MicBackend> Supervisor<B> {
                     && now.duration_since(self.last_facts) >= FACTS_EVERY
                 {
                     self.last_facts = now;
+                    if self.delivery_strays(now) {
+                        // The device's own facts are remembered while it keeps
+                        // its identity; a headset changing mode keeps it, and
+                        // only its frames say so. Ask it again.
+                        self.backend.forget();
+                    }
                     match self.backend.facts(&self.request.device) {
                         Ok(facts) => {
                             let moved = self.request.device == DeviceChoice::Default
@@ -774,7 +811,7 @@ impl<B: MicBackend> Supervisor<B> {
                             {
                                 self.lose(now, "native input configuration changed".into());
                                 if self.status.state != MicState::Stuck {
-                                    self.reopen(&facts);
+                                    self.reopen(&facts, now);
                                 }
                             }
                         }
@@ -785,7 +822,7 @@ impl<B: MicBackend> Supervisor<B> {
             MicState::Lost if now.duration_since(self.last_facts) >= FACTS_EVERY => {
                 self.last_facts = now;
                 match self.backend.facts(&self.request.device) {
-                    Ok(facts) => self.reopen(&facts),
+                    Ok(facts) => self.reopen(&facts, now),
                     Err(error) => self.last_error = Some(error.to_string()),
                 }
             }
@@ -794,8 +831,33 @@ impl<B: MicBackend> Supervisor<B> {
         self.shared.publish(self.status);
     }
 
-    fn reopen(&mut self, facts: &MicFacts) {
-        if let Err(error) = self.open_facts(facts) {
+    /// Whether the frames since the last look stray more than a quarter
+    /// from the rate the mic was opened at, and the device is due to be
+    /// asked again. Each look in a row that finds nothing changed doubles the
+    /// wait, up to [`RECHECK_MOST`]; frames at the rate start it over.
+    fn delivery_strays(&mut self, now: Instant) -> bool {
+        let frames = self.shared.frames.load(Ordering::Relaxed);
+        let (since, from) = self.delivery;
+        self.delivery = (now, frames);
+        let delivered = u128::from(frames.wrapping_sub(from));
+        let expected = u128::from(self.status.device_rate)
+            * now.saturating_duration_since(since).as_nanos()
+            / 1_000_000_000;
+        if delivered * 4 >= expected * 3 && delivered * 3 <= expected * 4 {
+            self.recheck_at = now;
+            self.recheck_wait = FACTS_EVERY;
+            return false;
+        }
+        if now < self.recheck_at {
+            return false;
+        }
+        self.recheck_at = now + self.recheck_wait;
+        self.recheck_wait = self.recheck_wait.saturating_mul(2).min(RECHECK_MOST);
+        true
+    }
+
+    fn reopen(&mut self, facts: &MicFacts, now: Instant) {
+        if let Err(error) = self.open_facts(facts, now) {
             if self.status.state != MicState::Stuck {
                 self.status.state = MicState::Lost;
             }

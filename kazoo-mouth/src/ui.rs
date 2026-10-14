@@ -3,7 +3,8 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
 
 use crate::controls::App;
 
@@ -13,6 +14,18 @@ mod pitch;
 mod trail;
 
 pub use trail::Display;
+
+/// `text` in rows of at most `width` characters; an empty text is one row.
+fn rows_of(text: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() || width == 0 {
+        return vec![String::new()];
+    }
+    chars
+        .chunks(width)
+        .map(|row| row.iter().collect())
+        .collect()
+}
 
 #[cfg(test)]
 mod tests;
@@ -57,27 +70,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     } else {
         2
     };
-    let mic = format!("mic: {}", app.input_label);
-    let mic_rows = u16::try_from(mic.chars().count().div_ceil(usize::from(area.width)))
-        .unwrap_or(u16::MAX)
-        .max(1);
-    let link_rows = u16::try_from(link.chars().count().div_ceil(usize::from(area.width)))
-        .unwrap_or(u16::MAX)
-        .max(1);
-    let header_rows = 1_u16
-        .saturating_add(mic_rows)
-        .saturating_add(link_rows)
-        .min(area.height.saturating_sub(5));
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_rows),
-            Constraint::Length(voice_height),
-            Constraint::Min(0),
-            Constraint::Length(2),
-            Constraint::Length(1),
-        ])
-        .split(area);
     let gate = if display.latest.is_some_and(|voice| voice.gate) {
         "●"
     } else {
@@ -93,10 +85,28 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
             ""
         }
     );
-    frame.render_widget(
-        Paragraph::new(format!("{title}\n{link}\n{mic}")).wrap(Wrap { trim: true }),
-        areas[0],
-    );
+    let mic = format!("mic: {}", app.input_label);
+    // Cut at the width, not at words, so the rows counted are the rows drawn.
+    let width = usize::from(area.width);
+    let header: Vec<Line<'_>> = [title.as_str(), link, mic.as_str()]
+        .into_iter()
+        .flat_map(|text| rows_of(text, width))
+        .map(Line::from)
+        .collect();
+    let header_rows = u16::try_from(header.len())
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(5));
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(header_rows),
+            Constraint::Length(voice_height),
+            Constraint::Min(0),
+            Constraint::Length(2),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    frame.render_widget(Paragraph::new(header), areas[0]);
     let strip = areas[1];
     let meter_width = strip.width.min(38);
     let plot_width = strip.width.saturating_sub(meter_width);
