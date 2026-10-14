@@ -541,3 +541,50 @@ fn the_tree_help_lists_every_available_key() {
         assert!(screen.contains(keys), "missing {keys}: {screen}");
     }
 }
+
+#[test]
+fn undoing_a_replacement_says_what_the_wall_did() {
+    for (what, summary) in [
+        (
+            What::Go {
+                to: place(),
+                from: place(),
+                backup: "before-undo".into(),
+                fingerprint: "abc".into(),
+                modules: 4,
+                cables: 3,
+                tempo: 96.0,
+                by_console: true,
+            },
+            "went back to main, after change 812 · the wall as it was is saved as “before-undo” · \
+             z undoes it",
+        ),
+        (
+            What::Load {
+                save: None,
+                backup: "before-undo".into(),
+                fingerprint: "abc".into(),
+                modules: 4,
+                cables: 3,
+                tempo: 96.0,
+                by_console: true,
+            },
+            "brought back the wall it replaced · the wall as it was is saved as “before-undo” · z \
+             undoes it",
+        ),
+    ] {
+        let mut app = connected();
+        let result = LoadResult {
+            change: Change {
+                what,
+                ..super::change(816, "Tom", "undid change 815", Some(815))
+            },
+            backup: "before-undo".into(),
+            notes: Vec::new(),
+        };
+        answer(&mut app, Request::Undo { change: 815 }, &result);
+        let said = status(&app);
+        assert!(!said.contains("cleared the wall"), "{said}");
+        assert_eq!(said, summary);
+    }
+}

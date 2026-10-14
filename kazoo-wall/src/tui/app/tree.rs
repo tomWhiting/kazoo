@@ -485,6 +485,20 @@ impl App {
             Request::Undo { .. } => {
                 if let Some(result) = self.parse::<LoadResult>(request, value, now) {
                     self.loaded(&result, now);
+                    // `loaded` words a load; an undo of a go or a load says
+                    // where the wall went back to, or what it brought back.
+                    let what = match &result.change.what {
+                        What::Go { to, .. } => format!("went back to {}", place_words(to)),
+                        _ => "brought back the wall it replaced".to_string(),
+                    };
+                    self.say(
+                        Tone::Done,
+                        format!(
+                            "{what} · the wall as it was is saved as “{}” · z undoes it",
+                            result.backup
+                        ),
+                        now,
+                    );
                     self.refresh_tree();
                 }
             }
