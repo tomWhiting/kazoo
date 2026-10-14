@@ -3,6 +3,8 @@ name = "kazoo-808"
 version = "0.1.0"
 edition = "2024"
 description = "TR-808 drum machine — all-synthesis, no samples"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true

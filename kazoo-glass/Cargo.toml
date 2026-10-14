@@ -3,6 +3,8 @@ name = "kazoo-glass"
 version = "0.1.0"
 edition = "2024"
 description = "Polyphonic modal bell synthesizer: tuned glass, chimes and metallic keys"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true

@@ -3,6 +3,8 @@ name = "kazoo-mini"
 version = "0.1.0"
 edition = "2024"
 description = "Moog Minimoog inspired bass/lead synth — monophonic, ladder filter"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true

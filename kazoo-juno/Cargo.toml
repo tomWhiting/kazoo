@@ -3,6 +3,8 @@ name = "kazoo-juno"
 version = "0.1.0"
 edition = "2024"
 description = "Roland Juno inspired procedural polyphonic chorus synth"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true

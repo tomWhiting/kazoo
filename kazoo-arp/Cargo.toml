@@ -3,6 +3,8 @@ name = "kazoo-arp"
 version = "0.1.0"
 edition = "2024"
 description = "Jupiter-8 style arpeggiator — note scheduler for any synth"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true

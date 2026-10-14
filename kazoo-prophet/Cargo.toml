@@ -3,6 +3,8 @@ name = "kazoo-prophet"
 version = "0.1.0"
 edition = "2024"
 description = "Sequential Prophet-5 inspired polyphonic analog synth"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true

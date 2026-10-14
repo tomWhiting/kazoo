@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Kazoo's sampler: record your own sounds, keep them, play them back beautifully"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true

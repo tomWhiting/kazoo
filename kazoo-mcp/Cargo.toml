@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "The wall for Claude seats: an MCP server that plays kazoo-wall and tells a seat when others change it"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true
