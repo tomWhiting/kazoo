@@ -59,7 +59,8 @@ Up/Down choose a control. Left/Right change it; Shift makes a big step.
 Space toggles the focused switch. w steps waveform. v toggles vibrato. s toggles silent. ? shows help.
 Tab/Shift-Tab walks panels. 1..5 select FX. [/] choose slot; b bypasses; {/} move; d resets a knob.
 ,/. change own tempo by 1 BPM; </> by 10. The desk owns synced tempo.
-r records or punches; u undoes; C clears; l chooses length; o stops/starts.
+r records or punches; u undoes; C clears; l chooses length; p stops/starts.
+o cycles scope; k shows/hides spectrum; L shows latency breakdown.
 -/= change loop volume; _/+ make a big step; w saves ~/.kazoo/mouth/loops/.
 Esc closes help or quits. Ctrl-C quits.
 ";
@@ -556,6 +557,43 @@ fn event_loop(
                 display.push(voice);
             }
             display.recentre();
+            let mut voice = [0.0; crate::engine::capture::SAMPLES];
+            let mut synth = [0.0; crate::engine::capture::SAMPLES];
+            if session.stats.capture.read(&mut voice, &mut synth) {
+                app.scope_voice = voice;
+                app.scope_synth = synth;
+                if app.plots.spectrum_visible {
+                    app.spectrum.update(&app.scope_voice, session.rate);
+                }
+            }
+            let rate = f64::from(session.rate);
+            app.latency = ui::latency::Latency {
+                input: session.mic.as_ref().and_then(Mic::input_latency_ms),
+                resampler: session
+                    .mic
+                    .as_ref()
+                    .and_then(Mic::resampler_delay_frames)
+                    .map(|frames| frames as f64 * 1000.0 / rate),
+                block: session
+                    .output
+                    .as_ref()
+                    .map(|output| output.buffer_frames().min(4096) as f64 * 1000.0 / rate),
+                effects: Some(
+                    session.stats.fx_latency.load(Ordering::Relaxed) as f64 * 1000.0 / rate,
+                ),
+                output: if session
+                    .hub
+                    .as_ref()
+                    .is_some_and(|hub| hub.status().connected)
+                {
+                    None
+                } else {
+                    session
+                        .output
+                        .as_ref()
+                        .and_then(|output| output.health().latency_ms())
+                },
+            };
             let link = link_state(session);
             let now = Instant::now();
             app.sync_stats(&session.stats, now);

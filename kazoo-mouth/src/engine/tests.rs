@@ -17,6 +17,33 @@ use kazoo_core::voice::quantise::QuantiseSettings;
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
 
+#[test]
+fn capture_never_allocates() -> Result<()> {
+    let mut rig = Rig::new(false, BLOCK)?;
+    let input = sine(220.0, 4096);
+    let mut output = [0.0; BLOCK * 2];
+    let before = assert_no_alloc::violation_count();
+    assert_no_alloc::assert_no_alloc(|| {
+        for block in input.chunks(BLOCK) {
+            rig.block(block, &mut output);
+        }
+    });
+    assert_eq!(assert_no_alloc::violation_count(), before);
+    let mut voice = [0.0; 4096];
+    let mut synth = [0.0; 4096];
+    assert!(rig.stats.capture.read(&mut voice, &mut synth));
+    assert!(
+        voice
+            .iter()
+            .zip(&input)
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
+        "capture did not retain the last 4096 mic samples"
+    );
+    assert!(synth.iter().any(|sample| sample.abs() > 0.01));
+    rig.finish();
+    Ok(())
+}
+
 #[derive(Debug)]
 struct FakeHub {
     connected: bool,

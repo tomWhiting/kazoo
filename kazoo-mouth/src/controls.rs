@@ -301,6 +301,11 @@ pub enum Focus {
 
 #[derive(Debug)]
 pub struct App {
+    pub(crate) plots: crate::ui::scope::View,
+    pub(crate) latency: crate::ui::latency::Latency,
+    pub(crate) scope_voice: [f32; crate::engine::capture::SAMPLES],
+    pub(crate) scope_synth: [f32; crate::engine::capture::SAMPLES],
+    pub(crate) spectrum: crate::ui::spectrum::Spectrum,
     pub accepted: Settings,
     pub selected: Control,
     pub help: bool,
@@ -361,6 +366,14 @@ impl App {
 
     pub fn loaded(loaded: settings::Loaded, path: PathBuf, now: Instant) -> Self {
         Self {
+            plots: crate::ui::scope::View {
+                spectrum_visible: true,
+                ..crate::ui::scope::View::default()
+            },
+            latency: crate::ui::latency::Latency::default(),
+            scope_voice: [0.0; crate::engine::capture::SAMPLES],
+            scope_synth: [0.0; crate::engine::capture::SAMPLES],
+            spectrum: crate::ui::spectrum::Spectrum::default(),
             accepted: loaded.settings,
             selected: Control::Quantise,
             help: false,
@@ -468,7 +481,7 @@ impl App {
             'r' => Command::LoopRecord,
             'u' => Command::LoopUndo,
             'C' => Command::LoopClear,
-            'o' => Command::LoopPlay(state == State::Stopped as u8),
+            'p' => Command::LoopPlay(state == State::Stopped as u8),
             '-' | '=' | '_' | '+' => {
                 let step = if matches!(key, '_' | '+') { 0.25 } else { 0.05 };
                 let direction = if matches!(key, '-' | '_') { -1.0 } else { 1.0 };
@@ -643,6 +656,15 @@ impl App {
         Ok(Action::Continue)
     }
 
+    fn display_key(&mut self, code: KeyCode) -> bool {
+        if self.help {
+            self.help_key(code);
+            true
+        } else {
+            self.plots.key(code)
+        }
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -674,8 +696,7 @@ impl App {
             self.help_scroll.set(0);
             return Ok(Action::Continue);
         }
-        if self.help {
-            self.help_key(key.code);
+        if self.display_key(key.code) {
             return Ok(Action::Continue);
         }
         if key.code == KeyCode::Char('w') && !key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -684,7 +705,8 @@ impl App {
         if matches!(key.code, KeyCode::Char('W' | 'w')) {
             return self.loop_key('w', sender, now);
         }
-        if let KeyCode::Char(key @ ('r' | 'u' | 'C' | 'l' | 'o' | '-' | '=' | '_' | '+')) = key.code
+
+        if let KeyCode::Char(key @ ('r' | 'u' | 'C' | 'l' | 'p' | '-' | '=' | '_' | '+')) = key.code
         {
             return self.loop_key(key, sender, now);
         }

@@ -15,6 +15,7 @@ use ringbuf::{HeapCons, HeapProd};
 
 use crate::synth::{SynthSettings, VoiceSynth};
 
+pub(crate) mod capture;
 pub(crate) mod fx;
 pub(crate) mod looper;
 mod meters;
@@ -87,6 +88,8 @@ pub(crate) enum Command {
 
 #[derive(Debug, Default)]
 pub struct Stats {
+    pub capture: capture::Capture,
+    pub fx_latency: AtomicU64,
     pub mic_dropped: AtomicU64,
     pub mic_skipped: AtomicU64,
     pub display_dropped: AtomicU64,
@@ -346,6 +349,15 @@ impl<D: DeskOut> MouthEngine<D> {
         );
     }
 
+    fn publish_capture(&self, count: usize) {
+        self.stats
+            .capture
+            .push(&self.mic[..count], &self.stereo[..count * 2]);
+        self.stats
+            .fx_latency
+            .store(self.fx.latency() as u64, Ordering::Relaxed);
+    }
+
     fn render_chunk(&mut self, out: &mut [f32], channels: usize) {
         let count = out.len() / channels;
         if count == 0 {
@@ -425,6 +437,7 @@ impl<D: DeskOut> MouthEngine<D> {
                 &self.stats.output_rms,
             );
         }
+        self.publish_capture(count);
         let connected = self.desk.is_connected();
         let accepted = self
             .desk

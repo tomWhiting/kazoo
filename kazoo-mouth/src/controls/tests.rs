@@ -96,7 +96,7 @@ fn loop_keys_send_their_commands() {
         let (mut looper, feed) = Looper::with_capacity(48_000, 96_000);
         let sender = FakeSender::default();
         app.loop_feed = Some(feed);
-        for character in ['r', 'u', 'C', 'l', 'o', '-', '=', '_', '+'] {
+        for character in ['r', 'u', 'C', 'l', 'p', '-', '=', '_', '+'] {
             key(&mut app, &sender, KeyCode::Char(character), false, now);
             let commands = sender.commands.borrow();
             assert_eq!(commands.len(), 1);
@@ -105,7 +105,7 @@ fn loop_keys_send_their_commands() {
                 | ('u', Command::LoopUndo)
                 | ('C', Command::LoopClear)
                 | ('l', Command::LoopLength(LoopLength::Bars(1)))
-                | ('o', Command::LoopPlay(false)) => {}
+                | ('p', Command::LoopPlay(false)) => {}
                 ('-' | '=' | '_' | '+', Command::LoopVolume(volume)) => {
                     assert!((volume - app.accepted.loop_volume).abs() < f32::EPSILON);
                 }
@@ -137,7 +137,7 @@ fn loop_keys_send_their_commands() {
             .unwrap()
             .state
             .store(State::Stopped as u8, Ordering::Relaxed);
-        key(&mut app, &sender, KeyCode::Char('o'), false, now);
+        key(&mut app, &sender, KeyCode::Char('p'), false, now);
         assert!(matches!(
             sender.commands.borrow_mut().remove(0),
             Command::LoopPlay(true)

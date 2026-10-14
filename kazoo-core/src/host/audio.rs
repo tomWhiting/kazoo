@@ -197,12 +197,17 @@ impl std::fmt::Debug for PreparedInput {
 
 #[derive(Debug, Clone)]
 pub struct StreamHealth {
+    pub(super) latency: Arc<super::audio_latency::LatencyReport>,
     pub(super) fault: Arc<AtomicUsize>,
     pub(super) receiver: Receiver<cpal::StreamError>,
     pub(super) context: String,
 }
 
 impl StreamHealth {
+    #[must_use]
+    pub fn latency_ms(&self) -> Option<f64> {
+        self.latency.milliseconds()
+    }
     pub fn check(&self) -> Result<()> {
         self.check_with_handler(drop)
     }
