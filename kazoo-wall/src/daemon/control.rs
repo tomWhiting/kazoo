@@ -686,8 +686,8 @@ impl Control {
         self.answer_later(answers);
     }
 
-    fn answer_tree(&mut self) {
-        let answers = self.wall.tree_answers(Instant::now());
+    fn answer_tree(&mut self, now: Instant) {
+        let answers = self.wall.tree_answers(now);
         self.answer_later(answers);
     }
 
@@ -883,7 +883,7 @@ impl Control {
             self.broadcast(&event, None);
         }
         self.answer_speech();
-        self.answer_tree();
+        self.answer_tree(now);
         self.answer_saves();
         self.watch_audio(now);
     }
@@ -1026,7 +1026,7 @@ impl Control {
             },
             now,
         );
-        self.wall.attach(engine, link);
+        self.wall.attach(engine, link, now);
         self.backend = Some(backend);
     }
 
@@ -1042,6 +1042,8 @@ impl Control {
         for event in self.wall.close(now) {
             self.broadcast(&event, None);
         }
+        let answers = self.wall.settled_desk_go_answers();
+        self.answer_later(answers);
         let conns: Vec<u64> = self.conns.keys().copied().collect();
         let mut writers = Vec::new();
         for conn in conns {

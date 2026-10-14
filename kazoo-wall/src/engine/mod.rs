@@ -25,6 +25,7 @@
 //! master fades out, the swap is applied in silence, and it fades back in.
 
 mod batch;
+mod desk_tempo;
 mod fixed;
 mod line_commands;
 mod moments;
@@ -159,6 +160,13 @@ pub enum Command {
     /// Set the wall's own tempo. While following a playing desk, the desk's
     /// next change overrides it.
     Tempo(f64),
+    /// Ask the desk for a moment's tempo when its timed swap lands.
+    DeskTempo {
+        /// The moment's tempo.
+        bpm: f64,
+        /// The go whose answer receives the request result.
+        seq: u64,
+    },
     /// Move the wall's own tempo in a straight line to `bpm` over `frames`
     /// frames, a sub-block at a time; 0 frames is `Tempo(bpm)`. A `Tempo`
     /// stops it where it is, and so does the desk setting the tempo.
@@ -252,6 +260,8 @@ pub struct Shared {
     ignored: AtomicU64,
     unhushed: AtomicU64,
     origin: AtomicU64,
+    desk_tempo_seq: AtomicU64,
+    desk_tempo_status: AtomicU32,
 }
 
 impl Shared {
@@ -280,6 +290,8 @@ impl Shared {
             ignored: AtomicU64::new(0),
             unhushed: AtomicU64::new(0),
             origin: AtomicU64::new(0.0_f64.to_bits()),
+            desk_tempo_seq: AtomicU64::new(0),
+            desk_tempo_status: AtomicU32::new(0),
         }
     }
 
@@ -1005,6 +1017,7 @@ impl Engine {
                 self.tempo_left = 0;
                 self.shared.bpm.store(self.bpm.to_bits(), Ordering::Relaxed);
             }
+            Command::DeskTempo { bpm, seq } => self.ask_desk_tempo(bpm, seq),
             Command::TempoGlide { bpm, .. } if !bpm.is_finite() => {
                 self.shared.ignored.fetch_add(1, Ordering::Relaxed);
             }

@@ -30,18 +30,9 @@ pub fn summarise_with(
     undoes: Option<u64>,
     kind_of: impl Fn(&str) -> Option<Kind>,
 ) -> String {
-    if let What::Tempo {
-        from,
-        to,
-        desk: true,
-    } = what
-    {
+    if let What::Tempo { to, desk: true, .. } = what {
         if seat == "desk" && undoes.is_none() {
-            return format!(
-                "the desk set the tempo {} → {}",
-                format::bpm(*from),
-                format::bpm(*to)
-            );
+            return format!("the desk moved the tempo to {}", format::bpm(*to));
         }
     }
     let body = describe_with(what, undoes.is_some(), &kind_of);
