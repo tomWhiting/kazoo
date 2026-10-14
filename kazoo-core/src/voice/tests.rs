@@ -287,7 +287,11 @@ fn the_judge_thread_comes_and_goes() -> crate::Result<()> {
                     }
                     break;
                 }
-                Some(JudgeResult::Onset { .. } | JudgeResult::Provisional(_)) => {}
+                Some(
+                    JudgeResult::Onset { .. }
+                    | JudgeResult::Provisional(_)
+                    | JudgeResult::Residual(_),
+                ) => {}
                 None => {
                     assert!(
                         std::time::Instant::now() < deadline,
@@ -304,7 +308,8 @@ fn the_judge_thread_comes_and_goes() -> crate::Result<()> {
         judge.stats(),
         judge::JudgeStatsSnapshot {
             samples_dropped: 0,
-            results_dropped: 0
+            results_dropped: 0,
+            feedback_overflow: 0,
         }
     );
     drop(feed);

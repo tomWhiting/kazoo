@@ -34,6 +34,7 @@ pub enum JudgeResult {
     Pitch(PitchEstimate),
     Onset { strength: f32 },
     Provisional(CycleEstimate),
+    Residual(Option<CycleEstimate>),
 }
 
 /// Onset settings at 48 kHz, scaled with the voice judge at higher rates.
@@ -55,17 +56,20 @@ impl Default for OnsetConfig {
 struct JudgeStats {
     samples_dropped: AtomicU64,
     results_dropped: AtomicU64,
+    feedback_overflow: AtomicU64,
 }
 /// Ring overflow counters since this judge started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JudgeStatsSnapshot {
     pub samples_dropped: u64,
     pub results_dropped: u64,
+    pub feedback_overflow: u64,
 }
 
 /// Callback-side producer and a wake token for the worker.
 pub struct JudgeFeed {
     samples: HeapProd<f32>,
+    frames: HeapProd<super::VoiceFrame>,
     thread: Thread,
     stats: Arc<JudgeStats>,
 }
@@ -136,6 +140,7 @@ fn spawn_config(
         .map_err(|error| crate::Error::Config(error.to_string()))?
         .max(1);
     let (samples, mut input) = HeapRb::<f32>::new(capacity).split();
+    let (frames, mut published) = HeapRb::<super::VoiceFrame>::new(capacity).split();
     let (mut output, results) = HeapRb::<JudgeResult>::new(64).split();
     let stats = Arc::new(JudgeStats::default());
     let worker_stats = Arc::clone(&stats);
@@ -159,8 +164,21 @@ fn spawn_config(
                 for samples in buffer[..count].chunks(hop.min(super::VOICE_HOP)) {
                     if let Some(early) = early.as_mut() {
                         for &sample in samples {
+                            while published
+                                .first()
+                                .is_some_and(|frame| frame.at <= early.position())
+                            {
+                                if let Some(frame) = published.try_pop() {
+                                    early.observe(frame);
+                                }
+                            }
                             if let Some(estimate) = early.push(sample) {
                                 if output.try_push(JudgeResult::Provisional(estimate)).is_err() {
+                                    worker_stats.results_dropped.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            if let Some(pitch) = early.pitch() {
+                                if output.try_push(pitch).is_err() {
                                     worker_stats.results_dropped.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
@@ -188,6 +206,7 @@ fn spawn_config(
     Ok((
         JudgeFeed {
             samples,
+            frames,
             thread,
             stats: Arc::clone(&stats),
         },
@@ -196,6 +215,11 @@ fn spawn_config(
     ))
 }
 impl JudgeFeed {
+    pub fn observe(&mut self, frame: super::VoiceFrame) {
+        if self.frames.try_push(frame).is_err() {
+            self.stats.feedback_overflow.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     /// Push the fitting prefix, count the rest and wake once; no allocation or lock.
     pub fn push(&mut self, samples: &[f32]) {
         let count = self.samples.push_slice(samples);
@@ -218,6 +242,7 @@ impl Judge {
         JudgeStatsSnapshot {
             samples_dropped: self.stats.samples_dropped.load(Ordering::Relaxed),
             results_dropped: self.stats.results_dropped.load(Ordering::Relaxed),
+            feedback_overflow: self.stats.feedback_overflow.load(Ordering::Relaxed),
         }
     }
     /// Join after dropping the feed; a wake makes producer shutdown immediate.

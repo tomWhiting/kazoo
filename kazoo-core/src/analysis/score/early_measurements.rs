@@ -29,7 +29,11 @@ fn candidate_and_onset_measurements() {
                 println!("WORKER take={name} at={at} estimate={estimate:?}");
                 tracker.judge(JudgeResult::Provisional(estimate));
             }
+            if let Some(pitch) = judge.pitch() {
+                tracker.judge(pitch);
+            }
             tracker.process(std::slice::from_ref(&sample), |frame| {
+                judge.observe(frame);
                 if tracing && (frame.onset || frame.at % 512 == 0) {
                     println!("FRAME take={name} {frame:?}");
                 }
@@ -59,7 +63,11 @@ fn provisional_arrival_measurements() {
                 readings.push((at + 1, estimate));
                 tracker.judge(crate::voice::judge::JudgeResult::Provisional(estimate));
             }
+            if let Some(pitch) = judge.pitch() {
+                tracker.judge(pitch);
+            }
             tracker.process(std::slice::from_ref(&sample), |frame| {
+                judge.observe(frame);
                 frames.push((at + 1, frame));
             });
         }
@@ -122,7 +130,11 @@ fn motion_following_measurements() {
                     if let Some(estimate) = judge.push(sample) {
                         tracker.judge(crate::voice::judge::JudgeResult::Provisional(estimate));
                     }
+                    if let Some(pitch) = judge.pitch() {
+                        tracker.judge(pitch);
+                    }
                     tracker.process(std::slice::from_ref(&sample), |frame| {
+                        judge.observe(frame);
                         onsets += usize::from(frame.onset);
                         let time = (at + 1 - take.onsets[0].min(at + 1)) as f32 / take.rate as f32;
                         let moving = match name {

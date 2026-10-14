@@ -111,8 +111,14 @@ impl TrackerUnderTest for FusedUnderTest {
                 if let Some(estimate) = early.push(*sample) {
                     self.tracker.judge(JudgeResult::Provisional(estimate));
                 }
+                if let Some(pitch) = early.pitch() {
+                    self.tracker.judge(pitch);
+                }
             }
             self.tracker.process(input, |frame| {
+                if let Some(early) = self.early.as_mut() {
+                    early.observe(frame);
+                }
                 self.latest = Some(frame);
                 self.onsets += u64::from(frame.onset);
                 #[cfg(test)]

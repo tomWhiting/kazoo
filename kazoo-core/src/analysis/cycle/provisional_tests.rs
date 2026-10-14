@@ -30,29 +30,40 @@ fn a_repluck_discards_the_previous_search_history() {
 
 #[test]
 fn ringing_cancellation_sweep_measurements() {
+    use crate::voice::{VoiceTracker, judge::JudgeResult};
     let takes = instrument_suite(48_000);
     let take = takes
         .iter()
         .find(|take| take.name == "sweep")
         .expect("sweep");
     let mut judge = ProvisionalJudge::new(take.rate, InputProfile::Guitar.tracking().cycle);
-    let mut last_attack = None;
+    let mut tracker = VoiceTracker::with_settings(take.rate, InputProfile::Guitar.tracking());
+    let mut due = None;
     for (at, &sample) in take.samples.iter().enumerate() {
-        if let Some(estimate) = judge.push(sample) {
-            if last_attack != Some(judge.attack_at) {
-                let mut maxima = judge.maxima.clone();
+        if let Some(reading) = judge.push(sample) {
+            tracker.judge(JudgeResult::Provisional(reading));
+        }
+        if let Some(pitch) = judge.pitch() {
+            tracker.judge(pitch);
+        }
+        tracker.process(std::slice::from_ref(&sample), |frame| {
+            if frame.onset {
+                let note = take.onsets.partition_point(|&pluck| pluck <= frame.at as usize) - 1;
+                let truth = take.truth[(take.onsets[note] + 32) / 32].expect("note truth");
+                due = Some(frame.at + (2.0 * take.rate as f32 / truth).ceil() as u64);
+            }
+            let settled = due.is_some_and(|due| frame.at >= due);
+            if frame.onset || settled {
+                let mut maxima = Vec::new();
+                judge.residual.tracker.key_maxima(judge.residual.available, &mut maxima);
                 maxima.sort_unstable_by(|a, b| b.clarity.total_cmp(&a.clarity));
                 maxima.truncate(3);
-                println!(
-                    "RESIDUAL attack={} delivery={} reading={estimate:?} ringing={:?} combs={:?} top_three={maxima:?}",
-                    judge.attack_at,
-                    at + 1,
-                    judge.ringing,
-                    judge.cancellation.combs
-                );
-                last_attack = Some(judge.attack_at);
+                println!("RESIDUAL onset={} two_periods={settled} delivery={} frame={frame:?} published_sources={:?} pre_attack_sources={:?} ringing={:?} combs={:?} top_three={maxima:?}", frame.onset, at + 1,
+                    judge.residual.sources, judge.ringing, judge.residual.ringing, judge.residual.cancellation.combs);
             }
-        }
+            if settled { due = None; }
+            judge.observe(frame);
+        });
     }
 }
 

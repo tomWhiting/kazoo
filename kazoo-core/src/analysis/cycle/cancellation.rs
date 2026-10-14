@@ -27,7 +27,6 @@ impl Cancellation {
     }
 
     pub(super) fn configure(&mut self, ringing: &mut Vec<Peak>, attack: usize) {
-        ringing.retain(|peak| peak.clarity >= 0.60);
         ringing.sort_unstable_by(|a, b| b.clarity.total_cmp(&a.clarity));
         let mut count = 0;
         for index in 0..ringing.len() {
@@ -68,7 +67,11 @@ impl Cancellation {
                 gain,
             });
         }
-        self.stages[..self.combs.len() * self.length].fill(0.0);
+        let needed = self.combs.len() * self.length;
+        if self.stages.len() < needed {
+            self.stages.resize(needed, 0.0);
+        }
+        self.stages[..needed].fill(0.0);
     }
 
     pub(super) fn push(&mut self, mut sample: f32, at: usize) -> f32 {

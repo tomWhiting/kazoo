@@ -132,6 +132,7 @@ pub struct VoiceTracker {
     invalid_frame: bool,
     provisional: bool,
     provisional_frame: Option<CycleEstimate>,
+    residual_frame: Option<CycleEstimate>,
     previous_reading: Option<u64>,
     pick: super::attack::Attack,
 }
@@ -179,6 +180,7 @@ impl VoiceTracker {
             invalid_frame: false,
             provisional: false,
             provisional_frame: None,
+            residual_frame: None,
             previous_reading: None,
             pick: super::attack::Attack::new(rate),
         }
@@ -187,6 +189,15 @@ impl VoiceTracker {
     /// Receive a memory-free verdict from the judge, on the callback's sample clock.
     pub fn judge(&mut self, result: JudgeResult) {
         match result {
+            JudgeResult::Residual(estimate) => {
+                self.residual_frame = estimate.filter(|estimate| {
+                    estimate.hz.is_finite()
+                        && estimate.hz > 0.0
+                        && estimate.period.is_finite()
+                        && estimate.clarity.is_finite()
+                        && estimate.clarity >= 0.60
+                });
+            }
             JudgeResult::Provisional(estimate) => {
                 if self.cycle.provisional(estimate) {
                     self.provisional_frame = Some(estimate);
@@ -247,6 +258,7 @@ impl VoiceTracker {
                 self.invalid_frame = true;
                 self.cycle.unlock();
                 self.provisional_frame = None;
+                self.residual_frame = None;
                 self.gate.reset();
                 self.fast = 0.0;
                 self.valley = 0.0;
@@ -283,6 +295,7 @@ impl VoiceTracker {
                 self.cycle.pick_attack(self.pick.behind());
                 self.fast_until = at + (0.020 * self.rate) as u64;
                 self.provisional_frame = None;
+                self.residual_frame = None;
                 self.hop = (self.samples - at) as usize % (VOICE_HOP / 2);
             }
             let frame_hop = if self.samples < self.fast_until {
@@ -376,8 +389,9 @@ impl VoiceTracker {
         {
             confidence *= 0.5;
         }
-        let valid_hz = self.hz.is_finite();
-        let hz = sanitize_sample(self.hz);
+        let output_hz = self.output_hz();
+        let valid_hz = output_hz.is_finite();
+        let hz = sanitize_sample(output_hz);
         let volts = sanitize_sample(volts_from_hz(hz));
         VoiceFrame {
             at: self.frame_at(onset),
@@ -400,14 +414,14 @@ impl VoiceTracker {
         }
     }
 
-    fn worker_frame(&mut self) -> Option<CycleEstimate> {
-        // During cancellation only the worker can confirm the newest string.
-        if self.settings.cycle.early && self.samples < self.fast_until + (0.020 * self.rate) as u64
-        {
-            self.provisional_frame
-        } else {
-            self.provisional_frame.take()
-        }
+    fn output_hz(&self) -> f32 {
+        self.residual_frame
+            .filter(|_| self.samples < self.fast_until + (0.020 * self.rate) as u64)
+            .map_or(self.hz, |estimate| estimate.hz)
+    }
+
+    const fn worker_frame(&mut self) -> Option<CycleEstimate> {
+        self.provisional_frame.take()
     }
 
     const fn frame_at(&self, onset: bool) -> u64 {
@@ -481,6 +495,7 @@ impl VoiceTracker {
         self.invalid_frame = false;
         self.provisional = false;
         self.provisional_frame = None;
+        self.residual_frame = None;
         self.previous_reading = None;
         self.pick.reset();
         self.release = coefficient(FAST_RELEASE_MIN_MS, self.rate);

@@ -18,6 +18,7 @@ mod early;
 mod level;
 mod motion;
 mod provisional;
+mod residual;
 
 pub use provisional::ProvisionalJudge;
 

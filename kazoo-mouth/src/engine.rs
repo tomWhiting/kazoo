@@ -403,6 +403,7 @@ impl<D: DeskOut> MouthEngine<D> {
         });
         let mut start = 0;
         for mut frame in frames.into_iter().take(emitted).flatten() {
+            self.judge_feed.observe(frame);
             self.quantiser.process(&mut frame);
             self.synth.control(&frame);
             if !self.desk.send_voice(&frame) {

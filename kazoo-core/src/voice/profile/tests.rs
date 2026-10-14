@@ -27,6 +27,9 @@ fn frames(take: &Take, profile: InputProfile) -> Vec<VoiceFrame> {
         if let Some(estimate) = judge.push(sample) {
             tracker.judge(JudgeResult::Provisional(estimate));
         }
+        if let Some(pitch) = judge.pitch() {
+            tracker.judge(pitch);
+        }
         tracker.process(std::slice::from_ref(&sample), |frame| {
             if frame.onset {
                 println!(
@@ -38,6 +41,7 @@ fn frames(take: &Take, profile: InputProfile) -> Vec<VoiceFrame> {
                     frame.confidence
                 );
             }
+            judge.observe(frame);
             output.push(frame);
         });
     }
@@ -280,10 +284,22 @@ fn a_sweep_is_one_onset_per_note() {
     assert_eq!(onsets.len(), 6, "{onsets:?}");
     for (frame, &pluck) in onsets.iter().zip(&take.onsets) {
         let hz = truth_at(take, pluck + SCORE_STEP).expect("pluck truth");
-        assert!(
-            cents(frame.hz, hz) <= 50.0,
-            "pluck {pluck}, {hz} Hz: {frame:?}"
+        let settled = frame.at + (2.0 * RATE as f32 / hz).ceil() as u64;
+        let next = onsets.iter().find(|next| next.at > frame.at).map_or_else(
+            || take.samples.len() as u64 - u64::from(RATE) / 5,
+            |next| next.at,
         );
+        let held: Vec<_> = output
+            .iter()
+            .filter(|held| held.at >= settled && held.at < next)
+            .collect();
+        assert!(!held.is_empty(), "pluck {pluck}: no held frames");
+        for held in held {
+            assert!(
+                held.voiced && cents(held.hz, hz) <= 50.0,
+                "pluck {pluck}, {hz} Hz after two periods: {held:?}"
+            );
+        }
         assert!(
             frame.at >= pluck as u64
                 && (frame.at - pluck as u64) as f32 / 48.0 <= 2000.0 / hz + 3.0,

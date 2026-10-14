@@ -205,7 +205,13 @@ fn instrument_frames(
         if let Some(estimate) = judge.push(sample) {
             tracker.judge(crate::voice::judge::JudgeResult::Provisional(estimate));
         }
-        tracker.process(std::slice::from_ref(&sample), |frame| output.push(frame));
+        if let Some(pitch) = judge.pitch() {
+            tracker.judge(pitch);
+        }
+        tracker.process(std::slice::from_ref(&sample), |frame| {
+            judge.observe(frame);
+            output.push(frame);
+        });
     }
     output
 }
