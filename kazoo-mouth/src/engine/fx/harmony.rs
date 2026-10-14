@@ -87,18 +87,23 @@ fn build() -> Box<dyn Effect> {
     Box::new(Harmony::new(128))
 }
 
+/// Sets one knob of the harmony as the panel and the engine both keep it.
+/// A preset sets the voices and the dry; a knob that moves makes the
+/// preset `custom` and is remembered as custom. A knob left where it was
+/// keeps the preset, and a preset past the list is `custom`.
 pub fn adjust(values: &mut [f32; MAX_PARAMS], custom: &mut [f32; 7], index: usize, value: f32) {
-    values[index] = value;
     if index == 0 {
-        let preset = value as usize;
-        values[1..8].copy_from_slice(if preset == CUSTOM {
-            custom
-        } else {
-            &KNOBS[preset]
-        });
-    } else if (1..8).contains(&index) {
-        values[0] = CUSTOM as f32;
-        custom.copy_from_slice(&values[1..8]);
+        let preset = (value as usize).min(CUSTOM);
+        values[0] = preset as f32;
+        values[1..8].copy_from_slice(KNOBS.get(preset).unwrap_or(custom));
+    } else if let Some(knob) = values.get_mut(index)
+        && knob.to_bits() != value.to_bits()
+    {
+        *knob = value;
+        if (1..8).contains(&index) {
+            values[0] = CUSTOM as f32;
+            custom.copy_from_slice(&values[1..8]);
+        }
     }
 }
 
@@ -340,8 +345,42 @@ impl Effect for Harmony {
 
 #[cfg(test)]
 mod tests {
-    use super::{Harmony, RAMP_SECONDS};
+    use super::{CUSTOM, DEFAULT, Harmony, KNOBS, MAX_PARAMS, RAMP_SECONDS, adjust};
     use kazoo_fx::{Context, Effect};
+
+    #[test]
+    fn harmony_a_knob_left_where_it_was_keeps_the_preset() {
+        let mut values = [0.0; MAX_PARAMS];
+        let mut custom = KNOBS[DEFAULT];
+        adjust(&mut values, &mut custom, 0, 4.0);
+        assert!(
+            values[1..8]
+                .iter()
+                .zip(KNOBS[4])
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        let level = values[3];
+        adjust(&mut values, &mut custom, 3, level);
+        assert_eq!(values[0].to_bits(), 4.0_f32.to_bits());
+        adjust(&mut values, &mut custom, 3, level - 1.0);
+        assert_eq!(values[0].to_bits(), (CUSTOM as f32).to_bits());
+        assert!(
+            custom
+                .iter()
+                .zip(&values[1..8])
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+    }
+
+    #[test]
+    fn harmony_a_preset_past_the_list_is_custom() {
+        let mut values = [0.0; MAX_PARAMS];
+        let mut custom = KNOBS[DEFAULT];
+        custom[0] = -6.0;
+        adjust(&mut values, &mut custom, 0, 9.0);
+        assert_eq!(values[0].to_bits(), (CUSTOM as f32).to_bits());
+        assert_eq!(values[1].to_bits(), (-6.0_f32).to_bits());
+    }
 
     #[test]
     fn harmony_off_voices_never_process_and_wake_without_stale_audio() {

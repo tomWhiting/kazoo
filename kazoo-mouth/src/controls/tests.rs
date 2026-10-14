@@ -757,3 +757,23 @@ fn harmony_old_settings_migrate_and_six_round_trip() -> std::io::Result<()> {
     assert_close(loaded.settings.fx.slots[slot as usize].values[0][0], 2.0);
     Ok(())
 }
+
+#[test]
+fn harmony_default_on_a_knob_already_there_keeps_the_preset() {
+    use crate::controls::Focus;
+    use crate::engine::fx::Slot;
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    app.selected_slot = Slot::Harmony;
+    let preset = |app: &App| app.accepted.fx.slots[Slot::Harmony as usize].values[0][0];
+    app.selected_cell = 3;
+    key(&mut app, &sender, KeyCode::Char('d'), false, now);
+    assert_close(preset(&app), 2.0);
+    app.selected_cell = 7;
+    key(&mut app, &sender, KeyCode::Left, false, now);
+    assert_close(preset(&app), 2.0);
+    key(&mut app, &sender, KeyCode::Right, false, now);
+    assert_close(preset(&app), 8.0);
+}
