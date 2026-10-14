@@ -20,9 +20,11 @@ pub mod client;
 pub mod codec;
 pub mod tree;
 
+pub(crate) mod batch;
 mod chains;
 mod loops;
 
+pub use batch::BatchResult;
 pub use chains::{ChainSaveResult, ChainsResult};
 pub use loops::{LoopState, LoopView, LoopsMeet};
 pub use tree::{BranchView, MarkKind, MarkResult, MarkView, MomentView, TreePlace, TreeResult};
@@ -239,6 +241,11 @@ pub enum Request {
     },
     /// Add a module.
     Add {
+        /// In a batch, a label later steps name this module by, as
+        /// `@label` or `@label.port` (no spaces, dots or `@`; unique in the
+        /// batch). Refused outside a batch.
+        #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+        alias: Option<String>,
         /// Kind, e.g. `lfo`.
         kind: String,
         /// Display name (see [`valid_name`]).
@@ -249,6 +256,16 @@ pub enum Request {
         /// row. (A wall older than the rack's rows ignores it.)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         place: Option<Place>,
+    },
+    /// Several changes toward one idea, with a note like a commit message:
+    /// applied in the order given as one change, all or none (a
+    /// [`BatchResult`]). One seq, one log line, one commit and one undo.
+    Batch {
+        /// The sender's words: 1 to 200 characters after trimming, one line
+        /// with no control characters.
+        note: String,
+        /// One or more adds, removes, turns, patches, unpatches or tempos.
+        changes: Vec<Self>,
     },
     /// Take a module away, with its cables.
     Remove {
@@ -400,6 +417,22 @@ pub enum Request {
         /// The save's name (any case).
         name: String,
     },
+    /// Name the moment the wall is at: a [`MarkResult`]. Every subscriber
+    /// is told ([`Event::Marked`]); nothing is logged. Any seat but a watcher.
+    /// Marks never move.
+    Mark {
+        name: String,
+    },
+    /// Put the wall at a moment while it plays: a [`LoadResult`]. The wall
+    /// as it was is kept first; one [`What::Go`] is logged. Any seat but a watcher.
+    Go {
+        moment: String,
+    },
+    /// List the tree: a [`TreeResult`]. Anyone may ask, watchers too.
+    Tree {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recent: Option<u32>,
+    },
     /// Stop the daemon. Console only.
     Shutdown,
 }
@@ -409,6 +442,7 @@ impl Request {
     #[must_use]
     pub const fn op(&self) -> &'static str {
         match self {
+            Self::Batch { .. } => "batch",
             Self::Hello { .. } => "hello",
             Self::Look => "look",
             Self::Catalogue => "catalogue",
@@ -437,6 +471,9 @@ impl Request {
             Self::Load { .. } => "load",
             Self::New => "new",
             Self::DeleteSave { .. } => "delete_save",
+            Self::Mark { .. } => "mark",
+            Self::Go { .. } => "go",
+            Self::Tree { .. } => "tree",
             Self::Shutdown => "shutdown",
         }
     }
@@ -449,7 +486,8 @@ impl Request {
     pub const fn acts_on_modules(&self) -> bool {
         matches!(
             self,
-            Self::Turn { .. }
+            Self::Batch { .. }
+                | Self::Turn { .. }
                 | Self::Patch { .. }
                 | Self::Unpatch { .. }
                 | Self::Add { .. }
@@ -469,7 +507,8 @@ impl Request {
     pub const fn is_change(&self) -> bool {
         matches!(
             self,
-            Self::Turn { .. }
+            Self::Batch { .. }
+                | Self::Turn { .. }
                 | Self::Patch { .. }
                 | Self::Unpatch { .. }
                 | Self::Add { .. }
@@ -485,6 +524,8 @@ impl Request {
                 | Self::Record { .. }
                 | Self::Save { .. }
                 | Self::Load { .. }
+                | Self::Mark { .. }
+                | Self::Go { .. }
                 | Self::New
                 | Self::DeleteSave { .. }
         )
@@ -620,11 +661,15 @@ pub enum ErrorCode {
     NotAllowed,
     /// Something went wrong inside the daemon.
     Internal,
+    /// No moment with that name in the tree.
+    UnknownMoment,
+    /// A permanent mark with that name already exists.
+    MarkExists,
 }
 
 impl ErrorCode {
     /// Every code.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::BadRequest,
         Self::NotHello,
         Self::BadName,
@@ -642,6 +687,8 @@ impl ErrorCode {
         Self::SlowDown,
         Self::NotAllowed,
         Self::Internal,
+        Self::UnknownMoment,
+        Self::MarkExists,
     ];
 }
 
@@ -652,6 +699,9 @@ pub struct WallError {
     pub code: ErrorCode,
     /// A sentence for people.
     pub message: String,
+    /// For a refused batch, the index of the step that refused it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<usize>,
 }
 
 impl WallError {
@@ -661,6 +711,7 @@ impl WallError {
         Self {
             code,
             message: message.into(),
+            step: None,
         }
     }
 }
@@ -744,6 +795,13 @@ pub enum TakeWhy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum What {
+    /// A seat's batch: its note, and each change it made, in order.
+    Batch {
+        /// The sender's note.
+        note: String,
+        /// Each step's change, in the order applied.
+        changes: Vec<Self>,
+    },
     /// A loop's tape erased (`tape` none), or put back by the erase's
     /// undo (`tape` the reel put back). Undone, the loop holds `was` again.
     Erase {
@@ -1121,6 +1179,14 @@ pub enum Event {
         seat: String,
         /// The save, as it was named.
         name: String,
+    },
+    /// A seat marked a moment: told to every subscriber, the marker included.
+    /// Marking changes no sound and logs nothing.
+    Marked {
+        seat: String,
+        name: String,
+        tag: String,
+        at: TreePlace,
     },
     /// The change log stopped taking changes, or took them again, or what
     /// it owes moved: sent to every subscriber.

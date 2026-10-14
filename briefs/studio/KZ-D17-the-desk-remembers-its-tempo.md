@@ -1,4 +1,4 @@
-# KZ-D10: the desk remembers its tempo, and the wall's tree hears the desk's tempo
+# KZ-D17: the desk remembers its tempo, and the wall's tree hears the desk's tempo
 
 Line numbers are from `main` at the head this lane starts from; find each item by what it does, and never rename anything. Checks, code quality and the END block are as PLAN.md's STACK RULES, with `-p kazoo-mix -p kazoo-wall`.
 
@@ -44,8 +44,8 @@ ast-grep scan kazoo-mix kazoo-wall
 ## END
 
 ```
-START KZ-D10 base=<sha> branch=lane/kz-D10 df=<GB> load=<1m> at <time>
-END KZ-D10 head=<sha> base=<sha> pushed=lane at <time> minutes=<n>
+START KZ-D17 base=<sha> branch=lane/kz-D17 df=<GB> load=<1m> at <time>
+END KZ-D17 head=<sha> base=<sha> pushed=lane at <time> minutes=<n>
 DONE: each definition-of-done line with its proof
 RED: each test's name and its failing output before the fix
 TESTS: nextest counts; clippy, fmt and ast-grep each with their own exit code

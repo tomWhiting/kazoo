@@ -10,7 +10,7 @@ use color_eyre::eyre::{WrapErr, eyre};
 use crossbeam_channel::Sender;
 use crossterm::event::{self, Event};
 use kazoo_core::analysis::PitchDetectorConfig;
-use kazoo_core::host::audio::{DeviceChoice, OpenedOutput, OutputRequest};
+use kazoo_core::host::audio::{DeviceChoice, InputNotices, OpenedOutput, OutputRequest};
 use kazoo_core::host::link::{LinkSetup, connect_or_direct};
 use kazoo_core::io::mic::{Mic, MicRequest, MicTarget};
 use kazoo_core::ipc::link::HubLink;
@@ -24,6 +24,8 @@ use crate::controls::{Action, App, settings};
 use crate::engine::looper::{LoopFeed, LoopOut};
 use crate::engine::{Command, EngineSetup, MouthEngine, Stats};
 use crate::ui::{self, Display};
+
+mod terminal;
 
 #[cfg(test)]
 mod tests;
@@ -54,10 +56,11 @@ usage: kazoo mouth [options]
   --score <wav>...        Score recorded takes and exit without audio.
 
 Up/Down choose a control. Left/Right change it; Shift makes a big step.
-Space toggles quantise. v toggles vibrato. s toggles silent. ? shows help.
-Tab switches synth/fx. [/] choose slot; b bypasses; {/} move; d resets a knob.
+Space toggles the focused switch. w steps waveform. v toggles vibrato. s toggles silent. ? shows help.
+Tab/Shift-Tab walks panels. 1..5 select FX. [/] choose slot; b bypasses; {/} move; d resets a knob.
 ,/. change own tempo by 1 BPM; </> by 10. The desk owns synced tempo.
 r records or punches; u undoes; C clears; l chooses length; o stops/starts.
+O cycles scope; k shows/hides spectrum; L shows latency breakdown.
 -/= change loop volume; _/+ make a big step; w saves ~/.kazoo/mouth/loops/.
 Esc closes help or quits. Ctrl-C quits.
 ";
@@ -187,19 +190,23 @@ pub fn run(args: Args) -> Result<()> {
     }
     loaded.settings.silent = args.silent;
     let mut session = Session::start(args, &loaded.settings)?;
-    let mut terminal = kazoo_host::terminal::enter()?;
+    let mut terminal = kazoo_host::terminal::enter_with(terminal_options())?;
     let mut app = App::loaded(loaded, path, Instant::now());
+    app.input_label.clone_from(&session.input_label);
     app.loop_sample_rate = session.rate;
     app.loop_feed = session.loop_feed.take();
+    if let Some(reason) = terminal.mouse_refused() {
+        app.message(format!("mouse capture refused: {reason}"), Instant::now());
+    }
     let result = event_loop(&mut session, &mut terminal, &mut app);
     app.sync_stats(&session.stats, Instant::now());
     app.save_if_due(Instant::now(), true);
     let stopped = session.stop();
-    let restored = terminal.leave().wrap_err("restoring the mouth terminal");
-    combine(combine(result, restored), stopped)
+    terminal::finish(result, terminal, stopped)
 }
 
 struct Session {
+    input_label: String,
     rate: u32,
     output: Option<OpenedOutput>,
     mic: Option<Mic>,
@@ -222,6 +229,12 @@ impl Session {
             ..OutputRequest::default()
         }
         .prepare_output()?;
+        let notices = InputNotices::default();
+        let input = prepared.input_pick(args.input.as_deref(), &notices)?;
+        let input_label = input.why.as_ref().map_or_else(
+            || input.name.clone(),
+            |why| format!("{} ({why})", input.name),
+        );
         let info = prepared.info();
         let (mic_tx, mic_rx) = HeapRb::new((info.rate / 10).max(1) as usize).split();
         let (display_tx, display) = HeapRb::new(1024).split();
@@ -237,13 +250,14 @@ impl Session {
             info.frames,
             OnsetConfig::default(),
         )?;
-        let stats = Arc::new(Stats::default());
+        let stats = Arc::new(Stats::new(info.rate));
         let loop_directory = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or_else(|| eyre!("HOME is missing: cannot locate saved loops"))?
             .join(".kazoo/mouth/loops");
         let (saved_tx, saved) = crossbeam_channel::bounded(8);
         let mut session = Self {
+            input_label,
             rate: info.rate,
             output: None,
             mic: None,
@@ -275,9 +289,9 @@ impl Session {
         session.output = Some(prepared.open(move |out, info| {
             engine.render(out, usize::from(info.channels));
         })?);
-        session.mic = Some(kazoo_core::io::mic::open_mic(
+        session.mic = Some(kazoo_core::io::mic::open_mic_with_notices(
             MicRequest {
-                device: device(args.input),
+                device: DeviceChoice::Named(input.name),
                 channel: args.input_channel,
             },
             MicTarget {
@@ -290,6 +304,7 @@ impl Session {
                     .mic_dropped
                     .fetch_add((offered - accepted) as u64, Ordering::Relaxed);
             }),
+            notices,
         )?);
         Ok(session)
     }
@@ -521,6 +536,10 @@ fn event_loop(
     app: &mut App,
 ) -> Result<()> {
     let mut display = Display::new(session.rate);
+    // Both copies are allocated here, once: a read lands in `fresh` and only a
+    // whole one is swapped into the app.
+    app.scope = session.stats.capture.frames();
+    let mut fresh = session.stats.capture.frames();
     let period = Duration::from_secs_f64(1.0 / 30.0);
     let mut draw_at = Instant::now();
     let mut quitting = false;
@@ -544,32 +563,81 @@ fn event_loop(
                 display.push(voice);
             }
             display.recentre();
+            if session.stats.capture.read(&mut fresh) {
+                std::mem::swap(&mut app.scope, &mut fresh);
+                if app.plots.spectrum_visible {
+                    app.spectrum.update(app.scope.voice(), session.rate);
+                }
+            }
+            let rate = f64::from(session.rate);
+            app.latency = ui::latency::Latency {
+                input: session.mic.as_ref().and_then(Mic::input_latency_ms),
+                resampler: session
+                    .mic
+                    .as_ref()
+                    .and_then(Mic::resampler_delay_frames)
+                    .map(|frames| frames as f64 * 1000.0 / rate),
+                block: session
+                    .output
+                    .as_ref()
+                    .map(|output| output.buffer_frames().min(4096) as f64 * 1000.0 / rate),
+                effects: Some(
+                    session.stats.fx_latency.load(Ordering::Relaxed) as f64 * 1000.0 / rate,
+                ),
+                device_buffers_only: kazoo_core::host::audio::LATENCY_COVERS
+                    == kazoo_core::host::audio::LatencyCovers::BufferOnly,
+                output: if session
+                    .hub
+                    .as_ref()
+                    .is_some_and(|hub| hub.status().connected)
+                {
+                    None
+                } else {
+                    session
+                        .output
+                        .as_ref()
+                        .and_then(|output| output.health().latency_ms())
+                },
+            };
             let link = link_state(session);
             let now = Instant::now();
             app.sync_stats(&session.stats, now);
             app.sync_loop(session.rate, now);
             session.loop_returns(app, now);
             app.save_if_due(now, false);
+            if let Some(mic) = &session.mic {
+                show_input_notice(app, mic.input_notices(), now);
+            }
             terminal.draw(|frame| ui::draw(frame, app, &display, &link, now))?;
             draw_at = Instant::now() + period;
         }
-        if event::poll(draw_at.saturating_duration_since(Instant::now()))?
-            && let Event::Key(key) = event::read()?
-            && !quitting
-            && app
-                .handle_key(key, &session.commands, Instant::now())
-                .wrap_err("mouth command channel disconnected")?
-                == Action::Quit
-        {
-            session
-                .commands
-                .try_send(Command::Shutdown)
-                .wrap_err("mouth shutdown command not sent; closing output")?;
-            quitting = true;
-            if app.loop_save_pending() {
-                app.message("finishing loop save".into(), Instant::now());
+        if event::poll(draw_at.saturating_duration_since(Instant::now()))? {
+            let action = match event::read()? {
+                Event::Key(key) if !quitting => app
+                    .handle_key(key, &session.commands, Instant::now())
+                    .wrap_err("mouth command channel disconnected")?,
+                Event::Mouse(mouse) if !quitting => app
+                    .handle_mouse(mouse, &session.commands, Instant::now())
+                    .wrap_err("mouth command channel disconnected")?,
+                _ => Action::Continue,
+            };
+            if action == Action::Quit {
+                session
+                    .commands
+                    .try_send(Command::Shutdown)
+                    .wrap_err("mouth shutdown command not sent; closing output")?;
+                quitting = true;
+                if app.loop_save_pending() {
+                    app.message("finishing loop save".into(), Instant::now());
+                }
             }
         }
+    }
+}
+
+fn show_input_notice(app: &mut App, notices: &InputNotices, now: Instant) {
+    if let Some(message) = notices.take() {
+        app.message(message, now);
     }
 }
 
@@ -577,9 +645,18 @@ fn link_state(session: &Session) -> String {
     let Some(hub) = &session.hub else {
         return "playing direct: no desk".into();
     };
-    let state = hub.status();
+    desk_status(&hub.status())
+}
+
+fn desk_status(state: &kazoo_core::ipc::link::LinkStatus) -> String {
     if !state.connected {
-        "playing direct: no desk".into()
+        state
+            .desk_refusal()
+            .or(state.last_refusal.as_deref())
+            .map_or_else(
+                || "playing direct: no desk".into(),
+                |why| format!("not on the desk: {why}"),
+            )
     } else if state.voice.desk_carries {
         state.strip.map_or_else(
             || "on the desk, awaiting strip".into(),
@@ -587,5 +664,12 @@ fn link_state(session: &Session) -> String {
         )
     } else {
         "the desk is too old to carry the voice".into()
+    }
+}
+
+const fn terminal_options() -> kazoo_host::terminal::Options {
+    kazoo_host::terminal::Options {
+        mouse: true,
+        key_release_events: false,
     }
 }

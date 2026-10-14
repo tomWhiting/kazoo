@@ -68,6 +68,7 @@ fn assert_whole_command(app: &App, sender: &FakeSender, control: Control) {
             assert_eq!(control, Control::Silent);
             assert_eq!(silent, app.accepted.silent);
         }
+        Command::SetGate(settings) => assert_eq!(settings, app.accepted.gate),
         Command::Shutdown
         | Command::FxOn { .. }
         | Command::FxKind { .. }
@@ -116,7 +117,7 @@ fn loop_keys_send_their_commands() {
         let gauges = app.loop_gauges().unwrap();
         gauges.n.store(48_000, Ordering::Relaxed);
         gauges.state.store(State::Playing as u8, Ordering::Relaxed);
-        key(&mut app, &sender, KeyCode::Char('w'), false, now);
+        key(&mut app, &sender, KeyCode::Char('W'), false, now);
         assert!(sender.commands.borrow().is_empty());
         looper.process(&[0.0; 128], &[f64::NAN; 128], 120.0, &mut [0.0; 128]);
         let crate::engine::looper::LoopOut::Refused(samples) =
@@ -130,7 +131,7 @@ fn loop_keys_send_their_commands() {
             .unwrap()
             .n
             .store(48_000, Ordering::Relaxed);
-        key(&mut app, &sender, KeyCode::Char('w'), false, now);
+        key(&mut app, &sender, KeyCode::Char('W'), false, now);
         assert_eq!(app.notice(now), Some("already saving"));
         app.loop_gauges()
             .unwrap()
@@ -319,6 +320,7 @@ fn a_full_channel_says_busy_and_keeps_the_engines_value() {
     }
     assert!(!app.busy(now + Duration::from_secs(1)));
     sender.commands.borrow_mut().clear();
+    app.selected = Control::Quantise;
     key(&mut app, &sender, KeyCode::Char(' '), false, now);
     assert_whole_command(&app, &sender, Control::Quantise);
     key(&mut app, &sender, KeyCode::Char(' '), false, now);
@@ -332,7 +334,7 @@ fn selection_help_and_shortcuts_have_no_hidden_commands() {
     let now = Instant::now();
     let mut app = App::new(QuantiseSettings::default(), false);
     key(&mut app, &sender, KeyCode::Up, false, now);
-    assert_eq!(app.selected, Control::Silent);
+    assert_eq!(app.selected, Control::Blend);
     key(&mut app, &sender, KeyCode::Down, false, now);
     assert_eq!(app.selected, Control::Quantise);
     key(&mut app, &sender, KeyCode::Char('?'), false, now);
@@ -394,6 +396,8 @@ fn fx_keys_select_turn_bypass_and_move() {
     let now = Instant::now();
     let mut app = App::new(QuantiseSettings::default(), false);
     key(&mut app, &sender, KeyCode::Tab, false, now);
+    assert_eq!(app.focus, Focus::Gate);
+    key(&mut app, &sender, KeyCode::Tab, false, now);
     assert_eq!(app.focus, Focus::Fx);
     key(&mut app, &sender, KeyCode::Char(']'), false, now);
     assert_eq!(app.selected_slot, Slot::Distortion);
@@ -423,7 +427,7 @@ fn fx_keys_select_turn_bypass_and_move() {
         .unwrap();
     let spec = &description.params[index];
     app.selected_cell = index + 1;
-    let value = app.accepted.fx.slots[2].values[0][index];
+    let value = app.accepted.fx.slots[Slot::Delay as usize].values[0][index];
     key(&mut app, &sender, KeyCode::Right, true, now);
     let expected = spec.clamp(value + (spec.max - spec.min) / 10.0);
     match sender.commands.borrow_mut().remove(0) {
@@ -438,13 +442,16 @@ fn fx_keys_select_turn_bypass_and_move() {
         }
         command => panic!("unexpected {command:?}"),
     }
-    app.accepted.fx.slots[2].values[0][index] = spec.max;
+    app.accepted.fx.slots[Slot::Delay as usize].values[0][index] = spec.max;
     key(&mut app, &sender, KeyCode::Right, true, now);
-    assert_close(app.accepted.fx.slots[2].values[0][index], spec.max);
+    assert_close(
+        app.accepted.fx.slots[Slot::Delay as usize].values[0][index],
+        spec.max,
+    );
     sender.commands.borrow_mut().clear();
     key(&mut app, &sender, KeyCode::Char('}'), false, now);
     let mut order = Slot::ALL;
-    order.swap(2, 3);
+    order.swap(Slot::Delay as usize, Slot::Echo as usize);
     assert!(
         matches!(sender.commands.borrow_mut().remove(0), Command::FxOrder(sent) if sent == order)
     );
@@ -597,4 +604,176 @@ fn a_queued_tempo_is_not_replaced_by_an_older_callback_snapshot() {
     stats.own_bpm.store(150.0_f64.to_bits(), Ordering::Relaxed);
     app.sync_stats(&stats, now);
     assert_eq!(app.accepted.own_bpm.to_bits(), 150.0_f64.to_bits());
+}
+
+#[test]
+fn the_waveform_is_one_key_away() {
+    for focus in super::Focus::ALL {
+        for control in Control::ALL {
+            let mut app = App::new(QuantiseSettings::default(), false);
+            app.focus = focus;
+            app.selected = control;
+            let sender = FakeSender::default();
+            key(&mut app, &sender, KeyCode::Char('w'), false, Instant::now());
+            assert_eq!(
+                app.accepted.synth.shape,
+                OscillatorShape::Square,
+                "{focus:?} {control:?}"
+            );
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+            terminal
+                .draw(|frame| {
+                    crate::ui::draw(
+                        frame,
+                        &app,
+                        &crate::ui::Display::new(48_000),
+                        "direct",
+                        Instant::now(),
+                    );
+                })
+                .unwrap();
+            let hit = app
+                .hits
+                .borrow()
+                .iter()
+                .find(|hit| hit.target == super::panels::Target::Shape(3))
+                .copied()
+                .unwrap();
+            assert_eq!(
+                terminal.backend().buffer()[(hit.area.x, hit.area.y)].bg,
+                ratatui::style::Color::Cyan
+            );
+            key(&mut app, &sender, KeyCode::Char('w'), false, Instant::now());
+            assert_eq!(app.accepted.synth.shape, OscillatorShape::Sine);
+        }
+    }
+}
+
+#[test]
+fn enter_explains_without_changing_sound() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = super::Focus::Fx;
+    let before = app.accepted;
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    key(&mut app, &sender, KeyCode::Enter, false, now);
+    assert_eq!(app.accepted, before);
+    assert!(sender.commands.borrow().is_empty());
+    assert!(app.notice(now).is_some());
+}
+
+#[test]
+fn harmony_keys_reach_six_slots_presets_and_custom() {
+    use crate::controls::Focus;
+    use crate::engine::fx::Slot;
+    let slot = Slot::ALL
+        .into_iter()
+        .find(|slot| slot.name() == "harmony")
+        .unwrap();
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    app.selected_slot = slot;
+    assert_eq!(Slot::ALL.len(), 6);
+    for expected in Slot::ALL.into_iter().cycle().skip(1).take(6) {
+        key(&mut app, &sender, KeyCode::Char(']'), false, now);
+        assert_eq!(app.selected_slot, expected);
+    }
+    key(&mut app, &sender, KeyCode::Char('['), false, now);
+    assert_eq!(app.selected_slot, *Slot::ALL.last().unwrap());
+    app.selected_slot = slot;
+    for _ in 0..5 {
+        key(&mut app, &sender, KeyCode::Char('}'), false, now);
+    }
+    assert_eq!(*app.accepted.fx.order.last().unwrap(), slot);
+    for _ in 0..5 {
+        key(&mut app, &sender, KeyCode::Char('{'), false, now);
+    }
+    assert_eq!(app.accepted.fx.order, Slot::ALL);
+    for expected in [3, 4, 5, 6, 7, 8, 0, 1, 2] {
+        key(&mut app, &sender, KeyCode::Right, false, now);
+        assert_close(
+            app.accepted.fx.slots[slot as usize].values[0][0],
+            expected as f32,
+        );
+    }
+    key(&mut app, &sender, KeyCode::Left, false, now);
+    assert_close(app.accepted.fx.slots[slot as usize].values[0][0], 1.0);
+    app.selected_cell = 4;
+    key(&mut app, &sender, KeyCode::Right, false, now);
+    assert_close(app.accepted.fx.slots[slot as usize].values[0][0], 8.0);
+    let custom = app.accepted.fx.slots[slot as usize].values[0][4];
+    app.selected_cell = 0;
+    key(&mut app, &sender, KeyCode::Right, false, now);
+    assert_close(app.accepted.fx.slots[slot as usize].values[0][0], 0.0);
+    key(&mut app, &sender, KeyCode::Left, false, now);
+    assert_close(app.accepted.fx.slots[slot as usize].values[0][0], 8.0);
+    assert_close(app.accepted.fx.slots[slot as usize].values[0][4], custom);
+    app.selected_cell = 4;
+    key(&mut app, &sender, KeyCode::Char('d'), false, now);
+    assert_close(app.accepted.fx.slots[slot as usize].values[0][4], 12.0);
+}
+
+#[test]
+fn harmony_old_settings_migrate_and_six_round_trip() -> std::io::Result<()> {
+    use crate::controls::{Settings, settings};
+    use crate::engine::fx::Slot;
+    let slot = Slot::ALL
+        .into_iter()
+        .find(|slot| slot.name() == "harmony")
+        .unwrap();
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/kz-logs/harmony-migration/settings.json");
+    let mut original = Settings::default();
+    original.fx.order.rotate_left(2);
+    original.fx.slots[slot as usize].on = true;
+    original.fx.slots[slot as usize].values[0][4] = 11.0;
+    original.fx.slots[slot as usize].values[0][8] = 0.0;
+    original.fx.slots[slot as usize].custom[3] = -5.0;
+    settings::save(&path, &original)?;
+    assert_eq!(settings::load(&path).settings, original);
+    let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    json["fx"]["slots"]["harmony"]["kinds"]["pitch"]["voice 2 shift"] = serde_json::json!(11.5);
+    json["fx"]["slots"]["harmony"]["custom"][3] = serde_json::json!(-5.5);
+    std::fs::write(&path, serde_json::to_vec(&json)?)?;
+    let fractional = settings::load(&path);
+    assert_close(
+        fractional.settings.fx.slots[slot as usize].values[0][4],
+        12.0,
+    );
+    assert_close(fractional.settings.fx.slots[slot as usize].custom[3], -6.0);
+    json["fx"]["order"] = serde_json::json!(["delay", "echo", "reverb", "megaphone", "distortion"]);
+    json["fx"]["slots"]
+        .as_object_mut()
+        .unwrap()
+        .remove("harmony");
+    std::fs::write(&path, serde_json::to_vec(&json)?)?;
+    let loaded = settings::load(&path);
+    assert!(loaded.notes.is_empty(), "{:?}", loaded.notes);
+    assert_eq!(loaded.settings.fx.order[0], slot);
+    assert!(!loaded.settings.fx.slots[slot as usize].on);
+    assert_close(loaded.settings.fx.slots[slot as usize].values[0][0], 2.0);
+    Ok(())
+}
+
+#[test]
+fn harmony_default_on_a_knob_already_there_keeps_the_preset() {
+    use crate::controls::Focus;
+    use crate::engine::fx::Slot;
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    app.selected_slot = Slot::Harmony;
+    let preset = |app: &App| app.accepted.fx.slots[Slot::Harmony as usize].values[0][0];
+    app.selected_cell = 3;
+    key(&mut app, &sender, KeyCode::Char('d'), false, now);
+    assert_close(preset(&app), 2.0);
+    app.selected_cell = 7;
+    key(&mut app, &sender, KeyCode::Left, false, now);
+    assert_close(preset(&app), 2.0);
+    key(&mut app, &sender, KeyCode::Right, false, now);
+    assert_close(preset(&app), 8.0);
 }

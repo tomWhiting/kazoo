@@ -10,7 +10,7 @@ use kazoo_core::voice::quantise::{NOTE_NAMES, SCALE_NAMES};
 use serde::{Deserialize, Serialize};
 
 pub use super::Settings;
-use crate::engine::fx::{Slot, mouth_default, permutation};
+use crate::engine::fx::{Slot, harmony, mouth_default, permutation};
 use crate::engine::looper::{BAR_CHOICES, LoopLength};
 
 #[derive(Debug)]
@@ -40,6 +40,18 @@ struct Document {
     fx: Effects,
     #[serde(default, rename = "loop")]
     looper: Option<LoopSettings>,
+    #[serde(default)]
+    gate: Option<Gate>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Gate {
+    #[serde(deserialize_with = "number")]
+    open_db: Option<f32>,
+    #[serde(deserialize_with = "number")]
+    close_db: Option<f32>,
+    #[serde(deserialize_with = "number")]
+    hold_ms: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,12 +95,14 @@ struct Synth {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Effects {
-    order: [String; 5],
+    order: Vec<String>,
     slots: BTreeMap<String, Pedal>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Pedal {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custom: Option<[f32; 7]>,
     on: bool,
     kind: String,
     kinds: BTreeMap<String, BTreeMap<String, Option<f32>>>,
@@ -130,6 +144,7 @@ impl From<&Settings> for Document {
                 (
                     slot.name().into(),
                     Pedal {
+                        custom: (slot == Slot::Harmony).then_some(saved.custom),
                         on: saved.on,
                         kind: slot.ids()[saved.active].into(),
                         kinds,
@@ -139,6 +154,11 @@ impl From<&Settings> for Document {
             .collect();
         Self {
             version: 1,
+            gate: Some(Gate {
+                open_db: Some(settings.gate.open_db),
+                close_db: Some(settings.gate.close_db),
+                hold_ms: Some(settings.gate.hold_ms),
+            }),
             quantise: Quantise {
                 on: quantise.blend > 0.0,
                 scale: SCALE_NAMES[quantise.scale].into(),
@@ -163,7 +183,12 @@ impl From<&Settings> for Document {
                 volume: Some(settings.loop_volume),
             }),
             fx: Effects {
-                order: settings.fx.order.map(|slot| slot.name().into()),
+                order: settings
+                    .fx
+                    .order
+                    .iter()
+                    .map(|slot| slot.name().into())
+                    .collect(),
                 slots,
             },
         }
@@ -269,10 +294,17 @@ impl Synth {
 impl Effects {
     fn apply(self, settings: &mut Settings, notes: &mut Vec<String>) {
         let mut order = Slot::ALL;
-        let mut known = true;
+        let legacy = self.order.len() == Slot::ALL.len() - 1
+            && !self.order.iter().any(|name| name == "harmony");
+        let offset = usize::from(legacy);
+        let mut known = self.order.len() + offset == Slot::ALL.len();
         for (index, name) in self.order.iter().enumerate() {
             if let Some(slot) = Slot::ALL.into_iter().find(|slot| slot.name() == name) {
-                order[index] = slot;
+                if let Some(entry) = order.get_mut(index + offset) {
+                    *entry = slot;
+                } else {
+                    known = false;
+                }
             } else {
                 known = false;
                 notes.push(format!("unknown slot in order: {name}"));
@@ -297,6 +329,24 @@ impl Pedal {
     fn apply(self, slot: Slot, settings: &mut Settings, notes: &mut Vec<String>) {
         let saved = &mut settings.fx.slots[slot as usize];
         saved.on = self.on;
+        if slot == Slot::Harmony
+            && let Some(custom) = self.custom
+        {
+            for (index, value) in custom.into_iter().enumerate() {
+                let spec = &harmony::KIND.params[index + 1];
+                saved.custom[index] = spec.clamp(held(
+                    Some(value),
+                    spec.default,
+                    spec.min,
+                    spec.max,
+                    spec.name,
+                    notes,
+                ));
+                if matches!(index, 1 | 3 | 5) {
+                    saved.custom[index] = saved.custom[index].round();
+                }
+            }
+        }
         if let Some(kind) = slot.ids().iter().position(|id| *id == self.kind) {
             saved.active = kind;
         } else {
@@ -326,7 +376,11 @@ impl Pedal {
                     &format!("{id}.{name}"),
                     notes,
                 );
-                saved.values[kind][index] = spec.clamp(value);
+                saved.values[kind][index] = if slot == Slot::Harmony && matches!(index, 2 | 4 | 6) {
+                    spec.clamp(value).round()
+                } else {
+                    spec.clamp(value)
+                };
             }
         }
     }
@@ -334,6 +388,36 @@ impl Pedal {
 
 impl Document {
     fn apply(self, loaded: &mut Loaded) {
+        if let Some(gate) = self.gate {
+            let defaults = kazoo_core::voice::GateSettings::default();
+            loaded.settings.gate = kazoo_core::voice::GateSettings {
+                open_db: held(
+                    gate.open_db,
+                    defaults.open_db,
+                    -70.0,
+                    -10.0,
+                    "gate open",
+                    &mut loaded.notes,
+                ),
+                close_db: held(
+                    gate.close_db,
+                    defaults.close_db,
+                    -80.0,
+                    -15.0,
+                    "gate close",
+                    &mut loaded.notes,
+                ),
+                hold_ms: held(
+                    gate.hold_ms,
+                    defaults.hold_ms,
+                    0.0,
+                    300.0,
+                    "gate hold",
+                    &mut loaded.notes,
+                ),
+            }
+            .held();
+        }
         self.quantise.apply(&mut loaded.settings, &mut loaded.notes);
         self.synth.apply(&mut loaded.settings, &mut loaded.notes);
         if let Some(tempo) = self.tempo.filter(|tempo| tempo.is_finite()) {
@@ -661,7 +745,10 @@ mod tests {
         value["fx"]["order"] = json!(["delay", "delay", "echo", "reverb", "megaphone"]);
         fs::write(&path, serde_json::to_vec(&value).map_err(io::Error::other)?)?;
         let loaded = load(&path);
-        assert_eq!(loaded.settings.fx.slots[1].active, 0);
+        assert_eq!(
+            loaded.settings.fx.slots[Slot::Distortion as usize].active,
+            0
+        );
         assert_eq!(
             loaded.settings.synth.cutoff_hz.to_bits(),
             12_000.0_f32.to_bits()
@@ -686,6 +773,28 @@ mod tests {
                 loaded.notes
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn old_settings_acquire_gate_defaults_and_round_trip() -> io::Result<()> {
+        let path = fixture("old_settings_acquire_gate_defaults")?;
+        let original = Settings::default();
+        save(&path, &original)?;
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
+        document.as_object_mut().unwrap().remove("gate");
+        fs::write(
+            &path,
+            serde_json::to_vec(&document).map_err(io::Error::other)?,
+        )?;
+        let mut loaded = load(&path);
+        assert_eq!(loaded.settings, original);
+        loaded.settings.gate.open_db = -42.0;
+        loaded.settings.gate.close_db = -48.0;
+        loaded.settings.gate.hold_ms = 90.0;
+        save(&path, &loaded.settings)?;
+        assert_eq!(load(&path).settings, loaded.settings);
         Ok(())
     }
 

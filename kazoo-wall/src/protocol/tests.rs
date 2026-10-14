@@ -76,11 +76,13 @@ fn every_request_round_trips() {
             to: Some("vcf1.cutoff".to_string()),
         },
         Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: Some("slow wobble".to_string()),
             place: None,
         },
         Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: Some(Place {
@@ -254,7 +256,9 @@ fn every_error_code_has_its_wire_name() {
             "wall_replaced",
             "slow_down",
             "not_allowed",
-            "internal"
+            "internal",
+            "unknown_moment",
+            "mark_exists"
         ]
     );
 }
@@ -543,6 +547,7 @@ fn the_rack_has_its_shape_and_older_walls_and_consoles_still_read() {
         serde_json::from_value(json!({"id":7,"op":"add","kind":"lfo"})).unwrap();
     assert!(matches!(line.request, Request::Add { place: None, .. }));
     let with = Request::Add {
+        alias: None,
         kind: "lfo".to_string(),
         name: None,
         place: Some(Place::end_of(3)),
@@ -887,6 +892,7 @@ fn a_request_says_which_wall_it_is_for() {
             to: None,
         },
         Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,

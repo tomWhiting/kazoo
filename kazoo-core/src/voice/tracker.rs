@@ -396,6 +396,13 @@ impl VoiceTracker {
         (gate, onset && !correction)
     }
 
+    pub fn set_gate(&mut self, settings: super::GateSettings) {
+        let settings = settings.held();
+        self.settings.gate_on_db = settings.open_db;
+        self.settings.gate_off_db = settings.close_db;
+        self.gate.set(settings, self.rate as u32);
+    }
+
     /// Clear history, verdicts and frame clock without allocating.
     pub fn reset(&mut self) {
         self.cycle.reset();

@@ -8,12 +8,15 @@ use super::Stats;
 #[cfg(test)]
 mod tests;
 
+pub mod harmony;
+
 pub const MAX_PARAMS: usize = 16;
 pub const RAMP_SECONDS: f32 = 0.010;
 const SEED: u64 = 0x6D6F_7574_6800;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
+    Harmony,
     Megaphone,
     Distortion,
     Delay,
@@ -22,7 +25,8 @@ pub enum Slot {
 }
 
 impl Slot {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
+        Self::Harmony,
         Self::Megaphone,
         Self::Distortion,
         Self::Delay,
@@ -32,6 +36,7 @@ impl Slot {
 
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Harmony => "harmony",
             Self::Megaphone => "megaphone",
             Self::Distortion => "distortion",
             Self::Delay => "delay",
@@ -42,6 +47,7 @@ impl Slot {
 
     pub const fn ids(self) -> &'static [&'static str] {
         match self {
+            Self::Harmony => &["pitch"],
             Self::Megaphone => &["radio"],
             Self::Distortion => &["fuzz", "screamer", "amp", "crush"],
             Self::Delay => &["digital", "bbd"],
@@ -51,7 +57,11 @@ impl Slot {
     }
 
     pub fn kind(self, index: usize) -> Option<&'static EffectKind> {
-        self.ids().get(index).and_then(|id| kazoo_fx::find(id))
+        if self == Self::Harmony && index == 0 {
+            Some(&harmony::KIND)
+        } else {
+            self.ids().get(index).and_then(|id| kazoo_fx::find(id))
+        }
     }
 
     const fn trail(self) -> bool {
@@ -63,7 +73,15 @@ impl Slot {
             .iter()
             .map(|slot| slot.ids().len())
             .sum();
-        SEED + (before + kind) as u64
+        if self == Self::Harmony {
+            SEED + Self::ALL
+                .iter()
+                .filter(|slot| **slot != Self::Harmony)
+                .map(|slot| slot.ids().len())
+                .sum::<usize>() as u64
+        } else {
+            SEED + (before.saturating_sub(Self::Harmony.ids().len()) + kind) as u64
+        }
     }
 }
 
@@ -83,7 +101,7 @@ pub fn mouth_default(slot: Slot, kind: usize, spec: &ParamSpec) -> f32 {
     }
 }
 
-pub fn permutation(order: [Slot; 5]) -> bool {
+pub fn permutation(order: [Slot; Slot::ALL.len()]) -> bool {
     Slot::ALL
         .iter()
         .all(|slot| order.iter().filter(|entry| *entry == slot).count() == 1)
@@ -94,12 +112,13 @@ pub struct SlotSettings {
     pub on: bool,
     pub active: usize,
     pub values: [[f32; MAX_PARAMS]; 4],
+    pub custom: [f32; 7],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FxSettings {
-    pub order: [Slot; 5],
-    pub slots: [SlotSettings; 5],
+    pub order: [Slot; Slot::ALL.len()],
+    pub slots: [SlotSettings; Slot::ALL.len()],
 }
 
 impl Default for FxSettings {
@@ -109,6 +128,7 @@ impl Default for FxSettings {
                 on: false,
                 active: 0,
                 values: [[0.0; MAX_PARAMS]; 4],
+                custom: harmony::KNOBS[harmony::DEFAULT],
             };
             for kind in 0..slot.ids().len() {
                 if let Some(description) = slot.kind(kind) {
@@ -185,6 +205,7 @@ struct Kind {
     effect: Box<dyn Effect>,
     values: [f32; MAX_PARAMS],
     description: &'static EffectKind,
+    custom: [f32; 7],
 }
 
 #[derive(Debug)]
@@ -463,17 +484,31 @@ impl Pedal {
 
 #[derive(Debug)]
 pub struct FxChain {
-    pub order: [Slot; 5],
-    pedals: [Pedal; 5],
-    pending: Option<[Slot; 5]>,
+    pub order: [Slot; Slot::ALL.len()],
+    pedals: [Pedal; Slot::ALL.len()],
+    pending: Option<[Slot; Slot::ALL.len()]>,
     a: [Box<[f32]>; 2],
     b: [Box<[f32]>; 2],
     spare: [Box<[f32]>; 2],
     gains: Box<[f32]>,
     second: usize,
+    input_meters: [super::meters::Rms; Slot::ALL.len()],
+    output_meters: [super::meters::Rms; Slot::ALL.len()],
 }
 
 impl FxChain {
+    pub fn latency(&self) -> usize {
+        self.pedals
+            .iter()
+            .filter(|pedal| pedal.on || pedal.gain.moving())
+            .map(|pedal| {
+                let current = pedal.kinds[pedal.active].effect.latency();
+                pedal.fading_from.map_or(current, |old| {
+                    current.max(pedal.kinds[old].effect.latency())
+                })
+            })
+            .sum()
+    }
     pub fn new(rate: u32, block: usize, settings: &FxSettings) -> kazoo_core::Result<Self> {
         if rate == 0 || block == 0 {
             return Err(kazoo_core::Error::Config(
@@ -481,12 +516,12 @@ impl FxChain {
             ));
         }
         let ramp = (rate as f32 * RAMP_SECONDS).round() as usize;
-        let mut pedals = Vec::with_capacity(5);
+        let mut pedals = Vec::with_capacity(Slot::ALL.len());
         for slot in Slot::ALL {
             let saved = settings.slots[slot as usize];
             let mut kinds = Vec::with_capacity(slot.ids().len());
             for (kind, id) in slot.ids().iter().enumerate() {
-                let description = kazoo_fx::find(id).ok_or_else(|| {
+                let description = slot.kind(kind).ok_or_else(|| {
                     kazoo_core::Error::Config(format!("mouth effect {id} is missing"))
                 })?;
                 if description.params.len() > MAX_PARAMS {
@@ -495,7 +530,11 @@ impl FxChain {
                         description.id
                     )));
                 }
-                let mut effect = (description.build)();
+                let mut effect: Box<dyn Effect> = if slot == Slot::Harmony {
+                    Box::new(harmony::Harmony::new(block))
+                } else {
+                    (description.build)()
+                };
                 effect.prepare(rate as f32);
                 effect.set_seed(slot.seed(kind));
                 let mut values = saved.values[kind];
@@ -505,6 +544,9 @@ impl FxChain {
                     } else {
                         mouth_default(slot, kind, spec)
                     });
+                    if slot == Slot::Harmony && matches!(index, 2 | 4 | 6) {
+                        values[index] = values[index].round();
+                    }
                     effect.set_param(index, values[index]);
                 }
                 effect.reset();
@@ -512,6 +554,7 @@ impl FxChain {
                     effect,
                     values,
                     description,
+                    custom: saved.custom,
                 });
             }
             if saved.active >= kinds.len() {
@@ -535,7 +578,7 @@ impl FxChain {
         }
         let pedals = pedals
             .try_into()
-            .map_err(|_| kazoo_core::Error::Config("mouth requires five slots".into()))?;
+            .map_err(|_| kazoo_core::Error::Config("mouth requires six slots".into()))?;
         if !permutation(settings.order) {
             return Err(kazoo_core::Error::Config(
                 "mouth effect order is invalid".into(),
@@ -550,6 +593,8 @@ impl FxChain {
             spare: std::array::from_fn(|_| vec![0.0; block].into_boxed_slice()),
             gains: vec![0.0; block].into_boxed_slice(),
             second: rate as usize,
+            input_meters: [super::meters::Rms::default(); Slot::ALL.len()],
+            output_meters: [super::meters::Rms::default(); Slot::ALL.len()],
         })
     }
 
@@ -573,15 +618,37 @@ impl FxChain {
         {
             if value.is_finite() {
                 let value = spec.clamp(value);
-                kind.values[usize::from(index)] = value;
-                kind.effect.set_param(usize::from(index), value);
+                if slot == Slot::Harmony {
+                    let value = if matches!(index, 2 | 4 | 6) {
+                        value.round()
+                    } else {
+                        value
+                    };
+                    harmony::adjust(
+                        &mut kind.values,
+                        &mut kind.custom,
+                        usize::from(index),
+                        value,
+                    );
+                    for (index, value) in kind
+                        .values
+                        .iter()
+                        .take(harmony::KIND.params.len())
+                        .enumerate()
+                    {
+                        kind.effect.set_param(index, *value);
+                    }
+                } else {
+                    kind.values[usize::from(index)] = value;
+                    kind.effect.set_param(usize::from(index), value);
+                }
             }
         } else {
             stats.fx_refused.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    pub fn reorder(&mut self, order: [Slot; 5], stats: &Stats) {
+    pub fn reorder(&mut self, order: [Slot; Slot::ALL.len()], stats: &Stats) {
         if !permutation(order) {
             stats.fx_refused.fetch_add(1, Ordering::Relaxed);
             return;
@@ -641,6 +708,12 @@ impl FxChain {
                 let [a_l, a_r] = &self.a;
                 let [b_l, b_r] = &mut self.b;
                 let [s_l, s_r] = &mut self.spare;
+                self.input_meters[slot as usize].stereo(
+                    &a_l[..size],
+                    &a_r[..size],
+                    self.second / 10,
+                    &stats.fx_input[slot as usize],
+                );
                 self.pedals[slot as usize].process(
                     context,
                     Buffers {
@@ -652,10 +725,19 @@ impl FxChain {
                     stats,
                     self.second,
                 );
+                self.output_meters[slot as usize].stereo(
+                    &b_l[..size],
+                    &b_r[..size],
+                    self.second / 10,
+                    &stats.fx_output[slot as usize],
+                );
                 std::mem::swap(&mut self.a, &mut self.b);
             }
-            left[start..start + size].copy_from_slice(&self.a[0][..size]);
-            right[start..start + size].copy_from_slice(&self.a[1][..size]);
+            for i in 0..size {
+                let finite = mono[start + i].is_finite();
+                left[start + i] = if finite { self.a[0][i] } else { 0.0 };
+                right[start + i] = if finite { self.a[1][i] } else { 0.0 };
+            }
             start += size;
         }
         if let Some(order) = self.pending

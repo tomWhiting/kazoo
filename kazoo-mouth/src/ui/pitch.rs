@@ -66,6 +66,13 @@ const fn dim_style() -> Style {
 }
 
 fn panel(frame: &mut Frame<'_>, area: Rect, note: &str, label: &str, detail: &str, style: Style) {
+    if area.width < 35 {
+        frame.render_widget(
+            Paragraph::new(format!("{label} {note}\n{detail}")).style(style),
+            area,
+        );
+        return;
+    }
     for (index, character) in note.chars().enumerate() {
         if let Some((_, rows)) = FONT.iter().find(|(glyph, _)| *glyph == character) {
             for (row, bits) in rows.iter().enumerate() {

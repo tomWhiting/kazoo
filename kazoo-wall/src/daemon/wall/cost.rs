@@ -144,7 +144,11 @@ pub(super) fn kind_share(kind: Kind, rate: u32) -> f32 {
 /// takes work away, and is never costed.
 pub(super) fn can_wake(what: &What) -> bool {
     match what {
-        What::Patch { .. } | What::Add { .. } | What::Restore { .. } | What::Chain { .. } => true,
+        What::Patch { .. }
+        | What::Add { .. }
+        | What::Restore { .. }
+        | What::Batch { .. }
+        | What::Chain { .. } => true,
         What::Unpatch { replugged, .. } => replugged.is_some(),
         What::Remove { replugged, .. } => !replugged.is_empty(),
         _ => false,
@@ -183,7 +187,9 @@ fn heard_modules(patch: &Patch) -> Vec<usize> {
 fn taken_away(what: &What) -> Vec<&ModuleRecord> {
     match what {
         What::Remove { module, .. } => vec![module],
-        What::Chain { changes, .. } => changes.iter().flat_map(taken_away).collect(),
+        What::Batch { changes, .. } | What::Chain { changes, .. } => {
+            changes.iter().flat_map(taken_away).collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -296,6 +302,7 @@ impl Wall {
             what,
             What::Add { .. }
                 | What::Restore { .. }
+                | What::Batch { .. }
                 | What::Chain { .. }
                 | What::Patch { replaced: None, .. }
         ) {

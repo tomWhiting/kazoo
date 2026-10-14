@@ -188,3 +188,26 @@ START KZ-T04a base=dd1bfc6 branch=lane/kz-T04a df=95GB at 12:59
 START KZ-R02 base=8ed511d branch=lane/kz-R02 df=74GB at 13:55
 START KZ-R03 base=8ed511d branch=lane/kz-R03 df=74GB at 13:56
 - Tom, 14 Oct 19:5x, on the mouth after the build round: sounds good, high end much better; the front end is hard. Waveform not reachable, effects not reachable or not visibly doing anything, help a wall of text, gate hard to find; wants mouse, a voice oscilloscope and more to see, a vocoder-ish voice-through blend; maybe extra latency (AirPods; check with wired IEMs; add a latency readout). Next mouth lanes: V09a-d (briefs by Cassio).
+START KZ-V09a base=8ed511d branch=lane/kz-V09a df=40GB at 20:27
+START KZ-T04b base=8ed511d branch=lane/kz-T04b df=25GB at 20:32
+START KZ-D10 base=8ed511d branch=lane/kz-D10 df=84GB at 20:49
+START KZ-R04 base=8ed511d branch=lane/kz-R04 df=86GB at 20:55
+START KZ-D17 base=8ed511d branch=lane/kz-D17 df=72GB at 21:49
+START KZ-T04c base=8ed511d branch=lane/kz-T04c df=77GB at 21:56
+START KZ-T04d base=8ed511d branch=lane/kz-T04d df=77GB at 21:56
+START KZ-T04c base=8f397db branch=lane/kz-T04c df=77GB at 21:56
+START KZ-T04d base=8f397db branch=lane/kz-T04d df=77GB at 21:56
+START KZ-P11b base=96d5ba6 branch=lane/kz-P11b df=67GB at 22:20
+START KZ-T04f base=2680242 branch=lane/kz-T04f df=67GB at 22:20
+START KZ-P11b base=lane/kz-P11 df=67GB at 22:1x; START KZ-T04f base=main at 22:1x; FIX KZ-R04 run 2 at 22:20
+START KZ-V13 base=aca8a25 branch=lane/kz-V13 df=49GB at 23:55
+START KZ-T05g base=5c5280e branch=lane/kz-T05g df=25GB at 01:39
+START KZ-D18 base=2a430f0 branch=lane/kz-D18 df=99GB at 02:07
+START KZ-T11a base=f44489e branch=lane/kz-T11a df=99GB at 02:25
+START KZ-T10a base=f44489e branch=lane/kz-T10a df=99GB at 02:25
+START KZ-T04g base=72b8d51 branch=lane/kz-T04g df=94GB at 02:34
+START KZ-D18b base=015c825 branch=lane/kz-D18b df=79GB at 03:23
+START KZ-V14 base=bc27e5b branch=lane/kz-V14 df=74GB at 03:47
+START KZ-V15 base=bc27e5b branch=lane/kz-V15 df=74GB at 03:47
+START KZ-D20 base=cd69e4d branch=lane/kz-D20 df=75GB at 05:04
+START KZ-T05b base=cd69e4d branch=lane/kz-T05b df=74GB at 05:04

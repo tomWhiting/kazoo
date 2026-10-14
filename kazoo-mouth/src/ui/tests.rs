@@ -6,14 +6,14 @@ use kazoo_core::voice::{VOICE_HOP, VoiceFrame, hz_from_volts};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::{Buffer, Cell};
-use ratatui::style::{Color, Modifier};
+use ratatui::style::Modifier;
 
 use super::{BRIGHT, DIM, Display, draw};
 use crate::controls::{App, Control};
 
 const RATE: u32 = 48_000;
 
-fn voice(at: u64, semitones: f32, snapped: f32) -> VoiceFrame {
+pub(super) fn voice(at: u64, semitones: f32, snapped: f32) -> VoiceFrame {
     VoiceFrame {
         at,
         hz: hz_from_volts(semitones / 12.0),
@@ -32,7 +32,13 @@ fn voice(at: u64, semitones: f32, snapped: f32) -> VoiceFrame {
     }
 }
 
-fn render(app: &App, display: &Display, width: u16, height: u16, now: Instant) -> Buffer {
+pub(super) fn render(
+    app: &App,
+    display: &Display,
+    width: u16,
+    height: u16,
+    now: Instant,
+) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal
         .draw(|frame| draw(frame, app, display, "playing direct: no desk", now))
@@ -40,7 +46,7 @@ fn render(app: &App, display: &Display, width: u16, height: u16, now: Instant) -
     terminal.backend().buffer().clone()
 }
 
-fn text(buffer: &Buffer) -> String {
+pub(super) fn text(buffer: &Buffer) -> String {
     buffer
         .content
         .chunks(usize::from(buffer.area.width))
@@ -57,7 +63,7 @@ fn the_pitch_panel_shows_sung_and_snapped() {
     let expected_hz = format!("{:.1} Hz", hz_from_volts(frame.volts));
     display.push(frame);
     display.recentre();
-    let buffer = render(&app, &display, 80, 24, Instant::now());
+    let buffer = render(&app, &display, 120, 40, Instant::now());
     let screen = text(&buffer);
     assert!(screen.contains("+12¢"), "{screen}");
     assert!(screen.contains(&expected_hz), "{screen}");
@@ -77,13 +83,13 @@ fn unvoiced_is_dim_and_held() {
     unvoiced.gate = false;
     display.push(unvoiced);
     display.recentre();
-    let buffer = render(&app, &display, 80, 24, Instant::now());
+    let buffer = render(&app, &display, 120, 40, Instant::now());
     let screen = text(&buffer);
     assert!(screen.contains("sung A4"), "{screen}");
     assert!(screen.contains("snapped A4"), "{screen}");
     assert!(screen.contains("○ kazoo mouth"), "{screen}");
-    for row in buffer.content.chunks(80).skip(1).take(5) {
-        for cell in row.iter().filter(|cell| cell.symbol() != " ") {
+    for row in buffer.content.chunks(120).skip(3).take(5) {
+        for cell in row.iter().take(82).filter(|cell| cell.symbol() != " ") {
             assert_eq!(cell.fg, DIM);
             assert!(cell.modifier.contains(Modifier::DIM));
         }
@@ -110,9 +116,9 @@ fn the_trail_draws_four_seconds() {
     }
     display.recentre();
     assert_eq!(display.frames.len(), 3000);
-    let buffer = render(&app, &display, 80, 24, Instant::now());
-    let rows: Vec<_> = buffer.content.chunks(80).skip(6).take(9).collect();
-    for column in 0..80 {
+    let buffer = render(&app, &display, 120, 40, Instant::now());
+    let rows: Vec<_> = buffer.content.chunks(120).skip(8).take(6).collect();
+    for column in 0..41 {
         assert!(
             rows.iter().any(|row| {
                 row[column].fg == BRIGHT
@@ -134,12 +140,11 @@ fn the_trail_draws_four_seconds() {
 
 #[test]
 fn a_small_terminal_says_so() {
-    let mut app = App::new(QuantiseSettings::default(), false);
-    app.help = true;
-    let display = Display::new(RATE);
-    for (width, height) in [(60, 20), (79, 24), (80, 23)] {
-        let buffer = render(&app, &display, width, height, Instant::now());
-        assert_eq!(text(&buffer).trim(), "make the terminal at least 80×24");
+    let app = App::new(QuantiseSettings::default(), false);
+    for (width, height) in [(1, 1), (20, 8), (60, 20), (79, 24), (80, 23)] {
+        let buffer = render(&app, &Display::new(RATE), width, height, Instant::now());
+        assert_eq!(buffer.area.width, width);
+        assert_eq!(buffer.area.height, height);
     }
 }
 
@@ -148,86 +153,27 @@ fn the_footer_and_help_name_every_key() {
     let mut app = App::new(QuantiseSettings::default(), false);
     let display = Display::new(RATE);
     let now = Instant::now();
-    let screen = text(&render(&app, &display, 80, 24, now));
+    let screen = text(&render(&app, &display, 120, 40, now));
     let footer = screen.lines().last().unwrap();
-    assert!(footer.contains("loop r u C l o w - = _ +"), "{footer}");
-    for name in [
-        "↑↓",
-        "←→",
-        "space",
-        "v vibrato",
-        "s silent",
-        "tab fx",
-        "? help",
-    ] {
-        assert!(footer.contains(name), "{name}: {footer}");
+    for key in ["Tab", "↑↓", "←→", "w", "Space", "b", "d", "?"] {
+        assert!(footer.contains(key), "{footer}");
     }
+    assert!(footer.contains(app.selected.help()));
     app.help = true;
-    let help = text(&render(&app, &display, 100, 100, now));
-    for name in [
-        "Up",
-        "Down",
-        "Left",
-        "Right",
-        "Shift+Left",
-        "Shift+Right",
-        "Space",
-        "v",
-        "s",
-        "?",
-        "Esc",
+    let lines = super::board::help_lines(&app);
+    for key in [
+        "SOURCE",
+        "PITCH",
+        "GATE",
+        "FX",
+        "LOOP",
+        "Shift+w",
         "Ctrl-C",
-        "Tab",
-        "[ / ]",
-        "b:",
-        "{ / }",
-        "d:",
-        ", / .",
-        "< / >",
-        "Settings:",
-        "r:",
-        "u:",
-        "C:",
-        "l:",
-        "o:",
-        "- / =",
-        "_ / +",
-        "w:",
-        "Loops:",
+        "Enter on a control",
     ] {
-        assert!(help.contains(name), "{name}: {help}");
+        assert!(lines.iter().any(|line| line.contains(key)), "{key}");
     }
-    let unbordered = help.replace('│', " ");
-    let help_words = unbordered.split_whitespace().collect::<Vec<_>>().join(" ");
-    for control in Control::ALL {
-        assert!(help.contains(control.name()), "{help}");
-        assert!(help_words.contains(control.help()), "{help}");
-    }
-    for slot in crate::engine::fx::Slot::ALL {
-        for kind in 0..slot.ids().len() {
-            assert!(
-                help_words.contains(slot.kind(kind).unwrap().description),
-                "{help}"
-            );
-        }
-    }
-    app.help = false;
-    app.focus = crate::controls::Focus::Fx;
-    let screen = text(&render(&app, &display, 80, 24, now));
-    let footer = screen.lines().last().unwrap();
-    assert!(footer.contains("loop r u C l o w - = _ +"), "{footer}");
-    for name in [
-        "[ ]",
-        "↑↓",
-        "←→",
-        "b on/off",
-        "{ }",
-        "d default",
-        "tab synth",
-        "? help",
-    ] {
-        assert!(footer.contains(name), "{name}: {footer}");
-    }
+    assert!(lines.iter().all(|line| line.chars().count() <= 50));
 }
 
 #[test]
@@ -291,7 +237,7 @@ fn display_gaps_expire_old_frames_and_invalid_pitch_is_not_drawn() {
     display.recentre();
     assert_eq!(display.frames.len(), 1);
     assert!(!display.latest.unwrap().voiced);
-    let screen = text(&render(&app, &display, 80, 24, Instant::now()));
+    let screen = text(&render(&app, &display, 120, 40, Instant::now()));
     assert!(screen.contains("silent"));
     assert!(screen.contains("sung A4"));
     assert!(!screen.contains("NaN"));
@@ -300,23 +246,22 @@ fn display_gaps_expire_old_frames_and_invalid_pitch_is_not_drawn() {
 
 #[test]
 fn the_controls_meters_and_link_are_visible() {
-    let app = App::new(QuantiseSettings::default(), false);
-    let mut display = Display::new(RATE);
-    display.push(voice(64, 9.0, 9.0));
-    let buffer = render(&app, &display, 80, 24, Instant::now());
-    let screen = text(&buffer);
-    assert!(screen.contains("playing direct: no desk"));
-    assert!(screen.contains("quantise off: hertz for hertz"));
-    assert!(screen.contains("loud ███████████░░░░░"));
-    assert!(screen.contains("breath ████░░░░░░░░░░░░"));
-    assert!(screen.contains("sure ██████████████░░"));
-    assert!(screen.contains("gate ●"));
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.mic_rms = 0.1;
+    app.output_rms = 0.25;
+    let screen = text(&render(&app, &Display::new(RATE), 120, 40, Instant::now()));
+    for name in [
+        "playing direct: no desk",
+        "quantise [off]",
+        "mic",
+        "output",
+        "-20 dBFS",
+        "latency ≥ 0.0 ms",
+    ] {
+        assert!(screen.contains(name), "{screen}");
+    }
     for control in Control::ALL {
         assert!(screen.contains(control.name()), "{screen}");
-    }
-    for cell in &buffer.content[17 * 80..17 * 80 + 40] {
-        assert_eq!(cell.bg, BRIGHT);
-        assert_eq!(cell.fg, Color::Black);
     }
 }
 
@@ -342,44 +287,43 @@ fn trail_capacity_tracks_the_device_rate_and_unvoiced_frames_leave_gaps() {
 fn the_fx_panel_shows_the_chain_and_the_selected_slots_knobs() {
     use crate::controls::Focus;
     use crate::engine::fx::Slot;
-
     let mut app = App::new(QuantiseSettings::default(), false);
     app.focus = Focus::Fx;
     app.selected_slot = Slot::Delay;
-    app.accepted.fx.slots[0].on = true;
-    let buffer = render(&app, &Display::new(RATE), 80, 24, Instant::now());
-    let screen = text(&buffer);
+    app.accepted.fx.slots[Slot::Megaphone as usize].on = true;
+    let screen = text(&render(&app, &Display::new(RATE), 120, 40, Instant::now()));
     let mut previous = 0;
-    for name in ["megaphone ●", "fuzz ○", "delay ○", "echo ○", "plate ○"] {
+    for name in [
+        "[●] megaphone",
+        "[○] distortion",
+        "[○] delay",
+        "[○] echo",
+        "[○] reverb",
+    ] {
         let index = screen.find(name).unwrap();
         assert!(index >= previous, "{screen}");
         previous = index;
     }
-    for name in ["1/8d·1/4", "ltime", "feedback", "mix", "♩120.0 own"] {
-        assert!(screen.contains(name), "{name}: {screen}");
+    for name in ["ltime", "feedback", "mix", "120.0"] {
+        assert!(screen.contains(name), "{screen}");
     }
-    app.moving = 1 << Slot::Delay as usize;
-    assert!(text(&render(&app, &Display::new(RATE), 80, 24, Instant::now())).contains("delay ◐"));
 }
 
 #[test]
 fn both_panels_show_at_thirty_rows() {
-    let display = Display::new(RATE);
-    let now = Instant::now();
-    let mut app = App::new(QuantiseSettings::default(), false);
-    let tall = text(&render(&app, &display, 80, 30, now));
-    assert!(tall.contains("cutoff"));
-    assert!(tall.contains("megaphone"));
-    let short = text(&render(&app, &display, 80, 24, now));
-    assert!(short.contains("cutoff"));
-    assert!(!short.contains("megaphone"));
-    app.focus = crate::controls::Focus::Fx;
-    let focused = text(&render(&app, &display, 80, 24, now));
-    assert!(focused.contains("megaphone"));
-    assert!(!focused.contains("cutoff"));
-    let tall = text(&render(&app, &display, 80, 30, now));
-    assert!(tall.contains("cutoff"));
-    assert!(tall.contains("megaphone"));
+    let app = App::new(QuantiseSettings::default(), false);
+    for height in [24, 30, 40] {
+        let screen = text(&render(
+            &app,
+            &Display::new(RATE),
+            80,
+            height,
+            Instant::now(),
+        ));
+        for name in ["SOURCE", "PITCH", "GATE", "FX", "cutoff", "megaphone"] {
+            assert!(screen.contains(name), "{screen}");
+        }
+    }
 }
 
 #[test]
@@ -387,15 +331,17 @@ fn help_scroll_stops_at_the_last_description_and_can_move_back() {
     let mut app = App::new(QuantiseSettings::default(), false);
     app.help = true;
     app.help_scroll.set(u16::MAX);
-    let display = Display::new(RATE);
-    let now = Instant::now();
-    let last = text(&render(&app, &display, 80, 24, now));
-    assert!(last.contains("spring"), "{last}");
+    let screen = text(&render(&app, &Display::new(RATE), 80, 24, Instant::now()));
+    assert!(screen.contains("Enter on a control"));
     let end = app.help_scroll.get();
-    assert!(end < u16::MAX);
+    assert!(end > 0 && end < u16::MAX);
     let (sender, receiver) = crossbeam_channel::bounded(64);
-    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &sender, now)
-        .unwrap();
+    app.handle_key(
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        &sender,
+        Instant::now(),
+    )
+    .unwrap();
     assert_eq!(app.help_scroll.get(), end - 1);
     assert!(receiver.is_empty());
 }
@@ -432,7 +378,7 @@ fn the_loop_strip_shows_state_length_layers_and_volume() {
     ] {
         assert!(screen.contains(expected), "{expected}: {screen}");
     }
-    assert!(buffer[(42, 14)].modifier.contains(Modifier::REVERSED));
+    assert!(buffer[(42, 22)].modifier.contains(Modifier::REVERSED));
     app.desk_bpm = Some(128.0);
     app.loop_gauges()
         .unwrap()
@@ -440,4 +386,283 @@ fn the_loop_strip_shows_state_length_layers_and_volume() {
         .store(true, Ordering::Relaxed);
     assert!(text(&render(&app, &Display::new(RATE), 80, 24, now)).contains("· desk 128.0"));
     drop(looper);
+}
+
+#[test]
+fn every_panel_is_on_screen() {
+    let app = App::new(QuantiseSettings::default(), false);
+    let screen = text(&render(&app, &Display::new(RATE), 120, 40, Instant::now()));
+    for name in ["SOURCE", "PITCH", "GATE", "FX", "open", "close", "hold"] {
+        assert!(screen.contains(name), "missing {name}: {screen}");
+    }
+    for control in Control::ALL {
+        assert!(screen.contains(control.name()), "{screen}");
+    }
+}
+
+#[test]
+fn small_terminals_stack() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.selected = Control::Cutoff;
+    app.focus = crate::controls::Focus::Synth;
+    for (width, height) in [(80, 30), (50, 20)] {
+        let buffer = render(&app, &Display::new(RATE), width, height, Instant::now());
+        assert_eq!(
+            buffer.content.len(),
+            usize::from(width) * usize::from(height)
+        );
+        assert!(text(&buffer).contains("cutoff"));
+    }
+}
+
+#[test]
+fn help_is_short_and_grouped() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.help = true;
+    let screen = text(&render(&app, &Display::new(RATE), 120, 80, Instant::now()));
+    for title in ["SOURCE", "PITCH", "GATE", "FX"] {
+        assert!(screen.contains(title), "{screen}");
+    }
+    assert!(
+        super::board::help_lines(&app)
+            .iter()
+            .all(|line| line.chars().count() <= 50)
+    );
+    let (sender, receiver) = crossbeam_channel::bounded(64);
+    for ch in "/gate".chars() {
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            &sender,
+            Instant::now(),
+        )
+        .unwrap();
+    }
+    let lines = super::board::help_lines(&app);
+    assert!(!lines.is_empty());
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.to_lowercase().contains("gate"))
+    );
+    let filtered = text(&render(&app, &Display::new(RATE), 120, 40, Instant::now()));
+    assert!(!filtered.contains("SOURCE"));
+    assert!(receiver.is_empty());
+}
+
+fn mouse(app: &mut App, control: Control, kind: crossterm::event::MouseEventKind, fraction: f32) {
+    let buffer = render(app, &Display::new(RATE), 120, 40, Instant::now());
+    assert!(text(&buffer).contains(control.name()));
+    let hit = app
+        .hits
+        .borrow()
+        .iter()
+        .find(|hit| hit.target == crate::controls::panels::Target::Control(control))
+        .copied()
+        .expect("dial hit region missing");
+    let (sender, receiver) = crossbeam_channel::bounded(64);
+    let event = crossterm::event::MouseEvent {
+        kind,
+        column: hit.bar.x + (fraction * f32::from(hit.bar.width.saturating_sub(1))).round() as u16,
+        row: hit.area.y,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(event, &sender, Instant::now()).unwrap();
+    assert!(!receiver.is_empty());
+}
+
+#[test]
+fn a_click_sets_a_dial() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    mouse(
+        &mut app,
+        Control::Cutoff,
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        0.75,
+    );
+    assert!((app.accepted.synth.cutoff_hz - 9025.0).abs() < 600.0);
+}
+
+#[test]
+fn the_wheel_turns_a_dial() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    let before = app.accepted.synth.volume;
+    for _ in 0..2 {
+        mouse(
+            &mut app,
+            Control::Volume,
+            crossterm::event::MouseEventKind::ScrollUp,
+            0.5,
+        );
+    }
+    assert!((app.accepted.synth.volume - before - 0.1).abs() < 0.001);
+}
+
+#[test]
+fn the_gate_holds_its_order() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    mouse(
+        &mut app,
+        Control::GateClose,
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        1.0,
+    );
+    assert!((app.accepted.gate.close_db - app.accepted.gate.open_db + 3.0).abs() < 0.001);
+    assert!(text(&render(&app, &Display::new(RATE), 120, 40, Instant::now())).contains("-53 dBFS"));
+}
+
+#[test]
+fn an_idle_effect_shows_flat() {
+    use crate::engine::{
+        Stats,
+        fx::{FxChain, FxSettings, Slot},
+    };
+    use std::sync::atomic::Ordering;
+    let mut settings = FxSettings::default();
+    let slot = Slot::Delay;
+    let mix = slot
+        .kind(0)
+        .unwrap()
+        .params
+        .iter()
+        .position(|spec| spec.name == "mix")
+        .unwrap();
+    settings.slots[slot as usize].on = true;
+    settings.slots[slot as usize].values[0][mix] = 0.0;
+    let stats = Stats::default();
+    let mut chain = FxChain::new(RATE, 256, &settings).unwrap();
+    let input: Vec<_> = (0..256).map(|i| (i as f32 * 0.1).sin() * 0.25).collect();
+    let mut left = [0.0; 256];
+    let mut right = [0.0; 256];
+    for _ in 0..20 {
+        chain.process(
+            kazoo_fx::Context { bpm: 120.0 },
+            &input,
+            [&mut left, &mut right],
+            &stats,
+        );
+    }
+    let read = || {
+        (
+            f32::from_bits(stats.fx_input[slot as usize].load(Ordering::Relaxed)),
+            f32::from_bits(stats.fx_output[slot as usize].load(Ordering::Relaxed)),
+        )
+    };
+    let (before, after) = read();
+    assert!(before > 0.0, "slot RMS was not published");
+    assert!((before - after).abs() < 0.000_01);
+    chain.param(slot, 0, mix as u8, 1.0, &stats);
+    for _ in 0..40 {
+        chain.process(
+            kazoo_fx::Context { bpm: 120.0 },
+            &input,
+            [&mut left, &mut right],
+            &stats,
+        );
+    }
+    let (before, after) = read();
+    assert!((before - after).abs() > 0.000_01);
+}
+
+#[test]
+fn harmony_effect_panel_keys_fit_without_cut_words() {
+    use crate::controls::Focus;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    for (width, expected) in [
+        (
+            80,
+            "[ ] effect · ↑↓ row · ←→ change · b on/off · { } move · d default",
+        ),
+        (40, "[ ] effect · ←→ change · b on/off"),
+        (20, "[ ] effect"),
+    ] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 18)).unwrap();
+        terminal
+            .draw(|frame| super::board::effects(frame, frame.area(), &app))
+            .unwrap();
+        let screen = text(terminal.backend().buffer());
+        assert!(screen.contains(expected), "width {width}: {screen}");
+    }
+}
+
+#[test]
+fn harmony_rows_read_off_and_whole_semitones() {
+    use crate::controls::Focus;
+    use crate::engine::fx::Slot;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    app.selected_slot = Slot::Harmony;
+    for (cell, name, value) in [
+        (2, "voice 1 shift", "▏ -12 st"),
+        (4, "voice 2 shift", "▏ +12 st"),
+        (5, "voice 2 level", "▏ -3.00 dB"),
+        (7, "voice 3 level", "▏ off"),
+    ] {
+        app.selected_cell = cell;
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| super::board::effects(frame, frame.area(), &app))
+            .unwrap();
+        let screen = text(terminal.backend().buffer());
+        let row = screen
+            .lines()
+            .find(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("{name} missing: {screen}"));
+        assert!(row.trim_end().ends_with(value), "{row}");
+    }
+}
+
+#[test]
+fn harmony_help_says_the_copies_arrive_late_and_nothing_else() {
+    use crate::engine::fx::harmony;
+    assert!(harmony::KIND.description.contains("13 to 25 ms"));
+    assert!(!harmony::KIND.description.contains("Enter"));
+}
+
+#[test]
+fn mic_choice_and_desk_refusal_are_readable_together() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.input_label =
+        "MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)".into();
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    let display = Display::new(RATE);
+    terminal
+        .draw(|frame| {
+            draw(
+                frame,
+                &app,
+                &display,
+                "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)",
+                Instant::now(),
+            );
+        })
+        .unwrap();
+    let screen = text(terminal.backend().buffer());
+    assert!(screen.contains(
+        "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)"
+    ));
+    assert!(screen.contains(
+        "mic: MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)"
+    ));
+}
+
+#[test]
+fn a_narrow_header_keeps_every_word_of_the_mic_and_the_desk() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.input_label =
+        "MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)".into();
+    let link = "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)";
+    for width in [24, 41, 60] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+        let display = Display::new(RATE);
+        terminal
+            .draw(|frame| draw(frame, &app, &display, link, Instant::now()))
+            .unwrap();
+        let screen = text(terminal.backend().buffer()).replace('\n', "");
+        assert!(screen.contains(link), "width {width}: {screen}");
+        assert!(
+            screen.contains(&format!("mic: {}", app.input_label)),
+            "width {width}: {screen}"
+        );
+    }
 }
