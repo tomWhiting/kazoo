@@ -6,6 +6,8 @@
 //! triangle waveforms with `PolyBLEP` anti-aliasing, portamento glide, detune,
 //! and an envelope-sensitive low-pass filter.
 
+mod carrier;
+
 use crate::analysis::EnvelopeFollower;
 use crate::effects::{BiquadFilter, FilterType};
 use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
@@ -283,7 +285,7 @@ impl PitchTrackedSynth {
 
 impl PitchTrackedSynth {
     /// Render one piece no longer than the filter scratch buffer.
-    fn render_piece(&mut self, input: &[f32], output: &mut [f32]) {
+    fn render_piece(&mut self, input: &[f32], output: &mut [f32], mut carrier: Option<&mut [f32]>) {
         let len = input.len().min(output.len()).min(self.filter_scratch.len());
 
         for (i, &inp_sample) in input.iter().enumerate().take(len) {
@@ -312,7 +314,11 @@ impl PitchTrackedSynth {
             };
 
             // Generate oscillator sample.
+            let phase = self.phase;
             let osc = self.generate_sample(detuned_freq);
+            if let Some(carrier) = carrier.as_deref_mut() {
+                carrier[i] = self.carrier_sample(osc, phase, detuned_freq);
+            }
 
             // Scale oscillator by envelope (so silence in = silence out).
             self.filter_scratch[i] = sanitize_sample(osc * env_val);
@@ -346,7 +352,7 @@ impl Processor for PitchTrackedSynth {
             .chunks(piece)
             .zip(output[..len].chunks_mut(piece))
         {
-            self.render_piece(input, output);
+            self.render_piece(input, output, None);
         }
     }
 

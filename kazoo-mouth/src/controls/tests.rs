@@ -60,7 +60,13 @@ fn assert_whole_command(app: &App, sender: &FakeSender, control: Control) {
         Command::SetSynth(settings) => {
             assert!(matches!(
                 control,
-                Control::Shape | Control::Cutoff | Control::Air | Control::Volume
+                Control::Shape
+                    | Control::Cutoff
+                    | Control::Air
+                    | Control::Voice
+                    | Control::Bands
+                    | Control::Sibilance
+                    | Control::Volume
             ));
             assert_eq!(settings, app.accepted.synth);
         }
@@ -152,6 +158,8 @@ const fn set_float(app: &mut App, control: Control, value: f32) {
         Control::Blend => app.accepted.quantise.blend = value,
         Control::Cutoff => app.accepted.synth.cutoff_hz = value,
         Control::Air => app.accepted.synth.air = value,
+        Control::Voice => app.accepted.synth.voice = value,
+        Control::Sibilance => app.accepted.synth.sibilance = value,
         Control::Volume => app.accepted.synth.volume = value,
         _ => panic!("not a numeric control"),
     }
@@ -164,6 +172,8 @@ const fn get_float(app: &App, control: Control) -> f32 {
         Control::Blend => app.accepted.quantise.blend,
         Control::Cutoff => app.accepted.synth.cutoff_hz,
         Control::Air => app.accepted.synth.air,
+        Control::Voice => app.accepted.synth.voice,
+        Control::Sibilance => app.accepted.synth.sibilance,
         Control::Volume => app.accepted.synth.volume,
         _ => panic!("not a numeric control"),
     }
@@ -179,6 +189,8 @@ fn numeric_ranges_and_steps(now: Instant, sender: &FakeSender) {
         (Control::Hysteresis, 0.0, 50.0, 0.0, 5.0, 25.0),
         (Control::Blend, 0.0, 1.0, 0.5, 0.05, 0.25),
         (Control::Air, 0.0, 1.0, 0.25, 0.05, 0.25),
+        (Control::Voice, 0.0, 1.0, 0.25, 0.05, 0.25),
+        (Control::Sibilance, 0.0, 1.0, 0.25, 0.05, 0.25),
         (Control::Volume, 0.0, 1.0, 0.5, 0.05, 0.25),
         (Control::Cutoff, 100.0, 12_000.0, 2400.0, 0.0, 0.0),
     ] {
@@ -776,4 +788,26 @@ fn harmony_default_on_a_knob_already_there_keeps_the_preset() {
     assert_close(preset(&app), 2.0);
     key(&mut app, &sender, KeyCode::Right, false, now);
     assert_close(preset(&app), 8.0);
+}
+
+#[test]
+fn bands_select_only_preallocated_choices_and_restore_default() {
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.selected = Control::Bands;
+    for (code, expected) in [
+        (KeyCode::Right, 24),
+        (KeyCode::Right, 24),
+        (KeyCode::Left, 16),
+        (KeyCode::Left, 8),
+        (KeyCode::Left, 8),
+    ] {
+        key(&mut app, &sender, code, false, now);
+        assert_eq!(app.accepted.synth.bands, expected);
+        assert_whole_command(&app, &sender, Control::Bands);
+    }
+    key(&mut app, &sender, KeyCode::Char('d'), false, now);
+    assert_eq!(app.accepted.synth.bands, 16);
+    assert_whole_command(&app, &sender, Control::Bands);
 }
