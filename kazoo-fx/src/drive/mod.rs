@@ -18,7 +18,7 @@ mod filter;
 mod fold;
 mod fuzz;
 mod gate;
-mod kit;
+pub(crate) mod kit;
 mod klon;
 mod network;
 pub(crate) mod oversample;

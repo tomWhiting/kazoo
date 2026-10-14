@@ -35,6 +35,8 @@ pub(super) const BUSY_SAID: f32 = 1.25;
 /// that render at 57% of real time at 251%.
 /// `gate` provisionally takes the `comp` row until `wall/kind/gate` is
 /// measured on a quiet machine beside `comp` and `vca`.
+/// Sidestep provisionally takes the ringmod row until `fx/sidestep` is
+/// measured on a quiet machine.
 pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
     ("vco", 133_880),
     ("lfo", 72_895),
@@ -66,6 +68,7 @@ pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
     ("fold", 836_620),
     ("crush", 279_640),
     ("ringmod", 379_420),
+    ("sidestep", 379_420),
     ("comp", 592_430),
     ("gate", 592_430),
     ("tape", 491_630),

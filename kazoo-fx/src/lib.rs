@@ -7,7 +7,7 @@
 //! [`Effect::prepare`] off the audio thread, then feeds it audio and knob
 //! values. That is what lets any effect be patched into anything.
 //!
-//! The effects come in four families, each in its own module:
+//! The effects come in five families, each in its own module:
 //!
 //! - [`drive`]: distortion, folding, crushing, ring modulation, dynamics.
 //! - [`time`]: delays, the modulation effects built on short delays, and
@@ -15,6 +15,7 @@
 //! - [`space`]: reverbs, resonators and tone shaping.
 //! - [`lofi`]: worn media: VHS, cassette and reel tape, vinyl, generation
 //!   loss.
+//! - [`shape`]: input-driven synthesis, dividers and wave shaping.
 //!
 //! # Real-time contract
 //!
@@ -28,6 +29,7 @@ pub mod bench;
 pub mod drive;
 pub mod dsp;
 pub mod lofi;
+pub mod shape;
 pub mod space;
 pub mod time;
 mod wet;
@@ -210,6 +212,7 @@ pub fn catalogue() -> impl Iterator<Item = &'static EffectKind> {
         .chain(time::KINDS.iter())
         .chain(space::KINDS.iter())
         .chain(lofi::KINDS.iter())
+        .chain(shape::KINDS.iter())
 }
 
 /// The effect with this id, if there is one.
