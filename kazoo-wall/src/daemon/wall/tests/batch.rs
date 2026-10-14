@@ -358,3 +358,38 @@ fn a_batch_is_kept_in_the_log_and_grows_one_knot_with_its_note_and_steps() {
     assert!(undo.starts_with("Tom undid change "), "{undo}");
     assert_eq!(trailers.trim(), "Kazoo-Kind: change");
 }
+
+#[test]
+fn a_batch_the_log_refuses_as_the_engine_grows_leaves_it_its_old_room() {
+    let (mut wall, mut engine, _dir) = saving_wall();
+    wall.set_load_guard(false);
+    engine.render(&mut [0.0; 128], 2);
+    let slots = wall.engine.slots();
+    let queued = wall.engine.queued_commands();
+    let before = wall.patch.to_file();
+    let adds = slots - wall.rack.slots.len() + 1;
+    let request = batch(
+        "a crowd",
+        serde_json::json!(
+            (0..adds)
+                .map(|_| serde_json::json!({"op":"add","kind":"lfo"}))
+                .collect::<Vec<_>>()
+        ),
+    );
+    fail_once(&mut wall, FailAt::AppendLog);
+    let refused = ask(&mut wall, &request).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Internal, "{}", refused.message);
+    assert_eq!(wall.patch.to_file().modules, before.modules);
+    assert_eq!(wall.patch.to_file().cables, before.cables);
+    assert_eq!(wall.engine.slots(), slots);
+    assert_eq!(wall.engine.queued_commands(), queued);
+    let made = ask(&mut wall, &request).unwrap();
+    assert!(wall.engine.slots() > slots);
+    for step in made["steps"].as_array().unwrap() {
+        let id = step["module"].as_str().unwrap();
+        assert!(wall.rack.slot_of(id).is_some(), "{id} has no slot");
+    }
+    wall.engine.pump();
+    engine.render(&mut [0.0; 128], 2);
+    assert_eq!(wall.engine.shared().slots(), wall.engine.slots());
+}
