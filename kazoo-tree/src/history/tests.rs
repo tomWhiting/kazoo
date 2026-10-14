@@ -1045,6 +1045,24 @@ fn an_invisible_format_character_is_left_out_of_what_is_shown() {
     assert_eq!(clean("a\u{202E}b\u{200B}c\u{FEFF}d"), "abcd");
     assert_eq!(clean("one\ttwo"), "one\u{fffd}two");
     assert_eq!(clean("Chopin 🎹 · é"), "Chopin 🎹 · é");
+    // Joiners make emoji and joined scripts: kept.
+    for kept in [
+        "🏳️‍🌈",
+        "👩‍🎤",
+        "می‌خواهم",
+        "🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+    ] {
+        assert_eq!(clean(kept), kept);
+    }
+    // Every bidi control and invisible spacer: left out.
+    for gone in [
+        '\u{61C}', '\u{200B}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202E}', '\u{2060}',
+        '\u{2064}', '\u{2066}', '\u{2069}', '\u{FEFF}', '\u{180E}',
+    ] {
+        assert_eq!(clean(&format!("a{gone}b")), "ab", "{:04X}", u32::from(gone));
+    }
+    // A tag character away from a flag: left out.
+    assert_eq!(clean("a\u{E0067}b"), "ab");
 }
 
 #[test]

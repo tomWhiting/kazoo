@@ -304,19 +304,18 @@ impl Snapshot {
         ]))?;
         Ok(Self { refs, head })
     }
+}
 
-    /// Every commit a ref or HEAD names, once each.
-    fn tips(&self) -> Vec<String> {
-        // A line that does not read is said when the tree is laid out.
-        let mut tips: Vec<String> = read_refs(&self.refs)
-            .filter_map(Result::ok)
-            .map(|r| r.commit.to_owned())
-            .chain(self.head.clone())
-            .collect();
-        tips.sort_unstable();
-        tips.dedup();
-        tips
-    }
+/// Every commit `refs` or HEAD (`head`) names, once each.
+fn tips_of(refs: &[Ref<'_>], head: Option<&str>) -> Vec<String> {
+    let mut tips: Vec<String> = refs
+        .iter()
+        .map(|r| r.commit.to_owned())
+        .chain(head.map(str::to_owned))
+        .collect();
+    tips.sort_unstable();
+    tips.dedup();
+    tips
 }
 
 impl History {
@@ -348,7 +347,12 @@ impl History {
         snapshot: &Snapshot,
         known: &[String],
     ) -> Result<usize, HistoryError> {
-        let tips = snapshot.tips();
+        // The refs read once: the tips the log is read for, and the limbs
+        // and marks laid out, are the same refs, and a line that does not
+        // read is said once.
+        let mut problems = Vec::new();
+        let refs = refs_of(&snapshot.refs, &mut problems);
+        let tips = tips_of(&refs, snapshot.head.as_deref());
         let added = if tips.is_empty() {
             0
         } else {
@@ -377,7 +381,7 @@ impl History {
             self.learn(dir, &log)?;
             self.append(&log, true)?
         };
-        self.lay_out(&snapshot.refs, snapshot.head.as_deref(), known)?;
+        self.lay_out(&refs, problems, snapshot.head.as_deref(), known)?;
         self.tips = tips;
         Ok(added)
     }
@@ -392,7 +396,9 @@ impl History {
     pub fn from_git(log: &str, refs: &str, here: Option<&str>) -> Result<Self, HistoryError> {
         let mut history = Self::default();
         history.append(log.as_bytes(), false)?;
-        history.lay_out(refs, here, &[])?;
+        let mut problems = Vec::new();
+        let refs = refs_of(refs, &mut problems);
+        history.lay_out(&refs, problems, here, &[])?;
         Ok(history)
     }
 
@@ -409,7 +415,9 @@ impl History {
         here: Option<&str>,
         known: &[String],
     ) -> Result<(), HistoryError> {
-        self.lay_out(refs, here, known)
+        let mut problems = Vec::new();
+        let refs = refs_of(refs, &mut problems);
+        self.lay_out(&refs, problems, here, known)
     }
 
     /// Read the settings of every module file `log` names that are not
@@ -518,23 +526,22 @@ impl History {
     }
 
     /// Lay the limbs, marks, problems and the wall's place out again from
-    /// the refs and HEAD.
+    /// the refs and HEAD; `problems` are what reading the refs found.
     fn lay_out(
         &mut self,
-        refs: &str,
+        refs: &[Ref<'_>],
+        mut problems: Vec<String>,
         here: Option<&str>,
         known: &[String],
     ) -> Result<(), HistoryError> {
-        let mut problems = Vec::new();
-        let refs = refs_of(refs, &mut problems);
-        let (limbs, by_hand) = limbs(&refs, &self.index, &self.moments, known, &mut problems)?;
+        let (limbs, by_hand) = limbs(refs, &self.index, &self.moments, known, &mut problems)?;
         let mut place = vec![None; self.moments.len()];
         for (l, limb) in limbs.iter().enumerate() {
             for (at, &m) in limb.moments.iter().enumerate() {
                 place[m] = Some((l, at));
             }
         }
-        let marks = marks(&refs, &self.index, &mut problems);
+        let marks = marks(refs, &self.index, &mut problems);
         let here = match here {
             None => None,
             Some(id) => {
@@ -576,31 +583,37 @@ impl History {
 
     /// The way along the tree from moment `from` to moment `to`: how many
     /// changes back from `from` to the last moment both grew from, then
-    /// how many on from there to `to`. None when they share no moment.
+    /// how many on from there to `to`. None when either is on no limb, or
+    /// they share no moment. Walked a limb at a time, never a moment at a
+    /// time: as long as the limbs between them, however long they are.
     #[must_use]
     pub fn path_between(&self, from: usize, to: usize) -> Option<(usize, usize)> {
-        let mut back_to: HashMap<usize, usize> = HashMap::new();
-        let mut at = Some(from);
+        // Each limb on `from`'s path down to its root: the place on it the
+        // path holds, and how many changes back from `from` that is.
+        let mut down: HashMap<usize, (usize, usize)> = HashMap::new();
+        let mut at = self.place_of(from);
         let mut back = 0;
-        while let Some(m) = at {
-            if back_to.insert(m, back).is_some() {
+        while let Some((limb, place)) = at {
+            if down.insert(limb, (place, back)).is_some() {
                 break;
             }
-            back += 1;
-            at = self.moments.get(m)?.parent;
+            back += place + 1;
+            at = self.limbs[limb].from.and_then(|m| self.place_of(m));
         }
-        let mut seen: HashSet<usize> = HashSet::new();
-        let mut at = Some(to);
+        let mut at = self.place_of(to);
         let mut on = 0;
-        while let Some(m) = at {
-            if let Some(&back) = back_to.get(&m) {
-                return Some((back, on));
+        let mut seen: HashSet<usize> = HashSet::new();
+        while let Some((limb, place)) = at {
+            if let Some(&(there, back)) = down.get(&limb) {
+                // Both paths on this limb: they part at the lower place.
+                let part = there.min(place);
+                return Some((back + there - part, on + place - part));
             }
-            if !seen.insert(m) {
+            if !seen.insert(limb) {
                 return None;
             }
-            on += 1;
-            at = self.moments.get(m)?.parent;
+            on += place + 1;
+            at = self.limbs[limb].from.and_then(|m| self.place_of(m));
         }
         None
     }
@@ -648,14 +661,32 @@ fn head(dir: &Path) -> Result<Option<String>, HistoryError> {
 /// zero-width space) is left out.
 #[must_use]
 pub fn clean(text: &str) -> String {
-    text.chars()
-        .filter(|&c| !is_format(c))
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
-        .collect()
+    let mut out = String::with_capacity(text.len());
+    // Within a flag: 🏴 and the tag characters after it, which spell
+    // which flag it is. A tag character anywhere else is left out.
+    let mut flag = false;
+    for c in text.chars() {
+        if ('\u{E0020}'..='\u{E007F}').contains(&c) {
+            if flag {
+                out.push(c);
+            }
+            continue;
+        }
+        flag = c == '\u{1F3F4}';
+        if is_format(c) {
+            continue;
+        }
+        out.push(if c.is_control() { '\u{fffd}' } else { c });
+    }
+    out
 }
 
-/// Whether `c` is a format character (Unicode's general category Cf, as
-/// of Unicode 15.1): it is never seen, only changes how others are.
+/// Whether `c` is an invisible format character (Unicode's general
+/// category Cf, as of Unicode 15.1) that is left out of what is shown: the
+/// bidi controls, the invisible spacers and the rest of Cf, but not the
+/// joiners (U+200C, U+200D), which make emoji (👩‍🎤, 🏳️‍🌈) and words in
+/// scripts that join, nor the tag characters (U+E0020 to U+E007F), which
+/// [`clean`] keeps only after 🏴, where they spell a flag.
 const fn is_format(c: char) -> bool {
     matches!(
         c,
@@ -667,7 +698,8 @@ const fn is_format(c: char) -> bool {
             | '\u{890}'..='\u{891}'
             | '\u{8E2}'
             | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
+            | '\u{200B}'
+            | '\u{200E}'..='\u{200F}'
             | '\u{202A}'..='\u{202E}'
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{206F}'
@@ -679,7 +711,6 @@ const fn is_format(c: char) -> bool {
             | '\u{1BCA0}'..='\u{1BCA3}'
             | '\u{1D173}'..='\u{1D17A}'
             | '\u{E0001}'
-            | '\u{E0020}'..='\u{E007F}'
     )
 }
 

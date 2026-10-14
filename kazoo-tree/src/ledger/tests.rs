@@ -169,3 +169,31 @@ fn a_later_line_fills_in_what_an_earlier_one_lacked_and_nothing_else() {
     broken.take("step\taa\t1\tfirst=\t1\t2\t3\t4\t5");
     assert_eq!(broken.unreadable, 1);
 }
+
+#[test]
+fn a_step_drawn_again_for_another_first_moment_takes_its_place() {
+    let dir = tempfile::tempdir().expect("a folder");
+    let shape = |x: f64| Shape {
+        start: (x, 0.0),
+        end: (x, 1.0),
+        heading: 0.5,
+    };
+    let step = |first: &str, x: f64| Saved {
+        first: Some(first.to_owned()),
+        ..shaped("aa", 1, shape(x))
+    };
+    let mut ledger = Ledger::of_tree(dir.path());
+    ledger.record(&[], &[step("c0ffee", 1.0), key("bb", 0)]);
+    ledger.record(&[], &[step("beef", 2.0)]);
+    let mut again = Ledger::of_tree(dir.path());
+    again.refresh();
+    assert_eq!(again.steps, [step("beef", 2.0), key("bb", 0)]);
+    // first= comes last on the line, after the shape.
+    let text = std::fs::read_to_string(dir.path().join(LEDGER)).expect("written");
+    assert!(
+        text.lines()
+            .next()
+            .is_some_and(|line| line.ends_with("\t0.5\tfirst=c0ffee")),
+        "{text}"
+    );
+}

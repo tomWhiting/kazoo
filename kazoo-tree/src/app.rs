@@ -652,18 +652,18 @@ impl App {
         matches!(self.follow, Follow::On(Some(_)))
     }
 
-    /// The user moved the selection: say where it is from the wall, and
-    /// follow it once it rests.
+    /// The user moved the selection: follow it once it rests.
     fn moved_to(&mut self, m: usize) {
-        self.said = self.whereabouts(m);
         if let Follow::On(moved) = &mut self.follow {
             *moved = Some((Arc::clone(&self.history.moments[m].id), Instant::now()));
         }
     }
 
     /// How far moment `m` is from the wall, along the tree, and what
-    /// Enter does there.
-    fn whereabouts(&self, m: usize) -> String {
+    /// Enter does there: worked out each time the details are drawn, so it
+    /// is right however the wall has moved since.
+    #[must_use]
+    pub fn whereabouts(&self, m: usize) -> String {
         let changes = |n: usize| {
             if n == 1 {
                 "1 change".to_owned()
@@ -881,6 +881,9 @@ impl App {
         }
         lines.push(("who".to_owned(), moment.seat.clone()));
         lines.push(("when".to_owned(), local_time(moment.time)));
+        if self.history.here != Some(m) {
+            lines.push(("wall".to_owned(), self.whereabouts(m)));
+        }
         if let Some(beat) = moment.beat {
             let bar = (beat / 4.0).floor() + 1.0;
             let in_bar = beat.rem_euclid(4.0) + 1.0;

@@ -14,17 +14,25 @@
 //!
 //! ```text
 //! limb\t<branch name>
-//! step\t<commit of the limb's first moment>\t<step number on the limb>\tfirst=<commit of the step's first moment>\t<start x>\t<start y>\t<end x>\t<end y>\t<heading>
+//! step\t<commit of the limb's first moment>\t<step number on the limb>\t<start x>\t<start y>\t<end x>\t<end y>\t<heading>\tfirst=<commit of the step's first moment>
 //! ```
 //!
 //! A `limb` line is the order the branches made by hand claimed their
 //! moments; a `step` line is the order the steps of growth grew, and where
-//! each was drawn. A step's `first=` and its shape may be missing (lines
+//! each was drawn. A step's shape and its `first=` may be missing (lines
 //! written before they were kept): a later line for the same step fills in
-//! what an earlier one lacked, and never changes what it has. Otherwise a
-//! line seen twice counts once (two `kazoo tree`s may both write what they
-//! grew), and an unfinished last line (a write cut off) waits until it is
-//! finished.
+//! what an earlier one lacked, and never changes what it has, unless it
+//! names another first moment (the limb's moments shifted, and the step
+//! was drawn again for its own): then it is the step from there on, in the
+//! same place in the order. Otherwise a line seen twice counts once (two
+//! `kazoo tree`s may both write what they grew), and an unfinished last
+//! line (a write cut off) waits until it is finished.
+//!
+//! A `kazoo tree` from before `first=` was kept (15 Oct 2026) reads a line
+//! that has it as one that does not read, and grows that step by its rules:
+//! no form of the line would keep its shape for it, since it took every
+//! field after the step's number as a number. Every `kazoo tree` on a
+//! machine is installed together.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -202,7 +210,7 @@ impl Ledger {
                     return;
                 };
                 let (first, rest) = match rest {
-                    [first, rest @ ..] if first.starts_with("first=") => {
+                    [rest @ .., first] if first.starts_with("first=") => {
                         let Some(id) = first.strip_prefix("first=").filter(|id| !id.is_empty())
                         else {
                             self.unreadable += 1;
@@ -256,12 +264,17 @@ impl Ledger {
         }
     }
 
-    /// Hold `step`: a new one at the end, or what a held one lacks (its
-    /// first moment, its shape) filled in from it. Answers its place when
-    /// anything was held that was not before.
+    /// Hold `step`: a new one at the end; one that names another first
+    /// moment than the one held, in its place; or what a held one lacks
+    /// (its first moment, its shape) filled in from it. Answers its place
+    /// when anything was held that was not before.
     fn hold_step(&mut self, step: Saved) -> Option<usize> {
         if let Some(&at) = self.seen_steps.get(&step.key) {
             let held = &mut self.steps[at];
+            if held.first.is_some() && step.first.is_some() && held.first != step.first {
+                *held = step;
+                return Some(at);
+            }
             let first = held.first.is_none() && step.first.is_some();
             if first {
                 held.first = step.first;
@@ -365,10 +378,6 @@ fn step_line(text: &mut String, step: &Saved) {
     text.push_str(&step.key.limb);
     text.push('\t');
     text.push_str(&step.key.index.to_string());
-    if let Some(first) = &step.first {
-        text.push_str("\tfirst=");
-        text.push_str(first);
-    }
     if let Some(shape) = step.shape {
         for n in [
             shape.start.0,
@@ -380,6 +389,10 @@ fn step_line(text: &mut String, step: &Saved) {
             text.push('\t');
             text.push_str(&n.to_string());
         }
+    }
+    if let Some(first) = &step.first {
+        text.push_str("\tfirst=");
+        text.push_str(first);
     }
     text.push('\n');
 }

@@ -440,7 +440,7 @@ impl Growth {
         });
         if refused && let Some(saved) = known {
             self.refused.push(format!(
-                "step {index} of the limb from {:.10} was drawn for the moments from {:.10}, but now starts at {:.10}; it is grown again, so it may be drawn elsewhere than before",
+                "step {index} of the limb from {:.10} was drawn for the moments from {:.10}, but now starts at {:.10}; it is grown again, and drawn there from now on",
                 saved.key.limb,
                 saved.first.as_deref().unwrap_or_default(),
                 first.as_deref().unwrap_or_default()
@@ -452,11 +452,11 @@ impl Growth {
         let Some(step) = self.steps.get(before) else {
             return;
         };
-        // What the ledger lacks: all of a new step; the first moment or
-        // shape of an old line; nothing of one refused, which keeps what
-        // it was saved as.
+        // What the ledger lacks: all of a new step, or of one refused (it
+        // takes the refused one's place, so the step is drawn here from
+        // now on); the first moment or shape of an old line.
         let lacks =
-            known.is_none_or(|saved| !refused && (saved.first.is_none() || saved.shape.is_none()));
+            known.is_none_or(|saved| refused || saved.first.is_none() || saved.shape.is_none());
         if lacks {
             fresh.push(Saved {
                 key: self.keys[before].clone(),

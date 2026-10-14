@@ -425,10 +425,21 @@ fn a_shape_saved_for_other_moments_is_refused_and_said() {
         "{:?}",
         again.refused
     );
-    assert!(
-        fresh.is_empty(),
-        "a refused line is never written over: {fresh:?}"
+    assert_eq!(
+        fresh.len(),
+        1,
+        "the step drawn again, for the ledger: {fresh:?}"
     );
+    assert_eq!(fresh[0].key, saved[k].key);
+    // Launched again with what the ledger holds now: drawn where it was
+    // drawn again, and nothing refused.
+    let mut ledger = crate::ledger::Ledger::in_memory();
+    ledger.record(&[], &saved);
+    ledger.record(&[], &fresh);
+    let mut second = Growth::default();
+    assert!(second.grow_on(&history, &ledger.steps).is_empty());
+    assert!(second.refused.is_empty(), "{:?}", second.refused);
+    assert_eq!(second.at, again.at, "the second launch draws as the first");
     for (i, step) in saved.iter().enumerate() {
         if i != k {
             assert!(drawn_as(&again, step), "{step:?}");
