@@ -20,7 +20,7 @@ use std::io::{self, Stdout, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::Show;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
@@ -37,7 +37,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::app::{App, Go, Grower, Grown, HELP, PANEL, Shown};
+use crate::app::{App, Follow, Go, Grower, Grown, HELP, PANEL, Shown};
 use crate::go::Goes;
 use crate::history::{HistoryError, Snapshot};
 use crate::ledger::Ledger;
@@ -354,9 +354,9 @@ fn walk(
     let mut reader_gone = false;
     let goes = Goes::to(kazoo_wall::paths::socket_path());
     while !app.quit && stop.load(Ordering::Relaxed) == 0 {
-        if let Go::Send(moment) = &app.go {
-            goes.send(moment);
-            app.go = Go::Sent;
+        if let Some(moment) = app.go_due(Instant::now()) {
+            goes.send(&moment);
+            dirty = true;
         }
         if let Some(words) = goes.heard() {
             // The wall has moved, or said why not: either way the tree is
@@ -376,7 +376,14 @@ fn walk(
             terminal.draw(|frame| frame_of(app, frame.area(), frame.buffer_mut()))?;
             dirty = false;
         }
-        if event::poll(Duration::from_millis(250))? {
+        // While a follow waits for the selection to rest, look again soon
+        // enough to send it on time.
+        let wait = if app.resting() {
+            Duration::from_millis(25)
+        } else {
+            Duration::from_millis(250)
+        };
+        if event::poll(wait)? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => app.key(key),
                 Event::Mouse(mouse) => app.mouse(mouse),
@@ -447,13 +454,18 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
         .filter(|limb| !limb.moments.is_empty())
         .count();
     let mut words = format!(
-        " {} moments, {} branches │ {} │ ? help, q quit",
+        " {} moments, {} branches │ {} │ {} │ ? help, q quit",
         app.history.moments.len(),
         branches,
         if app.shown == Shown::Lanes {
             "lanes: one row a moment"
         } else {
             level.name()
+        },
+        if app.follow == Follow::Off {
+            "g goes"
+        } else {
+            "following: arrows move the wall"
         }
     );
     let problems = app.history.problem_count();

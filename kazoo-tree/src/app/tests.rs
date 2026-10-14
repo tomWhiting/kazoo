@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crossterm::event::{KeyEvent, KeyEventState, MouseEvent};
 
 use super::*;
@@ -25,6 +27,7 @@ fn app(history: History) -> App {
         quit: false,
         wants_reading: false,
         go: Go::Idle,
+        follow: Follow::On(None),
     };
     app.take(history);
     app.selected = app.history.here;
@@ -56,10 +59,10 @@ fn keys_pan_and_zoom_and_zero_fits_again() {
     press(&mut app, KeyCode::Char('+'));
     let zoomed = app.view.expect("a view");
     assert!((zoomed.scale / fitted.scale - ZOOM).abs() < 1e-4);
-    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Char('l'));
     let panned = app.view.expect("a view");
     assert!(panned.centre.0 > zoomed.centre.0);
-    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Char('k'));
     assert!(app.view.expect("a view").centre.1 > panned.centre.1);
     press(&mut app, KeyCode::Char('0'));
     assert_eq!(app.view, Some(fitted));
@@ -257,43 +260,97 @@ fn y_copies_the_whole_commit() {
 }
 
 #[test]
-fn g_asks_before_putting_the_wall_at_the_selected_moment() {
+fn g_puts_the_wall_at_the_selected_moment_at_once() {
     let mut app = app(grown(10, &[]));
-    // Where the wall is already: nothing to ask.
+    app.follow = Follow::Off;
+    // Where the wall is already: nothing to do.
     press(&mut app, KeyCode::Char('g'));
     assert_eq!(app.go, Go::Idle);
     assert_eq!(app.said, "the wall is at this moment already");
-    // Another moment: asked, and any key but y stays.
     press(&mut app, KeyCode::Char('['));
     let there = app.history.moments[app.selected.expect("selected")]
         .id
         .clone();
     press(&mut app, KeyCode::Char('g'));
-    assert_eq!(app.go, Go::Asking(there.clone()));
-    assert!(
-        app.said
-            .starts_with(&format!("put the wall at {}", short(&there))),
-        "{}",
-        app.said
-    );
-    let view = app.view;
-    press(&mut app, KeyCode::Char('j'));
-    assert_eq!(app.go, Go::Idle);
-    assert_eq!(app.said, "the wall stays where it is");
-    // The answering key does nothing else: j did not pan.
-    assert_eq!(app.view, view);
-    // Asked again, y goes; a tree read meanwhile cannot change the moment.
-    press(&mut app, KeyCode::Char('g'));
-    let history = app.history.clone();
-    app.take(history);
-    press(&mut app, KeyCode::Char('y'));
-    assert_eq!(app.go, Go::Send(there));
-    assert_eq!(app.yank, None, "y answered; it did not copy");
-    // While a go is on its way, another is not asked for.
-    app.go = Go::Sent;
-    press(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.go, Go::Send(there.clone()));
+    // The loop takes it, and nothing more is due until the wall answers.
+    let now = Instant::now();
+    assert_eq!(app.go_due(now), Some(there));
     assert_eq!(app.go, Go::Sent);
-    assert_eq!(app.said, "the wall is still being moved: wait for it");
+    assert_eq!(app.go_due(now + REST * 4), None);
+}
+
+#[test]
+fn following_goes_where_the_selection_rests_once() {
+    let mut app = app(grown(40, &[]));
+    let start = Instant::now();
+    // Nothing moved by the user: nothing to follow.
+    assert_eq!(app.go_due(start + REST * 2), None);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    let rest = app.history.moments[app.selected.expect("selected")]
+        .id
+        .clone();
+    assert!(app.resting());
+    // Still running through: not yet.
+    assert_eq!(app.go_due(Instant::now()), None);
+    let later = Instant::now() + REST;
+    assert_eq!(app.go_due(later), Some(rest));
+    assert_eq!(app.go, Go::Sent);
+    assert!(!app.resting());
+    // Answered: nothing more until the user moves again.
+    app.go = Go::Idle;
+    assert_eq!(app.go_due(later + REST * 4), None);
+    // Back onto the wall's own place: no go.
+    press(&mut app, KeyCode::Char('.'));
+    assert_eq!(app.go_due(Instant::now() + REST * 2), None);
+    // f stops following.
+    press(&mut app, KeyCode::Char('f'));
+    assert_eq!(app.follow, Follow::Off);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.go_due(Instant::now() + REST * 2), None);
+}
+
+#[test]
+fn right_steps_into_a_branch_and_left_back_out() {
+    // A bud grows from trunk moment 20, another from moment 30.
+    let mut app = app(grown(60, &[(0, 20, 5), (0, 30, 5)]));
+    app.follow = Follow::Off;
+    let trunk_at = |app: &App, place: usize| app.history.limbs[0].moments[place];
+    app.selected = Some(trunk_at(&app, 10));
+    press(&mut app, KeyCode::Right);
+    let first_bud = app.history.limbs[1].moments[0];
+    assert_eq!(app.selected, Some(first_bud));
+    // Up walks along the bud.
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.selected, Some(app.history.limbs[1].moments[1]));
+    // Left goes back to where it grew from.
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.selected, Some(trunk_at(&app, 20)));
+    // Past the first bud's moment, Right finds the next one ahead.
+    app.selected = Some(trunk_at(&app, 25));
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.selected, Some(app.history.limbs[2].moments[0]));
+    // Beyond the last bud: said, and the selection stays.
+    app.selected = Some(trunk_at(&app, 50));
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.selected, Some(trunk_at(&app, 50)));
+    assert_eq!(app.said, "no branch grows from here on");
+    // On the trunk, Left has nowhere to go.
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.said, "this is the trunk: nothing to step back out to");
+}
+
+#[test]
+fn right_on_a_buds_first_moment_moves_to_its_sister() {
+    let mut app = app(grown(40, &[(0, 20, 4), (0, 20, 4)]));
+    app.follow = Follow::Off;
+    app.selected = Some(app.history.limbs[0].moments[20]);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.selected, Some(app.history.limbs[1].moments[0]));
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.selected, Some(app.history.limbs[2].moments[0]));
 }
 
 #[test]

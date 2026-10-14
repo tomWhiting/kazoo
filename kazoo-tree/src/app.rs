@@ -1,11 +1,14 @@
 //! `kazoo tree`'s state and keys: a view panned and zoomed over the grown
 //! tree, a selected moment and what it says, and the help card.
 //!
-//! Reading the tree never changes the music: only `g` does, after asking,
-//! by putting the wall at the selected moment.
+//! Reading the tree never changes the music unless asked: `g` puts the wall
+//! at the selected moment, and while following (`f`, on from the start)
+//! the wall goes wherever the selection comes to rest. Every go is undoable:
+//! the wall keeps itself as it was first.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
@@ -23,6 +26,9 @@ pub const PANEL: u16 = 44;
 const FAR: f64 = 0.5;
 /// Moments per `{` / `}` jump.
 const JUMP: isize = 16;
+/// How long the selection rests before a follow puts the wall there, so
+/// running through moments sends one go, not one a key.
+pub const REST: Duration = Duration::from_millis(150);
 
 /// The whole app.
 #[derive(Debug)]
@@ -67,21 +73,32 @@ pub struct App {
     pub quit: bool,
     /// The tree was asked to be read again (`r`): the reader is told.
     pub wants_reading: bool,
-    /// Where `g` is: asking, answered yes, or waiting for the wall.
+    /// Where a go is: asked for, or waiting for the wall.
     pub go: Go,
+    /// Whether the wall follows the selection (`f`), and where to.
+    pub follow: Follow,
 }
 
-/// Where putting the wall at a moment (`g`) is. Each moment is held by its
-/// whole commit, so a tree read again meanwhile cannot change which moment
-/// is meant.
+/// Following: the wall goes wherever the selection comes to rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Follow {
+    /// `g` alone puts the wall at the selected moment.
+    Off,
+    /// The selection the user last moved to, by its whole commit, and
+    /// when; `None` once it has been sent, or before any move. Only a move
+    /// by the user is followed, never a selection the reading kept.
+    On(Option<(Arc<str>, Instant)>),
+}
+
+/// Where putting the wall at a moment is. Each moment is held by its whole
+/// commit, so a tree read again meanwhile cannot change which moment is
+/// meant.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Go {
     /// Nothing asked.
     #[default]
     Idle,
-    /// Asked whether to put the wall at this moment; the next key answers.
-    Asking(Arc<str>),
-    /// Answered yes: the loop sends it to the wall at its next turn.
+    /// Asked for (`g`): the loop sends it to the wall at its next turn.
     Send(Arc<str>),
     /// Sent, and the wall has not answered yet.
     Sent,
@@ -254,6 +271,7 @@ impl App {
             quit: false,
             wants_reading: false,
             go: Go::Idle,
+            follow: Follow::On(None),
         };
         app.show(grown);
         app.selected = app.history.here.or_else(|| {
@@ -363,6 +381,7 @@ impl App {
     /// Select `moment` and bring it into view.
     fn select(&mut self, moment: usize) {
         self.selected = Some(moment);
+        self.moved_to(moment);
         self.centre_on_selected();
     }
 
@@ -507,22 +526,17 @@ impl App {
             }
             return;
         }
-        if let Go::Asking(moment) = &self.go {
-            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
-                self.said = format!("putting the wall at {} …", short(moment));
-                self.go = Go::Send(Arc::clone(moment));
-            } else {
-                "the wall stays where it is".clone_into(&mut self.said);
-                self.go = Go::Idle;
-            }
-            return;
-        }
         if self.shown == Shown::Lanes && self.lane_key(key.code) {
             return;
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let step = if shift { FAR } else { 0.125 };
         match key.code {
+            // The arrows walk the changes; with Shift they pan.
+            KeyCode::Up if !shift => self.step(1),
+            KeyCode::Down if !shift => self.step(-1),
+            KeyCode::Right if !shift => self.step_into_branch(),
+            KeyCode::Left if !shift => self.step_out_of_branch(),
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
             KeyCode::Char('?') => {
@@ -530,7 +544,19 @@ impl App {
                 self.help_top = 0;
             }
             KeyCode::Char('y') => self.copy_selected(),
-            KeyCode::Char('g') => self.ask_to_go(),
+            KeyCode::Char('g') => self.go_now(),
+            KeyCode::Char('f') => {
+                self.follow = match self.follow {
+                    Follow::Off => Follow::On(None),
+                    Follow::On(_) => Follow::Off,
+                };
+                (if self.follow == Follow::On(None) {
+                    "following: the wall goes where the selection rests"
+                } else {
+                    "not following: g puts the wall at the selected moment"
+                })
+                .clone_into(&mut self.said);
+            }
             KeyCode::Left | KeyCode::Char('h') => self.pan(-step, 0.0),
             KeyCode::Right | KeyCode::Char('l') => self.pan(step, 0.0),
             KeyCode::Up | KeyCode::Char('k') => self.pan(0.0, step),
@@ -568,9 +594,8 @@ impl App {
         }
     }
 
-    /// Ask whether to put the wall at the selected moment (`g`); the
-    /// answer is the next key, `y` for yes.
-    fn ask_to_go(&mut self) {
+    /// Put the wall at the selected moment now (`g`).
+    fn go_now(&mut self) {
         let Some(m) = self.selected else {
             "select a moment to put the wall at first".clone_into(&mut self.said);
             return;
@@ -579,17 +604,121 @@ impl App {
             "the wall is at this moment already".clone_into(&mut self.said);
             return;
         }
-        if self.go != Go::Idle {
-            "the wall is still being moved: wait for it".clone_into(&mut self.said);
+        let moment = &self.history.moments[m];
+        self.said = format!("putting the wall at {} …", short(&moment.id));
+        if let Follow::On(moved) = &mut self.follow {
+            *moved = None;
+        }
+        self.go = Go::Send(Arc::clone(&moment.id));
+    }
+
+    /// The moment to put the wall at now, if any: one asked for with `g`,
+    /// or, while following, the selection the user moved to once it has
+    /// rested [`REST`] and the wall is not there already. One go at a
+    /// time: while one is on its way, the latest rest waits for it.
+    pub fn go_due(&mut self, now: Instant) -> Option<Arc<str>> {
+        match &self.go {
+            Go::Send(moment) => {
+                let moment = Arc::clone(moment);
+                self.go = Go::Sent;
+                return Some(moment);
+            }
+            Go::Sent => return None,
+            Go::Idle => {}
+        }
+        let Follow::On(moved) = &mut self.follow else {
+            return None;
+        };
+        let (moment, at) = moved.clone()?;
+        if now.duration_since(at) < REST {
+            return None;
+        }
+        *moved = None;
+        let here = self.history.here.map(|m| &self.history.moments[m].id);
+        if here == Some(&moment) {
+            return None;
+        }
+        self.said = format!("putting the wall at {} …", short(&moment));
+        self.go = Go::Sent;
+        Some(moment)
+    }
+
+    /// Whether a follow is waiting for the selection to rest, so the loop
+    /// looks again soon.
+    #[must_use]
+    pub const fn resting(&self) -> bool {
+        matches!(self.follow, Follow::On(Some(_)))
+    }
+
+    /// The user moved the selection: follow it once it rests.
+    fn moved_to(&mut self, m: usize) {
+        if let Follow::On(moved) = &mut self.follow {
+            *moved = Some((Arc::clone(&self.history.moments[m].id), Instant::now()));
+        }
+    }
+
+    /// One moment on along the selected limb (`by` 1) or back toward the
+    /// root (`by` -1), from the wall's place when nothing is selected.
+    fn step(&mut self, by: isize) {
+        if self.selected.is_none() {
+            self.selected = self.history.here;
+        }
+        self.walk(by);
+    }
+
+    /// Into the nearest branch: the first bud that grows from the selected
+    /// limb at or ahead of the selected moment (or, on a bud's own first
+    /// moment, its next sister from the same moment).
+    fn step_into_branch(&mut self) {
+        let Some(m) = self.selected.or(self.history.here) else {
+            return;
+        };
+        let Some((limb, place)) = self.history.place_of(m) else {
+            return;
+        };
+        let history = &self.history;
+        let first_of = |l: usize| history.limbs[l].moments.first().copied();
+        // On a bud's first moment: its next sister, if it has one.
+        let own = &history.limbs[limb];
+        if place == 0
+            && let Some(from) = own.from
+            && let Some(sister) = (limb + 1..history.limbs.len())
+                .find(|&l| history.limbs[l].from == Some(from) && first_of(l).is_some())
+            && let Some(first) = first_of(sister)
+        {
+            self.select(first);
             return;
         }
-        let moment = &self.history.moments[m];
-        self.said = format!(
-            "put the wall at {} ({})? y to go, any other key to stay",
-            short(&moment.id),
-            moment.summary
-        );
-        self.go = Go::Asking(Arc::clone(&moment.id));
+        let ahead = (0..history.limbs.len())
+            .filter_map(|l| {
+                let from = history.limbs[l].from?;
+                let (on, at) = history.place_of(from)?;
+                (on == limb && at >= place && first_of(l).is_some()).then_some((at, l))
+            })
+            .min();
+        match ahead.and_then(|(_, l)| first_of(l)) {
+            Some(first) => {
+                self.select(first);
+            }
+            None => "no branch grows from here on".clone_into(&mut self.said),
+        }
+    }
+
+    /// Back out of a branch, to the moment it grew from.
+    fn step_out_of_branch(&mut self) {
+        let Some(m) = self.selected.or(self.history.here) else {
+            return;
+        };
+        let from = self
+            .history
+            .place_of(m)
+            .and_then(|(limb, _)| self.history.limbs[limb].from);
+        match from {
+            Some(from) => {
+                self.select(from);
+            }
+            None => "this is the trunk: nothing to step back out to".clone_into(&mut self.said),
+        }
     }
 
     /// Put the selected moment's whole commit on the terminal's clipboard.
@@ -632,7 +761,9 @@ impl App {
     /// Select row `to` of the lanes view, or the last when past it.
     fn select_row(&mut self, to: usize) {
         if let Some(last) = self.lanes.rows.len().checked_sub(1) {
-            self.selected = Some(self.lanes.rows[to.min(last)].moment);
+            let moment = self.lanes.rows[to.min(last)].moment;
+            self.selected = Some(moment);
+            self.moved_to(moment);
         }
     }
 
@@ -677,6 +808,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) if inside => {
                 if let Some(m) = self.nearest(col, row) {
                     self.selected = Some(m);
+                    self.moved_to(m);
                 }
                 let centre = self.view(cols, rows).centre;
                 self.drag = Some(((col, row), centre));
@@ -775,7 +907,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "look around",
         &[
-            ("arrows, h j k l", "pan (Shift: further)"),
+            ("h j k l, Shift-arrows", "pan (H J K L: further)"),
             ("drag", "pan with the mouse"),
             ("+ - or wheel", "zoom in and out"),
             ("0", "the whole tree"),
@@ -786,7 +918,9 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("click", "select the nearest moment"),
             ("Tab, Shift-Tab", "next or previous mark or the wall"),
-            ("[ ]", "one moment back or on"),
+            ("up down, [ ]", "one change on or back"),
+            ("right", "into the nearest branch ahead"),
+            ("left", "back to where this branch grew"),
             ("{ }", "sixteen moments back or on"),
             (".", "where the wall is"),
             ("Enter, c", "centre on the selected moment"),
@@ -797,7 +931,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("v", "the tree, or lanes: one row a moment"),
             ("y", "copy the selected moment's commit"),
-            ("g", "put the wall at the selected moment (asks)"),
+            ("f", "follow: the wall goes where you stop (on)"),
+            ("g", "put the wall at the selected moment now"),
             ("Shift-drag", "select text (Option-drag in iTerm2)"),
             ("r", "read the tree again"),
             ("?", "this card"),

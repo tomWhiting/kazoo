@@ -73,7 +73,7 @@ It draws with the terminal's graphics protocol where it can (Ghostty and Kitty, 
 2. Each moment records its sound from now on (KZ-T08c), which gives the colours.
 3. The lanes view.
 4. The graphics-protocol drawing, with colour.
-5. Going to a moment from the tree: `g` on a selected moment asks first, then tells the wall to go there, logged under Tom (KZ-T04b's go). For now the wall jumps; the journey over N beats comes with KZ-T05b and T05c. The wall keeps itself as it was before each go, so a go can be undone.
+5. Going to a moment from the tree, and flowing through them (Tom, 15 Oct 00:0x: "the arrow keys should just be... to move up or over to a branch... with sort of auto confirmation. Since it's all saved"). Up and Down walk the changes along a branch, Right steps into the nearest branch ahead, Left back to where the branch grew; while following (`f`, on from the start) the wall goes wherever the selection rests for 150 ms, one go at a time, and `g` goes at once. The tree goes as Tom's console, so a go is never refused for the wall's guess at its cost (it is put up, with a note). For now the wall jumps; the journey over N beats comes with KZ-T05b and T05c. Every go is undoable: the wall keeps itself as it was first.
 
 ## For Cally
 
