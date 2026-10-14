@@ -1031,6 +1031,16 @@ impl App {
                 };
                 self.on_saves_changed(&seat, &name, did);
             }
+            Event::Marked { seat, name, at, .. } => {
+                if seat != self.seat {
+                    let after = at
+                        .change
+                        .map_or_else(String::new, |n| format!(" (after change {n})"));
+                    let text = format!("{seat} marked the moment as \"{name}\"{after}");
+                    self.note(text.clone(), LogTone::Note);
+                    self.say(Tone::Done, text, now);
+                }
+            }
             Event::SaveDeleted { seat, name } => {
                 self.on_saves_changed(&seat, &name, "deleted the save");
             }
