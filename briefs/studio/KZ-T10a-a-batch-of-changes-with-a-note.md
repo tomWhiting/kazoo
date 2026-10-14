@@ -15,7 +15,7 @@ The wall already applies several changes as one: `ChainAdd` sets `chain_batch` (
 ## Outcome
 
 1. **`Request::Batch { note: String, changes: Vec<Request> }`.**
-   - `note`: 1 to 200 characters after trimming, one line (a newline is refused, never rewritten: the note is the sender's words). Refused with `bad_request` and the reason when empty, too long, or multi-line.
+   - `note`: 1 to 200 characters after trimming, one line with no control characters (a newline, a tab, an escape or any other control character is refused, never rewritten: the note is the sender's words, and a control character in a commit would drive a terminal or split the tree's log records). Refused with `bad_request` and the reason when empty, too long, or holding a control character.
    - `changes`: 1 or more of `Add`, `Remove`, `Turn`, `Patch`, `Unpatch`, `Tempo`. Any other op (an undo, a go, a load, a chain, a group, an arrange, a nested batch) is refused before anything is applied, naming its index and op. No upper limit on the count (Tom: nothing is capped if it can be avoided); the protocol's frame size is the only bound, and the room for the whole batch is reserved up front as `chain_add` does (`room_to_grow` with the batch's added modules and cables).
    - **A module added in the batch is named by later steps.** An `Add` in a batch may carry `as: "<label>"` (a name with no spaces or dots, unique in the batch). A later step's module or port that starts with `@<label>` (`@osc`, `@osc.out`) is given the id that add made. An unknown label, or one used before its add, is refused before anything is applied. Decision: ids are the wall's to choose (kind plus number), so the sender cannot know them in advance; a label is the smallest way to say "the one I just added".
 2. **All or none, in order.** The steps are applied in the order given through `answer`, with `chain_batch` collecting their `What`s. If any step fails, the wall is put back exactly as before the batch (patch, tempo, and the engine: nothing the batch turned or added is heard, not even for one block), and the answer is the error with `step: <index>` and the step's own reason. Decision: a batch is one thought; half of one is a wall nobody meant.
@@ -40,7 +40,7 @@ The wall already applies several changes as one: `ChainAdd` sets `chain_batch` (
 
 ## Tests (write them first; each fails before the change)
 
-- protocol: a batch round-trips through JSON; `as` and `@label` parse; the refused ops, an empty note, a 201-character note and a note with a newline are each refused before anything is applied.
+- protocol: a batch round-trips through JSON; `as` and `@label` parse; the refused ops, an empty note, a 201-character note, a note with a newline and a note with `\u{1e}` are each refused before anything is applied.
 - wall: a batch of add (as `osc`), patch `@osc.out` to an existing input, turn `@osc.freq` with a glide, and tempo applies in order and logs one change with one seq; its summary has the note and four steps.
 - wall: a batch whose third step names an unknown module leaves the patch, the tempo and the engine's commands as before (no command reaches the engine), and the answer says `step: 2` and why.
 - wall: undoing a batch puts the wall back as before it in one change; a batch holding a step that can never be undone cannot be undone.
