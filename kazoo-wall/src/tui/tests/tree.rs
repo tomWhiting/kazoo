@@ -588,3 +588,12 @@ fn undoing_a_replacement_says_what_the_wall_did() {
         assert_eq!(said, summary);
     }
 }
+
+#[test]
+fn the_tree_list_names_only_its_own_keys() {
+    let mut app = open_list();
+    let screen = text(&render(&mut app, 120, 40));
+    assert!(screen.contains("⏎ go there"), "{screen}");
+    assert!(!screen.contains("y goes"), "{screen}");
+    assert!(!screen.contains("n stays"), "{screen}");
+}

@@ -95,7 +95,7 @@ pub fn tree(buf: &mut Buffer, area: Rect, app: &App, index: usize) {
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " j k ↑ ↓ move · ⏎ go · y goes · n stays · r again · B Esc q close · b marks after closing",
+        " j k ↑ ↓ move · ⏎ go there (asks first) · r again · B Esc q close · b marks after closing",
         plain(TEXT_DIM, PANEL),
     )));
     Paragraph::new(lines)
