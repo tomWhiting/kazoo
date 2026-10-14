@@ -13,6 +13,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use kazoo_wall::tree::git::git_command;
+
+use crate::colour::{self, Kinds};
 use kazoo_wall::tree::thread::here::name_of;
 
 /// What went wrong reading the tree.
@@ -78,6 +80,11 @@ pub struct Moment {
     pub sound: Option<Sound>,
     /// Modules alive at this moment.
     pub modules: u32,
+    /// Modules alive at this moment, by family (its colour).
+    pub alive: Kinds,
+    /// Modules this moment turned, repatched, added or took away, by
+    /// family: what was being played with.
+    pub touched: Kinds,
     /// What did not read in its commit: said in the details, never a
     /// reason not to open the tree.
     pub problems: Vec<String>,
@@ -400,11 +407,12 @@ impl History {
                         .or_else(|| fresh_index.get(id).map(|&i| self.moments.len() + i))
                 },
                 |m| {
-                    if m < self.moments.len() {
-                        self.moments[m].modules
+                    let at = if m < self.moments.len() {
+                        &self.moments[m]
                     } else {
-                        fresh[m - self.moments.len()].modules
-                    }
+                        &fresh[m - self.moments.len()]
+                    };
+                    (at.modules, at.alive)
                 },
             )?;
             if self.index.contains_key(&moment.id) || fresh_index.contains_key(&moment.id) {
@@ -527,12 +535,12 @@ pub fn clean(text: &str) -> String {
         .collect()
 }
 
-/// One log record as a moment. `index` finds a parent's place, `modules`
-/// the modules alive at a place.
+/// One log record as a moment. `index` finds a parent's place, `alive_at`
+/// the modules alive at a place, all of them and by family.
 fn moment(
     record: &str,
     index: impl Fn(&str) -> Option<usize>,
-    modules_at: impl Fn(usize) -> u32,
+    alive_at: impl Fn(usize) -> (u32, Kinds),
 ) -> Result<Moment, HistoryError> {
     let (head, files) = record.split_once(BODY_END).ok_or_else(|| {
         HistoryError::Broken(format!("a log record without its end: {record:.80}"))
@@ -586,27 +594,8 @@ fn moment(
             sound = keep(&mut problems, sound_of(value));
         }
     }
-    let before = parent.map_or(0, &modules_at);
-    let mut modules = i64::from(before);
-    for line in files.lines() {
-        let mut parts = line.splitn(2, '\t');
-        let (Some(status), Some(path)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        if !path.starts_with("modules/") {
-            continue;
-        }
-        match status.trim() {
-            "A" => modules += 1,
-            "D" => modules -= 1,
-            _ => {}
-        }
-    }
-    if modules < 0 {
-        problems.push(format!(
-            "removes more modules than were alive ({before} alive, {modules} after); counted as none"
-        ));
-    }
+    let (before, alive) = parent.map_or_else(|| (0, Kinds::default()), &alive_at);
+    let (modules, alive, touched) = files_of(files, before, alive, &mut problems);
     Ok(Moment {
         id,
         parent,
@@ -618,9 +607,63 @@ fn moment(
         beat,
         tempo,
         sound,
-        modules: u32::try_from(modules.max(0)).unwrap_or(u32::MAX),
+        modules,
+        alive,
+        touched,
         problems,
     })
+}
+
+/// What a record's files did to the modules: how many are alive after it
+/// (from `before`), by family too (from `alive`), and which families it
+/// touched. Anything that does not add up is said in `problems`.
+fn files_of(
+    files: &str,
+    before: u32,
+    mut alive: Kinds,
+    problems: &mut Vec<String>,
+) -> (u32, Kinds, Kinds) {
+    let mut modules = i64::from(before);
+    let mut touched = Kinds::default();
+    let mut missing = false;
+    for line in files.lines() {
+        let mut parts = line.splitn(2, '\t');
+        let (Some(status), Some(path)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Some(file) = path.strip_prefix("modules/") else {
+            continue;
+        };
+        let kind = colour::kind_of(file.trim_end().trim_end_matches(".toml"));
+        match status.trim() {
+            "A" => {
+                modules += 1;
+                alive.add(kind);
+            }
+            "D" => {
+                modules -= 1;
+                missing |= !alive.remove(kind);
+            }
+            _ => {}
+        }
+        touched.add(kind);
+    }
+    if missing {
+        problems.push(
+            "takes away a module whose kind was not alive before it; its colour leaves it out"
+                .to_owned(),
+        );
+    }
+    if modules < 0 {
+        problems.push(format!(
+            "removes more modules than were alive ({before} alive, {modules} after); counted as none"
+        ));
+    }
+    (
+        u32::try_from(modules.max(0)).unwrap_or(u32::MAX),
+        alive,
+        touched,
+    )
 }
 
 /// A trailer's value, or `None` with what was wrong said in `problems`.

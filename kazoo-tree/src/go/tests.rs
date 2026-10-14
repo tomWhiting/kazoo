@@ -25,11 +25,11 @@ fn a_go_puts_the_wall_at_a_moment_and_says_so() {
     let dir = tempfile::tempdir().expect("a folder");
     let tree = dir.path().join("tree");
     kazoo_wall::tree::git::plant(&tree).expect("planted");
-    let daemon = Daemon::start(DaemonConfig::headless(
-        dir.path(),
-        &dir.path().join("state"),
-    ))
-    .expect("a wall");
+    let mut config = DaemonConfig::headless(dir.path(), &dir.path().join("state"));
+    // The tests run side by side, so the machine is busy: the wall's guard
+    // against overloading it would refuse the go for that, not for the go.
+    config.load_guard = false;
+    let daemon = Daemon::start(config).expect("a wall");
     let mut wall = WallClient::connect(daemon.socket(), "Tester", "a test", false).expect("in");
     let look = wall.look().expect("a look");
     let (module, knob) = look

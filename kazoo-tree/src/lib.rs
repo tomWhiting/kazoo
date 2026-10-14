@@ -6,6 +6,7 @@
 //! playing, the tree is for seeing where it has been and finding a moment.
 
 pub mod app;
+pub mod colour;
 pub mod go;
 pub mod growth;
 pub mod history;
@@ -541,7 +542,14 @@ fn lanes(app: &mut App, area: Rect, buf: &mut Buffer) {
         .zip(&graphs)
         .map(|(row, full)| {
             let moment = &app.history.moments[row.moment];
-            let (r, g, b) = render::colour_of(moment.sound);
+            // The same colour the moment has on the tree.
+            let (r, g, b) = app
+                .growth
+                .look
+                .get(row.moment)
+                .copied()
+                .flatten()
+                .map_or(colour::PLAIN, |look| look.colour);
             let length = full.chars().count();
             let mut graph: Vec<char> = full.chars().skip(left).take(room).collect();
             if left > 0

@@ -7,7 +7,7 @@
 use unicode_width::UnicodeWidthChar;
 
 use crate::growth::{Growth, ROOT_DEPTH, ROOT_REACH, Step};
-use crate::history::{History, Sound};
+use crate::history::History;
 
 /// How far in the view is: each level shows more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -134,10 +134,13 @@ pub fn min_scale(bounds: (f64, f64, f64, f64), cols: u16, rows: u16) -> f64 {
 /// The furthest in.
 pub const MAX_SCALE: f64 = 40.0;
 /// The share of its width, in dots, a limb keeps however far out.
-const FAR_THICKNESS: f64 = 0.35;
+const FAR_THICKNESS: f64 = 0.6;
+/// How much wider a tree's own trunk is drawn than its modules alone make
+/// it: a trunk reads as a trunk.
+const TRUNK_THICKER: f64 = 1.4;
 /// The widest a limb is ever drawn, in dots, so close in a thick limb does
 /// not bury its own marks.
-const MAX_DOTS_WIDE: f64 = 8.0;
+const MAX_DOTS_WIDE: f64 = 10.0;
 
 /// What a glyph is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,9 +418,6 @@ impl Picture {
 
 /// The colour labels are drawn in.
 pub const LABEL: (u8, u8, u8) = (200, 200, 190);
-/// Unheard: a limb whose sound was not kept. Grey, never black: not
-/// knowing how it sounded is not silence.
-pub const UNHEARD: (u8, u8, u8) = (140, 140, 136);
 /// Day marks: faint, beside the growth.
 const DAY: (u8, u8, u8) = (120, 120, 116);
 /// How long a tip counts as growing: it grew within this long before now,
@@ -432,54 +432,6 @@ const ROOT: (u8, u8, u8) = (110, 90, 70);
 const HERE: (u8, u8, u8) = (255, 240, 160);
 /// Marks.
 const MARK: (u8, u8, u8) = (240, 200, 120);
-
-/// A limb's colour from how it sounded: warm (amber) where the sound sat
-/// low, cool (blue) where it was bright; lighter when louder; more vivid
-/// when busier.
-#[must_use]
-pub fn colour_of(sound: Option<Sound>) -> (u8, u8, u8) {
-    let Some(sound) = sound else {
-        return UNHEARD;
-    };
-    let centroid = if sound.centroid_hz.is_finite() {
-        f64::from(sound.centroid_hz)
-    } else {
-        500.0
-    };
-    let bright = ((centroid.max(1.0).log2() - 100_f64.log2()) / (4000_f64.log2() - 100_f64.log2()))
-        .clamp(0.0, 1.0);
-    let hue = bright.mul_add(190.0, 30.0);
-    let rms = if sound.rms_db.is_finite() {
-        f64::from(sound.rms_db)
-    } else {
-        -60.0
-    };
-    let light = ((rms + 50.0) / 40.0).clamp(0.0, 1.0).mul_add(0.35, 0.35);
-    let onsets = if sound.onsets.is_finite() {
-        f64::from(sound.onsets)
-    } else {
-        0.0
-    };
-    let saturation = (onsets / 6.0).clamp(0.0, 1.0).mul_add(0.55, 0.35);
-    hsl(hue, saturation, light)
-}
-
-fn hsl(hue: f64, saturation: f64, light: f64) -> (u8, u8, u8) {
-    let chroma = (1.0 - 2.0_f64.mul_add(light, -1.0).abs()) * saturation;
-    let sector = hue / 60.0;
-    let second = chroma * (1.0 - (sector % 2.0 - 1.0).abs());
-    let (red, green, blue) = match sector as u32 {
-        0 => (chroma, second, 0.0),
-        1 => (second, chroma, 0.0),
-        2 => (0.0, chroma, second),
-        3 => (0.0, second, chroma),
-        4 => (second, 0.0, chroma),
-        _ => (chroma, 0.0, second),
-    };
-    let base = light - chroma / 2.0;
-    let to = |v: f64| ((v + base).clamp(0.0, 1.0) * 255.0).round() as u8;
-    (to(red), to(green), to(blue))
-}
 
 /// A gesture: a run of one seat's moments doing the same thing on one limb.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -870,6 +822,8 @@ fn draw_step(
     rows: u16,
 ) {
     let limb = &scene.history.limbs[step.limb];
+    // A tree's own trunk: a limb that grew from no other.
+    let trunk = limb.from.is_none();
     let mut from = step.start;
     let mut run: Option<Run> = None;
     for &m in &limb.moments[step.first..=step.last] {
@@ -879,10 +833,15 @@ fn draw_step(
         // Far out a limb keeps some of its thickness, so the trunk still
         // reads as a trunk; close in it is drawn true to scale, up to a
         // limit.
-        let wide = (look.width * view.scale)
-            .max(look.width * FAR_THICKNESS)
+        let width = if trunk {
+            look.width * TRUNK_THICKER
+        } else {
+            look.width
+        };
+        let wide = (width * view.scale)
+            .max(width * FAR_THICKNESS)
             .clamp(1.0, MAX_DOTS_WIDE);
-        let colour = colour_of(look.sound);
+        let colour = look.colour;
         let bright = scene.line.get(m).copied().unwrap_or(false);
         let style = Style {
             wide,

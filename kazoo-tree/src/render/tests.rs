@@ -149,39 +149,6 @@ fn levels_follow_the_scale() {
 }
 
 #[test]
-fn colour_follows_the_sound() {
-    assert_eq!(colour_of(None), UNHEARD);
-    let sound = |centroid_hz: f32, rms_db: f32| Sound {
-        rms_db,
-        peak_db: 0.0,
-        centroid_hz,
-        low: 0.3,
-        mid: 0.6,
-        high: 0.1,
-        onsets: 2.0,
-    };
-    let (r_low, _, b_low) = colour_of(Some(sound(150.0, -25.0)));
-    let (r_high, _, b_high) = colour_of(Some(sound(3500.0, -25.0)));
-    assert!(r_low > b_low, "low sits warm");
-    assert!(b_high > r_high, "bright sits cool");
-    let quiet = colour_of(Some(sound(600.0, -45.0)));
-    let loud = colour_of(Some(sound(600.0, -12.0)));
-    let sum = |(r, g, b): (u8, u8, u8)| u32::from(r) + u32::from(g) + u32::from(b);
-    assert!(sum(loud) > sum(quiet), "louder is lighter");
-    let nonsense = Sound {
-        rms_db: f32::NAN,
-        peak_db: f32::NAN,
-        centroid_hz: f32::INFINITY,
-        low: 0.0,
-        mid: 0.0,
-        high: 0.0,
-        onsets: f32::NAN,
-    };
-    let (r, g, b) = colour_of(Some(nonsense));
-    assert!(r > 0 || g > 0 || b > 0, "nonsense still draws");
-}
-
-#[test]
 fn gestures_fold_one_seats_same_change() {
     let history = grown(12, &[]);
     let folded = gestures(&history);
