@@ -52,6 +52,17 @@ impl Stream {
             writeln!(self.text, "from :{from}").expect("a String takes it");
         }
         for (path, body) in files {
+            // A module's file is a module's TOML, as the wall writes it; a
+            // word given for one is its name, so each reads as itself.
+            let module;
+            let body = match (path.strip_prefix("modules/"), body) {
+                (Some(file), Some(body)) if !body.starts_with("kind") => {
+                    let kind = crate::colour::kind_of(file.trim_end_matches(".toml"));
+                    module = format!("kind = \"{kind}\"\nname = \"{body}\"\n\n[knobs]\n");
+                    Some(module.as_str())
+                }
+                _ => *body,
+            };
             match body {
                 Some(body) => write!(
                     self.text,
@@ -725,7 +736,7 @@ fn one_commit_in_bytes_that_are_not_text_is_its_own_problem() {
     bad[at] = 0xff;
     log.extend(bad);
     let mut history = History::default();
-    history.append(&log).expect("reads");
+    history.append(&log, false).expect("reads");
     history
         .lay_out_with("refs/heads/trunk\0b\0\n", None, &[])
         .expect("lays out");
@@ -809,12 +820,12 @@ fn a_batch_missing_its_words_is_said_and_still_shown() {
 #[test]
 fn a_record_mark_in_the_words_never_splits_a_commit_or_closes_the_tree() {
     let log = [
-        record("a", "", "one", "A\tmodules/vco1.toml\n"),
+        record("a", "", "one", ":000000 100644 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\tmodules/vco1.toml\n"),
         record(
             "b",
             "a",
             "Cassio: take\u{1e}two\u{1f}three\n\nKazoo-Kind: batch\nKazoo-Note: take\u{1e}two\u{1f}three\nKazoo-Step: added lfo3",
-            "A\tmodules/lfo3.toml\n",
+            ":000000 100644 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\tmodules/lfo3.toml\n",
         ),
         record("c", "b", "after", ""),
     ]
@@ -832,9 +843,9 @@ fn a_record_mark_in_the_words_never_splits_a_commit_or_closes_the_tree() {
 fn a_record_mark_then_an_id_at_the_end_of_an_author_or_subject_never_splits_a_commit() {
     let hex = "0123456789abcdef0123456789abcdef01234567";
     let log = [
-        record("a", "", "one", "A\tmodules/vco1.toml\n"),
+        record("a", "", "one", ":000000 100644 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\tmodules/vco1.toml\n"),
         format!(
-            "\u{1e}b\0a\01000\0B\u{1e}{hex}\0sub\u{1e}abc\0Kazoo-Kind: change\n\u{1f}\nA\tmodules/lfo3.toml\n"
+            "\u{1e}b\0a\01000\0B\u{1e}{hex}\0sub\u{1e}abc\0Kazoo-Kind: change\n\u{1f}\n:000000 100644 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\tmodules/lfo3.toml\n"
         ),
         record("c", "b", "after", ""),
     ]
@@ -846,10 +857,23 @@ fn a_record_mark_then_an_id_at_the_end_of_an_author_or_subject_never_splits_a_co
     assert_eq!(history.moments[1].modules, 2);
 }
 
+/// A filter's file as the wall writes it: its cutoff, its seats' dye and
+/// its birth as given.
+fn filter(cutoff: f64, dye: f64, birth: &str) -> String {
+    format!(
+        "kind = \"vcf\"\nname = \"low\"\nbirth = \"{birth}\"\n\n[knobs]\ncutoff = {cutoff:?}\nresonance = 0.2\n\n[inputs]\ncutoff = {{ cable = 150, from = \"lfo1.out\", amount = -0.4 }}\n\n[dye]\nCassio = {dye:?}\n"
+    )
+}
+
 #[test]
 fn a_moments_tint_is_its_modules_shades_from_their_settings() {
     let dir = tempfile::tempdir().expect("a temporary folder");
     kazoo_wall::tree::git::plant(dir.path()).expect("planted");
+    let born = "born 7308.0 2026-10-14T14:06:06Z 1165dea1b321acbe aa83f0f62b7bc3c3";
+    let first = filter(1000.0, 1.0, born);
+    // Turned and dyed, then turned back with more dye: the same settings.
+    let turned = filter(1100.0, 2.0, born);
+    let back = filter(1000.0, 3.5, born);
     let mut stream = Stream::default();
     let one = stream.commit(
         "trunk",
@@ -862,46 +886,95 @@ fn a_moments_tint_is_its_modules_shades_from_their_settings() {
         "trunk",
         Some(one),
         2,
-        &[("modules/vcf1.toml", Some("b"))],
+        &[("modules/vcf1.toml", Some(&first))],
         None,
     );
     let three = stream.commit(
         "trunk",
         Some(two),
         3,
-        &[("modules/vcf1.toml", Some("z"))],
+        &[("modules/vcf1.toml", Some(&turned))],
         None,
     );
     let four = stream.commit(
         "trunk",
         Some(three),
         4,
-        &[("modules/vcf1.toml", Some("b"))],
+        &[("modules/vcf1.toml", Some(&back))],
         None,
     );
     let five = stream.commit("trunk", Some(four), 5, &[("modules/vco1.toml", None)], None);
-    stream.commit(
+    let six = stream.commit(
         "trunk",
         Some(five),
         6,
         &[("modules/out1.toml", Some("o"))],
         None,
     );
+    stream.commit(
+        "trunk",
+        Some(six),
+        7,
+        &[("modules/lfo9.toml", Some("kind = [broken"))],
+        None,
+    );
     stream.import(dir.path());
     let history = History::read(dir.path()).expect("the tree reads");
-    let tints: Vec<Tint> = history.limbs[0]
-        .moments
-        .iter()
-        .map(|&m| history.moments[m].tint)
-        .collect();
+    let moments = &history.limbs[0].moments;
+    let tints: Vec<Tint> = moments.iter().map(|&m| history.moments[m].tint).collect();
     assert_eq!(tints[0].count, 1);
     assert_eq!(tints[1].count, 2);
-    // New settings, a new shade; the old settings back, the old shade.
+    // A turn is a new shade, near the old; turned back, the old exactly,
+    // whatever the dye says.
     assert_ne!(tints[2], tints[1]);
     assert_eq!(tints[3], tints[1]);
     // The vco taken away takes exactly its shade with it.
     assert_eq!(tints[4], tints[3].minus(&tints[0]));
     // Plumbing has no shade.
     assert_eq!(tints[5], tints[4]);
-    assert!(history.moments.iter().all(|m| m.problems.is_empty()));
+    for &m in &moments[..6] {
+        assert!(
+            history.moments[m].problems.is_empty(),
+            "{:?}",
+            history.moments[m].problems
+        );
+    }
+    // A module file that does not read is said, and still counted.
+    let last = &history.moments[moments[6]];
+    assert_eq!(last.modules, 3, "vcf1, out1 and lfo9");
+    assert_eq!(last.tint.count, 2);
+    assert!(
+        last.problems
+            .iter()
+            .any(|p| p.contains("could not be read")),
+        "{:?}",
+        last.problems
+    );
+}
+
+#[test]
+fn a_file_line_that_is_not_raw_or_not_a_modules_is_said() {
+    let zero = "0".repeat(40);
+    let one = "1".repeat(40);
+    let log = record(
+        "a",
+        "",
+        "one",
+        &format!(
+            "A\tmodules/vco1.toml\n:000000 100644 {zero} {one} A\t\"modules/a\\tb.toml\"\n:000000 100644 {zero} {one} A\tmodules/x/y.toml\n:000000 100644 {zero} {one} U\tmodules/vcf1.toml\n:000000 100644 {zero} {one} A\tmodules/lfo1.toml\n"
+        ),
+    );
+    let history = History::from_git(&log, "refs/heads/trunk\0a\0\n", None).expect("it opens");
+    let moment = &history.moments[0];
+    assert_eq!(moment.modules, 1, "only lfo1 is a module added");
+    assert_eq!(moment.tint.count, 1);
+    let said = moment.problems.join("\n");
+    for words in [
+        "did not write as expected",
+        "had to quote",
+        "is no module's file",
+        "does not know (U)",
+    ] {
+        assert!(said.contains(words), "{words}: {said}");
+    }
 }

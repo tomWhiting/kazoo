@@ -6,8 +6,7 @@
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::colour;
-use crate::growth::{GROWTH_STEP, Growth, ROOT_DEPTH, ROOT_REACH, STEP_LENGTH, Step};
+use crate::growth::{GROWTH_STEP, Growth, ROOT_DEPTH, ROOT_REACH, Running, STEP_LENGTH, Step};
 use crate::history::{Batch, History, Moment};
 
 /// How far in the view is: each level shows more.
@@ -796,7 +795,21 @@ fn hang_words(
             Words::Here => "the wall is here".to_owned(),
             Words::None => continue,
         };
-        let said = picture.label(col + 2, row, &text, taken);
+        let said = if matches!(words, Words::Day(_)) {
+            // A new day is the one word for when a limb grew, so it looks
+            // for room beside its mark rather than giving up its place.
+            let wide = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+            [
+                (col + 2, row),
+                (col + 2, row - 1),
+                (col + 2, row + 1),
+                (col.saturating_sub(wide.saturating_add(2)), row),
+            ]
+            .into_iter()
+            .any(|(c, r)| c >= 0 && picture.label(c, r, &text, taken))
+        } else {
+            picture.label(col + 2, row, &text, taken)
+        };
         // Zoomed right in, a batch opens into its changes under its note.
         if said
             && level == Level::Every
@@ -966,45 +979,65 @@ fn hangings(
 }
 
 /// How many moments a colour is blended over at `scale`: those along
-/// [`MELLOW_DOTS`] of limb, one close in.
+/// [`MELLOW_DOTS`] of limb when the view is far out (whole tree or names),
+/// one closer in, where each moment is drawn in its own colour as the
+/// lanes and the details show it.
 fn mellow_window(scale: f64) -> usize {
+    if !matches!(Level::of(scale), Level::Far | Level::Near) {
+        return 1;
+    }
     let spacing = STEP_LENGTH / GROWTH_STEP as f64;
     let moments = (MELLOW_DOTS / (scale * spacing)).ceil();
     if moments.is_finite() && moments > 1.0 {
-        // Finite and positive: the cast saturates at the most a limb can
-        // hold, which is as far back as any blend can reach.
+        // Finite and above one: the cast saturates at `usize::MAX`, past
+        // any path's length, which blends from the tree's first moment.
         moments as usize
     } else {
         1
     }
 }
 
-/// The colour of the moment at `p` on a limb of `moments`, blended with
-/// up to `window - 1` moments before it on the same limb: their tints'
-/// mean, with the moment's own sound. `None` when there is nothing to
-/// blend (a window of one, the limb's first moment) or the moments are not
-/// grown yet, and the moment's own colour is drawn.
-fn mellowed(scene: &Scene<'_>, moments: &[usize], p: usize, window: usize) -> Option<(u8, u8, u8)> {
-    if window <= 1 || p == 0 {
+/// The colour of moment `m` blended with the `window - 1` moments before
+/// it on its path, back down the limbs it grew from: their tints' mean and
+/// their mean loudness. `None` when there is nothing to blend (a window of
+/// one) or the moments are not grown yet, and the moment's own colour is
+/// drawn.
+fn mellowed(scene: &Scene<'_>, m: usize, window: usize) -> Option<(u8, u8, u8)> {
+    if window <= 1 {
         return None;
     }
-    let look = scene.growth.look[*moments.get(p)?]?;
-    let start = p.saturating_sub(window);
-    let (sum, count) = if p + 1 > window {
-        let before = scene.growth.look[*moments.get(start)?]?;
-        (look.running.minus(&before.running), window)
-    } else {
-        (look.running, p + 1)
+    let look = scene.growth.look[m]?;
+    let history = scene.history;
+    // The moment `window` back along the path, or none when the path is
+    // shorter: then the blend reaches its tree's first moment.
+    let (mut limb, mut p) = history.place[m]?;
+    let mut back = window;
+    let before = loop {
+        if back <= p {
+            break Some(history.limbs[limb].moments[p - back]);
+        }
+        back -= p + 1;
+        let Some(from) = history.limbs[limb].from else {
+            break None;
+        };
+        if back == 0 {
+            break Some(from);
+        }
+        (limb, p) = history.place[from]?;
     };
-    // A limb's moments are counted in memory: far fewer than `i64` holds.
-    let count = i64::try_from(count).unwrap_or(i64::MAX);
-    Some(colour::colour(&sum.mean(count), look.sound.as_ref()))
+    let before = match before {
+        Some(b) => scene.growth.look[b]?.running,
+        None => Running::default(),
+    };
+    Some(look.running.colour_since(&before))
 }
 
 /// Draw one step: each moment's stretch, from the moment before it (or
-/// the step's start) to it, in that moment's own width and colour, bright
-/// where it is on the wall's own line. Stretches drawn alike in a row are
-/// one line: a step is straight.
+/// the step's start) to it, in that moment's own width and colour (far
+/// out, its colour blended with the moments before it), bright where it is
+/// on the wall's own line. Stretches drawn alike in a row are one line (a
+/// step is straight), and so is a stretch too short to leave its run's
+/// last dot.
 fn draw_step(
     picture: &mut Picture,
     scene: &Scene<'_>,
@@ -1019,11 +1052,8 @@ fn draw_step(
     let mut from = step.start;
     let mut run: Option<Run> = None;
     let window = mellow_window(view.scale);
-    for (p, &m) in limb.moments[step.first..=step.last]
-        .iter()
-        .enumerate()
-        .map(|(i, m)| (step.first + i, m))
-    {
+    let mut end_dot = None;
+    for &m in &limb.moments[step.first..=step.last] {
         let (Some(at), Some(look)) = (scene.growth.at[m], scene.growth.look[m]) else {
             continue;
         };
@@ -1038,15 +1068,21 @@ fn draw_step(
         let wide = (width * view.scale)
             .max(width * FAR_THICKNESS)
             .clamp(1.0, MAX_DOTS_WIDE);
-        let colour = mellowed(scene, &limb.moments, p, window).unwrap_or(look.colour);
+        let colour = mellowed(scene, m, window).unwrap_or(look.colour);
         let bright = scene.line.get(m).copied().unwrap_or(false);
         let style = Style {
             wide,
             colour,
             bright,
         };
+        // A stretch that ends on the dot the run already ends on adds
+        // nothing to draw: the run takes it in its own look.
+        let dot = view.to_dots(at, cols, rows);
+        let dot = (dot.0.round(), dot.1.round());
+        let same_dot = end_dot == Some(dot);
+        end_dot = Some(dot);
         match &mut run {
-            Some((_, end, same)) if *same == style => *end = at,
+            Some((_, end, same)) if *same == style || same_dot => *end = at,
             _ => {
                 if let Some((a, b, done)) = run.take() {
                     picture.line(

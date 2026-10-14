@@ -10,13 +10,20 @@ fn kinds(pairs: &[(&str, u16)]) -> Kinds {
     kinds
 }
 
-/// A tint of `pairs`' modules, each at its own place (`modules/<kind><i>.toml`)
-/// with settings named `settings`.
-fn tint(pairs: &[(&str, u16)], settings: &str) -> Tint {
+/// A tint of `pairs`' modules, each at its own place
+/// (`modules/<kind><i>.toml`), every one leaning `lean` by its settings.
+fn tint(pairs: &[(&str, u16)], lean: f64) -> Tint {
     let mut tint = Tint::default();
     for &(kind, n) in pairs {
         for i in 0..n {
-            tint.add(kind, &format!("modules/{kind}{i}.toml"), settings);
+            tint.add(
+                kind,
+                &format!("modules/{kind}{i}.toml"),
+                Some(Settings {
+                    turn: lean,
+                    light: 0.0,
+                }),
+            );
         }
     }
     tint
@@ -65,7 +72,7 @@ fn every_family_has_its_own_hue() {
         assert_eq!(family_of(kind), Some(f), "{kind}");
         // Enough modules that their shades' turns even out around the
         // family's hue.
-        let c = colour(&tint(&[(kind, 64)], "a"), None);
+        let c = colour(&tint(&[(kind, 64)], 0.0), None);
         assert!(
             hue_gap(hue_of(c), HUES[f]) < 20.0,
             "{kind}: {c:?} is not near {}",
@@ -76,9 +83,27 @@ fn every_family_has_its_own_hue() {
 
 #[test]
 fn a_module_shade_stays_within_its_family_spread() {
-    for blob in ["a", "b", "c", "d", "e", "f", "0123", "ffff"] {
-        let c = colour(&tint(&[("vcf", 1)], blob), None);
-        assert!(hue_gap(hue_of(c), HUES[2]) <= SPREAD + 3.0, "{blob}: {c:?}");
+    for lean in [-1.0, -0.5, 0.0, 0.3, 1.0] {
+        for place in [
+            "modules/vcf1.toml",
+            "modules/vcf2.toml",
+            "modules/vcf77.toml",
+        ] {
+            let mut one = Tint::default();
+            one.add(
+                "vcf",
+                place,
+                Some(Settings {
+                    turn: lean,
+                    light: lean,
+                }),
+            );
+            let c = colour(&one, None);
+            assert!(
+                hue_gap(hue_of(c), HUES[2]) <= SPREAD + 3.0,
+                "{lean} {place}: {c:?}"
+            );
+        }
     }
 }
 
@@ -87,45 +112,77 @@ fn plumbing_and_unknown_kinds_have_no_colour() {
     for kind in ["out", "mix", "vca", "scope", "readout", "a-kind-from-later"] {
         assert_eq!(family_of(kind), None, "{kind}");
     }
-    let plumbing = tint(&[("out", 2), ("mix", 3)], "a");
+    let plumbing = tint(&[("out", 2), ("mix", 3)], 0.0);
     assert_eq!(plumbing, Tint::default());
     assert_eq!(colour(&plumbing, None), PLAIN);
-    let voices = tint(&[("vco", 4)], "a");
+    let voices = tint(&[("vco", 4)], 0.0);
     assert_eq!(colour(&voices.plus(&plumbing), None), colour(&voices, None));
 }
 
 #[test]
-fn the_same_settings_give_the_same_colour_and_new_ones_a_near_one() {
-    let wall = tint(&[("vco", 20), ("vcf", 20), ("hall", 10), ("lfo", 10)], "a");
-    assert_eq!(
-        wall,
-        tint(&[("vco", 20), ("vcf", 20), ("hall", 10), ("lfo", 10)], "a")
-    );
-    // One knob turned: one module's settings change.
+fn a_small_turn_is_a_small_move_and_turning_back_is_exact() {
+    let wall = tint(&[("vco", 20), ("vcf", 20), ("hall", 10), ("lfo", 10)], 0.0);
+    let set = |lean: f64| {
+        Some(Settings {
+            turn: lean,
+            light: 0.0,
+        })
+    };
     let mut turned = wall;
-    turned.remove("vcf", "modules/vcf3.toml", "a");
-    turned.add("vcf", "modules/vcf3.toml", "b");
+    turned.remove("vcf", "modules/vcf3.toml", set(0.0));
+    turned.add("vcf", "modules/vcf3.toml", set(0.05));
     assert_ne!(turned, wall);
     let (before, after) = (hue_of(colour(&wall, None)), hue_of(colour(&turned, None)));
-    // One shade of sixty moves by up to twice the spread: the whole moves a
-    // few degrees, never a jump to another colour.
-    assert!(hue_gap(before, after) < 8.0, "{before} {after}");
-    // Turned back, exactly the colour it was.
-    turned.remove("vcf", "modules/vcf3.toml", "b");
-    turned.add("vcf", "modules/vcf3.toml", "a");
+    assert!(hue_gap(before, after) < 1.0, "{before} {after}");
+    turned.remove("vcf", "modules/vcf3.toml", set(0.05));
+    turned.add("vcf", "modules/vcf3.toml", set(0.0));
     assert_eq!(turned, wall);
 }
 
 #[test]
-fn a_wall_of_new_settings_is_a_different_shade() {
-    let a = colour(&tint(&[("vco", 3), ("vcf", 3)], "a"), None);
-    let b = colour(&tint(&[("vco", 3), ("vcf", 3)], "zzz"), None);
+fn settings_are_the_knobs_and_cables_and_nothing_else() {
+    let file = |cutoff: &str, name: &str, birth: &str, cable: u32, amount: &str, dye: &str| {
+        format!(
+            "kind = \"vcf\"\nname = \"{name}\"\nbirth = \"{birth}\"\n\n[knobs]\ncutoff = {cutoff}\nresonance = 0.2\nmode = 0\n\n[inputs]\ncutoff = {{ cable = {cable}, from = \"lfo1.out\", amount = {amount} }}\n\n[dye]\nCassio = {dye}\n"
+        )
+    };
+    let read = |text: &str| settings_of(text).expect("a module's file");
+    let base = read(&file("1000.0", "low", "b1", 150, "-0.4", "3.21"));
+    // Its name, birth, cable number and dye are not its sound.
+    assert_eq!(
+        read(&file("1000.0", "high", "b2", 999, "-0.4", "9.0")),
+        base
+    );
+    // A small turn of one knob is a small lean; a big one, further.
+    let small = read(&file("1020.0", "low", "b1", 150, "-0.4", "3.21"));
+    let big = read(&file("9000.0", "low", "b1", 150, "-0.4", "3.21"));
+    let gap = |a: Settings| (a.turn - base.turn).abs() + (a.light - base.light).abs();
+    assert!(gap(small) > 0.0 && gap(small) < 0.05, "{small:?} {base:?}");
+    assert!(gap(big) > gap(small) * 5.0, "{big:?} {small:?}");
+    // A cable's amount leans it too.
+    assert_ne!(read(&file("1000.0", "low", "b1", 150, "0.4", "3.21")), base);
+    // A kind this tree does not know still has settings; nonsense has none.
+    assert!(settings_of("kind = \"later\"\n\n[knobs]\nwarp = 3.0\n").is_some());
+    assert_eq!(settings_of("not a module ["), None);
+    assert_eq!(settings_of("name = \"no kind\"\n"), None);
+    for lean in [base, small, big] {
+        assert!(
+            lean.turn.abs() <= 1.0 && lean.light.abs() <= 1.0,
+            "{lean:?}"
+        );
+    }
+}
+
+#[test]
+fn a_wall_of_other_settings_is_another_shade() {
+    let a = colour(&tint(&[("vco", 3), ("vcf", 3)], 0.0), None);
+    let b = colour(&tint(&[("vco", 3), ("vcf", 3)], 0.8), None);
     assert_ne!(a, b);
 }
 
 #[test]
 fn the_blend_sits_between_its_families() {
-    let alive = tint(&[("vco", 40), ("vcf", 40)], "a");
+    let alive = tint(&[("vco", 40), ("vcf", 40)], 0.0);
     let hue = hue_of(colour(&alive, None));
     // Between amber (32) and green (125).
     assert!(hue > 32.0 && hue < 125.0, "{hue}");
@@ -134,7 +191,7 @@ fn the_blend_sits_between_its_families() {
 #[test]
 fn one_family_is_more_vivid_than_a_mix() {
     let spread = |(r, g, b): (u8, u8, u8)| r.max(g).max(b) - r.min(g).min(b);
-    let one = colour(&tint(&[("vcf", 8)], "a"), None);
+    let one = colour(&tint(&[("vcf", 8)], 0.0), None);
     let mix = colour(
         &tint(
             &[
@@ -145,7 +202,7 @@ fn one_family_is_more_vivid_than_a_mix() {
                 ("hall", 2),
                 ("lfo", 2),
             ],
-            "a",
+            0.0,
         ),
         None,
     );
@@ -155,7 +212,7 @@ fn one_family_is_more_vivid_than_a_mix() {
 
 #[test]
 fn louder_is_lighter_and_nonsense_still_draws() {
-    let alive = tint(&[("vco", 3)], "a");
+    let alive = tint(&[("vco", 3)], 0.0);
     let sound = |rms_db: f32| Sound {
         rms_db,
         peak_db: 0.0,
@@ -175,25 +232,31 @@ fn louder_is_lighter_and_nonsense_still_draws() {
 }
 
 #[test]
-fn a_mean_divides_every_sum_and_rounds_to_nearest() {
-    let sum = Tint {
-        x: 10,
-        y: -10,
-        light: 7,
-        count: 9,
-    };
-    assert_eq!(
-        sum.mean(4),
-        Tint {
-            x: 3,
-            y: -3,
-            light: 2,
-            count: 2
-        }
-    );
-    assert_eq!(sum.mean(1), sum);
-    assert_eq!(sum.mean(0), sum);
-    assert_eq!(sum.minus(&sum), Tint::default());
+fn a_blend_is_the_mean_and_a_few_modules_among_many_moments_still_count() {
+    let one = tint(&[("vco", 6), ("hall", 2)], 0.2);
+    let mut three = Tint::default();
+    for _ in 0..3 {
+        three = three.plus(&one);
+    }
+    assert_eq!(blend(&three, 3.0, None), colour(&one, None));
+    assert_eq!(three.minus(&three), Tint::default());
+    // Two moments with nothing coloured and one with a single voice: a
+    // colour, not grey, and the voice's hue.
+    let voice = tint(&[("vco", 1)], 0.0);
+    let thin = blend(&voice, 3.0, None);
+    assert_ne!(thin, PLAIN);
+    assert!(hue_gap(hue_of(thin), hue_of(colour(&voice, None))) < 3.0);
+    assert_eq!(blend(&Tint::default(), 3.0, None), PLAIN);
+    assert_eq!(blend(&voice, 0.0, None), PLAIN);
+    assert_eq!(blend(&voice, f64::NAN, None), PLAIN);
+}
+
+#[test]
+fn a_moment_of_few_modules_is_quieter_than_a_full_wall() {
+    let spread = |(r, g, b): (u8, u8, u8)| r.max(g).max(b) - r.min(g).min(b);
+    let few = colour(&tint(&[("vcf", 1)], 0.0), None);
+    let full = colour(&tint(&[("vcf", 12)], 0.0), None);
+    assert!(spread(full) > spread(few), "{few:?} {full:?}");
 }
 
 #[test]

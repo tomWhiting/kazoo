@@ -462,24 +462,33 @@ fn close_in_a_batch_says_its_note() {
     );
 }
 
+/// A tree whose moments alternate a voice and a hall, with a bud of
+/// halls from the trunk's tenth moment.
+fn striped() -> History {
+    let mut history = grown(40, &[(0, 10, 20)]);
+    for l in 0..history.limbs.len() {
+        for (i, &m) in history.limbs[l].moments.clone().iter().enumerate() {
+            let (kind, path) = if l == 0 && i % 2 == 0 {
+                ("vco", "modules/vco1.toml")
+            } else {
+                ("hall", "modules/hall1.toml")
+            };
+            std::sync::Arc::make_mut(&mut history.moments[m])
+                .tint
+                .add(kind, path, None);
+        }
+    }
+    history
+}
+
 #[test]
 fn far_out_a_limb_blends_its_colours_and_close_in_each_is_its_own() {
     assert_eq!(mellow_window(MAX_SCALE), 1);
+    assert_eq!(mellow_window(3.0), 1, "close in, each moment is its own");
     assert_eq!(mellow_window(1.0), 12);
     assert_eq!(mellow_window(0.005), 2_400);
     assert_eq!(mellow_window(f64::NAN), 1);
-    assert_eq!(mellow_window(0.0), 1);
-    let mut history = grown(40, &[]);
-    for (i, &m) in history.limbs[0].moments.clone().iter().enumerate() {
-        let (kind, path) = if i % 2 == 0 {
-            ("vco", "modules/vco1.toml")
-        } else {
-            ("hall", "modules/hall1.toml")
-        };
-        std::sync::Arc::make_mut(&mut history.moments[m])
-            .tint
-            .add(kind, path, "a");
-    }
+    let history = striped();
     let (growth, gestures, line) = scene_parts(&history);
     let scene = Scene {
         history: &history,
@@ -490,33 +499,116 @@ fn far_out_a_limb_blends_its_colours_and_close_in_each_is_its_own() {
         selected: None,
         now: 0,
     };
-    let moments = &history.limbs[0].moments;
-    assert_eq!(mellowed(&scene, moments, 20, 1), None);
-    assert_eq!(mellowed(&scene, moments, 0, 8), None);
+    let trunk = &history.limbs[0].moments;
+    assert_eq!(mellowed(&scene, trunk[20], 1), None);
     // Four back: two voices and two halls, their mean.
-    let mut four = colour::Tint::default();
-    for &m in &moments[17..=20] {
+    let mut four = crate::colour::Tint::default();
+    for &m in &trunk[17..=20] {
         four = four.plus(&history.moments[m].tint);
     }
     assert_eq!(
-        mellowed(&scene, moments, 20, 4),
-        Some(colour::colour(&four.mean(4), None))
+        mellowed(&scene, trunk[20], 4),
+        Some(crate::colour::blend(&four, 4.0, None))
     );
-    // Near the limb's start the blend reaches back only to its first moment.
-    let mut start = colour::Tint::default();
-    for &m in &moments[..=2] {
+    // Near the tree's start the blend reaches back only to its first moment.
+    let mut start = crate::colour::Tint::default();
+    for &m in &trunk[..=2] {
         start = start.plus(&history.moments[m].tint);
     }
     assert_eq!(
-        mellowed(&scene, moments, 2, 50),
-        Some(colour::colour(&start.mean(3), None))
+        mellowed(&scene, trunk[2], 50),
+        Some(crate::colour::blend(&start, 3.0, None))
     );
-    // Neighbours far out are alike; close in they differ.
-    let (a, b) = (moments[20], moments[21]);
+    // Close in, neighbours differ; far out, they are alike.
     let own = |m: usize| growth.look[m].expect("grown").colour;
-    assert_ne!(own(a), own(b));
+    assert_ne!(own(trunk[20]), own(trunk[21]));
     assert_eq!(
-        mellowed(&scene, moments, 20, 20),
-        mellowed(&scene, moments, 22, 20)
+        mellowed(&scene, trunk[20], 20),
+        mellowed(&scene, trunk[22], 20)
     );
+}
+
+#[test]
+fn a_buds_blend_reaches_back_down_the_limb_it_grew_from() {
+    let history = striped();
+    let (growth, gestures, line) = scene_parts(&history);
+    let scene = Scene {
+        history: &history,
+        growth: &growth,
+        gestures: &gestures,
+        days: &[],
+        line: &line,
+        selected: None,
+        now: 0,
+    };
+    let trunk = &history.limbs[0].moments;
+    let bud = &history.limbs[1].moments;
+    let from = history.limbs[1].from.expect("a bud");
+    let at = history.place[from].expect("on the trunk").1;
+    // The bud's second moment, four back: its first, the moment it grew
+    // from and the two before that on the trunk.
+    let mut four = bud[0..=1]
+        .iter()
+        .chain(&trunk[at - 1..=at])
+        .fold(crate::colour::Tint::default(), |sum, &m| {
+            sum.plus(&history.moments[m].tint)
+        });
+    assert_eq!(
+        mellowed(&scene, bud[1], 4),
+        Some(crate::colour::blend(&four, 4.0, None))
+    );
+    // Its running sums carry on from the trunk's.
+    let running = |m: usize| growth.look[m].expect("grown").running;
+    assert_eq!(running(bud[0]).moments, running(from).moments + 1);
+    four = four.minus(&history.moments[bud[1]].tint);
+    assert_eq!(
+        running(bud[0]).tint.minus(&running(trunk[at - 2]).tint),
+        four
+    );
+}
+
+#[test]
+fn a_new_days_words_find_room_beside_a_label_in_their_place() {
+    let mut history = grown(30, &[(0, 10, 10)]);
+    let bud_first = history.limbs[1].moments[0];
+    for (i, moment) in history.moments.iter_mut().enumerate() {
+        std::sync::Arc::make_mut(moment).time = if i == bud_first || history_after(i, bud_first) {
+            1_760_486_400 + 86_400
+        } else {
+            1_760_486_400
+        };
+    }
+    let zone = chrono::FixedOffset::east_opt(0).expect("utc");
+    let days = days(&history, &zone);
+    let day = days
+        .iter()
+        .position(|day| day.moment == bud_first)
+        .expect("the bud's first moment starts a new day");
+    let (growth, gestures, line) = scene_parts(&history);
+    let from = history.limbs[1].from.expect("a bud");
+    let view = View {
+        centre: growth.at[from].expect("placed"),
+        scale: 1.5,
+    };
+    let scene = Scene {
+        history: &history,
+        growth: &growth,
+        gestures: &gestures,
+        days: &days,
+        line: &line,
+        selected: Some(from),
+        now: 0,
+    };
+    let picture = draw(&scene, &view, 120, 40);
+    assert!(
+        picture.text().contains(&days[day].words),
+        "{}",
+        picture.text()
+    );
+}
+
+/// Whether moment `i` was made after `first` (the test trees make them in
+/// order).
+const fn history_after(i: usize, first: usize) -> bool {
+    i > first
 }

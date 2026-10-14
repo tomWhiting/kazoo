@@ -96,12 +96,56 @@ pub struct Look {
     /// so far. Only ever the past: a stretch drawn once is drawn the same
     /// way however the step fills after it.
     pub colour: (u8, u8, u8),
-    /// The tints of its limb's moments up to and including it, added up,
-    /// so far out the colour of any run of them is one subtraction.
-    pub running: Tint,
-    /// The mean sound of its step's moments so far, as its colour has it.
-    pub sound: Option<Sound>,
+    /// Everything from its tree's first moment up to and including it,
+    /// along the limbs it grew from, added up: so far out the colour of any
+    /// run of moments is one subtraction.
+    pub running: Running,
 }
+
+/// Sums along a path of moments, from a tree's first moment.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Running {
+    /// The moments' tints.
+    pub tint: Tint,
+    /// How many moments.
+    pub moments: u64,
+    /// Their loudness, dBFS, for those that kept their sound.
+    pub rms_db: f64,
+    /// How many kept their sound.
+    pub heard: u64,
+}
+
+impl Running {
+    /// These sums with `moment` added.
+    fn and(&self, tint: &Tint, sound: Option<&Sound>) -> Self {
+        let rms = sound.map(|sound| {
+            if sound.rms_db.is_finite() {
+                f64::from(sound.rms_db)
+            } else {
+                SILENT_DB
+            }
+        });
+        Self {
+            tint: self.tint.plus(tint),
+            moments: self.moments + 1,
+            rms_db: self.rms_db + rms.unwrap_or(0.0),
+            heard: self.heard + u64::from(rms.is_some()),
+        }
+    }
+
+    /// The moments in these sums that are not in `before`'s, as a colour:
+    /// their tints' mean, lightened by their mean loudness.
+    #[must_use]
+    pub fn colour_since(&self, before: &Self) -> (u8, u8, u8) {
+        let moments = self.moments.saturating_sub(before.moments);
+        let heard = self.heard.saturating_sub(before.heard);
+        let rms = (heard > 0).then(|| (self.rms_db - before.rms_db) / heard as f64);
+        colour::blend(&self.tint.minus(&before.tint), moments as f64, rms)
+    }
+}
+
+/// How loud a sound that does not read is taken to be, dBFS.
+const SILENT_DB: f64 = -60.0;
 
 /// The grown tree.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -594,7 +638,7 @@ impl Growth {
         let step = &self.steps[id];
         let moments = &history.limbs[step.limb].moments;
         let last = (step.first + GROWTH_STEP).min(moments.len()) - 1;
-        let (start, end, first) = (step.start, step.end, step.first);
+        let (start, end, first, step_limb) = (step.start, step.end, step.first, step.limb);
         let own = &moments[first..=last];
         let mut sounds = Vec::new();
         let mut widest: f64 = 1.0;
@@ -611,16 +655,19 @@ impl Growth {
             }
             let width = width_for(moment.modules);
             widest = widest.max(width);
+            // The moment before it on its path: on its limb, or for a
+            // bud's first, the moment it grew from.
             let before = (first + i)
                 .checked_sub(1)
-                .and_then(|p| self.look[moments[p]])
-                .map_or_else(Tint::default, |look| look.running);
+                .map(|p| moments[p])
+                .or(history.limbs[step_limb].from)
+                .and_then(|b| self.look[b])
+                .map_or_else(Running::default, |look| look.running);
             let sound = mean_of(&sounds);
             self.look[m] = Some(Look {
                 width,
                 colour: colour::colour(&moment.tint, sound.as_ref()),
-                running: before.plus(&moment.tint),
-                sound,
+                running: before.and(&moment.tint, moment.sound.as_ref()),
             });
         }
         let step = &mut self.steps[id];
