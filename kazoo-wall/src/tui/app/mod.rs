@@ -32,6 +32,9 @@ mod saves;
 mod tree;
 mod tree_distance;
 
+#[cfg(test)]
+pub use tree_distance::words as tree_distance_words;
+
 pub(super) use tree::{RowKind, TreeList};
 
 pub use prefs::{load as load_prefs, path as prefs_path, save as save_prefs};

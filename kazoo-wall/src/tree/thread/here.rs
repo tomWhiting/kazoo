@@ -813,9 +813,10 @@ pub(super) fn list(
     } else {
         Vec::new()
     };
-    let parents = ancestry::read(tree, &by_id, here.as_ref())?;
+    let ancestry = ancestry::read(tree, &by_id, here.as_ref(), &recent)?;
     Ok(TreeResult {
-        parents,
+        limbs: ancestry.limbs,
+        places: ancestry.places,
         here,
         through,
         revision: 0,

@@ -52,6 +52,8 @@ fn go_tab_offers_a_moment_without_opening_b() {
         &mut app,
         Request::Tree { recent: None },
         &serde_json::json!({
+            "limbs": [{"from": null}],
+            "places": {("a".repeat(40)): {"limb": 0, "position": 0}},
             "here": {"commit": "a".repeat(40), "branch": "trunk", "change": 1},
             "through": 1, "revision": 1,
             "branches": [{"name": "trunk", "tip": {

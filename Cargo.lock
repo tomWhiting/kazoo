@@ -1803,6 +1803,7 @@ dependencies = [
  "kazoo-host",
  "kazoo-perc",
  "kazoo-speech",
+ "kazoo-tree",
  "ratatui",
  "ringbuf",
  "rustix",

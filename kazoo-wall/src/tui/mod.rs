@@ -18,6 +18,8 @@
 //! - [`kazoo_host::terminal`] takes over the terminal and gives it back.
 
 mod app;
+#[cfg(test)]
+pub(crate) use app::tree_distance_words;
 pub mod clock;
 mod draw;
 mod dye;

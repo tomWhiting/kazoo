@@ -32,6 +32,7 @@ signal-hook = "0.3.18"
 toml = "0.9"
 
 [dev-dependencies]
+kazoo-tree = { path = "../kazoo-tree" }
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
 assert_no_alloc = { version = "1.1.2", features = ["warn_debug"] }
 tempfile = "3"

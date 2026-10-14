@@ -60,12 +60,26 @@ pub struct MarkResult {
     pub at: TreePlace,
 }
 
+/// A moment's zero-based position on a limb in this listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LimbPlace {
+    pub limb: usize,
+    pub position: usize,
+}
+
+/// The parent moment of a limb's first moment, or its independent root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeLimb {
+    pub from: Option<LimbPlace>,
+}
+
 /// A bounded listing with counts for the names beyond the screen.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeResult {
-    /// First parents of the listed moments and their ancestors, including roots.
-    #[serde(default)]
-    pub parents: BTreeMap<String, Option<String>>,
+    /// Each limb's connection, sent once however many moments it holds.
+    pub limbs: Vec<TreeLimb>,
+    /// Positions for every listed moment and the wall's current moment.
+    pub places: BTreeMap<String, LimbPlace>,
     pub here: Option<TreePlace>,
     pub through: u64,
     #[serde(default)]

@@ -50,7 +50,8 @@ fn moment(n: u64) -> MomentView {
 
 fn listed() -> TreeResult {
     TreeResult {
-        parents: std::collections::BTreeMap::new(),
+        limbs: Vec::new(),
+        places: std::collections::BTreeMap::new(),
         here: Some(place()),
         through: 812,
         revision: 814,
@@ -189,19 +190,36 @@ fn moving_the_tree_cursor_says_the_distance_from_the_wall() {
     result.branches[1].tip = moment(24);
     result.marks[0].moment = moment(13);
     result.recent.clear();
-    let mut value = serde_json::to_value(result).unwrap();
-    let mut parents: serde_json::Map<String, serde_json::Value> = (1..=24)
+    result.limbs = vec![
+        crate::protocol::tree::TreeLimb { from: None },
+        crate::protocol::tree::TreeLimb {
+            from: Some(crate::protocol::tree::LimbPlace {
+                limb: 0,
+                position: 12,
+            }),
+        },
+    ];
+    result.places = (0..=24)
         .map(|n| {
-            let parent = if n == 17 { 12 } else { n - 1 };
-            (moment(n).commit, serde_json::json!(moment(parent).commit))
+            let place = if n <= 16 {
+                crate::protocol::tree::LimbPlace {
+                    limb: 0,
+                    position: n as usize,
+                }
+            } else {
+                crate::protocol::tree::LimbPlace {
+                    limb: 1,
+                    position: (n - 17) as usize,
+                }
+            };
+            (moment(n).commit, place)
         })
         .collect();
-    parents.insert(moment(0).commit, serde_json::Value::Null);
-    value["parents"] = serde_json::json!(parents);
+    let value = serde_json::to_value(result).unwrap();
     app.on_reply(
         Reply::Answer {
             request: Request::Tree { recent: None },
-            outcome: Ok(value.clone()),
+            outcome: Ok(value),
         },
         Instant::now(),
     );
@@ -219,24 +237,6 @@ fn moving_the_tree_cursor_says_the_distance_from_the_wall() {
     press(&mut app, KeyCode::Up);
     assert_eq!(status(&app), "the wall is here");
     assert!(calls(&mut app).is_empty(), "moving only looks");
-    // The tree sends the newest parents only: a line that parts from the
-    // wall's further back than that is said to, never guessed.
-    for n in 0..=13 {
-        parents.remove(&moment(n).commit);
-    }
-    value["parents"] = serde_json::json!(parents);
-    app.on_reply(
-        Reply::Answer {
-            request: Request::Tree { recent: None },
-            outcome: Ok(value),
-        },
-        Instant::now(),
-    );
-    press(&mut app, KeyCode::Down);
-    assert_eq!(
-        status(&app),
-        "further from the wall than the tree counted · Enter puts the wall here"
-    );
 }
 
 #[test]
@@ -248,9 +248,17 @@ fn one_change_from_the_wall_is_said_in_the_singular() {
     result.branches[1].tip = moment(15);
     result.marks.clear();
     result.recent.clear();
-    result.parents = (1..=16)
-        .map(|n| (moment(n).commit, Some(moment(n - 1).commit)))
-        .chain(std::iter::once((moment(0).commit, None)))
+    result.limbs = vec![crate::protocol::tree::TreeLimb { from: None }];
+    result.places = (0..=16)
+        .map(|n| {
+            (
+                moment(n).commit,
+                crate::protocol::tree::LimbPlace {
+                    limb: 0,
+                    position: n as usize,
+                },
+            )
+        })
         .collect();
     answer(&mut app, Request::Tree { recent: None }, &result);
     press(&mut app, KeyCode::Down);

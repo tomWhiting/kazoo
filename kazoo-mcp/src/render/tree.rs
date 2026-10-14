@@ -203,7 +203,8 @@ mod tests {
         first.change = None;
         first.summary = "first\0 moment".into();
         TreeResult {
-            parents: std::collections::BTreeMap::new(),
+            limbs: Vec::new(),
+            places: std::collections::BTreeMap::new(),
             here: Some(place()),
             through: 57,
             revision: 57,
