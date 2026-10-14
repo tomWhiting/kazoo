@@ -152,6 +152,7 @@ impl Wall {
     fn hear_the_desk_first(&mut self) {
         if self.on_the_desk() {
             self.sync_desk_tempo(clamp_bpm(self.engine.shared().bpm()));
+            self.finish_desk_tempo();
         }
     }
 

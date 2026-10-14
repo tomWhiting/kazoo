@@ -173,11 +173,8 @@ fn run_desk(
         }
 
         if redraw {
-            let (note, note_alert) = status_line(
-                news.stopped || !hub.is_running(),
-                tempo.status_warning(now),
-                || news.line(hub, demo),
-            );
+            let (note, note_alert) =
+                status_line(tempo.status_warning(now), || news.line(hub, demo));
             let status = StatusInfo {
                 sample_rate: audio.sample_rate,
                 channels: audio.channels,
@@ -222,14 +219,13 @@ fn run_desk(
 }
 
 fn status_line(
-    hub_stopped: bool,
     tempo_warning: Option<&str>,
     hub_line: impl FnOnce() -> (String, bool),
 ) -> (String, bool) {
-    if hub_stopped {
-        hub_line()
-    } else {
-        tempo_warning.map_or_else(hub_line, |warning| (warning.to_string(), true))
+    let (line, alert) = hub_line();
+    match tempo_warning {
+        Some(warning) => (format!("{line}; {warning}"), true),
+        None => (line, alert),
     }
 }
 

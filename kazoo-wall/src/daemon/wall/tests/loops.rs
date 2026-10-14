@@ -14,7 +14,7 @@ fn loaded(patch: Patch, dir: &std::path::Path) -> (Wall, Engine) {
     let (mut wall, mut engine) = wall();
     wall.loops = Loops::with_reels_dir(dir.to_path_buf());
     wall.patch = patch;
-    wall.swap_engine();
+    wall.swap_engine(false);
     land(&wall, &mut engine);
     (wall, engine)
 }
@@ -403,7 +403,7 @@ fn taking_wall(dir: &std::path::Path) -> (Wall, Engine, tempfile::TempDir) {
         .plug("vco1.out", "loop1.left", None, None)
         .unwrap();
     wall.patch.turn("loop1", "bars", 1.0, Some(0.0)).unwrap();
-    wall.swap_engine();
+    wall.swap_engine(false);
     land(&wall, &mut engine);
     (wall, engine, state_dir)
 }
@@ -609,7 +609,7 @@ fn a_snapshot_reports_loop_seams_and_paused_checkpoints() {
     let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
     wall.loops = Loops::with_reels_dir(dir.path().to_path_buf());
     wall.patch = patch;
-    wall.swap_engine();
+    wall.swap_engine(false);
     land(&wall, &mut engine);
     wall.loops.wait_install_for_test();
     render(&mut engine, 4_096);
@@ -645,7 +645,7 @@ fn a_snapshot_reports_loop_seams_and_paused_checkpoints() {
     let mut record = wall.patch.loop_record("loop2").unwrap().clone();
     record.tape.as_mut().unwrap().anchor = 8.0;
     wall.patch.set_loop("loop2", record).unwrap();
-    wall.swap_engine();
+    wall.swap_engine(false);
     land(&wall, &mut engine);
     wall.loops.wait_install_for_test();
     render(&mut engine, 4_096);

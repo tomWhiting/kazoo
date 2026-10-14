@@ -412,7 +412,7 @@ impl Wall {
 
     /// Complete tree requests without waiting; expired requests are answered once.
     pub fn tree_answers(&mut self, now: Instant) -> Vec<(u64, Result<Outcome, WallError>)> {
-        let mut replies = Vec::new();
+        let mut replies = self.desk_go_answers(now);
         for (ticket, _, answer) in std::mem::take(&mut self.tree_answered) {
             let Some(mut waiting) = self.tree_waiting.remove(&ticket) else {
                 continue;
@@ -437,7 +437,15 @@ impl Wall {
             if let Err(err) = &result {
                 self.refund_tree(&waiting, err, false);
             }
-            replies.push((ticket, result));
+            match result {
+                Ok(outcome)
+                    if self.on_desk()
+                        && matches!(waiting.what, Asked::Go { .. } | Asked::Back { .. }) =>
+                {
+                    self.wait_for_desk_tempo(ticket, outcome);
+                }
+                other => replies.push((ticket, other)),
+            }
         }
         let expired: Vec<_> = self
             .tree_waiting

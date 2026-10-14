@@ -1,5 +1,16 @@
 use super::{Wall, What};
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+const TEMPO_THRESHOLD: f64 = 0.05;
+const GESTURE_GAP: Duration = Duration::from_secs(2);
+
+#[derive(Debug)]
+struct Gesture {
+    from: f64,
+    to: f64,
+    moved: Instant,
+}
 
 #[derive(Debug, Default)]
 pub(super) struct DeskTempo {
@@ -9,6 +20,7 @@ pub(super) struct DeskTempo {
     /// again has heard no move: the desk may not have applied an ask yet.
     heard: Option<f64>,
     asked: VecDeque<f64>,
+    gesture: Option<Gesture>,
 }
 
 impl DeskTempo {
@@ -24,11 +36,17 @@ impl DeskTempo {
         self.last = None;
         self.heard = None;
         self.asked.clear();
+        self.gesture = None;
     }
 }
 
 impl Wall {
     pub(super) fn sync_desk_tempo(&mut self, bpm: f64) {
+        self.sync_desk_tempo_at(bpm, Instant::now());
+    }
+
+    pub(super) fn sync_desk_tempo_at(&mut self, bpm: f64, now: Instant) {
+        self.settle_desk_tempo(now);
         if !bpm.is_finite()
             || self
                 .desk_tempo
@@ -43,27 +61,61 @@ impl Wall {
             .desk_tempo
             .asked
             .iter()
-            .rposition(|asked| (*asked - bpm).abs() <= 0.01);
+            .rposition(|asked| (*asked - bpm).abs() <= TEMPO_THRESHOLD);
         if let Some(position) = requested {
             drop(self.desk_tempo.asked.drain(..=position));
             return;
         }
         self.desk_tempo.asked.clear();
-        if (bpm - from).abs() > 0.01 {
+        if self.desk_tempo.gesture.is_some() || (bpm - from).abs() > TEMPO_THRESHOLD {
             self.desk_tempo.last = Some(bpm);
+            if let Some(gesture) = self.desk_tempo.gesture.as_mut() {
+                gesture.to = bpm;
+                gesture.moved = now;
+            } else {
+                self.desk_tempo.gesture = Some(Gesture {
+                    from,
+                    to: bpm,
+                    moved: now,
+                });
+            }
+        }
+        if self.desk_tempo.last.is_none() {
+            self.desk_tempo.last = Some(from);
+        }
+    }
+
+    pub(super) fn settle_desk_tempo(&mut self, now: Instant) {
+        if self
+            .desk_tempo
+            .gesture
+            .as_ref()
+            .is_some_and(|gesture| now.saturating_duration_since(gesture.moved) >= GESTURE_GAP)
+        {
+            self.finish_desk_tempo();
+        }
+    }
+
+    pub(super) fn finish_desk_tempo(&mut self) {
+        if let Some(gesture) = self.desk_tempo.gesture.take() {
             let paid = self.commit_own(
                 "desk",
                 What::Tempo {
-                    from,
-                    to: bpm,
+                    from: gesture.from,
+                    to: gesture.to,
                     desk: true,
                 },
             );
             self.tell_paid(paid.into_iter().collect());
         }
-        if self.desk_tempo.last.is_none() {
-            self.desk_tempo.last = Some(from);
-        }
+    }
+
+    pub(super) fn desk_kept_tempo(&mut self, bpm: f64) {
+        self.desk_tempo.asked.clear();
+        self.desk_tempo.heard = None;
+        self.desk_tempo.last = Some(self.patch.tempo);
+        self.sync_desk_tempo(bpm);
+        self.finish_desk_tempo();
     }
 }
 

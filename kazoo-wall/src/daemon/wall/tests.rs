@@ -381,7 +381,7 @@ fn a_wall_just_put_up_is_measured_before_it_takes_more() {
     assert!(!health.measuring && !health.refusing);
     assert_eq!(health.load_guard, Some(f64::from(LOAD_GUARD)));
     // Another wall put up is measured afresh.
-    wall.swap_engine();
+    wall.swap_engine(false);
     assert!(wall.snapshot().engine.unwrap().measuring);
     assert_eq!(code(ask(&mut wall, &add("mix"))), ErrorCode::SlowDown);
 }
@@ -4169,8 +4169,10 @@ fn on_the_desk_a_load_is_not_changed_by_the_desks_tempo() {
         Some(store),
     );
     load_save(&mut wall, "slow").unwrap();
-    // The tick takes the desk's tempo into the wall's saved tempo.
-    wall.tick(Instant::now());
+    // A settled desk gesture takes its tempo into the wall's saved tempo.
+    let now = Instant::now();
+    wall.tick(now);
+    wall.tick(now + Duration::from_secs(2));
     assert!(
         (wall.patch().tempo - 120.0).abs() < 1e-9,
         "{}",

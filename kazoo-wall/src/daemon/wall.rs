@@ -544,6 +544,7 @@ pub struct Wall {
     moved_to: Option<crate::protocol::TreePlace>,
     pub tree_answered: Vec<crate::tree::thread::TreeAnswer>,
     tree_waiting: BTreeMap<u64, moments::Waiting>,
+    desk_go_waiting: BTreeMap<u64, go_tempo::Waiting>,
     next_tree_ticket: u64,
     mark_buckets: HashMap<String, Bucket>,
     tree_buckets: HashMap<String, Bucket>,
@@ -1373,6 +1374,7 @@ impl Wall {
             engine,
             clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
             desk_tempo: tempo_sync::DeskTempo::default(),
+            desk_go_waiting: BTreeMap::new(),
             desk,
             log: history.into_iter().skip(skip).collect(),
             next_seq,
@@ -1583,7 +1585,7 @@ impl Wall {
     /// [`Command::Hush`]). The engine's clock, the desk link and a
     /// recording under way carry on through it; the wall's own tempo
     /// becomes the patch's, unless the desk keeps the tempo.
-    fn swap_engine(&mut self) {
+    fn swap_engine(&mut self, ask_desk: bool) {
         self.engine.begin_swap();
         self.engine.send(Command::Hush);
         self.rack.empty();
@@ -1616,6 +1618,12 @@ impl Wall {
         self.send_tables();
         if !self.on_desk() {
             self.engine.send(Command::Tempo(self.patch.tempo));
+        } else if ask_desk {
+            self.desk_tempo.asked(self.patch.tempo);
+            self.engine.send(Command::DeskTempo {
+                bpm: self.patch.tempo,
+                seq: self.patch.last_seq,
+            });
         }
         self.engine.send(Command::Unhush);
         self.engine.end_swap();
@@ -2087,7 +2095,8 @@ impl Wall {
                 }
             }
             // The patch is the new wall already.
-            What::Load { .. } | What::Go { .. } => self.swap_engine(),
+            What::Load { .. } => self.swap_engine(false),
+            What::Go { .. } => self.swap_engine(true),
         }
     }
 
@@ -2651,6 +2660,9 @@ impl Wall {
         request: &Request,
         now: Instant,
     ) -> Result<Outcome, WallError> {
+        if request.is_change() {
+            self.finish_desk_tempo();
+        }
         if request.is_change() {
             let bucket = self
                 .buckets
@@ -3445,6 +3457,7 @@ impl Wall {
             // so the tick after the ask hears nothing new until the desk
             // answers it.
             self.sync_desk_tempo(from);
+            self.finish_desk_tempo();
         }
         // The log first: the desk is asked only once the change is in it,
         // so a tempo the log cannot take never moves the desk (whose tempo
@@ -3961,6 +3974,10 @@ impl Wall {
         }
         let warning = self.load_room_as(console, &incoming, source, &mut notes)?;
         let how = source.how();
+        if matches!(source, Source::Moment { .. } | Source::Back { .. }) && self.on_desk() {
+            self.sync_desk_tempo(clamp_bpm(self.engine.shared().bpm()));
+        }
+        self.finish_desk_tempo();
         // The daemon's own changes owed to the log go first (they take
         // their numbers before this one), or nothing is replaced.
         self.pay_owed()?;
@@ -3970,7 +3987,7 @@ impl Wall {
             self.engine.sample_rate(),
             &backup.name,
         ));
-        let playing = self.playing_after(&incoming, &mut notes);
+        let playing = self.tempo_after_go(&incoming, source, &mut notes);
         let incoming_print = Print::of(&incoming);
         let what = source.replacement(&backup, &incoming, playing, console);
         // The wall put up starts a clock line with this change. Should the
@@ -4410,6 +4427,7 @@ impl Wall {
     /// and `patch.json` stays where the log is, so the next start numbers
     /// on from what was written and nothing told is ever numbered again.
     pub fn close(&mut self, now: Instant) -> Vec<Event> {
+        self.finish_desk_tempo();
         self.save(now);
         self.finish_tree();
         if !self.owed.is_empty() {
@@ -4975,9 +4993,10 @@ impl Wall {
         if self.desk.as_ref().is_some_and(HubLink::is_connected) {
             let bpm = self.engine.shared().bpm();
             if bpm.is_finite() {
-                self.sync_desk_tempo(clamp_bpm(bpm));
+                self.sync_desk_tempo_at(clamp_bpm(bpm), now);
             }
         } else {
+            self.finish_desk_tempo();
             self.desk_tempo.disconnected();
         }
         self.take_readings(now);
@@ -5270,4 +5289,5 @@ mod tests;
 #[cfg(test)]
 mod clock_tests;
 
+mod go_tempo;
 mod tempo_sync;

@@ -16,9 +16,11 @@ fn the_wall_logs_the_desks_tempo() {
     }
     let before = commits(&tree).len();
     wall.tick(Instant::now());
-    sync(&mut stream, 100.0);
-    hear(&wall, &mut engine, 100.0);
-    let events = wall.tick(Instant::now());
+    sync(&mut stream, 96.0);
+    hear(&wall, &mut engine, 96.0);
+    let now = Instant::now();
+    assert!(wall.tick(now).is_empty());
+    let events = wall.tick(now + Duration::from_secs(2));
     let changes: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
@@ -32,14 +34,11 @@ fn the_wall_logs_the_desks_tempo() {
         changes[0].what,
         What::Tempo {
             from: 120.0,
-            to: 100.0,
+            to: 96.0,
             desk: true
         }
     );
-    assert_eq!(
-        changes[0].summary,
-        "the desk set the tempo 120 BPM → 100 BPM"
-    );
+    assert_eq!(changes[0].summary, "the desk moved the tempo to 96 BPM");
     assert!(wall.tick(Instant::now()).is_empty());
     while wall.snapshot().tree.unwrap().through != Some(1) {
         wall.wait_for_tree();
@@ -50,8 +49,186 @@ fn the_wall_logs_the_desks_tempo() {
         after
             .first()
             .unwrap()
-            .contains("the desk set the tempo 120 BPM → 100 BPM")
+            .contains("the desk moved the tempo to 96 BPM")
     );
+    let output = crate::tree::git::git_command("show", Some(&tree))
+        .arg("HEAD:wall.toml")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let saved: toml::Value = toml::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(
+        saved["tempo"].as_float().unwrap().to_bits(),
+        96.0_f64.to_bits()
+    );
+}
+
+#[test]
+fn a_desk_drag_is_one_change_with_the_first_before_and_last_after() {
+    let (mut wall, _engine) = wall();
+    wall.patch.tempo = 120.0;
+    let now = Instant::now();
+    for step in 1_u32..=30 {
+        let bpm = (f64::from(step) / 30.0).mul_add(-20.0, 120.0);
+        wall.sync_desk_tempo_at(bpm, now + Duration::from_millis(u64::from(step) * 50));
+        assert!(wall.log.is_empty(), "a drag was committed before it ended");
+    }
+    wall.settle_desk_tempo(now + Duration::from_millis(3_500));
+    assert_eq!(wall.log.len(), 1);
+    assert_eq!(wall.log[0].seat, "desk");
+    assert_eq!(
+        wall.log[0].what,
+        What::Tempo {
+            from: 120.0,
+            to: 100.0,
+            desk: true
+        }
+    );
+}
+
+#[test]
+fn a_desk_move_of_less_than_point_zero_five_is_not_logged() {
+    let (mut wall, _engine) = wall();
+    wall.patch.tempo = 120.0;
+    wall.sync_desk_tempo(120.02);
+    wall.tick(Instant::now() + Duration::from_secs(2));
+    assert!(wall.log.is_empty());
+    assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
+}
+
+#[test]
+fn a_linked_go_asks_at_its_landing_bar_and_reports_a_refusal() {
+    linked_go(false);
+    linked_go(true);
+}
+
+fn go_wall(dir: &std::path::Path) -> (Wall, Engine, std::os::unix::net::UnixStream, String) {
+    let (link, (audio, stream)) = a_desk(dir, 120.0);
+    let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 3.4), Some(audio));
+    let mut patch = seed().unwrap();
+    patch.tempo = 96.0;
+    let mut wall = Wall::new(
+        patch,
+        control,
+        Some(link),
+        Vec::new(),
+        Some(Store::peek(dir).unwrap()),
+    );
+    let tree = dir.join("tree");
+    crate::tree::git::plant(&tree).unwrap();
+    wall.find_tree(&tree);
+    while wall.snapshot().tree.unwrap().through != Some(0) {
+        wall.wait_for_tree();
+    }
+    let output = crate::tree::git::git_command("rev-parse", Some(&tree))
+        .arg("HEAD")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let moment = String::from_utf8(output.stdout).unwrap().trim().to_string();
+    (wall, engine, stream, moment)
+}
+
+fn linked_go(accept: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut wall, mut engine, mut stream, moment) = go_wall(dir.path());
+    wall.request("Tom", &turn("vcf1", "cutoff", 1000.0), Instant::now())
+        .unwrap();
+    let now = Instant::now();
+    let ticket = wall
+        .request("Tom", &Request::Go { moment }, now)
+        .unwrap()
+        .pending
+        .unwrap();
+    while wall.swaps_sent == 0 {
+        wall.tree_test_wait();
+        let answers = wall.tree_answers(now);
+        assert!(
+            answers.is_empty(),
+            "the go answered before the desk was asked: {answers:?}"
+        );
+    }
+    assert_eq!(wall.engine.shared().unhushed(), 0);
+    let desk_changes = wall
+        .log
+        .iter()
+        .filter(|change| change.seat == "desk")
+        .count();
+    let mut reader = stream.try_clone().unwrap();
+    let (sent, received) = std::sync::mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        use kazoo_core::ipc::protocol::FrameBuffer;
+        use kazoo_core::ipc::types::{MSG_TRANSPORT_REQUEST, TransportRequestMsg};
+        let mut frame = FrameBuffer::new();
+        loop {
+            let header = frame.read_frame(&mut reader).unwrap();
+            if header.msg_type == MSG_TRANSPORT_REQUEST {
+                let request = TransportRequestMsg::decode(frame.payload());
+                sent.send(request.requested_bpm).unwrap();
+                break;
+            }
+        }
+    });
+    assert!(matches!(
+        received.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    let before = assert_no_alloc::violation_count();
+    assert_no_alloc::assert_no_alloc(|| land(&wall, &mut engine));
+    assert_eq!(assert_no_alloc::violation_count(), before);
+    assert_eq!(
+        wall.engine.shared().desk_tempo_reply(wall.patch.last_seq),
+        Some(Ok(()))
+    );
+    assert_eq!(received.recv().unwrap().to_bits(), 96.0_f32.to_bits());
+    reading.join().unwrap();
+    assert_eq!(wall.engine.shared().origin().to_bits(), 4.0_f64.to_bits());
+    let bpm = if accept { 96.0 } else { 120.0 };
+    sync(&mut stream, bpm);
+    if accept {
+        hear(&wall, &mut engine, f64::from(bpm));
+    }
+    let first = wall.tree_answers(now);
+    let answers = if accept {
+        first
+    } else {
+        assert!(first.is_empty());
+        wall.tree_answers(now + Duration::from_secs(1))
+    };
+    let result = answers
+        .into_iter()
+        .find(|(id, _)| *id == ticket)
+        .unwrap()
+        .1
+        .unwrap();
+    let loaded: LoadResult = serde_json::from_value(result.result).unwrap();
+    if accept {
+        assert!(
+            !loaded
+                .notes
+                .iter()
+                .any(|note| note.contains("the desk kept"))
+        );
+        assert_eq!(
+            wall.log
+                .iter()
+                .filter(|change| change.seat == "desk")
+                .count(),
+            desk_changes
+        );
+        assert_eq!(wall.patch.tempo.to_bits(), 96.0_f64.to_bits());
+    } else {
+        assert!(
+            loaded
+                .notes
+                .iter()
+                .any(|note| note == "the desk kept 120 BPM; this moment was made at 96 BPM"),
+            "{:?}",
+            loaded.notes
+        );
+        assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
+    }
+    wall.close(now);
 }
 
 fn commits(tree: &std::path::Path) -> Vec<String> {
@@ -83,18 +260,18 @@ fn a_wall_asked_tempo_is_logged_once() {
     let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
     wall.tick(Instant::now());
     let change = wall
-        .request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
+        .request("Tom", &Request::Tempo { bpm: 110.0 }, Instant::now())
         .unwrap()
         .change
         .unwrap();
-    assert_eq!(change.summary, "Tom asked the desk for 100 BPM");
+    assert_eq!(change.summary, "Tom asked the desk for 110 BPM");
     let mut frame = FrameBuffer::new();
     assert_eq!(
         frame.read_frame(&mut stream).unwrap().msg_type,
         MSG_TRANSPORT_REQUEST
     );
-    sync(&mut stream, 100.0);
-    hear(&wall, &mut engine, 100.0);
+    sync(&mut stream, 110.0);
+    hear(&wall, &mut engine, 110.0);
     let events = wall.tick(Instant::now());
     assert!(
         !events
@@ -102,7 +279,7 @@ fn a_wall_asked_tempo_is_logged_once() {
             .any(|event| matches!(event, Event::Change { .. }))
     );
     assert_eq!(wall.log.len(), 1);
-    assert_eq!(wall.patch.tempo.to_bits(), 100.0_f64.to_bits());
+    assert_eq!(wall.patch.tempo.to_bits(), 110.0_f64.to_bits());
 }
 
 #[test]
@@ -110,9 +287,11 @@ fn a_first_sync_and_a_restarted_desk_are_logged() {
     let (mut wall, _engine) = wall();
     wall.patch.tempo = 96.0;
     wall.sync_desk_tempo(100.0);
+    wall.finish_desk_tempo();
     assert_eq!(wall.log.len(), 1);
     wall.desk_tempo.disconnected();
     wall.sync_desk_tempo(120.0);
+    wall.finish_desk_tempo();
     assert_eq!(wall.log.len(), 2);
     assert_eq!(
         wall.log.back().unwrap().what,
@@ -126,6 +305,10 @@ fn a_first_sync_and_a_restarted_desk_are_logged() {
     assert_eq!(wall.log.len(), 2);
     assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
     wall.sync_desk_tempo(120.02);
+    wall.finish_desk_tempo();
+    assert_eq!(wall.log.len(), 2);
+    wall.sync_desk_tempo(120.06);
+    wall.finish_desk_tempo();
     assert_eq!(wall.log.len(), 3);
 }
 
@@ -166,6 +349,7 @@ fn a_desk_change_before_the_asked_tick_starts_from_the_logged_tempo() {
     wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
         .unwrap();
     wall.sync_desk_tempo(105.0);
+    wall.finish_desk_tempo();
     assert_eq!(wall.log.len(), 2);
     assert_eq!(
         wall.log.back().unwrap().what,
@@ -190,6 +374,7 @@ fn the_desk_race_log_replays_through_rings_without_a_mismatch() {
     wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
         .unwrap();
     wall.sync_desk_tempo(105.0);
+    wall.finish_desk_tempo();
     let state = dir.path().join("state");
     std::fs::create_dir_all(state.join("saves")).unwrap();
     std::fs::write(
@@ -221,6 +406,7 @@ fn the_patch_tempo_waits_for_the_desk_change_to_be_logged() {
     wall.patch.tempo = 120.0;
     fail_once(&mut wall, FailAt::AppendLog);
     wall.sync_desk_tempo(100.0);
+    wall.finish_desk_tempo();
     assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
     assert_eq!(wall.owed.len(), 1);
     wall.pay_owed().unwrap();
@@ -235,6 +421,7 @@ fn a_matched_desk_report_does_not_rewind_the_latest_logged_ask() {
     wall.desk_tempo.asked(110.0);
     wall.sync_desk_tempo(100.0);
     wall.sync_desk_tempo(105.0);
+    wall.finish_desk_tempo();
     assert_eq!(
         wall.log.back().unwrap().what,
         What::Tempo {
@@ -273,6 +460,7 @@ fn a_subthreshold_first_sync_keeps_the_next_log_continuous() {
     wall.sync_desk_tempo(120.005);
     assert!(wall.log.is_empty());
     wall.sync_desk_tempo(125.0);
+    wall.finish_desk_tempo();
     assert_eq!(
         wall.log.back().unwrap().what,
         What::Tempo {
