@@ -281,7 +281,7 @@ fn the_fx_panel_shows_the_chain_and_the_selected_slots_knobs() {
     let mut app = App::new(QuantiseSettings::default(), false);
     app.focus = Focus::Fx;
     app.selected_slot = Slot::Delay;
-    app.accepted.fx.slots[0].on = true;
+    app.accepted.fx.slots[Slot::Megaphone as usize].on = true;
     let screen = text(&render(&app, &Display::new(RATE), 120, 40, Instant::now()));
     let mut previous = 0;
     for name in [
@@ -552,4 +552,26 @@ fn an_idle_effect_shows_flat() {
     }
     let (before, after) = read();
     assert!((before - after).abs() > 0.000_01);
+}
+
+#[test]
+fn harmony_effect_panel_keys_fit_without_cut_words() {
+    use crate::controls::Focus;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    for (width, expected) in [
+        (
+            80,
+            "[ ] effect · ↑↓ row · ←→ change · b on/off · { } move · d default",
+        ),
+        (40, "[ ] effect · ←→ change · b on/off"),
+        (20, "[ ] effect"),
+    ] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 18)).unwrap();
+        terminal
+            .draw(|frame| super::board::effects(frame, frame.area(), &app))
+            .unwrap();
+        let screen = text(terminal.backend().buffer());
+        assert!(screen.contains(expected), "width {width}: {screen}");
+    }
 }

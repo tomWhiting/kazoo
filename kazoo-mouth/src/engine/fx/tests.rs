@@ -111,7 +111,7 @@ fn each_slot_is_its_kazoo_fx_kind() {
     let input = saw(RATE as usize);
     for slot in Slot::ALL {
         for kind in 0..slot.ids().len() {
-            let description = kazoo_fx::find(slot.ids()[kind]).unwrap();
+            let description = slot.kind(kind).unwrap();
             let mut effect = (description.build)();
             effect.prepare(RATE as f32);
             effect.set_seed(slot.seed(kind));
@@ -208,7 +208,7 @@ fn the_megaphone_is_the_radios_horn() {
             .position(|spec| spec.name == name)
             .unwrap();
         assert_eq!(
-            settings.slots[0].values[0][index].to_bits(),
+            settings.slots[Slot::Megaphone as usize].values[0][index].to_bits(),
             expected.to_bits()
         );
     }
@@ -258,9 +258,13 @@ fn switching_on_and_off_never_clicks() {
         }
         assert!(
             output.iter().all(|side| max_step(side) <= limit),
-            "{}: {} > {limit}",
+            "{}: {} > {limit}, peak {:?}",
             slot.name(),
-            max_step(&output[0])
+            max_step(&output[0]),
+            output[0]
+                .windows(2)
+                .enumerate()
+                .max_by(|a, b| (a.1[1] - a.1[0]).abs().total_cmp(&(b.1[1] - b.1[0]).abs()))
         );
     }
 }
@@ -538,7 +542,7 @@ fn a_reorder_swaps_without_a_click() {
         assert!((output[side][0] - warm[side][23_999]).abs() <= limit);
         assert!(max_step(&output[side]) <= limit);
     }
-    chain.reorder([Slot::Delay; 5], &stats);
+    chain.reorder([Slot::Delay; Slot::ALL.len()], &stats);
     assert_eq!(chain.order, order);
     assert_eq!(stats.fx_refused.load(Ordering::Relaxed), 1);
 }
@@ -705,7 +709,7 @@ fn parameters_are_kept_for_each_kind_and_invalid_commands_are_counted() {
     chain.kind(Slot::Distortion, 0, &stats);
     render(&mut chain, &sine(1024), 120.0, &stats);
     assert_eq!(
-        chain.pedals[1].kinds[0].values[index].to_bits(),
+        chain.pedals[Slot::Distortion as usize].kinds[0].values[index].to_bits(),
         value.to_bits()
     );
     chain.kind(Slot::Distortion, u8::MAX, &stats);
@@ -752,4 +756,172 @@ fn a_transport_change_lands_on_its_frame_and_stopping_clears_the_beat() -> Resul
     assert_eq!(rig.engine.stats.desk_lost.load(Ordering::Relaxed), 1);
     rig.finish();
     Ok(())
+}
+
+fn harmony_slot() -> Slot {
+    Slot::ALL
+        .into_iter()
+        .find(|slot| slot.name() == "harmony")
+        .unwrap()
+}
+
+fn amplitude(samples: &[f32], hz: f32) -> f32 {
+    let (sin, cos) = samples
+        .iter()
+        .enumerate()
+        .fold((0.0, 0.0), |(sin, cos), (i, x)| {
+            let phase = TAU * hz * i as f32 / RATE as f32;
+            (x.mul_add(phase.sin(), sin), x.mul_add(phase.cos(), cos))
+        });
+    2.0 * sin.hypot(cos) / samples.len() as f32
+}
+
+#[test]
+fn harmony_intervals_and_octaves_spectrum() {
+    let slot = harmony_slot();
+    for (preset, shift, hz) in [
+        (0.0, -12.0, 110.0),
+        (1.0, 12.0, 440.0),
+        (4.0, 7.0, 329.627_56),
+    ] {
+        let mut settings = only(slot, 0);
+        param(&mut settings, slot, 0, "preset", preset);
+        param(&mut settings, slot, 0, "dry", -60.0);
+        param(&mut settings, slot, 0, "voice 1 shift", shift);
+        param(&mut settings, slot, 0, "voice 1 level", 0.0);
+        param(&mut settings, slot, 0, "voice 2 level", -60.0);
+        let output = render(
+            &mut chain(&settings),
+            &sine(RATE as usize * 2),
+            120.0,
+            &Stats::default(),
+        );
+        let window = &output[0][RATE as usize..];
+        assert!(
+            amplitude(window, hz) > AMP * 0.5,
+            "{hz}: shifted fundamental is too quiet"
+        );
+        let peak = (0..=200)
+            .map(|i| hz * (i as f32).mul_add(0.0002, 0.98))
+            .max_by(|a, b| amplitude(window, *a).total_cmp(&amplitude(window, *b)))
+            .unwrap();
+        assert!((peak / hz - 1.0).abs() < 0.01, "{peak} != {hz}");
+    }
+    let output = render(
+        &mut chain(&only(slot, 0)),
+        &sine(RATE as usize * 2),
+        120.0,
+        &Stats::default(),
+    );
+    for (hz, db) in [(110.0, 0.0), (220.0, 0.0), (440.0, -3.0)] {
+        let actual = 20.0 * (amplitude(&output[0][RATE as usize..], hz) / AMP).log10();
+        assert!(
+            (actual - db).abs() <= 3.0,
+            "{hz}: {actual} dB expected {db}"
+        );
+    }
+}
+
+#[test]
+fn harmony_all_voices_allocate_nothing_and_recover_from_nonfinite() {
+    let slot = harmony_slot();
+    let mut settings = only(slot, 0);
+    param(&mut settings, slot, 0, "voice 3 level", -6.0);
+    let mut chain = chain(&settings);
+    let stats = Stats::default();
+    let mut left = [0.0; BLOCK];
+    let mut right = [0.0; BLOCK];
+    let input = sine(BLOCK);
+    let before = assert_no_alloc::violation_count();
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1000 {
+            chain.process(
+                Context { bpm: 120.0 },
+                &input,
+                [&mut left, &mut right],
+                &stats,
+            );
+        }
+    });
+    assert_eq!(before, assert_no_alloc::violation_count());
+    let mut fresh = super::tests::chain(&settings);
+    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        fresh.process(
+            Context { bpm: 120.0 },
+            &[value; BLOCK],
+            [&mut left, &mut right],
+            &stats,
+        );
+        assert!(left.iter().chain(&right).all(|x| *x == 0.0));
+    }
+    let output = render(&mut fresh, &sine(RATE as usize), 120.0, &stats);
+    assert!(output.iter().flatten().all(|x| x.is_finite()));
+    assert!(output[0].iter().any(|x| x.abs() > 0.1));
+    fresh.process(
+        Context { bpm: 120.0 },
+        &[f32::NAN; BLOCK],
+        [&mut left, &mut right],
+        &stats,
+    );
+    assert!(left.iter().chain(&right).all(|x| *x == 0.0));
+}
+
+#[test]
+fn harmony_cost_per_block() {
+    use std::time::Instant;
+    let slot = harmony_slot();
+    let input: [f32; BLOCK] =
+        std::array::from_fn(|i| (TAU * 220.0 * i as f32 / RATE as f32).sin() * AMP);
+    let stats = Stats::default();
+    let mut left = [0.0; BLOCK];
+    let mut right = [0.0; BLOCK];
+    let context = Context { bpm: 120.0 };
+    let blocks = if cfg!(debug_assertions) { 32 } else { 1000 };
+    for voices in 0..=3 {
+        let mut settings = FxSettings::default();
+        for saved in &mut settings.slots {
+            saved.on = true;
+        }
+        settings.slots[slot as usize].on = voices > 0;
+        for index in 0..3 {
+            param(
+                &mut settings,
+                slot,
+                0,
+                ["voice 1 level", "voice 2 level", "voice 3 level"][index],
+                if index < voices { 0.0 } else { -60.0 },
+            );
+        }
+        let mut chain = chain(&settings);
+        let description = slot.kind(0).unwrap();
+        let mut harmony = (description.build)();
+        harmony.prepare(RATE as f32);
+        for (index, value) in settings.slots[slot as usize].values[0]
+            .iter()
+            .take(description.params.len())
+            .enumerate()
+        {
+            harmony.set_param(index, *value);
+        }
+        harmony.reset();
+        for _ in 0..100 {
+            chain.process(context, &input, [&mut left, &mut right], &stats);
+            harmony.process(&context, [&input, &input], [&mut left, &mut right]);
+        }
+        let start = Instant::now();
+        for _ in 0..blocks {
+            chain.process(context, &input, [&mut left, &mut right], &stats);
+        }
+        let chain_us = start.elapsed().as_secs_f64() * 1_000_000.0 / f64::from(blocks);
+        let start = Instant::now();
+        for _ in 0..blocks {
+            harmony.process(&context, [&input, &input], [&mut left, &mut right]);
+        }
+        let harmony_us = start.elapsed().as_secs_f64() * 1_000_000.0 / f64::from(blocks);
+        println!(
+            "voices={voices} harmony_us={harmony_us:.3} chain_us={chain_us:.3} block_us=2666.667 harmony_percent={:.2}",
+            harmony_us / 2666.667 * 100.0
+        );
+        assert!(left.iter().chain(&right).all(|x| x.is_finite()));
+    }
 }
