@@ -123,7 +123,8 @@ impl Gate {
         };
         self.pitch = [self.pitch[1], current];
         let onset = self.high
-            && (!was_high || (ready && (rise >= self.settings.onset_rise_db || paired || jump)));
+            && ready
+            && (!was_high || rise >= self.settings.onset_rise_db || paired || jump);
         if onset {
             self.last_onset = Some(at);
             self.flux = None;

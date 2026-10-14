@@ -991,3 +991,8 @@ Fix-run measurements and remaining conflicts: `target/kz-logs/r02-fix-bench.md`.
 
 The amendment, motion/DC mechanism, red receipts and unchanged numerical limits
 are recorded in [KZ-R02-run3-measurements.md](KZ-R02-run3-measurements.md).
+
+## KZ-R02 fix run 4
+
+The final bass-only reacquisition, regression receipts and remaining limits are
+recorded in [KZ-R02-run4-measurements.md](KZ-R02-run4-measurements.md).

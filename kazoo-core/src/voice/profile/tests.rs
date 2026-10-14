@@ -271,9 +271,11 @@ fn slides_bends_and_vibrato_are_not_onsets() {
             assert_eq!(onsets.len(), 1, "{profile:?} {name}: {onsets:?}");
             let pluck = take.onsets[0];
             let hz = truth_at(take, pluck + SCORE_STEP).expect("first pluck truth");
+            let latency_ms = (onsets[0].at - pluck as u64) as f32 / 48.0;
+            let limit_ms = 2000.0 / hz + 3.0;
             assert!(
-                onsets[0].at >= pluck as u64
-                    && (onsets[0].at - pluck as u64) as f32 / 48.0 <= 2000.0 / hz + 3.0
+                onsets[0].at >= pluck as u64 && latency_ms <= limit_ms,
+                "{profile:?} {name}: onset {latency_ms} ms, limit {limit_ms} ms"
             );
         }
     }

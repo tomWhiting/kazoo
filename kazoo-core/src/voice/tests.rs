@@ -427,3 +427,16 @@ fn the_rest_of_a_recovery_is_the_same_syllable() {
     }
     assert_eq!(onsets, 0, "one syllable, one onset");
 }
+
+#[test]
+fn a_gate_reopening_respects_the_onset_refractory_time() {
+    let mut gate = super::gate::Gate::new(48_000);
+    assert!(gate.frame(64, true, -12.0, -12.0).1);
+    for frame in 2..=12 {
+        assert!(!gate.frame(frame * 64, false, -70.0, -70.0).1);
+    }
+    let (high, onset) = gate.frame(13 * 64, true, -12.0, -12.0);
+    assert!(high);
+    assert!(!onset, "a recovered pitch is still the same articulation");
+    assert!(gate.frame(64 + 2880, true, -12.0, -30.0).1);
+}

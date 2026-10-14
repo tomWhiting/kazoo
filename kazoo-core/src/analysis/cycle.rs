@@ -78,6 +78,9 @@ const HINT_MATCH: f32 = 0.01;
 /// wild finite value (1e30) would otherwise hold the DC blocker and the peak
 /// follower far from the next note for seconds.
 const INPUT_LIMIT: f32 = 1.0;
+/// A six-dB pick attack reopens the long-release bass filter. Short-release
+/// instruments retain their marks, which already acquire their faster cycles.
+const PLUCK_RISE: f32 = 2.0;
 /// The NSDF window is half the candidate period, so a new note is read once
 /// 1.5 of its periods exist (a reading lands within two periods at any
 /// phase, since a mark comes every half period); a window never shrinks
@@ -271,6 +274,7 @@ pub struct CycleTracker {
     lp_second: f32,
     release: f32,
     peak: f32,
+    attack_peak: f32,
     previous: f32,
     armed_rising: bool,
     armed_falling: bool,
@@ -328,6 +332,7 @@ impl CycleTracker {
             lp_second: 0.0,
             release: (-1000.0 / (settings.peak_release_ms * rate)).exp(),
             peak: 0.0,
+            attack_peak: 0.0,
             previous: 0.0,
             armed_rising: false,
             armed_falling: false,
@@ -355,6 +360,20 @@ impl CycleTracker {
     /// allocates, locks or panics.
     pub fn push(&mut self, sample: f32) {
         let x = sanitize_sample(sample).clamp(-INPUT_LIMIT, INPUT_LIMIT);
+        let attack = (x - self.dc_previous).abs();
+        if self.centred_windows()
+            && self.settings.peak_release_ms > PEAK_RELEASE_MS
+            && self.estimate.is_some()
+            && self.attack_peak >= SILENCE_PEAK
+            && attack > PLUCK_RISE * self.attack_peak
+        {
+            self.unlock();
+            self.rising.clear();
+            self.falling.clear();
+            self.armed_rising = false;
+            self.armed_falling = false;
+        }
+        self.attack_peak = attack.max(self.attack_peak * self.release);
         let dc = sanitize_sample(self.dc_coefficient * (self.dc_output + x - self.dc_previous));
         self.dc_previous = x;
         self.dc_output = dc;
@@ -450,6 +469,7 @@ impl CycleTracker {
         self.lp_first = 0.0;
         self.lp_second = 0.0;
         self.peak = 0.0;
+        self.attack_peak = 0.0;
         self.previous = 0.0;
         self.armed_rising = false;
         self.armed_falling = false;
