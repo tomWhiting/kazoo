@@ -687,7 +687,7 @@ fn day_marks_take_no_place_another_glyph_or_word_would_have() {
     let days = days(&history, &zone);
     assert_eq!(days.len(), 1 + buds.len(), "the trunk and every bud");
     let (growth, gestures, line) = scene_parts(&history);
-    for scale in [0.5, 1.0, 1.5, 2.4] {
+    for scale in [0.5, 1.0, 1.5, 2.4, 3.0, 8.0] {
         let view = View {
             centre: growth.at[history.limbs[0].moments[18]].expect("placed"),
             scale,
@@ -717,4 +717,18 @@ fn day_marks_take_no_place_another_glyph_or_word_would_have() {
             assert_eq!(shown, without.text(), "scale {scale}");
         }
     }
+}
+
+#[test]
+fn a_day_hangs_its_words_only_beside_its_own_moments_glyph() {
+    // Its own glyph, or the selected mark of itself.
+    assert!(day_holds(Some(4), 4, None));
+    assert!(day_holds(None, 4, Some(4)));
+    // Another moment's glyph, even with the day's moment selected: its
+    // words there would read as that moment's day.
+    assert!(!day_holds(Some(9), 4, Some(4)));
+    assert!(!day_holds(Some(9), 4, None));
+    // A cell taken by a label, not a glyph, and the day not selected.
+    assert!(!day_holds(None, 4, None));
+    assert!(!day_holds(None, 4, Some(9)));
 }

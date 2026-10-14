@@ -1,5 +1,8 @@
 //! Canonical, durable commits through git's own importer.
 
+mod restart;
+pub(super) use restart::missing_changes;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::DirBuilderExt;
@@ -303,53 +306,87 @@ impl Commit {
             .timestamp();
         let json = serde_json::to_string(change)
             .map_err(|err| TreeError::Git(format!("change JSON: {err}")))?;
-        Ok(Self {
-            seat: change.seat.clone(),
-            unix,
-            message: format!(
+        // A batch sent is one knot with its note; an undo of one is said as
+        // the undo it is, like any other change, never as the batch again.
+        let message = if let (crate::protocol::What::Batch { note, changes }, None) =
+            (&change.what, change.undoes)
+        {
+            let mut message = format!(
+                "{}: {note}\n\n{}Kazoo-Note: {note}\n",
+                change.seat,
+                trailers("batch", change.seq, change.clock.as_ref(), None)
+            );
+            for step in changes {
+                message.push_str("Kazoo-Step: ");
+                message.push_str(&crate::change::describe(step));
+                message.push('\n');
+            }
+            message.push_str("Kazoo-Change: ");
+            message.push_str(&json);
+            message.push('\n');
+            message
+        } else {
+            format!(
                 "{}\n\n{}Kazoo-Change: {json}\n",
                 change.summary.replace(['\r', '\n'], " "),
                 trailers("change", change.seq, change.clock.as_ref(), None)
-            ),
+            )
+        };
+        Ok(Self {
+            seat: change.seat.clone(),
+            unix,
+            message,
             whole: false,
             files,
         })
     }
 
-    /// A start or gap commit holding the whole wall after change `seq`,
-    /// naming the changes after `through` it holds without their own
-    /// commits.
+    /// A whole-wall commit naming only logged changes missing from the tree.
     #[must_use]
     pub fn whole(
         kind: &str,
         seq: u64,
         clock: Option<&ClockStamp>,
         files: super::Files,
-        through: Option<u64>,
+        missing: &[u64],
     ) -> Self {
-        let previous = through.unwrap_or(0);
-        let gap = (seq > previous).then(|| (previous + 1, seq));
-        let summary = match (kind, gap, previous > seq) {
-            ("start", Some((first, last)), _) => format!(
-                "the wall started after change {seq}; the tree did not hold changes {first} to {last} one by one"
-            ),
-            ("start", None, true) => format!(
-                "the tree held changes up to {previous}; the wall started from change {seq}"
-            ),
-            ("start", None, false) => format!("the wall started after change {seq}"),
-            (_, Some((first, last)), _) => {
-                format!("the tree holds changes {first} to {last} as one commit")
+        let (names, gaps) = restart::describe(missing);
+        let summary = if missing.is_empty() {
+            if kind == "start" {
+                format!("the wall started again after change {seq}")
+            } else {
+                format!("the tree holds the wall after change {seq}")
             }
-            _ => format!("the tree holds the wall after change {seq}"),
+        } else if let [one] = missing {
+            format!("the tree holds change {one} as one commit")
+        } else {
+            format!("the tree holds changes {names} as one commit")
         };
         Self {
             seat: "kazoo-wall".into(),
             unix: chrono::Utc::now().timestamp(),
-            message: format!("{summary}\n\n{}", trailers(kind, seq, clock, gap)),
+            message: format!("{summary}\n\n{}{gaps}", trailers(kind, seq, clock, None)),
             whole: true,
             files: files.into_iter().map(|(p, b)| (p, Some(b))).collect(),
         }
     }
+}
+
+/// A ref name the tree's streams may write.
+fn valid_ref(name: &str) -> bool {
+    name.starts_with("refs/")
+        && !name.contains("..")
+        && !name.ends_with('/')
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'+' | b'=')
+        })
+}
+
+/// A mark `:N` (N from 1) or a full commit id.
+fn valid_source(from: &str) -> bool {
+    from.strip_prefix(':').is_some_and(|mark| {
+        !mark.is_empty() && mark.bytes().all(|b| b.is_ascii_digit()) && mark != "0"
+    }) || (from.len() == 40 && from.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// One `git fast-import` writing commits on the wall's branch.
@@ -438,10 +475,10 @@ impl Importer {
         self.write(format!("commit {}\nmark :{}\nauthor {} <{slug}@kazoo.invalid> {} +0000\ncommitter kazoo-wall <kazoo-wall@kazoo.invalid> {} +0000\ndata {}\n", self.branch, self.mark, c.seat, c.unix, c.unix, c.message.len()).as_bytes())?;
         self.write(c.message.as_bytes())?;
         self.write(b"\n")?;
-        if self.mark == 1 {
-            if let Some(tip) = self.tip.clone() {
-                self.write(format!("from {tip}\n").as_bytes())?;
-            }
+        // The first commit on a branch names its parent: the planted tip,
+        // or where `switch` grew the branch from.
+        if let Some(tip) = self.tip.take() {
+            self.write(format!("from {tip}\n").as_bytes())?;
         }
         if c.whole {
             self.write(b"deleteall\n")?;
@@ -473,19 +510,10 @@ impl Importer {
     ///
     /// Refuses an existing name, an invalid stream value, or a git failure.
     pub fn tag(&mut self, name: &str, from: &str) -> Result<(), TreeError> {
-        if !name.starts_with("refs/")
-            || name.contains("..")
-            || name.ends_with('/')
-            || !name.bytes().all(|b| {
-                b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'+' | b'=')
-            })
-        {
+        if !valid_ref(name) {
             return Err(TreeError::Git("invalid tree ref name".into()));
         }
-        let valid_from = from.strip_prefix(':').is_some_and(|mark| {
-            !mark.is_empty() && mark.bytes().all(|b| b.is_ascii_digit()) && mark != "0"
-        }) || (from.len() == 40 && from.bytes().all(|b| b.is_ascii_hexdigit()));
-        if !valid_from {
+        if !valid_source(from) {
             return Err(TreeError::Git("invalid tree ref source".into()));
         }
         let result =
@@ -503,6 +531,56 @@ impl Importer {
             )));
         }
         self.write(format!("reset {name}\nfrom {from}\n\n").as_bytes())
+    }
+
+    /// Write the next commits on the new branch `branch` in this same
+    /// stream, the first of them a child of `from` (a mark `:N` or a commit
+    /// id). Like every commit, it is durable only at the next checkpoint
+    /// or the finish, so one stream may grow several branches and name
+    /// them all at once.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` for a branch name or a source the stream cannot
+    /// take.
+    pub fn switch(&mut self, branch: &str, from: &str) -> Result<(), TreeError> {
+        if !branch.starts_with("refs/heads/") || !valid_ref(branch) {
+            return Err(TreeError::Git(format!("invalid tree branch {branch}")));
+        }
+        if !valid_source(from) {
+            return Err(TreeError::Git("invalid tree branch source".into()));
+        }
+        branch.clone_into(&mut self.branch);
+        self.tip = Some(from.into());
+        Ok(())
+    }
+
+    /// The commit id of mark `mark`, as the stream wrote it. Nothing is
+    /// made durable.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` when git does not answer with a commit id.
+    pub fn id(&mut self, mark: u64) -> Result<String, TreeError> {
+        if mark == 0 || mark > self.mark {
+            return Err(TreeError::Git(format!(
+                "mark {mark} is not a commit this stream wrote"
+            )));
+        }
+        self.write(format!("get-mark :{mark}\n").as_bytes())?;
+        let mut line = String::new();
+        match self.output.read_line(&mut line) {
+            Ok(0) => Err(self.failed("get-mark", "stdout ended")),
+            Ok(_) => {
+                let id = line.trim();
+                if id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    Ok(id.to_string())
+                } else {
+                    Err(self.failed("get-mark", format!("answered {id:?}")))
+                }
+            }
+            Err(err) => Err(self.failed("get-mark read", err)),
+        }
     }
 
     /// Make everything written durable, and require the branch to be at
@@ -599,3 +677,7 @@ impl Drop for Importer {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "batch_tests.rs"]
+mod batch_tests;

@@ -17,7 +17,7 @@ use super::super::theme::{
 use super::truncate;
 
 /// A popup `width` × `height` in the middle of `area`, cleared.
-fn popup(buf: &mut Buffer, area: Rect, width: u16, height: u16) -> Rect {
+pub(super) fn popup(buf: &mut Buffer, area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width.saturating_sub(4)).max(1);
     let height = height.min(area.height.saturating_sub(2)).max(1);
     let rect = Rect::new(
@@ -30,7 +30,7 @@ fn popup(buf: &mut Buffer, area: Rect, width: u16, height: u16) -> Rect {
     rect
 }
 
-fn frame(title: &str, colour: ratatui::style::Color) -> Block<'_> {
+pub(super) fn frame(title: &str, colour: ratatui::style::Color) -> Block<'_> {
     Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
@@ -119,6 +119,14 @@ const HELP: &[(&str, &str)] = &[
         "o",
         "the saves: load one (⏎ then y; the wall as it is is kept first, and z undoes the \
          load), delete one (d then y), start an empty wall (n then y); a shows the wall's own",
+    ),
+    (
+        "b",
+        "mark the moment the wall is at under a name (marks never move)",
+    ),
+    (
+        "B",
+        "the tree: j k say how far from the wall, ⏎ goes there, z undoes",
     ),
     (
         "m",
@@ -898,7 +906,7 @@ pub fn confirm_stop(buf: &mut Buffer, area: Rect) {
     );
 }
 
-fn question(buf: &mut Buffer, area: Rect, title: &str, lines: &[String], keys: &str) {
+pub(super) fn question(buf: &mut Buffer, area: Rect, title: &str, lines: &[String], keys: &str) {
     let height = u16::try_from(lines.len()).unwrap_or(4) + 5;
     let rect = popup(buf, area, 56, height);
     let mut text: Vec<Line<'_>> = vec![Line::from("")];

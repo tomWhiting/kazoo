@@ -1,10 +1,11 @@
 //! `kazoo tree`'s state and keys: a view panned and zoomed over the grown
 //! tree, a selected moment and what it says, and the help card.
 //!
-//! Reading the tree never changes the music unless asked: `g` puts the wall
-//! at the selected moment, and while following (`f`, on from the start)
-//! the wall goes wherever the selection comes to rest. Every go is undoable:
-//! the wall keeps itself as it was first.
+//! Reading the tree never changes the music unless asked: the arrows,
+//! clicks and Tab only look, saying how far the selected moment is from
+//! the wall; Enter (or `g`) puts the wall there, and only while following
+//! (`f`, off from the start) does the wall go wherever the selection comes
+//! to rest. Every go is undoable: the wall keeps itself as it was first.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -228,6 +229,7 @@ impl Grower {
         if let Some(problem) = self.ledger.problem() {
             history.problems.push(problem);
         }
+        history.problems.extend(self.growth.refused.iter().cloned());
         if self.ledger.unreadable > 0 {
             history.problems.push(format!(
                 "{} lines of the order the tree grew in did not read and were skipped",
@@ -273,7 +275,7 @@ impl App {
             quit: false,
             wants_reading: false,
             go: Go::Idle,
-            follow: Follow::On(None),
+            follow: Follow::Off,
             fire: crate::fire::Blaze::default(),
         };
         app.show(grown);
@@ -548,7 +550,7 @@ impl App {
                 self.help_top = 0;
             }
             KeyCode::Char('y') => self.copy_selected(),
-            KeyCode::Char('g') => self.go_now(),
+            KeyCode::Enter | KeyCode::Char('g') => self.go_now(),
             KeyCode::Char('b') => self.fire.toggle().clone_into(&mut self.said),
             KeyCode::Char('f') => {
                 self.follow = match self.follow {
@@ -558,7 +560,7 @@ impl App {
                 (if self.follow == Follow::On(None) {
                     "following: the wall goes where the selection rests"
                 } else {
-                    "not following: g puts the wall at the selected moment"
+                    "not following: Enter puts the wall at the selected moment"
                 })
                 .clone_into(&mut self.said);
             }
@@ -587,7 +589,7 @@ impl App {
                 Some(here) => self.select(here),
                 None => "the tree has no moment for the wall yet".clone_into(&mut self.said),
             },
-            KeyCode::Enter | KeyCode::Char('c') => self.centre_on_selected(),
+            KeyCode::Char('c') => self.centre_on_selected(),
             KeyCode::Char('r') => self.reload(),
             KeyCode::Char('v') => {
                 self.shown = match self.shown {
@@ -659,6 +661,38 @@ impl App {
     fn moved_to(&mut self, m: usize) {
         if let Follow::On(moved) = &mut self.follow {
             *moved = Some((Arc::clone(&self.history.moments[m].id), Instant::now()));
+        }
+    }
+
+    /// How far moment `m` is from the wall, along the tree, and what
+    /// Enter does there: worked out each time the details are drawn, so it
+    /// is right however the wall has moved since.
+    #[must_use]
+    pub fn whereabouts(&self, m: usize) -> String {
+        let changes = |n: usize| {
+            if n == 1 {
+                "1 change".to_owned()
+            } else {
+                format!("{n} changes")
+            }
+        };
+        let go = if matches!(self.follow, Follow::On(_)) {
+            "the wall follows when you stop"
+        } else {
+            "Enter puts the wall here"
+        };
+        match self.history.here {
+            Some(here) if here == m => "the wall is here".to_owned(),
+            Some(here) => match self.history.path_between(here, m) {
+                Some((0, on)) => format!("{} on from the wall · {go}", changes(on)),
+                Some((back, 0)) => format!("{} back from the wall · {go}", changes(back)),
+                Some((back, on)) => format!(
+                    "{} from the wall: {back} back to where they part, {on} on · {go}",
+                    changes(back + on)
+                ),
+                None => format!("on no path from the wall · {go}"),
+            },
+            None => go.to_owned(),
         }
     }
 
@@ -852,6 +886,9 @@ impl App {
         }
         lines.push(("who".to_owned(), moment.seat.clone()));
         lines.push(("when".to_owned(), local_time(moment.time)));
+        if self.history.here != Some(m) {
+            lines.push(("wall".to_owned(), self.whereabouts(m)));
+        }
         if let Some(beat) = moment.beat {
             let bar = (beat / 4.0).floor() + 1.0;
             let in_bar = beat.rem_euclid(4.0) + 1.0;
@@ -938,7 +975,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("left", "back to where this branch grew"),
             ("{ }", "sixteen moments back or on"),
             (".", "where the wall is"),
-            ("Enter, c", "centre on the selected moment"),
+            ("c", "centre on the selected moment"),
         ],
     ),
     (
@@ -946,8 +983,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("v", "the tree, or lanes: one row a moment"),
             ("y", "copy the selected moment's commit"),
-            ("f", "follow: the wall goes where you stop (on)"),
-            ("g", "put the wall at the selected moment now"),
+            ("Enter, g", "put the wall at the selected moment"),
+            ("f", "follow: the wall goes where you stop (off)"),
             ("b", "the wall's moment ablaze, or put out (on)"),
             ("Shift-drag", "select text (Option-drag in iTerm2)"),
             ("r", "read the tree again"),

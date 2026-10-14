@@ -791,3 +791,5 @@ mod tests {
         assert_eq!(state.take_channel_meters(99), MeterTake::SILENT);
     }
 }
+
+mod tempo;

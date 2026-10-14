@@ -507,7 +507,7 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
             level.name()
         },
         if app.follow == Follow::Off {
-            "g goes"
+            "Enter goes"
         } else {
             "following: arrows move the wall"
         }

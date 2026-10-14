@@ -2,7 +2,10 @@
 //!
 //! Each terminal cell is 2 dots wide and 4 tall; limbs are thick lines of
 //! dots coloured by the modules alive and their settings, lighter where
-//! louder, and the marks hang off them as glyphs with labels. What is drawn depends on how far in you are ([`Level`]).
+//! louder, and the marks hang off them as glyphs with labels. What is
+//! drawn depends on how far in you are ([`Level`]).
+
+use std::collections::HashMap;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -733,6 +736,12 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
             placed.push((col, row, m, glyph, words));
         }
     }
+    // Which moment's glyph holds each cell, so a day can hang its words
+    // beside its own moment's glyph.
+    let owners: HashMap<usize, usize> = placed
+        .iter()
+        .filter_map(|&(col, row, m, _, _)| picture.index(col, row).map(|i| (i, m)))
+        .collect();
     // The selected batch's changes hang after the wall's and marks' words.
     let opened = if let Some(sel) = scene.selected
         && let Some(p) = on_screen(sel)
@@ -743,20 +752,28 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
     };
     hang_words(&mut picture, scene, level, placed, opened, &mut taken);
     if level >= Level::Near {
-        hang_days(&mut picture, scene, &|m| on_screen(m).map(to), &mut taken);
+        hang_days(
+            &mut picture,
+            scene,
+            &|m| on_screen(m).map(to),
+            &owners,
+            &mut taken,
+        );
     }
     picture
 }
 
 /// Hang each day mark on screen, newest first, after every other glyph
 /// and word, so a day (and every branch has one) never takes a place
-/// another would have had: its glyph only on a free cell and only with its
-/// words beside it, right, above, below or left, wherever there is room;
-/// with no room for its words, neither.
+/// another would have had: its words beside it, right, above, below or
+/// left, wherever there is room, with its glyph on a free cell or, where its
+/// own moment's glyph (in `owners`, cell to moment) already stands, beside
+/// that; with no room for its words, or its cell another's, nothing.
 fn hang_days(
     picture: &mut Picture,
     scene: &Scene<'_>,
     dots: &impl Fn(usize) -> Option<(f64, f64)>,
+    owners: &HashMap<usize, usize>,
     taken: &mut [bool],
 ) {
     let mut order: Vec<&Day> = scene.days.iter().collect();
@@ -771,7 +788,7 @@ fn hang_days(
         let Some(at) = picture.index(col, row) else {
             continue;
         };
-        if taken[at] {
+        if taken[at] && !day_holds(owners.get(&at).copied(), day.moment, scene.selected) {
             continue;
         }
         let wide = i32::try_from(UnicodeWidthStr::width(day.words.as_str())).unwrap_or(i32::MAX);
@@ -786,7 +803,10 @@ fn hang_days(
         let Some((c, r)) = room else {
             continue;
         };
-        if picture
+        if taken[at] {
+            // Its moment's own glyph stands there: the words go beside it.
+            picture.label(c, r, &day.words, taken);
+        } else if picture
             .glyph(p, Glyph::Day, DAY, scene.selected == Some(day.moment))
             .is_some()
         {
@@ -794,6 +814,13 @@ fn hang_days(
             picture.label(c, r, &day.words, taken);
         }
     }
+}
+
+/// Whether a taken cell whose glyph is `owner`'s (none: the selected
+/// moment's mark, which is not in the glyphs placed) is `day`'s own, so its
+/// words may hang beside it.
+fn day_holds(owner: Option<usize>, day: usize, selected: Option<usize>) -> bool {
+    owner.map_or_else(|| selected == Some(day), |owner| owner == day)
 }
 
 /// The cell a dot at `p` falls in, if it is on the page's side of zero.

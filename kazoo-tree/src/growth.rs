@@ -166,6 +166,11 @@ pub struct Growth {
     /// Each step's first moment, to see that a history read again still
     /// lines up with what was grown.
     firsts: Vec<usize>,
+    /// Each step's last moment placed, likewise.
+    lasts: Vec<usize>,
+    /// Each step the ledger saved a shape for that was drawn for other
+    /// moments than the step holds now, said: it is grown by the rules.
+    pub refused: Vec<String>,
     /// Which grid cells hold growth.
     room: Room,
     /// Each limb's line of growth by its key, numbered in the order first
@@ -332,9 +337,13 @@ impl Growth {
     /// every step still not grown, by its causal key (its first moment's
     /// time, held no earlier than the step before it on its limb, and for a
     /// limb's first step, the step holding the moment it grew from), then
-    /// parents before their buds, then step order. What was grown before is
-    /// kept as it is; only its tips fill in. Answers the steps grown now
-    /// that `known` did not name, in the order they grew, for the ledger.
+    /// parents before their buds, then step order. A step `known` names is
+    /// drawn where it saved it, in either pass, unless it was saved for
+    /// other moments (then it is said in [`Self::refused`] and grown by
+    /// the rules). What was grown before is kept as it is; only its tips
+    /// fill in. Answers, for the ledger, the steps grown now that `known`
+    /// did not name, and those it named without their first moment or
+    /// shape, in the order they grew.
     ///
     /// A history read afresh, whose steps no longer line up with what was
     /// grown, is grown again from nothing, still in `known`'s order.
@@ -364,6 +373,7 @@ impl Growth {
         let by_key: HashMap<&str, usize> = (0..history.limbs.len())
             .filter_map(|l| limb_key(history, l).map(|key| (key, l)))
             .collect();
+        let saved: HashMap<&StepKey, &Saved> = known.iter().map(|step| (&step.key, step)).collect();
         let ready = |grown: &[Vec<bool>], limb: usize, index: usize| {
             if index > 0 {
                 return grown[limb][index - 1];
@@ -382,7 +392,7 @@ impl Growth {
                 && !grown[limb][key.index]
                 && ready(&grown, limb, key.index)
             {
-                self.grow_step(history, limb, key.index, step.shape);
+                self.grow_known(history, limb, key.index, Some(step), &mut fresh);
                 grown[limb][key.index] = true;
             }
         }
@@ -390,27 +400,80 @@ impl Growth {
             if grown[pending.limb][pending.index] {
                 continue;
             }
-            let before = self.steps.len();
-            self.grow_step(history, pending.limb, pending.index, None);
+            // A step the ledger names whose turn had not come in its order
+            // (one before it lost): still drawn where it was saved.
+            let known = limb_key(history, pending.limb).and_then(|limb| {
+                saved
+                    .get(&StepKey {
+                        limb: limb.to_owned(),
+                        index: pending.index,
+                    })
+                    .copied()
+            });
+            self.grow_known(history, pending.limb, pending.index, known, &mut fresh);
             grown[pending.limb][pending.index] = true;
-            if let Some(step) = self.steps.get(before) {
-                fresh.push(Saved {
-                    key: self.keys[before].clone(),
-                    shape: Some(Shape {
-                        start: step.start,
-                        end: step.end,
-                        heading: step.heading,
-                    }),
-                });
-            }
         }
         self.bounds = self.measure();
         fresh
     }
 
+    /// Grow step `index` of `limb`, where `known` saved it when it did
+    /// and it was saved for these moments, and add to `fresh` what the
+    /// ledger does not hold of it yet.
+    fn grow_known(
+        &mut self,
+        history: &History,
+        limb: usize,
+        index: usize,
+        known: Option<&Saved>,
+        fresh: &mut Vec<Saved>,
+    ) {
+        let first = history.limbs[limb]
+            .moments
+            .get(index * GROWTH_STEP)
+            .map(|&m| history.moments[m].id.to_string());
+        let refused = known.is_some_and(|saved| {
+            saved
+                .first
+                .as_ref()
+                .is_some_and(|was| Some(was) != first.as_ref())
+        });
+        if refused && let Some(saved) = known {
+            self.refused.push(format!(
+                "step {index} of the limb from {:.10} was drawn for the moments from {:.10}, but now starts at {:.10}; it is grown again, and drawn there from now on",
+                saved.key.limb,
+                saved.first.as_deref().unwrap_or_default(),
+                first.as_deref().unwrap_or_default()
+            ));
+        }
+        let shape = known.filter(|_| !refused).and_then(|saved| saved.shape);
+        let before = self.steps.len();
+        self.grow_step(history, limb, index, shape);
+        let Some(step) = self.steps.get(before) else {
+            return;
+        };
+        // What the ledger lacks: all of a new step, or of one refused (it
+        // takes the refused one's place, so the step is drawn here from
+        // now on); the first moment or shape of an old line.
+        let lacks =
+            known.is_none_or(|saved| refused || saved.first.is_none() || saved.shape.is_none());
+        if lacks {
+            fresh.push(Saved {
+                key: self.keys[before].clone(),
+                first,
+                shape: Some(Shape {
+                    start: step.start,
+                    end: step.end,
+                    heading: step.heading,
+                }),
+            });
+        }
+    }
+
     /// Whether what was grown is still `history`'s: each step's limb is
-    /// still there, by its first commit, with the same moment first in the
-    /// step.
+    /// still there, by its first commit, with the same moments first and
+    /// last placed in the step (a limb never shrinks under what was
+    /// grown).
     fn lines_up(&self, history: &History) -> bool {
         if history.moments.len() < self.at.len() {
             return false;
@@ -420,7 +483,9 @@ impl Growth {
             .collect();
         self.steps.iter().zip(&self.keys).all(|(step, key)| {
             by_key.get(key.limb.as_str()).is_some_and(|&l| {
-                history.limbs[l].moments.get(step.first) == Some(&self.firsts[step.id])
+                let moments = &history.limbs[l].moments;
+                moments.get(step.first) == Some(&self.firsts[step.id])
+                    && moments.get(step.last) == Some(&self.lasts[step.id])
             })
         })
     }
@@ -603,6 +668,7 @@ impl Growth {
         });
         self.keys.push(StepKey { limb: key, index });
         self.firsts.push(history.limbs[limb].moments[first]);
+        self.lasts.push(history.limbs[limb].moments[first]);
         self.limb_steps[limb].push(id);
         self.right = self.right.max(start.0.max(end.0) + WIDEST);
         self.place(history, id);
@@ -644,6 +710,7 @@ impl Growth {
                 running: before.and(&moment.tint, moment.sound.as_ref()),
             });
         }
+        self.lasts[id] = moments[last];
         let step = &mut self.steps[id];
         step.last = last;
         step.widest = widest;

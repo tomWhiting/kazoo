@@ -12,6 +12,9 @@ use kazoo_wall::daemon::{Daemon, DaemonConfig};
 use kazoo_wall::protocol::client::{Subscription, WallClient};
 use kazoo_wall::protocol::{ErrorCode, Event, MAX_LINE, Place, Response, What};
 
+#[path = "daemon/tree_isolation.rs"]
+mod tree_isolation;
+
 /// Socket paths are limited to about 100 bytes: the runtime directory lives
 /// directly under /tmp.
 fn dirs() -> (tempfile::TempDir, tempfile::TempDir) {
@@ -1326,8 +1329,8 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
-/// The daemon looks for its tree beside its state directory (`~/.kazoo/wall`
-/// gives `~/.kazoo/tree`). With none planted there it says so and writes
+/// The test daemon keeps its tree inside its own state directory.
+/// With none planted there it says so and writes
 /// nothing; once one is planted, its start and every change are commits.
 #[test]
 fn the_daemon_commits_to_a_tree_planted_beside_its_state_and_plants_none() {
@@ -1337,7 +1340,7 @@ fn the_daemon_commits_to_a_tree_planted_beside_its_state_and_plants_none() {
         .unwrap();
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join("wall");
-    let tree = root.path().join("tree");
+    let tree = state.join("tree");
 
     let daemon = start(runtime.path(), &state);
     let mut wall = WallClient::connect(daemon.socket(), "Tom", "test", true).unwrap();
@@ -1372,7 +1375,7 @@ fn the_daemon_commits_to_a_tree_planted_beside_its_state_and_plants_none() {
         lines,
         [
             format!(
-                "kazoo-wall|the wall started after change {0}; the tree did not hold changes 1 to {0} one by one|start,{0},1-{0}",
+                "kazoo-wall|the tree holds change 1 as one commit|start,{0},1-{0}",
                 first.change.seq
             ),
             format!("Tom|{}|change,{}", second.change.summary, second.change.seq),
