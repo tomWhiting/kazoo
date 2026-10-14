@@ -332,6 +332,24 @@ fn replaced(seq: u64, seat: &str) -> Feed {
     })
 }
 
+fn tempo(seq: u64, seat: &str) -> Feed {
+    Feed::Event(Event::Change {
+        change: Box::new(Change {
+            seq,
+            at: "2026-10-15T00:00:00Z".to_string(),
+            seat: seat.to_string(),
+            what: What::Tempo {
+                from: 92.0,
+                to: 96.0,
+                desk: false,
+            },
+            summary: format!("{seat} did {seq}"),
+            undoes: None,
+            clock: None,
+        }),
+    })
+}
+
 #[test]
 fn a_walk_ending_on_an_undone_go_to_a_mark_names_the_mark_whole() {
     let t0 = Instant::now();
@@ -364,4 +382,38 @@ fn a_walk_ending_on_an_undone_go_to_a_mark_names_the_mark_whole() {
              \"we went to sea\", after change 7 (140 modules, 189 cables, 96 BPM)\n{HINT}"
         ))
     );
+}
+
+#[test]
+fn a_stale_line_and_a_walk_line_are_never_counted_away() {
+    let t0 = Instant::now();
+    let mut news = News::new("Waffles".to_string());
+    news.sent(t0);
+    for seq in 1..=12 {
+        news.take(tempo(seq, "Cally"), t0);
+    }
+    go(&mut news, 41, "Tom", 6810, t0 + Duration::from_secs(1));
+    let told = tell(&mut news, t0 + Duration::from_secs(1)).unwrap();
+    assert!(
+        told.contains(
+            "- Tom is moving the wall through the tree: what this seat knew of it is stale\n"
+        ),
+        "{told}"
+    );
+    assert_eq!(told.matches("\n- ").count(), MAX_LINES + 1, "{told}");
+    assert!(told.contains("- and 3 more (see wall_log)\n"), "{told}");
+
+    let busy = t0 + Duration::from_secs(2);
+    for seq in 50..=61 {
+        news.take(tempo(seq, "Cally"), busy);
+    }
+    go(&mut news, 62, "Tom", 6825, busy);
+    let rested = busy + REST;
+    assert_eq!(tell(&mut news, rested), None);
+    let told = tell(&mut news, busy + WINDOW).unwrap();
+    assert!(
+        told.contains("- Tom walked the tree: 2 moments, now at the moment after change 6825"),
+        "{told}"
+    );
+    assert!(told.contains("- and 3 more (see wall_log)\n"), "{told}");
 }

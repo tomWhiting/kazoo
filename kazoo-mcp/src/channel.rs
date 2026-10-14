@@ -7,8 +7,10 @@
 //! [`MAX_LINES`] of them and a count of the rest; a fault goes at once. This
 //! seat's own changes are never news to it.
 //! Tree walks say at once that the wall is stale, then gather each actor's
-//! goes until five seconds of rest. Their summary joins waiting news or
-//! goes alone when nothing else is waiting.
+//! goes until five seconds of rest, or until a load splits the walk.
+//! Their summary joins waiting news or goes alone when
+//! nothing else is waiting. Faults, the wall gone stale and walks are never
+//! the lines counted away when more than [`MAX_LINES`] wait.
 //!
 //! The content is fixed prose around the wall's own summaries, which the
 //! daemon builds only from sanitised ids, names, numbers and units; they are
@@ -66,13 +68,22 @@ pub enum Feed {
     Own(u64),
 }
 
+/// One line of waiting news. A told line (a fault, the change log's
+/// trouble, the wall gone stale, a walk) is never counted away while an
+/// ordinary line could make room for it.
+#[derive(Debug)]
+struct Line {
+    text: String,
+    told: bool,
+}
+
 /// What has happened since the last notification, and when it is due.
 #[derive(Debug)]
 pub struct News {
     seat: String,
     seats: Vec<String>,
     seq: u64,
-    lines: Vec<String>,
+    lines: Vec<Line>,
     more: u64,
     urgent: bool,
     since: Option<Instant>,
@@ -158,7 +169,7 @@ impl News {
                 }
             }
             Feed::Event(Event::Fault { summary, .. }) => {
-                self.push(format!("fault: {}", clean(&summary)), now);
+                self.push_told(format!("fault: {}", clean(&summary)), now);
                 self.urgent = true;
             }
             Feed::Event(Event::Log { log }) => self.log_said(&log, now),
@@ -205,7 +216,7 @@ impl News {
         if seat != self.seat {
             match self.walks.loaded(seq, &seat, now) {
                 Some(true) => {
-                    self.push(
+                    self.push_told(
                         format!(
                             "{} is moving the wall through the tree: what this seat knew \
                              of it is stale",
@@ -218,7 +229,7 @@ impl News {
                 Some(false) => {}
                 None => {
                     self.end_walks(now);
-                    self.push(
+                    self.push_told(
                         "the whole wall was replaced: what this seat knew of it is stale"
                             .to_string(),
                         now,
@@ -249,7 +260,7 @@ impl News {
     /// once, and again when it takes them again.
     fn log_said(&mut self, log: &LogHealth, now: Instant) {
         if let Some(trouble) = log.trouble() {
-            self.push(clean(&trouble), now);
+            self.push_told(clean(&trouble), now);
             self.urgent = true;
         } else {
             self.push("the change log is well again".to_string(), now);
@@ -261,10 +272,34 @@ impl News {
             self.since = Some(now);
         }
         if self.lines.len() < MAX_LINES {
-            self.lines.push(line);
+            self.lines.push(Line {
+                text: line,
+                told: false,
+            });
         } else {
             self.more += 1;
         }
+    }
+
+    /// As [`Self::push`], but when the lines are full the newest ordinary
+    /// line is counted instead, so this one is read; only when every line
+    /// is already a told one is it counted itself.
+    fn push_told(&mut self, line: String, now: Instant) {
+        if self.since.is_none() {
+            self.since = Some(now);
+        }
+        if self.lines.len() >= MAX_LINES {
+            let Some(ordinary) = self.lines.iter().rposition(|line| !line.told) else {
+                self.more += 1;
+                return;
+            };
+            self.lines.remove(ordinary);
+            self.more += 1;
+        }
+        self.lines.push(Line {
+            text: line,
+            told: true,
+        });
     }
 
     fn rest(&mut self, now: Instant) {
@@ -282,7 +317,7 @@ impl News {
             self.urgent = true;
         }
         for line in lines {
-            self.push(line, now);
+            self.push_told(line, now);
         }
     }
 
@@ -313,7 +348,7 @@ impl News {
         let mut content = String::from("News from the wall:\n");
         for line in &self.lines {
             content.push_str("- ");
-            content.push_str(line);
+            content.push_str(&line.text);
             content.push('\n');
         }
         if self.more > 0 {
