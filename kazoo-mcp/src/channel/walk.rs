@@ -1,3 +1,4 @@
+use kazoo_wall::change::describe;
 use kazoo_wall::protocol::{Change, What};
 
 use super::{Duration, Instant, clean, who};
@@ -9,6 +10,7 @@ struct Go {
     seq: u64,
     seat: String,
     summary: String,
+    place: String,
 }
 
 #[derive(Debug)]
@@ -16,6 +18,7 @@ struct Walk {
     seat: String,
     count: u64,
     summary: String,
+    place: String,
     last: Instant,
 }
 
@@ -24,27 +27,33 @@ impl Walk {
         if self.count == 1 {
             return self.summary;
         }
-        let words = self
-            .summary
-            .strip_prefix(&self.seat)
-            .unwrap_or(&self.summary);
-        let place = words
-            .split_once("went to ")
-            .or_else(|| words.split_once("went back to "))
-            .map_or(words, |(_, place)| place);
-        let place = place
-            .split_once("; the wall as it was is saved as ")
-            .map_or(place, |(place, _)| place);
-        let place = place.rsplit_once(": ").map_or_else(
-            || place.to_string(),
-            |(place, size)| format!("{place} ({size})"),
-        );
         format!(
-            "{} walked the tree: {} moments, now at {place}",
+            "{} walked the tree: {} moments, now at {}",
             who(self.seat),
-            self.count
+            self.count,
+            self.place
         )
     }
+}
+
+/// Where a go took the wall, in the wall's own words for it: `the moment
+/// after change 6825 (140 modules, 189 cables, 96 BPM)`. Read from the
+/// structured go, never from the summary, so a mark or branch whose name
+/// holds the summary's own words cannot move where the place is cut.
+fn place(what: &What) -> String {
+    let words = describe(what);
+    let What::Go { backup, .. } = what else {
+        return clean(&words);
+    };
+    let saved = format!("; the wall as it was is saved as \"{backup}\"");
+    words
+        .strip_prefix("went to ")
+        .and_then(|rest| rest.strip_suffix(&saved))
+        .and_then(|rest| rest.rsplit_once(": "))
+        .map_or_else(
+            || clean(&words),
+            |(place, size)| clean(&format!("{place} ({size})")),
+        )
 }
 
 #[derive(Debug)]
@@ -61,12 +70,15 @@ impl Walks {
         }
     }
 
+    /// Hold `change` until its replacement event when it is a go; false for
+    /// anything else.
     pub(super) fn changed(&mut self, change: &Change) -> bool {
         if matches!(change.what, What::Go { .. }) {
             self.pending = Some(Go {
                 seq: change.seq,
                 seat: change.seat.clone(),
                 summary: clean(&change.summary),
+                place: place(&change.what),
             });
             true
         } else {
@@ -82,6 +94,7 @@ impl Walks {
         if let Some(walk) = self.active.iter_mut().find(|walk| walk.seat == seat) {
             walk.count += 1;
             walk.summary = go.summary;
+            walk.place = go.place;
             walk.last = now;
             Some(false)
         } else {
@@ -89,6 +102,7 @@ impl Walks {
                 seat: go.seat,
                 count: 1,
                 summary: go.summary,
+                place: go.place,
                 last: now,
             });
             Some(true)

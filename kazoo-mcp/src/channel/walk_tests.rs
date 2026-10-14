@@ -308,3 +308,60 @@ fn a_fault_is_urgent_and_a_failed_walk_notification_keeps_its_count() {
     assert_eq!(tell(&mut news, rested + WINDOW), Some(walk("Tom", 2, 6825)));
     assert_eq!(tell(&mut news, rested + WINDOW * 2), None);
 }
+
+fn go_change(seq: u64, seat: &str, what: What, undoes: Option<u64>) -> Feed {
+    Feed::Event(Event::Change {
+        change: Box::new(Change {
+            seq,
+            at: "2026-10-15T00:00:00Z".to_string(),
+            seat: seat.to_string(),
+            summary: kazoo_wall::change::summarise(seat, &what, undoes),
+            what,
+            undoes,
+            clock: None,
+        }),
+    })
+}
+
+fn replaced(seq: u64, seat: &str) -> Feed {
+    Feed::Event(Event::Loaded {
+        seq,
+        seat: seat.to_string(),
+        save: None,
+        backup: "before-go".to_string(),
+    })
+}
+
+#[test]
+fn a_walk_ending_on_an_undone_go_to_a_mark_names_the_mark_whole() {
+    let t0 = Instant::now();
+    let mut news = News::new("Waffles".to_string());
+    go(&mut news, 41, "Tom", 6810, t0);
+    assert_eq!(tell(&mut news, t0), Some(stale("Tom")));
+    let place = TreePlace {
+        commit: "a1b2c3d4e5f6012345678901234567890123456789".to_string(),
+        mark: Some("we went to sea".to_string()),
+        branch: None,
+        change: Some(7),
+    };
+    let what = What::Go {
+        from: place.clone(),
+        to: place,
+        backup: "before-go".to_string(),
+        fingerprint: "hash".to_string(),
+        modules: 140,
+        cables: 189,
+        tempo: 96.0,
+        by_console: true,
+    };
+    let undone = t0 + Duration::from_secs(1);
+    news.take(go_change(42, "Tom", what, Some(41)), undone);
+    news.take(replaced(42, "Tom"), undone);
+    assert_eq!(
+        tell(&mut news, undone + REST),
+        Some(format!(
+            "News from the wall:\n- Tom walked the tree: 2 moments, now at mark \
+             \"we went to sea\", after change 7 (140 modules, 189 cables, 96 BPM)\n{HINT}"
+        ))
+    );
+}
