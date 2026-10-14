@@ -197,3 +197,27 @@ fn a_step_drawn_again_for_another_first_moment_takes_its_place() {
         "{text}"
     );
 }
+
+#[test]
+fn a_line_with_its_first_moment_before_its_shape_still_reads() {
+    // The order a build wrote for a while (92e4798): first= straight after
+    // the step's number.
+    let mut ledger = Ledger::in_memory();
+    ledger.take("step\taa\t1\tfirst=c0ffee\t1\t2\t3\t4\t0.5");
+    assert_eq!(ledger.unreadable, 0);
+    assert_eq!(
+        ledger.steps,
+        [Saved {
+            first: Some("c0ffee".to_owned()),
+            ..shaped(
+                "aa",
+                1,
+                Shape {
+                    start: (1.0, 2.0),
+                    end: (3.0, 4.0),
+                    heading: 0.5,
+                }
+            )
+        }]
+    );
+}

@@ -209,8 +209,10 @@ impl Ledger {
                     self.unreadable += 1;
                     return;
                 };
+                // `first=` is written after the shape; a build for a while
+                // wrote it before, and those lines read too.
                 let (first, rest) = match rest {
-                    [rest @ .., first] if first.starts_with("first=") => {
+                    [rest @ .., first] | [first, rest @ ..] if first.starts_with("first=") => {
                         let Some(id) = first.strip_prefix("first=").filter(|id| !id.is_empty())
                         else {
                             self.unreadable += 1;
