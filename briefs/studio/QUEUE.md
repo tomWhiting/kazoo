@@ -173,3 +173,5 @@ START KZ-V05b base=dd1bfc6 branch=lane/kz-V05b df=125GB at 09:27
 START KZ-V12 base=dd1bfc6 branch=lane/kz-V12 df=53GB at 10:48
 START KZ-V11 base=dd1bfc6 branch=lane/kz-V11 df=53GB at 10:49
 - Tom, 14 Oct 11:0x: the public name is `kzoo` on both crates.io and npm (both free at 11:0x; `kazoo` npm taken by an abandoned 0.0.0, `kaz` npm taken by an empty 1.0.0). Commands: `kzoo`, with `kaz` as an alias. npx through per-platform binary packages (esbuild/biome pattern), built by GitHub Actions (no CI yet). Licence: Tom, 14 Oct 11:1x, "AGPL-3.0-or-later sounds good to me": LICENSE (gnu.org text) at the root, `license = "AGPL-3.0-or-later"` in every crate, `publish = false` on every crate except kazoo-cli (done on main). Still open: Tom's go to publish; kazoo-cli depends on the other path crates, so the release lane decides how they ship (publish each, or one crate); a dependency licence check before any publish.
+START KZ-V08a base=dd1bfc6 branch=lane/kz-V08a df=51GB at 11:12
+START KZ-T05a base=dd1bfc6 branch=lane/kz-T05a df=51GB at 11:12
