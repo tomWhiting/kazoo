@@ -29,6 +29,7 @@ fn hello_refuses_reserved_seat_names() {
         awaiting: HashMap::new(),
         counts: AudioCounts::new(now),
         told_link_refused: false,
+        desk_refusals: link_diagnostics::DeskRefusals::default(),
         reported_link_shutdowns: link_diagnostics::LinkShutdowns::default(),
     };
     for seat in ["desk", "kazoo-wall"] {

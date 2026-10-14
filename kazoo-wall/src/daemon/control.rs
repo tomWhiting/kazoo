@@ -259,6 +259,7 @@ struct Control {
     counts: AudioCounts,
     /// Whether the scheduling refusal has already been logged.
     told_link_refused: bool,
+    desk_refusals: link_diagnostics::DeskRefusals,
     /// The process-wide desk link shutdown counts already logged.
     reported_link_shutdowns: link_diagnostics::LinkShutdowns,
 }
@@ -290,6 +291,7 @@ pub fn run(setup: Setup) {
         awaiting: HashMap::new(),
         counts: AudioCounts::new(Instant::now()),
         told_link_refused: false,
+        desk_refusals: link_diagnostics::DeskRefusals::default(),
         reported_link_shutdowns: link_diagnostics::LinkShutdowns::default(),
     };
     while !control.stopping {
@@ -855,6 +857,10 @@ impl Control {
     }
 
     fn housekeeping(&mut self) {
+        if let Some(link) = self.wall.desk_link() {
+            self.desk_refusals
+                .report(&link.status(), |line| eprintln!("{line}"));
+        }
         link_diagnostics::report_refusal(
             &mut self.told_link_refused,
             self.wall.desk_link().and_then(HubLink::real_time),

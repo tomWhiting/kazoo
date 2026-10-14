@@ -189,7 +189,10 @@ fn run_desk(
                 mouse,
                 hub_priority: hub_priority(hub.real_time()),
             };
-            terminal.draw(|frame| ui::draw(frame, &mut desk, &audio.shared, &status))?;
+            let refused = hub.refused_lines(now);
+            terminal.draw(|frame| {
+                ui::draw_with_refusals(frame, &mut desk, &audio.shared, &status, &refused);
+            })?;
             redraw = false;
         }
 

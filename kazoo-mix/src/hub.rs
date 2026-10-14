@@ -28,6 +28,7 @@
 //! instrument as well as heard.
 
 mod instrument;
+mod refusals;
 pub(crate) mod tempo;
 use tempo::initial_song;
 #[cfg(test)]
@@ -302,6 +303,7 @@ pub struct HubStopped;
 /// Running counters, for the desk.
 #[derive(Debug, Default)]
 struct HubStats {
+    refusals: refusals::Refusals,
     instruments: AtomicU64,
     blocks: AtomicU64,
     dropped_blocks: AtomicU64,
@@ -444,6 +446,11 @@ impl Hub {
     #[must_use]
     pub fn real_time(&self) -> Option<&Result<(), NotRealTime>> {
         self.real_time.get()
+    }
+
+    #[must_use]
+    pub fn refused_lines(&self, now: Instant) -> Vec<String> {
+        self.stats.refusals.lines(now)
     }
 
     /// The hub's counters.
@@ -619,6 +626,7 @@ impl Server {
     }
 
     fn notify(&mut self, notice: HubNotice) {
+        self.stats.refusals.record(&notice, Instant::now());
         if matches!(notice, HubNotice::Refused { .. }) {
             if self.last_refusal.as_ref() == Some(&notice) {
                 return;
