@@ -612,12 +612,30 @@ fn a_snapshot_reports_loop_seams_and_paused_checkpoints() {
     wall.loops.wait_install_for_test();
     render(&mut engine, 4_096);
     wall.tick(Instant::now());
+    // The engine started at song beat 10, so the load landed on beat 12
+    // (bar 4): the loops play from there, and meet three bars later on the
+    // song than they would on a wall started at beat 0.
+    assert_eq!(wall.engine.shared().origin().to_bits(), 12.0_f64.to_bits());
+    let anchors: Vec<f64> = wall
+        .snapshot()
+        .modules
+        .iter()
+        .filter_map(|module| module.tape.as_ref().map(|tape| tape.anchor))
+        .collect();
+    let saved: Vec<f64> = wall
+        .patch
+        .modules()
+        .iter()
+        .filter_map(|module| wall.patch.loop_record(&module.id))
+        .filter_map(|record| record.tape.as_ref().map(|tape| tape.anchor + 12.0))
+        .collect();
+    assert_eq!(anchors, saved, "a loop's anchor is not read on the song");
     assert_eq!(
         wall.snapshot().loops_meet,
         Some(crate::protocol::LoopsMeet {
             bars: Some(391),
             seconds: Some(782.0),
-            next_bar: Some(392),
+            next_bar: Some(392 + 3),
         })
     );
     wall.loops.checkpoints_paused = true;
@@ -630,7 +648,10 @@ fn a_snapshot_reports_loop_seams_and_paused_checkpoints() {
     wall.loops.wait_install_for_test();
     render(&mut engine, 4_096);
     wall.tick(Instant::now());
-    assert_eq!(wall.snapshot().loops_meet.unwrap().next_bar, Some(256));
+    // The second load landed on the next bar of the song: beat 16, a
+    // bar after the first.
+    assert_eq!(wall.engine.shared().origin().to_bits(), 16.0_f64.to_bits());
+    assert_eq!(wall.snapshot().loops_meet.unwrap().next_bar, Some(256 + 4));
 }
 
 #[test]

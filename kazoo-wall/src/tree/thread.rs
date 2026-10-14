@@ -390,7 +390,10 @@ impl TreeHandle {
                 }
             }
             News::Gap { first, last } => {
-                self.through = Some(last);
+                // The whole commit naming them holds every change through
+                // its own, which may come after `last` (goes have no
+                // commit of their own): never back.
+                self.through = self.through.max(Some(last));
                 self.behind_from = None;
                 self.error = None;
                 eprintln!("kazoo-wall: the tree holds changes {first} to {last} as one commit");

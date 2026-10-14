@@ -2373,7 +2373,21 @@ impl Wall {
     }
 
     fn whole_tree(&mut self, kind: crate::tree::thread::WholeKind) {
-        let history = match self.store.as_ref().map(Store::load_log).transpose() {
+        // The changes the commit may name come after what the tree holds:
+        // the changes kept in memory (the last `MEMORY_CHANGES`) have them
+        // all unless the tree is further behind than that, and only then
+        // is the log read from disk (every go asks for this commit).
+        let first_owed = self
+            .tree
+            .as_ref()
+            .and_then(|tree| tree.through)
+            .map_or(1, |through| through.saturating_add(1));
+        let in_memory = self
+            .log
+            .front()
+            .is_none_or(|change| change.seq <= first_owed);
+        let from_disk = self.store.as_ref().filter(|_| !in_memory);
+        let history = match from_disk.map(Store::load_log).transpose() {
             Ok(Some(log)) => log.changes,
             Ok(None) => self.log.iter().cloned().collect(),
             Err(err) => {
@@ -4876,7 +4890,9 @@ impl Wall {
             })
             .collect();
         ModuleView {
-            tape: self.loops.view(&module.id, &self.patch),
+            tape: self
+                .loops
+                .view(&module.id, &self.patch, self.engine.shared().origin()),
             id: module.id.clone(),
             kind: module.kind.name().to_string(),
             name: module.name.clone(),

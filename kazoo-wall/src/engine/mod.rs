@@ -248,6 +248,7 @@ pub struct Shared {
     syncs_lost: AtomicU64,
     ignored: AtomicU64,
     unhushed: AtomicU64,
+    origin: AtomicU64,
 }
 
 impl Shared {
@@ -274,6 +275,7 @@ impl Shared {
             syncs_lost: AtomicU64::new(0),
             ignored: AtomicU64::new(0),
             unhushed: AtomicU64::new(0),
+            origin: AtomicU64::new(0.0_f64.to_bits()),
         }
     }
 
@@ -287,6 +289,14 @@ impl Shared {
     #[must_use]
     pub fn beat(&self) -> f64 {
         f64::from_bits(self.beat.load(Ordering::Relaxed))
+    }
+
+    /// The song position, in beats, at which the wall now playing started
+    /// (see [`crate::dsp::Tick::beat`]): 0 until a wall replaces the first,
+    /// then the bar its go landed on.
+    #[must_use]
+    pub fn origin(&self) -> f64 {
+        f64::from_bits(self.origin.load(Ordering::Relaxed))
     }
 
     /// Whether the wall is following a playing desk's beat.

@@ -100,3 +100,34 @@ fn moment_restart_without_missing_changes_names_the_restart() {
         "the wall started again after change 3"
     );
 }
+
+#[test]
+fn moment_restart_gap_of_one_change_names_it_in_the_singular() {
+    let history = (1..=5)
+        .map(|seq| change(seq, seq == 3 || seq == 5))
+        .collect();
+    assert_eq!(restart(history), "the tree holds change 4 as one commit");
+}
+
+#[test]
+fn moment_a_gap_short_of_the_whole_commit_does_not_move_the_tree_back() {
+    let dir = tempfile::tempdir().unwrap();
+    git::plant(dir.path()).unwrap();
+    let mut handle = TreeHandle::attach(dir.path()).unwrap();
+    // A whole commit after change 6 that named changes 4 and 5 (6 was a
+    // go): the tree holds every change through 6.
+    handle.hear(News::Committed { through: 6 });
+    handle.hear(News::Gap { first: 4, last: 5 });
+    assert_eq!(handle.through, Some(6));
+}
+
+#[test]
+fn moment_nothing_after_the_tree_asks_git_nothing() {
+    // Every candidate is at or before what the tree holds: no git run,
+    // so no git repository is needed to answer.
+    let nowhere = tempfile::tempdir().unwrap();
+    assert_eq!(
+        git::missing_changes(&nowhere.path().join("not-a-tree"), &[1, 2, 3], Some(3)).unwrap(),
+        Vec::<u64>::new()
+    );
+}

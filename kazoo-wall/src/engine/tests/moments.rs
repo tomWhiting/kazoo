@@ -147,9 +147,12 @@ fn moment_second_go_replaces_the_first_before_landing() {
 
 #[test]
 fn moment_held_and_landing_allocate_nothing() {
-    let (mut engine, mut control) = start(39.999);
+    // Four tenths of a beat before bar 11 (1,600 frames): held, faded out
+    // and landed in the one render.
+    let (mut engine, mut control) = start(39.6);
     moment(&mut control);
-    let mut data = [0.0; SUB_BLOCK * 2];
+    assert_eq!(control.landing_beat().to_bits(), 40.0_f64.to_bits());
+    let mut data = vec![0.0; 1_700 * 2];
     on_audio_thread(|| engine.render(&mut data, 2));
     assert_eq!(control.shared().unhushed(), 1);
     assert!(control.shared().beat() >= 40.0);
@@ -207,4 +210,97 @@ fn moment_origin_zero_keeps_an_unreplaced_wall_unchanged() {
     render(&mut engine, 1);
     assert_eq!(seen.load(Ordering::Relaxed), 37.3_f64.to_bits());
     assert_eq!(engine.origin.to_bits(), 0.0_f64.to_bits());
+}
+
+/// Render until the song position reaches `beat`, a frame at a time near
+/// it, so no landing is passed over.
+fn render_to(engine: &mut Engine, control: &EngineControl, beat: f64) {
+    loop {
+        if control.shared().beat() >= beat - 1e-9 {
+            break;
+        }
+        render(engine, 1);
+    }
+}
+
+#[test]
+fn moment_a_go_asked_too_near_its_bar_to_fade_out_lands_on_the_bar_after() {
+    // 39.95 is a tenth of a beat (50 ms at 120 BPM) before bar 11: less
+    // than the swap fade, so the old wall could not fade out whole.
+    let (mut engine, mut control) = start(39.95);
+    let seen = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+    probe(&mut control, &seen);
+    assert_eq!(control.landing_beat().to_bits(), 44.0_f64.to_bits());
+    render_to(&mut engine, &control, 43.99);
+    assert_eq!(control.shared().unhushed(), 0, "landed before bar 12");
+    render_to(&mut engine, &control, 44.0);
+    render(&mut engine, SUB_BLOCK + 1);
+    assert_eq!(control.shared().unhushed(), 1);
+}
+
+#[test]
+fn moment_a_go_that_reaches_the_engine_after_its_bar_waits_for_the_next() {
+    let (mut engine, mut control) = start(37.3);
+    let seen = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+    probe(&mut control, &seen);
+    assert_eq!(control.landing_beat().to_bits(), 40.0_f64.to_bits());
+    // The audio thread was late to take it: bar 11 has gone by.
+    engine.beat = 40.5;
+    render(&mut engine, SUB_BLOCK);
+    assert_eq!(
+        control.shared().unhushed(),
+        0,
+        "landed off the bar, at 40.5"
+    );
+    render_to(&mut engine, &control, 43.99);
+    assert_eq!(control.shared().unhushed(), 0);
+    render_to(&mut engine, &control, 44.0);
+    render(&mut engine, SUB_BLOCK + 1);
+    assert_eq!(control.shared().unhushed(), 1);
+    assert!(
+        f64::from_bits(seen.load(Ordering::Relaxed)) < 1e-3,
+        "the moment did not start from its beginning on bar 12"
+    );
+    assert_eq!(control.shared().origin().to_bits(), 44.0_f64.to_bits());
+}
+
+#[test]
+fn moment_a_song_position_moved_back_moves_a_held_go_to_the_bar_after_it() {
+    let (mut engine, mut control) = start(37.3);
+    let seen = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+    probe(&mut control, &seen);
+    render(&mut engine, 400);
+    // The desk moved the song back to beat 2.5 while the go was held.
+    engine.beat = 2.5;
+    control
+        .shared
+        .beat
+        .store(2.5_f64.to_bits(), Ordering::Relaxed);
+    render_to(&mut engine, &control, 3.99);
+    assert_eq!(control.shared().unhushed(), 0);
+    render_to(&mut engine, &control, 4.0);
+    render(&mut engine, SUB_BLOCK + 1);
+    assert_eq!(control.shared().unhushed(), 1, "the go waited for beat 40");
+    assert_eq!(control.shared().origin().to_bits(), 4.0_f64.to_bits());
+}
+
+#[test]
+fn moment_a_second_go_while_the_first_fades_lands_on_the_same_bar() {
+    let (mut engine, mut control) = start(37.3);
+    let first = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+    let second = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+    probe(&mut control, &first);
+    // A twentieth of a beat before bar 11: the first is fading out.
+    render_to(&mut engine, &control, 39.95);
+    probe(&mut control, &second);
+    assert_eq!(control.landing_beat().to_bits(), 40.0_f64.to_bits());
+    render_to(&mut engine, &control, 40.0);
+    render(&mut engine, SUB_BLOCK + 1);
+    assert!(f64::from_bits(first.load(Ordering::Relaxed)).is_nan());
+    assert_eq!(
+        control.shared().unhushed(),
+        2,
+        "the second did not land on bar 11"
+    );
+    assert_eq!(control.shared().origin().to_bits(), 40.0_f64.to_bits());
 }

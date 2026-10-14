@@ -335,6 +335,8 @@ impl Commit {
             } else {
                 format!("the tree holds the wall after change {seq}")
             }
+        } else if let [one] = missing {
+            format!("the tree holds change {one} as one commit")
         } else {
             format!("the tree holds changes {names} as one commit")
         };

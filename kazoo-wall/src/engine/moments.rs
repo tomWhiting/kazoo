@@ -1,11 +1,22 @@
-use super::{Command, Engine, EngineControl, Ordering, Retired, SUB_BLOCK};
+use super::{Command, Engine, EngineControl, Ordering, Retired, SUB_BLOCK, SWAP_FADE_SECONDS};
 use std::collections::VecDeque;
+
+/// Beats in a bar, as the console counts them.
+const BEATS_PER_BAR: f64 = 4.0;
+
+/// How long before its bar a go must be asked for to land on it: the swap
+/// fade, so the wall going out fades out whole, and a tenth of a second
+/// for the go to cross to the audio thread (a device buffer is a few
+/// hundredths). A go asked later lands on the bar after.
+const LANDING_LEAD_SECONDS: f64 = SWAP_FADE_SECONDS as f64 + 0.1;
 
 /// One complete wall, prepared before it enters the render command ring.
 #[derive(Debug)]
 pub struct TimedSwap {
     beat: f64,
     serial: u64,
+    /// Whether the wall going out has begun to fade towards `beat`.
+    fading: bool,
     commands: VecDeque<Command>,
 }
 
@@ -19,12 +30,16 @@ impl EngineControl {
         self.swap_commands = Some(VecDeque::new());
     }
 
-    /// Queue the collected wall and return its absolute landing beat.
+    /// Queue the collected wall and return its absolute landing beat: the
+    /// first bar at least [`LANDING_LEAD_SECONDS`] ahead, or the bar a go
+    /// not yet landed waits for (it replaces that one).
     pub fn end_swap(&mut self) -> f64 {
         let beat = if self.shared.unhushed() < self.swap_serial {
             self.swap_beat
         } else {
-            next_bar(self.shared.beat())
+            let lead =
+                kazoo_core::ipc::follow::beats_in(LANDING_LEAD_SECONDS, self.shared.bpm(), 1.0);
+            bar_from(self.shared.beat() + lead)
         };
         self.swap_beat = beat;
         if let Some(commands) = self.swap_commands.take() {
@@ -35,6 +50,7 @@ impl EngineControl {
             self.push(Command::Swap(Box::new(TimedSwap {
                 beat,
                 serial: self.swap_serial,
+                fading: false,
                 commands,
             })));
         }
@@ -42,13 +58,17 @@ impl EngineControl {
     }
 }
 
-fn next_bar(beat: f64) -> f64 {
-    (beat / 4.0).floor().mul_add(4.0, 4.0)
+/// The first bar at or after `beat`.
+fn bar_from(beat: f64) -> f64 {
+    (beat / BEATS_PER_BAR).ceil() * BEATS_PER_BAR
 }
 
 impl Engine {
-    pub(super) fn queue_swap(&mut self, swap: Box<TimedSwap>) {
-        if let Some(old) = self.pending_swap.replace(swap) {
+    pub(super) fn queue_swap(&mut self, mut swap: Box<TimedSwap>) {
+        if let Some(old) = self.pending_swap.take() {
+            // A go replacing one that is fading out towards the same bar
+            // carries the fade on, rather than starting it again.
+            swap.fading = old.fading && old.beat.to_bits() == swap.beat.to_bits();
             // Probe freshness counts sent tables, including superseded ones.
             self.tables = self.tables.wrapping_add(
                 old.commands
@@ -58,6 +78,7 @@ impl Engine {
             );
             self.retire(Retired::Swap(old));
         }
+        self.pending_swap = Some(swap);
         while let Some(command) = self.after_swap.pop_front() {
             if matches!(command, Command::Cables(_)) {
                 self.tables = self.tables.wrapping_add(1);
@@ -66,8 +87,29 @@ impl Engine {
         }
     }
 
+    /// Move a held go whose bar the song position no longer leads to: one
+    /// the song has gone past (the go reached the audio thread late, or the
+    /// desk moved the song on), one the wall going out can no longer fade
+    /// out whole for, or one more than a bar ahead (the desk moved the song
+    /// back). It goes to the first bar the wall can fade out whole for.
+    fn aim_swap(&mut self, step: f64) {
+        let fade = step * f64::from(self.sample_rate * SWAP_FADE_SECONDS);
+        let beat = self.beat;
+        if let Some(swap) = self.pending_swap.as_mut() {
+            let aim = bar_from(beat + fade);
+            let passed = swap.beat < beat - step;
+            let short = !swap.fading && swap.beat - beat < step.mul_add(-1e-6, fade);
+            let back = swap.beat > aim + BEATS_PER_BAR;
+            if passed || short || back {
+                swap.beat = aim;
+                swap.fading = false;
+            }
+        }
+    }
+
     pub(super) fn land_swap(&mut self) {
         let step = super::Tick::new(self.sample_rate, self.bpm, self.beat).beat_step;
+        self.aim_swap(step);
         if self
             .pending_swap
             .as_ref()
@@ -76,7 +118,12 @@ impl Engine {
             return;
         }
         if let Some(mut swap) = self.pending_swap.take() {
-            self.origin = self.beat;
+            // The bar itself, not the frame's beat (within a millionth of a
+            // frame of it): the origin is a whole bar of the song.
+            self.origin = swap.beat;
+            self.shared
+                .origin
+                .store(self.origin.to_bits(), Ordering::Relaxed);
             self.wall_beat = Some(0.0);
             self.master.reset();
             self.hush_gain = 0.0;
@@ -100,16 +147,20 @@ impl Engine {
     }
 
     pub(super) fn fade_to_swap(
-        &self,
+        &mut self,
         left: &mut super::Block,
         right: &mut super::Block,
         beat_step: f64,
     ) {
-        if let Some(swap) = &self.pending_swap {
-            let remaining = (swap.beat - self.beat) / beat_step;
-            let fade = f64::from(self.sample_rate * super::SWAP_FADE_SECONDS);
+        let beat = self.beat;
+        let fade = f64::from(self.sample_rate * SWAP_FADE_SECONDS);
+        if let Some(swap) = self.pending_swap.as_mut() {
+            let remaining = (swap.beat - beat) / beat_step;
             for (frame, (left, right)) in left.iter_mut().zip(right).enumerate() {
-                let gain = ((remaining - frame as f64) / fade).clamp(0.0, 1.0) as f32;
+                let gain = ((remaining - frame as f64) / fade).clamp(0.0, 1.0);
+                swap.fading |= gain < 1.0;
+                // In 0..1: single precision is plenty.
+                let gain = gain as f32;
                 *left *= gain;
                 *right *= gain;
             }

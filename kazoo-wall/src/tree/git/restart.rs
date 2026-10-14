@@ -3,11 +3,23 @@ use std::path::Path;
 
 use super::{TreeError, checked, git_command};
 
+/// Which of `candidates` (logged changes that are not goes) after
+/// `through` have no commit in the tree at `dir`, by its own changes and
+/// the gaps its whole commits named, in order. Git is asked only when a
+/// candidate comes after `through`.
 pub(in crate::tree) fn missing_changes(
     dir: &Path,
     candidates: &[u64],
     through: Option<u64>,
 ) -> Result<Vec<u64>, TreeError> {
+    let after: BTreeSet<u64> = candidates
+        .iter()
+        .copied()
+        .filter(|seq| *seq > through.unwrap_or(0))
+        .collect();
+    if after.is_empty() {
+        return Ok(Vec::new());
+    }
     let text = checked(git_command("log", Some(dir)).args([
         "--all", "--format=%(trailers:key=Kazoo-Kind,valueonly,separator=%x2C)|%(trailers:key=Kazoo-Seq,valueonly,separator=%x2C)|%(trailers:key=Kazoo-Gap,valueonly,separator=%x2C)",
     ]))?;
@@ -41,16 +53,9 @@ pub(in crate::tree) fn missing_changes(
             gaps.push(first..=last);
         }
     }
-    Ok(candidates
-        .iter()
-        .copied()
-        .filter(|seq| {
-            *seq > through.unwrap_or(0)
-                && !committed.contains(seq)
-                && !gaps.iter().any(|gap| gap.contains(seq))
-        })
-        .collect::<BTreeSet<_>>()
+    Ok(after
         .into_iter()
+        .filter(|seq| !committed.contains(seq) && !gaps.iter().any(|gap| gap.contains(seq)))
         .collect())
 }
 
