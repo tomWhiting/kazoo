@@ -25,6 +25,8 @@ use crate::engine::looper::{LoopFeed, LoopOut};
 use crate::engine::{Command, EngineSetup, MouthEngine, Stats};
 use crate::ui::{self, Display};
 
+mod terminal;
+
 #[cfg(test)]
 mod tests;
 
@@ -54,8 +56,8 @@ usage: kazoo mouth [options]
   --score <wav>...        Score recorded takes and exit without audio.
 
 Up/Down choose a control. Left/Right change it; Shift makes a big step.
-Space toggles quantise. v toggles vibrato. s toggles silent. ? shows help.
-Tab switches synth/fx. [/] choose slot; b bypasses; {/} move; d resets a knob.
+Space toggles the focused switch. w steps waveform. v toggles vibrato. s toggles silent. ? shows help.
+Tab/Shift-Tab walks panels. 1..5 select FX. [/] choose slot; b bypasses; {/} move; d resets a knob.
 ,/. change own tempo by 1 BPM; </> by 10. The desk owns synced tempo.
 r records or punches; u undoes; C clears; l chooses length; o stops/starts.
 -/= change loop volume; _/+ make a big step; w saves ~/.kazoo/mouth/loops/.
@@ -186,17 +188,21 @@ pub fn run(args: Args) -> Result<()> {
         loaded.settings.last_blend = loaded.settings.quantise.blend;
     }
     loaded.settings.silent = args.silent;
+    let input_label = args.input.clone().unwrap_or_else(|| "default input".into());
     let mut session = Session::start(args, &loaded.settings)?;
-    let mut terminal = kazoo_host::terminal::enter()?;
+    let mut terminal = kazoo_host::terminal::enter_with(terminal_options())?;
     let mut app = App::loaded(loaded, path, Instant::now());
+    app.input_label = input_label;
     app.loop_sample_rate = session.rate;
     app.loop_feed = session.loop_feed.take();
+    if let Some(reason) = terminal.mouse_refused() {
+        app.message(format!("mouse capture refused: {reason}"), Instant::now());
+    }
     let result = event_loop(&mut session, &mut terminal, &mut app);
     app.sync_stats(&session.stats, Instant::now());
     app.save_if_due(Instant::now(), true);
     let stopped = session.stop();
-    let restored = terminal.leave().wrap_err("restoring the mouth terminal");
-    combine(combine(result, restored), stopped)
+    terminal::finish(result, terminal, stopped)
 }
 
 struct Session {
@@ -553,21 +559,25 @@ fn event_loop(
             terminal.draw(|frame| ui::draw(frame, app, &display, &link, now))?;
             draw_at = Instant::now() + period;
         }
-        if event::poll(draw_at.saturating_duration_since(Instant::now()))?
-            && let Event::Key(key) = event::read()?
-            && !quitting
-            && app
-                .handle_key(key, &session.commands, Instant::now())
-                .wrap_err("mouth command channel disconnected")?
-                == Action::Quit
-        {
-            session
-                .commands
-                .try_send(Command::Shutdown)
-                .wrap_err("mouth shutdown command not sent; closing output")?;
-            quitting = true;
-            if app.loop_save_pending() {
-                app.message("finishing loop save".into(), Instant::now());
+        if event::poll(draw_at.saturating_duration_since(Instant::now()))? {
+            let action = match event::read()? {
+                Event::Key(key) if !quitting => app
+                    .handle_key(key, &session.commands, Instant::now())
+                    .wrap_err("mouth command channel disconnected")?,
+                Event::Mouse(mouse) if !quitting => app
+                    .handle_mouse(mouse, &session.commands, Instant::now())
+                    .wrap_err("mouth command channel disconnected")?,
+                _ => Action::Continue,
+            };
+            if action == Action::Quit {
+                session
+                    .commands
+                    .try_send(Command::Shutdown)
+                    .wrap_err("mouth shutdown command not sent; closing output")?;
+                quitting = true;
+                if app.loop_save_pending() {
+                    app.message("finishing loop save".into(), Instant::now());
+                }
             }
         }
     }
@@ -587,5 +597,12 @@ fn link_state(session: &Session) -> String {
         )
     } else {
         "the desk is too old to carry the voice".into()
+    }
+}
+
+const fn terminal_options() -> kazoo_host::terminal::Options {
+    kazoo_host::terminal::Options {
+        mouse: true,
+        key_release_events: false,
     }
 }

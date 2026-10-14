@@ -79,3 +79,34 @@ fn a_saved_loop_is_a_float_wav_that_loops() -> color_eyre::Result<()> {
     std::fs::remove_file(second)?;
     Ok(())
 }
+
+#[test]
+fn mouse_is_released_on_exit() {
+    use super::terminal::{Restore, finish};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    #[derive(Debug)]
+    struct Guard(Rc<RefCell<Vec<u8>>>);
+    impl Restore for Guard {
+        fn leave(self) -> std::io::Result<()> {
+            let mut output = self.0.borrow_mut();
+            crossterm::execute!(&mut *output, crossterm::event::DisableMouseCapture)
+        }
+    }
+    assert!(super::terminal_options().mouse);
+    for failed in [false, true] {
+        let output = Rc::new(RefCell::new(Vec::new()));
+        let guard = Guard(Rc::clone(&output));
+        let result = if failed {
+            Err(color_eyre::eyre::eyre!("injected event error"))
+        } else {
+            Ok(())
+        };
+        let result = finish(result, guard, Ok(()));
+        assert_eq!(result.is_err(), failed);
+        let bytes = output.borrow();
+        let restored = std::str::from_utf8(&bytes).unwrap();
+        assert!(restored.contains("?1000l"));
+        assert!(restored.contains("?1003l"));
+    }
+}

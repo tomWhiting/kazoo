@@ -40,6 +40,18 @@ struct Document {
     fx: Effects,
     #[serde(default, rename = "loop")]
     looper: Option<LoopSettings>,
+    #[serde(default)]
+    gate: Option<Gate>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Gate {
+    #[serde(deserialize_with = "number")]
+    open_db: Option<f32>,
+    #[serde(deserialize_with = "number")]
+    close_db: Option<f32>,
+    #[serde(deserialize_with = "number")]
+    hold_ms: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -139,6 +151,11 @@ impl From<&Settings> for Document {
             .collect();
         Self {
             version: 1,
+            gate: Some(Gate {
+                open_db: Some(settings.gate.open_db),
+                close_db: Some(settings.gate.close_db),
+                hold_ms: Some(settings.gate.hold_ms),
+            }),
             quantise: Quantise {
                 on: quantise.blend > 0.0,
                 scale: SCALE_NAMES[quantise.scale].into(),
@@ -334,6 +351,36 @@ impl Pedal {
 
 impl Document {
     fn apply(self, loaded: &mut Loaded) {
+        if let Some(gate) = self.gate {
+            let defaults = kazoo_core::voice::GateSettings::default();
+            loaded.settings.gate = kazoo_core::voice::GateSettings {
+                open_db: held(
+                    gate.open_db,
+                    defaults.open_db,
+                    -70.0,
+                    -10.0,
+                    "gate open",
+                    &mut loaded.notes,
+                ),
+                close_db: held(
+                    gate.close_db,
+                    defaults.close_db,
+                    -80.0,
+                    -15.0,
+                    "gate close",
+                    &mut loaded.notes,
+                ),
+                hold_ms: held(
+                    gate.hold_ms,
+                    defaults.hold_ms,
+                    0.0,
+                    300.0,
+                    "gate hold",
+                    &mut loaded.notes,
+                ),
+            }
+            .held();
+        }
         self.quantise.apply(&mut loaded.settings, &mut loaded.notes);
         self.synth.apply(&mut loaded.settings, &mut loaded.notes);
         if let Some(tempo) = self.tempo.filter(|tempo| tempo.is_finite()) {
@@ -686,6 +733,28 @@ mod tests {
                 loaded.notes
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn old_settings_acquire_gate_defaults_and_round_trip() -> io::Result<()> {
+        let path = fixture("old_settings_acquire_gate_defaults")?;
+        let original = Settings::default();
+        save(&path, &original)?;
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
+        document.as_object_mut().unwrap().remove("gate");
+        fs::write(
+            &path,
+            serde_json::to_vec(&document).map_err(io::Error::other)?,
+        )?;
+        let mut loaded = load(&path);
+        assert_eq!(loaded.settings, original);
+        loaded.settings.gate.open_db = -42.0;
+        loaded.settings.gate.close_db = -48.0;
+        loaded.settings.gate.hold_ms = 90.0;
+        save(&path, &loaded.settings)?;
+        assert_eq!(load(&path).settings, loaded.settings);
         Ok(())
     }
 
