@@ -6,7 +6,8 @@
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::growth::{Growth, ROOT_DEPTH, ROOT_REACH, Step};
+use crate::colour;
+use crate::growth::{GROWTH_STEP, Growth, ROOT_DEPTH, ROOT_REACH, STEP_LENGTH, Step};
 use crate::history::{Batch, History, Moment};
 
 /// How far in the view is: each level shows more.
@@ -153,6 +154,9 @@ const FAR_THICKNESS: f64 = 0.6;
 /// How much wider a tree's own trunk is drawn than its modules alone make
 /// it: a trunk reads as a trunk.
 const TRUNK_THICKER: f64 = 1.4;
+/// How many dots of limb a colour is blended along when the view is far
+/// out, so a limb mellows into one long gradient instead of a patchwork.
+const MELLOW_DOTS: f64 = 3.0;
 /// The widest a limb is ever drawn, in dots, so close in a thick limb does
 /// not bury its own marks.
 const MAX_DOTS_WIDE: f64 = 10.0;
@@ -961,6 +965,42 @@ fn hangings(
     hang
 }
 
+/// How many moments a colour is blended over at `scale`: those along
+/// [`MELLOW_DOTS`] of limb, one close in.
+fn mellow_window(scale: f64) -> usize {
+    let spacing = STEP_LENGTH / GROWTH_STEP as f64;
+    let moments = (MELLOW_DOTS / (scale * spacing)).ceil();
+    if moments.is_finite() && moments > 1.0 {
+        // Finite and positive: the cast saturates at the most a limb can
+        // hold, which is as far back as any blend can reach.
+        moments as usize
+    } else {
+        1
+    }
+}
+
+/// The colour of the moment at `p` on a limb of `moments`, blended with
+/// up to `window - 1` moments before it on the same limb: their tints'
+/// mean, with the moment's own sound. `None` when there is nothing to
+/// blend (a window of one, the limb's first moment) or the moments are not
+/// grown yet, and the moment's own colour is drawn.
+fn mellowed(scene: &Scene<'_>, moments: &[usize], p: usize, window: usize) -> Option<(u8, u8, u8)> {
+    if window <= 1 || p == 0 {
+        return None;
+    }
+    let look = scene.growth.look[*moments.get(p)?]?;
+    let start = p.saturating_sub(window);
+    let (sum, count) = if p + 1 > window {
+        let before = scene.growth.look[*moments.get(start)?]?;
+        (look.running.minus(&before.running), window)
+    } else {
+        (look.running, p + 1)
+    };
+    // A limb's moments are counted in memory: far fewer than `i64` holds.
+    let count = i64::try_from(count).unwrap_or(i64::MAX);
+    Some(colour::colour(&sum.mean(count), look.sound.as_ref()))
+}
+
 /// Draw one step: each moment's stretch, from the moment before it (or
 /// the step's start) to it, in that moment's own width and colour, bright
 /// where it is on the wall's own line. Stretches drawn alike in a row are
@@ -978,7 +1018,12 @@ fn draw_step(
     let trunk = limb.from.is_none();
     let mut from = step.start;
     let mut run: Option<Run> = None;
-    for &m in &limb.moments[step.first..=step.last] {
+    let window = mellow_window(view.scale);
+    for (p, &m) in limb.moments[step.first..=step.last]
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (step.first + i, m))
+    {
         let (Some(at), Some(look)) = (scene.growth.at[m], scene.growth.look[m]) else {
             continue;
         };
@@ -993,7 +1038,7 @@ fn draw_step(
         let wide = (width * view.scale)
             .max(width * FAR_THICKNESS)
             .clamp(1.0, MAX_DOTS_WIDE);
-        let colour = look.colour;
+        let colour = mellowed(scene, &limb.moments, p, window).unwrap_or(look.colour);
         let bright = scene.line.get(m).copied().unwrap_or(false);
         let style = Style {
             wide,

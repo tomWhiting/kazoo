@@ -461,3 +461,62 @@ fn close_in_a_batch_says_its_note() {
         "close, the batch stays closed: {text}"
     );
 }
+
+#[test]
+fn far_out_a_limb_blends_its_colours_and_close_in_each_is_its_own() {
+    assert_eq!(mellow_window(MAX_SCALE), 1);
+    assert_eq!(mellow_window(1.0), 12);
+    assert_eq!(mellow_window(0.005), 2_400);
+    assert_eq!(mellow_window(f64::NAN), 1);
+    assert_eq!(mellow_window(0.0), 1);
+    let mut history = grown(40, &[]);
+    for (i, &m) in history.limbs[0].moments.clone().iter().enumerate() {
+        let (kind, path) = if i % 2 == 0 {
+            ("vco", "modules/vco1.toml")
+        } else {
+            ("hall", "modules/hall1.toml")
+        };
+        std::sync::Arc::make_mut(&mut history.moments[m])
+            .tint
+            .add(kind, path, "a");
+    }
+    let (growth, gestures, line) = scene_parts(&history);
+    let scene = Scene {
+        history: &history,
+        growth: &growth,
+        gestures: &gestures,
+        days: &[],
+        line: &line,
+        selected: None,
+        now: 0,
+    };
+    let moments = &history.limbs[0].moments;
+    assert_eq!(mellowed(&scene, moments, 20, 1), None);
+    assert_eq!(mellowed(&scene, moments, 0, 8), None);
+    // Four back: two voices and two halls, their mean.
+    let mut four = colour::Tint::default();
+    for &m in &moments[17..=20] {
+        four = four.plus(&history.moments[m].tint);
+    }
+    assert_eq!(
+        mellowed(&scene, moments, 20, 4),
+        Some(colour::colour(&four.mean(4), None))
+    );
+    // Near the limb's start the blend reaches back only to its first moment.
+    let mut start = colour::Tint::default();
+    for &m in &moments[..=2] {
+        start = start.plus(&history.moments[m].tint);
+    }
+    assert_eq!(
+        mellowed(&scene, moments, 2, 50),
+        Some(colour::colour(&start.mean(3), None))
+    );
+    // Neighbours far out are alike; close in they differ.
+    let (a, b) = (moments[20], moments[21]);
+    let own = |m: usize| growth.look[m].expect("grown").colour;
+    assert_ne!(own(a), own(b));
+    assert_eq!(
+        mellowed(&scene, moments, 20, 20),
+        mellowed(&scene, moments, 22, 20)
+    );
+}

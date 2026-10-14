@@ -2,15 +2,18 @@
 //!
 //! Every kind of module belongs to a family, and every family has its own
 //! hue: voices amber, drums yellow, filters green, rhythm cyan, space blue,
-//! modulation violet, tape and speech pink, drive red. A moment is the
-//! blend of the families alive in it, so a wall of oscillators and filters
-//! reads amber-green and one gone to reverb and delay reads blue, and the
-//! blend leans toward what was being played with (the families whose
-//! modules were turned or added) along the step so far. The plumbing (out,
-//! mix, vca, scope, readout) has no hue of its own. Mixed families make a
-//! softer colour, one family a vivid one. How loud it was, when the moment
-//! kept its sound, makes it lighter or darker. The same settings always
-//! give the same colour.
+//! modulation violet, tape and speech pink, drive red. Each module alive
+//! is its own shade of its family's hue, turned to one side or the other
+//! and lightened or darkened by a fingerprint of its settings (its file in
+//! the tree), and a moment is every module's shade together. So a wall of
+//! oscillators and filters reads amber-green and one gone to reverb and
+//! delay reads blue; one knob turned moves one module's shade of the
+//! hundred or so, so the colour drifts from moment to moment rather than
+//! jumping, and a wall put up again from its settings comes back to
+//! exactly its colour. The plumbing (out, mix, vca, scope, readout) has no
+//! hue of its own. Mixed families make a softer colour, one family a vivid
+//! one. How loud it was, when the moment kept its sound, makes it lighter
+//! or darker.
 
 use crate::history::Sound;
 
@@ -33,9 +36,13 @@ pub const NAMES: [&str; FAMILIES] = [
     "drive",
 ];
 
-/// How much what was played with counts against what is alive: at most
-/// this share of the alive modules' weight.
-const PLAYED: f64 = 0.6;
+/// How far a module's shade turns from its family's hue, either way,
+/// degrees: wide enough that neighbouring families' shades meet.
+const SPREAD: f64 = 55.0;
+/// A shade's length on the wheel, in the whole numbers a tint adds up.
+const UNIT: f64 = 1000.0;
+/// How far the modules' own light and dark move a moment's lightness.
+const SHADE_LIGHT: f64 = 0.14;
 /// Lightness with no sound kept.
 const LIGHT: f64 = 0.6;
 
@@ -85,6 +92,130 @@ impl Kinds {
     }
 }
 
+/// Every coloured module alive at a moment, each its shade, added up.
+///
+/// Each shade is a point on the colour wheel. The sums are whole numbers,
+/// so a module added and later taken away leaves exactly what was there
+/// before it, across any number of moments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tint {
+    /// The shades' sum across the wheel.
+    pub x: i64,
+    /// And up it.
+    pub y: i64,
+    /// Their light and dark, summed.
+    pub light: i64,
+    /// How many shades are in it.
+    pub count: i64,
+}
+
+impl Tint {
+    /// Add the module at `path`, a `kind`, whose settings' fingerprint is
+    /// `blob` (git's id of its file), if its kind has a family.
+    pub fn add(&mut self, kind: &str, path: &str, blob: &str) {
+        if let Some((x, y, light)) = shade(kind, path, blob) {
+            self.x += x;
+            self.y += y;
+            self.light += light;
+            self.count += 1;
+        }
+    }
+
+    /// Take away the module at `path` as it was when `blob` was its
+    /// settings: exactly what adding it added.
+    pub fn remove(&mut self, kind: &str, path: &str, blob: &str) {
+        if let Some((x, y, light)) = shade(kind, path, blob) {
+            self.x -= x;
+            self.y -= y;
+            self.light -= light;
+            self.count -= 1;
+        }
+    }
+
+    /// Both tints together.
+    #[must_use]
+    pub const fn plus(&self, other: &Self) -> Self {
+        Self {
+            x: self.x + other.x,
+            y: self.y + other.y,
+            light: self.light + other.light,
+            count: self.count + other.count,
+        }
+    }
+
+    /// The mean of `moments` tints added up into this one, each sum
+    /// divided and rounded to the nearest whole number; this tint as it is
+    /// for none or one.
+    #[must_use]
+    pub fn mean(&self, moments: i64) -> Self {
+        if moments <= 1 {
+            return *self;
+        }
+        let share = |sum: i64| {
+            let half = moments / 2;
+            if sum >= 0 {
+                (sum + half) / moments
+            } else {
+                (sum - half) / moments
+            }
+        };
+        Self {
+            x: share(self.x),
+            y: share(self.y),
+            light: share(self.light),
+            count: share(self.count),
+        }
+    }
+
+    /// This tint without `other`'s.
+    #[must_use]
+    pub const fn minus(&self, other: &Self) -> Self {
+        Self {
+            x: self.x - other.x,
+            y: self.y - other.y,
+            light: self.light - other.light,
+            count: self.count - other.count,
+        }
+    }
+}
+
+/// One module's shade: its family's hue turned by up to `SPREAD` either
+/// way, and its light or dark, both from a fingerprint of where it is and
+/// what its settings are. `None` for a kind with no family.
+fn shade(kind: &str, path: &str, blob: &str) -> Option<(i64, i64, i64)> {
+    let family = family_of(kind)?;
+    let print = fingerprint(path, blob);
+    let turn = unit(print);
+    let dark = unit(print >> 32);
+    let hue = turn.mul_add(2.0 * SPREAD, HUES[family] - SPREAD);
+    let (sin, cos) = hue.to_radians().sin_cos();
+    Some((
+        (cos * UNIT).round() as i64,
+        (sin * UNIT).round() as i64,
+        (dark.mul_add(2.0, -1.0) * UNIT).round() as i64,
+    ))
+}
+
+/// FNV-1a over `path`, a separator, and `blob`: the same settings at the
+/// same place always give the same print, on every machine.
+fn fingerprint(path: &str, blob: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in path.bytes().chain([0]).chain(blob.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    // Mixed once more, so prints that differ in their last letters spread
+    // across the whole range.
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    hash ^ (hash >> 33)
+}
+
+/// The low 32 bits of `bits` as a share from 0 to 1.
+fn unit(bits: u64) -> f64 {
+    f64::from((bits & 0xffff_ffff) as u32) / f64::from(u32::MAX)
+}
+
 /// A module's kind from its id, as the wall made it: the id without its
 /// number (`noiseperc12` is a `noiseperc`, `sampler12_3` a `sampler12`).
 #[must_use]
@@ -120,35 +251,26 @@ pub fn family_of(kind: &str) -> Option<usize> {
     })
 }
 
-/// A moment's colour: the blend of the families `alive`, leaning toward
-/// those `played` with, lighter when `sound` says it was louder.
+/// A moment's colour from its `tint`.
+///
+/// The hue is where its shades point together: vivid when they agree,
+/// softer when they spread around the wheel. It is lighter or darker by
+/// its modules' own light and, when `sound` was kept, by how loud it was.
 #[must_use]
-pub fn colour(alive: &Kinds, played: &Kinds, sound: Option<&Sound>) -> (u8, u8, u8) {
-    let alive_weight = f64::from(alive.total());
-    let played_total = f64::from(played.total());
-    let played_scale = if played_total > 0.0 {
-        PLAYED * alive_weight.max(1.0) / played_total
-    } else {
-        0.0
-    };
-    let (mut x, mut y, mut weight) = (0.0_f64, 0.0_f64, 0.0_f64);
-    for ((hue, alive), played) in HUES.iter().zip(alive.0).zip(played.0) {
-        let w = f64::from(played).mul_add(played_scale, f64::from(alive));
-        if w > 0.0 {
-            let (sin, cos) = hue.to_radians().sin_cos();
-            x = cos.mul_add(w, x);
-            y = sin.mul_add(w, y);
-            weight += w;
-        }
-    }
-    if weight <= 0.0 {
+pub fn colour(tint: &Tint, sound: Option<&Sound>) -> (u8, u8, u8) {
+    if tint.count <= 0 {
         return PLAIN;
     }
+    let (x, y) = (tint.x as f64, tint.y as f64);
+    let count = tint.count as f64;
     let hue = y.atan2(x).to_degrees().rem_euclid(360.0);
     // One family alone is vivid; an even mix of all of them still has a
     // colour, only a softer one.
-    let together = (libm::hypot(x, y) / weight).clamp(0.0, 1.0);
-    let saturation = together.mul_add(0.4, 0.45);
+    let together = (libm::hypot(x, y) / (count * UNIT)).clamp(0.0, 1.0);
+    let saturation = together.mul_add(0.45, 0.4);
+    // The modules' light and dark, as far from even as so many shades
+    // drawn at random would wander: a few modules move it as much as many.
+    let shades = (tint.light as f64 / (count.sqrt() * UNIT)).clamp(-1.0, 1.0);
     let light = sound.map_or(LIGHT, |sound| {
         let rms = if sound.rms_db.is_finite() {
             f64::from(sound.rms_db)
@@ -157,7 +279,7 @@ pub fn colour(alive: &Kinds, played: &Kinds, sound: Option<&Sound>) -> (u8, u8, 
         };
         ((rms + 50.0) / 40.0).clamp(0.0, 1.0).mul_add(0.3, 0.45)
     });
-    hsl(hue, saturation, light)
+    hsl(hue, saturation, shades.mul_add(SHADE_LIGHT, light))
 }
 
 /// A colour from hue (degrees), saturation and lightness (0 to 1).

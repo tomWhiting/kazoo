@@ -845,3 +845,63 @@ fn a_record_mark_then_an_id_at_the_end_of_an_author_or_subject_never_splits_a_co
     assert_eq!(history.moments[1].summary, "sub\u{fffd}abc");
     assert_eq!(history.moments[1].modules, 2);
 }
+
+#[test]
+fn a_moments_tint_is_its_modules_shades_from_their_settings() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    kazoo_wall::tree::git::plant(dir.path()).expect("planted");
+    let mut stream = Stream::default();
+    let one = stream.commit(
+        "trunk",
+        None,
+        1,
+        &[("modules/vco1.toml", Some("a")), ("wall.toml", Some("t"))],
+        None,
+    );
+    let two = stream.commit(
+        "trunk",
+        Some(one),
+        2,
+        &[("modules/vcf1.toml", Some("b"))],
+        None,
+    );
+    let three = stream.commit(
+        "trunk",
+        Some(two),
+        3,
+        &[("modules/vcf1.toml", Some("z"))],
+        None,
+    );
+    let four = stream.commit(
+        "trunk",
+        Some(three),
+        4,
+        &[("modules/vcf1.toml", Some("b"))],
+        None,
+    );
+    let five = stream.commit("trunk", Some(four), 5, &[("modules/vco1.toml", None)], None);
+    stream.commit(
+        "trunk",
+        Some(five),
+        6,
+        &[("modules/out1.toml", Some("o"))],
+        None,
+    );
+    stream.import(dir.path());
+    let history = History::read(dir.path()).expect("the tree reads");
+    let tints: Vec<Tint> = history.limbs[0]
+        .moments
+        .iter()
+        .map(|&m| history.moments[m].tint)
+        .collect();
+    assert_eq!(tints[0].count, 1);
+    assert_eq!(tints[1].count, 2);
+    // New settings, a new shade; the old settings back, the old shade.
+    assert_ne!(tints[2], tints[1]);
+    assert_eq!(tints[3], tints[1]);
+    // The vco taken away takes exactly its shade with it.
+    assert_eq!(tints[4], tints[3].minus(&tints[0]));
+    // Plumbing has no shade.
+    assert_eq!(tints[5], tints[4]);
+    assert!(history.moments.iter().all(|m| m.problems.is_empty()));
+}

@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::f64::consts::FRAC_PI_2;
 
-use crate::colour::{self, Kinds};
+use crate::colour::{self, Tint};
 use crate::history::{History, Sound};
 use crate::ledger::{Saved, Shape, StepKey};
 
@@ -91,11 +91,16 @@ pub struct Step {
 pub struct Look {
     /// Width, from the modules alive at the moment.
     pub width: f64,
-    /// Its colour: the families alive at it, leaning toward what was
-    /// played with along its step so far, lighter for the mean sound of the
-    /// step's moments so far. Only ever the past: a stretch drawn once is
-    /// drawn the same way however the step fills after it.
+    /// Its colour: every module alive at it, each its own shade from its
+    /// settings, together, lighter for the mean sound of the step's moments
+    /// so far. Only ever the past: a stretch drawn once is drawn the same
+    /// way however the step fills after it.
     pub colour: (u8, u8, u8),
+    /// The tints of its limb's moments up to and including it, added up,
+    /// so far out the colour of any run of them is one subtraction.
+    pub running: Tint,
+    /// The mean sound of its step's moments so far, as its colour has it.
+    pub sound: Option<Sound>,
 }
 
 /// The grown tree.
@@ -592,7 +597,6 @@ impl Growth {
         let (start, end, first) = (step.start, step.end, step.first);
         let own = &moments[first..=last];
         let mut sounds = Vec::new();
-        let mut played = Kinds::default();
         let mut widest: f64 = 1.0;
         for (i, &m) in own.iter().enumerate() {
             let t = (i + 1) as f64 / GROWTH_STEP as f64;
@@ -605,12 +609,18 @@ impl Growth {
             if let Some(sound) = moment.sound {
                 sounds.push(sound);
             }
-            played = played.plus(&moment.touched);
             let width = width_for(moment.modules);
             widest = widest.max(width);
+            let before = (first + i)
+                .checked_sub(1)
+                .and_then(|p| self.look[moments[p]])
+                .map_or_else(Tint::default, |look| look.running);
+            let sound = mean_of(&sounds);
             self.look[m] = Some(Look {
                 width,
-                colour: colour::colour(&moment.alive, &played, mean_of(&sounds).as_ref()),
+                colour: colour::colour(&moment.tint, sound.as_ref()),
+                running: before.plus(&moment.tint),
+                sound,
             });
         }
         let step = &mut self.steps[id];

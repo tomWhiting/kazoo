@@ -10,6 +10,23 @@ fn kinds(pairs: &[(&str, u16)]) -> Kinds {
     kinds
 }
 
+/// A tint of `pairs`' modules, each at its own place (`modules/<kind><i>.toml`)
+/// with settings named `settings`.
+fn tint(pairs: &[(&str, u16)], settings: &str) -> Tint {
+    let mut tint = Tint::default();
+    for &(kind, n) in pairs {
+        for i in 0..n {
+            tint.add(kind, &format!("modules/{kind}{i}.toml"), settings);
+        }
+    }
+    tint
+}
+
+fn hue_gap(a: f64, b: f64) -> f64 {
+    let d = (a - b).rem_euclid(360.0);
+    d.min(360.0 - d)
+}
+
 fn hue_of((red, green, blue): (u8, u8, u8)) -> f64 {
     let (red, green, blue) = (f64::from(red), f64::from(green), f64::from(blue));
     let max = red.max(green).max(blue);
@@ -23,11 +40,6 @@ fn hue_of((red, green, blue): (u8, u8, u8)) -> f64 {
         (red - green) / spread + 4.0
     };
     sector * 60.0
-}
-
-fn near(a: f64, b: f64) -> bool {
-    let d = (a - b).rem_euclid(360.0);
-    d.min(360.0 - d) < 6.0
 }
 
 #[test]
@@ -51,12 +63,22 @@ fn every_family_has_its_own_hue() {
         ("fuzz", 7),
     ] {
         assert_eq!(family_of(kind), Some(f), "{kind}");
-        let c = colour(&kinds(&[(kind, 3)]), &Kinds::default(), None);
+        // Enough modules that their shades' turns even out around the
+        // family's hue.
+        let c = colour(&tint(&[(kind, 64)], "a"), None);
         assert!(
-            near(hue_of(c), HUES[f]),
+            hue_gap(hue_of(c), HUES[f]) < 20.0,
             "{kind}: {c:?} is not near {}",
             HUES[f]
         );
+    }
+}
+
+#[test]
+fn a_module_shade_stays_within_its_family_spread() {
+    for blob in ["a", "b", "c", "d", "e", "f", "0123", "ffff"] {
+        let c = colour(&tint(&[("vcf", 1)], blob), None);
+        assert!(hue_gap(hue_of(c), HUES[2]) <= SPREAD + 3.0, "{blob}: {c:?}");
     }
 }
 
@@ -65,45 +87,66 @@ fn plumbing_and_unknown_kinds_have_no_colour() {
     for kind in ["out", "mix", "vca", "scope", "readout", "a-kind-from-later"] {
         assert_eq!(family_of(kind), None, "{kind}");
     }
-    let plumbing = kinds(&[("out", 2), ("mix", 3)]);
-    assert_eq!(plumbing.total(), 0);
-    assert_eq!(colour(&plumbing, &Kinds::default(), None), PLAIN);
-    // Plumbing among the others changes nothing.
-    let voices = kinds(&[("vco", 4)]);
-    assert_eq!(
-        colour(&voices.plus(&plumbing), &Kinds::default(), None),
-        colour(&voices, &Kinds::default(), None)
-    );
+    let plumbing = tint(&[("out", 2), ("mix", 3)], "a");
+    assert_eq!(plumbing, Tint::default());
+    assert_eq!(colour(&plumbing, None), PLAIN);
+    let voices = tint(&[("vco", 4)], "a");
+    assert_eq!(colour(&voices.plus(&plumbing), None), colour(&voices, None));
 }
 
 #[test]
-fn the_blend_sits_between_its_families_and_leans_toward_what_was_played() {
-    let alive = kinds(&[("vco", 5), ("vcf", 5)]);
-    let still = hue_of(colour(&alive, &Kinds::default(), None));
-    // Between amber (32) and green (125).
-    assert!(still > 32.0 && still < 125.0, "{still}");
-    let filters_played = hue_of(colour(&alive, &kinds(&[("vcf", 4)]), None));
-    let voices_played = hue_of(colour(&alive, &kinds(&[("vco", 4)]), None));
-    assert!(
-        filters_played > still && voices_played < still,
-        "{voices_played} {still} {filters_played}"
+fn the_same_settings_give_the_same_colour_and_new_ones_a_near_one() {
+    let wall = tint(&[("vco", 20), ("vcf", 20), ("hall", 10), ("lfo", 10)], "a");
+    assert_eq!(
+        wall,
+        tint(&[("vco", 20), ("vcf", 20), ("hall", 10), ("lfo", 10)], "a")
     );
+    // One knob turned: one module's settings change.
+    let mut turned = wall;
+    turned.remove("vcf", "modules/vcf3.toml", "a");
+    turned.add("vcf", "modules/vcf3.toml", "b");
+    assert_ne!(turned, wall);
+    let (before, after) = (hue_of(colour(&wall, None)), hue_of(colour(&turned, None)));
+    // One shade of sixty moves by up to twice the spread: the whole moves a
+    // few degrees, never a jump to another colour.
+    assert!(hue_gap(before, after) < 8.0, "{before} {after}");
+    // Turned back, exactly the colour it was.
+    turned.remove("vcf", "modules/vcf3.toml", "b");
+    turned.add("vcf", "modules/vcf3.toml", "a");
+    assert_eq!(turned, wall);
+}
+
+#[test]
+fn a_wall_of_new_settings_is_a_different_shade() {
+    let a = colour(&tint(&[("vco", 3), ("vcf", 3)], "a"), None);
+    let b = colour(&tint(&[("vco", 3), ("vcf", 3)], "zzz"), None);
+    assert_ne!(a, b);
+}
+
+#[test]
+fn the_blend_sits_between_its_families() {
+    let alive = tint(&[("vco", 40), ("vcf", 40)], "a");
+    let hue = hue_of(colour(&alive, None));
+    // Between amber (32) and green (125).
+    assert!(hue > 32.0 && hue < 125.0, "{hue}");
 }
 
 #[test]
 fn one_family_is_more_vivid_than_a_mix() {
     let spread = |(r, g, b): (u8, u8, u8)| r.max(g).max(b) - r.min(g).min(b);
-    let one = colour(&kinds(&[("vcf", 8)]), &Kinds::default(), None);
+    let one = colour(&tint(&[("vcf", 8)], "a"), None);
     let mix = colour(
-        &kinds(&[
-            ("vco", 2),
-            ("kick", 2),
-            ("vcf", 2),
-            ("seq", 2),
-            ("hall", 2),
-            ("lfo", 2),
-        ]),
-        &Kinds::default(),
+        &tint(
+            &[
+                ("vco", 2),
+                ("kick", 2),
+                ("vcf", 2),
+                ("seq", 2),
+                ("hall", 2),
+                ("lfo", 2),
+            ],
+            "a",
+        ),
         None,
     );
     assert!(spread(one) > spread(mix), "{one:?} {mix:?}");
@@ -112,7 +155,7 @@ fn one_family_is_more_vivid_than_a_mix() {
 
 #[test]
 fn louder_is_lighter_and_nonsense_still_draws() {
-    let alive = kinds(&[("vco", 3)]);
+    let alive = tint(&[("vco", 3)], "a");
     let sound = |rms_db: f32| Sound {
         rms_db,
         peak_db: 0.0,
@@ -123,12 +166,34 @@ fn louder_is_lighter_and_nonsense_still_draws() {
         onsets: 2.0,
     };
     let sum = |(r, g, b): (u8, u8, u8)| u32::from(r) + u32::from(g) + u32::from(b);
-    let quiet = colour(&alive, &Kinds::default(), Some(&sound(-45.0)));
-    let loud = colour(&alive, &Kinds::default(), Some(&sound(-12.0)));
+    let quiet = colour(&alive, Some(&sound(-45.0)));
+    let loud = colour(&alive, Some(&sound(-12.0)));
     assert!(sum(loud) > sum(quiet), "{quiet:?} {loud:?}");
-    let nonsense = colour(&alive, &Kinds::default(), Some(&sound(f32::NAN)));
+    let nonsense = colour(&alive, Some(&sound(f32::NAN)));
     assert!(sum(nonsense) > 0);
     assert_eq!(hsl(f64::NAN, f64::INFINITY, f64::NAN), hsl(0.0, 0.0, 0.5));
+}
+
+#[test]
+fn a_mean_divides_every_sum_and_rounds_to_nearest() {
+    let sum = Tint {
+        x: 10,
+        y: -10,
+        light: 7,
+        count: 9,
+    };
+    assert_eq!(
+        sum.mean(4),
+        Tint {
+            x: 3,
+            y: -3,
+            light: 2,
+            count: 2
+        }
+    );
+    assert_eq!(sum.mean(1), sum);
+    assert_eq!(sum.mean(0), sum);
+    assert_eq!(sum.minus(&sum), Tint::default());
 }
 
 #[test]

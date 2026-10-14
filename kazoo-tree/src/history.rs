@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use kazoo_wall::tree::git::git_command;
 
-use crate::colour::{self, Kinds};
+use crate::colour::{self, Kinds, Tint};
 use kazoo_wall::tree::thread::here::name_of;
 
 /// What went wrong reading the tree.
@@ -82,9 +82,9 @@ pub struct Moment {
     pub modules: u32,
     /// Modules alive at this moment, by family (its colour).
     pub alive: Kinds,
-    /// Modules this moment turned, repatched, added or took away, by
-    /// family: what was being played with.
-    pub touched: Kinds,
+    /// Every coloured module alive at this moment, each its own shade
+    /// from its settings, together (its colour).
+    pub tint: Tint,
     /// Several changes sent at once with a note, when the moment is one.
     pub batch: Option<Box<Batch>>,
     /// What did not read in its commit: said in the details, never a
@@ -359,7 +359,9 @@ impl History {
                     "--no-show-signature",
                     "--no-color",
                     "--encoding=UTF-8",
-                    "--name-status",
+                    "--raw",
+                    "--no-abbrev",
+                    "--no-renames",
                     LOG_FORMAT,
                 ]),
                 &input,
@@ -427,7 +429,7 @@ impl History {
                     } else {
                         &fresh[m - self.moments.len()]
                     };
-                    (at.modules, at.alive)
+                    (at.modules, at.alive, at.tint)
                 },
             )?;
             if self.index.contains_key(&moment.id) || fresh_index.contains_key(&moment.id) {
@@ -556,7 +558,7 @@ pub fn clean(text: &str) -> String {
 fn moment(
     record: &str,
     index: impl Fn(&str) -> Option<usize>,
-    alive_at: impl Fn(usize) -> (u32, Kinds),
+    alive_at: impl Fn(usize) -> (u32, Kinds, Tint),
 ) -> Result<Moment, HistoryError> {
     // The last end mark: the files after it are the wall's own paths,
     // while a subject or a note before it may hold the mark's byte.
@@ -619,8 +621,8 @@ fn moment(
         }
     }
     let batch = batch_of(&kind, &summary, note, steps, &mut problems);
-    let (before, alive) = parent.map_or_else(|| (0, Kinds::default()), &alive_at);
-    let (modules, alive, touched) = files_of(files, before, alive, &mut problems);
+    let before = parent.map_or_else(|| (0, Kinds::default(), Tint::default()), &alive_at);
+    let (modules, alive, tint) = files_of(files, before, &mut problems);
     Ok(Moment {
         id,
         parent,
@@ -634,7 +636,7 @@ fn moment(
         sound,
         modules,
         alive,
-        touched,
+        tint,
         batch,
         problems,
     })
@@ -721,39 +723,56 @@ pub(crate) fn knots(limbs: &[Limb], moments: &[Arc<Moment>]) -> Vec<Vec<usize>> 
         .collect()
 }
 
-/// What a record's files did to the modules: how many are alive after it
-/// (from `before`), by family too (from `alive`), and which families it
-/// touched. Anything that does not add up is said in `problems`.
+/// What a record's files did to the modules: how many are alive after it,
+/// by family, and their shades together, from what was alive `before` it.
+/// Git says each file as `--raw` does (`:old-mode new-mode old-id new-id
+/// status<TAB>path`), so a module's shade is taken away with the settings
+/// it had and given back with the ones it has; a line in `--name-status`
+/// form (`status<TAB>path`, the tests' own logs) has no ids, and shades the
+/// module by its place alone. Anything that does not add up is said in
+/// `problems`.
 fn files_of(
     files: &str,
-    before: u32,
-    mut alive: Kinds,
+    (before, mut alive, mut tint): (u32, Kinds, Tint),
     problems: &mut Vec<String>,
-) -> (u32, Kinds, Kinds) {
+) -> (u32, Kinds, Tint) {
     let mut modules = i64::from(before);
-    let mut touched = Kinds::default();
     let mut missing = false;
     for line in files.lines() {
-        let mut parts = line.splitn(2, '\t');
-        let (Some(status), Some(path)) = (parts.next(), parts.next()) else {
+        let Some((head, path)) = line.split_once('\t') else {
             continue;
         };
         let Some(file) = path.strip_prefix("modules/") else {
             continue;
         };
         let kind = colour::kind_of(file.trim_end().trim_end_matches(".toml"));
-        match status.trim() {
+        let fields: Vec<&str> = head.split_whitespace().collect();
+        let (old, new, status) = match fields.as_slice() {
+            [_, _, old, new, status] => (*old, *new, *status),
+            [status] => ("", "", *status),
+            _ => {
+                problems.push(format!(
+                    "a file line git did not write as expected: {line:.80}"
+                ));
+                continue;
+            }
+        };
+        match status {
             "A" => {
                 modules += 1;
                 alive.add(kind);
+                tint.add(kind, path, new);
             }
             "D" => {
                 modules -= 1;
                 missing |= !alive.remove(kind);
+                tint.remove(kind, path, old);
             }
-            _ => {}
+            _ => {
+                tint.remove(kind, path, old);
+                tint.add(kind, path, new);
+            }
         }
-        touched.add(kind);
     }
     if missing {
         problems.push(
@@ -769,7 +788,7 @@ fn files_of(
     (
         u32::try_from(modules.max(0)).unwrap_or(u32::MAX),
         alive,
-        touched,
+        tint,
     )
 }
 
