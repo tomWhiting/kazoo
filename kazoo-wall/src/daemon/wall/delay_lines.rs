@@ -65,7 +65,12 @@ impl Wall {
             // The endpoints and amount were accepted already, so changing
             // only the tag and bounded delay cannot grow or invalidate it.
             let route = Route {
-                tag: self.lined.get(&id).copied().unwrap_or(0),
+                tag: self
+                    .lined
+                    .get(&id)
+                    .or_else(|| self.cable_tags.get(&id))
+                    .copied()
+                    .unwrap_or(0),
                 delay: self.timing.delays.get(&id).copied().unwrap_or(0),
                 ..route
             };

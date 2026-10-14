@@ -28,6 +28,7 @@ fn change(seq: u64, go: bool) -> Change {
             modules: 0,
             cables: 0,
             tempo: 120.0,
+            beats: 0.0,
             by_console: true,
         }
     } else {

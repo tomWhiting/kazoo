@@ -20,6 +20,7 @@ fn go(news: &mut News, seq: u64, seat: &str, moment: u64, now: Instant) {
         modules: 140,
         cables: 189,
         tempo: 96.0,
+        beats: 0.0,
         by_console: true,
     };
     news.take(
@@ -370,6 +371,7 @@ fn a_walk_ending_on_an_undone_go_to_a_mark_names_the_mark_whole() {
         modules: 140,
         cables: 189,
         tempo: 96.0,
+        beats: 0.0,
         by_console: true,
     };
     let undone = t0 + Duration::from_secs(1);
@@ -462,6 +464,7 @@ fn a_go_cut_off_by_the_line_dropping_is_still_told() {
         modules: 140,
         cables: 189,
         tempo: 96.0,
+        beats: 0.0,
         by_console: true,
     };
     news.take(go_change(41, "Tom", what, None), t0);

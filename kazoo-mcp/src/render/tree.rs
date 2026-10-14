@@ -278,6 +278,7 @@ mod tests {
                     modules: 12,
                     cables: 30,
                     tempo: 96.0,
+                    beats: 0.0,
                     by_console: false,
                 },
                 summary: "Waffles put the wall at dawn".into(),
@@ -387,6 +388,7 @@ mod tests {
                     modules: 1,
                     cables: 0,
                     tempo: 120.0,
+                    beats: 0.0,
                     by_console: true,
                 },
                 summary: "went to trunk".into(),
@@ -442,6 +444,7 @@ mod tests {
             modules: 1,
             cables: 0,
             tempo: 120.0,
+            beats: 0.0,
             by_console: false,
         };
         let undone = |what: What| LoadResult {

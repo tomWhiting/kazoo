@@ -157,8 +157,9 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
             modules,
             cables,
             tempo,
+            beats,
             ..
-        } => went(to, undo, backup, (*modules, *cables, *tempo)),
+        } => went(to, undo, backup, (*modules, *cables, *tempo), *beats),
         What::Abandoned { .. } | What::Resumed { .. } | What::SetAside { .. } => noted(what),
     }
 }
@@ -280,6 +281,7 @@ fn went(
     undo: bool,
     backup: &str,
     (modules, cables, bpm): (u32, u32, f64),
+    beats: f64,
 ) -> String {
     let mut place = to.mark.as_ref().map_or_else(
         || {
@@ -301,8 +303,13 @@ fn went(
         }
     }
     let direction = if undo { "back to" } else { "to" };
+    let crossing = if beats > 0.0 {
+        format!("; crossing over {}", format::beats(beats))
+    } else {
+        String::new()
+    };
     format!(
-        "went {direction} {place}: {}, {}, {}; the wall as it was is saved as \"{backup}\"",
+        "went {direction} {place}: {}, {}, {}{crossing}; the wall as it was is saved as \"{backup}\"",
         count(usize::try_from(modules).unwrap_or(usize::MAX), "module"),
         count(usize::try_from(cables).unwrap_or(usize::MAX), "cable"),
         format::bpm(bpm)
@@ -741,6 +748,7 @@ mod tests {
                 modules: 41,
                 cables: 51,
                 tempo: 120.0,
+                beats: 0.0,
                 by_console: true,
             };
             assert_eq!(

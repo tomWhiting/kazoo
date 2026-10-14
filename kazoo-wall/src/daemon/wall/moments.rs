@@ -40,6 +40,7 @@ enum Asked {
     },
     Back {
         go: u64,
+        beats: f64,
         backup: String,
         fingerprint: String,
         back_to: TreePlace,
@@ -270,6 +271,7 @@ impl Wall {
         &mut self,
         (seat, console): (&str, bool),
         go: u64,
+        beats: f64,
         backup: String,
         fingerprint: String,
         back_to: TreePlace,
@@ -285,6 +287,7 @@ impl Wall {
                 asked: Instant::now(),
                 what: Asked::Back {
                     go,
+                    beats,
                     backup,
                     fingerprint,
                     back_to,
@@ -375,11 +378,21 @@ impl Wall {
                 }
                 let (incoming, notes) =
                     Patch::load(&wall).map_err(|err| error(ErrorCode::BrokenSave, err))?;
-                self.replace(seat, incoming, &Source::Moment { to, from: here }, notes)
+                self.replace(
+                    seat,
+                    incoming,
+                    &Source::Moment {
+                        to,
+                        from: here,
+                        beats: crate::protocol::DEFAULT_CROSS_BEATS,
+                    },
+                    notes,
+                )
             }
             (
                 Asked::Back {
                     go,
+                    beats,
                     backup,
                     fingerprint,
                     back_to,
@@ -399,6 +412,7 @@ impl Wall {
                         },
                         to: back_to.clone(),
                         from: here,
+                        beats: *beats,
                     },
                     read.notes,
                 )
@@ -484,11 +498,12 @@ impl Source {
         incoming: &Patch,
         playing: f64,
         console: bool,
+        beats: f64,
     ) -> What {
         let modules = u32::try_from(incoming.modules().len()).unwrap_or(u32::MAX);
         let cables = u32::try_from(incoming.cables().len()).unwrap_or(u32::MAX);
         match self {
-            Self::Moment { to, from } | Self::Back { to, from, .. } => What::Go {
+            Self::Moment { to, from, .. } | Self::Back { to, from, .. } => What::Go {
                 to: to.clone(),
                 from: from.clone(),
                 backup: backup.name.clone(),
@@ -496,6 +511,7 @@ impl Source {
                 modules,
                 cables,
                 tempo: playing,
+                beats,
                 by_console: console,
             },
             Self::Save(_) | Self::Empty | Self::Undo { .. } => What::Load {

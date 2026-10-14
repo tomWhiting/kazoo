@@ -28,6 +28,7 @@ impl Wall {
             .iter()
             .filter(|module| is_sink(module.kind))
             .filter_map(|module| self.rack.slot_of(&module.id))
+            .chain(self.fades.sinks())
             .collect();
         let kept = heard(slots, edges, &sinks);
         let heard: HashSet<usize> = kept.iter().copied().collect();

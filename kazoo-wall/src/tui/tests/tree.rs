@@ -226,6 +226,7 @@ fn a_go_answer_forgets_the_wall_and_says_where_it_went() {
                 modules: 4,
                 cables: 3,
                 tempo: 96.0,
+                beats: 0.0,
                 by_console: true,
             },
             summary: "went to dawn".into(),
@@ -499,6 +500,7 @@ fn undoing_go_and_load_keeps_the_backup_and_notes() {
             modules: 4,
             cables: 3,
             tempo: 96.0,
+            beats: 0.0,
             by_console: true,
         },
         What::Load {
@@ -554,6 +556,7 @@ fn undoing_a_replacement_says_what_the_wall_did() {
                 modules: 4,
                 cables: 3,
                 tempo: 96.0,
+                beats: 0.0,
                 by_console: true,
             },
             "went back to main, after change 812 · the wall as it was is saved as “before-undo” · \

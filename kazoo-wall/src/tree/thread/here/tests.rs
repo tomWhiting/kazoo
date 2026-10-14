@@ -138,6 +138,7 @@ impl Rig {
             modules: u32::try_from(file.modules.len()).unwrap(),
             cables: u32::try_from(file.cables.len()).unwrap(),
             tempo: file.tempo,
+            beats: 0.0,
             by_console: true,
         };
         let mut change = make_change(seq, what);
@@ -360,6 +361,7 @@ fn a_go_the_queue_dropped_is_still_taken_before_the_gap() {
         modules: 0,
         cables: 0,
         tempo: 120.0,
+        beats: 0.0,
         by_console: true,
     };
     rig.wall.tree_test_apply(&file, make_change(4, what));

@@ -7,10 +7,13 @@
 mod batch;
 mod chains;
 mod cost;
+mod cross;
 mod delay_lines;
 mod loops;
 mod moments;
 pub(super) mod unheard;
+
+use cross::{CrossPlan, Fades};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -260,6 +263,8 @@ struct Rack {
     /// The free slots below `slots.len()`, lowest first.
     free: BTreeSet<usize>,
     next_tag: u32,
+    /// Silent slots remain reserved until the control tick removes them.
+    leaving: BTreeMap<usize, u32>,
 }
 
 impl Rack {
@@ -301,6 +306,31 @@ impl Rack {
         Some(slot)
     }
 
+    fn leave(&mut self, id: &str) -> Option<usize> {
+        let slot = self.index.remove(id)?;
+        if let Some((_, tag)) = self.slots[slot].take() {
+            self.leaving.insert(slot, tag);
+        }
+        Some(slot)
+    }
+
+    fn gone(&mut self, slot: usize) {
+        self.leaving.remove(&slot);
+        self.free.insert(slot);
+    }
+
+    fn reindex(&mut self, renamed: &[(String, String, usize)]) {
+        for (old, _, _) in renamed {
+            self.index.remove(old);
+        }
+        for (_, new, slot) in renamed {
+            if let Some((id, _)) = self.slots[*slot].as_mut() {
+                new.clone_into(id);
+            }
+            self.index.insert(new.clone(), *slot);
+        }
+    }
+
     /// Free every slot, returning those that were taken. Tags carry on
     /// from where they were, so a fault from a module just taken out is
     /// never put down to the module that takes its slot.
@@ -311,6 +341,8 @@ impl Rack {
                 taken.push(slot);
             }
         }
+        taken.extend(self.leaving.keys().copied());
+        self.leaving.clear();
         self.index.clear();
         self.free = (0..self.slots.len()).collect();
         taken
@@ -550,6 +582,9 @@ pub struct Wall {
     chain_batch: Option<Vec<What>>,
     patch: Patch,
     rack: Rack,
+    fades: Fades,
+    cross_plan: Option<Box<CrossPlan>>,
+    crossings_sent: u64,
     engine: EngineControl,
     clock_line: ClockLine,
     desk: Option<HubLink>,
@@ -607,6 +642,8 @@ pub struct Wall {
     heard_units: usize,
     /// The tag of every cable that has needed delay.
     lined: BTreeMap<u32, u32>,
+    /// Owners of direct routes, independent of optional delay allocation.
+    cable_tags: BTreeMap<u32, u32>,
     /// Destinations recorded as lines are placed, until they are retired.
     line_places: BTreeMap<u32, (usize, usize)>,
     /// Destinations of cables in the last table sent.
@@ -912,7 +949,7 @@ impl Print {
 }
 
 /// Where a wall that replaces the one up comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Source {
     /// This save.
     Save(Kept),
@@ -921,12 +958,14 @@ enum Source {
     Moment {
         to: crate::protocol::TreePlace,
         from: crate::protocol::TreePlace,
+        beats: f64,
     },
     Back {
         go: u64,
         kept: Kept,
         to: crate::protocol::TreePlace,
         from: crate::protocol::TreePlace,
+        beats: f64,
     },
     /// Undoing load `load`: the wall it replaced, from the save it was
     /// kept in.
@@ -1358,6 +1397,7 @@ impl Wall {
             unheard: Vec::new(),
             heard_units: 0,
             lined: BTreeMap::new(),
+            cable_tags: BTreeMap::new(),
             line_places: BTreeMap::new(),
             sent_cables: BTreeMap::new(),
             #[cfg(test)]
@@ -1370,6 +1410,9 @@ impl Wall {
             fingerprints: patch.dye.flow(&patch),
             patch,
             rack: Rack::default(),
+            fades: Fades::default(),
+            cross_plan: None,
+            crossings_sent: 0,
             engine,
             clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
             desk_tempo: tempo_sync::DeskTempo::default(),
@@ -1541,10 +1584,13 @@ impl Wall {
     }
 
     fn load_engine(&mut self) {
+        self.fades = Fades::default();
+        self.cross_plan = None;
         self.loops.replace_wall();
         self.restart_load_watch();
         self.rack = Rack::default();
         self.lined.clear();
+        self.cable_tags.clear();
         self.line_places.clear();
         self.sent_cables.clear();
         // What the old engine's modules measured is gone with them.
@@ -1584,6 +1630,8 @@ impl Wall {
     /// recording under way carry on through it; the wall's own tempo
     /// becomes the patch's, unless the desk keeps the tempo.
     fn swap_engine(&mut self) {
+        self.fades = Fades::default();
+        self.cross_plan = None;
         self.engine.begin_swap();
         self.engine.send(Command::Hush);
         self.rack.empty();
@@ -1593,6 +1641,7 @@ impl Wall {
         self.speech.replace_wall();
         self.loops.replace_wall();
         self.lined.clear();
+        self.cable_tags.clear();
         self.line_places.clear();
         self.sent_cables.clear();
         self.settled.clear();
@@ -1705,13 +1754,8 @@ impl Wall {
     }
 
     fn send_tables(&mut self) {
-        let heard_before: BTreeSet<usize> = self
-            .rack
-            .index
-            .iter()
-            .filter(|(id, _)| !self.unheard.contains(id))
-            .map(|(_, slot)| *slot)
-            .collect();
+        self.assign_lines();
+        let heard_before = self.heard_before();
         let mut edges = Vec::with_capacity(self.patch.cables().len());
         for cable in self.patch.cables() {
             if let (Some(from), Some(to)) = (
@@ -1721,11 +1765,13 @@ impl Wall {
                 edges.push((from, to));
             }
         }
+        edges.extend(self.fades.edges());
         let slots: Vec<usize> = self
             .patch
             .modules()
             .iter()
             .filter_map(|module| self.rack.slot_of(&module.id))
+            .chain(self.fades.slots())
             .collect();
         let outs: Vec<usize> = self
             .patch
@@ -1733,6 +1779,7 @@ impl Wall {
             .iter()
             .filter(|module| module.kind == Kind::OUT)
             .filter_map(|module| self.rack.slot_of(&module.id))
+            .chain(self.fades.outs())
             .collect();
         let order: Order = self.heard_order(&slots, &edges, &outs);
         let rendered: Vec<String> = order
@@ -1769,6 +1816,9 @@ impl Wall {
             .collect();
         let mut routed = BTreeMap::new();
         for cable in self.patch.cables() {
+            if self.fades.waits(cable.id) {
+                continue;
+            }
             let (Some(from), Some(to)) = (
                 self.rack.slot_of(&cable.from_module),
                 self.rack.slot_of(&cable.to_module),
@@ -1785,10 +1835,11 @@ impl Wall {
                 eprintln!("kazoo-wall: cable {} is out of any range", cable.id);
                 continue;
             };
-            let tag = self.lined.get(&cable.id).copied().unwrap_or(0);
+            let tag = self.cable_tag(cable.id);
             let route = Route {
                 delay: self.timing.delays.get(&cable.id).copied().unwrap_or(0),
                 gate: carries_gate(&kinds, cable),
+                glide: self.fades.glide_of(cable.id),
                 ..Route::new(from, port, cable.amount, tag)
             };
             if table.set(to, jack, Some(route)) {
@@ -1802,6 +1853,7 @@ impl Wall {
         }
         self.place_lines(&routed, &heard_before);
         self.apply_line_delays(&mut table, &routed);
+        self.overlay_fades(&mut table);
         self.engine.send(Command::Cables(Box::new(table)));
         self.engine.send(Command::Order(Box::new(order)));
         self.sent_cables = routed;
@@ -1992,6 +2044,19 @@ impl Wall {
         }
     }
 
+    fn note_turned(&mut self, module: &str, knob: usize, from: f64, to: f64, frames: f64) {
+        let spec = self
+            .patch
+            .module(module)
+            .filter(|m| matches!(m.kind.spec().build, Builder::Effect(_)))
+            .and_then(|m| m.kind.spec().knobs.get(knob));
+        if let Some(spec) = spec {
+            let rate = f64::from(self.engine.sample_rate().max(1));
+            let settles = Duration::from_secs_f64(frames * landing(spec, from, to) / rate);
+            self.turned.push((module.to_string(), knob, settles));
+        }
+    }
+
     /// Mirror a change into the engine.
     fn mirror(&mut self, what: &What) {
         match what {
@@ -2021,19 +2086,7 @@ impl Wall {
                         target: *to as f32,
                         glide_frames: frames as u32,
                     });
-                    // An effect's latency may follow its knobs: measure it
-                    // again once this one has settled.
-                    let spec = self
-                        .patch
-                        .module(module)
-                        .filter(|m| matches!(m.kind.spec().build, Builder::Effect(_)))
-                        .and_then(|m| m.kind.spec().knobs.get(knob));
-                    if let Some(spec) = spec {
-                        let landing = landing(spec, *from, *to);
-                        // Finite and at most u32::MAX / rate seconds.
-                        let settles = Duration::from_secs_f64(frames * landing / rate);
-                        self.turned.push((module.clone(), knob, settles));
-                    }
+                    self.note_turned(module, knob, *from, *to, frames);
                 }
             }
             What::Patch { .. } | What::Unpatch { .. } => self.send_tables(),
@@ -2054,6 +2107,9 @@ impl Wall {
                 // afresh.
                 self.readings.remove(&module.id);
                 let slot = self.rack.free(&module.id);
+                if let Some(slot) = slot {
+                    self.fades.forget_slot(slot);
+                }
                 self.send_tables();
                 if let Some(slot) = slot {
                     self.engine.send(Command::Remove { slot });
@@ -2087,6 +2143,13 @@ impl Wall {
                 }
             }
             // The patch is the new wall already.
+            What::Go { beats, .. } if *beats > 0.0 => {
+                if let Some(plan) = self.cross_plan.take() {
+                    self.cross(*plan);
+                } else {
+                    self.swap_engine();
+                }
+            }
             What::Load { .. } | What::Go { .. } => self.swap_engine(),
         }
     }
@@ -2711,7 +2774,7 @@ impl Wall {
         // A change that cannot be logged is not made: what of the patch it
         // touched goes back as it was.
         let before = self.before(request);
-        let (held, swaps) = (self.held(), self.swaps_sent);
+        let (held, swaps, crossings) = (self.held(), self.swaps_sent, self.crossings_sent);
         let outcome = self.answer((seat, console), request, now);
         if std::mem::take(&mut self.unmade) {
             self.put_back(before);
@@ -2720,7 +2783,7 @@ impl Wall {
         // A wall put up is measured afresh (see `swap_engine`); any other
         // change counts towards the load not yet taken in (one the log
         // refused was put back, and counts nothing).
-        if self.swaps_sent == swaps {
+        if self.swaps_sent == swaps && self.crossings_sent == crossings {
             self.note_held(held);
         }
         // A refused load (no such save, a name that is not one, a save
@@ -3361,12 +3424,14 @@ impl Wall {
             backup,
             fingerprint,
             from,
+            beats,
             ..
         } = &what
         {
             return self.undo_go(
                 (seat, console),
                 seq,
+                *beats,
                 backup.clone(),
                 fingerprint.clone(),
                 from.clone(),
@@ -3960,6 +4025,11 @@ impl Wall {
             return Err(no_saves());
         }
         let warning = self.load_room_as(console, &incoming, source, &mut notes)?;
+        let asked = match source {
+            Source::Moment { beats, .. } | Source::Back { beats, .. } => *beats,
+            _ => 0.0,
+        };
+        let (cross_beats, plan) = self.crossing_beats(&incoming, asked, &mut notes);
         let how = source.how();
         // The daemon's own changes owed to the log go first (they take
         // their numbers before this one), or nothing is replaced.
@@ -3972,7 +4042,7 @@ impl Wall {
         ));
         let playing = self.playing_after(&incoming, &mut notes);
         let incoming_print = Print::of(&incoming);
-        let what = source.replacement(&backup, &incoming, playing, console);
+        let what = source.replacement(&backup, &incoming, playing, console, cross_beats);
         // The wall put up starts a clock line with this change. Should the
         // change be written nowhere, nothing was replaced and the line is
         // put back; once it may be in the log, its line is never reused.
@@ -4021,6 +4091,7 @@ impl Wall {
             }
         };
         // In the log for good: the load happens.
+        self.cross_plan = plan;
         self.patch = incoming;
         let (change, _) = self.apply(change);
         eprintln!("kazoo-wall: {}", change.summary);
@@ -4043,10 +4114,7 @@ impl Wall {
         });
         self.kept_in = source.kept().map(|kept| (kept.clone(), incoming_print));
         self.prune();
-        notes.push(format!(
-            "lands on bar {:.0}",
-            self.engine.landing_beat() / 4.0 + 1.0
-        ));
+        self.cross_arrival_note(cross_beats, &mut notes);
         let result = encode(&LoadResult {
             change: change.clone(),
             backup: backup.name.clone(),
@@ -4958,6 +5026,7 @@ impl Wall {
             .check(shared.beat(), shared.following_desk());
         self.tick_loops(now);
         self.settle(now);
+        self.cross_tick();
         // The saves not read yet since the start, one a tick, so the first
         // listing finds them read (see `Store::list_saves`).
         if let Some(store) = self.store.as_mut() {

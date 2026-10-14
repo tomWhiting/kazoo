@@ -791,6 +791,12 @@ pub enum TakeWhy {
     Rebuild,
 }
 
+/// Four bars give a wall time to become its moment.
+pub const DEFAULT_CROSS_BEATS: f64 = 16.0;
+
+/// Bound the time both walls render to the longest knob glide.
+pub const MAX_CROSS_BEATS: f64 = 64.0;
+
 /// What a change did.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -1006,6 +1012,9 @@ pub enum What {
         modules: u32,
         cables: u32,
         tempo: f64,
+        /// Beats at the starting tempo; old log lines describe cuts.
+        #[serde(default)]
+        beats: f64,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         by_console: bool,
     },
