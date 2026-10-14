@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cpal::traits::{DeviceTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, TryRecvError};
 
 #[cfg(test)]
@@ -12,6 +12,9 @@ use crate::io::device::{
 use crate::{Error, Result};
 
 pub use super::audio_open::{open_input, open_output};
+
+mod input_pick;
+pub use input_pick::{InputPick, choose_input, explicit_input, input_for};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DeviceChoice {
@@ -123,6 +126,39 @@ impl<D> PreparedOutput<D> {
         build: impl FnOnce(D, Chosen, String) -> Result<S>,
     ) -> Result<S> {
         build(self.device, self.chosen, self.context)
+    }
+}
+
+impl PreparedOutput {
+    pub fn input_pick(&self, explicit: Option<&str>) -> Result<InputPick> {
+        let output = self
+            .device
+            .description()
+            .map_err(|error| Error::Device(format!("cannot name output device: {error}")))?;
+        if let Some(name) = explicit {
+            return input_for(Some(name), None, output.name(), &[]);
+        }
+        let host = cpal::default_host();
+        let default = host
+            .default_input_device()
+            .map(|device| {
+                device
+                    .description()
+                    .map(|description| description.name().to_owned())
+            })
+            .transpose()
+            .map_err(|error| Error::Device(format!("cannot name default input device: {error}")))?;
+        let inputs = host
+            .input_devices()
+            .map_err(|error| Error::Device(format!("cannot list inputs: {error}")))?
+            .map(|device| {
+                device
+                    .description()
+                    .map(|description| description.name().to_owned())
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| Error::Device(format!("cannot name input device: {error}")))?;
+        input_for(None, default.as_deref(), output.name(), &inputs)
     }
 }
 

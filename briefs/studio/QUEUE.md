@@ -201,3 +201,9 @@ START KZ-P11b base=96d5ba6 branch=lane/kz-P11b df=67GB at 22:20
 START KZ-T04f base=2680242 branch=lane/kz-T04f df=67GB at 22:20
 START KZ-P11b base=lane/kz-P11 df=67GB at 22:1x; START KZ-T04f base=main at 22:1x; FIX KZ-R04 run 2 at 22:20
 START KZ-V13 base=aca8a25 branch=lane/kz-V13 df=49GB at 23:55
+START KZ-T05g base=5c5280e branch=lane/kz-T05g df=25GB at 01:39
+START KZ-D18 base=2a430f0 branch=lane/kz-D18 df=99GB at 02:07
+START KZ-T11a base=f44489e branch=lane/kz-T11a df=99GB at 02:25
+START KZ-T10a base=f44489e branch=lane/kz-T10a df=99GB at 02:25
+START KZ-T04g base=72b8d51 branch=lane/kz-T04g df=94GB at 02:34
+START KZ-D18b base=015c825 branch=lane/kz-D18b df=79GB at 03:23

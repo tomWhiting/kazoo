@@ -99,3 +99,73 @@ mod tests {
         assert_eq!(reported, LinkShutdowns { stuck: 2, late: 1 });
     }
 }
+
+#[derive(Debug, Default)]
+pub(super) struct DeskRefusals {
+    last: Option<String>,
+    connections: u64,
+}
+
+impl DeskRefusals {
+    pub(super) fn report(
+        &mut self,
+        status: &kazoo_core::ipc::link::LinkStatus,
+        mut log: impl FnMut(String),
+    ) {
+        if self.connections != status.connections || status.connected {
+            self.connections = status.connections;
+            self.last = None;
+        }
+        // Only the desk turning the wall away is a refusal: a desk that is
+        // not running, or a link that came down, is not.
+        if let Some(reason) = status.desk_refusal() {
+            if status.connected || self.last.as_deref() == Some(reason) {
+                return;
+            }
+            log(format!("kazoo-wall: the desk refused the wall: {reason}"));
+            self.last = Some(reason.to_owned());
+        }
+    }
+}
+
+#[cfg(test)]
+mod desk_tests {
+    use super::*;
+    #[test]
+    fn desk_refusals_log_once_per_reason_and_after_connection() {
+        let mut reported = DeskRefusals::default();
+        let mut lines = Vec::new();
+        let mut status = kazoo_core::ipc::link::LinkStatus {
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
+            normal_priority: false,
+            connected: false,
+            strip: None,
+            blocks_sent: 0,
+            blocks_dropped: 0,
+            messages_dropped: 0,
+            connections: 0,
+            last_refusal: Some("the desk refused wall: wrong rate".into()),
+        };
+        for _ in 0..2 {
+            reported.report(&status, |line| lines.push(line));
+        }
+        assert_eq!(lines, ["kazoo-wall: the desk refused the wall: wrong rate"]);
+        // A link that came down was not refused, and says nothing here.
+        status.last_refusal = Some("the desk closed the connection".into());
+        reported.report(&status, |line| lines.push(line));
+        assert_eq!(lines.len(), 1);
+        status.last_refusal = Some("the desk refused wall: desk full".into());
+        reported.report(&status, |line| lines.push(line));
+        assert_eq!(lines.len(), 2);
+        status.connections = 1;
+        reported.report(&status, |line| lines.push(line));
+        assert_eq!(lines.len(), 3);
+        status.connected = true;
+        status.last_refusal = None;
+        reported.report(&status, |line| lines.push(line));
+        status.connected = false;
+        status.last_refusal = Some("the desk refused wall: desk full".into());
+        reported.report(&status, |line| lines.push(line));
+        assert_eq!(lines.len(), 4);
+    }
+}

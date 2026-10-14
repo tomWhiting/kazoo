@@ -9,8 +9,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use kazoo_wall::protocol::{
-    CatalogueResult, ChangeResult, ListenResult, LoadResult, LogPage, LoopOp, ProbeResult,
-    RecordResult, Request, SaveResult, SavesResult, Snapshot, TempoResult,
+    CatalogueResult, ChangeResult, ListenResult, LoadResult, LogPage, LoopOp, MarkResult,
+    ProbeResult, RecordResult, Request, SaveResult, SavesResult, Snapshot, TempoResult, TreeResult,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -59,6 +59,9 @@ one back up while the wall plays (the wall as it was is saved first, and wall_un
 brings it back). Only Tom's console replaces or deletes a save. Once a wall is loaded, every \
 module and cable is new: changes meant for the wall last looked at are refused (wall_replaced) \
 until wall_look is called again.
+- The wall's past is a tree (git): every change is a moment, and nothing in the past ever changes. \
+wall_tree shows the branches, marks and recent moments; wall_mark names the moment the wall is at; \
+wall_go puts the wall at any moment: on a branch the next change carries it on; off any line it grows a new branch (a bud) from there.
 
 When other seats change the wall, this server sends a channel notification (source \
 kazoo-wall). Those are hints about the past: call wall_look before acting on them.";
@@ -286,6 +289,36 @@ pub struct SaveArgs {
 pub struct LoadArgs {
     /// The save's name, as `wall_saves` lists it (any case).
     pub name: String,
+}
+
+/// `wall_mark`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MarkArgs {
+    /// The mark's name: 1 to 64 of A-Z a-z 0-9 space _ . -, starting with a
+    /// letter or digit, e.g. `dawn` or `waffles low end 2026-10-13`. Not one
+    /// already marked (any case): marks never move.
+    pub name: String,
+}
+
+/// `wall_go`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GoArgs {
+    /// The moment: a mark's name, a branch (`trunk`, or a `bud/...` name as
+    /// `wall_tree` lists it), a change as `#<number>` (the wall just after that
+    /// change, from `wall_log`), or a commit id (7 to 40 hex digits).
+    pub moment: String,
+}
+
+/// `wall_tree`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TreeArgs {
+    /// How many of the latest moments on the wall's line to list: default
+    /// 20, at most 200.
+    #[serde(default)]
+    pub recent: Option<u32>,
 }
 
 /// `wall_probe`.
@@ -590,10 +623,35 @@ impl Seat {
         description = "Undo a change by its number (from wall_log or a tool's answer), whoever made it: the inverse is applied as a new change. Refused when the change no longer applies."
     )]
     async fn wall_undo(&self, Parameters(args): Parameters<UndoArgs>) -> CallToolResult {
-        self.change(Request::Undo {
-            change: args.change,
-        })
-        .await
+        match self
+            .wall
+            .ask::<serde_json::Value>(Request::Undo {
+                change: args.change,
+            })
+            .await
+        {
+            Ok(Answer::Read(value)) => {
+                if value.get("backup").is_some() {
+                    match serde_json::from_value::<LoadResult>(value.clone()) {
+                        Ok(result) => {
+                            self.own(result.change.seq);
+                            ok(render::went(&result))
+                        }
+                        Err(err) => ok(render::unread(&err.to_string(), &value)),
+                    }
+                } else {
+                    match serde_json::from_value::<ChangeResult>(value.clone()) {
+                        Ok(result) => {
+                            self.own(result.change.seq);
+                            ok(render::changed(&result))
+                        }
+                        Err(err) => ok(render::unread(&err.to_string(), &value)),
+                    }
+                }
+            }
+            Ok(Answer::Unread(why, value)) => ok(render::unread(&why, &value)),
+            Err(err) => bad(err.to_string()),
+        }
     }
 
     #[tool(
@@ -724,6 +782,52 @@ impl Seat {
     }
 
     #[tool(
+        name = "wall_mark",
+        description = "Name the moment the wall is at (just after its latest change) so anyone can come back to it with wall_go: 1 to 64 of A-Z a-z 0-9 space _ . -, starting with a letter or digit, e.g. dawn. A mark is a name in the wall's tree (a git tag, mark/<name>); it never moves and is never deleted, and the sound does not change. A name already marked (any case) is refused (mark_exists). Every seat is told. A seat may mark three times a minute (slow_down beyond), and not once the tree holds 1,000 marks (full)."
+    )]
+    async fn wall_mark(&self, Parameters(args): Parameters<MarkArgs>) -> CallToolResult {
+        self.read::<MarkResult>(Request::Mark { name: args.name }, |result| {
+            Ok(render::marked(result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "wall_go",
+        description = "Put the whole wall at a moment from its past while it plays on: a mark's name or a branch from wall_tree, a change as #<number> from wall_log (the wall just after it), or a commit id. It is a cut: the master fades out and back in over a few hundredths of a second. Nothing in the past changes: the wall as it is is kept first (as before-go-<time>, or in the save that already holds it unchanged), the go is one change, and wall_undo with its number brings the wall back exactly to where it was. On a branch, the next change carries it on. Off any line, the first change anyone makes grows a bud, a new branch named for the moment and the time; with no change, nothing grows. Every seat is told. Call wall_look afterwards: every module and cable is new, and changes are refused (wall_replaced) until this seat has looked. A seat may replace the wall (a load, a go, or undoing one) three times a minute (slow_down beyond)."
+    )]
+    async fn wall_go(&self, Parameters(args): Parameters<GoArgs>) -> CallToolResult {
+        match self
+            .wall
+            .ask::<LoadResult>(Request::Go {
+                moment: args.moment,
+            })
+            .await
+        {
+            Ok(Answer::Read(result)) => {
+                self.own(result.change.seq);
+                ok(render::went(&result))
+            }
+            Ok(Answer::Unread(why, value)) => ok(render::unread(&why, &value)),
+            Err(err) => bad(err.to_string()),
+        }
+    }
+
+    #[tool(
+        name = "wall_tree",
+        description = "The wall's tree, where every change is a moment: where the wall is (its line and the moment), every branch (trunk and the buds, newest first, each with the moment it grew from), every mark and every save's mark, and the latest moments on the wall's line (recent: default 20, at most 200), each with its change number, who, when (UTC) and what. Anything listed is a moment wall_go takes. Anyone may ask, at most ten times in a few seconds."
+    )]
+    async fn wall_tree(&self, Parameters(args): Parameters<TreeArgs>) -> CallToolResult {
+        self.read::<TreeResult>(
+            Request::Tree {
+                recent: args.recent,
+            },
+            |result| Ok(render::tree(result)),
+        )
+        .await
+    }
+
+    #[tool(
         name = "wall_tempo",
         description = "Set the tempo in BPM (20 to 300). On its own clock the wall changes at once; while it follows the kazoo-mix desk, the desk is asked and changes the tempo for everyone."
     )]
@@ -799,143 +903,4 @@ impl ServerHandler for Seat {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wall_loop_needs_exactly_one_of_erase_and_from() {
-        for json in [
-            r#"{"module":"loop1"}"#,
-            r#"{"module":"loop1","erase":false}"#,
-            r#"{"module":"loop1","erase":true,"from":"mouth/dry"}"#,
-            r#"{"module":"loop1","erase":true,"from":null}"#,
-        ] {
-            let args: LoopArgs = serde_json::from_str(json).unwrap();
-            assert_eq!(
-                args.request().unwrap_err(),
-                "Give exactly one of erase: true or from (a desk strip label, or null for patched inputs)."
-            );
-        }
-        for (json, op) in [
-            (r#"{"module":"loop1","erase":true}"#, LoopOp::Erase),
-            (
-                r#"{"module":"loop1","from":"mouth/dry"}"#,
-                LoopOp::From {
-                    from: Some("mouth/dry".into()),
-                },
-            ),
-            (
-                r#"{"module":"loop1","from":null}"#,
-                LoopOp::From { from: None },
-            ),
-            (
-                r#"{"module":"loop1","erase":false,"from":null}"#,
-                LoopOp::From { from: None },
-            ),
-        ] {
-            let args: LoopArgs = serde_json::from_str(json).unwrap();
-            assert_eq!(
-                args.request().unwrap(),
-                Request::Loop {
-                    module: "loop1".into(),
-                    op
-                }
-            );
-        }
-        assert!(serde_json::from_str::<LoopArgs>(r#"{"module":"loop1","from":42}"#).is_err());
-    }
-
-    /// Every tool, in the router's order.
-    const TOOLS: [&str; 20] = [
-        "wall_add",
-        "wall_catalogue",
-        "wall_chain",
-        "wall_group",
-        "wall_listen",
-        "wall_load",
-        "wall_log",
-        "wall_look",
-        "wall_loop",
-        "wall_patch",
-        "wall_probe",
-        "wall_record",
-        "wall_remove",
-        "wall_save",
-        "wall_saves",
-        "wall_speak",
-        "wall_tempo",
-        "wall_turn",
-        "wall_undo",
-        "wall_unpatch",
-    ];
-
-    #[test]
-    fn the_router_holds_every_tool_with_a_description_and_schema() {
-        let tools = Seat::tool_router().list_all();
-        let mut names = tools
-            .iter()
-            .map(|tool| tool.name.as_ref())
-            .collect::<Vec<_>>();
-        names.sort_unstable();
-        assert_eq!(names, TOOLS);
-        for tool in &tools {
-            let about = tool.description.as_deref().unwrap_or_default();
-            assert!(about.len() > 60, "{} is barely described", tool.name);
-            assert_eq!(
-                tool.input_schema.get("type").and_then(|kind| kind.as_str()),
-                Some("object"),
-                "{}",
-                tool.name
-            );
-        }
-        let turn = tools
-            .iter()
-            .find(|tool| tool.name == "wall_turn")
-            .map(|tool| serde_json::Value::Object(tool.input_schema.as_ref().clone()))
-            .unwrap_or_default();
-        let required = turn["required"].as_array().cloned().unwrap_or_default();
-        assert_eq!(required, ["module", "knob", "value"]);
-        let glide = turn["properties"]["glide_beats"]["description"]
-            .as_str()
-            .unwrap_or_default();
-        assert!(glide.contains("beats"), "{glide}");
-    }
-
-    #[test]
-    fn arguments_are_strict() {
-        assert!(serde_json::from_str::<TurnArgs>(r#"{"module":"vcf1","knob":"cutoff"}"#).is_err());
-        assert!(
-            serde_json::from_str::<TurnArgs>(
-                r#"{"module":"vcf1","knob":"cutoff","value":800,"glide":4}"#
-            )
-            .is_err(),
-            "an unknown field is refused, not ignored"
-        );
-        let unpatch: UnpatchArgs = serde_json::from_str(r#"{"to":"vcf1.cutoff"}"#).unwrap();
-        assert_eq!(unpatch.to.as_deref(), Some("vcf1.cutoff"));
-        assert_eq!(unpatch.cable, None);
-        assert!(serde_json::from_str::<NoArgs>("{}").is_ok());
-        assert!(
-            serde_json::from_str::<RecordArgs>("{}").is_err(),
-            "on is required"
-        );
-        let record: RecordArgs = serde_json::from_str(r#"{"on":true}"#).unwrap();
-        assert!(record.on);
-        // A seat cannot ask to save over a save: there is no such field.
-        assert!(
-            serde_json::from_str::<SaveArgs>(r#"{"name":"jam","overwrite":true}"#).is_err(),
-            "overwrite is the console's"
-        );
-        let probe: ProbeArgs = serde_json::from_str("{}").unwrap();
-        assert_eq!(probe.module, None);
-        let probe: ProbeArgs = serde_json::from_str(r#"{"module":"scope1"}"#).unwrap();
-        assert_eq!(probe.module.as_deref(), Some("scope1"));
-        assert!(serde_json::from_str::<ProbeArgs>(r#"{"modules":["scope1"]}"#).is_err());
-        let save: SaveArgs = serde_json::from_str(r#"{"name":"jam"}"#).unwrap();
-        assert_eq!(save.name, "jam");
-        assert!(
-            serde_json::from_str::<LoadArgs>("{}").is_err(),
-            "name is required"
-        );
-    }
-}
+mod tests;
