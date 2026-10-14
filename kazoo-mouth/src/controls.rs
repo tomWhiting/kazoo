@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kazoo_core::synthesis::OscillatorShape;
 use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
 
-use crate::engine::fx::{FxSettings, Slot, mouth_default};
+use crate::engine::fx::{FxSettings, Slot, harmony, mouth_default};
 use crate::engine::looper::{
     BAR_CHOICES, LoopFeed, LoopGauges, LoopLength, Note, State, VOLUME_DEFAULT,
 };
@@ -306,8 +306,8 @@ pub struct App {
     pub help: bool,
     pub(crate) help_filter: Option<String>,
     pub(crate) hits: RefCell<Vec<panels::Hit>>,
-    pub(crate) fx_input: [f32; 5],
-    pub(crate) fx_output: [f32; 5],
+    pub(crate) fx_input: [f32; Slot::ALL.len()],
+    pub(crate) fx_output: [f32; Slot::ALL.len()],
     pub(crate) mic_rms: f32,
     pub(crate) output_rms: f32,
     pub(crate) input_label: String,
@@ -366,8 +366,8 @@ impl App {
             help: false,
             help_filter: None,
             hits: RefCell::new(Vec::new()),
-            fx_input: [0.0; 5],
-            fx_output: [0.0; 5],
+            fx_input: [0.0; Slot::ALL.len()],
+            fx_output: [0.0; Slot::ALL.len()],
             mic_rms: 0.0,
             output_rms: 0.0,
             input_label: "input".into(),
@@ -694,7 +694,7 @@ impl App {
             );
             return Ok(Action::Continue);
         }
-        if let KeyCode::Char(number @ '1'..='5') = key.code {
+        if let KeyCode::Char(number @ '1'..='6') = key.code {
             self.selected_slot = self.accepted.fx.order[number as usize - '1' as usize];
             self.selected_cell = 0;
             self.focus = Focus::Fx;
@@ -788,13 +788,13 @@ impl App {
         let Some(description) = slot.kind(saved.active) else {
             return Ok(Action::Continue);
         };
-        let cells = description.params.len() + 1;
+        let cells = description.params.len() + usize::from(slot != Slot::Harmony);
         match key.code {
             KeyCode::Char('[' | ']') => {
                 let next = if key.code == KeyCode::Char(']') {
-                    (position + 1) % 5
+                    (position + 1) % Slot::ALL.len()
                 } else {
-                    (position + 4) % 5
+                    (position + Slot::ALL.len() - 1) % Slot::ALL.len()
                 };
                 self.selected_slot = proposed.fx.order[next];
                 self.selected_cell = 0;
@@ -817,7 +817,7 @@ impl App {
             }
             KeyCode::Char('{' | '}') => {
                 let next = if key.code == KeyCode::Char('}') {
-                    (position + 1).min(4)
+                    (position + 1).min(Slot::ALL.len() - 1)
                 } else {
                     position.saturating_sub(1)
                 };
@@ -826,7 +826,7 @@ impl App {
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char('d') => {
                 let right = key.code == KeyCode::Right;
-                if self.selected_cell == 0 {
+                if self.selected_cell == 0 && slot != Slot::Harmony {
                     saved.active = if key.code == KeyCode::Char('d') {
                         0
                     } else if right {
@@ -839,12 +839,22 @@ impl App {
                         kind: saved.active as u8,
                     }
                 } else {
-                    let index = self.selected_cell - 1;
+                    let index = self.selected_cell - usize::from(slot != Slot::Harmony);
                     let Some(spec) = description.params.get(index) else {
                         return Ok(Action::Continue);
                     };
                     let value = if key.code == KeyCode::Char('d') {
-                        mouth_default(slot, saved.active, spec)
+                        if slot == Slot::Harmony {
+                            harmony::default_value(&saved.values[0], index)
+                        } else {
+                            mouth_default(slot, saved.active, spec)
+                        }
+                    } else if slot == Slot::Harmony && index == 0 {
+                        let preset = saved.values[0][0] as usize;
+                        ((preset + if right { 1 } else { harmony::PRESETS.len() - 1 })
+                            % harmony::PRESETS.len()) as f32
+                    } else if slot == Slot::Harmony && matches!(index, 2 | 4 | 6) {
+                        (saved.values[0][index] + if right { 1.0 } else { -1.0 }).clamp(-24.0, 24.0)
                     } else {
                         turn(
                             spec,
@@ -853,7 +863,11 @@ impl App {
                             key.modifiers.contains(KeyModifiers::SHIFT),
                         )
                     };
-                    saved.values[saved.active][index] = value;
+                    if slot == Slot::Harmony {
+                        harmony::adjust(&mut saved.values[0], &mut saved.custom, index, value);
+                    } else {
+                        saved.values[saved.active][index] = value;
+                    }
                     Command::FxParam {
                         slot,
                         kind: saved.active as u8,

@@ -79,7 +79,7 @@ fn unvoiced_is_dim_and_held() {
     assert!(screen.contains("sung A4"), "{screen}");
     assert!(screen.contains("snapped A4"), "{screen}");
     assert!(screen.contains("○ kazoo mouth"), "{screen}");
-    for row in buffer.content.chunks(120).skip(1).take(5) {
+    for row in buffer.content.chunks(120).skip(3).take(5) {
         for cell in row.iter().take(82).filter(|cell| cell.symbol() != " ") {
             assert_eq!(cell.fg, DIM);
             assert!(cell.modifier.contains(Modifier::DIM));
@@ -281,7 +281,7 @@ fn the_fx_panel_shows_the_chain_and_the_selected_slots_knobs() {
     let mut app = App::new(QuantiseSettings::default(), false);
     app.focus = Focus::Fx;
     app.selected_slot = Slot::Delay;
-    app.accepted.fx.slots[0].on = true;
+    app.accepted.fx.slots[Slot::Megaphone as usize].on = true;
     let screen = text(&render(&app, &Display::new(RATE), 120, 40, Instant::now()));
     let mut previous = 0;
     for name in [
@@ -552,4 +552,108 @@ fn an_idle_effect_shows_flat() {
     }
     let (before, after) = read();
     assert!((before - after).abs() > 0.000_01);
+}
+
+#[test]
+fn harmony_effect_panel_keys_fit_without_cut_words() {
+    use crate::controls::Focus;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    for (width, expected) in [
+        (
+            80,
+            "[ ] effect · ↑↓ row · ←→ change · b on/off · { } move · d default",
+        ),
+        (40, "[ ] effect · ←→ change · b on/off"),
+        (20, "[ ] effect"),
+    ] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 18)).unwrap();
+        terminal
+            .draw(|frame| super::board::effects(frame, frame.area(), &app))
+            .unwrap();
+        let screen = text(terminal.backend().buffer());
+        assert!(screen.contains(expected), "width {width}: {screen}");
+    }
+}
+
+#[test]
+fn harmony_rows_read_off_and_whole_semitones() {
+    use crate::controls::Focus;
+    use crate::engine::fx::Slot;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    app.selected_slot = Slot::Harmony;
+    for (cell, name, value) in [
+        (2, "voice 1 shift", "▏ -12 st"),
+        (4, "voice 2 shift", "▏ +12 st"),
+        (5, "voice 2 level", "▏ -3.00 dB"),
+        (7, "voice 3 level", "▏ off"),
+    ] {
+        app.selected_cell = cell;
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| super::board::effects(frame, frame.area(), &app))
+            .unwrap();
+        let screen = text(terminal.backend().buffer());
+        let row = screen
+            .lines()
+            .find(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("{name} missing: {screen}"));
+        assert!(row.trim_end().ends_with(value), "{row}");
+    }
+}
+
+#[test]
+fn harmony_help_says_the_copies_arrive_late_and_nothing_else() {
+    use crate::engine::fx::harmony;
+    assert!(harmony::KIND.description.contains("13 to 25 ms"));
+    assert!(!harmony::KIND.description.contains("Enter"));
+}
+
+#[test]
+fn mic_choice_and_desk_refusal_are_readable_together() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.input_label =
+        "MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)".into();
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    let display = Display::new(RATE);
+    terminal
+        .draw(|frame| {
+            draw(
+                frame,
+                &app,
+                &display,
+                "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)",
+                Instant::now(),
+            );
+        })
+        .unwrap();
+    let screen = text(terminal.backend().buffer());
+    assert!(screen.contains(
+        "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)"
+    ));
+    assert!(screen.contains(
+        "mic: MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)"
+    ));
+}
+
+#[test]
+fn a_narrow_header_keeps_every_word_of_the_mic_and_the_desk() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.input_label =
+        "MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)".into();
+    let link = "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)";
+    for width in [24, 41, 60] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+        let display = Display::new(RATE);
+        terminal
+            .draw(|frame| draw(frame, &app, &display, link, Instant::now()))
+            .unwrap();
+        let screen = text(terminal.backend().buffer()).replace('\n', "");
+        assert!(screen.contains(link), "width {width}: {screen}");
+        assert!(
+            screen.contains(&format!("mic: {}", app.input_label)),
+            "width {width}: {screen}"
+        );
+    }
 }

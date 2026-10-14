@@ -821,8 +821,12 @@ impl App {
             .as_ref()
             .map_or_else(String::new, |place| format!(" {}", self.place_words(place)));
         self.say(Tone::Info, format!("adding {kind}{words}…"), now);
-        self.jobs
-            .push(Job::Call(Request::Add { kind, name, place }));
+        self.jobs.push(Job::Call(Request::Add {
+            alias: None,
+            kind,
+            name,
+            place,
+        }));
     }
 
     /// Where `place` is, in words: `to row 2 after vcf1`, `at the start of

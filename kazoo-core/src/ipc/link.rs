@@ -432,6 +432,24 @@ pub struct LinkStatus {
     pub last_refusal: Option<String>,
 }
 
+/// How `last_refusal` begins when the desk itself refused the instrument:
+/// this, the instrument's name, `": "`, then the desk's reason.
+pub(crate) const DESK_REFUSED: &str = "the desk refused ";
+
+impl LinkStatus {
+    /// The desk's own reason, when the desk refused this instrument; `None`
+    /// when it did not (connected, never tried, or the link failed or came
+    /// down for another reason, which `last_refusal` still holds).
+    #[must_use]
+    pub fn desk_refusal(&self) -> Option<&str> {
+        self.last_refusal
+            .as_deref()?
+            .strip_prefix(DESK_REFUSED)?
+            .split_once(": ")
+            .map(|(_, reason)| reason)
+    }
+}
+
 /// The UI half of the link. Dropping it says goodbye to the hub.
 #[derive(Debug)]
 pub struct HubLink {

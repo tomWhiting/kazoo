@@ -15,6 +15,13 @@ struct FakeState {
     faults: VecDeque<MicFault>,
     capture: Arc<Mutex<Option<MicCapture>>>,
     opens: Vec<(u32, u16, usize)>,
+    /// The facts the fake holds, as `CpalMic` does, and the device object
+    /// generation they were read from: a device that comes back is a new
+    /// object, and a handle to the old one only fails.
+    cached: Option<(MicFacts, u32)>,
+    generation: u32,
+    probes: usize,
+    searches: usize,
 }
 
 struct FakeMic(Arc<Mutex<FakeState>>);
@@ -37,21 +44,38 @@ impl MicBackend for FakeMic {
     type Stream = FakeStream;
 
     fn facts(&mut self, device: &DeviceChoice) -> Result<MicFacts> {
-        let state = self.0.lock().unwrap();
-        let facts = match device {
-            DeviceChoice::Default => &state.default,
-            DeviceChoice::Named(_) => &state.named,
+        let mut state = self.0.lock().unwrap();
+        state.searches += 1;
+        let current = match device {
+            DeviceChoice::Default => state.default.clone(),
+            DeviceChoice::Named(_) => state.named.clone(),
         };
-        let result = if state.available {
-            Ok(facts.clone())
-        } else {
-            Err(Error::Device(format!(
+        if !state.available {
+            return Err(Error::Device(format!(
                 "input device '{}' is unavailable",
-                facts.name
-            )))
-        };
+                current.name
+            )));
+        }
+        if let Some((cached, generation)) = &state.cached {
+            if matches!(device, DeviceChoice::Named(_)) && *generation != state.generation {
+                return Err(Error::Device(format!(
+                    "input device '{}' is a stale handle",
+                    cached.name
+                )));
+            }
+            // The same device: its facts are not asked for again.
+            if cached.name == current.name {
+                return Ok(cached.clone());
+            }
+        }
+        state.probes += 1;
+        state.cached = Some((current.clone(), state.generation));
         drop(state);
-        result
+        Ok(current)
+    }
+
+    fn forget(&mut self) {
+        self.0.lock().unwrap().cached = None;
     }
 
     fn open(
@@ -124,6 +148,10 @@ impl Rig {
             faults: VecDeque::new(),
             capture: Arc::new(Mutex::new(None)),
             opens: Vec::new(),
+            cached: None,
+            generation: 0,
+            probes: 0,
+            searches: 0,
         }));
         let (producer, consumer) = HeapRb::<f32>::new(1_000_000).split();
         let dropped = Arc::new(AtomicUsize::new(0));
@@ -383,6 +411,8 @@ fn a_lost_device_is_reopened_when_it_returns() {
     }
     rig.control.lock().unwrap().available = true;
     rig.supervisor.tick(now + HEALTH_EVERY + FACTS_EVERY * 4);
+    assert_eq!(rig.status().state, MicState::Lost);
+    rig.supervisor.tick(now + HEALTH_EVERY + FACTS_EVERY * 7);
     assert_eq!(rig.status().state, MicState::Live);
     assert_eq!(rig.status().reopens, 1);
     rig.feed(&[0.25, -0.5], 1, 128);
@@ -394,7 +424,11 @@ fn a_rate_change_reopens_at_the_new_rate() {
     let mut rig = Rig::new(48_000, 48_000, 1, None, false);
     rig.start();
     let now = rig.supervisor.last_facts;
+    // A headset dropping to its two-way mode keeps its name and identity:
+    // only the frames it delivers say its rate changed.
     rig.control.lock().unwrap().named.rate = 24_000;
+    rig.feed(&sine(440.0, 24_000, 1), 1, 128);
+    rig.output();
     rig.supervisor.tick(now + FACTS_EVERY);
     assert_eq!(rig.status().state, MicState::Live);
     assert_eq!(rig.status().device_rate, 24_000);
@@ -580,6 +614,8 @@ fn a_failed_reopen_keeps_the_producer_for_the_next_attempt() {
     assert!(rig.supervisor.sink.is_some());
     rig.control.lock().unwrap().fail_open = false;
     rig.supervisor.tick(now + HEALTH_EVERY + FACTS_EVERY * 2);
+    assert_eq!(rig.status().state, MicState::Lost);
+    rig.supervisor.tick(now + HEALTH_EVERY + FACTS_EVERY * 3);
     assert_eq!(rig.status().state, MicState::Live);
     assert_eq!(rig.status().reopens, 1);
     rig.feed(&[0.5], 1, 128);
@@ -624,4 +660,175 @@ fn a_channel_count_change_reopens_at_the_native_width() {
     assert_eq!(rig.status().reopens, 1);
     rig.feed(&[0.0, 0.5], 2, 128);
     assert_eq!(rig.output(), [0.25]);
+}
+
+/// One second of silence at `rate`, `channels` wide.
+fn second_of(rate: u32, channels: u16) -> Vec<f32> {
+    vec![0.0; usize::try_from(rate).unwrap() * usize::from(channels)]
+}
+
+#[test]
+fn a_steady_mic_is_asked_for_its_facts_once_over_100_seconds() {
+    for default in [true, false] {
+        let mut rig = Rig::new(48_000, 48_000, 1, None, default);
+        rig.start();
+        let now = rig.supervisor.last_facts;
+        for second in 1..=100 {
+            rig.feed(&second_of(48_000, 1), 1, 512);
+            rig.output();
+            rig.supervisor.tick(now + FACTS_EVERY * second);
+        }
+        assert_eq!(rig.status().state, MicState::Live);
+        assert_eq!(rig.status().reopens, 0);
+        assert_eq!(rig.control.lock().unwrap().probes, 1);
+    }
+}
+
+#[test]
+fn a_rate_change_under_the_same_name_is_heard_in_the_frames() {
+    let mut rig = Rig::new(48_000, 48_000, 1, None, false);
+    rig.start();
+    let now = rig.supervisor.last_facts;
+    rig.feed(&second_of(48_000, 1), 1, 512);
+    rig.output();
+    rig.supervisor.tick(now + FACTS_EVERY);
+    assert_eq!(rig.control.lock().unwrap().probes, 1);
+    // AirPods opening their mic: same device, now 24 kHz.
+    rig.control.lock().unwrap().named.rate = 24_000;
+    for second in 2..=3 {
+        rig.feed(&second_of(24_000, 1), 1, 512);
+        rig.output();
+        rig.supervisor.tick(now + FACTS_EVERY * second);
+    }
+    assert_eq!(rig.status().state, MicState::Live);
+    assert_eq!(rig.status().device_rate, 24_000);
+    assert_eq!(rig.status().reopens, 1);
+    assert_eq!(
+        rig.control.lock().unwrap().opens,
+        [(48_000, 1, 128), (24_000, 1, 64)]
+    );
+    rig.feed(&sine(440.0, 24_000, 1), 1, 64);
+    assert_pitch(&rig.output(), 48_000, 440.0);
+}
+
+#[test]
+fn a_stalled_mic_is_asked_again_less_and_less_often() {
+    let mut rig = Rig::new(48_000, 48_000, 1, None, false);
+    rig.start();
+    let now = rig.supervisor.last_facts;
+    // Nothing arrives for two minutes and the device says nothing changed.
+    for second in 1..=120 {
+        rig.supervisor.tick(now + FACTS_EVERY * second);
+    }
+    let probes = rig.control.lock().unwrap().probes;
+    // 1 at start, then after 1, 2, 4, 8, 16, 32, 32, 32 seconds of stall.
+    assert!(probes <= 10, "{probes} probes in two minutes of stall");
+    assert!(probes >= 2, "a stall is looked into at least once");
+    assert_eq!(rig.status().reopens, 0);
+    // Frames at the right rate again: the wait starts over.
+    rig.feed(&second_of(48_000, 1), 1, 512);
+    rig.output();
+    rig.supervisor.tick(now + FACTS_EVERY * 121);
+    rig.supervisor.tick(now + FACTS_EVERY * 122);
+    assert_eq!(rig.control.lock().unwrap().probes, probes + 1);
+}
+
+#[test]
+fn a_named_mic_lost_without_a_fault_is_found_when_it_returns() {
+    let mut rig = Rig::new(48_000, 48_000, 1, None, false);
+    rig.start();
+    let now = rig.supervisor.last_facts;
+    // A device that is also the system default has its stream errors
+    // swallowed by the host: only its facts failing says it went. It went
+    // just after a whole second arrived, so the frames do not say so.
+    rig.feed(&second_of(48_000, 1), 1, 512);
+    rig.output();
+    rig.control.lock().unwrap().available = false;
+    rig.supervisor.tick(now + FACTS_EVERY);
+    assert_eq!(rig.status().state, MicState::Lost);
+    {
+        let mut state = rig.control.lock().unwrap();
+        state.available = true;
+        state.generation += 1;
+    }
+    rig.supervisor.tick(now + FACTS_EVERY * 2);
+    assert_eq!(rig.status().state, MicState::Live);
+    assert_eq!(rig.status().reopens, 1);
+}
+
+#[test]
+fn a_lost_mic_search_slows_and_finds_the_return_within_one_wait() {
+    let mut rig = Rig::new(48_000, 48_000, 1, None, false);
+    rig.start();
+    let now = rig.supervisor.last_facts;
+    rig.control.lock().unwrap().available = false;
+    rig.fault(MicFault::Lost("unplugged".into()));
+    rig.supervisor.tick(now);
+    let before = rig.control.lock().unwrap().searches;
+    let mut looked_at = Vec::new();
+    for second in 1..=100 {
+        let searches = rig.control.lock().unwrap().searches;
+        rig.supervisor.tick(now + FACTS_EVERY * second);
+        if rig.control.lock().unwrap().searches > searches {
+            looked_at.push(second);
+        }
+    }
+    let searches = rig.control.lock().unwrap().searches - before;
+    assert!(
+        searches <= 8,
+        "{searches} searches in 100 seconds: {looked_at:?}"
+    );
+    assert_eq!(looked_at, [1, 3, 7, 15, 31, 63, 95]);
+    rig.control.lock().unwrap().available = true;
+    for second in 101..=127 {
+        rig.supervisor.tick(now + FACTS_EVERY * second);
+    }
+    assert_eq!(rig.status().state, MicState::Live);
+    assert_eq!(rig.status().reopens, 1);
+    assert_eq!(rig.control.lock().unwrap().searches - before, 8);
+    // A reopened mic that delivers at its rate resets the wait for the next loss.
+    rig.feed(&second_of(48_000, 1), 1, 512);
+    rig.output();
+    rig.supervisor.tick(now + FACTS_EVERY * 128);
+    rig.fault(MicFault::Lost("unplugged again".into()));
+    rig.supervisor.tick(now + FACTS_EVERY * 129);
+    assert_eq!(rig.status().state, MicState::Lost);
+    rig.supervisor.tick(now + FACTS_EVERY * 130);
+    assert_eq!(rig.status().state, MicState::Live);
+    assert_eq!(rig.status().reopens, 2);
+}
+
+#[test]
+fn a_mic_that_drops_as_soon_as_it_opens_is_opened_less_and_less_often() {
+    let mut rig = Rig::new(48_000, 48_000, 1, None, false);
+    rig.start();
+    let now = rig.supervisor.last_facts;
+    // A Bluetooth mic mid-connect: every stream it gives drops before a
+    // second of frames arrives. Each open builds host audio units.
+    for second in 1..=100 {
+        if rig.status().state == MicState::Live {
+            rig.fault(MicFault::Lost("dropped while connecting".into()));
+        }
+        rig.supervisor.tick(now + FACTS_EVERY * second);
+    }
+    let opens = rig.control.lock().unwrap().opens.len();
+    // 1 at start, then after 1, 2, 4, 8, 16, 32, 32 seconds of trying.
+    assert!(opens <= 9, "{opens} opens in 100 seconds of a flapping mic");
+    // A mic that delivers at its rate for a second is back for real: the
+    // next loss is looked for after one second again.
+    rig.control.lock().unwrap().faults.clear();
+    let mut second = 101;
+    while rig.status().state != MicState::Live {
+        rig.supervisor.tick(now + FACTS_EVERY * second);
+        second += 1;
+    }
+    rig.feed(&second_of(48_000, 1), 1, 512);
+    rig.output();
+    rig.supervisor.tick(now + FACTS_EVERY * second);
+    assert_eq!(rig.status().state, MicState::Live);
+    rig.fault(MicFault::Lost("unplugged".into()));
+    rig.supervisor.tick(now + FACTS_EVERY * (second + 1));
+    assert_eq!(rig.status().state, MicState::Lost);
+    rig.supervisor.tick(now + FACTS_EVERY * (second + 2));
+    assert_eq!(rig.status().state, MicState::Live);
 }

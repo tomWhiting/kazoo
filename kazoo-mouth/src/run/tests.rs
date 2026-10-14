@@ -1,5 +1,78 @@
 use super::{Args, parse_args, parse_quantise};
 
+struct FakeInputHost {
+    names: Vec<std::result::Result<&'static str, &'static str>>,
+}
+
+impl FakeInputHost {
+    fn pick(
+        &self,
+        notices: &kazoo_core::host::audio::InputNotices,
+    ) -> kazoo_core::Result<kazoo_core::host::audio::InputPick> {
+        kazoo_core::host::audio::input_for_names(
+            None,
+            Some(Ok("AirPods".into())),
+            "AirPods",
+            self.names.iter().map(|name| {
+                name.map(str::to_owned)
+                    .map_err(|reason| kazoo_core::Error::Device(reason.into()))
+            }),
+            |message| notices.report(message),
+        )
+    }
+}
+
+#[test]
+fn an_unnamable_second_input_is_skipped_and_said_once() {
+    let host = FakeInputHost {
+        names: vec![
+            Ok("AirPods"),
+            Err("device disconnected"),
+            Ok("MacBook Pro Microphone"),
+        ],
+    };
+    let notices = kazoo_core::host::audio::InputNotices::default();
+    let input = host.pick(&notices).unwrap();
+    assert_eq!(input.name, "MacBook Pro Microphone");
+    let now = std::time::Instant::now();
+    let mut app = crate::controls::App::new(super::QuantiseSettings::default(), false);
+    super::show_input_notice(&mut app, &notices, now);
+    assert!(
+        app.notice(now)
+            .unwrap()
+            .contains("an input device could not be named:")
+    );
+    assert!(
+        app.notice(now)
+            .unwrap()
+            .contains("device disconnected; left out")
+    );
+    for _ in 0..5 {
+        assert_eq!(host.pick(&notices).unwrap().name, "MacBook Pro Microphone");
+        assert!(notices.take().is_none());
+    }
+    let later = now + std::time::Duration::from_secs(4);
+    super::show_input_notice(&mut app, &notices, later);
+    assert!(app.notice(later).is_none());
+}
+
+#[test]
+fn an_only_unnamable_input_says_no_input_device() {
+    let host = FakeInputHost {
+        names: vec![Err("device disconnected")],
+    };
+    let notices = kazoo_core::host::audio::InputNotices::default();
+    let error = host.pick(&notices).unwrap_err().to_string();
+    assert!(error.contains("no input device"), "{error}");
+    assert!(
+        notices
+            .take()
+            .unwrap()
+            .contains("device disconnected; left out")
+    );
+    assert!(notices.take().is_none());
+}
+
 #[test]
 fn standalone_args_match_the_mouth_controls() {
     let args = parse_args(
@@ -109,4 +182,37 @@ fn mouse_is_released_on_exit() {
         assert!(restored.contains("?1000l"));
         assert!(restored.contains("?1003l"));
     }
+}
+
+#[test]
+fn desk_refusal_stays_in_the_mouth_status() {
+    let mut state = kazoo_core::ipc::link::LinkStatus {
+        voice: kazoo_core::ipc::link::VoiceLink::default(),
+        normal_priority: false,
+        connected: false,
+        strip: None,
+        blocks_sent: 0,
+        blocks_dropped: 0,
+        messages_dropped: 0,
+        connections: 1,
+        last_refusal: Some(
+            "the desk refused mouth: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)"
+                .into(),
+        ),
+    };
+    assert_eq!(
+        super::desk_status(&state),
+        "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)"
+    );
+    state.last_refusal = Some("the desk closed the connection".into());
+    assert_eq!(
+        super::desk_status(&state),
+        "not on the desk: the desk closed the connection"
+    );
+    state.last_refusal = None;
+    assert_eq!(super::desk_status(&state), "playing direct: no desk");
+    state.connected = true;
+    state.voice.desk_carries = true;
+    state.strip = Some(0);
+    assert_eq!(super::desk_status(&state), "on the desk, strip 1");
 }

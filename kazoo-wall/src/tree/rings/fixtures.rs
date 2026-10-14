@@ -262,6 +262,7 @@ pub(super) fn mixed_changes(wall: &mut Wall) {
     ask(
         wall,
         &Request::Add {
+            alias: None,
             kind: "vco".into(),
             name: None,
             place: None,

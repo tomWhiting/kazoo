@@ -178,6 +178,7 @@ fn every_command_sends_its_request() {
         (
             "add lfo slow one",
             Request::Add {
+                alias: None,
                 kind: "lfo".to_string(),
                 name: Some("slow one".to_string()),
                 place: None,

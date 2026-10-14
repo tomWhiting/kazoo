@@ -183,6 +183,7 @@ fn every_change_is_one_commit_with_its_trailers() {
             amount: Some(0.2),
         },
         Request::Add {
+            alias: None,
             kind: "vco".into(),
             name: None,
             place: None,
@@ -249,6 +250,7 @@ fn each_commit_holds_the_wall_after_its_change() {
     for request in [
         turn(401.0),
         Request::Add {
+            alias: None,
             kind: "vco".into(),
             name: None,
             place: None,
@@ -630,6 +632,7 @@ fn the_tree_repacks_and_keeps_every_commit() {
         .item(
             thread::TreeItem::Whole {
                 kind: thread::WholeKind::Start,
+                changes: Vec::new(),
                 seq: 0,
                 clock: None,
                 files: mirror.clone(),
@@ -745,6 +748,7 @@ fn evening_tree_cost() {
     let mut mirror = crate::tree::to_files(&patch.to_file()).unwrap();
     assert!(handle.offer(thread::TreeItem::Whole {
         kind: thread::WholeKind::Start,
+        changes: Vec::new(),
         seq: patch.last_seq,
         clock: None,
         files: mirror.clone(),

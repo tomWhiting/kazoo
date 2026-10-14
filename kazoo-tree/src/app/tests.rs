@@ -27,7 +27,7 @@ fn app(history: History) -> App {
         quit: false,
         wants_reading: false,
         go: Go::Idle,
-        follow: Follow::On(None),
+        follow: Follow::Off,
     };
     app.take(history);
     app.selected = app.history.here;
@@ -307,6 +307,9 @@ fn g_puts_the_wall_at_the_selected_moment_at_once() {
 #[test]
 fn following_goes_where_the_selection_rests_once() {
     let mut app = app(grown(40, &[]));
+    // Off from the start: f turns it on.
+    press(&mut app, KeyCode::Char('f'));
+    assert_eq!(app.follow, Follow::On(None));
     let start = Instant::now();
     // Nothing moved by the user: nothing to follow.
     assert_eq!(app.go_due(start + REST * 2), None);
@@ -390,4 +393,107 @@ fn g_with_nothing_selected_says_so() {
 fn a_short_id_is_twelve_characters_or_all_of_a_shorter_one() {
     assert_eq!(short("0123456789abcdef"), "0123456789ab");
     assert_eq!(short("abc"), "abc");
+}
+
+#[test]
+fn the_arrows_only_look_and_say_how_far_and_enter_goes() {
+    // Tom, 15 Oct: "the arrow keys... probably shouldn't move you straight
+    // away... arrow keys plus enter... you get a little bit of information".
+    let mut app = app(grown(40, &[(0, 20, 6)]));
+    assert_eq!(app.follow, Follow::Off, "nothing follows from the start");
+    let start = Instant::now();
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    assert!(!app.resting());
+    assert_eq!(app.go_due(start + REST * 4), None, "looking never goes");
+    assert_eq!(app.go, Go::Idle);
+    assert_eq!(
+        wall_line(&app).as_deref(),
+        Some("2 changes back from the wall · Enter puts the wall here")
+    );
+    press(&mut app, KeyCode::Up);
+    assert_eq!(
+        wall_line(&app).as_deref(),
+        Some("1 change back from the wall · Enter puts the wall here")
+    );
+    // Said on its own line, never in what the footer says, so a read of
+    // the tree or a move of the wall never leaves it stale.
+    assert!(app.said.is_empty(), "{}", app.said);
+    let here = app.history.here;
+    app.history.here = app.selected;
+    assert_eq!(wall_line(&app), None, "the wall moved here: ◉ says it");
+    app.history.here = here;
+    press(&mut app, KeyCode::Up);
+    assert_eq!(wall_line(&app), None);
+    // The wall is at the bud's tip (6 moments from trunk moment 20): a
+    // trunk moment further on is back to the fork, then on.
+    app.selected = Some(app.history.limbs[0].moments[29]);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(
+        wall_line(&app).as_deref(),
+        Some(
+            "16 changes from the wall: 6 back to where they part, 10 on · Enter puts the wall here"
+        )
+    );
+    // Into the bud from the fork: its first moment, on the wall's line.
+    app.selected = Some(app.history.limbs[0].moments[20]);
+    press(&mut app, KeyCode::Right);
+    let bud_first = app.history.limbs[1].moments[0];
+    assert_eq!(app.selected, Some(bud_first));
+    assert_eq!(
+        wall_line(&app).as_deref(),
+        Some("5 changes back from the wall · Enter puts the wall here")
+    );
+    // Enter goes there; c only centres.
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.go, Go::Idle);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.go, Go::Send(app.history.moments[bud_first].id.clone()));
+}
+
+#[test]
+fn the_path_between_two_moments_goes_back_to_where_they_part_then_on() {
+    let history = grown(30, &[(0, 10, 4), (0, 20, 3)]);
+    let trunk = |p: usize| history.limbs[0].moments[p];
+    let first = history.limbs[1].moments[3];
+    let second = history.limbs[2].moments[2];
+    assert_eq!(history.path_between(trunk(5), trunk(5)), Some((0, 0)));
+    assert_eq!(history.path_between(trunk(5), trunk(9)), Some((0, 4)));
+    assert_eq!(history.path_between(trunk(9), trunk(5)), Some((4, 0)));
+    // Bud to bud: down the first to trunk 10, then up through 20.
+    assert_eq!(history.path_between(first, second), Some((4, 13)));
+    // Along one bud, both ways.
+    let bud = |p: usize| history.limbs[1].moments[p];
+    assert_eq!(history.path_between(bud(0), bud(3)), Some((0, 3)));
+    assert_eq!(history.path_between(bud(3), bud(1)), Some((2, 0)));
+    // From a bud down to the trunk below where it grew, and on past it.
+    assert_eq!(history.path_between(first, trunk(4)), Some((10, 0)));
+    assert_eq!(history.path_between(first, trunk(29)), Some((4, 19)));
+    // A moment that is not in the tree has no path.
+    assert_eq!(history.path_between(trunk(5), history.moments.len()), None);
+}
+
+/// The details' line saying how far the selected moment is from the wall.
+fn wall_line(app: &App) -> Option<String> {
+    app.details()
+        .into_iter()
+        .find(|(key, _)| key == "wall")
+        .map(|(_, words)| words)
+}
+
+#[test]
+fn the_path_between_two_moments_is_walked_by_limbs_not_moments() {
+    // Every moment's parent forgotten: only the limbs and where each grew
+    // from are left, and they are all the walk needs.
+    let mut history = grown(30, &[(0, 10, 4), (0, 20, 3)]);
+    for moment in &mut history.moments {
+        std::sync::Arc::make_mut(moment).parent = None;
+    }
+    let first = history.limbs[1].moments[3];
+    let second = history.limbs[2].moments[2];
+    assert_eq!(history.path_between(first, second), Some((4, 13)));
+    assert_eq!(
+        history.path_between(history.limbs[0].moments[2], history.limbs[0].moments[7]),
+        Some((0, 5))
+    );
 }
