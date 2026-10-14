@@ -28,16 +28,18 @@ use tokio::sync::mpsc;
 const NOT_RUNNING: &str = "the wall is not running (start it with `kazoo wall`)";
 
 /// Every tool.
-const TOOLS: [&str; 20] = [
+const TOOLS: [&str; 23] = [
     "wall_add",
     "wall_catalogue",
     "wall_chain",
+    "wall_go",
     "wall_group",
     "wall_listen",
     "wall_load",
     "wall_log",
     "wall_look",
     "wall_loop",
+    "wall_mark",
     "wall_patch",
     "wall_probe",
     "wall_record",
@@ -46,6 +48,7 @@ const TOOLS: [&str; 20] = [
     "wall_saves",
     "wall_speak",
     "wall_tempo",
+    "wall_tree",
     "wall_turn",
     "wall_undo",
     "wall_unpatch",
