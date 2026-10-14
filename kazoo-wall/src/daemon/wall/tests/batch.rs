@@ -194,3 +194,18 @@ fn batch_add_then_remove_keeps_a_complete_moment() {
     );
     assert!(result["change"]["what"]["changes"][0]["module"]["birth"].is_string());
 }
+
+#[test]
+fn a_batch_of_one_change_says_one_change() {
+    let (mut wall, _engine) = wall();
+    let result = ask(
+        &mut wall,
+        &batch("faster", serde_json::json!([{"op":"tempo","bpm":130.0}])),
+    )
+    .unwrap();
+    let summary = result["change"]["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("Tom: \"faster\" (1 change: "),
+        "{summary}"
+    );
+}

@@ -517,6 +517,9 @@ fn loop_from(module: &str, from: Option<&str>) -> String {
     )
 }
 
+/// A batch in words: its note in quotes, then how many changes it holds
+/// and each of them as [`describe`] says it, the list cut at 240
+/// characters with `…` (the whole list stays in the change).
 fn described_batch(
     note: &str,
     changes: &[What],
@@ -533,7 +536,11 @@ fn described_batch(
     } else {
         list
     };
-    format!("\"{note}\" ({} changes: {list})", changes.len())
+    let count = match changes.len() {
+        1 => "1 change".to_string(),
+        n => format!("{n} changes"),
+    };
+    format!("\"{note}\" ({count}: {list})")
 }
 
 #[cfg(test)]
