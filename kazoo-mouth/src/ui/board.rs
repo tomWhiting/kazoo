@@ -240,6 +240,16 @@ fn effects_area(frame: &mut Frame<'_>, area: Rect, focused: bool) -> Rect {
     Rect::new(area.x, area.y, area.width, content_height)
 }
 
+/// A harmony level at the bottom is off, and a shift moves in whole
+/// semitones, so the rows say so.
+fn harmony_label(index: usize, value: f32) -> Option<String> {
+    match index {
+        1 | 3 | 5 | 7 if value <= -60.0 => Some("off".to_owned()),
+        2 | 4 | 6 => Some(format!("{value:+.0} st")),
+        _ => None,
+    }
+}
+
 pub(super) fn effects(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let area = effects_area(frame, area, app.focus == Focus::Fx);
     let saved = app.accepted.fx.slots[app.selected_slot as usize];
@@ -308,7 +318,11 @@ pub(super) fn effects(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Curve::Log => (value / spec.min).log(spec.max / spec.min),
                 _ => (value - spec.min) / (spec.max - spec.min),
             };
-            let label = if let Curve::Stepped { labels } = spec.curve {
+            let label = if app.selected_slot == Slot::Harmony
+                && let Some(label) = harmony_label(index, value)
+            {
+                label
+            } else if let Curve::Stepped { labels } = spec.curve {
                 labels
                     .get((value - spec.min) as usize)
                     .copied()

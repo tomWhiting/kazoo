@@ -575,3 +575,30 @@ fn harmony_effect_panel_keys_fit_without_cut_words() {
         assert!(screen.contains(expected), "width {width}: {screen}");
     }
 }
+
+#[test]
+fn harmony_rows_read_off_and_whole_semitones() {
+    use crate::controls::Focus;
+    use crate::engine::fx::Slot;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    app.selected_slot = Slot::Harmony;
+    for (cell, name, value) in [
+        (2, "voice 1 shift", "▏ -12 st"),
+        (4, "voice 2 shift", "▏ +12 st"),
+        (5, "voice 2 level", "▏ -3.00 dB"),
+        (7, "voice 3 level", "▏ off"),
+    ] {
+        app.selected_cell = cell;
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| super::board::effects(frame, frame.area(), &app))
+            .unwrap();
+        let screen = text(terminal.backend().buffer());
+        let row = screen
+            .lines()
+            .find(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("{name} missing: {screen}"));
+        assert!(row.trim_end().ends_with(value), "{row}");
+    }
+}
