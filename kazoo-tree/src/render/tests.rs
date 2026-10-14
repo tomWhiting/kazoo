@@ -687,7 +687,7 @@ fn day_marks_take_no_place_another_glyph_or_word_would_have() {
     let days = days(&history, &zone);
     assert_eq!(days.len(), 1 + buds.len(), "the trunk and every bud");
     let (growth, gestures, line) = scene_parts(&history);
-    for scale in [0.5, 1.0, 1.5, 2.4] {
+    for scale in [0.5, 1.0, 1.5, 2.4, 3.0, 8.0] {
         let view = View {
             centre: growth.at[history.limbs[0].moments[18]].expect("placed"),
             scale,
