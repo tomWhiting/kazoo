@@ -1,8 +1,11 @@
 //! `kazoo tree`'s state and keys: a view panned and zoomed over the grown
-//! tree, a selected moment and what it says, and the help card. Reading the
-//! tree never changes the music.
+//! tree, a selected moment and what it says, and the help card.
+//!
+//! Reading the tree never changes the music: only `g` does, after asking,
+//! by putting the wall at the selected moment.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
@@ -64,6 +67,24 @@ pub struct App {
     pub quit: bool,
     /// The tree was asked to be read again (`r`): the reader is told.
     pub wants_reading: bool,
+    /// Where `g` is: asking, answered yes, or waiting for the wall.
+    pub go: Go,
+}
+
+/// Where putting the wall at a moment (`g`) is. Each moment is held by its
+/// whole commit, so a tree read again meanwhile cannot change which moment
+/// is meant.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Go {
+    /// Nothing asked.
+    #[default]
+    Idle,
+    /// Asked whether to put the wall at this moment; the next key answers.
+    Asking(Arc<str>),
+    /// Answered yes: the loop sends it to the wall at its next turn.
+    Send(Arc<str>),
+    /// Sent, and the wall has not answered yet.
+    Sent,
 }
 
 /// Which view is shown.
@@ -232,6 +253,7 @@ impl App {
             drag: None,
             quit: false,
             wants_reading: false,
+            go: Go::Idle,
         };
         app.show(grown);
         app.selected = app.history.here.or_else(|| {
@@ -485,6 +507,16 @@ impl App {
             }
             return;
         }
+        if let Go::Asking(moment) = &self.go {
+            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
+                self.said = format!("putting the wall at {} …", short(moment));
+                self.go = Go::Send(Arc::clone(moment));
+            } else {
+                "the wall stays where it is".clone_into(&mut self.said);
+                self.go = Go::Idle;
+            }
+            return;
+        }
         if self.shown == Shown::Lanes && self.lane_key(key.code) {
             return;
         }
@@ -498,6 +530,7 @@ impl App {
                 self.help_top = 0;
             }
             KeyCode::Char('y') => self.copy_selected(),
+            KeyCode::Char('g') => self.ask_to_go(),
             KeyCode::Left | KeyCode::Char('h') => self.pan(-step, 0.0),
             KeyCode::Right | KeyCode::Char('l') => self.pan(step, 0.0),
             KeyCode::Up | KeyCode::Char('k') => self.pan(0.0, step),
@@ -533,6 +566,30 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Ask whether to put the wall at the selected moment (`g`); the
+    /// answer is the next key, `y` for yes.
+    fn ask_to_go(&mut self) {
+        let Some(m) = self.selected else {
+            "select a moment to put the wall at first".clone_into(&mut self.said);
+            return;
+        };
+        if self.history.here == Some(m) {
+            "the wall is at this moment already".clone_into(&mut self.said);
+            return;
+        }
+        if self.go != Go::Idle {
+            "the wall is still being moved: wait for it".clone_into(&mut self.said);
+            return;
+        }
+        let moment = &self.history.moments[m];
+        self.said = format!(
+            "put the wall at {} ({})? y to go, any other key to stay",
+            short(&moment.id),
+            moment.summary
+        );
+        self.go = Go::Asking(Arc::clone(&moment.id));
     }
 
     /// Put the selected moment's whole commit on the terminal's clipboard.
@@ -740,6 +797,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("v", "the tree, or lanes: one row a moment"),
             ("y", "copy the selected moment's commit"),
+            ("g", "put the wall at the selected moment (asks)"),
             ("Shift-drag", "select text (Option-drag in iTerm2)"),
             ("r", "read the tree again"),
             ("?", "this card"),
@@ -771,6 +829,12 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
 ];
+
+/// A commit's first twelve characters, as the wall shows short ids.
+#[must_use]
+pub fn short(id: &str) -> &str {
+    id.get(..12).unwrap_or(id)
+}
 
 #[cfg(test)]
 mod tests;

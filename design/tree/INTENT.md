@@ -73,7 +73,7 @@ It draws with the terminal's graphics protocol where it can (Ghostty and Kitty, 
 2. Each moment records its sound from now on (KZ-T08c), which gives the colours.
 3. The lanes view.
 4. The graphics-protocol drawing, with colour.
-5. Going to a moment from the tree. That waits for the wall's own "go to a moment" (KZ-T04b, being built), and for the journey over N beats (KZ-T05b, T05c).
+5. Going to a moment from the tree: `g` on a selected moment asks first, then tells the wall to go there, logged under Tom (KZ-T04b's go). For now the wall jumps; the journey over N beats comes with KZ-T05b and T05c. The wall keeps itself as it was before each go, so a go can be undone.
 
 ## For Cally
 
