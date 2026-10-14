@@ -1372,7 +1372,7 @@ fn the_daemon_commits_to_a_tree_planted_beside_its_state_and_plants_none() {
         lines,
         [
             format!(
-                "kazoo-wall|the wall started after change {0}; the tree did not hold changes 1 to {0} one by one|start,{0},1-{0}",
+                "kazoo-wall|the tree holds change 1 as one commit|start,{0},1-{0}",
                 first.change.seq
             ),
             format!("Tom|{}|change,{}", second.change.summary, second.change.seq),

@@ -467,6 +467,7 @@ fn adding_picks_a_kind_optionally_named_and_selects_it_when_it_arrives() {
     assert_eq!(
         calls(&mut app),
         vec![Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,
@@ -483,6 +484,7 @@ fn adding_picks_a_kind_optionally_named_and_selects_it_when_it_arrives() {
     assert_eq!(
         calls(&mut app),
         vec![Request::Add {
+            alias: None,
             kind: "vco".to_string(),
             name: Some("wob".to_string()),
             place: None,
@@ -493,6 +495,7 @@ fn adding_picks_a_kind_optionally_named_and_selects_it_when_it_arrives() {
     changed(
         &mut app,
         Request::Add {
+            alias: None,
             kind: "vco".to_string(),
             name: Some("wob".to_string()),
             place: None,
@@ -914,6 +917,7 @@ fn a_module_added_in_the_rack_view_is_brought_into_sight() {
     render(&mut app, 120, 40);
     assert_eq!(app.rack.pan.x, 0);
     let add = Request::Add {
+        alias: None,
         kind: "lfo".to_string(),
         name: None,
         place: None,
@@ -1325,6 +1329,7 @@ fn typing_in_the_picker_finds_a_kind() {
     assert_eq!(
         calls(&mut app),
         vec![Request::Add {
+            alias: None,
             kind: "quant".to_string(),
             name: None,
             place: None,
@@ -1377,6 +1382,7 @@ fn in_the_rack_view_a_goes_after_the_selected_module_and_says_where() {
     assert_eq!(
         calls(&mut app),
         vec![Request::Add {
+            alias: None,
             kind: "noise".to_string(),
             name: Some("hiss".to_string()),
             place: Some(place),

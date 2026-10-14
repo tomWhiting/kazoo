@@ -213,9 +213,12 @@ impl Loops {
         }
     }
 
-    /// Read tape atomics and saved identity on the control side.
+    /// Read tape atomics and saved identity on the control side. The loop
+    /// keeps its anchor in beats from the wall's origin (the bar the wall
+    /// now playing landed on, `origin`); the view gives it on the song, as
+    /// the snapshot gives the beat.
     #[must_use]
-    pub fn view(&self, id: &str, patch: &crate::patch::Patch) -> Option<LoopView> {
+    pub fn view(&self, id: &str, patch: &crate::patch::Patch, origin: f64) -> Option<LoopView> {
         if patch.module(id)?.kind != crate::catalogue::Kind::LOOP {
             return None;
         }
@@ -243,7 +246,7 @@ impl Loops {
             };
             view.frames = gauges.frames.load(Ordering::Relaxed);
             view.beats = finite(f64::from_bits(gauges.beats.load(Ordering::Relaxed)));
-            view.anchor = finite(f64::from_bits(gauges.anchor.load(Ordering::Relaxed)));
+            view.anchor = finite(f64::from_bits(gauges.anchor.load(Ordering::Relaxed)) + origin);
             view.rate = f32::from_bits(gauges.rate.load(Ordering::Relaxed)) as u32;
             view.pass = gauges.pass.load(Ordering::Relaxed);
             let bars = (view.beats / 4.0).ceil().clamp(0.0, MAX_LOOP_BARS as f64) as usize;

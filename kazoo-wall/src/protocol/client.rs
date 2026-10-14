@@ -329,6 +329,7 @@ impl WallClient {
     /// As [`Self::call`].
     pub fn add(&mut self, kind: &str, name: Option<&str>) -> Result<ChangeResult, ClientError> {
         self.call_as(Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: name.map(str::to_string),
             place: None,
