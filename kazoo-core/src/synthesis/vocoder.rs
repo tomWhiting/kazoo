@@ -87,6 +87,16 @@ const DEFAULT_NUM_BANDS: usize = 16;
 /// suited to vocal formant bands.
 const BAND_Q: f32 = 4.0;
 
+/// Lowest carrier band level a separate carrier is divided by: a band the
+/// carrier leaves empty is raised at most this far, never to infinity.
+const EXTERNAL_LEVEL_FLOOR: f32 = 0.001;
+
+/// How far below the loudest carrier band within an octave a separate
+/// carrier's band may sit and still be raised to the voice's level: 18 dB,
+/// more than a triangle's 12 dB per octave fall, less than the skirt a
+/// missing harmonic leaves.
+const EXTERNAL_GAP_FRACTION: f32 = 0.125;
+
 /// Voice spectral envelope applied to a carrier signal.
 ///
 /// Parameters:
@@ -104,12 +114,24 @@ pub struct Vocoder {
     mod_filters: Vec<BiquadFilter>,
     carrier_filters: Vec<BiquadFilter>,
     envelopes: Vec<EnvelopeFollower>,
+    // Used only with a separate carrier (`process_with_carrier`): a second
+    // band-pass stage per band, so a strong low harmonic of the carrier does
+    // not leak into a high band's level, and the follower that measures each
+    // carrier band so it can be brought to the voice's band level.
+    carrier_stage_two: Vec<BiquadFilter>,
     carrier_envelopes: Vec<EnvelopeFollower>,
+    // Each carrier band's level as the piece began, and how many bands make
+    // an octave: a band far quieter than the loudest within an octave of it
+    // holds no harmonic of the carrier, only its neighbours' skirts, and is
+    // not raised to the voice's level.
+    carrier_levels: Vec<f32>,
+    octave_span: usize,
 
     // Per-band scratch buffers (pre-allocated for block processing).
     mod_band_buf: Vec<f32>,
     carrier_band_buf: Vec<f32>,
     carrier_block: Vec<f32>,
+    carrier_stage_buf: Vec<f32>,
 
     // Internal carrier oscillator state.
     carrier_phase: f32,
@@ -181,6 +203,17 @@ impl Vocoder {
             mod_filters,
             carrier_filters,
             envelopes,
+            carrier_stage_two: band_freqs
+                .iter()
+                .map(|&freq| {
+                    let mut filter = BiquadFilter::new(FilterType::BandPass, sr);
+                    filter.set_frequency(freq);
+                    filter.set_q(BAND_Q);
+                    filter
+                })
+                .collect(),
+            carrier_levels: vec![0.0; num_bands],
+            octave_span: octave_span(&band_freqs),
             carrier_envelopes: (0..num_bands)
                 .map(|_| {
                     EnvelopeFollower::new(Self::DEFAULT_ATTACK_MS, Self::DEFAULT_RELEASE_MS, sr)
@@ -189,6 +222,7 @@ impl Vocoder {
             mod_band_buf: vec![0.0; block_cap],
             carrier_band_buf: vec![0.0; block_cap],
             carrier_block: vec![0.0; block_cap],
+            carrier_stage_buf: vec![0.0; block_cap],
             carrier_phase: 0.0,
             noise_gen: NoiseGen::new(0xCAFE_BABE),
             carrier_mode: VocoderCarrierMode::InternalSaw,
@@ -282,6 +316,17 @@ fn fill_sanitized_input(dest: &mut [f32], src: &[f32]) {
     }
 }
 
+/// How many log-spaced bands span an octave, at least one.
+fn octave_span(band_freqs: &[f32]) -> usize {
+    match band_freqs {
+        [low, high, ..] if *high > *low && *low > 0.0 => (std::f32::consts::LN_2
+            / (high / low).ln())
+        .round()
+        .max(1.0) as usize,
+        _ => 1,
+    }
+}
+
 /// Compute logarithmically spaced band centre frequencies.
 fn compute_band_frequencies(num_bands: usize, sample_rate: f32) -> Vec<f32> {
     if num_bands == 0 {
@@ -309,6 +354,7 @@ impl Vocoder {
             .len()
             .min(self.carrier_band_buf.len())
             .min(self.carrier_block.len())
+            .min(self.carrier_stage_buf.len())
             .max(1)
     }
 
@@ -347,7 +393,25 @@ impl Vocoder {
         //   3. carrier_block (carrier input) -> carrier_filters -> mod_band_buf (filtered carrier)
         //   4. output[i] += mod_band_buf[i] * carrier_band_buf[i]
         //   5. Re-fill mod_band_buf from input for the next band.
+        if external.is_some() {
+            for (level, envelope) in self.carrier_levels.iter_mut().zip(&self.carrier_envelopes) {
+                *level = envelope.current();
+            }
+        }
+
         for band in 0..self.num_bands {
+            let gap_floor = if external.is_some() {
+                let low = band.saturating_sub(self.octave_span);
+                let high = (band + self.octave_span).min(self.num_bands - 1);
+                (self.carrier_levels[low..=high]
+                    .iter()
+                    .fold(0.0_f32, |loudest, level| loudest.max(*level))
+                    * EXTERNAL_GAP_FRACTION)
+                    .max(EXTERNAL_LEVEL_FLOOR)
+            } else {
+                EXTERNAL_LEVEL_FLOOR
+            };
+
             // 1. Filter modulator through bandpass (entire block).
             self.mod_filters[band]
                 .process(&self.mod_band_buf[..len], &mut self.carrier_band_buf[..len]);
@@ -363,6 +427,13 @@ impl Vocoder {
             //    carrier_block is never modified, so it's stable across bands.
             self.carrier_filters[band]
                 .process(&self.carrier_block[..len], &mut self.mod_band_buf[..len]);
+            if external.is_some() {
+                self.carrier_stage_two[band].process(
+                    &self.mod_band_buf[..len],
+                    &mut self.carrier_stage_buf[..len],
+                );
+                self.mod_band_buf[..len].copy_from_slice(&self.carrier_stage_buf[..len]);
+            }
 
             // 4. Accumulate: filtered_carrier * envelope.
             for ((out, &carrier), &env) in output[..len]
@@ -371,11 +442,13 @@ impl Vocoder {
                 .zip(&self.carrier_band_buf[..len])
             {
                 let env = if external.is_some() {
-                    // Equal carrier energy per band preserves the modulator envelope.
+                    // Each carrier band is brought to the voice's level in that
+                    // band, so the output's spectral envelope is the voice's
+                    // whatever the carrier's own tilt, at the voice's loudness.
                     let level = self.carrier_envelopes[band]
                         .process_sample(carrier)
-                        .max(0.001);
-                    env / level * (2.0 / self.num_bands as f32)
+                        .max(gap_floor);
+                    env / level
                 } else {
                     env
                 };
@@ -416,7 +489,11 @@ impl Processor for Vocoder {
         for f in &mut self.mod_filters {
             f.reset();
         }
-        for f in &mut self.carrier_filters {
+        for f in self
+            .carrier_filters
+            .iter_mut()
+            .chain(&mut self.carrier_stage_two)
+        {
             f.reset();
         }
         for e in self.envelopes.iter_mut().chain(&mut self.carrier_envelopes) {
@@ -492,6 +569,9 @@ impl Processor for Vocoder {
             self.carrier_filters[i].set_sample_rate(sr);
             self.carrier_filters[i].set_frequency(freq);
             self.carrier_filters[i].set_q(self.band_q);
+            self.carrier_stage_two[i].set_sample_rate(sr);
+            self.carrier_stage_two[i].set_frequency(freq);
+            self.carrier_stage_two[i].set_q(self.band_q);
         }
         self.rebuild_envelopes();
         self.reset();
@@ -507,6 +587,9 @@ impl Processor for Vocoder {
         }
         if self.carrier_block.len() < cap {
             self.carrier_block.resize(cap, 0.0);
+        }
+        if self.carrier_stage_buf.len() < cap {
+            self.carrier_stage_buf.resize(cap, 0.0);
         }
     }
 }

@@ -34,6 +34,11 @@ impl Ramp {
         }
     }
 
+    /// Silent now and staying silent: whatever it scales can rest.
+    fn silent(&self) -> bool {
+        self.value == 0.0 && self.target == 0.0
+    }
+
     fn next(&mut self) -> f32 {
         if self.remaining > 0 {
             self.remaining -= 1;
@@ -49,7 +54,12 @@ impl Ramp {
 
 #[derive(Debug)]
 pub(super) struct VoiceBlend {
+    /// Every band count runs while the voice is up, so a change of bands
+    /// crossfades between two settled banks and never clicks.
     banks: [Vocoder; 3],
+    /// The blend rests while the voice is at 0, and starts again from
+    /// silence, never from the voice it heard before it rested.
+    resting: bool,
     outputs: [Vec<f32>; 3],
     high_pass: BiquadFilter,
     consonants: Vec<f32>,
@@ -75,6 +85,7 @@ impl VoiceBlend {
         high_pass.set_frequency(5000.0);
         Self {
             banks,
+            resting: true,
             outputs: std::array::from_fn(|_| vec![0.0; block]),
             high_pass,
             consonants: vec![0.0; block],
@@ -97,8 +108,16 @@ impl VoiceBlend {
     }
 
     pub(super) fn prepare(&mut self, mic: &[f32], carrier: &[f32]) {
-        if self.voice.value == 0.0 && self.voice.target == 0.0 {
+        if self.voice.silent() {
+            self.resting = true;
             return;
+        }
+        if self.resting {
+            for bank in &mut self.banks {
+                bank.reset();
+            }
+            self.high_pass.reset();
+            self.resting = false;
         }
         for (bank, output) in self.banks.iter_mut().zip(&mut self.outputs) {
             bank.process_with_carrier(mic, carrier, &mut output[..mic.len()]);

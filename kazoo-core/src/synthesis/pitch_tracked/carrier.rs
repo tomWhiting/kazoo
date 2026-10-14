@@ -1,6 +1,11 @@
 use super::PitchTrackedSynth;
 
 impl PitchTrackedSynth {
+    /// Render the first `min(input, output, carrier)` samples exactly as
+    /// [`crate::Processor::process`] would, and write the raw oscillator
+    /// (before the envelope and the filter) for those samples to `carrier`,
+    /// for a vocoder to use as its carrier. The rest of `output` and
+    /// `carrier` is silence. Never allocates, locks or panics.
     pub fn process_with_carrier(&mut self, input: &[f32], output: &mut [f32], carrier: &mut [f32]) {
         let len = input.len().min(output.len()).min(carrier.len());
         output[len..].fill(0.0);
