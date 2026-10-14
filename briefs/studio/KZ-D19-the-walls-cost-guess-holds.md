@@ -4,7 +4,9 @@ Line numbers are from main at the commit that adds this brief and may have moved
 
 Written by Cassio, 15 Oct 2026, 00:1x. Decided by Cassio; reasons beside each decision.
 
-Place: Track D (the wall's deadline, after D15). Time: about 40 minutes. Crates: kazoo-wall (`daemon/wall/cost.rs`, `daemon/wall.rs`, their tests). Runs after KZ-T04d and KZ-P11b (both touch these files); never beside them.
+Place: Track D (the wall's deadline, after D15). Time: about 40 minutes. Crates: kazoo-wall (`daemon/wall/cost.rs`, `daemon/wall.rs`, their tests). Runs after KZ-T04d (landed). Runs beside KZ-P11b (amended 15 Oct 07:5x): P11b changes one row of `cost.rs` and the two test helpers below, nothing else here. So this lane's first step is the same helper pin P11b makes, and whichever lands second merges identical lines.
+
+**First step (amended 15 Oct 07:5x, from the P11b fix decision 6):** in `kazoo-wall/src/daemon/wall/tests/cost.rs`, `heavy()` returns `Kind::from_name("screamer")`, and `audio_kind(false)` returns, by name, the kind it picks today (print it once before the change and put it in the END). Each keeps its assertion that the kind has an audio input and output. Reason: the fixtures' arithmetic was built on screamer's row (two screamers and an `out` are 0.2992 of a 48 kHz block). With `heavy()` following "the dearest row", any new or re-measured effect would move this lane's numbers under it, so the before and after this brief asks for would not compare like with like.
 
 ## Why
 
