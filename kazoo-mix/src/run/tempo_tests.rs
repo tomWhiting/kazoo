@@ -1,20 +1,14 @@
 use super::*;
 
 #[test]
-fn a_stopped_hub_wins_over_a_tempo_warning() {
+fn hub_notices_are_shown_beside_a_lasting_tempo_save_failure() {
     assert_eq!(
-        status_line(true, Some("tempo failed"), || (
-            "hub stopped".to_string(),
-            true
-        )),
-        ("hub stopped".to_string(), true),
+        status_line(Some("tempo failed"), || ("hub stopped".to_string(), true)),
+        ("hub stopped; tempo failed".to_string(), true),
     );
     assert_eq!(
-        status_line(false, Some("tempo failed"), || (
-            "hub notice".to_string(),
-            false
-        )),
-        ("tempo failed".to_string(), true),
+        status_line(Some("tempo failed"), || ("hub notice".to_string(), false)),
+        ("hub notice; tempo failed".to_string(), true),
     );
 }
 
@@ -43,6 +37,10 @@ fn startup_warnings_age_but_write_failures_stay_until_a_good_write() {
             .is_some()
     );
     assert_eq!(store.failed_writes().len(), 1);
+    let warning = store.status_warning(now + Duration::from_secs(60)).unwrap();
+    let (line, alert) = status_line(Some(warning), || ("hub notice".to_string(), false));
+    assert_eq!(line, format!("hub notice; {warning}"));
+    assert!(alert);
     std::fs::remove_dir(&path).unwrap();
     shared.set_tempo(100.0);
     store.poll(shared.transport(), now + Duration::from_secs(61));
