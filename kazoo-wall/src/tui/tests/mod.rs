@@ -37,6 +37,7 @@ pub fn module(id: &str, kind: &str, name: Option<&str>) -> ModuleView {
         .find(|info| info.kind == kind)
         .unwrap_or_else(|| panic!("the catalogue has no {kind}"));
     ModuleView {
+        tape: None,
         id: id.to_string(),
         kind: kind.to_string(),
         name: name.map(str::to_string),
@@ -86,6 +87,8 @@ pub fn snapshot() -> Snapshot {
     cutoff.target = 800.0;
     cutoff.target_display = "800 Hz".to_string();
     Snapshot {
+        loops_meet: None,
+        checkpoints_paused: false,
         revision: 58,
         wall: 0,
         seed: 0,

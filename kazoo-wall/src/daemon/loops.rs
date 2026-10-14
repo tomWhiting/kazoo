@@ -12,14 +12,18 @@ pub mod pins;
 pub mod takes;
 pub use pins::SAVE_WAIT;
 pub use takes::CHECKPOINT_SECONDS;
+pub mod meet;
 #[cfg(test)]
 pub(crate) mod tests;
 mod worker;
 
 use crate::dsp::looper::{self, LoopFeed, LoopGauges, LoopIn, LoopOut, LoopTape, MAX_LOOP_BARS};
 use crate::patch::TapeRecord;
+use crate::protocol::{Change, LoopState, LoopView, What};
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{TryRecvError, TrySendError};
 use worker::{TapeDone, TapeJob, TapeWorker};
 
@@ -29,6 +33,15 @@ pub const MAX_LOOPS: usize = 8;
 
 /// Notes kept for the wall to show; older ones are on the console log.
 const MAX_NOTES: usize = 64;
+
+const fn finite(value: f64) -> f64 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
+fn belongs(note: &str, module: &str) -> bool {
+    note.strip_prefix(module)
+        .is_some_and(|rest| rest.starts_with(' ') || rest.starts_with("'s "))
+}
 
 /// One loop's tape on its way: a job not yet queued, or a tape not yet
 /// taken by the loop's feed.
@@ -60,6 +73,8 @@ pub struct Loops {
     worker: Thread,
     waiting: HashMap<String, Waiting>,
     notes: VecDeque<String>,
+    unseen: RefCell<VecDeque<String>>,
+    newest: RefCell<HashMap<String, (u64, String)>>,
     dir: Result<PathBuf, String>,
     tickets: u64,
     /// Each attached loop's `(capacity, tail)` in frames.
@@ -109,6 +124,8 @@ impl Loops {
             worker: Thread::NotStarted,
             waiting: HashMap::new(),
             notes: VecDeque::with_capacity(MAX_NOTES),
+            unseen: RefCell::new(VecDeque::with_capacity(MAX_NOTES)),
+            newest: RefCell::new(HashMap::new()),
             dir,
             tickets: 0,
             geometry: HashMap::new(),
@@ -127,6 +144,11 @@ impl Loops {
 
     fn note(&mut self, text: String) {
         eprintln!("kazoo-wall: {text}");
+        let unseen = self.unseen.get_mut();
+        if unseen.len() == MAX_NOTES {
+            unseen.pop_front();
+        }
+        unseen.push_back(text.clone());
         if self.notes.len() == MAX_NOTES {
             self.notes.pop_front();
         }
@@ -136,6 +158,18 @@ impl Loops {
     /// What went wrong with the loops' tape lately, oldest first.
     pub fn notes(&self) -> impl Iterator<Item = &str> {
         self.notes.iter().map(String::as_str)
+    }
+
+    /// Module notes travel with their tape view, leaving general failures here.
+    pub fn unassigned_notes<'a>(
+        &'a self,
+        patch: &'a crate::patch::Patch,
+    ) -> impl Iterator<Item = &'a str> {
+        self.notes().filter(move |note| {
+            !patch.modules().iter().any(|module| {
+                module.kind == crate::catalogue::Kind::LOOP && belongs(note, &module.id)
+            })
+        })
     }
 
     /// Punches finished since the wall started.
@@ -148,6 +182,112 @@ impl Loops {
     #[must_use]
     pub fn gauges(&self, module: &str) -> Option<&LoopGauges> {
         self.feeds.get(module).map(LoopFeed::gauges)
+    }
+
+    /// Recover take numbers from the durable log, including after a restart.
+    pub fn observe_takes<'a>(
+        &self,
+        changes: impl Iterator<Item = &'a Change>,
+        patch: &crate::patch::Patch,
+    ) {
+        let mut newest = self.newest.borrow_mut();
+        newest.retain(|id, _| {
+            patch
+                .module(id)
+                .is_some_and(|module| module.kind == crate::catalogue::Kind::LOOP)
+        });
+        for change in changes {
+            if let What::Take {
+                module,
+                tape: Some(tape),
+                ..
+            } = &change.what
+            {
+                if patch
+                    .module(module)
+                    .is_some_and(|module| module.kind == crate::catalogue::Kind::LOOP)
+                {
+                    newest.insert(module.clone(), (change.seq, tape.reel.clone()));
+                }
+            }
+        }
+    }
+
+    /// Read tape atomics and saved identity on the control side.
+    #[must_use]
+    pub fn view(&self, id: &str, patch: &crate::patch::Patch) -> Option<LoopView> {
+        if patch.module(id)?.kind != crate::catalogue::Kind::LOOP {
+            return None;
+        }
+        let record = patch.loop_record(id);
+        let tape = record.and_then(|record| record.tape.as_ref());
+        let gauges = self.gauges(id);
+        let mut view = LoopView {
+            from: record.and_then(|record| record.from.clone()),
+            reel: tape.map(|tape| tape.reel.chars().take(8).collect()),
+            take: self
+                .newest
+                .borrow()
+                .get(id)
+                .and_then(|(seq, reel)| tape.filter(|tape| tape.reel == *reel).map(|_| *seq)),
+            ..LoopView::default()
+        };
+        if let Some(gauges) = gauges {
+            view.state = match gauges.state.load(Ordering::Relaxed) {
+                value if value == looper::LoopState::Armed as u8 => LoopState::Armed,
+                value if value == looper::LoopState::Rolling as u8 => LoopState::Rolling,
+                value if value == looper::LoopState::PostRoll as u8 => LoopState::PostRoll,
+                value if value == looper::LoopState::Holding as u8 => LoopState::Holding,
+                value if value == looper::LoopState::NoTape as u8 => LoopState::NoTape,
+                _ => LoopState::Blank,
+            };
+            view.frames = gauges.frames.load(Ordering::Relaxed);
+            view.beats = finite(f64::from_bits(gauges.beats.load(Ordering::Relaxed)));
+            view.anchor = finite(f64::from_bits(gauges.anchor.load(Ordering::Relaxed)));
+            view.rate = f32::from_bits(gauges.rate.load(Ordering::Relaxed)) as u32;
+            view.pass = gauges.pass.load(Ordering::Relaxed);
+            let bars = (view.beats / 4.0).ceil().clamp(0.0, MAX_LOOP_BARS as f64) as usize;
+            for gauge in gauges.bar_pass.iter().take(bars) {
+                let written = gauge.load(Ordering::Relaxed);
+                view.written.push(written != i64::MIN);
+                let age = if written == i64::MIN {
+                    0
+                } else {
+                    view.pass.saturating_sub(written).max(0)
+                };
+                view.ages.push(u32::try_from(age).unwrap_or(u32::MAX));
+            }
+            view.bins = gauges
+                .bins
+                .iter()
+                .map(|bin| bin.load(Ordering::Relaxed))
+                .collect();
+            let left = f32::from_bits(gauges.peak_left.swap(0, Ordering::Relaxed));
+            let right = f32::from_bits(gauges.peak_right.swap(0, Ordering::Relaxed));
+            let peak = finite(f64::from(left)).max(finite(f64::from(right)));
+            view.peak_db = if peak > 0.0 {
+                (20.0 * peak.log10()).max(-120.0)
+            } else {
+                -120.0
+            };
+            view.shortened = gauges.shortened.load(Ordering::Relaxed);
+        }
+        if self
+            .waiting
+            .get(id)
+            .is_some_and(|waiting| waiting.reel.is_some())
+        {
+            view.state = LoopState::Loading;
+        }
+        self.unseen.borrow_mut().retain(|note| {
+            if belongs(note, id) {
+                view.notes.push(note.clone());
+                false
+            } else {
+                true
+            }
+        });
+        Some(view)
     }
 
     /// Attach a freshly built loop's feed; the loop was built at `rate`.

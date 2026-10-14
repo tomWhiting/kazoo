@@ -496,6 +496,140 @@ fn a_finished_recording_becomes_a_logged_take_with_its_exact_samples() {
 }
 
 #[test]
+fn a_loop_shows_its_state_length_place_and_take() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, state_dir) = taking_wall(dir.path());
+    rolling(&mut wall, &mut engine);
+    let recording = wall.snapshot();
+    let view = recording
+        .modules
+        .iter()
+        .find(|module| module.id == "loop1")
+        .unwrap()
+        .tape
+        .as_ref()
+        .unwrap();
+    assert_eq!(view.state, crate::protocol::LoopState::Rolling);
+    let seq = punch(&mut wall, &mut engine);
+    let snapshot = wall.snapshot();
+    let view = snapshot
+        .modules
+        .iter()
+        .find(|module| module.id == "loop1")
+        .unwrap()
+        .tape
+        .as_ref()
+        .unwrap();
+    assert_eq!(view.state, crate::protocol::LoopState::Holding);
+    assert!((view.beats - 4.0).abs() < f64::EPSILON);
+    assert_eq!(view.written, [true]);
+    assert_eq!(view.take, Some(seq));
+    let reel = view.reel.as_ref().unwrap();
+    assert_eq!(reel.len(), 8);
+    assert!(reel.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(view.rate, 48_000);
+    assert_eq!(view.frames, BAR as u64);
+    assert_eq!(view.bins.len(), 64);
+    let gauges = gauges(&wall);
+    gauges.pass.store(3, Ordering::Relaxed);
+    gauges.bar_pass[0].store(1, Ordering::Relaxed);
+    gauges.peak_left.store(0.5_f32.to_bits(), Ordering::Relaxed);
+    gauges
+        .peak_right
+        .store(f32::INFINITY.to_bits(), Ordering::Relaxed);
+    let looked = wall.snapshot();
+    let tape = looked
+        .modules
+        .iter()
+        .find(|module| module.id == "loop1")
+        .unwrap()
+        .tape
+        .as_ref()
+        .unwrap();
+    assert_eq!(tape.ages, [2]);
+    assert!((tape.peak_db + 6.020_599_913_279_624).abs() < 1e-10);
+    wall.loops.report("loop1's take was restored".into());
+    assert_eq!(
+        wall.snapshot()
+            .modules
+            .iter()
+            .find(|module| module.id == "loop1")
+            .unwrap()
+            .tape
+            .as_ref()
+            .unwrap()
+            .notes,
+        ["loop1's take was restored"]
+    );
+    assert!(
+        wall.snapshot()
+            .modules
+            .iter()
+            .find(|module| module.id == "loop1")
+            .unwrap()
+            .tape
+            .as_ref()
+            .unwrap()
+            .notes
+            .is_empty()
+    );
+    assert!(state_dir.path().is_dir());
+}
+
+#[test]
+fn a_snapshot_reports_loop_seams_and_paused_checkpoints() {
+    let dir = reels_dir();
+    let (tape, samples) = put_reel(dir.path());
+    assert!(!samples.is_empty());
+    let mut patch = Patch::empty(120.0);
+    for (bars, anchor) in [(17_u32, 0.0), (23, 0.0)] {
+        let What::Add { module } = patch.add("loop", None, None).unwrap() else {
+            panic!("adding a loop did not return its module");
+        };
+        patch
+            .set_loop(
+                &module.id,
+                LoopRecord {
+                    tape: Some(TapeRecord {
+                        beats: f64::from(bars * 4),
+                        anchor,
+                        bars: vec![Some(0); bars as usize],
+                        ..tape.clone()
+                    }),
+                    from: None,
+                },
+            )
+            .unwrap();
+    }
+    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 10.0), None);
+    let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
+    wall.loops = Loops::with_reels_dir(dir.path().to_path_buf());
+    wall.patch = patch;
+    wall.swap_engine();
+    wall.loops.wait_install_for_test();
+    render(&mut engine, 4_096);
+    wall.tick(Instant::now());
+    assert_eq!(
+        wall.snapshot().loops_meet,
+        Some(crate::protocol::LoopsMeet {
+            bars: Some(391),
+            seconds: Some(782.0),
+            next_bar: Some(392),
+        })
+    );
+    wall.loops.checkpoints_paused = true;
+    assert!(wall.snapshot().checkpoints_paused);
+    let mut record = wall.patch.loop_record("loop2").unwrap().clone();
+    record.tape.as_mut().unwrap().anchor = 8.0;
+    wall.patch.set_loop("loop2", record).unwrap();
+    wall.swap_engine();
+    wall.loops.wait_install_for_test();
+    render(&mut engine, 4_096);
+    wall.tick(Instant::now());
+    assert_eq!(wall.snapshot().loops_meet.unwrap().next_bar, Some(256));
+}
+
+#[test]
 fn undoing_a_take_puts_back_what_was_there() {
     let dir = reels_dir();
     let (mut wall, mut engine, state_dir) = taking_wall(dir.path());

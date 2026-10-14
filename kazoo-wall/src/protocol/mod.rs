@@ -20,8 +20,10 @@ pub mod client;
 pub mod codec;
 
 mod chains;
+mod loops;
 
 pub use chains::{ChainSaveResult, ChainsResult};
+pub use loops::{LoopState, LoopView, LoopsMeet};
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -1180,6 +1182,10 @@ const fn heard_by_default() -> bool {
 /// The result of `look`: the whole wall.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loops_meet: Option<LoopsMeet>,
+    #[serde(default)]
+    pub checkpoints_paused: bool,
     /// The latest change's sequence number.
     pub revision: u64,
     /// Which wall is up: the number of the change that put it up (a load,
@@ -1412,6 +1418,8 @@ pub struct ModuleTiming {
 /// One module in a snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModuleView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tape: Option<LoopView>,
     /// Id.
     pub id: String,
     /// Kind, e.g. `vco` or `plate`.

@@ -1307,13 +1307,15 @@ impl Wall {
         );
         let recorder = Recorder::new(recordings, &mut engine);
         let probe_ring = engine.take_probes().map(ProbeRing);
+        let loops = Loops::new();
+        loops.observe_takes(history.iter(), &patch);
         let mut wall = Self {
             tree: None,
             tree_mirror: crate::tree::Files::new(),
             tree_error: None,
             chain_batch: None,
             speech: Speech::new(speech_cache),
-            loops: Loops::new(),
+            loops,
             loop_work: loops::Work::default(),
             recorder,
             told: Vec::new(),
@@ -4319,13 +4321,20 @@ impl Wall {
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         let shared = self.engine.shared();
-        let modules = self
+        self.loops.observe_takes(self.log.iter(), &self.patch);
+        let modules: Vec<_> = self
             .patch
             .modules()
             .iter()
             .map(|module| self.module_view(module))
             .collect();
         Snapshot {
+            loops_meet: super::loops::meet::loops_meet(
+                modules.iter().filter_map(|module| module.tape.as_ref()),
+                shared.bpm(),
+                shared.beat(),
+            ),
+            checkpoints_paused: self.loops.checkpoints_paused,
             revision: self.revision(),
             wall: self.patch.wall,
             seed: self.patch.seed,
@@ -4353,7 +4362,7 @@ impl Wall {
                     .recent
                     .iter()
                     .cloned()
-                    .chain(self.loops.notes().map(str::to_owned))
+                    .chain(self.loops.unassigned_notes(&self.patch).map(str::to_owned))
                     .collect(),
             },
             fingerprints: self.fingerprints.clone(),
@@ -4771,6 +4780,7 @@ impl Wall {
             })
             .collect();
         ModuleView {
+            tape: self.loops.view(&module.id, &self.patch),
             id: module.id.clone(),
             kind: module.kind.name().to_string(),
             name: module.name.clone(),

@@ -364,6 +364,7 @@ impl Loops {
                 .push_back((0, Box::new(TapeJob::Budget)));
         }
         let mut busy = BTreeSet::new();
+        let mut notes = Vec::new();
         for (ticket, take) in &mut self.recordings.pending {
             if !busy.insert(take.module.clone()) {
                 continue;
@@ -388,12 +389,15 @@ impl Loops {
                         Err(spare) => take.spare = Some(spare),
                     }
                 } else {
-                    self.notes.push_back(format!(
+                    notes.push(format!(
                         "{}'s take was lost because its loop was removed",
                         take.module
                     ));
                 }
             }
+        }
+        for note in notes {
+            self.note(note);
         }
         while let Some((ticket, job)) = self.recordings.jobs.pop_front() {
             let Thread::Running(worker) = &self.worker else {

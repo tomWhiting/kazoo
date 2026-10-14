@@ -794,6 +794,9 @@ impl LoopModule {
         for (gauge, bin) in self.gauges.bins.iter().zip(self.bins) {
             gauge.store(bin, Ordering::Relaxed);
         }
+        for (gauge, pass) in self.gauges.bar_pass.iter().zip(self.bar_pass) {
+            gauge.store(pass, Ordering::Relaxed);
+        }
     }
 }
 

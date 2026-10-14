@@ -11,6 +11,7 @@
 //! into ratatui's test backend.
 
 mod folded;
+mod loops;
 mod overlay;
 mod panes;
 mod rack;
@@ -69,7 +70,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, now: Instant, unix_now: Option
     panes::header(buf, header, app);
     match app.view() {
         View::List => {
-            wall::wall(buf, rack, app);
+            wall::wall(buf, rack, app, now);
             panes::cables(buf, side, app);
         }
         View::Rack => rack::rack(buf, body, app),
