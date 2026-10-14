@@ -996,3 +996,5 @@ are recorded in [KZ-R02-run3-measurements.md](KZ-R02-run3-measurements.md).
 
 The final bass-only reacquisition, regression receipts and remaining limits are
 recorded in [KZ-R02-run4-measurements.md](KZ-R02-run4-measurements.md).
+
+Run 6: [bass acquisition repair and complete measurements](KZ-R02-run6-measurements.md).

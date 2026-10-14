@@ -9,7 +9,7 @@
 use std::f32::consts::TAU;
 
 use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
-use crate::sanitize_sample;
+use crate::{sanitize_sample, voice::VOICE_HOP};
 
 mod early;
 mod level;
@@ -225,6 +225,7 @@ struct Peak {
 struct Choice {
     chosen: Option<Peak>,
     best: f32,
+    best_peak: Option<Peak>,
     tried: [usize; SEARCH_MARKS + 2],
     tried_count: usize,
 }
@@ -234,6 +235,7 @@ impl Choice {
         Self {
             chosen: None,
             best: 0.0,
+            best_peak: None,
             tried: [0; SEARCH_MARKS + 2],
             tried_count: 0,
         }
@@ -294,6 +296,7 @@ pub struct CycleTracker {
     /// and the sample time after which it is no longer carried forward.
     glide: Option<(f32, f64)>,
     early: early::Early,
+    acquisition: Option<f32>,
 }
 
 impl CycleTracker {
@@ -353,6 +356,7 @@ impl CycleTracker {
             trend_count: 0,
             glide: None,
             early: early::Early::new(),
+            acquisition: None,
         }
     }
 
@@ -399,6 +403,9 @@ impl CycleTracker {
             self.early_push(previous, filtered);
         }
         self.schmitt(filtered);
+        if self.position % VOICE_HOP == 0 {
+            self.retry_acquisition();
+        }
         self.carry_glide();
         if self.estimate.is_some_and(|e| {
             self.time - self.last_accepted_mark
@@ -449,6 +456,30 @@ impl CycleTracker {
         self.trend_count = 0;
         self.glide = None;
         self.early = early::Early::new();
+        self.acquisition = None;
+    }
+
+    fn retry_acquisition(&mut self) {
+        // Partial-cycle evidence changes between marks. Retry only the
+        // strongest refused peak and the two newest intervals, once per hop.
+        if self.instrument_acquisition() && self.estimate.is_none() {
+            let mut choice = Choice::new();
+            if let Some(period) = self.acquisition {
+                self.consider(period, &mut choice);
+            }
+            self.intervals(&self.rising, 1, 1, &mut choice);
+            self.intervals(&self.falling, 1, 1, &mut choice);
+            if let Some(peak) = choice.chosen {
+                self.accept(self.half_check(peak), self.time);
+            }
+        }
+    }
+
+    fn instrument_acquisition(&self) -> bool {
+        // The long-release bass profile's narrow search filter separates
+        // useful evidence from its next mark. Short-release instruments
+        // retain their original mark cadence and candidate refinement.
+        self.centred_windows() && self.settings.peak_release_ms > PEAK_RELEASE_MS
     }
 
     /// Cycle marks seen since `new` or `reset`: one per cycle, at its rising
@@ -585,6 +616,9 @@ impl CycleTracker {
             self.accept(peak, at);
         } else {
             self.last_clarity = choice.best;
+            if self.instrument_acquisition() && self.estimate.is_none() {
+                self.acquisition = choice.best_peak.map(|peak| peak.period);
+            }
         }
         if let Some((period, remaining)) = self.hint {
             let consumed =
@@ -621,6 +655,12 @@ impl CycleTracker {
         }
         if let Some(peak) = self.refine(period) {
             choice.best = choice.best.max(peak.clarity);
+            if choice
+                .best_peak
+                .is_none_or(|best| peak.clarity > best.clarity)
+            {
+                choice.best_peak = Some(peak);
+            }
             let held = self.estimate.is_some_and(|estimate| {
                 (1200.0 * (peak.period / estimate.period).log2()).abs() <= HOLD_CENTS
             });
@@ -752,7 +792,25 @@ impl CycleTracker {
         let mut left = self.nsdf(lag - 1, window);
         let mut centre = self.nsdf(lag, window);
         let mut right = self.nsdf(lag + 1, window);
-        for _ in 0..climb {
+        let acquisition = self.instrument_acquisition() && self.estimate.is_none();
+        if acquisition {
+            // A noisy first cycle has small local peaks between the mark's
+            // interval and the periodic peak. Search the same bounded reach
+            // before choosing one, rather than stopping at the first ripple.
+            let start = lag.saturating_sub(climb).max(2);
+            let end = (lag + climb).min(self.max_lag - 1);
+            for candidate in start..=end {
+                let clarity = self.nsdf(candidate, window);
+                if clarity > centre {
+                    lag = candidate;
+                    centre = clarity;
+                }
+            }
+            left = self.nsdf(lag - 1, window);
+            right = self.nsdf(lag + 1, window);
+        }
+        let steps = if acquisition { 0 } else { climb };
+        for _ in 0..steps {
             if right > centre && right >= left {
                 lag += 1;
                 if lag + 1 > self.max_lag {
