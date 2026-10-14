@@ -1763,6 +1763,7 @@ dependencies = [
  "kazoo-wall",
  "libm",
  "ratatui",
+ "rustix",
  "signal-hook",
  "tempfile",
  "unicode-width",

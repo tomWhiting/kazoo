@@ -140,23 +140,38 @@ impl Grower {
         }
     }
 
-    /// Read on to `snapshot` and grow, answering what to show. A read that
-    /// fails partway is tried again whole; when that fails too, nothing
+    /// Read the tree as it is now and grow on to it, answering what to
+    /// show and the snapshot it was read at. The ledger is held throughout,
+    /// and read before the tree: another view's growth is followed, never
+    /// raced. A read that fails partway is tried again whole (and grown
+    /// again whole, in the ledger's order); when that fails too, nothing
     /// held is lost and the next read starts from the last good one.
     ///
     /// # Errors
     ///
-    /// When the tree cannot be read, either way.
-    pub fn read(&mut self, snapshot: &Snapshot) -> Result<Grown, HistoryError> {
+    /// When the tree cannot be read, either way, or the ledger cannot be
+    /// held.
+    pub fn read(&mut self) -> Result<(Grown, Snapshot), HistoryError> {
+        let held = self.ledger.hold().map_err(|err| {
+            HistoryError::Git(format!(
+                "the order the tree grew in could not be held for this view: {err}"
+            ))
+        })?;
         self.ledger.refresh();
-        if let Err(grow) = self.history.grow(&self.dir, snapshot, &self.ledger.limbs) {
+        let snapshot = Snapshot::read(&self.dir)?;
+        if let Err(grow) = self.history.grow(&self.dir, &snapshot, &self.ledger.limbs) {
             let mut whole = History::default();
             whole
-                .grow(&self.dir, snapshot, &self.ledger.limbs)
+                .grow(&self.dir, &snapshot, &self.ledger.limbs)
                 .map_err(|read| HistoryError::Git(format!("{grow}; and read whole: {read}")))?;
             self.history = whole;
+            // Its moments may be numbered differently: grow it again whole,
+            // in the ledger's order, which draws it just as before.
+            self.growth = Growth::default();
         }
-        Ok(self.grow())
+        let grown = self.grow();
+        drop(held);
+        Ok((grown, snapshot))
     }
 
     fn grow(&mut self) -> Grown {
@@ -170,8 +185,8 @@ impl Grower {
         let fresh = self.growth.grow_on(&self.history, &self.ledger.steps);
         self.ledger.record(&new_limbs, &fresh);
         let mut history = self.history.clone();
-        if let Some(problem) = &self.ledger.problem {
-            history.problems.push(problem.clone());
+        if let Some(problem) = self.ledger.problem() {
+            history.problems.push(problem);
         }
         if self.ledger.unreadable > 0 {
             history.problems.push(format!(
@@ -190,8 +205,7 @@ impl App {
     ///
     /// When the tree cannot be read.
     pub fn open(dir: PathBuf, ledger: Ledger) -> Result<Self, HistoryError> {
-        let snapshot = Snapshot::read(&dir)?;
-        let grown = Grower::new(dir.clone(), ledger).read(&snapshot)?;
+        let (grown, _) = Grower::new(dir.clone(), ledger).read()?;
         Ok(Self::showing(dir, grown))
     }
 
