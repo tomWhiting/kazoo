@@ -173,20 +173,6 @@ fn capital_b_lists_the_tree_and_enter_then_y_goes() {
             moment: "dusk".into()
         }]
     );
-    press(&mut app, KeyCode::Char('B'));
-    calls(&mut app);
-    press(&mut app, KeyCode::Char('r'));
-    assert_eq!(calls(&mut app), [Request::Tree { recent: None }]);
-    app.on_reply(
-        Reply::Event(Event::Marked {
-            seat: "Tom".into(),
-            name: "dawn".into(),
-            tag: "dawn".into(),
-            at: place(),
-        }),
-        Instant::now(),
-    );
-    assert_eq!(calls(&mut app), [Request::Tree { recent: None }]);
 }
 
 #[test]
@@ -209,6 +195,7 @@ fn the_tree_list_draws_here_branches_marks_and_recent() {
     }
     let mut empty = listed();
     empty.here = None;
+    empty.through = empty.revision;
     empty.branches.clear();
     empty.marks.clear();
     empty.recent.clear();
@@ -255,7 +242,7 @@ fn a_go_answer_forgets_the_wall_and_says_where_it_went() {
         },
         &result,
     );
-    assert!(app.snapshot().is_none());
+    assert!(app.snapshot().is_some());
     assert!(status(&app).contains("went to mark \"dawn\""));
     assert!(status(&app).contains("z undoes it"));
     assert!(text(&render(&mut app, 120, 40)).contains("kept the old wall"));
@@ -325,4 +312,232 @@ fn a_go_question_keeps_the_keys_visible_for_long_names() {
     press(&mut app, KeyCode::Enter);
     let screen = text(&render(&mut app, 120, 40));
     assert!(screen.contains("y goes · n stays"), "{screen}");
+}
+
+#[test]
+fn a_late_name_taken_keeps_the_active_mode() {
+    let mut app = open_list();
+    app.on_reply(
+        Reply::Answer {
+            request: Request::Mark {
+                name: "dawn".into(),
+            },
+            outcome: Err(Failure {
+                code: Some(ErrorCode::MarkExists),
+                message: "dawn is taken".into(),
+            }),
+        },
+        Instant::now(),
+    );
+    assert_eq!(*app.mode(), Mode::Tree { index: 0 });
+    assert_eq!(status(&app), "dawn is taken · b to mark again");
+}
+
+#[test]
+fn tree_events_are_throttled_and_do_not_overlap() {
+    use std::time::Duration;
+    let mut app = open_list();
+    let now = Instant::now();
+    for n in 1..30 {
+        app.on_reply(
+            Reply::Event(Event::Marked {
+                seat: "Tom".into(),
+                name: format!("dawn{n}"),
+                tag: format!("mark/dawn{n}"),
+                at: place(),
+            }),
+            now,
+        );
+    }
+    assert!(calls(&mut app).is_empty());
+    app.tick(now);
+    assert!(calls(&mut app).is_empty());
+    let later = now + Duration::from_secs(1);
+    app.tick(later);
+    assert_eq!(calls(&mut app), [Request::Tree { recent: None }]);
+    app.on_reply(
+        Reply::Event(Event::Loaded {
+            seq: 815,
+            seat: "Tom".into(),
+            save: None,
+            backup: "before-go".into(),
+        }),
+        later,
+    );
+    press(&mut app, KeyCode::Char('r'));
+    app.tick(later + Duration::from_secs(1));
+    assert!(calls(&mut app).is_empty());
+    answer(&mut app, Request::Tree { recent: None }, &listed());
+    app.tick(later + Duration::from_secs(1));
+    assert_eq!(calls(&mut app), [Request::Tree { recent: None }]);
+    answer(&mut app, Request::Tree { recent: None }, &listed());
+    press(&mut app, KeyCode::Esc);
+    app.on_reply(
+        Reply::Event(Event::Marked {
+            seat: "Tom".into(),
+            name: "dusk".into(),
+            tag: "mark/dusk".into(),
+            at: place(),
+        }),
+        later,
+    );
+    app.tick(later + Duration::from_secs(4));
+    assert!(calls(&mut app).is_empty());
+}
+
+#[test]
+fn any_change_event_refreshes_the_tree_on_the_tick() {
+    let mut app = open_list();
+    let now = Instant::now();
+    app.on_reply(
+        Reply::Event(Event::Change {
+            change: Box::new(super::change(815, "Tom", "turned cutoff", None)),
+        }),
+        now,
+    );
+    assert!(calls(&mut app).is_empty());
+    app.tick(now + std::time::Duration::from_secs(1));
+    assert_eq!(calls(&mut app), [Request::Tree { recent: None }]);
+}
+
+#[test]
+fn tree_refusals_stay_in_the_list() {
+    let mut app = open_list();
+    let before = status(&app);
+    app.on_reply(
+        Reply::Answer {
+            request: Request::Tree { recent: None },
+            outcome: Err(Failure {
+                code: Some(ErrorCode::SlowDown),
+                message: "tree asked too often".into(),
+            }),
+        },
+        Instant::now(),
+    );
+    assert_eq!(status(&app), before);
+    assert!(text(&render(&mut app, 120, 40)).contains("tree asked too often"));
+}
+
+#[test]
+fn the_tree_cursor_follows_the_commit_and_clamps_when_gone() {
+    let mut app = open_list();
+    for _ in 0..6 {
+        press(&mut app, KeyCode::Char('j'));
+    }
+    let mut result = listed();
+    result.branches.insert(
+        0,
+        BranchView {
+            name: "new".into(),
+            tip: moment(900),
+            grew_from: None,
+        },
+    );
+    result.branch_count += 1;
+    answer(&mut app, Request::Tree { recent: None }, &result);
+    assert_eq!(*app.mode(), Mode::Tree { index: 7 });
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode(), Mode::Go { moment, .. } if moment == "#810"));
+    result.branches.clear();
+    result.marks.clear();
+    result.recent = vec![moment(900)];
+    result.branch_count = 0;
+    result.mark_count = 0;
+    answer(&mut app, Request::Tree { recent: None }, &result);
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(*app.mode(), Mode::Tree { index: 0 });
+}
+
+#[test]
+fn an_empty_tree_reports_lag_in_one_line_with_singular_changes() {
+    let mut app = open_list();
+    let mut result = listed();
+    result.here = None;
+    result.branches.clear();
+    result.marks.clear();
+    result.recent.clear();
+    result.branch_count = 0;
+    result.mark_count = 0;
+    for (revision, expected) in [
+        (813, "the tree is 1 change behind and holds no moments yet"),
+        (814, "the tree is 2 changes behind and holds no moments yet"),
+    ] {
+        result.revision = revision;
+        answer(&mut app, Request::Tree { recent: None }, &result);
+        let screen = text(&render(&mut app, 120, 40));
+        assert!(screen.contains(expected), "{screen}");
+        assert!(!screen.contains("the first change makes one"));
+    }
+    result.here = Some(place());
+    result.revision = 813;
+    answer(&mut app, Request::Tree { recent: None }, &result);
+    assert!(text(&render(&mut app, 120, 40)).contains("the tree is 1 change behind the wall"));
+}
+
+#[test]
+fn unreadable_tree_times_keep_the_parse_error() {
+    let mut app = open_list();
+    let mut result = listed();
+    result.branches[0].tip.at = "bad".into();
+    answer(&mut app, Request::Tree { recent: None }, &result);
+    let problem = chrono::DateTime::parse_from_rfc3339("bad")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        text(&render(&mut app, 120, 40)).contains(&format!("unreadable time: bad ({problem})"))
+    );
+}
+
+#[test]
+fn undoing_go_and_load_keeps_the_backup_and_notes() {
+    for what in [
+        What::Go {
+            to: place(),
+            from: place(),
+            backup: "before-undo".into(),
+            fingerprint: "abc".into(),
+            modules: 4,
+            cables: 3,
+            tempo: 96.0,
+            by_console: true,
+        },
+        What::Load {
+            save: Some("dawn".into()),
+            backup: "before-undo".into(),
+            fingerprint: "abc".into(),
+            modules: 4,
+            cables: 3,
+            tempo: 96.0,
+            by_console: true,
+        },
+    ] {
+        let mut app = connected();
+        let result = LoadResult {
+            change: Change {
+                what,
+                ..super::change(816, "Tom", "undid the replacement", Some(815))
+            },
+            backup: "before-undo".into(),
+            notes: vec!["undo kept the tempo".into()],
+        };
+        answer(&mut app, Request::Undo { change: 815 }, &result);
+        assert!(status(&app).contains("before-undo"));
+        assert!(text(&render(&mut app, 120, 40)).contains("undo kept the tempo"));
+        assert!(app.snapshot().is_some());
+    }
+}
+
+#[test]
+fn the_tree_help_lists_every_available_key() {
+    let mut app = open_list();
+    let screen = text(&render(&mut app, 120, 40));
+    for keys in [
+        "j k ↑ ↓ move",
+        "⏎ go",
+        "r again",
+        "b marks",
+        "B Esc q close",
+    ] {
+        assert!(screen.contains(keys), "missing {keys}: {screen}");
+    }
 }

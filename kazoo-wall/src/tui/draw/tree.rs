@@ -7,10 +7,10 @@ use super::super::app::{App, RowKind, Tone};
 use super::super::theme::{BRASS, INK, PANEL, TEXT, TEXT_DIM, bold, plain};
 use super::{overlay, truncate};
 
-pub(super) fn mark_prompt(app: &App, text: &str) -> (String, String) {
+pub(super) fn mark_prompt(app: &App, text: &str, now: std::time::Instant) -> (String, String) {
     (
         format!("mark this moment as: {text}█"),
-        app.status(std::time::Instant::now())
+        app.status(now)
             .filter(|status| status.tone == Tone::Trouble)
             .map_or_else(
                 || "   1 to 64 of A-Z a-z 0-9 space _ . - · ⏎ marks it (marks never move) · Esc cancels".to_string(),
@@ -42,14 +42,10 @@ pub fn tree(buf: &mut Buffer, area: Rect, app: &App, index: usize) {
         } else {
             None
         };
-        rows.push((selected, row.label, false));
+        rows.push((selected, row.label.clone(), false));
     }
-    if position == 0 && list.result.is_some() {
-        rows.push((
-            None,
-            "the tree has no moments yet: the first change makes one".into(),
-            false,
-        ));
+    if let Some(problem) = &list.problem {
+        rows.insert(0, (None, problem.clone(), false));
     } else if list.result.is_none() {
         let words = if list.fetching {
             "asking the wall…"
@@ -99,7 +95,7 @@ pub fn tree(buf: &mut Buffer, area: Rect, app: &App, index: usize) {
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " j k move · ⏎ go there · r again · Esc closes",
+        " j k ↑ ↓ move · ⏎ go · y goes · n stays · r again · B Esc q close · b marks after closing",
         plain(TEXT_DIM, PANEL),
     )));
     Paragraph::new(lines)

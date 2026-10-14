@@ -992,6 +992,7 @@ impl App {
     fn on_event(&mut self, event: Event, now: Instant) {
         match event {
             Event::Change { change } => {
+                self.refresh_tree();
                 let mine = change.seat == self.seat;
                 self.log.add_change(&change, mine);
             }
@@ -1176,10 +1177,11 @@ impl App {
     }
 
     fn on_result(&mut self, request: &Request, value: serde_json::Value, now: Instant) {
+        if tree::is_tree_result(request, &value) {
+            self.tree_result(request, value, now);
+            return;
+        }
         match request {
-            Request::Mark { .. } | Request::Go { .. } | Request::Tree { .. } => {
-                self.tree_result(request, value, now);
-            }
             Request::ChainSave { .. } | Request::Chains => self.chain_result(request, value, now),
             Request::Probe { .. } => self.probed(request, value, now),
             Request::Group { group, .. } => self.grouped(request, group, value, now),
@@ -1455,6 +1457,7 @@ impl App {
         }
         self.tick_moves(now);
         self.tick_saves(now);
+        self.tick_tree(now);
         let chosen = self.glide_beats();
         let mut index = 0;
         while index < self.pending.len() {

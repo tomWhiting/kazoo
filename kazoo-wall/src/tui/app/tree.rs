@@ -9,12 +9,16 @@ use crate::protocol::{
 
 use super::super::worker::{Failure, Job};
 use super::command::Completion;
-use super::{App, Mode, Tone, step_cursor};
+use super::{App, Mode, SAVES_REFRESH, Tone, step_cursor};
 
 #[derive(Debug, Clone, Default)]
 pub struct TreeList {
     pub result: Option<TreeResult>,
     pub fetching: bool,
+    pub stale: bool,
+    pub asked: Option<Instant>,
+    pub problem: Option<String>,
+    pub rows: Vec<TreeRow>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +41,7 @@ impl RowKind {
 pub struct TreeRow {
     pub label: String,
     pub moment: String,
+    pub commit: String,
     pub kind: RowKind,
 }
 
@@ -50,7 +55,7 @@ fn short(commit: &str) -> String {
 
 fn when(at: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(at).map_or_else(
-        |_| format!("unreadable time: {at}"),
+        |err| format!("unreadable time: {at} ({err})"),
         |at| {
             let local = at.with_timezone(&chrono::Local);
             let format = if local.date_naive() == chrono::Local::now().date_naive() {
@@ -79,6 +84,7 @@ fn more(rows: &mut Vec<TreeRow>, count: usize, shown: usize) {
         rows.push(TreeRow {
             label: format!("and {} more", count - shown),
             moment: String::new(),
+            commit: String::new(),
             kind: RowKind::More,
         });
     }
@@ -86,6 +92,24 @@ fn more(rows: &mut Vec<TreeRow>, count: usize, shown: usize) {
 
 pub(super) fn tree_rows(result: &TreeResult) -> Vec<TreeRow> {
     let mut rows = Vec::new();
+    let behind = result.revision.saturating_sub(result.through);
+    if result.here.is_none() {
+        let label = if behind > 0 {
+            format!(
+                "the tree is {behind} {} behind and holds no moments yet",
+                changes(behind)
+            )
+        } else {
+            "the tree has no moments yet: the first change makes one".into()
+        };
+        rows.push(TreeRow {
+            label,
+            moment: String::new(),
+            commit: String::new(),
+            kind: RowKind::Here,
+        });
+        return rows;
+    }
     if let Some(here) = &result.here {
         let at = format!("{}{}", number(here.change), short(&here.commit));
         let label = here.branch.as_ref().map_or_else(
@@ -95,16 +119,15 @@ pub(super) fn tree_rows(result: &TreeResult) -> Vec<TreeRow> {
         rows.push(TreeRow {
             label,
             moment: String::new(),
+            commit: here.commit.clone(),
             kind: RowKind::Here,
         });
     }
     if result.through < result.revision {
         rows.push(TreeRow {
-            label: format!(
-                "the tree is {} changes behind the wall",
-                result.revision - result.through
-            ),
+            label: format!("the tree is {behind} {} behind the wall", changes(behind)),
             moment: String::new(),
+            commit: String::new(),
             kind: RowKind::Behind,
         });
     }
@@ -117,6 +140,7 @@ pub(super) fn tree_rows(result: &TreeResult) -> Vec<TreeRow> {
         rows.push(TreeRow {
             label: format!("{}  {}{grew}", branch.name, detail(&branch.tip)),
             moment: branch.name.clone(),
+            commit: branch.tip.commit.clone(),
             kind: RowKind::Branch,
         });
     }
@@ -133,6 +157,7 @@ pub(super) fn tree_rows(result: &TreeResult) -> Vec<TreeRow> {
         rows.push(TreeRow {
             label: format!("{name}  {}", detail(&mark.moment)),
             moment,
+            commit: mark.moment.commit.clone(),
             kind: RowKind::Mark,
         });
     }
@@ -149,10 +174,15 @@ pub(super) fn tree_rows(result: &TreeResult) -> Vec<TreeRow> {
             moment: moment
                 .change
                 .map_or_else(|| moment.commit.clone(), |n| format!("#{n}")),
+            commit: moment.commit.clone(),
             kind: RowKind::Recent,
         }
     }));
     rows
+}
+
+const fn changes(count: u64) -> &'static str {
+    if count == 1 { "change" } else { "changes" }
 }
 
 pub(super) fn mark_name_problem(name: &str) -> Option<String> {
@@ -184,17 +214,24 @@ fn place_words(to: &TreePlace) -> String {
     place
 }
 
+pub(super) fn is_tree_result(request: &Request, value: &serde_json::Value) -> bool {
+    matches!(
+        request,
+        Request::Mark { .. } | Request::Go { .. } | Request::Tree { .. }
+    ) || matches!(request, Request::Undo { .. }) && value.get("backup").is_some()
+}
+
 impl App {
     pub(super) fn tree_completions(&self, lower: &str) -> Vec<Completion> {
         self.tree_rows()
-            .into_iter()
+            .iter()
             .filter(|row| {
                 matches!(row.kind, RowKind::Branch | RowKind::Mark)
                     && row.moment.to_lowercase().starts_with(lower)
             })
             .map(|row| Completion {
-                word: row.moment,
-                note: row.label,
+                word: row.moment.clone(),
+                note: row.label.clone(),
                 open: false,
             })
             .collect()
@@ -229,8 +266,8 @@ impl App {
         &self.tree
     }
 
-    pub(in crate::tui) fn tree_rows(&self) -> Vec<TreeRow> {
-        self.tree.result.as_ref().map_or_else(Vec::new, tree_rows)
+    pub(in crate::tui) fn tree_rows(&self) -> &[TreeRow] {
+        &self.tree.rows
     }
 
     pub(super) fn open_mark(&mut self, now: Instant) {
@@ -288,7 +325,8 @@ impl App {
     pub(super) fn open_tree(&mut self, now: Instant) {
         if self.link.is_up() {
             self.mode = Mode::Tree { index: 0 };
-            self.fetch_tree();
+            self.refresh_tree();
+            self.tick_tree(now);
         } else {
             self.say(
                 Tone::Trouble,
@@ -298,21 +336,38 @@ impl App {
         }
     }
 
-    fn fetch_tree(&mut self) {
+    fn fetch_tree(&mut self, now: Instant) {
         self.tree.fetching = true;
+        self.tree.stale = false;
+        self.tree.asked = Some(now);
+        self.tree.problem = None;
         self.jobs.push(Job::Call(Request::Tree { recent: None }));
     }
 
-    pub(super) fn refresh_tree(&mut self) {
+    pub(super) const fn refresh_tree(&mut self) {
+        self.tree.stale = true;
+    }
+
+    pub(super) fn tick_tree(&mut self, now: Instant) {
         if matches!(self.mode, Mode::Tree { .. } | Mode::Go { .. }) {
-            self.fetch_tree();
+            self.fetch_tree_if_due(now);
+        }
+    }
+
+    fn fetch_tree_if_due(&mut self, now: Instant) {
+        let due = self
+            .tree
+            .asked
+            .is_none_or(|at| now.saturating_duration_since(at) >= SAVES_REFRESH);
+        if self.tree.stale && !self.tree.fetching && due {
+            self.fetch_tree(now);
         }
     }
 
     pub(super) fn tree_key(&mut self, key: KeyEvent, index: usize, now: Instant) -> Mode {
         let rows: Vec<_> = self
             .tree_rows()
-            .into_iter()
+            .iter()
             .filter(|row| row.kind.selectable())
             .collect();
         let index = match key.code {
@@ -320,7 +375,8 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => step_cursor(index, rows.len(), true),
             KeyCode::Up | KeyCode::Char('k') => step_cursor(index, rows.len(), false),
             KeyCode::Char('r') => {
-                self.fetch_tree();
+                self.refresh_tree();
+                self.fetch_tree_if_due(now);
                 index
             }
             KeyCode::Enter => {
@@ -400,9 +456,6 @@ impl App {
             Request::Go { .. } => {
                 if let Some(result) = self.parse::<LoadResult>(request, value, now) {
                     self.loaded(&result, now);
-                    self.snapshot = None;
-                    self.shown = None;
-                    self.look_at = None;
                     if let What::Go { to, .. } = &result.change.what {
                         self.say(
                             Tone::Done,
@@ -426,14 +479,13 @@ impl App {
             Request::Tree { .. } => {
                 self.tree.fetching = false;
                 if let Some(result) = self.parse::<TreeResult>(request, value, now) {
-                    let count = tree_rows(&result)
-                        .iter()
-                        .filter(|row| row.kind.selectable())
-                        .count();
-                    self.tree.result = Some(result);
-                    if let Mode::Tree { index } | Mode::Go { index, .. } = &mut self.mode {
-                        *index = (*index).min(count.saturating_sub(1));
-                    }
+                    self.listed_tree(result);
+                }
+            }
+            Request::Undo { .. } => {
+                if let Some(result) = self.parse::<LoadResult>(request, value, now) {
+                    self.loaded(&result, now);
+                    self.refresh_tree();
                 }
             }
             _ => {}
@@ -448,15 +500,60 @@ impl App {
     ) -> bool {
         match request {
             Request::Mark { name } if failure.code == Some(ErrorCode::MarkExists) => {
-                self.mode = Mode::Mark { text: name.clone() };
-                self.say(Tone::Trouble, failure.message.clone(), now);
+                let words = if self.mode == Mode::Normal {
+                    self.mode = Mode::Mark { text: name.clone() };
+                    failure.message.clone()
+                } else {
+                    format!("{} · b to mark again", failure.message)
+                };
+                self.say(Tone::Trouble, words, now);
                 true
             }
             Request::Tree { .. } => {
                 self.tree.fetching = false;
-                false
+                self.tree.problem = Some(failure.message.clone());
+                self.refresh_tree();
+                true
             }
             _ => false,
         }
+    }
+
+    fn listed_tree(&mut self, result: TreeResult) {
+        let old_index = match self.mode {
+            Mode::Tree { index } | Mode::Go { index, .. } => Some(index),
+            _ => None,
+        };
+        let chosen = old_index.and_then(|index| {
+            self.tree
+                .rows
+                .iter()
+                .filter(|row| row.kind.selectable())
+                .nth(index)
+        });
+        let rows = tree_rows(&result);
+        let selectable: Vec<_> = rows.iter().filter(|row| row.kind.selectable()).collect();
+        let found = chosen.and_then(|old| {
+            selectable
+                .iter()
+                .position(|row| {
+                    row.commit == old.commit && row.kind == old.kind && row.moment == old.moment
+                })
+                .or_else(|| {
+                    selectable
+                        .iter()
+                        .position(|row| row.commit == old.commit && row.kind == old.kind)
+                })
+                .or_else(|| selectable.iter().position(|row| row.commit == old.commit))
+        });
+        if let Mode::Tree { index } | Mode::Go { index, .. } = &mut self.mode {
+            *index = found.unwrap_or_else(|| (*index).min(selectable.len().saturating_sub(1)));
+        }
+        if result.through < result.revision {
+            self.refresh_tree();
+        }
+        self.tree.rows = rows;
+        self.tree.result = Some(result);
+        self.tree.problem = None;
     }
 }

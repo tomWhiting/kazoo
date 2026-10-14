@@ -1,5 +1,7 @@
 use kazoo_wall::protocol::tree::MAX_LISTED;
-use kazoo_wall::protocol::{LoadResult, MarkKind, MarkResult, MomentView, TreePlace, TreeResult};
+use kazoo_wall::protocol::{
+    LoadResult, MarkKind, MarkResult, MomentView, TreePlace, TreeResult, What,
+};
 
 use crate::channel::clean;
 
@@ -21,18 +23,34 @@ pub fn marked(result: &MarkResult) -> String {
 #[must_use]
 pub fn went(result: &LoadResult) -> String {
     let mut out = super::loaded(result);
-    out.push_str(if result.change.undoes.is_some() {
-        " The wall is back on the line it left."
-    } else {
-        " The next change anyone makes grows a bud: a new branch from this moment."
-    });
+    if result.change.undoes.is_some() {
+        out.push_str(" The wall is back on the line it left.");
+    } else if let What::Go { to, .. } = &result.change.what {
+        if let Some(branch) = &to.branch {
+            out.push_str(" The wall is on ");
+            out.push_str(branch);
+            out.push_str(": the next change carries it on.");
+        } else {
+            out.push_str(
+                " The next change anyone makes grows a bud: a new branch from this moment.",
+            );
+        }
+    }
     out
 }
 
 #[must_use]
 pub fn tree(result: &TreeResult) -> String {
     let Some(here) = &result.here else {
-        return "The tree has no moments yet: the first change makes one.".into();
+        let behind = result.revision.saturating_sub(result.through);
+        return if behind > 0 {
+            format!(
+                "The tree is {behind} {} behind and holds no moments yet.",
+                changes(behind)
+            )
+        } else {
+            "The tree has no moments yet: the first change makes one.".into()
+        };
     };
     let mut out = String::new();
     location(&mut out, here);
@@ -40,8 +58,9 @@ pub fn tree(result: &TreeResult) -> String {
         line(
             &mut out,
             format_args!(
-                "The tree is {} changes behind the wall.",
-                result.revision - result.through
+                "The tree is {} {} behind the wall.",
+                result.revision - result.through,
+                changes(result.revision - result.through)
             ),
         );
     } else {
@@ -71,8 +90,8 @@ pub fn tree(result: &TreeResult) -> String {
     line(&mut out, format_args!("Marks ({}):", result.mark_count));
     for mark in result.marks.iter().take(MAX_LISTED) {
         let kind = match mark.kind {
-            MarkKind::Mark => "mark",
-            MarkKind::Save => "save",
+            MarkKind::Mark => "mark".to_string(),
+            MarkKind::Save => format!("save; wall_go \"{}\"", mark.tag),
         };
         line(
             &mut out,
@@ -95,8 +114,12 @@ pub fn tree(result: &TreeResult) -> String {
     out
 }
 
+const fn changes(count: u64) -> &'static str {
+    if count == 1 { "change" } else { "changes" }
+}
+
 fn short(commit: &str) -> String {
-    commit.chars().take(7).collect()
+    commit.chars().take(12).collect()
 }
 
 fn identity(place: &TreePlace) -> String {
@@ -163,7 +186,7 @@ mod tests {
     fn moment() -> MomentView {
         MomentView {
             commit: place().commit,
-            short: "abcdef0".into(),
+            short: "abcdef012345".into(),
             change: Some(57),
             seat: "Waffles".into(),
             at: "2026-10-13T02:00:00Z".into(),
@@ -202,7 +225,7 @@ mod tests {
                 MarkView {
                     name: "low end".into(),
                     kind: MarkKind::Save,
-                    tag: "save/low%20end".into(),
+                    tag: "save/low%20end/20261013-020000".into(),
                     moment: moment(),
                 },
             ],
@@ -230,19 +253,21 @@ mod tests {
         result.at.change = None;
         assert_eq!(
             marked(&result),
-            "Marked the moment the wall is at as \"dawn\" (mark/dawn, moment abcdef0). wall_go with \"dawn\" puts the wall back here."
+            "Marked the moment the wall is at as \"dawn\" (mark/dawn, moment abcdef012345). wall_go with \"dawn\" puts the wall back here."
         );
     }
 
     #[test]
     fn a_go_says_how_to_undo_it_and_that_a_bud_will_grow() {
+        let mut destination = place();
+        destination.branch = None;
         let mut result = LoadResult {
             change: Change {
                 seq: 80,
                 at: "2026-10-13T02:00:00Z".into(),
                 seat: "Waffles".into(),
                 what: What::Go {
-                    to: place(),
+                    to: destination,
                     from: place(),
                     backup: "before-go-20261013-020000".into(),
                     fingerprint: "0123456789abcdef-2048".into(),
@@ -284,17 +309,17 @@ mod tests {
         let mut result = listing();
         assert_eq!(
             tree(&result),
-            "The wall is on trunk at #57 abcdef0.\n\
+            "The wall is on trunk at #57 abcdef012345.\n\
              The tree has every change up to #57 (the wall's latest is #57).\n\
              Branches (2):\n\
-             - bud/dawn/20261013-020000 (grew from dawn): #57 abcdef0 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
-             - trunk: #57 abcdef0 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
+             - bud/dawn/20261013-020000 (grew from dawn): #57 abcdef012345 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
+             - trunk: #57 abcdef012345 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
              Marks (2):\n\
-             - \"dawn\" (mark): #57 abcdef0 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
-             - \"low end\" (save): #57 abcdef0 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
+             - \"dawn\" (mark): #57 abcdef012345 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
+             - \"low end\" (save; wall_go \"save/low%20end/20261013-020000\"): #57 abcdef012345 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
              Recent on this line (2):\n\
-             - #57 abcdef0 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
-             - abcdef0 2026-10-13T02:00:00Z Waffles: first moment\n\
+             - #57 abcdef012345 2026-10-13T02:00:00Z Waffles: turned the cutoff to 800 Hz\n\
+             - abcdef012345 2026-10-13T02:00:00Z Waffles: first moment\n\
              wall_go with a mark, a branch, #<change> or a commit id puts the wall there."
         );
         let mut here = place();
@@ -302,16 +327,14 @@ mod tests {
         here.mark = Some("dawn".into());
         result.here = Some(here.clone());
         assert!(tree(&result).starts_with(
-            "The wall is at #57 abcdef0, off any line, reached by mark \"dawn\": the next change grows a bud.\n"
+            "The wall is at #57 abcdef012345, off any line, reached by mark \"dawn\": the next change grows a bud.\n"
         ));
         here.mark = None;
         here.change = None;
         result.here = Some(here);
-        assert!(
-            tree(&result).starts_with(
-                "The wall is at abcdef0, off any line: the next change grows a bud.\n"
-            )
-        );
+        assert!(tree(&result).starts_with(
+            "The wall is at abcdef012345, off any line: the next change grows a bud.\n"
+        ));
         result.revision = 60;
         assert!(tree(&result).contains("The tree is 3 changes behind the wall.\n"));
         let mut mark = result.marks[0].clone();
@@ -325,7 +348,7 @@ mod tests {
         assert!(text.contains("Marks (205):\n"));
         assert_eq!(text.matches("- \"dawn\" (mark):").count(), 200);
         assert_eq!(text.matches("- bud/dawn/").count(), 200);
-        assert_eq!(text.matches("- #57 abcdef0").count(), 200);
+        assert_eq!(text.matches("- #57 abcdef012345").count(), 200);
         assert_eq!(text.matches("and 5 more").count(), 3);
         assert!(text.contains(&crate::channel::clean(&"界".repeat(400))));
         result.marks.truncate(200);
@@ -343,5 +366,63 @@ mod tests {
             tree(&result),
             "The tree has no moments yet: the first change makes one."
         );
+    }
+
+    #[test]
+    fn a_go_to_trunk_carries_on_the_branch() {
+        let result = LoadResult {
+            change: Change {
+                seq: 80,
+                at: moment().at,
+                seat: "Tom".into(),
+                what: What::Go {
+                    to: place(),
+                    from: place(),
+                    backup: "before-go".into(),
+                    fingerprint: "abc".into(),
+                    modules: 1,
+                    cables: 0,
+                    tempo: 120.0,
+                    by_console: true,
+                },
+                summary: "went to trunk".into(),
+                undoes: None,
+                clock: None,
+            },
+            backup: "before-go".into(),
+            notes: Vec::new(),
+        };
+        assert!(went(&result).contains("The wall is on trunk: the next change carries it on"));
+        assert!(!went(&result).contains("grows a bud"));
+    }
+
+    #[test]
+    fn save_marks_list_the_lookup_tag_and_distinguish_names() {
+        let mut result = listing();
+        result.marks[0].name = "low end".into();
+        result.marks[1].tag = "save/low%20end/20261013-020000".into();
+        let text = tree(&result);
+        assert!(text.contains("- \"low end\" (mark):"));
+        assert!(text.contains("- \"low end\" (save; wall_go \"save/low%20end/20261013-020000\"):"));
+    }
+
+    #[test]
+    fn an_empty_tree_reports_lag_and_singular_changes() {
+        let mut result = listing();
+        result.here = None;
+        result.through = 57;
+        result.revision = 58;
+        assert_eq!(
+            tree(&result),
+            "The tree is 1 change behind and holds no moments yet."
+        );
+        result.revision = 59;
+        assert_eq!(
+            tree(&result),
+            "The tree is 2 changes behind and holds no moments yet."
+        );
+        result.here = Some(place());
+        result.revision = 58;
+        assert!(tree(&result).contains("The tree is 1 change behind the wall."));
     }
 }

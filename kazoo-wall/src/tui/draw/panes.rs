@@ -577,7 +577,7 @@ pub fn status(buf: &mut Buffer, area: Rect, app: &App, now: Instant) {
     let base = plain(TEXT, PANEL);
     fill(buf, area, area.y, base);
     let width = usize::from(area.width.saturating_sub(2));
-    if let Some((prompt, detail)) = prompt(app) {
+    if let Some((prompt, detail)) = prompt(app, now) {
         let x = put(
             buf,
             area,
@@ -639,7 +639,7 @@ pub fn status(buf: &mut Buffer, area: Rect, app: &App, now: Instant) {
 }
 
 /// The prompt for a mode that takes typing or steps, and its help.
-fn prompt(app: &App) -> Option<(String, String)> {
+fn prompt(app: &App, now: Instant) -> Option<(String, String)> {
     match app.mode() {
         Mode::Tempo { text } => Some((
             format!("tempo: {text}█ BPM"),
@@ -725,7 +725,7 @@ fn prompt(app: &App) -> Option<(String, String)> {
                 crate::protocol::MAX_SAVE_NAME
             ),
         )),
-        Mode::Mark { text } => Some(super::tree::mark_prompt(app, text)),
+        Mode::Mark { text } => Some(super::tree::mark_prompt(app, text, now)),
         Mode::Normal
         | Mode::Help { .. }
         | Mode::Add { .. }
