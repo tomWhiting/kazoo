@@ -135,7 +135,18 @@ impl CycleTracker {
         let mut probes = [None; EARLY_LAGS.len()];
         let mut best: Option<(usize, Probe)> = None;
         for (index, (&factor, slot)) in EARLY_LAGS.iter().zip(&mut probes).enumerate() {
-            *slot = self.early_probe(period * factor, window);
+            *slot = lag_from(f64::from(period * factor))
+                .filter(|&lag| lag >= 2 && lag < self.max_lag)
+                .filter(|_| (self.min_period..=self.max_period).contains(&(period * factor)))
+                .map(|lag| {
+                    let centre = self.nsdf(lag, window);
+                    Probe {
+                        lag,
+                        left: centre,
+                        centre,
+                        right: centre,
+                    }
+                });
             if let Some(probe) = *slot {
                 if best.is_none_or(|(_, old)| probe.centre > old.centre) {
                     best = Some((index, probe));
@@ -151,18 +162,24 @@ impl CycleTracker {
         let right = probes.get(index + 1).copied().flatten();
         let refined = match (left, right) {
             (Some(left), Some(right)) => between(left, probe, right)?,
-            _ => probe.local(),
+            _ => probe.lag as f32,
         };
         if !refined.is_finite() || !(self.min_period..=self.max_period).contains(&refined) {
             return None;
         }
+        // The wide parabola brackets a peak; the local parabola measures it.
+        // Five coarse lags and two local triplets stay inside the search's
+        // eighteen-evaluation bound.
+        let local = self.early_probe(refined, window)?;
+        if local.centre < EARLY_CLARITY {
+            return None;
+        }
         let mut peak = Peak {
-            period: refined,
-            // Acceptance uses measured evidence, rather than the fitted height.
-            clarity: probe.centre,
+            period: local.local(),
+            clarity: local.centre,
             window,
         };
-        let half_period = refined / 2.0;
+        let half_period = peak.period / 2.0;
         let half_window = self.window(lag_from(f64::from(half_period))?);
         if let Some(half) = self.early_probe(half_period, half_window) {
             if half.centre >= CLARITY_ON + HALF_MARGIN
@@ -201,4 +218,28 @@ fn between(left: Probe, centre: Probe, right: Probe) -> Option<f32> {
     }
     let offset = (-slope / (2.0 * curvature)).clamp(low / 2.0, high / 2.0);
     Some(centre.lag as f32 + offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::live::InputProfile;
+
+    #[test]
+    fn a_coarse_lobe_search_preserves_fractional_pitch() {
+        let mut tracker =
+            CycleTracker::with_settings(48_000, InputProfile::Guitar.tracking().cycle);
+        let period = 48_000.0_f32 / 110.0;
+        let length = tracker.history.len();
+        for (index, sample) in tracker.history.iter_mut().enumerate() {
+            let phase = 0.3 - (length - 1 - index) as f64 / f64::from(period);
+            *sample = (std::f64::consts::TAU * phase).sin() as f32;
+        }
+        tracker.position = length;
+        let estimate = tracker
+            .early_peak(0.96 * period)
+            .expect("clean lobe confirms");
+        let error = (1200.0 * (estimate.period / period).log2()).abs();
+        assert!(error <= 3.0, "{error} cents: {estimate:?}");
+    }
 }

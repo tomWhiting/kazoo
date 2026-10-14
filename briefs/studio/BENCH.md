@@ -984,3 +984,5 @@ P07 remains blocked: the refused first B0 lobe proposes 149.69 samples against a
 Receipt: `target/kz-logs/r02-diagnostics.txt`. P07 line 60 demands early-off take
 at least two B0 periods (64.79 ms), while its normal-path preservation rule forbids
 changing the already faster path. Neither the waveform nor the assertion was weakened.
+
+Fix-run measurements and remaining conflicts: `target/kz-logs/r02-fix-bench.md`.

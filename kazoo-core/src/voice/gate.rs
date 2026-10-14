@@ -59,6 +59,7 @@ impl Gate {
     pub(super) fn frame(&mut self, at: u64, voiced: bool, db: f32, valley_db: f32) -> (bool, bool) {
         self.frame_with_pitch(at, voiced, db, valley_db, 0.0)
     }
+    #[cfg(test)]
     pub(super) fn frame_with_pitch(
         &mut self,
         at: u64,
@@ -66,6 +67,18 @@ impl Gate {
         db: f32,
         valley_db: f32,
         hz: f32,
+    ) -> (bool, bool) {
+        self.frame_with_level(at, voiced, db, valley_db, hz, db)
+    }
+
+    pub(super) fn frame_with_level(
+        &mut self,
+        at: u64,
+        voiced: bool,
+        db: f32,
+        valley_db: f32,
+        hz: f32,
+        periodic_db: f32,
     ) -> (bool, bool) {
         let was_high = self.high;
         if self.high {
@@ -77,7 +90,10 @@ impl Gate {
             } else {
                 self.off_frames = 0;
             }
-        } else if voiced && db >= self.settings.gate_on_db {
+        } else if voiced
+            && db >= self.settings.gate_on_db
+            && periodic_db >= self.settings.gate_on_db
+        {
             self.high = true;
             self.off_frames = 0;
         }
