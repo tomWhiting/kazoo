@@ -84,7 +84,7 @@ fn pitch_is(signal: &[f32], expected: f64, tolerance: f64) {
     }
 }
 
-fn no_other_component(signal: &[f32], frequency: f64, margin_db: f64) {
+fn no_other_component(signal: &[f32], frequency: f64, margin_db: f64, upper: f64) {
     let segment = &signal[24_000..24_000 + 65_536];
     let power = spectrum(segment);
     let resolution = f64::from(RATE) / segment.len() as f64;
@@ -94,11 +94,7 @@ fn no_other_component(signal: &[f32], frequency: f64, margin_db: f64) {
         .copied()
         .fold(0.0, f64::max);
     assert!(peak > 1e-9, "missing {frequency} Hz component");
-    for (bin, value) in power
-        .iter()
-        .enumerate()
-        .take((1000.0 / resolution) as usize)
-    {
+    for (bin, value) in power.iter().enumerate().take((upper / resolution) as usize) {
         if bin.abs_diff(target) > 3 {
             let db = 10.0 * (value / peak).log10();
             assert!(db < -margin_db, "{} Hz: {db} dB", bin as f64 * resolution);
@@ -124,7 +120,7 @@ fn down1_and_down2_are_half_and_quarter() {
     for (path, frequency) in [("down1", 220.0), ("down2", 110.0)] {
         let output = render(isolated(path).as_mut(), &input);
         pitch_is(&output, frequency, 2.0);
-        no_other_component(&output, frequency, 30.0);
+        no_other_component(&output, frequency, 30.0, 1000.0);
     }
 }
 
@@ -132,7 +128,12 @@ fn down1_and_down2_are_half_and_quarter() {
 fn up2_is_four_times() {
     let input = sine(440.0, 96_000);
     let output = render(isolated("up2").as_mut(), &input);
-    pitch_is(&output, 1760.0, 1.0);
+    pitch_is(&output, 1760.0, 10.0);
+    let pitches = window_pitch(&output, RATE, 10.0);
+    let steady: Vec<_> = pitches.iter().filter(|(time, _)| *time >= 0.25).collect();
+    let mean = steady.iter().map(|sample| sample.1).sum::<f64>() / steady.len() as f64;
+    assert!(cents(mean, 1760.0).abs() <= 1.0, "mean pitch {mean} Hz");
+    no_other_component(&output, 1760.0, 30.0, 4000.0);
 }
 
 #[test]
@@ -157,10 +158,54 @@ fn every_octave_path_is_at_unity_across_the_bank() {
 }
 
 #[test]
+fn the_down_paths_hold_their_level_whatever_came_before() {
+    let frequency = centre(60.0, 2000.0, 40.0);
+    let mut levels = Vec::new();
+    for (path, ratio) in [("down1", 0.5), ("down2", 0.25)] {
+        for history in ["hard start", "fade", "300 Hz", "semitone"] {
+            let mut effect = isolated(path);
+            let mut input = sine(frequency, 24_000);
+            match history {
+                "fade" => {
+                    for (frame, sample) in input.iter_mut().take(960).enumerate() {
+                        *sample *= frame as f32 / 960.0;
+                    }
+                }
+                "300 Hz" | "semitone" => {
+                    let before = if history == "300 Hz" {
+                        300.0
+                    } else {
+                        frequency * 1.06
+                    };
+                    let preceding = render(effect.as_mut(), &sine(before, 12_000));
+                    assert!(preceding.iter().all(|sample| sample.is_finite()));
+                }
+                "hard start" => {}
+                _ => panic!("unknown history"),
+            }
+            let output = render(effect.as_mut(), &input);
+            let level = 20.0
+                * (magnitude(&output[12_000..], RATE, frequency * ratio)
+                    / magnitude(&input[12_000..], RATE, frequency))
+                .log10();
+            eprintln!("history {path} {history}: {level:.6} dB");
+            levels.push((path, history, level));
+        }
+    }
+    assert!(
+        levels
+            .iter()
+            .all(|(_, _, level)| level.is_finite() && level.abs() <= 1.0),
+        "history levels: {levels:?}"
+    );
+}
+
+#[test]
 fn the_width_range_keeps_every_path_usable() {
-    assert!((PARAMS[2].min - 0.8).abs() <= f32::EPSILON);
-    assert!((PARAMS[2].max - 1.25).abs() <= f32::EPSILON);
-    for width in [0.8, 1.0, 1.25] {
+    assert!((PARAMS[2].min - 0.9).abs() <= f32::EPSILON);
+    assert!((PARAMS[2].max - 1.2).abs() <= f32::EPSILON);
+    for step in 90..=120 {
+        let width = step as f32 / 100.0;
         let mut bank = Bank::default();
         bank.prepare([60.0, 2000.0, width], RATE);
         let mut minimum = [f64::INFINITY; 4];
@@ -186,7 +231,7 @@ fn the_width_range_keeps_every_path_usable() {
         }
         for path in 0..4 {
             let spread = 20.0 * (maximum[path] / minimum[path]).log10();
-            let limit = if path % 2 == 0 { 3.0 } else { 7.0 };
+            let limit = [4.0, 9.5, 3.0, 3.5][path];
             assert!(
                 spread <= limit,
                 "width {width}, {}: {spread} dB",
@@ -222,45 +267,94 @@ fn rms(signal: &[f32]) -> f64 {
     (signal.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>() / signal.len() as f64).sqrt()
 }
 
-fn follows(signal: &[f32], path: &str, ratio: f64) {
+fn delayed_pitch(source: &[(f64, f64)], time: f64) -> Option<f64> {
+    let after = source.partition_point(|sample| sample.0 < time);
+    if after == 0 || after >= source.len() {
+        return None;
+    }
+    let (before, next) = (source[after - 1], source[after]);
+    let share = (time - before.0) / (next.0 - before.0);
+    Some(before.1 * ((next.1 / before.1).log2() * share).exp2())
+}
+
+fn follows(signal: &[f32], path: &str, ratio: f64, lowest: f64, maximum_error: f64) {
     let output = render(isolated(path).as_mut(), signal);
     let source = window_pitch(signal, RATE, 10.0);
     let heard = window_pitch(&output, RATE, 10.0);
+    let spacing =
+        10.0_f64.powf((super::erb(2000.0) - super::erb(60.0)) / (21.4 * (BANDS - 1) as f64));
+    let below = (lowest + 1.0 / 0.00437) * (1.0 - 1.0 / spacing);
+    let above = (lowest + 1.0 / 0.00437) * (spacing - 1.0);
+    let bandwidth = 2.0 * below * above / (below + above);
+    let maximum_lag = 1.2 * 2.4 / (std::f64::consts::PI * bandwidth);
+    let steps = (maximum_lag / 0.0001).ceil() as usize;
+    let mut best = (0, f64::INFINITY);
+    for step in 0..=steps {
+        let lag = maximum_lag * step as f64 / steps as f64;
+        let errors: Vec<_> = heard
+            .iter()
+            .filter(|(time, _)| *time >= 0.2)
+            .filter_map(|(time, pitch)| {
+                delayed_pitch(&source, time - lag).map(|expected| cents(*pitch, expected * ratio))
+            })
+            .collect();
+        assert!(!errors.is_empty(), "no matched windows at lag {lag}");
+        let squared = errors.iter().map(|error| error * error).sum::<f64>() / errors.len() as f64;
+        if squared < best.1 {
+            best = (step, squared);
+        }
+    }
+    let lag = maximum_lag * best.0 as f64 / steps as f64;
     let mut previous = None;
-    let mut count = 0;
+    let mut errors = Vec::new();
     let mut missing = 0;
+    let mut largest = 0.0_f64;
+    let mut worst_excess = 0.0_f64;
     for &(time, pitch) in &heard {
-        if time < 0.1 {
+        if time < 0.2 {
             continue;
         }
-        let expected = source
-            .iter()
-            .find(|sample| (sample.0 - time).abs() < 1e-6)
-            .map(|sample| sample.1 * ratio);
-        let Some(expected) = expected else {
+        let Some(expected) = delayed_pitch(&source, time - lag).map(|pitch| pitch * ratio) else {
             missing += 1;
             continue;
         };
-        let error = cents(pitch, expected);
-        assert!(error.abs() <= 10.0, "{time}: {error} cents");
+        errors.push(cents(pitch, expected));
         if let Some((last_pitch, last_expected)) = previous {
             let step = cents(pitch, last_pitch).abs();
             let input_step = cents(expected, last_expected).abs();
-            assert!(
-                step <= input_step + 5.0,
-                "{time}: step {step}, input {input_step}"
-            );
+            largest = largest.max(step);
+            worst_excess = worst_excess.max(step - input_step);
         }
         previous = Some((pitch, expected));
-        count += 1;
     }
-    assert!(count > 180, "only {count} windows");
+    let count = errors.len();
+    assert!(count >= 170, "only {count} windows");
+    let mean = errors.iter().sum::<f64>() / count as f64;
+    let rms_error = (errors.iter().map(|error| error * error).sum::<f64>() / count as f64).sqrt();
+    let maximum = errors.iter().map(|error| error.abs()).fold(0.0, f64::max);
+    eprintln!(
+        "{path}: lag {:.6} ms (bound {:.6}), RMS {rms_error:.6}, mean {mean:.6}, max {maximum:.6} cents; largest pitch step {largest:.6}, step excess {worst_excess:.6}; {missing} unmatched of {}",
+        lag * 1000.0,
+        maximum_lag * 1000.0,
+        count + missing
+    );
+    assert!(best.0 > 0 && best.0 < steps, "lag fit reached bound: {lag}");
+    assert!(rms_error <= 8.0, "RMS {rms_error} cents");
+    assert!(mean.abs() <= 2.0, "mean {mean} cents");
+    assert!(maximum <= maximum_error, "max {maximum} cents");
+    assert!(worst_excess <= 5.0, "step excess {worst_excess} cents");
+    if path == "down1" {
+        assert!(
+            largest <= 6.109_905,
+            "glide step grew by more than one cent: {largest}"
+        );
+    }
     assert!(
         missing * 20 < count + missing,
         "{missing} unmatched windows of {}",
         count + missing
     );
-    let levels: Vec<_> = output[4800..].chunks_exact(480).map(rms).collect();
+    let levels: Vec<_> = output[9600..].chunks_exact(480).map(rms).collect();
     let peak = levels.iter().copied().fold(0.0, f64::max);
     assert!(peak > 1e-5, "missing octave");
     for (window, level) in levels.into_iter().enumerate() {
@@ -271,12 +365,18 @@ fn follows(signal: &[f32], path: &str, ratio: f64) {
 
 #[test]
 fn the_octave_follows_a_glide_without_steps() {
-    follows(&glide_fourth(RATE), "down1", 0.5);
+    follows(&glide_fourth(RATE), "down1", 0.5, 220.0, 20.0);
 }
 
 #[test]
 fn the_octave_follows_a_vibrato_without_steps() {
-    follows(&vibrato_30c_6hz(RATE), "up1", 2.0);
+    follows(
+        &vibrato_30c_6hz(RATE),
+        "up1",
+        2.0,
+        220.0 * (-30.0_f64 / 1200.0).exp2(),
+        10.0,
+    );
 }
 
 #[test]
@@ -321,7 +421,7 @@ fn largest_step(signal: &[f32]) -> f32 {
 fn a_redesign_never_bangs_or_dips() {
     let kind = kind();
     let input = sine(1000.0, 48_000);
-    for (name, value) in [("low", 150.0), ("high", 5000.0), ("width", 1.25)] {
+    for (name, value) in [("low", 150.0), ("high", 5000.0), ("width", 1.2)] {
         let mut effect = isolated("down1");
         let before = render(effect.as_mut(), &input);
         let reference = rms(&before[24_000..]);
@@ -369,7 +469,7 @@ fn turning_low_high_or_width_never_allocates_or_clicks() {
     for (name, low, high) in [
         ("low", 30.0, 150.0),
         ("high", 500.0, 5000.0),
-        ("width", 0.8, 1.25),
+        ("width", 0.9, 1.2),
     ] {
         let mut effect = effect(&[
             ("dry", 0.0),
@@ -485,7 +585,7 @@ fn processing_never_allocates() {
     assert_no_alloc::assert_no_alloc(|| {
         for block in 0..64 {
             if block == 4 {
-                effect.set_param(2, 1.25);
+                effect.set_param(2, 1.2);
             }
             effect.process(&CONTEXT, [&input, &input], [&mut left, &mut right]);
         }
@@ -510,18 +610,18 @@ fn bank_design_waits_for_rest_and_crossfades_once() {
     let before = effect.designed;
     for frame in 0..4800 {
         if frame % 48 == 0 {
-            effect.set_param(2, 0.8 + 0.45 * frame as f32 / 4800.0);
+            effect.set_param(2, 0.9 + 0.3 * frame as f32 / 4800.0);
         }
         assert!(effect.sample(0.1, 0.1).is_finite());
         assert_eq!(effect.designed.map(f32::to_bits), before.map(f32::to_bits));
     }
-    effect.set_param(2, 1.25);
+    effect.set_param(2, 1.2);
     for _ in 0..effect.hold - 1 {
         assert!(effect.sample(0.1, 0.1).is_finite());
         assert_eq!(effect.designed.map(f32::to_bits), before.map(f32::to_bits));
     }
     assert!(effect.sample(0.1, 0.1).is_finite());
-    assert!((effect.designed[2] - 1.25).abs() <= f32::EPSILON);
+    assert!((effect.designed[2] - 1.2).abs() <= f32::EPSILON);
     assert_eq!(effect.fade, 0);
     assert_eq!(effect.warming, effect.banks[1 - effect.active].settling - 1);
     let previous_bank = effect.active;

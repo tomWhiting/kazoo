@@ -37,38 +37,39 @@ fn chain(wall: &mut Wall, kind: Kind, count: usize) -> Vec<String> {
 }
 
 fn audio_kind(dearest: bool) -> Kind {
-    let rows = super::super::cost::KIND_BENCH_NS;
-    let mut audio: Vec<(Kind, u32)> = rows
-        .iter()
-        .filter_map(|&(name, ns)| {
-            let kind = Kind::from_name(name)?;
-            // A loop is always heard (it records whether or not anything
-            // listens), and a wall holds eight: no cable wakes a set of them.
-            (kind != Kind::LOOP
-                && kind
-                    .spec()
-                    .inputs
-                    .iter()
-                    .any(|port| port.signal == crate::catalogue::Signal::Audio)
-                && kind
-                    .spec()
-                    .outputs
-                    .iter()
-                    .any(|port| port.signal == crate::catalogue::Signal::Audio))
-            .then_some((kind, ns))
-        })
-        .collect();
-    audio.sort_by_key(|(_, ns)| *ns);
-    if dearest {
-        audio.last().unwrap().0
-    } else {
-        audio[0].0
-    }
+    let kind = Kind::from_name(if dearest { "screamer" } else { "mix" }).unwrap();
+    assert!(
+        kind.spec()
+            .inputs
+            .iter()
+            .any(|port| port.signal == crate::catalogue::Signal::Audio)
+    );
+    assert!(
+        kind.spec()
+            .outputs
+            .iter()
+            .any(|port| port.signal == crate::catalogue::Signal::Audio)
+    );
+    kind
 }
 
 fn heavy() -> Kind {
-    audio_kind(true)
+    let kind = Kind::from_name("screamer").unwrap();
+    assert!(
+        kind.spec()
+            .inputs
+            .iter()
+            .any(|port| port.signal == crate::catalogue::Signal::Audio)
+    );
+    assert!(
+        kind.spec()
+            .outputs
+            .iter()
+            .any(|port| port.signal == crate::catalogue::Signal::Audio)
+    );
+    kind
 }
+
 fn last_output(ids: &[String], kind: Kind) -> String {
     format!("{}.{}", ids.last().unwrap(), kind.spec().outputs[0].name)
 }

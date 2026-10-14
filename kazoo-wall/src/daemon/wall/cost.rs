@@ -70,11 +70,8 @@ pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
     ("ringmod", 379_420),
     ("sidestep", 379_420),
     ("comp", 592_430),
-    // fx/octaves: provisional until `wall/kind/octaves` is measured at load
-    // 40 or less (the 4,143,200 ns first taken was at load 176 and not by
-    // that method).
-    ("octaves", 800_000),
     ("gate", 592_430),
+    ("octaves", 800_000), // provisional until fx/octaves is measured
     ("tape", 491_630),
     ("bbd", 162_010),
     ("digital", 133_860),

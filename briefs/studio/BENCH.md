@@ -813,11 +813,13 @@ Before load: 89.81 / 45.16 / 39.59. After load: 175.89 / 112.78 / 73.55.
 These measurements are diagnostic under heavy, different loads; their ratio
 does not establish an attributable speedup or a quiet-machine budget pass.
 
-The wall stores 4,143,200 ns per 512 frames, four times the measured
-128-frame steady midpoint. This is a block-length conversion, not a separate
-512-frame wall benchmark. It replaces the provisional 800,000 ns row.
-The earlier 800 µs per 512-frame chord budget is not verified.
-The crossfade's complete block cost has not been measured separately.
+The wall stores 800,000 ns per 512 frames provisionally until fx/octaves
+is measured with `wall/kind/octaves` at a one-minute load of 40 or less.
+The earlier 4,143,200 ns row came from multiplying a 128-frame FX measurement
+at load 175.89 by four; it is not comparable to the wall benchmarks.
+The fix run observed load 98.22 before checks and did not run a benchmark.
+The 800 µs per 512-frame chord budget and the complete crossfade block cost
+are not verified.
 
 ## KZ-D04 page-owned delay lines
 

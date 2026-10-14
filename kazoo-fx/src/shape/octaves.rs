@@ -31,8 +31,11 @@
 //! the analysis bands' sound, approximately `2.4 / (pi * bandwidth)`: with
 //! width one, about 24 ms at 1 kHz, 100 ms at 60 Hz, and 230 ms at the
 //! 30 Hz floor with a bass range ending near 500 Hz. Response depends on
-//! both range endpoints. Width ranges from 0.8 to 1.25, default one;
+//! both range endpoints. Width ranges from 0.9 to 1.2, default one;
 //! wider bands respond sooner but adjacent notes leak and sound rougher.
+//! Up2's level varies by about 9 dB across the bank because neighbouring bands,
+//! 180 degrees apart at their crossover, do not stay aligned between crossovers
+//! when their phase is multiplied by four.
 //! A redesign clears and warms the spare bank for `3 / (pi * bandwidth_min)`
 //! before a 10 ms crossfade. Each bank carries its own unity calibration.
 //!
@@ -61,10 +64,12 @@
 //! SOFTWARE.
 
 mod band;
+mod level;
 #[cfg(test)]
 mod tests;
 
 use band::Band;
+use level::LevelMatch;
 
 use crate::drive::kit::{DEFAULT_RATE, Knobs, for_each_frame, for_each_frame_wet};
 use crate::dsp::{OnePole, db_to_gain, sane_rate};
@@ -95,7 +100,7 @@ const fn knob(
 static PARAMS: [ParamSpec; N] = [
     knob("low", 30.0, 500.0, 60.0, "Hz", Curve::Log),
     knob("high", 500.0, 5000.0, 2000.0, "Hz", Curve::Log),
-    knob("width", 0.8, 1.25, 1.0, "", Curve::Linear),
+    knob("width", 0.9, 1.2, 1.0, "", Curve::Linear),
     knob("dry", 0.0, 200.0, 100.0, "%", Curve::Linear),
     knob("up1", 0.0, 200.0, 0.0, "%", Curve::Linear),
     knob("up2", 0.0, 200.0, 0.0, "%", Curve::Linear),
@@ -126,6 +131,8 @@ fn centre(low: f64, high: f64, position: f64) -> f64 {
 struct Bank {
     bands: Vec<Band>,
     gains: [f32; 4],
+    input_scale: f64,
+    levels: [LevelMatch; 2],
     settling: usize,
     down1_sign: f32,
     down2_turn: usize,
@@ -156,11 +163,28 @@ impl Bank {
         }
         self.settling = (3.0 * f64::from(rate) / (std::f64::consts::PI * minimum)).ceil() as usize;
         self.gains = self.calibrate(settings, rate);
+        let frequency = centre(low, high, 40.0);
+        // Summing band energies avoids making the reference depend on their phases.
+        let power = self
+            .bands
+            .iter()
+            .map(|band| {
+                let (real, imag) = band.response(frequency, f64::from(rate));
+                0.25 * real.mul_add(real, imag * imag)
+            })
+            .sum::<f64>();
+        self.input_scale = 1.0 / power;
+        for level in &mut self.levels {
+            level.prepare(rate);
+        }
     }
 
     fn reset(&mut self) {
         self.down1_sign = 1.0;
         self.down2_turn = 0;
+        for level in &mut self.levels {
+            level.reset();
+        }
         for band in &mut self.bands {
             band.reset();
         }
@@ -169,8 +193,10 @@ impl Bank {
     fn sample(&mut self, input: f32, enabled: [bool; 4], audible: bool) -> BankSample {
         let mut sum = [0.0; 4];
         let mut down = [(0.0, 0.0); 2];
+        let mut input_power = 0.0;
         for band in &mut self.bands {
-            let (paths, divided) = band.sample(input, enabled, audible);
+            let (paths, divided, power) = band.sample(input, enabled, audible);
+            input_power += power;
             for (sum, path) in sum.iter_mut().zip(paths) {
                 *sum += path;
             }
@@ -183,10 +209,22 @@ impl Bank {
         down[1] = quarter_turn(down[1], self.down2_turn);
         sum[2] = down[0].0;
         sum[3] = down[1].0;
-        BankSample {
-            paths: std::array::from_fn(|path| sum[path] * self.gains[path]),
-            down,
+        let mut paths = std::array::from_fn(|path| sum[path] * self.gains[path]);
+        for path in 0..2 {
+            if enabled[path + 2] {
+                let (real, imag) = down[path];
+                let output_power =
+                    2.0 * f64::from(real).powi(2) * f64::from(self.gains[path + 2]).powi(2)
+                        / self.input_scale;
+                let gain = self.levels[path].sample(input_power, output_power) as f32;
+                paths[path + 2] *= gain;
+                down[path] = (real * gain, imag * gain);
+            }
         }
+        if !audible {
+            paths = [0.0; 4];
+        }
+        BankSample { paths, down }
     }
 
     fn align(&mut self, active: &BankSample, spare: &mut BankSample) {

@@ -155,18 +155,18 @@ impl Band {
         input: f32,
         enabled: [bool; 4],
         audible: bool,
-    ) -> ([f32; 4], [(f32, f32); 2]) {
+    ) -> ([f32; 4], [(f32, f32); 2], f64) {
         let y = self.filter(input);
         let power = y.real.mul_add(y.real, y.imag * y.imag);
         if !power.is_finite() {
             self.reset();
-            return ([0.0; 4], [(0.0, 0.0); 2]);
+            return ([0.0; 4], [(0.0, 0.0); 2], 0.0);
         }
         let up = enabled[0] || enabled[1];
         let down = enabled[2] || enabled[3];
         // Quiet initial cycles determine the divider branch before it is audible.
         if power < 1e-24 || (!down && (!audible || !up)) {
-            return ([0.0; 4], [(0.0, 0.0); 2]);
+            return ([0.0; 4], [(0.0, 0.0); 2], 0.0);
         }
         let inverse = 1.0 / power.sqrt();
         let mut paths = [0.0; 4];
@@ -183,20 +183,22 @@ impl Band {
         if enabled[2] || enabled[3] {
             self.down1.track(y);
             let down1 = self.down1.half_phase(y, inverse);
+            if enabled[2] {
+                down[0] = (down1.real as f32, down1.imag as f32);
+            }
             if audible && enabled[2] {
                 paths[2] = down1.real as f32;
-                down[0] = (down1.real as f32, down1.imag as f32);
             }
             if enabled[3] {
                 self.down2.track(down1);
+                let down2 = self.down2.half_phase(down1, inverse);
+                down[1] = (down2.real as f32, down2.imag as f32);
                 if audible {
-                    let down2 = self.down2.half_phase(down1, inverse);
                     paths[3] = down2.real as f32;
-                    down[1] = (down2.real as f32, down2.imag as f32);
                 }
             }
         }
-        (paths, down)
+        (paths, down, 2.0 * y.real * y.real)
     }
 
     /// Evaluate the stored coefficients, without narrowing their precision.
