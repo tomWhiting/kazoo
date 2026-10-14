@@ -21,8 +21,12 @@ pub struct FusedUnderTest {
 impl FusedUnderTest {
     /// Construct an offline adapter for this stream's sample rate.
     pub fn new(rate: u32) -> crate::Result<Self> {
-        let config = PitchDetectorConfig::for_rate(rate);
-        let scale = config.frame_length / 2048;
+        Self::with_judge(rate, PitchDetectorConfig::for_rate(rate))
+    }
+
+    /// Construct an offline adapter with the caller's pitch judge.
+    pub fn with_judge(rate: u32, config: PitchDetectorConfig) -> crate::Result<Self> {
+        let scale = PitchDetectorConfig::for_rate(rate).frame_length / 2048;
         let lag = config.hop_length as u64;
         let onsets = OnsetConfig::default();
         Ok(Self {

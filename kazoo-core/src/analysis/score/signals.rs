@@ -12,6 +12,26 @@ enum Sound {
     Bursts,
     Whistle,
     Syllables,
+    HighWhistle,
+    SungSecond,
+    SungThird,
+    Spliced,
+}
+
+impl Sound {
+    const fn needs_peak_normalisation(self) -> bool {
+        matches!(
+            self,
+            Self::Hum
+                | Self::Bait
+                | Self::Vowel
+                | Self::Whistle
+                | Self::HighWhistle
+                | Self::SungSecond
+                | Self::SungThird
+                | Self::Spliced
+        )
+    }
 }
 
 struct Noise(u32);
@@ -68,6 +88,25 @@ fn syllable_gain(time: f64) -> f64 {
     10.0_f64.powf(db / 20.0)
 }
 
+fn high_tone(phase: f64, noise: f64, harmonics: [f64; 3], breath: f64) -> f64 {
+    let [fundamental, second, third] = harmonics;
+    breath.mul_add(
+        noise,
+        third.mul_add(
+            (3.0 * phase).sin(),
+            second.mul_add((2.0 * phase).sin(), fundamental * phase.sin()),
+        ),
+    )
+}
+
+fn splice_phase(phase: f64, hz: f64, rate: u32, index: u32) -> f64 {
+    if index > 0 && index % (rate / 20).max(1) == 0 {
+        (phase + TAU * hz * 128.0 / f64::from(rate)).rem_euclid(TAU)
+    } else {
+        phase
+    }
+}
+
 fn make(
     name: &str,
     rate: u32,
@@ -119,6 +158,13 @@ fn make(
                     resonators.iter_mut().map(|filter| filter.push(saw)).sum()
                 }
                 Sound::Whistle => 0.01_f64.mul_add(noise.next(), 0.5 * phase.sin()),
+                Sound::HighWhistle => high_tone(phase, noise.next(), [0.5, 0.0158, 0.0], 0.05),
+                Sound::SungSecond => high_tone(phase, noise.next(), [1.0, 1.2, 0.3], 0.02),
+                Sound::SungThird => high_tone(phase, noise.next(), [1.0, 0.4, 1.1], 0.02),
+                Sound::Spliced => {
+                    phase = splice_phase(phase, hz, rate, index - floor);
+                    high_tone(phase, noise.next(), [0.5, 0.0158, 0.0], 0.05)
+                }
                 Sound::Syllables => 0.5 * phase.sin() * syllable_gain(time),
                 Sound::Sine | Sound::Bursts => 0.5 * phase.sin(),
             };
@@ -134,10 +180,7 @@ fn make(
         };
         samples.push(value as f32);
     }
-    if matches!(
-        sound,
-        Sound::Hum | Sound::Bait | Sound::Vowel | Sound::Whistle
-    ) {
+    if sound.needs_peak_normalisation() {
         let active = &mut samples[floor as usize..(floor + body) as usize];
         let peak = active
             .iter()
@@ -220,4 +263,32 @@ pub fn suite(rate: u32) -> Vec<Take> {
             Some(220.0)
         }),
     ]
+}
+
+/// Sixteen three-second high notes with a ±15-cent, 5 Hz wobble and 200 ms
+/// of floor at each end: whistles, strong second or third harmonics, and
+/// whistles with a 128-sample splice every 50 ms.
+#[must_use]
+pub fn high_suite(rate: u32) -> Vec<Take> {
+    let mut takes = Vec::with_capacity(16);
+    for frequency in [800_u32, 1100, 1500, 2200] {
+        for (prefix, sound, seed) in [
+            ("whistle", Sound::HighWhistle, 11),
+            ("sung2", Sound::SungSecond, 12),
+            ("sung3", Sound::SungThird, 13),
+            ("splice", Sound::Spliced, 14),
+        ] {
+            takes.push(make(
+                &format!("{prefix}_{frequency}"),
+                rate,
+                3000,
+                seed + frequency,
+                sound,
+                |time| {
+                    Some(f64::from(frequency) * (15.0 * (TAU * 5.0 * time).sin() / 1200.0).exp2())
+                },
+            ));
+        }
+    }
+    takes
 }

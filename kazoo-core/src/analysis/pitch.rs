@@ -23,8 +23,8 @@ pub const JUDGE_RESOLUTION: f64 = 0.34;
 /// The largest pYIN transition table a detector may build, in bytes.
 ///
 /// pYIN 1.2 builds a dense `(2 × pitch_bins)²` table of `f64`s inside
-/// `PYINExecutor::new`. The largest any caller uses is the engine's (0.1 over
-/// 60–1000 Hz) and the wall listener's (0.1 over its range), both under 19 MB.
+/// `PYINExecutor::new`. The wall listener uses 0.1 over its range, while the
+/// voice judge uses coarser bins to rule only on octave and voicing.
 /// A 64 MiB ceiling leaves room for 0.1 over the full 50–4000 Hz voice range
 /// (about 18.4 MB) and refuses 0.05 over that range (about 73.7 MB).
 const PYIN_TABLE_CEILING: f64 = 64.0 * 1024.0 * 1024.0;
@@ -72,16 +72,23 @@ impl PitchDetectorConfig {
         }
     }
 
-    /// Configure the engine's accurate, once-per-window detector until it is retired.
+    /// Keep the voice judge's 512 × scale hop wherever pYIN can hold it,
+    /// halving only where it cannot, down to 64 samples. If none builds,
+    /// leave the configuration unchanged so [`PitchDetector::new`] reports why.
     #[must_use]
-    pub const fn engine_default() -> Self {
-        Self {
-            min_frequency: 60.0,
-            max_frequency: 1000.0,
-            hop_length: 2048,
-            resolution: 0.1,
-            ..Self::for_rate(44_100)
+    pub fn with_hop_pyin_holds(self) -> Self {
+        let mut hop_length = self.hop_length;
+        while hop_length >= 64 {
+            let candidate = Self { hop_length, ..self };
+            if validate(&candidate).is_ok() {
+                return candidate;
+            }
+            if hop_length == 64 {
+                break;
+            }
+            hop_length = (hop_length / 2).max(64);
         }
+        self
     }
 
     /// This configuration with the longest hop pYIN can hold: one run per
