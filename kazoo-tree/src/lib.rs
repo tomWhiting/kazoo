@@ -15,12 +15,14 @@ pub mod ledger;
 pub mod render;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod tests;
 
 use std::io::{self, Stdout, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::Show;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
@@ -37,7 +39,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::app::{App, Go, Grower, Grown, HELP, PANEL, Shown};
+use crate::app::{App, Follow, Go, Grower, Grown, HELP, PANEL, Shown};
 use crate::go::Goes;
 use crate::history::{HistoryError, Snapshot};
 use crate::ledger::Ledger;
@@ -109,6 +111,14 @@ pub fn print(dir: PathBuf, cols: u16, rows: u16) -> io::Result<String> {
 /// cannot be used.
 pub fn run(dir: PathBuf) -> io::Result<()> {
     planted(&dir)?;
+    // The catalogue says on stderr any kind it leaves out as it is built:
+    // built first, long before the screen is taken, so it never writes
+    // over it.
+    if kazoo_wall::catalogue::registry().kinds().is_empty() {
+        return Err(io::Error::other(
+            "the wall's catalogue holds no kinds of module",
+        ));
+    }
     // Read once before the screen is taken, so a tree that cannot be read
     // says so plainly; the snapshot comes first, so the reader's first look
     // compares against exactly what was read.
@@ -353,10 +363,18 @@ fn walk(
     let mut dirty = true;
     let mut reader_gone = false;
     let goes = Goes::to(kazoo_wall::paths::socket_path());
+    // The shell that started the walk: when it goes (its terminal closed
+    // with no hang-up sent), the walk is orphaned, and a terminal that is
+    // gone reads as always ready with nothing in it, so the walk ends.
+    let parent = std::os::unix::process::parent_id();
     while !app.quit && stop.load(Ordering::Relaxed) == 0 {
-        if let Go::Send(moment) = &app.go {
-            goes.send(moment);
-            app.go = Go::Sent;
+        if orphaned(parent, std::os::unix::process::parent_id()) {
+            eprintln!("kazoo tree: the terminal it ran in has gone; ending");
+            break;
+        }
+        if let Some(moment) = app.go_due(Instant::now()) {
+            goes.send(&moment);
+            dirty = true;
         }
         if let Some(words) = goes.heard() {
             // The wall has moved, or said why not: either way the tree is
@@ -376,7 +394,14 @@ fn walk(
             terminal.draw(|frame| frame_of(app, frame.area(), frame.buffer_mut()))?;
             dirty = false;
         }
-        if event::poll(Duration::from_millis(250))? {
+        // While a follow waits for the selection to rest, look again soon
+        // enough to send it on time.
+        let wait = if app.resting() {
+            Duration::from_millis(25)
+        } else {
+            Duration::from_millis(250)
+        };
+        if event::poll(wait)? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => app.key(key),
                 Event::Mouse(mouse) => app.mouse(mouse),
@@ -407,6 +432,13 @@ fn walk(
         }
     }
     Ok(())
+}
+
+/// Whether the walk has been orphaned: started under `started`, it is now
+/// under another parent (the shell that ran it has gone).
+#[must_use]
+pub const fn orphaned(started: u32, now: u32) -> bool {
+    started != now
 }
 
 /// Draw the whole frame: the tree, the details panel when there is room,
@@ -447,13 +479,18 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
         .filter(|limb| !limb.moments.is_empty())
         .count();
     let mut words = format!(
-        " {} moments, {} branches │ {} │ ? help, q quit",
+        " {} moments, {} branches │ {} │ {} │ ? help, q quit",
         app.history.moments.len(),
         branches,
         if app.shown == Shown::Lanes {
             "lanes: one row a moment"
         } else {
             level.name()
+        },
+        if app.follow == Follow::Off {
+            "g goes"
+        } else {
+            "following: arrows move the wall"
         }
     );
     let problems = app.history.problem_count();
@@ -584,7 +621,10 @@ fn lanes(app: &mut App, area: Rect, buf: &mut Buffer) {
             Line::from(vec![
                 Span::styled(format!("{graph}{} ", " ".repeat(pad)), graph_style),
                 Span::styled("■ ", Style::new().fg(Color::Rgb(r, g, b))),
-                Span::raw(moment.summary.clone()),
+                Span::raw(moment.batch.as_deref().map_or_else(
+                    || moment.summary.clone(),
+                    |batch| format!("❖ {} ({})", batch.note, changes(batch.steps.len())),
+                )),
                 Span::styled(
                     format!("  {} {when}", moment.seat),
                     Style::new().fg(Color::DarkGray),
@@ -682,4 +722,13 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// `n` changes, in words.
+pub(crate) fn changes(n: usize) -> String {
+    if n == 1 {
+        "1 change".to_owned()
+    } else {
+        format!("{n} changes")
+    }
 }

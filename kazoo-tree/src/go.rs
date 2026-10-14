@@ -1,7 +1,9 @@
 //! `g`: putting the wall at a moment of its tree.
 //!
-//! The tree only reads, but for this: asked and answered yes, it says
-//! `go` to the wall over its control socket, as Tom, and the wall puts
+//! The tree only reads, but for this: it says `go` to the wall over its
+//! control socket, as Tom's console (the tree is Tom's own view, and a
+//! console's go is never held to a seat's allowance or refused for the
+//! wall's guess at its cost: it is put up, with a note when heavy), and the wall puts
 //! itself at that moment while it plays (keeping the wall as it was first,
 //! so the go can be undone). The go is sent off the screen's thread, so a
 //! wall that is slow to answer never stops the screen.
@@ -82,7 +84,7 @@ impl Goes {
 /// In words, when the wall cannot be reached, refuses, or does not answer.
 pub fn go(socket: &Path, moment: &str) -> Result<String, String> {
     let shown = short(moment);
-    let mut wall = WallClient::connect(socket, SEAT, CLIENT, false).map_err(|err| {
+    let mut wall = WallClient::connect(socket, SEAT, CLIENT, true).map_err(|err| {
         format!("the wall could not be reached to go to {shown}: {err}; is it playing?")
     })?;
     wall.set_timeout(Some(WAIT))

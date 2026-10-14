@@ -21,6 +21,8 @@ use kazoo_core::host::link::connect_config_or_direct;
 use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig};
 
 mod link_diagnostics;
+#[cfg(test)]
+mod tempo_tests;
 
 use super::DeskMode;
 use super::audio::headless_lead_frames;
@@ -257,6 +259,7 @@ struct Control {
     counts: AudioCounts,
     /// Whether the scheduling refusal has already been logged.
     told_link_refused: bool,
+    desk_refusals: link_diagnostics::DeskRefusals,
     /// The process-wide desk link shutdown counts already logged.
     reported_link_shutdowns: link_diagnostics::LinkShutdowns,
 }
@@ -288,6 +291,7 @@ pub fn run(setup: Setup) {
         awaiting: HashMap::new(),
         counts: AudioCounts::new(Instant::now()),
         told_link_refused: false,
+        desk_refusals: link_diagnostics::DeskRefusals::default(),
         reported_link_shutdowns: link_diagnostics::LinkShutdowns::default(),
     };
     while !control.stopping {
@@ -741,6 +745,15 @@ impl Control {
         console: bool,
         watcher: bool,
     ) -> Response {
+        if matches!(seat, "desk" | "kazoo-wall") {
+            return Response::failure(
+                id,
+                WallError::new(
+                    ErrorCode::BadName,
+                    format!("'{seat}' is a reserved seat name; choose another name."),
+                ),
+            );
+        }
         if !valid_name(seat) {
             return Response::failure(
                 id,
@@ -844,6 +857,10 @@ impl Control {
     }
 
     fn housekeeping(&mut self) {
+        if let Some(link) = self.wall.desk_link() {
+            self.desk_refusals
+                .report(&link.status(), |line| eprintln!("{line}"));
+        }
         link_diagnostics::report_refusal(
             &mut self.told_link_refused,
             self.wall.desk_link().and_then(HubLink::real_time),

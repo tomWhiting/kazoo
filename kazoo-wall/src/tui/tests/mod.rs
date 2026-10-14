@@ -10,6 +10,7 @@ mod probes;
 mod rack;
 mod render;
 mod saves;
+mod tree;
 
 use std::collections::BTreeMap;
 use std::time::Instant;
