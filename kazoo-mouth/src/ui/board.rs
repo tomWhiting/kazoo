@@ -10,6 +10,7 @@ use crate::controls::{
     App, Control, Focus, SHAPES,
     panels::{Hit, Target},
 };
+use crate::engine::fx::{Slot, harmony};
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, app: &App, display: &Display) {
     app.hits.borrow_mut().clear();
@@ -216,13 +217,52 @@ pub fn activity(input: f32, output: f32) -> &'static str {
     }
 }
 
-fn effects(frame: &mut Frame<'_>, area: Rect, app: &App) {
+fn effects_area(frame: &mut Frame<'_>, area: Rect, focused: bool) -> Rect {
+    if area.height == 0 {
+        return area;
+    }
+    let content_height = area.height.saturating_sub(u16::from(focused));
+    if focused {
+        let hints = [
+            "[ ] effect · ↑↓ row · ←→ change · b on/off · { } move · d default",
+            "[ ] effect · ←→ change · b on/off",
+            "[ ] effect",
+        ];
+        let hint = hints
+            .into_iter()
+            .find(|hint| hint.chars().count() <= usize::from(area.width))
+            .unwrap_or("");
+        frame.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(DIM)),
+            Rect::new(area.x, area.y + content_height, area.width, 1),
+        );
+    }
+    Rect::new(area.x, area.y, area.width, content_height)
+}
+
+/// A knob's value as its row reads it. A harmony level at the bottom is
+/// off, and a harmony shift moves in whole semitones, so the rows say so.
+fn value_label(slot: Slot, index: usize, spec: &kazoo_fx::ParamSpec, value: f32) -> String {
+    match (slot, index, spec.curve) {
+        (Slot::Harmony, 1 | 3 | 5 | 7, _) if value <= -60.0 => "off".to_owned(),
+        (Slot::Harmony, 2 | 4 | 6, _) => format!("{value:+.0} st"),
+        (_, _, Curve::Stepped { labels }) => labels
+            .get((value - spec.min) as usize)
+            .copied()
+            .unwrap_or("?")
+            .to_owned(),
+        _ => format!("{value:.2} {}", spec.unit),
+    }
+}
+
+pub(super) fn effects(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let area = effects_area(frame, area, app.focus == Focus::Fx);
     let saved = app.accepted.fx.slots[app.selected_slot as usize];
     let Some(kind) = app.selected_slot.kind(saved.active) else {
         return;
     };
     let focus_row = if app.focus == Focus::Fx {
-        5 + app.selected_cell
+        Slot::ALL.len() + app.selected_cell
     } else {
         0
     };
@@ -247,9 +287,15 @@ fn effects(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let meter = activity(app.fx_input[slot as usize], app.fx_output[slot as usize]);
         let light = if saved.on { "●" } else { "○" };
         frame.render_widget(
-            Paragraph::new(format!("[{light}] {} {meter} mix {mix:.2}", slot.name())).style(
-                selected_style(slot == app.selected_slot && app.focus == Focus::Fx),
-            ),
+            Paragraph::new(if slot == Slot::Harmony {
+                let preset = harmony::PRESETS[saved.values[0][0] as usize];
+                format!("[{light}] harmony {preset} {meter}")
+            } else {
+                format!("[{light}] {} {meter} mix {mix:.2}", slot.name())
+            })
+            .style(selected_style(
+                slot == app.selected_slot && app.focus == Focus::Fx,
+            )),
             rect,
         );
         app.hits.borrow_mut().push(Hit {
@@ -268,34 +314,33 @@ fn effects(frame: &mut Frame<'_>, area: Rect, app: &App) {
             target: Target::FxSlot(slot),
         });
     }
-    let cells = std::iter::once(("kind", kind.id.to_owned(), 0.0)).chain(
-        kind.params.iter().enumerate().map(|(index, spec)| {
+    let cells = (app.selected_slot != Slot::Harmony)
+        .then(|| ("kind", kind.id.to_owned(), 0.0))
+        .into_iter()
+        .chain(kind.params.iter().enumerate().map(|(index, spec)| {
             let value = saved.values[saved.active][index];
             let fraction = match spec.curve {
                 Curve::Log => (value / spec.min).log(spec.max / spec.min),
                 _ => (value - spec.min) / (spec.max - spec.min),
             };
-            let label = if let Curve::Stepped { labels } = spec.curve {
-                labels
-                    .get((value - spec.min) as usize)
-                    .copied()
-                    .unwrap_or("?")
-                    .to_owned()
-            } else {
-                format!("{value:.2} {}", spec.unit)
-            };
-            (spec.name, label, fraction)
-        }),
-    );
+            (
+                spec.name,
+                value_label(app.selected_slot, index, spec, value),
+                fraction,
+            )
+        }));
     for (cell, (name, value, fraction)) in cells.enumerate() {
-        let row = 5 + cell;
+        let row = Slot::ALL.len() + cell;
         if row < offset || row - offset >= usize::from(area.height) {
             continue;
         }
         let rect = Rect::new(area.x, area.y + (row - offset) as u16, area.width, 1);
         let style = selected_style(cell == app.selected_cell && app.focus == Focus::Fx);
         let bar = if cell == 0 {
-            frame.render_widget(Paragraph::new(format!("kind [{value}]")).style(style), rect);
+            frame.render_widget(
+                Paragraph::new(format!("{name} [{value}]")).style(style),
+                rect,
+            );
             Rect::default()
         } else {
             dial(frame, rect, name, &value, fraction, style)
@@ -320,7 +365,7 @@ pub fn help_lines(app: &App) -> Vec<String> {
         "Tab: reach gate panel",
         "Left/Right: turn gate threshold or hold",
         "FX",
-        "1..5: select effect slot",
+        "1..6: select effect slot",
         "b: toggle selected effect",
         "{ / }: move effect in chain",
         "[ / ]: previous / next effect",

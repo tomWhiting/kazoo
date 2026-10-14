@@ -196,17 +196,27 @@ impl App {
         fraction: f32,
     ) -> Option<Command> {
         let saved = &mut proposed.fx.slots[slot as usize];
-        let spec = slot.kind(saved.active)?.params.get(cell - 1)?;
+        let index = cell - usize::from(slot != Slot::Harmony);
+        let spec = slot.kind(saved.active)?.params.get(index)?;
         let fraction = fraction.clamp(0.0, 1.0);
         let value = spec.clamp(match spec.curve {
             Curve::Log => spec.min * (spec.max / spec.min).powf(fraction),
             _ => fraction.mul_add(spec.max - spec.min, spec.min),
         });
-        saved.values[saved.active][cell - 1] = value;
+        if slot == Slot::Harmony {
+            let value = if matches!(index, 2 | 4 | 6) {
+                value.round()
+            } else {
+                value
+            };
+            super::harmony::adjust(&mut saved.values[0], &mut saved.custom, index, value);
+        } else {
+            saved.values[saved.active][index] = value;
+        }
         Some(Command::FxParam {
             slot,
             kind: saved.active as u8,
-            index: (cell - 1) as u8,
+            index: index as u8,
             value,
         })
     }
