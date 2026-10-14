@@ -209,7 +209,7 @@ fn trees_that_share_nothing_stand_apart_and_stay_put() {
 /// grows fails here, and is made on purpose, with [`GROWTH_VERSION`].
 #[test]
 fn the_shape_is_pinned() {
-    assert_eq!(GROWTH_VERSION, 3);
+    assert_eq!(GROWTH_VERSION, 4);
     let growth = Growth::grow(&grown(64, &[(0, 20, 32)]));
     let pins: Vec<(usize, f64, f64)> = [0_usize, 2, 3, 5]
         .iter()
@@ -233,10 +233,10 @@ fn the_shape_is_pinned() {
 
 /// Steps 0, 2, 3 (the trunk) and 5 (the bud): limb, and where each ends.
 const PINNED: [(usize, f64, f64); 4] = [
-    (0, 0.212_754_037_460_759_22, 3.994_337_957_602_504),
-    (0, 1.542_087_093_207_413_8, 11.879_382_987_066_093),
-    (0, 2.493_484_577_078_811, 15.764_591_196_117_852),
-    (1, -3.767_680_979_023_85, 12.011_703_033_119_787),
+    (0, 0.038_533_228_509_109, 3.999_814_394_481_407),
+    (0, -0.390_363_717_902_120_1, 11.978_874_815_378_564),
+    (0, -0.021_990_789_258_274_024, 15.961_876_370_166_404),
+    (1, 6.153_928_624_471_739, 10.173_185_397_769_782),
 ];
 
 #[test]
@@ -310,4 +310,47 @@ fn a_second_trees_place_never_depends_on_how_wide_the_first_grew() {
     }
     let thick = Growth::grow(&history);
     assert_eq!(thin.roots, thick.roots);
+}
+
+#[test]
+fn a_trunk_keeps_rising_however_long_it_grows() {
+    // As long as the wall's own trunk tonight: it never leans over and
+    // grows back down.
+    let history = grown(7_200, &[]);
+    let growth = Growth::grow(&history);
+    for &s in &growth.limb_steps[0] {
+        let step = &growth.steps[s];
+        assert!(
+            libm::sin(step.heading) > 0.0,
+            "step {s} heads down: {step:?}"
+        );
+    }
+    let tip = growth.steps[*growth.limb_steps[0].last().expect("a trunk")].end;
+    let reach = 7_200_usize.div_ceil(GROWTH_STEP) as f64 * STEP_LENGTH;
+    assert!(tip.1 > reach * 0.8, "it rises: {tip:?} of {reach}");
+}
+
+#[test]
+fn a_saved_shape_is_drawn_as_saved_whatever_the_rules_say_now() {
+    let history = grown(48, &[(0, 20, 20)]);
+    let mut growth = Growth::default();
+    let mut saved = growth.grow_on(&history, &[]);
+    // Shapes drawn by other rules, long ago: kept exactly.
+    for (i, step) in saved.iter_mut().enumerate() {
+        let shape = step.shape.as_mut().expect("a shape");
+        shape.start.0 += 100.0 + i as f64;
+        shape.end.0 += 100.0 + i as f64;
+        shape.heading = 1.0;
+    }
+    let mut again = Growth::default();
+    let fresh = again.grow_on(&history, &saved);
+    assert!(fresh.is_empty(), "nothing new to grow");
+    for (step, kept) in again.steps.iter().zip(&saved) {
+        let shape = kept.shape.expect("a shape");
+        assert_eq!(
+            (step.start, step.end, step.heading),
+            (shape.start, shape.end, shape.heading)
+        );
+    }
+    assert_eq!(again.roots, [saved[0].shape.expect("a shape").start]);
 }

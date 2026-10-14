@@ -109,9 +109,8 @@ pub fn run(dir: PathBuf) -> io::Result<()> {
     // Read once before the screen is taken, so a tree that cannot be read
     // says so plainly; the snapshot comes first, so the reader's first look
     // compares against exactly what was read.
-    let snapshot = Snapshot::read(&dir).map_err(io::Error::other)?;
     let mut grower = Grower::new(dir.clone(), Ledger::of_tree(&dir));
-    let grown = grower.read(&snapshot).map_err(io::Error::other)?;
+    let (grown, snapshot) = grower.read().map_err(io::Error::other)?;
     let mut app = App::showing(dir.clone(), grown);
     let reader = Reader::start(dir, grower, snapshot)?;
     // A terminal closed, a `kill`, or ^C from outside the raw terminal:
@@ -196,37 +195,33 @@ fn read_on(
             Err(mpsc::RecvTimeoutError::Timeout) => false,
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
-        let news = match Snapshot::read(dir) {
-            Err(err) => {
+        // Everything a look does is caught: a panic anywhere in it is said
+        // in the footer, and the next look starts again from nothing.
+        let looked =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match Snapshot::read(dir) {
+                Err(err) => Some(Err(err)),
+                Ok(snapshot) if snapshot == last && !forced && !failing => None,
+                Ok(_) => Some(grower.read()),
+            }));
+        let news = match looked {
+            Ok(None) => continue,
+            Ok(Some(Ok((grown, snapshot)))) => {
+                last = snapshot;
+                failing = false;
+                Ok(grown)
+            }
+            Ok(Some(Err(err))) => {
                 failing = true;
                 Err(err)
             }
-            Ok(snapshot) if snapshot == last && !forced && !failing => continue,
-            Ok(snapshot) => {
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    grower.read(&snapshot)
-                })) {
-                    Ok(Ok(grown)) => {
-                        last = snapshot;
-                        failing = false;
-                        Ok(grown)
-                    }
-                    Ok(Err(err)) => {
-                        failing = true;
-                        Err(err)
-                    }
-                    Err(panic) => {
-                        // Whatever the grower held may be half changed:
-                        // start again from nothing at the next look.
-                        grower = Grower::new(dir.to_path_buf(), Ledger::of_tree(dir));
-                        last = Snapshot::default();
-                        failing = true;
-                        Err(HistoryError::Broken(format!(
-                            "reading the tree failed inside ({}); it is read again whole at the next look",
-                            panic_words(panic.as_ref())
-                        )))
-                    }
-                }
+            Err(panic) => {
+                grower = Grower::new(dir.to_path_buf(), Ledger::of_tree(dir));
+                last = Snapshot::default();
+                failing = true;
+                Err(HistoryError::Broken(format!(
+                    "reading the tree failed inside ({}); it is read again whole at the next look",
+                    panic_words(panic.as_ref())
+                )))
             }
         };
         if tell.send(news).is_err() {
