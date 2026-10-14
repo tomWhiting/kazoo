@@ -1,4 +1,4 @@
-# KZ-V09b: the mouth shows the voice: a scope, a spectrum and the latency it adds
+# KZ-V14: the mouth shows the voice: a scope, a spectrum and the latency it adds
 
 Line numbers are from `main` at the head this lane starts from; find each item by what it does, and never rename anything. Checks, code quality and the END block are as PLAN.md's STACK RULES, with `-p kazoo-mouth` (and `-p kazoo-core` if the latency figures come from there).
 
@@ -40,8 +40,8 @@ ast-grep scan kazoo-mouth
 ## END
 
 ```
-START KZ-V09b base=<sha> branch=lane/kz-V09b df=<GB> load=<1m> at <time>
-END KZ-V09b head=<sha> base=<sha> pushed=lane at <time> minutes=<n>
+START KZ-V14 base=<sha> branch=lane/kz-V14 df=<GB> load=<1m> at <time>
+END KZ-V14 head=<sha> base=<sha> pushed=lane at <time> minutes=<n>
 DONE: each definition-of-done line with its proof
 RED: each test's name and its failing output before the fix
 TESTS: nextest counts; clippy, fmt and ast-grep each with their own exit code

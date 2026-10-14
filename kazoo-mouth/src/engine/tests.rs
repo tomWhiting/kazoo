@@ -17,6 +17,46 @@ use kazoo_core::voice::quantise::QuantiseSettings;
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
 
+#[test]
+fn capture_never_allocates() -> Result<()> {
+    let mut rig = Rig::new(false, BLOCK)?;
+    let held = super::capture::frames(RATE);
+    let input = sine(220.0, held.div_ceil(BLOCK) * BLOCK);
+    let mut output = [0.0; BLOCK * 2];
+    let before = assert_no_alloc::violation_count();
+    assert_no_alloc::assert_no_alloc(|| {
+        for block in input.chunks(BLOCK) {
+            rig.block(block, &mut output);
+        }
+    });
+    assert_eq!(assert_no_alloc::violation_count(), before);
+    let mut frames = rig.stats.capture.frames();
+    assert!(rig.stats.capture.read(&mut frames));
+    assert!(
+        frames
+            .voice()
+            .iter()
+            .zip(&input[input.len() - held..])
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
+        "capture did not retain the last {held} mic samples"
+    );
+    assert!(frames.synth().iter().any(|sample| sample.abs() > 0.01));
+    rig.finish();
+    Ok(())
+}
+
+#[test]
+fn an_engine_refuses_a_capture_sized_for_another_rate() {
+    let refused = Rig::with_stats(false, BLOCK, Stats::new(RATE * 2));
+    assert!(
+        matches!(&refused, Err(error) if error.to_string().contains("96000 Hz")),
+        "{:?}",
+        refused.as_ref().map(|_| ())
+    );
+    let rig = Rig::with_stats(false, BLOCK, Stats::new(RATE)).unwrap();
+    rig.finish();
+}
+
 #[derive(Debug)]
 struct FakeHub {
     connected: bool,
@@ -86,6 +126,10 @@ struct Rig {
 
 impl Rig {
     fn new(connected: bool, block: usize) -> Result<Self> {
+        Self::with_stats(connected, block, Stats::default())
+    }
+
+    fn with_stats(connected: bool, block: usize, stats: Stats) -> Result<Self> {
         let (mic, mic_rx) = HeapRb::new(RATE as usize / 10).split();
         let (display_tx, display) = HeapRb::new(1024).split();
         let (commands, command_rx) = crossbeam_channel::bounded(64);
@@ -94,7 +138,7 @@ impl Rig {
             block,
             OnsetConfig::default(),
         )?;
-        let stats = Arc::new(Stats::default());
+        let stats = Arc::new(stats);
         let engine = MouthEngine::new(EngineSetup {
             rate: RATE,
             block,

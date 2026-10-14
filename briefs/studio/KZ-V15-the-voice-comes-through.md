@@ -1,4 +1,4 @@
-# KZ-V09c: the voice comes through: a vocoder blend on the mouth
+# KZ-V15: the voice comes through: a vocoder blend on the mouth
 
 Line numbers are from `main` at the head this lane starts from; find each item by what it does, and never rename anything. Checks, code quality and the END block are as PLAN.md's STACK RULES, with `-p kazoo-mouth`.
 
@@ -39,8 +39,8 @@ ast-grep scan kazoo-mouth
 ## END
 
 ```
-START KZ-V09c base=<sha> branch=lane/kz-V09c df=<GB> load=<1m> at <time>
-END KZ-V09c head=<sha> base=<sha> pushed=lane at <time> minutes=<n>
+START KZ-V15 base=<sha> branch=lane/kz-V15 df=<GB> load=<1m> at <time>
+END KZ-V15 head=<sha> base=<sha> pushed=lane at <time> minutes=<n>
 DONE: each definition-of-done line with its proof
 RED: each test's name and its failing output before the fix
 TESTS: nextest counts; clippy, fmt and ast-grep each with their own exit code

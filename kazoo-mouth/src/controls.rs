@@ -301,6 +301,10 @@ pub enum Focus {
 
 #[derive(Debug)]
 pub struct App {
+    pub(crate) plots: crate::ui::scope::View,
+    pub(crate) latency: crate::ui::latency::Latency,
+    pub(crate) scope: crate::engine::capture::Frames,
+    pub(crate) spectrum: crate::ui::spectrum::Spectrum,
     pub accepted: Settings,
     pub selected: Control,
     pub help: bool,
@@ -361,6 +365,13 @@ impl App {
 
     pub fn loaded(loaded: settings::Loaded, path: PathBuf, now: Instant) -> Self {
         Self {
+            plots: crate::ui::scope::View {
+                spectrum_visible: true,
+                ..crate::ui::scope::View::default()
+            },
+            latency: crate::ui::latency::Latency::default(),
+            scope: crate::engine::capture::Frames::default(),
+            spectrum: crate::ui::spectrum::Spectrum::default(),
             accepted: loaded.settings,
             selected: Control::Quantise,
             help: false,
@@ -643,6 +654,15 @@ impl App {
         Ok(Action::Continue)
     }
 
+    fn display_key(&mut self, code: KeyCode) -> bool {
+        if self.help {
+            self.help_key(code);
+            true
+        } else {
+            self.plots.key(code)
+        }
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -674,8 +694,7 @@ impl App {
             self.help_scroll.set(0);
             return Ok(Action::Continue);
         }
-        if self.help {
-            self.help_key(key.code);
+        if self.display_key(key.code) {
             return Ok(Action::Continue);
         }
         if key.code == KeyCode::Char('w') && !key.modifiers.contains(KeyModifiers::SHIFT) {
