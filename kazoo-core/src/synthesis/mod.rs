@@ -13,7 +13,7 @@ pub mod wavetable;
 pub use granular::{GrainEnvelope, GranularSynth};
 pub use phase_vocoder::PhaseVocoder;
 pub use pitch_tracked::{OscillatorShape, PitchTrackedSynth};
-pub use vocoder::{Vocoder, VocoderCarrierMode};
+pub use vocoder::{Vocoder, VocoderBands, VocoderCarrierMode};
 pub use wavetable::{Wavetable, WavetableExtractor, WavetableOscillator};
 
 /// Active synthesis mode selector.

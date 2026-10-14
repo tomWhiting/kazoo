@@ -3,8 +3,13 @@ use kazoo_core::synthesis::{OscillatorShape, PitchTrackedSynth};
 use kazoo_core::voice::VoiceFrame;
 use kazoo_core::{ParamResult, Processor, sanitize_sample};
 
+mod voice;
+use voice::VoiceBlend;
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod voice_tests;
 
 // The processor's parameter table defines these indices; controls remain Copy.
 const PARAM_SHAPE: usize = 0;
@@ -20,6 +25,9 @@ pub struct SynthSettings {
     pub cutoff_hz: f32,
     pub air: f32,
     pub volume: f32,
+    pub voice: f32,
+    pub bands: u8,
+    pub sibilance: f32,
 }
 
 impl Default for SynthSettings {
@@ -29,6 +37,9 @@ impl Default for SynthSettings {
             cutoff_hz: 2400.0,
             air: 0.25,
             volume: 0.7,
+            voice: 0.0,
+            bands: 16,
+            sibilance: 0.3,
         }
     }
 }
@@ -41,6 +52,12 @@ impl SynthSettings {
             cutoff_hz: held(self.cutoff_hz, 100.0, 12_000.0, 2400.0),
             air: held(self.air, 0.0, 1.0, 0.25),
             volume: held(self.volume, 0.0, 1.0, 0.7),
+            voice: held(self.voice, 0.0, 1.0, 0.0),
+            bands: match self.bands {
+                8 | 16 | 24 => self.bands,
+                _ => 16,
+            },
+            sibilance: held(self.sibilance, 0.0, 1.0, 0.3),
         }
     }
 }
@@ -56,6 +73,8 @@ const fn held(value: f32, min: f32, max: f32, default: f32) -> f32 {
 #[derive(Debug)]
 pub struct VoiceSynth {
     tone: PitchTrackedSynth,
+    voice: VoiceBlend,
+    carrier: Vec<f32>,
     air_filter: BiquadFilter,
     noise: Vec<f32>,
     filtered_noise: Vec<f32>,
@@ -83,6 +102,8 @@ impl VoiceSynth {
         air_filter.set_q(1.5);
         let mut synth = Self {
             tone,
+            voice: VoiceBlend::new(rate, block),
+            carrier: vec![0.0; block],
             air_filter,
             noise: vec![0.0; block],
             filtered_noise: vec![0.0; block],
@@ -109,6 +130,7 @@ impl VoiceSynth {
         self.tone.set_param(PARAM_SHAPE, shape)?;
         self.tone
             .set_param(PARAM_FILTER_CUTOFF, settings.cutoff_hz)?;
+        self.voice.set(settings);
         self.settings = settings;
         Ok(())
     }
@@ -131,7 +153,9 @@ impl VoiceSynth {
             .chunks(self.noise.len())
             .zip(out[..len].chunks_mut(self.noise.len()))
         {
-            self.tone.process(mic, out);
+            self.tone
+                .process_with_carrier(mic, out, &mut self.carrier[..mic.len()]);
+            self.voice.prepare(mic, &self.carrier[..mic.len()]);
             for sample in &mut self.noise[..mic.len()] {
                 self.random ^= self.random << 13;
                 self.random ^= self.random >> 17;
@@ -148,12 +172,19 @@ impl VoiceSynth {
             } else {
                 self.release
             };
-            for (tone, &air) in out.iter_mut().zip(&self.filtered_noise[..mic.len()]) {
+            for (index, (tone, &air)) in out
+                .iter_mut()
+                .zip(&self.filtered_noise[..mic.len()])
+                .enumerate()
+            {
                 self.gate = coefficient.mul_add(self.gate - target, target);
                 let x = (self.air_gain * self.settings.air).mul_add(air, *tone)
                     * self.gate
                     * self.settings.volume;
-                *tone = sanitize_sample(x / (1.0 + x.abs()));
+                let plain = sanitize_sample(x / (1.0 + x.abs()));
+                *tone = self
+                    .voice
+                    .mix(index, plain, self.gate * self.settings.volume);
             }
         }
     }

@@ -3,6 +3,8 @@ use kazoo_core::voice::{VoiceFrame, volts_from_hz};
 
 use super::{SynthSettings, VoiceSynth};
 
+pub(super) mod legacy;
+
 #[test]
 fn controls_are_held_to_finite_ranges() {
     let held = SynthSettings {

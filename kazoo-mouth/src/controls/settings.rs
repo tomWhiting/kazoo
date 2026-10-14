@@ -85,6 +85,12 @@ struct Quantise {
 #[derive(Debug, Serialize, Deserialize)]
 struct Synth {
     shape: String,
+    #[serde(default, deserialize_with = "number")]
+    voice: Option<f32>,
+    #[serde(default, deserialize_with = "number")]
+    bands: Option<f32>,
+    #[serde(default, deserialize_with = "number")]
+    sibilance: Option<f32>,
     #[serde(deserialize_with = "number")]
     cutoff_hz: Option<f32>,
     #[serde(deserialize_with = "number")]
@@ -170,6 +176,9 @@ impl From<&Settings> for Document {
             },
             synth: Synth {
                 shape: shape_name(settings.synth.shape).into(),
+                voice: Some(settings.synth.voice),
+                bands: Some(f32::from(settings.synth.bands)),
+                sibilance: Some(settings.synth.sibilance),
                 cutoff_hz: Some(settings.synth.cutoff_hz),
                 air: Some(settings.synth.air),
                 volume: Some(settings.synth.volume),
@@ -287,6 +296,20 @@ impl Synth {
             "volume",
             notes,
         );
+        if let Some(voice) = self.voice {
+            settings.synth.voice = held(Some(voice), 0.0, 0.0, 1.0, "voice", notes);
+        }
+        if let Some(bands) = self.bands {
+            if [8.0, 16.0, 24.0].contains(&bands) {
+                settings.synth.bands = bands as u8;
+            } else {
+                notes.push("bands must be 8, 16 or 24: using 16".into());
+                settings.synth.bands = 16;
+            }
+        }
+        if let Some(sibilance) = self.sibilance {
+            settings.synth.sibilance = held(Some(sibilance), 0.3, 0.0, 1.0, "sibilance", notes);
+        }
         settings.synth = settings.synth.held();
     }
 }
@@ -651,6 +674,26 @@ mod tests {
     }
 
     #[test]
+    fn old_settings_acquire_voice_defaults_and_round_trip() -> io::Result<()> {
+        let path = fixture("old_settings_acquire_voice_defaults_and_round_trip")?;
+        let mut old = serde_json::to_value(Document::from(&Settings::default()))?;
+        let synth = old["synth"].as_object_mut().unwrap();
+        for name in ["voice", "bands", "sibilance"] {
+            assert!(synth.remove(name).is_some());
+        }
+        fs::write(&path, serde_json::to_vec(&old)?)?;
+        let loaded = load(&path);
+        assert_eq!(loaded.settings.synth, Settings::default().synth);
+        assert!(loaded.notes.is_empty());
+        save(&path, &loaded.settings)?;
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+        assert_eq!(saved["synth"]["voice"], 0.0);
+        assert_eq!(saved["synth"]["bands"], 16.0);
+        assert_eq!(saved["synth"]["sibilance"], 0.3);
+        Ok(())
+    }
+
+    #[test]
     fn settings_round_trip() -> io::Result<()> {
         let path = fixture("settings_round_trip")?;
         let mut settings = Settings::default();
@@ -665,6 +708,9 @@ mod tests {
         settings.synth.cutoff_hz = 3200.0;
         settings.synth.air = 0.4;
         settings.synth.volume = 0.3;
+        settings.synth.voice = 0.75;
+        settings.synth.bands = 24;
+        settings.synth.sibilance = 0.6;
         settings.own_bpm = 147.3;
         settings.loop_length = crate::engine::looper::LoopLength::Bars(4);
         settings.loop_volume = 0.35;
