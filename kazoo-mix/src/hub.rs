@@ -28,6 +28,8 @@
 //! instrument as well as heard.
 
 mod instrument;
+pub(crate) mod tempo;
+use tempo::initial_song;
 #[cfg(test)]
 mod tests;
 
@@ -58,7 +60,7 @@ use kazoo_core::realtime::{NotRealTime, RealTime};
 
 use crate::engine::{MAX_SOURCE_RING_SAMPLES, MixerEngineError, short_name};
 use crate::patchbay::{PatchCommand, PatchEvent, PatchbayHub};
-use crate::shared::{DEFAULT_BPM, DESK_CHANNELS, SharedState, Transport};
+use crate::shared::{DESK_CHANNELS, SharedState, Transport};
 use crate::song::SongAnchor;
 use crate::studio_clock::{DeskClock, DeskTimer, StudioStamp};
 use crate::worker::join_worker;
@@ -538,6 +540,7 @@ impl Server {
             }
         });
         let timer = DeskTimer::new(config.sample_rate);
+        let song = VecDeque::from([initial_song(&shared)]);
         Self {
             listener,
             config,
@@ -549,7 +552,7 @@ impl Server {
             instruments: Vec::with_capacity(DESK_CHANNELS),
             strips,
             patches: VecDeque::with_capacity(PATCH_CAPACITY),
-            song: VecDeque::from([SongAnchor::stopped(f64::from(DEFAULT_BPM))]),
+            song,
             timer,
             last_refusal: None,
             notes: Vec::with_capacity(DESK_CHANNELS * MESSAGES_PER_POLL),

@@ -1658,6 +1658,7 @@ dependencies = [
 name = "kazoo-mix"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "color-eyre",
  "cpal",
  "criterion",

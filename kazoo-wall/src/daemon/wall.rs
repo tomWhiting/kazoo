@@ -546,6 +546,7 @@ pub struct Wall {
     engine: EngineControl,
     clock_line: ClockLine,
     desk: Option<HubLink>,
+    desk_tempo: tempo_sync::DeskTempo,
     log: VecDeque<Change>,
     next_seq: u64,
     /// The latest change made (and logged): what `revision` says. Behind
@@ -1348,6 +1349,7 @@ impl Wall {
             rack: Rack::default(),
             engine,
             clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
+            desk_tempo: tempo_sync::DeskTempo::default(),
             desk,
             log: history.into_iter().skip(skip).collect(),
             next_seq,
@@ -3376,6 +3378,7 @@ impl Wall {
                     ),
                 });
             }
+            self.desk_tempo.asked(bpm);
         } else {
             self.patch.tempo = bpm;
         }
@@ -4881,10 +4884,9 @@ impl Wall {
         // (the engine may not have heard that change yet).
         if self.desk.as_ref().is_some_and(HubLink::is_connected) {
             let bpm = clamp_bpm(self.engine.shared().bpm());
-            if (bpm - self.patch.tempo).abs() > 1e-9 {
-                self.patch.tempo = bpm;
-                self.dirty = true;
-            }
+            self.sync_desk_tempo(bpm);
+        } else {
+            self.desk_tempo.disconnected();
         }
         self.take_readings(now);
         let (left, right) = self.engine.shared().take_peaks();
@@ -5175,3 +5177,5 @@ mod tests;
 
 #[cfg(test)]
 mod clock_tests;
+
+mod tempo_sync;

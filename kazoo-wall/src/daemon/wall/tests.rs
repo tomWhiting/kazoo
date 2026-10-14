@@ -14,6 +14,7 @@ use crate::seed::seed;
 use crate::store::{FailAt, Loaded};
 
 mod delay_lines;
+mod tempo;
 
 fn wall() -> (Wall, Engine) {
     let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);

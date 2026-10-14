@@ -14,6 +14,7 @@ use crate::hub::{Hub, HubConfig, HubNotice, HubStopped, LeaveReason, PATCH_CAPAC
 use crate::patchbay::{PatchbayHub, patchbay};
 use crate::shared::{DESK_CHANNELS, SharedState};
 use crate::source::DemoEightOhEight;
+use crate::tempo_store::TempoStore;
 use crate::ui::{self, HubPriority, StatusInfo};
 use kazoo_core::ipc::link::LinkStatus;
 use kazoo_core::realtime::NotRealTime;
@@ -91,7 +92,11 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> Result<()> {
 pub fn run(args: Args) -> Result<()> {
     // Open audio and the hub before taking over the terminal, so a failure
     // prints a readable error instead of vanishing with the alternate screen.
-    let (audio, patchbay) = MixerAudio::start()?;
+    let mut tempo = TempoStore::standard().map_err(|error| eyre!(error))?;
+    if let Some(warning) = &tempo.warning {
+        eprintln!("{warning}");
+    }
+    let (audio, patchbay) = MixerAudio::start(tempo.bpm)?;
     let hub = Hub::start(
         HubConfig::standard(audio.sample_rate, [false; DESK_CHANNELS]),
         Arc::clone(&audio.shared),
@@ -113,7 +118,14 @@ pub fn run(args: Args) -> Result<()> {
     })?;
     let mouse = terminal_guard.mouse_captured();
 
-    let result = run_desk(&mut terminal_guard, &audio, &hub, demo.as_ref(), mouse);
+    let result = run_desk(
+        &mut terminal_guard,
+        &audio,
+        &hub,
+        demo.as_ref(),
+        mouse,
+        &mut tempo,
+    );
 
     drop(demo);
     drop(hub);
@@ -134,6 +146,7 @@ fn run_desk(
     hub: &Hub,
     demo: Option<&DemoEightOhEight>,
     mouse: bool,
+    tempo: &mut TempoStore,
 ) -> Result<()> {
     let mut desk = Desk::new();
     let mut news = HubNews::default();
@@ -143,6 +156,7 @@ fn run_desk(
     while !desk.should_quit {
         audio.stream.check_error()?;
         let now = Instant::now();
+        redraw |= tempo.poll(audio.shared.transport(), now);
         let since_tick = now.duration_since(last_tick);
         if since_tick >= UI_TICK {
             desk.tick(&audio.shared, since_tick.as_secs_f32());
@@ -152,7 +166,10 @@ fn run_desk(
         }
 
         if redraw {
-            let (note, note_alert) = news.line(hub, demo);
+            let (note, note_alert) = tempo
+                .warning
+                .as_ref()
+                .map_or_else(|| news.line(hub, demo), |warning| (warning.clone(), true));
             let status = StatusInfo {
                 sample_rate: audio.sample_rate,
                 channels: audio.channels,
@@ -298,14 +315,13 @@ struct MixerAudio {
 impl MixerAudio {
     /// Open the default output device and start the desk's callback. Returns
     /// the hub's end of the patchbay the callback listens on.
-    fn start() -> Result<(Self, PatchbayHub)> {
+    fn start(bpm: f32) -> Result<(Self, PatchbayHub)> {
         let request = OutputRequest::default();
         let prepared = request.prepare_output()?;
         let info = prepared.info();
 
-        let shared = Arc::new(SharedState::new());
-        let engine = MixerEngine::new(DESK_CHANNELS, info.rate)
-            .map_err(|err| eyre!("failed to build the mixer engine: {err:?}"))?;
+        let (shared, engine) = desk_transport(bpm, info.rate)?;
+        let shared = Arc::new(shared);
         let (patchbay_hub, patchbay_callback) = patchbay(PATCH_CAPACITY);
         let mut callback = AudioCallback::new(engine, Arc::clone(&shared), info.channels)
             .with_patchbay(patchbay_callback);
@@ -321,6 +337,13 @@ impl MixerAudio {
             patchbay_hub,
         ))
     }
+}
+
+pub fn desk_transport(bpm: f32, sample_rate: u32) -> Result<(SharedState, MixerEngine)> {
+    let shared = SharedState::with_tempo(bpm);
+    let engine = MixerEngine::with_tempo(DESK_CHANNELS, sample_rate, bpm)
+        .map_err(|err| eyre!("failed to build the mixer engine: {err:?}"))?;
+    Ok((shared, engine))
 }
 
 #[cfg(test)]
