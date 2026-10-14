@@ -55,10 +55,10 @@ pub fn tree(buf: &mut Buffer, area: Rect, app: &App, index: usize) {
         rows.push((None, words.into(), false));
     }
     let wanted = u16::try_from(rows.len())
-        .unwrap_or(u16::MAX - 5)
-        .saturating_add(5);
+        .unwrap_or(u16::MAX - 6)
+        .saturating_add(6);
     let rect = overlay::popup(buf, area, 96, wanted);
-    let visible = usize::from(rect.height.saturating_sub(5)).max(1);
+    let visible = usize::from(rect.height.saturating_sub(6)).max(1);
     let chosen = rows
         .iter()
         .position(|(selected, _, _)| *selected == Some(index))
@@ -95,7 +95,11 @@ pub fn tree(buf: &mut Buffer, area: Rect, app: &App, index: usize) {
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " j k ↑ ↓ move · ⏎ go there (asks first) · r again · B Esc q close · b marks after closing",
+        format!(" {}", app.tree_distance(index)),
+        plain(TEXT, PANEL),
+    )));
+    lines.push(Line::from(Span::styled(
+        " j k move · ⏎ go there · z undo · Esc closes",
         plain(TEXT_DIM, PANEL),
     )));
     Paragraph::new(lines)

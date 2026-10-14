@@ -1,6 +1,7 @@
 //! Places and immutable names in the wall's durable tree.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A place in the tree: a commit, and the line and mark it was reached by.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +63,9 @@ pub struct MarkResult {
 /// A bounded listing with counts for the names beyond the screen.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeResult {
+    /// First parents of the listed moments and their ancestors, including roots.
+    #[serde(default)]
+    pub parents: BTreeMap<String, Option<String>>,
     pub here: Option<TreePlace>,
     pub through: u64,
     #[serde(default)]

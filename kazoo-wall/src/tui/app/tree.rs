@@ -254,7 +254,10 @@ impl App {
                 if rest.is_empty() {
                     return Err(format!("type {}", super::usage(name).unwrap_or_default()));
                 }
-                self.go_to(rest, rest, now);
+                self.mode = Mode::Go {
+                    moment: rest.into(),
+                    label: rest.into(),
+                };
             }
             "tree" => self.open_tree(now),
             _ => return Err(format!("'{name}' is not a tree command")),
@@ -349,7 +352,10 @@ impl App {
     }
 
     pub(super) fn tick_tree(&mut self, now: Instant) {
-        if matches!(self.mode, Mode::Tree { .. } | Mode::Go { .. }) {
+        if matches!(
+            self.mode,
+            Mode::Tree { .. } | Mode::Go { .. } | Mode::Command(_)
+        ) {
             self.fetch_tree_if_due(now);
         }
     }
@@ -381,11 +387,10 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(row) = rows.get(index) {
-                    return Mode::Go {
-                        moment: row.moment.clone(),
-                        label: row.label.clone(),
-                        index,
-                    };
+                    let moment = row.moment.clone();
+                    let label = row.label.clone();
+                    self.go_to(&moment, &label, now);
+                    return Mode::Normal;
                 }
                 self.say(
                     Tone::Trouble,
@@ -394,9 +399,31 @@ impl App {
                 );
                 index
             }
+            KeyCode::Char('z') => {
+                self.undo_latest(now);
+                index
+            }
             _ => index,
         };
+        if matches!(
+            key.code,
+            KeyCode::Down | KeyCode::Up | KeyCode::Char('j' | 'k')
+        ) {
+            self.say(Tone::Info, self.tree_distance(index), now);
+        }
         Mode::Tree { index }
+    }
+
+    pub(in crate::tui) fn tree_distance(&self, index: usize) -> String {
+        let chosen = self
+            .tree_rows()
+            .iter()
+            .filter(|row| row.kind.selectable())
+            .nth(index);
+        match (self.tree.result.as_ref(), chosen) {
+            (Some(result), Some(row)) => super::tree_distance::words(result, &row.commit),
+            _ => "there is no moment to choose yet".into(),
+        }
     }
 
     pub(super) fn go_key(
@@ -404,7 +431,6 @@ impl App {
         key: KeyEvent,
         moment: String,
         label: String,
-        index: usize,
         now: Instant,
     ) -> Mode {
         match key.code {
@@ -412,12 +438,8 @@ impl App {
                 self.go_to(&moment, &label, now);
                 Mode::Normal
             }
-            KeyCode::Esc | KeyCode::Char('n') => Mode::Tree { index },
-            _ => Mode::Go {
-                moment,
-                label,
-                index,
-            },
+            KeyCode::Esc | KeyCode::Char('n') => Mode::Normal,
+            _ => Mode::Go { moment, label },
         }
     }
 
@@ -535,7 +557,7 @@ impl App {
 
     fn listed_tree(&mut self, result: TreeResult) {
         let old_index = match self.mode {
-            Mode::Tree { index } | Mode::Go { index, .. } => Some(index),
+            Mode::Tree { index } => Some(index),
             _ => None,
         };
         let chosen = old_index.and_then(|index| {
@@ -560,7 +582,7 @@ impl App {
                 })
                 .or_else(|| selectable.iter().position(|row| row.commit == old.commit))
         });
-        if let Mode::Tree { index } | Mode::Go { index, .. } = &mut self.mode {
+        if let Mode::Tree { index } = &mut self.mode {
             *index = found.unwrap_or_else(|| (*index).min(selectable.len().saturating_sub(1)));
         }
         if result.through < result.revision {

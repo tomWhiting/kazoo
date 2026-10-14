@@ -68,11 +68,7 @@ impl App {
             Mode::Save { text } => self.save_key(key, text, now),
             Mode::Mark { text } => self.mark_key(key, text, now),
             Mode::Tree { index } => self.tree_key(key, index, now),
-            Mode::Go {
-                moment,
-                label,
-                index,
-            } => self.go_key(key, moment, label, index, now),
+            Mode::Go { moment, label } => self.go_key(key, moment, label, now),
             Mode::Overwrite { name } => self.confirm_overwrite(key, name, now),
             Mode::Saves { index } => self.saves_key(key, index, now),
             Mode::LoadSave { name, index } => self.confirm_load(key, (name, index), now),

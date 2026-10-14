@@ -23,9 +23,12 @@ fn moments(dir: &Path, count: usize) -> History {
 #[test]
 fn a_go_puts_the_wall_at_a_moment_and_says_so() {
     let dir = tempfile::tempdir().expect("a folder");
-    let tree = dir.path().join("tree");
+    // A test daemon keeps its tree inside its own state (KZ-T04g).
+    let state = dir.path().join("state");
+    let tree = state.join("tree");
+    std::fs::create_dir_all(&state).expect("a state folder");
     kazoo_wall::tree::git::plant(&tree).expect("planted");
-    let mut config = DaemonConfig::headless(dir.path(), &dir.path().join("state"));
+    let mut config = DaemonConfig::headless(dir.path(), &state);
     // The tests run side by side, so the machine is busy: the wall's guard
     // against overloading it would refuse the go for that, not for the go.
     config.load_guard = false;

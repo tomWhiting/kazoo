@@ -192,12 +192,16 @@ enum Jacks {
 }
 
 impl App {
-    /// `:`: open the command line, asking for the saves to complete their
-    /// names when they have not come.
+    /// `:`: open the command line, asking for saves and tree moments to
+    /// complete their names.
     pub(super) fn open_command(&mut self, now: Instant) {
         self.mode = Mode::Command(CommandLine::default());
         if self.link.is_up() && self.saves.result.is_none() && !self.saves.fetching {
             self.fetch_saves(now);
+        }
+        if self.link.is_up() {
+            self.refresh_tree();
+            self.tick_tree(now);
         }
     }
 
