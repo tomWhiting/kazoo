@@ -171,6 +171,15 @@ pub fn is_bare(dir: &Path) -> Result<bool, TreeError> {
     Ok(resolve(Path::new(git_dir))? == resolve(dir)?)
 }
 
+/// The configured tree, or the directory beside the wall's state.
+#[must_use]
+pub fn tree_dir(state: &Path) -> Option<PathBuf> {
+    std::env::var_os("KAZOO_TREE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| state.parent().map(|dir| dir.join("tree")))
+}
+
 /// Where a planted tree stands.
 #[derive(Debug, Clone)]
 pub struct Planted {
@@ -458,6 +467,44 @@ impl Importer {
         Ok(self.mark)
     }
 
+    /// Name a new ref in this batch; an existing ref is never moved.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an existing name, an invalid stream value, or a git failure.
+    pub fn tag(&mut self, name: &str, from: &str) -> Result<(), TreeError> {
+        if !name.starts_with("refs/")
+            || name.contains("..")
+            || name.ends_with('/')
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'))
+        {
+            return Err(TreeError::Git("invalid tree ref name".into()));
+        }
+        let valid_from = from.strip_prefix(':').is_some_and(|mark| {
+            !mark.is_empty() && mark.bytes().all(|b| b.is_ascii_digit()) && mark != "0"
+        }) || (from.len() == 40 && from.bytes().all(|b| b.is_ascii_hexdigit()));
+        if !valid_from {
+            return Err(TreeError::Git("invalid tree ref source".into()));
+        }
+        let result =
+            output(git_command("rev-parse", Some(&self.dir)).args(["-q", "--verify", name]))?;
+        if result.status.success() {
+            return Err(TreeError::Git(format!(
+                "{name} exists; a tag is never moved"
+            )));
+        }
+        if result.status.code() != Some(1) {
+            return Err(TreeError::Git(format!(
+                "read {name}: {}: {}",
+                result.status,
+                String::from_utf8_lossy(&result.stderr)
+            )));
+        }
+        self.write(format!("reset {name}\nfrom {from}\n\n").as_bytes())
+    }
+
     /// Make everything written durable, and require the branch to be at
     /// the commit `mark` names: git refused the update, or someone else
     /// moved the branch, when it is not.
@@ -466,6 +513,24 @@ impl Importer {
     ///
     /// `TreeError::Git` when git fails or the branch is elsewhere.
     pub fn checkpoint(&mut self, mark: u64) -> Result<String, TreeError> {
+        if mark == 0 {
+            self.write(b"checkpoint\n\nprogress kazoo 0\n")?;
+            loop {
+                let mut line = String::new();
+                match self.output.read_line(&mut line) {
+                    Ok(0) => return Err(self.failed("checkpoint", "stdout ended")),
+                    Ok(_) => {
+                        if line.trim() == "progress kazoo 0" {
+                            break;
+                        }
+                    }
+                    Err(err) => return Err(self.failed("checkpoint read", err)),
+                }
+            }
+            return checked(
+                git_command("rev-parse", Some(&self.dir)).args(["--verify", &self.branch]),
+            );
+        }
         self.write(
             format!("checkpoint\n\nprogress kazoo {mark}\n\nget-mark :{mark}\n").as_bytes(),
         )?;

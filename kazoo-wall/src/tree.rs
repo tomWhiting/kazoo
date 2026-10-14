@@ -7,6 +7,7 @@
 //! for byte, with no I/O.
 
 pub mod git;
+pub mod rings;
 pub mod thread;
 
 use std::cmp::Ordering;

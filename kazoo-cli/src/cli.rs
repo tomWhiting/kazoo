@@ -114,12 +114,32 @@ pub enum StudioCommand {
 /// Operations on the shared wall.
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub enum WallCommand {
+    /// Plant the tree and grow its trunk from the wall's change log (once, with the wall stopped).
+    Tree {
+        #[command(subcommand)]
+        command: TreeCommand,
+    },
     /// Run the wall until stopped (Ctrl-C, SIGTERM, or a console).
     Serve(ServeArgs),
     /// Ask the running wall to stop.
     Stop,
     /// Open the console, starting the wall if it is not playing (the default).
     Console,
+}
+
+/// Operations on the wall's lasting history.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum TreeCommand {
+    /// Plant the tree and grow its trunk from the wall's change log (once, with the wall stopped).
+    Import(ImportArgs),
+}
+
+/// Options for growing the first rings.
+#[derive(Debug, Args, PartialEq, Eq)]
+pub struct ImportArgs {
+    /// Grow beside the tree, report the history, and remove the scratch tree.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Wall rendering and desk options.

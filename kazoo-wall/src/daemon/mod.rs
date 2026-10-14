@@ -159,6 +159,14 @@ impl Daemon {
     /// cannot be set aside, another daemon is serving on the socket, or a
     /// thread cannot start.
     pub fn start(config: DaemonConfig) -> Result<Self, DaemonError> {
+        let tree_dir = crate::tree::git::tree_dir(&config.state_dir);
+        Self::start_with_tree(config, tree_dir)
+    }
+
+    pub(crate) fn start_with_tree(
+        config: DaemonConfig,
+        tree_dir: Option<PathBuf>,
+    ) -> Result<Self, DaemonError> {
         // The socket first, so a daemon already serving it is found before
         // any state is touched. (One wall per state directory is the
         // store's lock: see `Store::open`.)
@@ -189,10 +197,6 @@ impl Daemon {
             patch.cables().len(),
             config.socket.display()
         );
-        let tree_dir = std::env::var_os("KAZOO_TREE_DIR")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| config.state_dir.parent().map(|dir| dir.join("tree")));
         let recordings = config.recordings;
         let load_guard = config.load_guard;
         let setup = control::Setup {
