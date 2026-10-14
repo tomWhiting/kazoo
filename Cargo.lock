@@ -1761,8 +1761,11 @@ dependencies = [
  "chrono",
  "crossterm",
  "kazoo-wall",
+ "libm",
  "ratatui",
+ "signal-hook",
  "tempfile",
+ "unicode-width",
 ]
 
 [[package]]
