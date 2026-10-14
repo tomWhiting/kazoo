@@ -17,6 +17,15 @@ pub struct FusedUnderTest {
     lag: u64,
     latest: Option<VoiceFrame>,
     onsets: u64,
+    #[cfg(test)]
+    recording: Option<Recording>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(super) struct Recording {
+    pub(super) verdicts: VecDeque<(u64, JudgeResult)>,
+    pub(super) frames: VecDeque<VoiceFrame>,
 }
 impl FusedUnderTest {
     /// Construct an offline adapter for this stream's sample rate.
@@ -57,7 +66,19 @@ impl FusedUnderTest {
             lag,
             latest: None,
             onsets: 0,
+            #[cfg(test)]
+            recording: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn record(&mut self) {
+        self.recording = Some(Recording::default());
+    }
+
+    #[cfg(test)]
+    pub(super) fn finish_recording(self) -> Recording {
+        self.recording.expect("recording was started")
     }
 }
 impl TrackerUnderTest for FusedUnderTest {
@@ -72,6 +93,10 @@ impl TrackerUnderTest for FusedUnderTest {
                 .is_some_and(|(at, _)| *at <= self.samples)
             {
                 if let Some((_, result)) = self.pending.pop_front() {
+                    #[cfg(test)]
+                    if let Some(recording) = self.recording.as_mut() {
+                        recording.verdicts.push_back((self.samples, result));
+                    }
                     self.tracker.judge(result);
                 }
             }
@@ -79,6 +104,10 @@ impl TrackerUnderTest for FusedUnderTest {
             self.tracker.process(input, |frame| {
                 self.latest = Some(frame);
                 self.onsets += u64::from(frame.onset);
+                #[cfg(test)]
+                if let Some(recording) = self.recording.as_mut() {
+                    recording.frames.push_back(frame);
+                }
             });
             self.samples += 1;
             if let Some(pitch) = self.pitch.push_samples(input) {
