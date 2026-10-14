@@ -6,6 +6,7 @@ use crate::dsp::{Rng, build};
 
 mod cost;
 mod delays;
+mod glide;
 mod sparse;
 mod unheard;
 

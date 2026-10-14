@@ -86,6 +86,14 @@ struct Tap {
     speed: f64,
     /// A gate's move.
     gate: Gate,
+    /// What the cable is multiplied by now.
+    gain: f32,
+    /// The amount it is moving to (or rests on): the last amount it saw.
+    aim: f32,
+    /// How far `gain` is from `aim` per frame left, while moving.
+    gain_step: f32,
+    /// Frames left to reach `aim`; 0 at rest.
+    gain_left: u32,
 }
 
 impl Tap {
@@ -97,6 +105,10 @@ impl Tap {
         gliding: false,
         speed: 0.0,
         gate: Gate::Steady,
+        gain: 0.0,
+        aim: 0.0,
+        gain_step: 0.0,
+        gain_left: 0,
     };
 }
 
@@ -169,10 +181,13 @@ impl Line {
             samples.fill(0.0);
             self.joining = false;
             self.awaiting_route = false;
+            let gain = if route.glide > 0 { 0.0 } else { route.amount };
             tap = Tap {
                 tag: route.tag,
                 at: f64::from(route.delay),
                 target: route.delay,
+                gain,
+                aim: gain,
                 ..Tap::EMPTY
             };
         }
@@ -187,6 +202,19 @@ impl Line {
         } else {
             *route
         };
+        if route.amount.to_bits() != tap.aim.to_bits() {
+            if route.glide == 0 {
+                tap.gain = route.amount;
+                tap.aim = route.amount;
+                tap.gain_left = 0;
+            } else {
+                // Frame counts are close enough in f32 for the line;
+                // computing from the aim makes the last frame exact.
+                tap.gain_step = (route.amount - tap.gain) / route.glide as f32;
+                tap.gain_left = route.glide;
+                tap.aim = route.amount;
+            }
+        }
         for (frame, sample) in source.iter().enumerate() {
             samples[(tap.write + frame) & (LINE_LEN - 1)] = *sample;
         }
@@ -203,7 +231,17 @@ impl Line {
             glide_block(samples, &mut tap, out);
         }
         for sample in out.iter_mut() {
-            *sample = finite(*sample * route.amount);
+            if tap.gain_left > 0 {
+                tap.gain_left -= 1;
+                // Frame counts are close enough in f32 for the line;
+                // the final frame has none left and lands on the aim.
+                tap.gain = (-tap.gain_step).mul_add(tap.gain_left as f32, tap.aim);
+                if !tap.gain.is_finite() {
+                    tap.gain = tap.aim;
+                    tap.gain_left = 0;
+                }
+            }
+            *sample = finite(*sample * tap.gain);
         }
         tap.write = (tap.write + SUB_BLOCK) & (LINE_LEN - 1);
         self.tap = tap;
