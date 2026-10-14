@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, eyre};
 use crossbeam_channel::Sender;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event};
 use kazoo_core::analysis::PitchDetectorConfig;
 use kazoo_core::host::audio::{DeviceChoice, OpenedOutput, OutputRequest};
 use kazoo_core::host::link::{LinkSetup, connect_or_direct};
@@ -16,11 +16,12 @@ use kazoo_core::ipc::link::HubLink;
 use kazoo_core::voice::VoiceFrame;
 use kazoo_core::voice::judge::{self, Judge, OnsetConfig};
 use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
-use ratatui::widgets::Paragraph;
 use ringbuf::traits::{Consumer, Split};
 use ringbuf::{HeapCons, HeapRb};
 
+use crate::controls::{Action, App};
 use crate::engine::{Command, EngineSetup, MouthEngine, Stats};
+use crate::ui::{self, Display};
 
 #[cfg(test)]
 mod tests;
@@ -50,7 +51,9 @@ usage: kazoo mouth [options]
   --silent               Publish voice without making sound.
   --score <wav>...        Score recorded takes and exit without audio.
 
-Space toggles quantise. Esc and Ctrl-C quit.
+Up/Down choose a control. Left/Right change it; Shift makes a big step.
+Space toggles quantise. v toggles vibrato. s toggles silent. ? shows help.
+Esc closes help or quits. Ctrl-C quits.
 ";
 
 pub fn parse_quantise(text: &str) -> std::result::Result<QuantiseSettings, String> {
@@ -179,6 +182,7 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 struct Session {
+    rate: u32,
     output: Option<OpenedOutput>,
     mic: Option<Mic>,
     hub: Option<HubLink>,
@@ -212,6 +216,7 @@ impl Session {
         )?;
         let stats = Arc::new(Stats::default());
         let mut session = Self {
+            rate: info.rate,
             output: None,
             mic: None,
             hub: Some(hub),
@@ -301,10 +306,11 @@ fn combine(first: Result<()>, second: Result<()>) -> Result<()> {
 fn event_loop(
     session: &mut Session,
     terminal: &mut kazoo_host::terminal::Terminal,
-    mut quantise: QuantiseSettings,
+    quantise: QuantiseSettings,
     silent: bool,
 ) -> Result<()> {
-    let mut latest = None;
+    let mut app = App::new(quantise, silent);
+    let mut display = Display::new(session.rate);
     let period = Duration::from_secs_f64(1.0 / 30.0);
     let mut draw_at = Instant::now();
     loop {
@@ -319,114 +325,41 @@ fn event_loop(
                 "mouth synth refused its parameter table; output muted"
             ));
         }
-        for frame in session.display.pop_iter().take(1024) {
-            latest = Some(frame);
-        }
         if Instant::now() >= draw_at {
-            let status = status(session, latest, quantise, silent);
-            terminal.draw(|frame| frame.render_widget(Paragraph::new(status), frame.area()))?;
+            for voice in session.display.pop_iter().take(1024) {
+                display.push(voice);
+            }
+            display.recentre();
+            let link = link_state(session);
+            let now = Instant::now();
+            terminal.draw(|frame| ui::draw(frame, &app, &display, &link, now))?;
             draw_at = Instant::now() + period;
         }
         if event::poll(draw_at.saturating_duration_since(Instant::now()))?
             && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
+            && app
+                .handle_key(key, &session.commands, Instant::now())
+                .wrap_err("mouth command channel disconnected")?
+                == Action::Quit
         {
-            match key.code {
-                KeyCode::Esc => return Ok(()),
-                KeyCode::Char('c' | 'C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Ok(());
-                }
-                KeyCode::Char(' ') => {
-                    quantise.blend = if quantise.blend > 0.0 { 0.0 } else { 1.0 };
-                    session
-                        .commands
-                        .try_send(Command::SetQuantise(quantise))
-                        .wrap_err("mouth command queue refused quantise change")?;
-                }
-                _ => {}
-            }
+            return Ok(());
         }
     }
 }
 
-fn status(
-    session: &Session,
-    latest: Option<VoiceFrame>,
-    quantise: QuantiseSettings,
-    silent: bool,
-) -> String {
-    let mut lines = vec!["the mouth — Space: quantise; Esc/Ctrl-C: quit".to_owned()];
-    if let Some(frame) = latest {
-        let semitones = frame.volts * 12.0;
-        let nearest = semitones.round();
-        let note = (nearest as i32 + 48).rem_euclid(12) as usize;
-        let octave = (nearest as i32 + 48).div_euclid(12);
-        lines.push(format!(
-            "{}{} {:+.1} cents; direct {:.2} Hz; snapped {:.2} Hz",
-            NOTE_NAMES[note],
-            octave,
-            (semitones - nearest) * 100.0,
-            frame.hz,
-            frame.snapped_hz
-        ));
-        lines.push(format!(
-            "gate {}; loudness {:.3}; breath {:.3}; confidence {:.3}",
-            if frame.gate { "on" } else { "off" },
-            frame.loudness,
-            frame.breath,
-            frame.confidence
-        ));
+fn link_state(session: &Session) -> String {
+    let Some(hub) = &session.hub else {
+        return "playing direct: no desk".into();
+    };
+    let state = hub.status();
+    if !state.connected {
+        "playing direct: no desk".into()
+    } else if state.desk_carries_voice {
+        state.strip.map_or_else(
+            || "on the desk, awaiting strip".into(),
+            |strip| format!("on the desk, strip {}", u16::from(strip) + 1),
+        )
     } else {
-        lines.push("waiting for a voice frame".into());
+        "the desk is too old to carry the voice".into()
     }
-    lines.push(format!(
-        "quantise {}: {}:{}; sound {}",
-        if quantise.blend > 0.0 { "on" } else { "off" },
-        SCALE_NAMES[quantise.scale],
-        NOTE_NAMES[usize::from(quantise.root)],
-        if silent { "off" } else { "on" }
-    ));
-    if let Some(hub) = &session.hub {
-        let state = hub.status();
-        lines.push(if state.connected {
-            if hub.desk_carries_voice() {
-                state.strip.map_or_else(
-                    || "on the desk, awaiting strip".into(),
-                    |strip| format!("on the desk, strip {}", u16::from(strip) + 1),
-                )
-            } else {
-                "the desk is too old to carry the voice".into()
-            }
-        } else {
-            "playing direct: no desk".into()
-        });
-        let dropped = hub.voice_stats().dropped;
-        if dropped > 0 {
-            lines.push(format!("voice dropped: {dropped}"));
-        }
-    }
-    if let Some(mic) = &session.mic {
-        let mic = mic.status();
-        lines.push(format!(
-            "mic {:?}: {} at {} Hz → {} Hz; channel {:?}; reopens {}",
-            mic.state,
-            mic.device.as_str(),
-            mic.device_rate,
-            mic.engine_rate,
-            mic.channel,
-            mic.reopens
-        ));
-    }
-    for (name, count) in [
-        ("mic dropped", &session.stats.mic_dropped),
-        ("mic skipped", &session.stats.mic_skipped),
-        ("display dropped", &session.stats.display_dropped),
-        ("desk audio refused", &session.stats.audio_refused),
-    ] {
-        let count = count.load(Ordering::Relaxed);
-        if count > 0 {
-            lines.push(format!("{name}: {count}"));
-        }
-    }
-    lines.join("\n")
 }

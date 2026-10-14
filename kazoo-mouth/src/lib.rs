@@ -1,7 +1,9 @@
+mod controls;
 pub mod engine;
 mod run;
 pub mod score;
 pub mod synth;
+mod ui;
 
 pub use run::{Args, USAGE, cli, parse_args, parse_quantise, run};
 
