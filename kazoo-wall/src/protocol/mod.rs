@@ -241,6 +241,9 @@ pub enum Request {
     },
     /// Add a module.
     Add {
+        /// In a batch, a label later steps name this module by, as
+        /// `@label` or `@label.port` (no spaces, dots or `@`; unique in the
+        /// batch). Refused outside a batch.
         #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
         alias: Option<String>,
         /// Kind, e.g. `lfo`.
@@ -254,8 +257,14 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         place: Option<Place>,
     },
+    /// Several changes toward one idea, with a note like a commit message:
+    /// applied in the order given as one change, all or none (a
+    /// [`BatchResult`]). One seq, one log line, one commit and one undo.
     Batch {
+        /// The sender's words: 1 to 200 characters after trimming, one line
+        /// with no control characters.
         note: String,
+        /// One or more adds, removes, turns, patches, unpatches or tempos.
         changes: Vec<Self>,
     },
     /// Take a module away, with its cables.
@@ -690,6 +699,7 @@ pub struct WallError {
     pub code: ErrorCode,
     /// A sentence for people.
     pub message: String,
+    /// For a refused batch, the index of the step that refused it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<usize>,
 }
@@ -785,8 +795,11 @@ pub enum TakeWhy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum What {
+    /// A seat's batch: its note, and each change it made, in order.
     Batch {
+        /// The sender's note.
         note: String,
+        /// Each step's change, in the order applied.
         changes: Vec<Self>,
     },
     /// A loop's tape erased (`tape` none), or put back by the erase's

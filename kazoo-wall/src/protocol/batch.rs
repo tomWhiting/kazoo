@@ -1,12 +1,19 @@
+//! A batch's rules: its note, the ops it takes, and its labels, checked
+//! before anything is applied.
+
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
 use super::{Change, ErrorCode, Request, WallError};
 
+/// The answer to a [`Request::Batch`]: the one change it made, and each
+/// step's own answer in order (an add's with its `module` and its `as`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BatchResult {
+    /// The batch, as logged.
     pub change: Change,
+    /// Each step's answer, in order.
     pub steps: Vec<serde_json::Value>,
 }
 
@@ -14,12 +21,20 @@ fn bad(message: impl Into<String>) -> WallError {
     WallError::new(ErrorCode::BadRequest, message)
 }
 
+/// `error` as step `index`'s: the step named in it and on it.
+#[must_use]
 pub fn at_step(mut error: WallError, index: usize) -> WallError {
     error.step = Some(index);
     error.message = format!("step {index}: {}", error.message);
     error
 }
 
+/// Check a batch before anything is applied: its `note` (returned trimmed)
+/// and each step's op and labels.
+///
+/// # Errors
+///
+/// `bad_request`, with the step's index when a step is refused.
 pub fn validate<'a>(note: &'a str, changes: &[Request]) -> Result<&'a str, WallError> {
     if note.chars().any(char::is_control) {
         return Err(bad(
