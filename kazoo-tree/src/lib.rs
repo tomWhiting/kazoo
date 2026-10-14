@@ -111,6 +111,14 @@ pub fn print(dir: PathBuf, cols: u16, rows: u16) -> io::Result<String> {
 /// cannot be used.
 pub fn run(dir: PathBuf) -> io::Result<()> {
     planted(&dir)?;
+    // The catalogue says on stderr any kind it leaves out as it is built:
+    // built first, long before the screen is taken, so it never writes
+    // over it.
+    if kazoo_wall::catalogue::registry().kinds().is_empty() {
+        return Err(io::Error::other(
+            "the wall's catalogue holds no kinds of module",
+        ));
+    }
     // Read once before the screen is taken, so a tree that cannot be read
     // says so plainly; the snapshot comes first, so the reader's first look
     // compares against exactly what was read.
@@ -130,13 +138,6 @@ pub fn run(dir: PathBuf) -> io::Result<()> {
             Arc::clone(&caught),
             number,
         )?);
-    }
-    // The catalogue says on stderr any kind it leaves out as it is built:
-    // built here, before the screen is taken, so it never writes over it.
-    if kazoo_wall::catalogue::registry().kinds().is_empty() {
-        return Err(io::Error::other(
-            "the wall's catalogue holds no kinds of module",
-        ));
     }
     let walked = Screen::enter().and_then(|mut screen| {
         let walked = walk(&mut app, &mut screen.terminal, &reader, &caught);

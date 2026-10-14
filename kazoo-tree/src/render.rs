@@ -1,8 +1,8 @@
 //! The tree drawn in braille.
 //!
 //! Each terminal cell is 2 dots wide and 4 tall; limbs are thick lines of
-//! dots coloured by how they sounded, and the marks hang off them as glyphs
-//! with labels. What is drawn depends on how far in you are ([`Level`]).
+//! dots coloured by the modules alive and their settings, lighter where
+//! louder, and the marks hang off them as glyphs with labels. What is drawn depends on how far in you are ([`Level`]).
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -1025,13 +1025,14 @@ fn mellowed(scene: &Scene<'_>, m: usize, window: usize) -> Option<(u8, u8, u8)> 
         let Some(from) = history.limbs[limb].from else {
             break None;
         };
-        if back == 0 {
-            break Some(from);
-        }
-        // A moment on no limb: the path starts there, as growth's sums do.
+        // Grown from a moment on no limb: the path starts at this limb, as
+        // growth's sums do.
         let Some(place) = history.place[from] else {
             break None;
         };
+        if back == 0 {
+            break Some(from);
+        }
         (limb, p) = place;
     };
     let before = match before {

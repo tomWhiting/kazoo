@@ -620,3 +620,32 @@ fn a_new_days_words_find_room_beside_a_label_in_their_place() {
 const fn history_after(i: usize, first: usize) -> bool {
     i > first
 }
+
+#[test]
+fn a_bud_grown_from_a_moment_on_no_limb_blends_from_its_own_start() {
+    let mut orphan = striped();
+    let from = orphan.limbs[1].from.expect("a bud");
+    // The moment it grew from is on no limb (its branch was deleted).
+    orphan.place[from] = None;
+    let (growth, gestures, line) = scene_parts(&orphan);
+    let scene = Scene {
+        history: &orphan,
+        growth: &growth,
+        gestures: &gestures,
+        days: &[],
+        line: &line,
+        selected: None,
+        now: 0,
+    };
+    let bud = &orphan.limbs[1].moments;
+    let running = |m: usize| growth.look[m].expect("grown").running;
+    for p in [3_usize, 6] {
+        for window in [p + 1, p + 2, 40] {
+            assert_eq!(
+                mellowed(&scene, bud[p], window),
+                Some(running(bud[p]).colour_since(&Running::default())),
+                "p {p} window {window}"
+            );
+        }
+    }
+}
