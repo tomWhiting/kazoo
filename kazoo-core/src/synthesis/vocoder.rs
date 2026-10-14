@@ -5,6 +5,9 @@
 //! extracts the amplitude contour, which is then multiplied onto the
 //! corresponding carrier band. The result is the classic "talking robot" effect.
 
+mod external;
+pub use external::VocoderBands;
+
 use crate::analysis::EnvelopeFollower;
 use crate::effects::{BiquadFilter, FilterType};
 use crate::{ParamError, ParamInfo, ParamResult, Processor, checked_param, sanitize_sample};
@@ -95,11 +98,13 @@ const BAND_Q: f32 = 4.0;
 pub struct Vocoder {
     sample_rate: f32,
     num_bands: usize,
+    band_q: f32,
 
     // Per-band processors.
     mod_filters: Vec<BiquadFilter>,
     carrier_filters: Vec<BiquadFilter>,
     envelopes: Vec<EnvelopeFollower>,
+    carrier_envelopes: Vec<EnvelopeFollower>,
 
     // Per-band scratch buffers (pre-allocated for block processing).
     mod_band_buf: Vec<f32>,
@@ -131,13 +136,16 @@ impl Vocoder {
     /// Create a new vocoder at the given sample rate.
     #[must_use]
     pub fn new(sample_rate: f32) -> Self {
+        Self::build(sample_rate, DEFAULT_NUM_BANDS)
+    }
+
+    fn build(sample_rate: f32, num_bands: usize) -> Self {
         let sr = if sample_rate.is_finite() && sample_rate > 0.0 {
             sample_rate
         } else {
             44100.0
         };
 
-        let num_bands = DEFAULT_NUM_BANDS;
         let band_freqs = compute_band_frequencies(num_bands, sr);
 
         let mut mod_filters = Vec::with_capacity(num_bands);
@@ -169,9 +177,15 @@ impl Vocoder {
         Self {
             sample_rate: sr,
             num_bands,
+            band_q: BAND_Q,
             mod_filters,
             carrier_filters,
             envelopes,
+            carrier_envelopes: (0..num_bands)
+                .map(|_| {
+                    EnvelopeFollower::new(Self::DEFAULT_ATTACK_MS, Self::DEFAULT_RELEASE_MS, sr)
+                })
+                .collect(),
             mod_band_buf: vec![0.0; block_cap],
             carrier_band_buf: vec![0.0; block_cap],
             carrier_block: vec![0.0; block_cap],
@@ -218,7 +232,7 @@ impl Vocoder {
     /// envelope follower in place. Never allocates, so it is safe from
     /// `set_param` on the audio thread.
     fn rebuild_envelopes(&mut self) {
-        for envelope in &mut self.envelopes {
+        for envelope in self.envelopes.iter_mut().chain(&mut self.carrier_envelopes) {
             envelope.set_times(self.attack_ms, self.release_ms, self.sample_rate);
         }
     }
@@ -299,11 +313,13 @@ impl Vocoder {
     }
 
     /// Render one piece no longer than [`Vocoder::piece_len`].
-    fn render_piece(&mut self, input: &[f32], output: &mut [f32]) {
+    fn render_piece(&mut self, input: &[f32], output: &mut [f32], external: Option<&[f32]>) {
         let len = output.len().min(self.piece_len());
 
         // Generate the carrier signal for the entire block.
-        if self.carrier_mode == VocoderCarrierMode::ExternalInput {
+        if let Some(carrier) = external {
+            fill_sanitized_input(&mut self.carrier_block[..len], carrier);
+        } else if self.carrier_mode == VocoderCarrierMode::ExternalInput {
             fill_sanitized_input(&mut self.carrier_block[..len], input);
         } else {
             // Generate carrier samples. We iterate by index because
@@ -354,6 +370,15 @@ impl Vocoder {
                 .zip(&self.mod_band_buf[..len])
                 .zip(&self.carrier_band_buf[..len])
             {
+                let env = if external.is_some() {
+                    // Equal carrier energy per band preserves the modulator envelope.
+                    let level = self.carrier_envelopes[band]
+                        .process_sample(carrier)
+                        .max(0.001);
+                    env / level * (2.0 / self.num_bands as f32)
+                } else {
+                    env
+                };
                 *out = carrier.mul_add(env, *out);
             }
 
@@ -382,7 +407,7 @@ impl Processor for Vocoder {
         while start < output.len() {
             let end = (start + piece).min(output.len());
             let input_piece = &input[start.min(input.len())..end.min(input.len())];
-            self.render_piece(input_piece, &mut output[start..end]);
+            self.render_piece(input_piece, &mut output[start..end], None);
             start = end;
         }
     }
@@ -394,7 +419,7 @@ impl Processor for Vocoder {
         for f in &mut self.carrier_filters {
             f.reset();
         }
-        for e in &mut self.envelopes {
+        for e in self.envelopes.iter_mut().chain(&mut self.carrier_envelopes) {
             e.reset();
         }
         self.carrier_phase = 0.0;
@@ -463,10 +488,10 @@ impl Processor for Vocoder {
         for (i, &freq) in band_freqs.iter().enumerate() {
             self.mod_filters[i].set_sample_rate(sr);
             self.mod_filters[i].set_frequency(freq);
-            self.mod_filters[i].set_q(BAND_Q);
+            self.mod_filters[i].set_q(self.band_q);
             self.carrier_filters[i].set_sample_rate(sr);
             self.carrier_filters[i].set_frequency(freq);
-            self.carrier_filters[i].set_q(BAND_Q);
+            self.carrier_filters[i].set_q(self.band_q);
         }
         self.rebuild_envelopes();
         self.reset();

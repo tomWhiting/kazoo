@@ -8,10 +8,13 @@ use ratatui::layout::Rect;
 use super::{Action, App, CommandSender, Control, Focus, SHAPES, Settings};
 use crate::engine::{Command, fx::Slot};
 
-pub const SOURCE: [Control; 5] = [
+pub const SOURCE: [Control; 8] = [
     Control::Shape,
     Control::Cutoff,
     Control::Air,
+    Control::Voice,
+    Control::Bands,
+    Control::Sibilance,
     Control::Volume,
     Control::Silent,
 ];
@@ -67,7 +70,14 @@ impl Focus {
 impl Control {
     pub const fn panel(self) -> Focus {
         match self {
-            Self::Shape | Self::Cutoff | Self::Air | Self::Volume | Self::Silent => Focus::Synth,
+            Self::Shape
+            | Self::Cutoff
+            | Self::Air
+            | Self::Voice
+            | Self::Bands
+            | Self::Sibilance
+            | Self::Volume
+            | Self::Silent => Focus::Synth,
             Self::GateOpen | Self::GateClose | Self::GateHold => Focus::Gate,
             _ => Focus::Pitch,
         }
@@ -79,6 +89,9 @@ impl Settings {
         Some(match control {
             Control::Cutoff => (100.0, 12_000.0, self.synth.cutoff_hz),
             Control::Air => (0.0, 1.0, self.synth.air),
+            Control::Voice => (0.0, 1.0, self.synth.voice),
+            Control::Bands => (8.0, 24.0, self.synth.bands as f32),
+            Control::Sibilance => (0.0, 1.0, self.synth.sibilance),
             Control::Volume => (0.0, 1.0, self.synth.volume),
             Control::Snap => (0.0, 400.0, self.quantise.snap_ms),
             Control::Hysteresis => (0.0, 50.0, self.quantise.hysteresis_cents),
@@ -100,6 +113,18 @@ impl Settings {
             }
             Control::Air => {
                 self.synth.air = value;
+                Command::SetSynth(self.synth)
+            }
+            Control::Voice => {
+                self.synth.voice = value;
+                Command::SetSynth(self.synth)
+            }
+            Control::Bands => {
+                self.synth.bands = ((value / 8.0).round() as u8 * 8).clamp(8, 24);
+                Command::SetSynth(self.synth)
+            }
+            Control::Sibilance => {
+                self.synth.sibilance = value;
                 Command::SetSynth(self.synth)
             }
             Control::Volume => {

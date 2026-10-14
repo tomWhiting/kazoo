@@ -18,6 +18,7 @@ use ringbuf::traits::Producer;
 
 pub mod panels;
 pub mod settings;
+mod voice;
 use crate::synth::SynthSettings;
 
 #[cfg(test)]
@@ -52,6 +53,9 @@ pub enum Control {
     Shape,
     Cutoff,
     Air,
+    Voice,
+    Bands,
+    Sibilance,
     Volume,
     Silent,
     GateOpen,
@@ -61,7 +65,7 @@ pub enum Control {
 
 impl Control {
     #[cfg(test)]
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 18] = [
         Self::Quantise,
         Self::Scale,
         Self::Root,
@@ -72,6 +76,9 @@ impl Control {
         Self::Shape,
         Self::Cutoff,
         Self::Air,
+        Self::Voice,
+        Self::Bands,
+        Self::Sibilance,
         Self::Volume,
         Self::Silent,
         Self::GateOpen,
@@ -91,6 +98,9 @@ impl Control {
             Self::Shape => "shape",
             Self::Cutoff => "cutoff",
             Self::Air => "air",
+            Self::Voice => "voice",
+            Self::Bands => "bands",
+            Self::Sibilance => "sibilance",
             Self::Volume => "volume",
             Self::Silent => "silent",
             Self::GateOpen => "open",
@@ -111,6 +121,9 @@ impl Control {
             Self::Shape => "Choose sine, triangle, saw or square tone.",
             Self::Cutoff => "Move the filter from 100 to 12,000 Hz.",
             Self::Air => "Mix breath noise into the tone, from 0 to 1.",
+            Self::Voice => "Blend the singing voice onto the synth pitch, from 0 to 1.",
+            Self::Bands => "Choose 8, 16 or 24 vocoder bands.",
+            Self::Sibilance => "Mix consonants above 5,000 Hz into the vocoder, from 0 to 1.",
             Self::Volume => "Set the synth's output level, from 0 to 1.",
             Self::Silent => "Publish the voice while muting the synth.",
             Self::GateOpen => "Open the voice gate above this input level in dBFS.",
@@ -220,6 +233,9 @@ impl Settings {
                     1.0,
                 );
             }
+            Control::Voice => self.adjust_vocoder(voice::Dial::Voice, right, shift),
+            Control::Bands => self.adjust_vocoder(voice::Dial::Bands, right, shift),
+            Control::Sibilance => self.adjust_vocoder(voice::Dial::Sibilance, right, shift),
             Control::Volume => {
                 self.synth.volume = step(
                     self.synth.volume,
@@ -247,13 +263,11 @@ impl Settings {
             }
         }
         match control {
-            Control::Shape | Control::Cutoff | Control::Air | Control::Volume => {
-                Command::SetSynth(self.synth)
-            }
             Control::Silent => Command::SetSilent(self.silent),
             Control::GateOpen | Control::GateClose | Control::GateHold => {
                 Command::SetGate(self.gate)
             }
+            _ if control.panel() == Focus::Synth => Command::SetSynth(self.synth),
             _ => Command::SetQuantise(self.quantise),
         }
     }
@@ -276,6 +290,9 @@ impl Settings {
             .into(),
             Control::Cutoff => format!("{:.0} Hz", self.synth.cutoff_hz),
             Control::Air => format!("{:.2}", self.synth.air),
+            Control::Voice => format!("{:.2}", self.synth.voice),
+            Control::Bands => self.synth.bands.to_string(),
+            Control::Sibilance => format!("{:.2}", self.synth.sibilance),
             Control::Volume => format!("{:.2}", self.synth.volume),
             Control::Silent => on_off(self.silent).into(),
             Control::GateOpen => format!("{:.0} dBFS", self.gate.open_db),
