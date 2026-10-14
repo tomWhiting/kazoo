@@ -7,40 +7,34 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
-fn directory() -> PathBuf {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/kz-logs")
-        .join(format!("tempo-{}", std::process::id()));
-    fs::create_dir_all(&path).unwrap();
-    path
+fn directory() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
 }
 
 #[test]
 fn a_restarted_desk_keeps_its_tempo() {
     let dir = directory();
-    let path = dir.join("tempo");
+    let path = dir.path().join("tempo");
     fs::write(&path, "96\n").unwrap();
-    let store = TempoStore::open(path_for(Some(dir.as_os_str()), None).unwrap());
+    let store = TempoStore::open(path_for(Some(dir.path().as_os_str()), None).unwrap());
     let (shared, engine) = crate::run::desk_transport(store.bpm, 48_000).unwrap();
     assert_float_eq(shared.transport().bpm, 96.0);
-    assert_f64_eq(crate::hub::tempo::initial_song(&shared).bpm, 96.0);
+    assert_float_eq(crate::hub::tests::tempo::first_song_tempo(store.bpm), 96.0);
     assert_f64_eq(engine.song().bpm, 96.0);
-    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn no_file_is_the_default() {
     let dir = directory();
-    let store = TempoStore::open(dir.join("missing"));
+    let store = TempoStore::open(dir.path().join("missing"));
     assert_float_eq(store.bpm, DEFAULT_BPM);
     assert!(store.warning.is_none());
-    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn a_bad_file_is_the_default_and_said() {
     let dir = directory();
-    let path = dir.join("tempo");
+    let path = dir.path().join("tempo");
     for (contents, reason) in [
         ("abc", "decimal"),
         ("NaN", "finite"),
@@ -55,13 +49,12 @@ fn a_bad_file_is_the_default_and_said() {
         assert!(warning.contains(reason), "{warning}");
         assert_eq!(fs::read_to_string(&path).unwrap(), contents);
     }
-    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn the_tempo_is_written_once_it_settles() {
     let dir = directory();
-    let path = dir.join("tempo");
+    let path = dir.path().join("tempo");
     let mut store = TempoStore::open(path.clone());
     let shared = SharedState::new();
     let now = Instant::now();
@@ -79,7 +72,6 @@ fn the_tempo_is_written_once_it_settles() {
     writes += usize::from(store.poll(shared.transport(), now + Duration::from_secs(1)));
     assert_eq!(writes, 1);
     assert_eq!(fs::read_to_string(path).unwrap(), "90\n");
-    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -122,8 +114,8 @@ fn the_store_uses_the_configured_directory_or_home() {
 #[test]
 fn a_failed_write_is_reported_and_retried_on_the_next_change() {
     let dir = directory();
-    let path = dir.join("blocked/tempo");
-    fs::write(dir.join("blocked"), "a file").unwrap();
+    let path = dir.path().join("blocked/tempo");
+    fs::write(dir.path().join("blocked"), "a file").unwrap();
     let mut store = TempoStore::open(path.clone());
     let shared = SharedState::new();
     let now = Instant::now();
@@ -137,14 +129,13 @@ fn a_failed_write_is_reported_and_retried_on_the_next_change() {
             .unwrap()
             .contains(path.to_str().unwrap())
     );
-    fs::remove_file(dir.join("blocked")).unwrap();
+    fs::remove_file(dir.path().join("blocked")).unwrap();
     assert!(!store.poll(shared.transport(), now + SETTLE * 2));
     shared.set_tempo(96.0);
     assert!(!store.poll(shared.transport(), now + SETTLE * 3));
     assert!(store.poll(shared.transport(), now + SETTLE * 4));
     assert!(store.warning.is_none());
     assert_eq!(fs::read_to_string(path).unwrap(), "96\n");
-    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -152,7 +143,7 @@ fn readers_only_see_complete_tempo_files() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     let dir = directory();
-    let path = dir.join("tempo");
+    let path = dir.path().join("tempo");
     write(&path, 120.0).unwrap();
     let finished = AtomicBool::new(false);
     let (ready, started) = mpsc::sync_channel(0);
@@ -177,14 +168,13 @@ fn readers_only_see_complete_tempo_files() {
         reader.join().unwrap();
     });
     assert_eq!(fs::read_to_string(path).unwrap(), "109\n");
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
-    fs::remove_dir_all(dir).unwrap();
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 
 #[test]
 fn play_changes_do_not_delay_a_pending_tempo_save() {
     let dir = directory();
-    let mut store = TempoStore::open(dir.join("tempo"));
+    let mut store = TempoStore::open(dir.path().join("tempo"));
     let shared = SharedState::new();
     let now = Instant::now();
     shared.set_tempo(96.0);
@@ -192,13 +182,12 @@ fn play_changes_do_not_delay_a_pending_tempo_save() {
     shared.set_playing(true);
     assert!(!store.poll(shared.transport(), now + Duration::from_millis(400)));
     assert!(store.poll(shared.transport(), now + SETTLE));
-    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn an_unreadable_file_is_reported_without_replacing_it() {
     let dir = directory();
-    let path = dir.join("tempo");
+    let path = dir.path().join("tempo");
     fs::create_dir(&path).unwrap();
     let store = TempoStore::open(path.clone());
     assert_float_eq(store.bpm, DEFAULT_BPM);
@@ -206,5 +195,95 @@ fn an_unreadable_file_is_reported_without_replacing_it() {
     assert!(warning.contains(path.to_str().unwrap()));
     assert!(warning.contains("could not read"));
     assert!(path.is_dir());
-    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn quitting_before_settle_saves_the_last_tempo() {
+    let dir = directory();
+    let path = dir.path().join("tempo");
+    let mut store = TempoStore::open(path.clone());
+    let shared = SharedState::new();
+    shared.set_tempo(96.0);
+    store.poll(shared.transport(), Instant::now());
+    store.flush(shared.transport()).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "96\n");
+}
+
+#[test]
+fn opening_removes_abandoned_tempo_files() {
+    let dir = directory();
+    fs::write(dir.path().join(".tempo-old"), "96\n").unwrap();
+    fs::write(dir.path().join("keep"), "keep").unwrap();
+    let store = TempoStore::open(dir.path().join("tempo"));
+    assert!(store.warning.is_none());
+    assert!(!dir.path().join(".tempo-old").exists());
+    assert!(dir.path().join("keep").exists());
+}
+
+#[test]
+fn failed_writes_wait_until_the_terminal_is_restored_to_print() {
+    assert!(!include_str!("../tempo_store.rs").contains("eprintln!"));
+    let run = include_str!("../run.rs");
+    assert!(run.contains("tempo.flush(audio.shared.transport())"));
+}
+
+#[test]
+fn standard_reads_the_configured_directory() {
+    const CHILD: &str = "KZ_D17_TEMPO_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let store = TempoStore::standard();
+        assert_float_eq(store.bpm, 96.0);
+        return;
+    }
+    let dir = directory();
+    fs::write(dir.path().join("tempo"), "96\n").unwrap();
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tempo_store::tests::standard_reads_the_configured_directory",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("KAZOO_MIX_DIR", dir.path())
+        .env_remove("HOME")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn missing_home_starts_with_a_warning() {
+    const CHILD: &str = "KZ_D17_NO_HOME_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let mut store = TempoStore::standard();
+        assert_float_eq(store.bpm, DEFAULT_BPM);
+        assert!(store.warning.as_ref().unwrap().contains("HOME"));
+        let shared = SharedState::new();
+        shared.set_tempo(96.0);
+        let now = Instant::now();
+        store.poll(shared.transport(), now);
+        store.poll(shared.transport(), now + SETTLE);
+        assert!(store.warning.as_ref().unwrap().contains("HOME"));
+        return;
+    }
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tempo_store::tests::missing_home_starts_with_a_warning",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env_remove("KAZOO_MIX_DIR")
+        .env_remove("HOME")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }

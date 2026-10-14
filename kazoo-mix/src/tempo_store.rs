@@ -14,12 +14,15 @@ const SETTLE: Duration = Duration::from_millis(500);
 
 #[derive(Debug)]
 pub struct TempoStore {
-    path: PathBuf,
+    path: Result<PathBuf, String>,
     pub(crate) bpm: f32,
     pub(crate) warning: Option<String>,
     revision: u64,
     pending: Option<Instant>,
     write_failed: bool,
+    last_written: f32,
+    warning_at: Option<Instant>,
+    failed_writes: Vec<String>,
 }
 
 impl TempoStore {
@@ -34,20 +37,100 @@ impl TempoStore {
                 )),
             ),
         };
+        let warning = match remove_leftovers(&path) {
+            Ok(()) => warning,
+            Err(error) => {
+                let cleanup = format!(
+                    "kazoo-mix: {}: temporary tempos could not be removed: {error}",
+                    path.display()
+                );
+                Some(warning.map_or_else(
+                    || cleanup.clone(),
+                    |warning| format!("{warning}; {cleanup}"),
+                ))
+            }
+        };
+        let warning_at = warning.as_ref().map(|_| Instant::now());
         Self {
-            path,
+            path: Ok(path),
             bpm,
             warning,
             revision: 0,
             pending: None,
             write_failed: false,
+            last_written: bpm,
+            warning_at,
+            failed_writes: Vec::new(),
         }
     }
 
-    pub(crate) fn standard() -> Result<Self, String> {
+    pub(crate) fn standard() -> Self {
         let mix = std::env::var_os("KAZOO_MIX_DIR");
         let home = std::env::var_os("HOME");
-        path_for(mix.as_deref(), home.as_deref()).map(Self::open)
+        match path_for(mix.as_deref(), home.as_deref()) {
+            Ok(path) => Self::open(path),
+            Err(reason) => Self {
+                path: Err(reason.clone()),
+                bpm: DEFAULT_BPM,
+                warning: Some(format!("{reason}; using {DEFAULT_BPM} BPM")),
+                revision: 0,
+                pending: None,
+                write_failed: false,
+                last_written: DEFAULT_BPM,
+                warning_at: Some(Instant::now()),
+                failed_writes: Vec::new(),
+            },
+        }
+    }
+
+    pub(crate) fn status_warning(&self, now: Instant) -> Option<&str> {
+        self.warning.as_deref().filter(|_| {
+            self.warning_at
+                .is_none_or(|at| now.saturating_duration_since(at) < Duration::from_secs(10))
+        })
+    }
+
+    pub(crate) fn failed_writes(&self) -> &[String] {
+        &self.failed_writes
+    }
+
+    pub(crate) fn flush(&mut self, transport: Transport) -> Result<(), String> {
+        self.bpm = transport.bpm;
+        if self.pending.is_some() || self.bpm.to_bits() != self.last_written.to_bits() {
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    fn save(&mut self) -> Result<(), String> {
+        self.pending = None;
+        let result = match &self.path {
+            Ok(path) => write(path, self.bpm).map_err(|error| {
+                format!(
+                    "kazoo-mix: {}: tempo could not be saved: {error}",
+                    path.display()
+                )
+            }),
+            Err(reason) => Err(format!(
+                "tempo {} BPM could not be saved: {reason}",
+                self.bpm
+            )),
+        };
+        match result {
+            Ok(()) => {
+                self.last_written = self.bpm;
+                self.warning = None;
+                self.warning_at = None;
+                self.write_failed = false;
+                Ok(())
+            }
+            Err(warning) => {
+                self.warning = Some(warning.clone());
+                self.warning_at = None;
+                self.write_failed = true;
+                Err(warning)
+            }
+        }
     }
 
     pub(crate) fn poll(&mut self, transport: Transport, now: Instant) -> bool {
@@ -64,21 +147,8 @@ impl TempoStore {
         {
             return false;
         }
-        self.pending = None;
-        match write(&self.path, self.bpm) {
-            Ok(()) => {
-                self.warning = None;
-                self.write_failed = false;
-            }
-            Err(error) => {
-                let warning = format!(
-                    "kazoo-mix: {}: tempo could not be saved: {error}",
-                    self.path.display()
-                );
-                eprintln!("{warning}");
-                self.warning = Some(warning);
-                self.write_failed = true;
-            }
+        if let Err(warning) = self.save() {
+            self.failed_writes.push(warning);
         }
         true
     }
@@ -114,6 +184,51 @@ fn read(path: &Path) -> Result<f32, String> {
     Ok(bpm)
 }
 
+fn remove_leftovers(path: &Path) -> io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut removed = false;
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_name().as_encoded_bytes().starts_with(b".tempo-") {
+            fs::remove_file(entry.path())?;
+            removed = true;
+        }
+    }
+    if removed {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn create_directory(path: &Path) -> io::Result<()> {
+    let mut missing = Vec::new();
+    let mut directory = path;
+    while !directory.as_os_str().is_empty() && !directory.try_exists()? {
+        missing.push(directory);
+        let Some(parent) = directory.parent() else {
+            break;
+        };
+        directory = parent;
+    }
+    fs::create_dir_all(path)?;
+    // Each new directory entry must survive before the tempo is renamed.
+    for directory in missing.into_iter().rev() {
+        let parent = directory
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
 fn write(path: &Path, bpm: f32) -> io::Result<()> {
     if !bpm.is_finite() || !(MIN_BPM..=MAX_BPM).contains(&bpm) {
         return Err(io::Error::new(
@@ -124,7 +239,7 @@ fn write(path: &Path, bpm: f32) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "tempo file has no directory")
     })?;
-    fs::create_dir_all(parent)?;
+    create_directory(parent)?;
     let (temporary, mut file) = loop {
         let temporary = parent.join(format!(
             ".tempo-{}-{}",

@@ -2054,6 +2054,7 @@ impl Wall {
             | What::SetAside { .. }
             | What::Unknown => {}
             What::Tempo { to, desk, .. } => {
+                self.patch.tempo = *to;
                 if !desk {
                     self.engine.send(Command::Tempo(*to));
                 }
@@ -4883,8 +4884,10 @@ impl Wall {
         // it; off the desk only `tempo` changes it, which saves it itself
         // (the engine may not have heard that change yet).
         if self.desk.as_ref().is_some_and(HubLink::is_connected) {
-            let bpm = clamp_bpm(self.engine.shared().bpm());
-            self.sync_desk_tempo(bpm);
+            let bpm = self.engine.shared().bpm();
+            if bpm.is_finite() {
+                self.sync_desk_tempo(clamp_bpm(bpm));
+            }
         } else {
             self.desk_tempo.disconnected();
         }

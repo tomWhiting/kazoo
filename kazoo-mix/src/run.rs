@@ -92,7 +92,7 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> Result<()> {
 pub fn run(args: Args) -> Result<()> {
     // Open audio and the hub before taking over the terminal, so a failure
     // prints a readable error instead of vanishing with the alternate screen.
-    let mut tempo = TempoStore::standard().map_err(|error| eyre!(error))?;
+    let mut tempo = TempoStore::standard();
     if let Some(warning) = &tempo.warning {
         eprintln!("{warning}");
     }
@@ -127,10 +127,17 @@ pub fn run(args: Args) -> Result<()> {
         &mut tempo,
     );
 
+    let flushed = tempo.flush(audio.shared.transport());
+    let restored = terminal_guard.leave();
+    for warning in tempo.failed_writes() {
+        eprintln!("{warning}");
+    }
+    if let Err(warning) = flushed {
+        eprintln!("{warning}");
+    }
     drop(demo);
     drop(hub);
     drop(audio);
-    let restored = terminal_guard.leave();
     match (result, restored) {
         (Ok(()), restored) => restored.map_err(Into::into),
         (Err(error), Ok(())) => Err(error),
@@ -166,10 +173,11 @@ fn run_desk(
         }
 
         if redraw {
-            let (note, note_alert) = tempo
-                .warning
-                .as_ref()
-                .map_or_else(|| news.line(hub, demo), |warning| (warning.clone(), true));
+            let (note, note_alert) = status_line(
+                news.stopped || !hub.is_running(),
+                tempo.status_warning(now),
+                || news.line(hub, demo),
+            );
             let status = StatusInfo {
                 sample_rate: audio.sample_rate,
                 channels: audio.channels,
@@ -209,6 +217,21 @@ fn run_desk(
 
     Ok(())
 }
+
+fn status_line(
+    hub_stopped: bool,
+    tempo_warning: Option<&str>,
+    hub_line: impl FnOnce() -> (String, bool),
+) -> (String, bool) {
+    if hub_stopped {
+        hub_line()
+    } else {
+        tempo_warning.map_or_else(hub_line, |warning| (warning.to_string(), true))
+    }
+}
+
+#[cfg(test)]
+mod tempo_tests;
 
 /// The latest thing the hub had to say, for the header.
 #[derive(Debug, Default)]

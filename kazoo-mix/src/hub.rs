@@ -31,7 +31,7 @@ mod instrument;
 pub(crate) mod tempo;
 use tempo::initial_song;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::VecDeque;
 use std::fmt;

@@ -124,6 +124,7 @@ fn a_first_sync_and_a_restarted_desk_are_logged() {
     );
     wall.sync_desk_tempo(120.005);
     assert_eq!(wall.log.len(), 2);
+    assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
     wall.sync_desk_tempo(120.02);
     assert_eq!(wall.log.len(), 3);
 }
@@ -151,4 +152,133 @@ fn hear(wall: &Wall, engine: &mut Engine, bpm: f64) {
         engine.render(&mut [0.0; 512], 2);
         std::thread::yield_now();
     }
+}
+
+#[test]
+fn a_desk_change_before_the_asked_tick_starts_from_the_logged_tempo() {
+    let dir = tempfile::tempdir().unwrap();
+    let (link, (audio, _stream)) = a_desk(dir.path(), 120.0);
+    let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), Some(audio));
+    let mut patch = seed().unwrap();
+    patch.tempo = 120.0;
+    let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
+    wall.sync_desk_tempo(120.0);
+    wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
+        .unwrap();
+    wall.sync_desk_tempo(105.0);
+    assert_eq!(wall.log.len(), 2);
+    assert_eq!(
+        wall.log.back().unwrap().what,
+        What::Tempo {
+            from: 100.0,
+            to: 105.0,
+            desk: true
+        }
+    );
+}
+
+#[test]
+fn the_desk_race_log_replays_through_rings_without_a_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (link, (audio, _stream)) = a_desk(dir.path(), 120.0);
+    let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), Some(audio));
+    let mut patch = seed().unwrap();
+    patch.tempo = 120.0;
+    let initial = patch.to_file();
+    let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
+    wall.sync_desk_tempo(120.0);
+    wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
+        .unwrap();
+    wall.sync_desk_tempo(105.0);
+    let state = dir.path().join("state");
+    std::fs::create_dir_all(state.join("saves")).unwrap();
+    std::fs::write(
+        state.join("patch.before-1.json"),
+        serde_json::to_vec(&initial).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        state.join("patch.json"),
+        serde_json::to_vec(&wall.patch.to_file()).unwrap(),
+    )
+    .unwrap();
+    let log = wall
+        .log
+        .iter()
+        .map(|change| serde_json::to_string(change).unwrap() + "\n")
+        .collect::<String>();
+    std::fs::write(state.join("log.jsonl"), log).unwrap();
+    let result =
+        crate::tree::rings::grow(&state, &dir.path().join("replayed-tree"), false).unwrap();
+    assert_eq!(result.gaps, 0, "{}", result.report);
+    assert_eq!(result.settles, 0, "{}", result.report);
+    assert_eq!(result.changes, 2, "{}", result.report);
+}
+
+#[test]
+fn the_patch_tempo_waits_for_the_desk_change_to_be_logged() {
+    let (mut wall, _engine, _dir) = saving_wall();
+    wall.patch.tempo = 120.0;
+    fail_once(&mut wall, FailAt::AppendLog);
+    wall.sync_desk_tempo(100.0);
+    assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
+    assert_eq!(wall.owed.len(), 1);
+    wall.pay_owed().unwrap();
+    assert_eq!(wall.patch.tempo.to_bits(), 100.0_f64.to_bits());
+}
+
+#[test]
+fn a_matched_desk_report_does_not_rewind_the_latest_logged_ask() {
+    let (mut wall, _engine) = wall();
+    wall.patch.tempo = 110.0;
+    wall.desk_tempo.asked(100.0);
+    wall.desk_tempo.asked(110.0);
+    wall.sync_desk_tempo(100.0);
+    wall.sync_desk_tempo(105.0);
+    assert_eq!(
+        wall.log.back().unwrap().what,
+        What::Tempo {
+            from: 110.0,
+            to: 105.0,
+            desk: true
+        }
+    );
+}
+
+#[test]
+fn a_matched_report_with_rounding_does_not_change_the_patch() {
+    let (mut wall, _engine) = wall();
+    wall.patch.tempo = 100.0;
+    wall.desk_tempo.asked(100.0);
+    wall.sync_desk_tempo(100.005);
+    assert_eq!(wall.patch.tempo.to_bits(), 100.0_f64.to_bits());
+    assert!(wall.log.is_empty());
+}
+
+#[test]
+fn nonfinite_desk_reports_are_refused_before_clamping() {
+    let (mut wall, _engine) = wall();
+    wall.patch.tempo = 96.0;
+    for bpm in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        wall.sync_desk_tempo(bpm);
+        assert_eq!(wall.patch.tempo.to_bits(), 96.0_f64.to_bits());
+        assert!(wall.log.is_empty());
+    }
+}
+
+#[test]
+fn a_subthreshold_first_sync_keeps_the_next_log_continuous() {
+    let (mut wall, _engine) = wall();
+    wall.patch.tempo = 120.0;
+    wall.sync_desk_tempo(120.005);
+    assert!(wall.log.is_empty());
+    wall.sync_desk_tempo(125.0);
+    assert_eq!(
+        wall.log.back().unwrap().what,
+        What::Tempo {
+            from: 120.0,
+            to: 125.0,
+            desk: true
+        }
+    );
 }
