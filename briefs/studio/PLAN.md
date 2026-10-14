@@ -264,6 +264,8 @@ Tom's words, 13 Oct 2026, about 19:20 to 20:10:
 | T08a the tree's shape | a `shape` request: every limb grown from its parent, modules alive per commit, marks, lanterns and the wall placed | kazoo-wall | T07b |
 | T08b the little tree | `Y` draws the tree in braille (plain fallback), thicker where more modules lived; every mark a reading | kazoo-wall (tui) | T08a, T07d, L12 (or a small lane split from L12 for `Dots` and plain glyphs) |
 | T09 the Bevy tree | an explorable tree (native and wasm), after Meridian Life | new crate | T08 |
+| T10a a batch of changes with a note | `Request::Batch { note, changes }`, `as`/`@label` for added modules, all or none, one change, one undo; the tree's commit has the note as subject and a `Kazoo-Step` trailer per step; `wall_batch` for the seats (Tom, 14 Oct 22:50 and 15 Oct 00:25) | kazoo-wall, kazoo-mcp | T04d |
+| T10b the console sends a batch | `:batch <note>` holds the console's changes, shown held; Enter sends, Esc drops | kazoo-wall (tui) | T10a |
 
 ### Track P: audio inputs
 
