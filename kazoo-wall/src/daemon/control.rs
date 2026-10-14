@@ -26,7 +26,7 @@ use super::DeskMode;
 use super::audio::headless_lead_frames;
 use super::audio::{AudioMode, Device, Headless, StreamHealth};
 use super::server::{Outgoing, ToControl, line};
-use super::wall::Wall;
+use super::wall::{Outcome, Wall};
 use crate::engine::{EngineConfig, EngineControl, MAX_CHUNK_FRAMES, engine};
 use crate::listen;
 use crate::patch::printable;
@@ -675,14 +675,26 @@ impl Control {
 
     /// Answer the `speak` requests whose words are ready.
     fn answer_speech(&mut self) {
-        for (ticket, answer) in self.wall.spoken() {
+        let answers = self.wall.spoken();
+        self.answer_later(answers);
+    }
+
+    fn answer_tree(&mut self) {
+        let answers = self.wall.tree_answers(Instant::now());
+        self.answer_later(answers);
+    }
+
+    fn answer_later(&mut self, answers: Vec<(u64, Result<Outcome, WallError>)>) {
+        for (ticket, answer) in answers {
             let asker = self.awaiting.remove(&ticket);
             let response = match answer {
                 Ok(outcome) => {
                     let seat = outcome.change.as_ref().map(|change| change.seat.clone());
-                    if let Some(seat) = seat {
-                        self.announce(&seat, outcome.change.clone(), outcome.event);
-                    }
+                    self.announce(
+                        seat.as_deref().unwrap_or("kazoo-wall"),
+                        outcome.change.clone(),
+                        outcome.event,
+                    );
                     asker.map(|(_, id)| Response {
                         id,
                         ok: true,
@@ -851,6 +863,7 @@ impl Control {
             self.broadcast(&event, None);
         }
         self.answer_speech();
+        self.answer_tree();
         self.answer_saves();
         self.watch_audio(now);
     }
@@ -1135,6 +1148,31 @@ mod tests {
             assert!((config.beat - 12.5).abs() < f64::EPSILON);
             let (_engine, control) = engine(config, None);
             assert_eq!(control.shared().audible(), heard);
+        }
+    }
+}
+
+#[cfg(test)]
+mod moments_tests {
+    use super::refusal;
+    use crate::protocol::{ErrorCode, Request};
+
+    #[test]
+    fn watchers_read_moments_and_seats_may_go() {
+        assert!(refusal(&Request::Tree { recent: None }, false, true).is_none());
+        for request in [
+            Request::Mark {
+                name: "dawn".into(),
+            },
+            Request::Go {
+                moment: "dawn".into(),
+            },
+        ] {
+            assert_eq!(
+                refusal(&request, false, true).unwrap().code,
+                ErrorCode::NotAllowed
+            );
+            assert!(refusal(&request, false, false).is_none());
         }
     }
 }
