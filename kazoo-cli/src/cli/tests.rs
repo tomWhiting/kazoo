@@ -6,9 +6,9 @@ use kazoo_wall::daemon::{AudioMode, DaemonConfig, DeskMode};
 
 use super::{Cli, Command, WallCommand};
 
-const COMMANDS: [&str; 15] = [
+const COMMANDS: [&str; 16] = [
     "808", "303", "cs80", "mini", "juno", "prophet", "dx", "string", "glass", "arp", "play",
-    "mouth", "mix", "wall", "mcp",
+    "mouth", "tui", "mix", "wall", "mcp",
 ];
 
 #[test]
@@ -32,6 +32,7 @@ fn every_instrument_is_a_subcommand() {
             Command::Arp(_) => name == "arp",
             Command::Play(_) => name == "play",
             Command::Mouth(_) => name == "mouth",
+            Command::Tui => name == "tui",
             Command::Mix(args) => name == "mix" && !args.demo,
             Command::Wall { command } => name == "wall" && command.is_none(),
             Command::Mcp(args) => name == "mcp" && args.seat == "Tom",
@@ -286,11 +287,12 @@ fn mouth_flags_become_microphone_arguments() {
     assert_eq!(args.input_channel, Some(2));
     assert!(args.list_inputs);
     assert_eq!(
-        kazoo_tui::Args::from(args),
-        kazoo_tui::Args {
+        kazoo_mouth::Args::from(args),
+        kazoo_mouth::Args {
             input: Some("X".into()),
             input_channel: Some(2),
-            list_inputs: true
+            list_inputs: true,
+            ..kazoo_mouth::Args::default()
         }
     );
 }
@@ -301,7 +303,7 @@ fn mouth_without_flags_uses_defaults() {
         panic!("expected mouth");
     };
     assert_eq!(args, super::MouthArgs::default());
-    assert_eq!(kazoo_tui::Args::from(args), kazoo_tui::Args::default());
+    assert_eq!(kazoo_mouth::Args::from(args), kazoo_mouth::Args::default());
 }
 
 #[test]
@@ -320,5 +322,72 @@ fn mouth_help_lists_the_input_flags() {
     let help = error.to_string();
     for flag in ["--input", "--input-channel", "--list-inputs"] {
         assert!(help.contains(flag), "{help}");
+    }
+}
+
+#[test]
+fn args_parse() {
+    let Command::Mouth(args) =
+        Cli::try_parse_from(["kazoo", "mouth", "--quantise", "major:D", "--silent"])
+            .unwrap()
+            .command
+    else {
+        panic!("expected mouth");
+    };
+    let args = kazoo_mouth::Args::from(args);
+    assert_eq!(args.quantise.scale, 1);
+    assert_eq!(args.quantise.root, 2);
+    assert!((args.quantise.blend - 1.0).abs() < f32::EPSILON);
+    assert!(args.silent);
+    let error = Cli::try_parse_from(["kazoo", "mouth", "--quantise", "lydian:H"]).unwrap_err();
+    assert_eq!(error.exit_code(), 2);
+    let error = error.to_string();
+    for choice in [
+        "chromatic",
+        "major",
+        "lydian",
+        "pentatonic-minor",
+        "C#",
+        "B",
+    ] {
+        assert!(error.contains(choice), "{error}");
+    }
+    assert_eq!(
+        Cli::try_parse_from(["kazoo", "tui"]).unwrap().command,
+        Command::Tui
+    );
+}
+
+#[test]
+fn mouth_output_score_and_sharp_root_parse() {
+    let Command::Mouth(args) = Cli::try_parse_from([
+        "kazoo",
+        "mouth",
+        "--output",
+        "Speakers",
+        "--quantise",
+        "pentatonic-minor:C#",
+        "--score",
+        "a.wav",
+        "b.wav",
+    ])
+    .unwrap()
+    .command
+    else {
+        panic!("expected mouth");
+    };
+    let args = kazoo_mouth::Args::from(args);
+    assert_eq!(args.output.as_deref(), Some("Speakers"));
+    assert_eq!(args.quantise.scale, 8);
+    assert_eq!(args.quantise.root, 1);
+    assert_eq!(args.score, [PathBuf::from("a.wav"), PathBuf::from("b.wav")]);
+    assert!(Cli::try_parse_from(["kazoo", "mouth", "--score"]).is_err());
+    for command in ["mouth", "tui"] {
+        assert_eq!(
+            Cli::try_parse_from(["kazoo", command, "--help"])
+                .unwrap_err()
+                .exit_code(),
+            0
+        );
     }
 }

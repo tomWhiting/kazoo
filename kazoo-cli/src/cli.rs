@@ -56,12 +56,14 @@ pub enum Command {
     Arp(ArpArgs),
     /// Text notation to events or sound.
     Play(PlayArgs),
-    /// The mouth: the voice-driven synth (kazoo-tui).
+    /// The mouth: sing or whistle into a synth, and drive every other instrument with your voice.
     Mouth(MouthArgs),
+    /// The voice tracker DAW (kazoo-tui).
+    Tui,
 }
 
 /// Microphone device selection and enumeration.
-#[derive(Debug, Args, Default, PartialEq, Eq)]
+#[derive(Debug, Args, Default, PartialEq)]
 pub struct MouthArgs {
     /// Input device name; omit to follow the system default.
     #[arg(long)]
@@ -72,6 +74,18 @@ pub struct MouthArgs {
     /// List input devices without opening a stream.
     #[arg(long)]
     pub list_inputs: bool,
+    /// Output device name; omit to use the system default.
+    #[arg(long)]
+    pub output: Option<String>,
+    /// Snap pitch to scale:root, for example major:D or pentatonic-minor:C#.
+    #[arg(long, value_parser = kazoo_mouth::parse_quantise)]
+    pub quantise: Option<kazoo_core::voice::quantise::QuantiseSettings>,
+    /// Publish voice frames without making sound.
+    #[arg(long)]
+    pub silent: bool,
+    /// Score recorded WAV takes and exit without opening audio.
+    #[arg(long, num_args = 1.., conflicts_with = "list_inputs")]
+    pub score: Vec<PathBuf>,
 }
 
 /// Desk startup options.
@@ -242,12 +256,16 @@ fn seat_name(text: &str) -> Result<String, String> {
     }
 }
 
-impl From<MouthArgs> for kazoo_tui::Args {
+impl From<MouthArgs> for kazoo_mouth::Args {
     fn from(args: MouthArgs) -> Self {
         Self {
             input: args.input,
             input_channel: args.input_channel,
             list_inputs: args.list_inputs,
+            output: args.output,
+            quantise: args.quantise.unwrap_or_default(),
+            silent: args.silent,
+            score: args.score,
         }
     }
 }

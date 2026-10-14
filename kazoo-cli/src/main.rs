@@ -41,7 +41,8 @@ fn main() -> ExitCode {
                 ExitCode::from(err.exit_code())
             }
         },
-        Command::Mouth(args) => finish(kazoo_tui::run(args.into())),
+        Command::Mouth(args) => finish(kazoo_mouth::run(args.into())),
+        Command::Tui => finish(kazoo_tui::run(kazoo_tui::Args::default())),
     }
 }
 

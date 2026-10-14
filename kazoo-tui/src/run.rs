@@ -17,7 +17,7 @@ pub struct Args {
 /// Help text for both ways to start the application.
 pub const USAGE: &str = "kazoo-tui: mouth synth, tracking views, mixing desk
 
-usage: kazoo mouth
+usage: kazoo tui
        kazoo-tui
 
   --input <name>       Choose an input device by name.
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn usage_names_both_ways_to_start_it() {
-        assert!(USAGE.contains("kazoo mouth"));
+        assert!(USAGE.contains("kazoo tui"));
         assert!(USAGE.contains("kazoo-tui"));
         assert!(USAGE.starts_with("kazoo-tui: "));
     }
