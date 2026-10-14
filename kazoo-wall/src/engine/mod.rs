@@ -1211,7 +1211,7 @@ impl Engine {
             self.tempo_left,
             self.following_desk || desk_changed,
         );
-        self.land_swap();
+        self.land_swap(desk_changed);
         let song = Tick::new(self.sample_rate, self.bpm, self.beat);
         self.carry_len = self.frames_to_swap(song.beat_step);
         let tick = Tick::new(

@@ -327,3 +327,17 @@ fn moment_an_engine_built_again_carries_the_wall_s_origin() {
     render(&mut engine, 1);
     assert_eq!(seen.load(Ordering::Relaxed), 37.25_f64.to_bits());
 }
+
+#[test]
+fn moment_a_fade_that_begins_on_a_sub_block_s_first_frame_still_lands() {
+    // 1,311.5 frames before bar 11 at 8 kHz: a sub-block starts 511.5
+    // frames out, its last frame 480.5 out (the fade is 480 frames), so the
+    // fade begins on the next sub-block's first frame.
+    let (mut engine, mut control) = start(40.0 - 1_311.5 / 4_000.0);
+    let seen = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+    probe(&mut control, &seen);
+    assert_eq!(control.landing_beat().to_bits(), 40.0_f64.to_bits());
+    render(&mut engine, 1_312 + SUB_BLOCK);
+    assert_eq!(control.shared().unhushed(), 1, "the go slipped past bar 11");
+    assert_eq!(control.shared().origin().to_bits(), 40.0_f64.to_bits());
+}

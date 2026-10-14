@@ -47,4 +47,6 @@ fn a_go_s_gap_commit_is_made_when_the_log_on_disk_cannot_be_read() {
     wall.whole_tree(crate::tree::thread::WholeKind::Gap);
     let error = wall.tree.as_ref().unwrap().error.clone();
     assert_eq!(error, None, "the gap commit waited on the log on disk");
+    // The tree's git finishes before the test does.
+    wall.close(std::time::Instant::now());
 }

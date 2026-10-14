@@ -85,20 +85,27 @@ impl Engine {
             }
             self.retire(Retired::Command(command));
         }
+        // A go that arrives too late to fade the wall out whole for its bar
+        // waits for the next.
+        let step = super::Tick::new(self.sample_rate, self.bpm, self.beat).beat_step;
+        self.aim_swap(step, true);
     }
 
     /// Move a held go whose bar the song position no longer leads to: one
     /// the song has gone past (the go reached the audio thread late, or the
-    /// desk moved the song on), one the wall going out can no longer fade
-    /// out whole for, or one more than a bar ahead (the desk moved the song
-    /// back). It goes to the first bar the wall can fade out whole for.
-    fn aim_swap(&mut self, step: f64) {
+    /// desk moved the song on), or one more than a bar ahead (the desk moved
+    /// the song back); and, when the go has just arrived or the desk has
+    /// just moved the song (`arrived`), one the wall going out can no
+    /// longer fade out whole for. It goes to the first bar the wall can
+    /// fade out whole for. Between those, the song only moves on towards
+    /// the bar, and the fade begins on its own frame.
+    fn aim_swap(&mut self, step: f64, arrived: bool) {
         let fade = step * f64::from(self.sample_rate * SWAP_FADE_SECONDS);
         let beat = self.beat;
         if let Some(swap) = self.pending_swap.as_mut() {
             let aim = bar_from(beat + fade);
             let passed = swap.beat < beat - step;
-            let short = !swap.fading && swap.beat - beat < step.mul_add(-1e-6, fade);
+            let short = arrived && !swap.fading && swap.beat - beat < step.mul_add(-1e-6, fade);
             let back = swap.beat > aim + BEATS_PER_BAR;
             if passed || short || back {
                 swap.beat = aim;
@@ -107,9 +114,11 @@ impl Engine {
         }
     }
 
-    pub(super) fn land_swap(&mut self) {
+    /// Take in the held go when the song reaches its bar; `desk_moved` when
+    /// the desk set the song position or tempo for this sub-block.
+    pub(super) fn land_swap(&mut self, desk_moved: bool) {
         let step = super::Tick::new(self.sample_rate, self.bpm, self.beat).beat_step;
-        self.aim_swap(step);
+        self.aim_swap(step, desk_moved);
         if self
             .pending_swap
             .as_ref()
