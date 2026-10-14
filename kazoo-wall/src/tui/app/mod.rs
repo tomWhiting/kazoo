@@ -29,6 +29,9 @@ mod moves;
 mod prefs;
 mod rack;
 mod saves;
+mod tree;
+
+pub(super) use tree::{RowKind, TreeList};
 
 pub use prefs::{load as load_prefs, path as prefs_path, save as save_prefs};
 
@@ -261,6 +264,16 @@ pub enum Mode {
         /// The name so far.
         text: String,
     },
+    /// Naming a mark for the moment the wall is at.
+    Mark { text: String },
+    /// The tree list.
+    Tree { index: usize },
+    /// Asking before the wall goes to a moment.
+    Go {
+        moment: String,
+        label: String,
+        index: usize,
+    },
     /// Asking before a save of that name is replaced.
     Overwrite {
         /// The save.
@@ -426,6 +439,7 @@ pub struct App {
     flood: flood::Flood,
     drag_sends: Vec<(String, String, Instant)>,
     saves: SavesList,
+    tree: TreeList,
     /// The rack view's layout, pan and drag, as last drawn.
     pub rack: RackState,
     /// Panels across, as last drawn: up and down move by this many.
@@ -476,6 +490,7 @@ impl App {
             flood: flood::Flood::new(),
             drag_sends: Vec::new(),
             saves: SavesList::default(),
+            tree: TreeList::default(),
             rack: RackState::default(),
             columns: 1,
             scroll: 0,
@@ -1018,7 +1033,10 @@ impl App {
             }
             Event::Loaded {
                 seat, save, backup, ..
-            } => self.on_loaded(&seat, save.as_deref(), &backup, now),
+            } => {
+                self.on_loaded(&seat, save.as_deref(), &backup, now);
+                self.refresh_tree();
+            }
             Event::Saved {
                 seat,
                 name,
@@ -1032,6 +1050,7 @@ impl App {
                 self.on_saves_changed(&seat, &name, did);
             }
             Event::Marked { seat, name, at, .. } => {
+                self.refresh_tree();
                 if seat != self.seat {
                     let after = at
                         .change
@@ -1158,6 +1177,9 @@ impl App {
 
     fn on_result(&mut self, request: &Request, value: serde_json::Value, now: Instant) {
         match request {
+            Request::Mark { .. } | Request::Go { .. } | Request::Tree { .. } => {
+                self.tree_result(request, value, now);
+            }
             Request::ChainSave { .. } | Request::Chains => self.chain_result(request, value, now),
             Request::Probe { .. } => self.probed(request, value, now),
             Request::Group { group, .. } => self.grouped(request, group, value, now),
@@ -1319,6 +1341,11 @@ impl App {
 
     fn on_failure(&mut self, request: &Request, failure: &Failure, now: Instant) {
         match request {
+            Request::Mark { .. } | Request::Tree { .. } => {
+                if self.tree_failure(request, failure, now) {
+                    return;
+                }
+            }
             // Asked ten times a second for screens in view (one may have
             // just been taken away): the next asks again, and a screen
             // left without a reading says so itself.

@@ -725,6 +725,7 @@ fn prompt(app: &App) -> Option<(String, String)> {
                 crate::protocol::MAX_SAVE_NAME
             ),
         )),
+        Mode::Mark { text } => Some(super::tree::mark_prompt(app, text)),
         Mode::Normal
         | Mode::Help { .. }
         | Mode::Add { .. }
@@ -732,6 +733,8 @@ fn prompt(app: &App) -> Option<(String, String)> {
         | Mode::Stop
         | Mode::Overwrite { .. }
         | Mode::Saves { .. }
+        | Mode::Tree { .. }
+        | Mode::Go { .. }
         | Mode::LoadSave { .. }
         | Mode::DeleteSave { .. }
         | Mode::Clear { .. }

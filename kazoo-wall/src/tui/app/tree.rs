@@ -1,0 +1,462 @@
+use std::time::Instant;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::protocol::{
+    ErrorCode, LoadResult, MAX_SAVE_NAME, MarkKind, MarkResult, MomentView, Request, TreePlace,
+    TreeResult, What, valid_save_name,
+};
+
+use super::super::worker::{Failure, Job};
+use super::command::Completion;
+use super::{App, Mode, Tone, step_cursor};
+
+#[derive(Debug, Clone, Default)]
+pub struct TreeList {
+    pub result: Option<TreeResult>,
+    pub fetching: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    Here,
+    Behind,
+    Branch,
+    Mark,
+    Recent,
+    More,
+}
+
+impl RowKind {
+    pub const fn selectable(self) -> bool {
+        matches!(self, Self::Branch | Self::Mark | Self::Recent)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TreeRow {
+    pub label: String,
+    pub moment: String,
+    pub kind: RowKind,
+}
+
+fn number(change: Option<u64>) -> String {
+    change.map_or_else(String::new, |n| format!("#{n} "))
+}
+
+fn short(commit: &str) -> String {
+    commit.chars().take(12).collect()
+}
+
+fn when(at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(at).map_or_else(
+        |_| format!("unreadable time: {at}"),
+        |at| {
+            let local = at.with_timezone(&chrono::Local);
+            let format = if local.date_naive() == chrono::Local::now().date_naive() {
+                "%H:%M"
+            } else {
+                "%Y-%m-%d"
+            };
+            local.format(format).to_string()
+        },
+    )
+}
+
+fn detail(moment: &MomentView) -> String {
+    format!(
+        "{}  {}  {}",
+        moment
+            .change
+            .map_or_else(|| moment.short.clone(), |n| format!("#{n}")),
+        when(&moment.at),
+        moment.seat
+    )
+}
+
+fn more(rows: &mut Vec<TreeRow>, count: usize, shown: usize) {
+    if count > shown {
+        rows.push(TreeRow {
+            label: format!("and {} more", count - shown),
+            moment: String::new(),
+            kind: RowKind::More,
+        });
+    }
+}
+
+pub(super) fn tree_rows(result: &TreeResult) -> Vec<TreeRow> {
+    let mut rows = Vec::new();
+    if let Some(here) = &result.here {
+        let at = format!("{}{}", number(here.change), short(&here.commit));
+        let label = here.branch.as_ref().map_or_else(
+            || format!("here: at {at}, off any line — the next change grows a bud"),
+            |branch| format!("here: on {branch} at {at}"),
+        );
+        rows.push(TreeRow {
+            label,
+            moment: String::new(),
+            kind: RowKind::Here,
+        });
+    }
+    if result.through < result.revision {
+        rows.push(TreeRow {
+            label: format!(
+                "the tree is {} changes behind the wall",
+                result.revision - result.through
+            ),
+            moment: String::new(),
+            kind: RowKind::Behind,
+        });
+    }
+    let limit = crate::protocol::tree::MAX_LISTED;
+    for branch in result.branches.iter().take(limit) {
+        let grew = branch
+            .grew_from
+            .as_ref()
+            .map_or_else(String::new, |from| format!(" · grew from {from}"));
+        rows.push(TreeRow {
+            label: format!("{}  {}{grew}", branch.name, detail(&branch.tip)),
+            moment: branch.name.clone(),
+            kind: RowKind::Branch,
+        });
+    }
+    more(
+        &mut rows,
+        result.branch_count,
+        result.branches.len().min(limit),
+    );
+    for mark in result.marks.iter().take(limit) {
+        let (name, moment) = match mark.kind {
+            MarkKind::Mark => (format!("“{}”", mark.name), mark.name.clone()),
+            MarkKind::Save => (format!("save “{}”", mark.name), mark.tag.clone()),
+        };
+        rows.push(TreeRow {
+            label: format!("{name}  {}", detail(&mark.moment)),
+            moment,
+            kind: RowKind::Mark,
+        });
+    }
+    more(&mut rows, result.mark_count, result.marks.len().min(limit));
+    rows.extend(result.recent.iter().map(|moment| {
+        TreeRow {
+            label: format!(
+                "{}{}  {}: {}",
+                number(moment.change),
+                moment.short,
+                moment.seat,
+                moment.summary
+            ),
+            moment: moment
+                .change
+                .map_or_else(|| moment.commit.clone(), |n| format!("#{n}")),
+            kind: RowKind::Recent,
+        }
+    }));
+    rows
+}
+
+pub(super) fn mark_name_problem(name: &str) -> Option<String> {
+    (!valid_save_name(name)).then(|| format!(
+        "a mark's name is 1 to {MAX_SAVE_NAME} of A-Z a-z 0-9 space _ . -, starting with a letter or digit"
+    ))
+}
+
+fn place_words(to: &TreePlace) -> String {
+    let mut place = to.mark.as_ref().map_or_else(
+        || {
+            to.branch.as_ref().map_or_else(
+                || {
+                    to.change.map_or_else(
+                        || format!("moment {}", short(&to.commit)),
+                        |n| format!("the moment after change {n}"),
+                    )
+                },
+                Clone::clone,
+            )
+        },
+        |mark| format!("mark \"{mark}\""),
+    );
+    if to.mark.is_some() || to.branch.is_some() {
+        if let Some(n) = to.change {
+            place = format!("{place}, after change {n}");
+        }
+    }
+    place
+}
+
+impl App {
+    pub(super) fn tree_completions(&self, lower: &str) -> Vec<Completion> {
+        self.tree_rows()
+            .into_iter()
+            .filter(|row| {
+                matches!(row.kind, RowKind::Branch | RowKind::Mark)
+                    && row.moment.to_lowercase().starts_with(lower)
+            })
+            .map(|row| Completion {
+                word: row.moment,
+                note: row.label,
+                open: false,
+            })
+            .collect()
+    }
+
+    pub(super) fn run_tree_command(
+        &mut self,
+        name: &str,
+        rest: &str,
+        now: Instant,
+    ) -> Result<(), String> {
+        match name {
+            "mark" => {
+                if let Some(problem) = mark_name_problem(rest) {
+                    return Err(problem);
+                }
+                self.mark_as(rest, now);
+            }
+            "go" => {
+                if rest.is_empty() {
+                    return Err(format!("type {}", super::usage(name).unwrap_or_default()));
+                }
+                self.go_to(rest, rest, now);
+            }
+            "tree" => self.open_tree(now),
+            _ => return Err(format!("'{name}' is not a tree command")),
+        }
+        Ok(())
+    }
+
+    pub(in crate::tui) const fn tree(&self) -> &TreeList {
+        &self.tree
+    }
+
+    pub(in crate::tui) fn tree_rows(&self) -> Vec<TreeRow> {
+        self.tree.result.as_ref().map_or_else(Vec::new, tree_rows)
+    }
+
+    pub(super) fn open_mark(&mut self, now: Instant) {
+        if self.link.is_up() {
+            self.status = None;
+            self.mode = Mode::Mark {
+                text: String::new(),
+            };
+        } else {
+            self.say(
+                Tone::Trouble,
+                "the wall is not answering, so its moment cannot be marked".into(),
+                now,
+            );
+        }
+    }
+
+    pub(super) fn mark_key(&mut self, key: KeyEvent, mut text: String, now: Instant) -> Mode {
+        match key.code {
+            KeyCode::Esc => {
+                self.say(Tone::Info, "nothing was marked".into(), now);
+                return Mode::Normal;
+            }
+            KeyCode::Backspace => {
+                text.pop();
+                self.status = None;
+            }
+            KeyCode::Char(c)
+                if !c.is_control() && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if text.chars().count() < MAX_SAVE_NAME {
+                    text.push(c);
+                    self.status = None;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(problem) = mark_name_problem(&text) {
+                    self.say(Tone::Trouble, problem, now);
+                } else {
+                    self.mark_as(&text, now);
+                    return Mode::Normal;
+                }
+            }
+            _ => {}
+        }
+        Mode::Mark { text }
+    }
+
+    pub(super) fn mark_as(&mut self, name: &str, now: Instant) {
+        self.say(Tone::Info, format!("marking “{name}”…"), now);
+        self.jobs
+            .push(Job::Call(Request::Mark { name: name.into() }));
+    }
+
+    pub(super) fn open_tree(&mut self, now: Instant) {
+        if self.link.is_up() {
+            self.mode = Mode::Tree { index: 0 };
+            self.fetch_tree();
+        } else {
+            self.say(
+                Tone::Trouble,
+                "the wall is not answering, so its tree cannot be listed".into(),
+                now,
+            );
+        }
+    }
+
+    fn fetch_tree(&mut self) {
+        self.tree.fetching = true;
+        self.jobs.push(Job::Call(Request::Tree { recent: None }));
+    }
+
+    pub(super) fn refresh_tree(&mut self) {
+        if matches!(self.mode, Mode::Tree { .. } | Mode::Go { .. }) {
+            self.fetch_tree();
+        }
+    }
+
+    pub(super) fn tree_key(&mut self, key: KeyEvent, index: usize, now: Instant) -> Mode {
+        let rows: Vec<_> = self
+            .tree_rows()
+            .into_iter()
+            .filter(|row| row.kind.selectable())
+            .collect();
+        let index = match key.code {
+            KeyCode::Esc | KeyCode::Char('q' | 'B') => return Mode::Normal,
+            KeyCode::Down | KeyCode::Char('j') => step_cursor(index, rows.len(), true),
+            KeyCode::Up | KeyCode::Char('k') => step_cursor(index, rows.len(), false),
+            KeyCode::Char('r') => {
+                self.fetch_tree();
+                index
+            }
+            KeyCode::Enter => {
+                if let Some(row) = rows.get(index) {
+                    return Mode::Go {
+                        moment: row.moment.clone(),
+                        label: row.label.clone(),
+                        index,
+                    };
+                }
+                self.say(
+                    Tone::Trouble,
+                    "there is no moment to choose yet".into(),
+                    now,
+                );
+                index
+            }
+            _ => index,
+        };
+        Mode::Tree { index }
+    }
+
+    pub(super) fn go_key(
+        &mut self,
+        key: KeyEvent,
+        moment: String,
+        label: String,
+        index: usize,
+        now: Instant,
+    ) -> Mode {
+        match key.code {
+            KeyCode::Char('y') => {
+                self.go_to(&moment, &label, now);
+                Mode::Normal
+            }
+            KeyCode::Esc | KeyCode::Char('n') => Mode::Tree { index },
+            _ => Mode::Go {
+                moment,
+                label,
+                index,
+            },
+        }
+    }
+
+    pub(super) fn go_to(&mut self, moment: &str, label: &str, now: Instant) {
+        self.say(
+            Tone::Info,
+            format!("going to {label} (the wall as it is is kept first)…"),
+            now,
+        );
+        self.jobs.push(Job::Call(Request::Go {
+            moment: moment.into(),
+        }));
+    }
+
+    pub(super) fn tree_result(
+        &mut self,
+        request: &Request,
+        value: serde_json::Value,
+        now: Instant,
+    ) {
+        match request {
+            Request::Mark { .. } => {
+                if let Some(result) = self.parse::<MarkResult>(request, value, now) {
+                    let at = result.at.change.map_or_else(
+                        || format!("at {}", short(&result.at.commit)),
+                        |n| format!("after change {n}"),
+                    );
+                    self.say(
+                        Tone::Done,
+                        format!("marked “{}” ({at}) · B shows the tree", result.name),
+                        now,
+                    );
+                    self.refresh_tree();
+                }
+            }
+            Request::Go { .. } => {
+                if let Some(result) = self.parse::<LoadResult>(request, value, now) {
+                    self.loaded(&result, now);
+                    self.snapshot = None;
+                    self.shown = None;
+                    self.look_at = None;
+                    if let What::Go { to, .. } = &result.change.what {
+                        self.say(
+                            Tone::Done,
+                            format!(
+                                "went to {} · the wall as it was is saved as “{}” · z undoes it",
+                                place_words(to),
+                                result.backup,
+                            ),
+                            now,
+                        );
+                    } else {
+                        self.say(
+                            Tone::Trouble,
+                            "the wall's go answer did not name a destination".into(),
+                            now,
+                        );
+                    }
+                    self.refresh_tree();
+                }
+            }
+            Request::Tree { .. } => {
+                self.tree.fetching = false;
+                if let Some(result) = self.parse::<TreeResult>(request, value, now) {
+                    let count = tree_rows(&result)
+                        .iter()
+                        .filter(|row| row.kind.selectable())
+                        .count();
+                    self.tree.result = Some(result);
+                    if let Mode::Tree { index } | Mode::Go { index, .. } = &mut self.mode {
+                        *index = (*index).min(count.saturating_sub(1));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn tree_failure(
+        &mut self,
+        request: &Request,
+        failure: &Failure,
+        now: Instant,
+    ) -> bool {
+        match request {
+            Request::Mark { name } if failure.code == Some(ErrorCode::MarkExists) => {
+                self.mode = Mode::Mark { text: name.clone() };
+                self.say(Tone::Trouble, failure.message.clone(), now);
+                true
+            }
+            Request::Tree { .. } => {
+                self.tree.fetching = false;
+                false
+            }
+            _ => false,
+        }
+    }
+}
