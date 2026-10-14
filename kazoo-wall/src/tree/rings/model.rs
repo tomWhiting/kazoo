@@ -1,325 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-use std::io::Read;
-use std::path::{Path, PathBuf};
 
 use crate::migrate;
-use crate::patch::{Patch, PatchFile, RetiredWords, hash_bytes, split_id};
-use crate::protocol::{CableRecord, Change, ModuleRecord, What, valid_save_name};
-use crate::store::MAX_WALL_FILE;
+use crate::patch::{Patch, PatchFile, RetiredWords, split_id};
+use crate::protocol::{CableRecord, Change, ModuleRecord, What};
 use crate::tree::{Birth, Files, TreeError, to_files};
-
-/// A wall file that holds the whole wall after change `after`: where it is
-/// and what it proves. Only this is held through the walk; the file itself
-/// is read again, bounded, each time the walk needs its wall.
-#[derive(Debug, Clone)]
-pub(super) struct Evidence {
-    pub path: PathBuf,
-    pub after: u64,
-    /// The file has a `seed` key (one written before seeds has none).
-    pub seeded: bool,
-    pub version: u32,
-    /// Which wall the file says it is.
-    pub wall: u64,
-    rank: u8,
-    /// A load's verified backup: the fingerprint its bytes must still hold.
-    fingerprint: Option<String>,
-}
-
-/// A file read whole (at most [`MAX_WALL_FILE`] bytes): its wall as
-/// `migrate::read` gives it, unmigrated, whether it has a seed, and the
-/// hash of its bytes.
-struct Decoded {
-    file: PatchFile,
-    seeded: bool,
-    hash: String,
-}
-
-impl Decoded {
-    /// The wall, with seed 0 when the file was written before seeds.
-    fn wall(self) -> PatchFile {
-        let mut file = self.file;
-        if !self.seeded {
-            file.seed = 0;
-        }
-        file
-    }
-}
-
-fn decode(path: &Path) -> Result<Decoded, String> {
-    let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(MAX_WALL_FILE + 1).read_to_end(&mut bytes))
-        .map_err(|e| format!("it could not be read: {e}"))?;
-    if !u64::try_from(bytes.len()).is_ok_and(|n| n <= MAX_WALL_FILE) {
-        return Err(format!(
-            "it is too large to be a wall (more than {MAX_WALL_FILE} bytes)"
-        ));
-    }
-    let seeded = serde_json::from_slice::<serde_json::Value>(&bytes)
-        .map_err(|e| format!("it is not JSON: {e}"))?
-        .get("seed")
-        .is_some();
-    let (file, _) = migrate::read(&bytes)?;
-    Ok(Decoded {
-        file,
-        seeded,
-        hash: hash_bytes(&bytes),
-    })
-}
-
-impl Evidence {
-    fn decoded(&self) -> Result<Decoded, TreeError> {
-        let failed = |why: String| {
-            TreeError::NotOneWall(format!(
-                "{} could not be read again: {why}",
-                self.path.display()
-            ))
-        };
-        let decoded = decode(&self.path).map_err(failed)?;
-        if self
-            .fingerprint
-            .as_ref()
-            .is_some_and(|fingerprint| *fingerprint != decoded.hash)
-        {
-            return Err(failed(
-                "its bytes no longer hold the fingerprint its load logged".into(),
-            ));
-        }
-        Ok(decoded)
-    }
-
-    /// The wall the file holds, as read and unmigrated; a file written
-    /// before seeds has seed 0, as the wall had then.
-    pub fn file(&self) -> Result<PatchFile, TreeError> {
-        self.decoded().map(Decoded::wall)
-    }
-
-    /// The file exactly as `migrate::read` gives it to the daemon (a
-    /// seedless file's seed taken from its bytes).
-    pub fn as_read(&self) -> Result<PatchFile, TreeError> {
-        Ok(self.decoded()?.file)
-    }
-
-    /// The file's name, for the commits and the report.
-    pub fn label(&self) -> String {
-        self.path.file_name().map_or_else(
-            || self.path.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        )
-    }
-}
-
-/// Every wall file in the state directory and what it proves.
-pub(super) struct Proofs {
-    pub files: Vec<Evidence>,
-    pub unreadable: Vec<String>,
-    pub bad_backups: Vec<String>,
-    pub backups: usize,
-    pub disagreements: Vec<String>,
-    pub count: usize,
-}
-
-fn wall_paths(state: &Path) -> Result<Vec<(PathBuf, u8)>, std::io::Error> {
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(state)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let rank = if name.starts_with("patch.before-") && name.ends_with(".json") {
-            1
-        } else if name == "patch.json" {
-            2
-        } else if name.starts_with("patch.") && name.ends_with(".json") {
-            3
-        } else {
-            continue;
-        };
-        if entry.file_type()?.is_file() {
-            paths.push((entry.path(), rank));
-        }
-    }
-    match fs::read_dir(state.join("saves")) {
-        Ok(entries) => {
-            for entry in entries {
-                let entry = entry?;
-                let name = entry.file_name();
-                if name
-                    .to_string_lossy()
-                    .strip_suffix(".json")
-                    .is_some_and(valid_save_name)
-                    && entry.file_type()?.is_file()
-                {
-                    paths.push((entry.path(), 4));
-                }
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
-    paths.sort();
-    Ok(paths)
-}
-
-impl Proofs {
-    /// Index every wall file, each read once here (one at a time) and
-    /// again only when the walk reaches it.
-    pub fn read(state: &Path, changes: &[Change]) -> Result<Self, std::io::Error> {
-        let mut proofs = Self {
-            files: Vec::new(),
-            unreadable: Vec::new(),
-            bad_backups: Vec::new(),
-            backups: 0,
-            disagreements: Vec::new(),
-            count: 0,
-        };
-        let mut hashes = BTreeMap::new();
-        for (path, rank) in wall_paths(state)? {
-            match decode(&path) {
-                Ok(decoded) => {
-                    hashes.insert(path.clone(), decoded.hash);
-                    proofs.files.push(Evidence {
-                        path,
-                        after: decoded.file.last_seq,
-                        seeded: decoded.seeded,
-                        version: decoded.file.version,
-                        wall: decoded.file.wall,
-                        rank,
-                        fingerprint: None,
-                    });
-                    proofs.count += 1;
-                }
-                Err(e) => proofs.unreadable.push(format!("{}: {e}", path.display())),
-            }
-        }
-        for change in changes {
-            let What::Load {
-                backup,
-                fingerprint,
-                ..
-            } = &change.what
-            else {
-                continue;
-            };
-            let path = state.join("saves").join(format!("{backup}.json"));
-            let held = proofs.files.iter().find(|e| e.path == path);
-            match held {
-                Some(e) if hashes.get(&path) == Some(fingerprint) => {
-                    let mut e = e.clone();
-                    e.rank = 0;
-                    e.after = change.seq.saturating_sub(1);
-                    e.fingerprint = Some(fingerprint.clone());
-                    proofs.files.push(e);
-                    proofs.backups += 1;
-                }
-                Some(_) | None => proofs.bad_backups.push(backup.clone()),
-            }
-        }
-        proofs
-            .files
-            .sort_by(|a, b| (a.after, a.rank, &a.path).cmp(&(b.after, b.rank, &b.path)));
-        let mut files: Vec<Evidence> = Vec::new();
-        for evidence in std::mem::take(&mut proofs.files) {
-            let Some(first) = files.last().filter(|f| f.after == evidence.after) else {
-                files.push(evidence);
-                continue;
-            };
-            // Two files at a time: the one that decides, and this one.
-            let said = match (first.file(), evidence.file()) {
-                (Ok(a), Ok(b)) => describe(&differences(&a, &b, evidence.seeded)),
-                (Err(e), _) | (_, Err(e)) => e.to_string(),
-            };
-            if !said.is_empty() {
-                proofs.disagreements.push(format!(
-                    "{} and {} disagree after change {}: {said}",
-                    first.label(),
-                    evidence.label(),
-                    evidence.after,
-                ));
-            }
-        }
-        proofs.files = files;
-        Ok(proofs)
-    }
-
-    pub fn at(&self, seq: u64) -> Option<&Evidence> {
-        self.files.iter().find(|e| e.after == seq)
-    }
-
-    /// The wall the load `change` put up, or why it is not known.
-    pub fn incoming(
-        &self,
-        state: &Path,
-        change: &Change,
-        changes: &[Change],
-    ) -> Result<PatchFile, String> {
-        let What::Load {
-            save,
-            modules,
-            cables,
-            tempo,
-            ..
-        } = &change.what
-        else {
-            return Err(format!("change {} is not a load", change.seq));
-        };
-        let next = changes
-            .iter()
-            .find(|c| {
-                c.seq > change.seq
-                    && !matches!(
-                        c.what,
-                        What::Record { .. } | What::Speak { .. } | What::Abandoned { .. }
-                    )
-            })
-            .map_or(u64::MAX, |c| c.seq);
-        if let Some(e) = self
-            .files
-            .iter()
-            .find(|e| e.after >= change.seq && e.after < next)
-        {
-            return e.file().map_err(|e| e.to_string());
-        }
-        if save.is_none() && change.undoes.is_none() {
-            let mut file = Patch::empty(*tempo).to_file();
-            if let Some(e) = self.files.iter().find(|e| e.wall == change.seq && e.seeded) {
-                file.seed = e.file().map_err(|e| e.to_string())?.seed;
-            }
-            return Ok(file);
-        }
-        if let Some(undone) = change.undoes {
-            return match self
-                .files
-                .iter()
-                .find(|e| e.rank == 0 && e.after == undone.saturating_sub(1))
-            {
-                Some(e) => e.file().map_err(|e| e.to_string()),
-                None => Err(format!(
-                    "the backup of the wall load {undone} replaced does not hold its fingerprint"
-                )),
-            };
-        }
-        let name = save.as_deref().unwrap_or_default();
-        let path = state.join("saves").join(format!("{name}.json"));
-        let file = decode(&path)?.wall();
-        let at = chrono::NaiveDateTime::parse_from_str(&change.at, "%Y-%m-%dT%H:%M:%SZ")
-            .map_err(|e| format!("its time {} does not read: {e}", change.at))?
-            .and_utc();
-        let modified = fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .map_err(|e| format!("when it was last written is not known: {e}"))?;
-        if chrono::DateTime::<chrono::Utc>::from(modified) >= at {
-            Err("it was written again after the load".into())
-        } else if u32::try_from(file.modules.len()) != Ok(*modules)
-            || u32::try_from(file.cables.len()) != Ok(*cables)
-            || !same(file.tempo, *tempo)
-        {
-            Err("its modules, cables or tempo are not those the load put up".into())
-        } else {
-            Ok(file)
-        }
-    }
-}
 
 pub(super) const fn same(a: f64, b: f64) -> bool {
     // Knob values are held to f32 ranges: the narrowing is exact enough.
@@ -479,13 +163,13 @@ impl Model {
     fn adopt_births(&mut self, how: Found) -> Result<(), TreeError> {
         for module in &mut self.file.modules {
             let key = (self.file.wall, module.id.clone());
-            let birth = if let Some(birth) = self.births.get(&key) {
-                if matches!(how, Found::Load) {
-                    self.kept_load += 1;
-                }
-                birth.clone()
-            } else if let Some(birth) = &module.birth {
+            if matches!(how, Found::Load) && self.births.contains_key(&key) {
+                self.kept_load += 1;
+            }
+            let birth = if let Some(birth) = &module.birth {
                 birth.parse()?
+            } else if let Some(birth) = self.births.get(&key) {
+                birth.clone()
             } else {
                 match how {
                     Found::Start => self.found_start += 1,
@@ -719,48 +403,8 @@ impl Model {
     fn forward(&mut self, what: &What, change: &Change, result: &mut Applied) {
         let seq = change.seq;
         match what {
-            What::Turn {
-                module,
-                knob,
-                from,
-                to,
-                ..
-            } => {
-                let key = format!("{module}.{knob}");
-                let since = self.since(&[key.as_str(), module.as_str()]);
-                // A knob a file from an older build lacks loads as its default.
-                let Some(target) = self
-                    .file
-                    .modules
-                    .iter_mut()
-                    .find(|m| m.id == *module)
-                    .and_then(|m| match default_of(&m.kind, knob) {
-                        Some(default) => Some(m.knobs.entry(knob.clone()).or_insert(default)),
-                        None => m.knobs.get_mut(knob),
-                    })
-                else {
-                    result.unknown = Some(format!(
-                        "change {seq} turns {module}.{knob}, which the wall the log makes does not have"
-                    ));
-                    return;
-                };
-                let held = *target;
-                *target = *to;
-                Self::check(result, same(held, *from), || {
-                    format!("{key} was {from}, not {held} as the log has it since change {since}")
-                });
-                self.set(key, change);
-            }
-            What::Tempo { from, to, .. } => {
-                let held = self.file.tempo;
-                let since = self.since(&["tempo"]);
-                Self::check(result, same(held, *from), || {
-                    format!(
-                        "the tempo was {from} BPM, not {held} BPM as the log has it since change {since}"
-                    )
-                });
-                self.file.tempo = *to;
-                self.set("tempo".into(), change);
+            What::Turn { .. } | What::Tempo { .. } => {
+                self.forward_value(what, change, result);
             }
             What::Patch { cable, replaced } => {
                 if !self.ends(cable) {
@@ -828,6 +472,56 @@ impl Model {
             }
             What::Record { .. } | What::Speak { .. } | What::Abandoned { .. } => {}
             // Every other op, and any op added later: the model cannot say.
+            _ => result.unknown = Some(change.summary.clone()),
+        }
+    }
+
+    fn forward_value(&mut self, what: &What, change: &Change, result: &mut Applied) {
+        let seq = change.seq;
+        match what {
+            What::Turn {
+                module,
+                knob,
+                from,
+                to,
+                ..
+            } => {
+                let key = format!("{module}.{knob}");
+                let since = self.since(&[key.as_str(), module.as_str()]);
+                // A knob a file from an older build lacks loads as its default.
+                let Some(target) = self
+                    .file
+                    .modules
+                    .iter_mut()
+                    .find(|m| m.id == *module)
+                    .and_then(|m| match default_of(&m.kind, knob) {
+                        Some(default) => Some(m.knobs.entry(knob.clone()).or_insert(default)),
+                        None => m.knobs.get_mut(knob),
+                    })
+                else {
+                    result.unknown = Some(format!(
+                        "change {seq} turns {module}.{knob}, which the wall the log makes does not have"
+                    ));
+                    return;
+                };
+                let held = *target;
+                *target = *to;
+                Self::check(result, same(held, *from), || {
+                    format!("{key} was {from}, not {held} as the log has it since change {since}")
+                });
+                self.set(key, change);
+            }
+            What::Tempo { from, to, .. } => {
+                let held = self.file.tempo;
+                let since = self.since(&["tempo"]);
+                Self::check(result, same(held, *from), || {
+                    format!(
+                        "the tempo was {from} BPM, not {held} BPM as the log has it since change {since}"
+                    )
+                });
+                self.file.tempo = *to;
+                self.set("tempo".into(), change);
+            }
             _ => result.unknown = Some(change.summary.clone()),
         }
     }

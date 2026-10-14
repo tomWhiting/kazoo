@@ -15,11 +15,18 @@ use super::{Files, TreeError};
 use crate::protocol::{Change, What};
 use crate::store::{LOG_FILE, LoadedLog, OLD_LOG_FILE, Store};
 
+mod births;
+mod evidence;
+#[cfg(test)]
+mod fixtures;
 mod model;
+#[cfg(test)]
+mod regressions;
 #[cfg(test)]
 mod tests;
 
-use model::{Evidence, Found, Model, Proofs, describe, differences};
+use evidence::{Evidence, Proofs};
+use model::{Found, Model, describe, differences};
 
 /// Why the first rings were not grown. Nothing in the tree is changed.
 #[derive(Debug)]
@@ -28,6 +35,8 @@ pub enum RingsError {
     WallRunning,
     /// The tree's directory is something other than a tree, or cannot be.
     NotATree(String),
+    /// The bare tree's HEAD names something other than trunk.
+    NotTrunk(String),
     /// The tree has a trunk the import did not grow.
     HasTrunk(String),
     /// The trunk does not grow from the import's last ring.
@@ -46,7 +55,7 @@ impl fmt::Display for RingsError {
             Self::WallRunning => f.write_str(
                 "the wall is playing: stop it first (kazoo wall stop), then import; the first rings grow only from a log nobody is writing",
             ),
-            Self::NotATree(s) | Self::HasTrunk(s) | Self::Diverged(s) | Self::NoWall(s) => {
+            Self::NotATree(s) | Self::NotTrunk(s) | Self::HasTrunk(s) | Self::Diverged(s) | Self::NoWall(s) => {
                 f.write_str(s)
             }
             Self::Tree(e) => e.fmt(f),
@@ -154,6 +163,16 @@ fn existing(tree: &Path, dry_run: bool) -> Result<Option<Rings>, RingsError> {
     }
     let end = reference(tree, "refs/tags/rings/end")?;
     let trunk = reference(tree, "refs/heads/trunk")?;
+    if trunk.is_none() {
+        let head = fs::read_to_string(tree.join("HEAD"))?;
+        let head = head.trim();
+        if head != "ref: refs/heads/trunk" {
+            return Err(RingsError::NotTrunk(format!(
+                "the tree's HEAD is {}, not trunk; nothing is changed",
+                head.strip_prefix("ref: ").unwrap_or(head)
+            )));
+        }
+    }
     match (end, trunk) {
         (Some(end), Some(trunk)) => in_already(tree, end, trunk).map(Some),
         (Some(end), None) => {
@@ -268,11 +287,12 @@ fn salts(state: &Path) -> Result<(BTreeMap<u64, u64>, u64), io::Error> {
         for line in BufReader::new(file).split(b'\n') {
             let line = line?;
             // Unreadable lines are `load_log`'s to count; they have no seq.
-            if let Ok(change) = serde_json::from_slice::<Change>(&line) {
-                salts
-                    .entry(change.seq)
-                    .or_insert_with(|| crate::chance::fnv1a64(&line));
-            }
+            let Ok(change) = serde_json::from_slice::<Change>(&line) else {
+                continue;
+            };
+            salts
+                .entry(change.seq)
+                .or_insert_with(|| crate::chance::fnv1a64(&line));
         }
     }
     Ok((salts, bytes))
@@ -497,8 +517,12 @@ impl Walk<'_> {
                         .proofs
                         .incoming(self.log.state, change, self.log.changes)
                     {
-                        Ok(file) => {
+                        Ok((file, note)) => {
                             self.model.adopt(&file, change.seq, Found::Load)?;
+                            if let Some(note) = note {
+                                self.gap_lines
+                                    .push(format!("births at load {}: {note}", change.seq));
+                            }
                             whole = true;
                         }
                         Err(why) => {
@@ -753,6 +777,7 @@ fn run(tree: &Path, log: Log<'_>) -> Result<(Rings, String), RingsError> {
             walk.unknown_reason
         )));
     }
+    walk.ending(last)?;
     walk.importer
         .tag("refs/tags/rings/end", &format!(":{}", walk.mark))?;
     walk.report.trunk = walk.importer.checkpoint(walk.mark)?;
@@ -764,12 +789,7 @@ fn run(tree: &Path, log: Log<'_>) -> Result<(Rings, String), RingsError> {
 impl Walk<'_> {
     fn summary(&self, last: &Change) -> String {
         let model = &self.model;
-        let patch = self
-            .log
-            .proofs
-            .files
-            .iter()
-            .find(|e| e.path == self.log.state.join("patch.json"));
+        let patch = self.log.proofs.patch.as_ref();
         let (tip_seq, tip_at) = &self.tip;
         let mut trunk = format!("trunk: {} (change {tip_seq}, {tip_at})", self.report.trunk);
         if *tip_seq < last.seq {
