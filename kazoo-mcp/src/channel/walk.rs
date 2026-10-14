@@ -86,11 +86,25 @@ impl Walks {
         }
     }
 
+    /// The summary of a go held for a replacement event that never came
+    /// (the line dropped between them, or another change arrived first).
+    pub(super) fn orphan(&mut self) -> Option<String> {
+        self.pending.take().map(|go| go.summary)
+    }
+
+    /// The wall was replaced by change `seq` of `seat`: `Some(true)` when it
+    /// starts a walk, `Some(false)` when it continues one, `None` when it
+    /// was not the go held (a load, or a go whose change was not heard),
+    /// leaving any go held for [`Self::orphan`].
     pub(super) fn loaded(&mut self, seq: u64, seat: &str, now: Instant) -> Option<bool> {
-        let go = self.pending.take()?;
-        if go.seq != seq || go.seat != seat {
+        if !self
+            .pending
+            .as_ref()
+            .is_some_and(|go| go.seq == seq && go.seat == seat)
+        {
             return None;
         }
+        let go = self.pending.take()?;
         if let Some(walk) = self.active.iter_mut().find(|walk| walk.seat == seat) {
             walk.count += 1;
             walk.summary = go.summary;

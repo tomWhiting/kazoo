@@ -443,3 +443,33 @@ fn the_walker_leaving_tells_its_walk_at_once() {
     );
     assert_eq!(news.due(WINDOW), None);
 }
+
+#[test]
+fn a_go_cut_off_by_the_line_dropping_is_still_told() {
+    let t0 = Instant::now();
+    let mut news = News::new("Waffles".to_string());
+    let place = TreePlace {
+        commit: "a1b2c3d4e5f6012345678901234567890123456789".to_string(),
+        mark: None,
+        branch: None,
+        change: Some(6810),
+    };
+    let what = What::Go {
+        from: place.clone(),
+        to: place,
+        backup: "before-go".to_string(),
+        fingerprint: "hash".to_string(),
+        modules: 140,
+        cables: 189,
+        tempo: 96.0,
+        by_console: true,
+    };
+    news.take(go_change(41, "Tom", what, None), t0);
+    news.take(Feed::Down, t0);
+    let told = tell(&mut news, t0).unwrap();
+    assert!(
+        told.contains("- Tom went to the moment after change 6810: 140 modules"),
+        "{told}"
+    );
+    assert!(told.contains("- the line to the wall dropped"), "{told}");
+}

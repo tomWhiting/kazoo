@@ -131,6 +131,7 @@ impl News {
                 }
             }
             Feed::Down => {
+                self.orphan(now);
                 self.seats.clear();
                 self.push(
                     "the line to the wall dropped (the wall may have stopped); this seat \
@@ -146,6 +147,7 @@ impl News {
                 self.seq = self.seq.max(seq);
             }
             Feed::Event(Event::Change { change }) => {
+                self.orphan(now);
                 self.seq = self.seq.max(change.seq);
                 if change.seat != self.seat && !self.walks.changed(&change) {
                     self.push(clean(&change.summary), now);
@@ -232,6 +234,7 @@ impl News {
                 }
                 Some(false) => {}
                 None => {
+                    self.orphan(now);
                     self.end_walks(now);
                     self.push_told(
                         "the whole wall was replaced: what this seat knew of it is stale"
@@ -304,6 +307,15 @@ impl News {
             text: line,
             told: true,
         });
+    }
+
+    /// A go held for a replacement event that never came is told as the
+    /// change it was, and the wall it replaced is stale.
+    fn orphan(&mut self, now: Instant) {
+        if let Some(summary) = self.walks.orphan() {
+            self.push_told(summary, now);
+            self.urgent = true;
+        }
     }
 
     fn rest(&mut self, now: Instant) {
