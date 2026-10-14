@@ -13,6 +13,8 @@ use crate::protocol::{ChangeResult, ProbeResult, Snapshot};
 use crate::seed::seed;
 use crate::store::{FailAt, Loaded};
 
+mod delay_lines;
+
 fn wall() -> (Wall, Engine) {
     let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
     (
@@ -260,13 +262,8 @@ fn the_wall_has_no_fixed_size_and_grows_its_engine_as_it_goes() {
     }
     assert!(cables > 320, "{cables}");
     assert_eq!(wall.patch().cables().len(), cables);
-    assert_eq!(wall.lines.len(), cables);
-    // Every cable has a line of its own, and the engine has been sent
-    // room for every module and line, grown by doubling.
-    let lines: BTreeSet<u32> = wall.lines.values().map(|(line, _)| *line).collect();
-    assert_eq!(lines.len(), cables);
+    assert_eq!(wall.lined.len(), wall.timing.delays.len());
     assert!(wall.engine.slots() >= target && wall.engine.slots().is_power_of_two());
-    assert!(wall.engine.lines() >= cables);
 }
 
 #[test]
@@ -1139,9 +1136,7 @@ fn a_cable_keeps_its_line_and_a_new_one_takes_the_lowest_free() {
         ],
         now,
     );
-    let before = wall.lines.clone();
-    let lines: Vec<u32> = cables.iter().map(|id| before[id].0).collect();
-    assert_eq!(lines, [0, 1, 2]);
+    assert!(wall.lined.is_empty());
     let unplug = Request::Unpatch {
         cable: Some(cables[1]),
         to: None,
@@ -1159,13 +1154,8 @@ fn a_cable_keeps_its_line_and_a_new_one_takes_the_lowest_free() {
         }) => cable.id,
         other => panic!("{other:?}"),
     };
-    // The others keep line and tag; the newcomer takes line 1 under a tag
-    // never used before.
-    assert_eq!(wall.lines[&cables[0]], before[&cables[0]]);
-    assert_eq!(wall.lines[&cables[2]], before[&cables[2]]);
-    let (line, tag) = wall.lines[&new];
-    assert_eq!(line, 1);
-    assert!(before.values().all(|(_, old)| *old != tag));
+    assert!(!wall.lined.contains_key(&new));
+    assert!(wall.lined.is_empty());
 }
 
 #[test]
@@ -1424,7 +1414,7 @@ fn a_wall_past_the_old_limits_grows_and_plays_without_allocating() {
     assert_eq!(cables, OLD_CABLES * 2);
     let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
     let mut wall = Wall::new(patch, control, None, Vec::new(), None);
-    assert_eq!(wall.lines.len(), cables);
+    assert_eq!(wall.lined.len(), wall.timing.delays.len());
     // The engine starts with room for a modest wall. The room and lines
     // this one needs were built on the control side and sent; the engine
     // moves into them as it renders, without allocating.
@@ -1432,7 +1422,11 @@ fn a_wall_past_the_old_limits_grows_and_plays_without_allocating() {
     let mut buffer = vec![0.0_f32; 512 * 2];
     render_without_allocating(&mut engine, &mut buffer);
     assert!(wall.engine.shared().slots() >= OLD_MODULES * 2);
-    assert!(wall.engine.shared().lines() >= cables);
+    while wall.engine.backlog() > 0 {
+        assert!(wall.engine.pump().is_empty());
+        render_without_allocating(&mut engine, &mut buffer);
+    }
+    assert_eq!(wall.engine.shared().lines(), wall.lined.len());
     for _ in 0..5 {
         render_without_allocating(&mut engine, &mut buffer);
         wall.tick(Instant::now());

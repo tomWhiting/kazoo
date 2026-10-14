@@ -5,19 +5,19 @@ use super::*;
 
 const RATE: f32 = 48_000.0;
 
-/// A route on line 3, owned by tag 7, with `delay` frames.
+/// A route owned by tag 7, with `delay` frames.
 fn route(delay: u16, gate: bool) -> Route {
     Route {
         delay,
         gate,
-        ..Route::new(0, 0, 1.0, 3, 7)
+        ..Route::new(0, 0, 1.0, 7)
     }
 }
 
 /// Run `signal` through `lines`, a sub-block at a time, with the route
 /// `route_at(frame)` for each sub-block starting at `frame`.
 fn run(
-    lines: &mut Lines,
+    lines: &mut Line,
     frames: usize,
     signal: impl Fn(usize) -> f32,
     route_at: impl Fn(usize) -> Route,
@@ -40,7 +40,7 @@ fn run(
 #[test]
 fn a_delay_holds_the_signal_back_exactly() {
     for delay in [0, 1, 31, 32, 43, 70, 1_024] {
-        let mut lines = Lines::new(RATE, 4);
+        let mut lines = Line::new(RATE).unwrap();
         let out = run(
             &mut lines,
             4_096,
@@ -55,7 +55,7 @@ fn a_delay_holds_the_signal_back_exactly() {
 
 #[test]
 fn the_amount_scales_what_arrives() {
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     let half = Route {
         amount: -0.5,
         ..route(0, false)
@@ -94,7 +94,7 @@ fn levels_db(samples: &[f32], window: usize) -> Vec<f32> {
 /// frames hold a whole number of the tone's cycles.
 fn moves_smoothly(from: u16, to: u16, hz: f32, window: usize, rate: f32) {
     let tone = sine(hz, rate);
-    let mut lines = Lines::new(rate, 4);
+    let mut lines = Line::new(rate).unwrap();
     let second = rate as usize;
     // Long enough for the longest glide (51 200 frames for 1 024) to end.
     let frames = second + 60_000;
@@ -140,7 +140,7 @@ fn glide_frames(from: u16, to: u16) -> usize {
     // its new delay reads measurably wrong. (A sine's crest would read
     // right a frame early, its slope there being nearly nothing.)
     let tone = |frame: usize| (frame % 256) as f32 / 256.0;
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     let start = 48_000;
     let out = run(&mut lines, start + 60_000, tone, |frame| {
         route(if frame < start { from } else { to }, false)
@@ -169,7 +169,7 @@ fn a_glide_lasts_fifty_frames_for_every_frame_moved() {
 #[test]
 fn a_change_during_a_glide_turns_the_glide_round() {
     let tone = sine(50.0, RATE);
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     // 0 → 40 at one second, then → 80 64 frames later, mid-glide.
     let out = run(&mut lines, 96_000, &tone, |frame| {
         route(
@@ -224,7 +224,7 @@ fn only_zeroes_and_ones(samples: &[f32]) -> bool {
 
 /// Run `gate` with its delay moving from `from` to `to` a second in.
 fn move_gate(gate: impl Fn(usize) -> f32, from: u16, to: u16) -> Vec<f32> {
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     run(&mut lines, 96_000, gate, |frame| {
         route(if frame < 48_016 { from } else { to }, true)
     })
@@ -286,7 +286,7 @@ fn a_move_taken_back_forgets_how_long_it_waited() {
             0.0
         }
     };
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     let out = run(&mut lines, 12_000, gate, |frame| {
         let delay = match frame {
             f if f < 64 => 0,
@@ -306,7 +306,7 @@ fn a_move_taken_back_forgets_how_long_it_waited() {
 
 #[test]
 fn a_new_cable_on_a_line_starts_clean() {
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     run(&mut lines, 4_096, |_| 1.0, |_| route(500, false));
     // The line changes hands: nothing of the old cable comes through.
     let newcomer = Route {
@@ -318,81 +318,128 @@ fn a_new_cable_on_a_line_starts_clean() {
 }
 
 #[test]
+fn a_playing_cable_joins_a_line_before_gliding_to_its_first_delay() {
+    let tone = |frame| sine(1_000.0, RATE)(frame).mul_add(0.25, 0.25);
+    for delay in [43, MAX_CABLE_DELAY] {
+        let mut line = Line::joining(RATE, 7).unwrap();
+        let source = std::array::from_fn(tone);
+        let mut first = [0.0; SUB_BLOCK];
+        line.carry(&route(delay, false), &source, &mut first);
+        assert_eq!(first.map(f32::to_bits), source.map(f32::to_bits));
+        assert_eq!(line.tap.at.to_bits(), 0.0_f64.to_bits());
+        let mut out = first.to_vec();
+        out.extend(run(
+            &mut line,
+            60_000,
+            |frame| tone(frame + SUB_BLOCK),
+            |_| route(delay, false),
+        ));
+        let own: Vec<f32> = (0..out.len()).map(tone).collect();
+        assert!(largest_step(&out) <= largest_step(&own).mul_add(1.02, 1e-5));
+        assert!(out.iter().all(|sample| *sample > 0.0));
+        for (frame, sample) in out.iter().enumerate().skip(59_000) {
+            assert!((sample - tone(frame - usize::from(delay))).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn a_joining_line_keeps_direct_history_until_its_route_arrives() {
+    let mut line = Line::joining(RATE, 7).unwrap();
+    let direct = Route {
+        tag: 0,
+        ..route(0, false)
+    };
+    let source = [0.25; SUB_BLOCK];
+    let mut out = [0.0; SUB_BLOCK];
+    for _ in 0..100 {
+        line.carry(&direct, &source, &mut out);
+        assert_eq!(out.map(f32::to_bits), source.map(f32::to_bits));
+    }
+    line.carry(&route(MAX_CABLE_DELAY, false), &source, &mut out);
+    assert_eq!(out.map(f32::to_bits), source.map(f32::to_bits));
+    assert!(line.tap.gliding);
+    assert!(line.tap.at > 0.0 && line.tap.at < f64::from(MAX_CABLE_DELAY));
+}
+
+#[test]
+fn a_joining_gate_keeps_its_first_pulse_whole() {
+    let gate = |frame| if frame % 1_000 < 300 { 1.0 } else { 0.0 };
+    let mut line = Line::joining(RATE, 7).unwrap();
+    let out = run(&mut line, 96_000, gate, |_| route(700, true));
+    assert!(
+        out[..SUB_BLOCK]
+            .iter()
+            .all(|sample| sample.to_bits() == 1.0_f32.to_bits())
+    );
+    assert!(only_zeroes_and_ones(&out));
+    assert!(high_runs(&out).iter().all(|length| *length == 300));
+    for (frame, sample) in out.iter().enumerate().skip(95_000) {
+        assert_eq!(sample.to_bits(), gate(frame - 700).to_bits());
+    }
+}
+
+#[test]
+fn a_joining_line_given_to_another_cable_starts_silent() {
+    let mut line = Line::joining(RATE, 7).unwrap();
+    run(
+        &mut line,
+        4_096,
+        |_| 0.75,
+        |_| Route {
+            tag: 0,
+            ..route(0, false)
+        },
+    );
+    let newcomer = Route {
+        tag: 8,
+        ..route(500, false)
+    };
+    let out = run(&mut line, 400, |_| 0.25, |_| newcomer);
+    assert!(out.iter().all(|sample| *sample == 0.0));
+}
+
+#[test]
 fn nothing_but_numbers_come_out() {
-    let mut lines = Lines::new(RATE, 4);
     let wild = |i: usize| match i % 4 {
         0 => 3e38,
         1 => -3e38,
         2 => f32::NAN,
         _ => f32::INFINITY,
     };
-    let out = run(&mut lines, 96_000, wild, |frame| {
-        route(if frame < 1_000 { 0 } else { 777 }, false)
-    });
-    assert!(out.iter().all(|s| s.is_finite()));
+    for mut line in [Line::new(RATE).unwrap(), Line::joining(RATE, 7).unwrap()] {
+        let out = run(&mut line, 96_000, wild, |frame| {
+            route(if frame < 1_000 { 0 } else { 777 }, false)
+        });
+        assert!(out.iter().all(|s| s.is_finite()));
+    }
 }
 
 #[test]
 fn carrying_never_allocates() {
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = [Line::new(RATE).unwrap(), Line::joining(RATE, 7).unwrap()];
     let source = [0.5; SUB_BLOCK];
     let mut out = [0.0; SUB_BLOCK];
     let before = assert_no_alloc::violation_count();
     assert_no_alloc::assert_no_alloc(|| {
-        for step in 0..1_000_u16 {
-            lines.carry(&route(step % 200, step % 3 == 0), &source, &mut out);
+        for line in &mut lines {
+            line.carry(
+                &Route {
+                    tag: 0,
+                    ..route(0, false)
+                },
+                &source,
+                &mut out,
+            );
+            for step in 0..1_000_u16 {
+                line.carry(&route(step % 200, step % 3 == 0), &source, &mut out);
+            }
         }
     });
     assert_eq!(assert_no_alloc::violation_count(), before);
 }
 
 #[test]
-fn growing_keeps_every_line_and_its_history_without_allocating() {
-    let mut lines = Lines::new(RATE, 4);
-    assert_eq!(lines.len(), LINES_PER_PAGE, "whole pages");
-    // An impulse on line 3, held back 500 frames; the lines grow while it
-    // is still inside the line.
-    let impulse = |i: usize| if i == 100 { 1.0 } else { 0.0 };
-    let mut out = run(&mut lines, 320, impulse, |_| route(500, false));
-    let mut more = MoreLines::new(lines.len(), 1_000).unwrap();
-    assert_eq!(more.len(), 1_024, "whole pages");
-    let before = assert_no_alloc::violation_count();
-    let grew = assert_no_alloc::assert_no_alloc(|| lines.grow(&mut more));
-    assert_eq!(assert_no_alloc::violation_count(), before);
-    assert!(grew);
-    assert_eq!(lines.len(), 1_024);
-    // What is left to free is the old table, emptied of its lines.
-    assert_eq!(more.len(), LINES_PER_PAGE);
-    assert!(more.is_emptied());
-    out.extend(run(
-        &mut lines,
-        1_024,
-        |i| impulse(i + 320),
-        |_| route(500, false),
-    ));
-    let at = out.iter().position(|s| *s != 0.0).unwrap();
-    assert_eq!(at, 600, "the impulse arrives on time across the growth");
-    // The new lines carry too: one far past the old page.
-    let far = Route {
-        line: 999,
-        ..route(0, false)
-    };
-    let out = run(&mut lines, 64, |_| 0.5, |_| far);
-    assert!(out.iter().all(|s| (*s - 0.5).abs() < 1e-7));
-}
-
-#[test]
-fn a_table_no_larger_is_left_alone_and_lines_past_the_end_are_silent() {
-    let mut lines = Lines::new(RATE, 4);
-    let mut same = MoreLines::new(4, LINES_PER_PAGE).unwrap();
-    assert!(!lines.grow(&mut same));
-    assert_eq!(lines.len(), LINES_PER_PAGE);
-    let past = Route {
-        line: u32::try_from(LINES_PER_PAGE).unwrap(),
-        ..route(0, false)
-    };
-    let out = run(&mut lines, 64, |_| 0.5, |_| past);
-    assert!(out.iter().all(|s| *s == 0.0));
-    // A table there is no memory for is refused on the control side.
-    assert!(MoreLines::new(0, usize::MAX).is_none());
+fn an_impossible_history_allocation_is_refused() {
+    assert!(slice_of::<f32>(usize::MAX, || 0.0).is_none());
 }

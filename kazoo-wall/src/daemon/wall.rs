@@ -6,6 +6,7 @@
 
 mod chains;
 mod cost;
+mod delay_lines;
 mod loops;
 pub(super) mod unheard;
 
@@ -593,8 +594,14 @@ pub struct Wall {
     unheard: Vec<String>,
     /// Heard modules and cables into them, sharing the measured render load.
     heard_units: usize,
-    /// Each cable's delay line and the tag it owns it under, by cable id.
-    lines: BTreeMap<u32, (u32, u32)>,
+    /// The tag of every cable that has needed delay.
+    lined: BTreeMap<u32, u32>,
+    /// Destinations recorded as lines are placed, until they are retired.
+    line_places: BTreeMap<u32, (usize, usize)>,
+    /// Destinations of cables in the last table sent.
+    sent_cables: BTreeMap<u32, (usize, usize)>,
+    #[cfg(test)]
+    line_allocator: fn(f32, u32, bool) -> Option<crate::engine::Line>,
     /// The last tag given to a delay line.
     line_tags: u32,
     /// One prepared effect of each kind on the wall, and the rate it was
@@ -1318,7 +1325,11 @@ impl Wall {
             timing: Timing::default(),
             unheard: Vec::new(),
             heard_units: 0,
-            lines: BTreeMap::new(),
+            lined: BTreeMap::new(),
+            line_places: BTreeMap::new(),
+            sent_cables: BTreeMap::new(),
+            #[cfg(test)]
+            line_allocator: delay_lines::make_line,
             line_tags: 0,
             probes: HashMap::new(),
             settled: HashMap::new(),
@@ -1499,13 +1510,16 @@ impl Wall {
         self.loops.replace_wall();
         self.restart_load_watch();
         self.rack = Rack::default();
+        self.lined.clear();
+        self.line_places.clear();
+        self.sent_cables.clear();
         // What the old engine's modules measured is gone with them.
         self.readings.clear();
         // Every knob goes in at its target, with nothing gliding.
         self.settled.clear();
         self.settling.clear();
         let modules = self.patch.modules().to_vec();
-        self.reserve_for(modules.len(), self.patch.cables().len());
+        self.reserve_for(modules.len());
         for module in &modules {
             if self.insert(module) {
                 self.put_back_words(&module.id);
@@ -1520,22 +1534,18 @@ impl Wall {
         }
     }
 
-    /// Size the engine for a wall of `modules` modules and `cables` cables
-    /// before anything goes in: one room and one line table, not a doubling
-    /// at every page on the way.
-    fn reserve_for(&mut self, modules: usize, cables: usize) {
+    /// Size the engine for `modules` modules before anything goes in.
+    fn reserve_for(&mut self, modules: usize) {
         let slots = self.rack.slots_for(modules);
-        if !self.engine.reserve_slots(slots) || !self.engine.reserve_lines(cables) {
-            eprintln!(
-                "kazoo-wall: no memory for {modules} modules and {cables} cables in the engine"
-            );
+        if !self.engine.reserve_slots(slots) {
+            eprintln!("kazoo-wall: no memory for {modules} modules in the engine");
         }
     }
 
     /// Swap the wall the engine plays for the patch, as it plays: the
     /// master fades out, every module comes out and the patch's go in,
-    /// knobs at their targets and nothing gliding, with fresh delay lines
-    /// for every cable, and the master fades back in (see
+    /// knobs at their targets and nothing gliding, with fresh lines at
+    /// delayed jacks, and the master fades back in (see
     /// [`Command::Hush`]). The engine's clock, the desk link and a
     /// recording under way carry on through it; the wall's own tempo
     /// becomes the patch's, unless the desk keeps the tempo.
@@ -1546,7 +1556,9 @@ impl Wall {
         }
         self.speech.replace_wall();
         self.loops.replace_wall();
-        self.lines.clear();
+        self.lined.clear();
+        self.line_places.clear();
+        self.sent_cables.clear();
         self.settled.clear();
         self.settling.clear();
         // Faults not yet told, and readings, belong to modules that have
@@ -1559,7 +1571,7 @@ impl Wall {
         self.file_grown = 0;
         self.restart_load_watch();
         let modules = self.patch.modules().to_vec();
-        self.reserve_for(modules.len(), self.patch.cables().len());
+        self.reserve_for(modules.len());
         for module in &modules {
             if self.insert(module) {
                 self.put_back_words(&module.id);
@@ -1656,6 +1668,13 @@ impl Wall {
     }
 
     fn send_tables(&mut self) {
+        let heard_before: BTreeSet<usize> = self
+            .rack
+            .index
+            .iter()
+            .filter(|(id, _)| !self.unheard.contains(id))
+            .map(|(_, slot)| *slot)
+            .collect();
         let mut edges = Vec::with_capacity(self.patch.cables().len());
         for cable in self.patch.cables() {
             if let (Some(from), Some(to)) = (
@@ -1690,7 +1709,6 @@ impl Wall {
             latencies.get(id).copied().unwrap_or(0)
         });
         self.timing.unsteady = self.unsteady();
-        self.assign_lines();
         // The table room_to_grow made sure of, or one made now for the rack
         // as it stands (a re-timing, or a change that added nothing).
         let slots = self.rack.slots.len();
@@ -1712,11 +1730,11 @@ impl Wall {
             .iter()
             .map(|module| (module.id.as_str(), module.kind))
             .collect();
+        let mut routed = BTreeMap::new();
         for cable in self.patch.cables() {
-            let (Some(from), Some(to), Some(&(line, tag))) = (
+            let (Some(from), Some(to)) = (
                 self.rack.slot_of(&cable.from_module),
                 self.rack.slot_of(&cable.to_module),
-                self.lines.get(&cable.id),
             ) else {
                 continue;
             };
@@ -1730,20 +1748,26 @@ impl Wall {
                 eprintln!("kazoo-wall: cable {} is out of any range", cable.id);
                 continue;
             };
+            let tag = self.lined.get(&cable.id).copied().unwrap_or(0);
             let route = Route {
                 delay: self.timing.delays.get(&cable.id).copied().unwrap_or(0),
                 gate: carries_gate(&kinds, cable),
-                ..Route::new(from, port, cable.amount, line, tag)
+                ..Route::new(from, port, cable.amount, tag)
             };
             if !table.set(to, jack, Some(route)) {
                 eprintln!(
                     "kazoo-wall: cable {} could not go in the engine's table and is not played",
                     cable.id
                 );
+            } else {
+                routed.insert(cable.id, (to, jack));
             }
         }
+        self.place_lines(&routed, &heard_before);
+        self.apply_line_delays(&mut table, &routed);
         self.engine.send(Command::Cables(Box::new(table)));
         self.engine.send(Command::Order(Box::new(order)));
+        self.sent_cables = routed;
         self.tables_sent = self.tables_sent.wrapping_add(1);
         self.note_rewiring();
     }
@@ -1806,32 +1830,6 @@ impl Wall {
         }
         self.wiring.retain(|id, _| measuring.contains(id));
         self.fresh_from.retain(|id, _| measuring.contains(id));
-    }
-
-    /// Give every cable a delay line of its own, kept for its life: a cable
-    /// keeps its line and tag across table swaps, a new cable takes the
-    /// lowest free line under a tag never used before.
-    fn assign_lines(&mut self) {
-        let present: BTreeSet<u32> = self.patch.cables().iter().map(|cable| cable.id).collect();
-        self.lines.retain(|id, _| present.contains(id));
-        let mut taken: BTreeSet<u32> = self.lines.values().map(|(line, _)| *line).collect();
-        // Lines below `lowest` are all taken: the search for a free one
-        // carries on from where the last one was found.
-        let mut lowest = 0_u32;
-        for id in present {
-            if self.lines.contains_key(&id) {
-                continue;
-            }
-            // There are fewer cables than u32 has numbers, so a free line
-            // is always found.
-            let Some(line) = (lowest..=u32::MAX).find(|line| !taken.contains(line)) else {
-                continue;
-            };
-            lowest = line;
-            taken.insert(line);
-            self.line_tags = self.line_tags.wrapping_add(1).max(1);
-            self.lines.insert(id, (line, self.line_tags));
-        }
     }
 
     /// Every module's latency in frames, with its knobs as they last
@@ -2878,16 +2876,6 @@ impl Wall {
             return Err(error(
                 ErrorCode::Full,
                 "the machine has no memory for another module",
-            ));
-        }
-        // Each cable has a line, and a new one takes the lowest free.
-        if !self
-            .engine
-            .reserve_lines(self.lines.len().saturating_add(growth.cables))
-        {
-            return Err(error(
-                ErrorCode::Full,
-                "the machine has no memory for another cable",
             ));
         }
         // The cable table the change will send, made now so that a machine

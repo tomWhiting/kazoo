@@ -5,6 +5,7 @@ use super::*;
 use crate::dsp::{Rng, build};
 
 mod cost;
+mod delays;
 mod sparse;
 mod unheard;
 
@@ -66,7 +67,7 @@ impl Model {
 
     fn send_tables(&self, control: &mut EngineControl) {
         let mut table = CableTable::new();
-        for (line, &(from, port, to, input, amount)) in self.cables.iter().enumerate() {
+        for &(from, port, to, input, amount) in &self.cables {
             // A tag from the cable's ends: a line that changes hands is
             // started afresh by the engine.
             let tag = u32::try_from(((from * 7 + port) * 97 + to) * 31 + input + 1).unwrap();
@@ -77,7 +78,6 @@ impl Model {
                     u32::try_from(from).unwrap(),
                     u8::try_from(port).unwrap(),
                     amount,
-                    u32::try_from(line).unwrap(),
                     tag,
                 )),
             ));
@@ -126,7 +126,7 @@ fn random_patching_never_allocates_on_the_audio_thread() {
     // Enough modules to outgrow the engine's first room while it plays.
     let most = INITIAL_SLOTS * 2;
     for round in 0..600 {
-        match pick(&mut rng, 6) {
+        match pick(&mut rng, 8) {
             0 | 1 if model.slots.len() < most => {
                 let free = (0..most)
                     .find(|slot| model.slots.iter().all(|(s, _)| s != slot))
@@ -168,6 +168,19 @@ fn random_patching_never_allocates_on_the_audio_thread() {
                     target: spec.knobs[knob].denormalise(rng.unit()),
                     glide_frames: pick(&mut rng, 20_000) as u32,
                 });
+            }
+            5 | 6 if !model.slots.is_empty() => {
+                let (slot, _) = model.slots[pick(&mut rng, model.slots.len())];
+                let jack = pick(&mut rng, MAX_JACKS);
+                if round % 2 == 0 {
+                    control.send(Command::Line {
+                        slot,
+                        jack,
+                        line: Box::new(Line::new(RATE as f32).unwrap()),
+                    });
+                } else {
+                    control.send(Command::Unline { slot, jack });
+                }
             }
             _ => control.send(Command::Tempo(f64::from(rng.unit()) * 300.0)),
         }
@@ -279,7 +292,7 @@ fn a_module_producing_nan_is_silenced_reset_and_reported() {
         knobs: [1.0; MAX_KNOBS],
     });
     let mut table = CableTable::new();
-    assert!(table.set(8, 0, Some(Route::new(7, 0, 1.0, 0, 1))));
+    assert!(table.set(8, 0, Some(Route::new(7, 0, 1.0, 1))));
     control.send(Command::Cables(Box::new(table)));
     control.send(Command::Order(Box::new(Order::new(&[7, 8], &[8]))));
     let mut buffer = Vec::new();
@@ -504,14 +517,11 @@ fn nonsense_commands_are_counted_not_obeyed() {
     control.send(Command::Room(Box::new(
         Room::new(0, INITIAL_SLOTS).unwrap(),
     )));
-    control.send(Command::Lines(Box::new(
-        MoreLines::new(INITIAL_LINES, INITIAL_LINES).unwrap(),
-    )));
     render(&mut engine, 32, &mut buffer);
-    assert_eq!(control.shared().ignored(), 6);
-    assert_eq!(control.retired_waiting(), 2);
+    assert_eq!(control.shared().ignored(), 5);
+    assert_eq!(control.retired_waiting(), 1);
     assert_eq!(engine.room.len(), INITIAL_SLOTS);
-    assert_eq!(control.shared().lines(), INITIAL_LINES);
+    assert_eq!(control.shared().lines(), 0);
 }
 
 #[test]
@@ -546,9 +556,9 @@ fn the_engine_grows_far_past_its_first_room_without_allocating() {
     model.send_tables(&mut control);
     // Sent, not yet in place: the engine grows as it takes its commands.
     assert!(control.slots() >= 2 + more);
-    assert!(control.lines() >= model.cables.len());
+    assert_eq!(control.lines(), 0);
     assert_eq!(control.shared().slots(), INITIAL_SLOTS);
-    assert_eq!(control.shared().lines(), INITIAL_LINES);
+    assert_eq!(control.shared().lines(), 0);
 
     // `render` runs the engine under assert_no_alloc: moving into the new
     // room and lines allocates and frees nothing on the audio thread.
@@ -1158,7 +1168,7 @@ fn a_new_cable_table_tells_only_the_modules_whose_inputs_it_moves() {
         let mut table = CableTable::new();
         for (line, &(to, input, amount)) in routes.iter().enumerate() {
             let line = u32::try_from(line).unwrap();
-            assert!(table.set(to, input, Some(Route::new(0, 0, amount, line, line + 1)),));
+            assert!(table.set(to, input, Some(Route::new(0, 0, amount, line + 1)),));
         }
         Command::Cables(Box::new(table))
     };

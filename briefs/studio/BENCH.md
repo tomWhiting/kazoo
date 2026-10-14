@@ -765,3 +765,75 @@ effect catalogue. No benchmark ran in the write-only round. The wall's
 sidestep cost provisionally uses ringmod's 379,420 ns per 512-frame block
 until `fx/sidestep` is measured on a quiet machine; this is a scheduling
 estimate, not a sidestep measurement.
+
+## KZ-D04 page-owned delay lines
+
+Measured at base `1c2dbfb` and the uncommitted `lane/kz-D04` tree. Both
+commands were `nice -n 10 env CARGO_BUILD_JOBS=4 NEXTEST_STATE_DIR=target/kz-logs/nextest cargo bench -p kazoo-wall --bench wall_render -- 'wall/cables'`
+(the actual state-directory argument was the absolute path in this lane).
+Both exited 0. Values are Criterion interval midpoints, in nanoseconds per
+512-frame block at 48 kHz.
+
+| row | before ns | after ns | before interval ns | after interval ns |
+|---|---:|---:|---|---|
+| wall/cables/10 | 290,630 | 557,680 | 268,580 to 316,260 | 466,530 to 672,640 |
+| wall/cables/100 | 607,520 | 492,910 | 496,510 to 737,230 | 460,990 to 531,800 |
+| wall/cables/1000 | 14,402,000 | 5,212,000 | 6,537,400 to 25,925,000 | 4,805,200 to 5,732,000 |
+| wall/cables/10000 | 46,997,000 | 70,849,000 | 43,061,000 to 51,402,000 | 62,546,000 to 79,898,000 |
+
+The after fixture printed `wall/cables/10000 lines=0`. The before fixture
+did not print its count. Receipts: `target/kz-logs/bench-before.txt` and
+`target/kz-logs/bench-after.txt`.
+
+The 10,000-cable midpoint regressed by 50.8%; the requested 3x improvement
+is not verified. These runs were under heavy shared-machine load. An uptime
+reading during the before run was 167.74 / 128.90 / 130.88; during the after
+run it was 94.41 / 116.17 / 122.25, and crate checks also ran concurrently.
+These observations do not isolate the mechanism's performance. The older
+D01 row of 141,610,000 ns is explicitly marked as not a baseline in this
+file; its ratio of 2.00x to this after row also does not meet 3x.
+
+A repeat on the frozen final source also exited 0
+(`target/kz-logs/bench-final.txt`). It again printed `lines=0` at 10,000.
+The one-minute / five-minute / fifteen-minute load during this repeat was
+77.70 / 93.24 / 109.02; the final crate suite was still running.
+
+| row | final repeat ns | interval ns |
+|---|---:|---|
+| wall/cables/10 | 626,170 | 541,580 to 715,840 |
+| wall/cables/100 | 1,495,400 | 1,239,700 to 1,767,100 |
+| wall/cables/1000 | 10,845,000 | 9,202,400 to 12,587,000 |
+| wall/cables/10000 | 100,870,000 | 89,220,000 to 112,930,000 |
+
+The final repeat is 2.15x slower than the measured base midpoint at 10,000,
+and 1.40x faster than the non-baseline D01 row. Neither meets the 3x target.
+Performance acceptance remains open; the observed regressions are retained.
+
+### KZ-D04 review: base and head interleaved (not a verdict)
+
+The reviewer built `wall_render` at base `1c2dbfb` and head `1c1dba2` (the
+same bench file at both, so both print the line count) and ran
+`wall_render-<side> --bench 'wall/cables' --noplot` three rounds, base then
+head each round, under `lockf ~/.kazoo-cargo.lock` so no kazoo cargo job ran
+beside them, 08:11 to 08:19 on 14 October. Load averages (1/5/15 min) at
+each start are in the table. Every run exited 0. Criterion midpoints, ns per
+512-frame block at 48 kHz:
+
+| round | side | load | cables/10 | cables/100 | cables/1000 | cables/10000 | lines at 10000 |
+|---|---|---|---:|---:|---:|---:|---:|
+| 1 | base | 102.38 / 78.18 / 73.00 | 718,970 | 1,585,900 | 12,596,000 | 122,970,000 | 10,048 |
+| 1 | head | 112.42 / 86.28 / 76.47 | 417,000 | 1,186,700 | 12,196,000 | 143,050,000 | 0 |
+| 2 | base | 145.13 / 102.58 / 83.55 | 887,870 | 1,366,600 | 15,114,000 | 252,110,000 | 10,048 |
+| 2 | head | 124.90 / 107.86 / 87.64 | 704,020 | 2,591,800 | 11,866,000 | 156,180,000 | 0 |
+| 3 | base | 118.48 / 108.40 / 89.48 | 669,680 | 1,523,300 | 14,772,000 | 162,120,000 | 10,048 |
+| 3 | head | 163.77 / 126.35 / 98.09 | 217,950 | 880,200 | 5,103,800 | 44,240,000 | 0 |
+
+The same binary moved 2x between rounds (base 10000: 123 to 252 ms), so at
+loads of 100 to 160 these rows cannot show 3x or rule it out. Head is
+faster than the base run beside it in 10 of 12 pairs; at 10000 it was
+slower in round 1 (1.16x) and faster in rounds 2 (1.61x) and 3 (3.66x).
+The line count is confirmed: 10,048 lines at base (157 pages of 64) and 0 at
+head. The 3x target is NOT CONFIRMED. A load-independent count (instructions and
+cycles per block for a fixed number of renders, `/usr/bin/time -l`) was
+being built when the review was stopped at 08:40 for Tom's 09:00 deadline,
+and no numbers came from it. Log: `target/kz-review/ab1.log`.
