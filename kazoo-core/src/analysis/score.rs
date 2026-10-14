@@ -11,6 +11,9 @@ pub mod wav;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod high_notes;
+
 use super::{PitchDetector, PitchDetectorConfig, cycle::CycleTracker};
 
 /// Trajectories are compared every 32 samples (0.67 ms at 48 kHz).

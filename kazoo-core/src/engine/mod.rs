@@ -48,7 +48,7 @@ use std::thread::JoinHandle;
 use ringbuf::traits::{Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
-use crate::analysis::{FormantData, PitchDetectorConfig};
+use crate::analysis::{FormantData, PitchDetectorConfig, VOICE_MAX_HZ, VOICE_MIN_HZ};
 use crate::io::StreamConfig;
 use crate::voice::judge::{self, OnsetConfig};
 use crate::{Result, SPECTRUM_FFT_SIZE};
@@ -70,8 +70,8 @@ pub struct EngineConfig {
     /// Audio stream configuration (device selection, sample rate, buffer size).
     pub stream: StreamConfig,
 
-    /// The judge's pYIN range and voicing threshold; rate, frame and hop are
-    /// taken from the device (see [`judge_config`]).
+    /// Voice judge configuration: 50 to 4000 Hz, 0.34-semitone bins and a
+    /// 0.3 voicing threshold by default; rate, frame and hop follow the device.
     pub pitch: PitchDetectorConfig,
 
     /// FFT size for spectrum analysis (default 2048).
@@ -101,7 +101,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             stream: StreamConfig::default(),
-            pitch: PitchDetectorConfig::engine_default(),
+            pitch: PitchDetectorConfig::for_rate(44_100),
             spectrum_fft_size: SPECTRUM_FFT_SIZE,
             spectrum_smoothing: 0.8,
             onset_fft_size: 1024,
@@ -113,20 +113,33 @@ impl Default for EngineConfig {
 
 /// Preserve the requested range and voicing threshold at the device's rate.
 ///
-/// The judge runs once per window at 0.1-semitone resolution. Below about
-/// 18 kHz pYIN cannot hold a one-window hop over the default range, so
-/// there the hop halves until it can (to 1024 samples at 16 kHz and 512 at
-/// 8 kHz): the engine starts at every device rate.
+/// Use the voice judge's window, hop and resolution at the device's rate.
+/// The cycle tracker supplies Hz, so the judge only rules on octave and
+/// voicing: 0.34-semitone bins suffice, and a 512-sample hop at 48 kHz
+/// brings a fresh verdict every 10.7 ms. Halve the hop only where pYIN
+/// cannot hold it.
 #[must_use]
 pub fn judge_config(asked: &PitchDetectorConfig, rate: u32) -> PitchDetectorConfig {
     PitchDetectorConfig {
         min_frequency: asked.min_frequency,
         max_frequency: asked.max_frequency,
         voiced_threshold: asked.voiced_threshold,
-        resolution: 0.1,
         ..PitchDetectorConfig::for_rate(rate)
     }
-    .with_longest_hop()
+    .with_hop_pyin_holds()
+}
+
+/// Refuse a judge that cannot hear every pitch the tracker can report.
+/// Folding trusts the judge's octave, so its range must cover the tracker.
+pub fn check_judge_range(asked: &PitchDetectorConfig) -> crate::Result<()> {
+    if !(asked.min_frequency <= VOICE_MIN_HZ && asked.max_frequency >= VOICE_MAX_HZ) {
+        return Err(crate::Error::Config(format!(
+            "the judge's range {} to {} Hz must cover the tracker's 50 to 4000 Hz: \
+             a narrower judge folds every note above its top down an octave",
+            asked.min_frequency, asked.max_frequency
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +202,7 @@ impl RingBufferCapacities {
 /// or [`crate::Error::Config`] for invalid configuration values (including
 /// an invalid judge pitch range or onset setting).
 pub fn start(config: EngineConfig) -> Result<EngineHandle> {
+    check_judge_range(&config.pitch)?;
     // Keep the selected device and configuration until the streams open, so
     // processing and the device use the same rate and buffer size.
     let prepared = crate::io::device::prepare_output(&config.stream)?;
@@ -650,12 +664,8 @@ mod tests {
         assert_eq!(stats.results_dropped, 0);
     }
 
-    /// A one-window hop is 128 ms at 16 kHz: pyin's transition band then
-    /// spans more semitones than the 60 to 1000 Hz range holds, and the
-    /// detector is refused, so `start` failed on a Bluetooth headset's 16 kHz
-    /// output. Main built its detector at 44.1 kHz on every device and
-    /// always started. The engine must start its judge at every device rate,
-    /// and still run once per window wherever pyin can hold that.
+    /// Keep the voice judge's hop at every rate where pYIN holds it, and
+    /// shorten it only when a low rate makes the transition band too wide.
     #[test]
     fn the_engine_builds_its_judge_at_every_device_rate() {
         for rate in [
@@ -663,6 +673,7 @@ mod tests {
             176_400, 192_000, 384_000,
         ] {
             let config = judge_config(&EngineConfig::default().pitch, rate);
+            assert!((config.max_frequency - VOICE_MAX_HZ).abs() < f32::EPSILON);
             let shown = format!("{config:?}");
             let once_per_window = config.hop_length == config.frame_length;
             let (feed, _results, judge) =
@@ -679,9 +690,12 @@ mod tests {
     #[test]
     fn engine_config_default_values() {
         let config = EngineConfig::default();
-        assert!((config.pitch.min_frequency - 60.0).abs() < f32::EPSILON);
-        assert!((config.pitch.max_frequency - 1000.0).abs() < f32::EPSILON);
-        assert!((config.pitch.resolution - 0.1).abs() < f64::EPSILON);
+        assert!((config.pitch.min_frequency - 50.0).abs() < f32::EPSILON);
+        assert!((config.pitch.max_frequency - 4000.0).abs() < f32::EPSILON);
+        assert!(
+            (config.pitch.resolution - PitchDetectorConfig::for_rate(44_100).resolution).abs()
+                < f64::EPSILON
+        );
         assert_eq!(config.spectrum_fft_size, SPECTRUM_FFT_SIZE);
         assert!((config.spectrum_smoothing - 0.8).abs() < f32::EPSILON);
         assert_eq!(config.onset_fft_size, 1024);

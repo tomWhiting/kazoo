@@ -18,6 +18,10 @@ pub const VETO_PROB: f32 = 0.1;
 pub const DISAGREE_CENTS: f32 = 100.0;
 /// A 300-cent frame leap exceeds vibrato and stops an old octave verdict folding a new note.
 pub const LEAP_CENTS: f32 = 300.0;
+/// A hint is tried for four cycles: at most 80 ms at 50 Hz but under 10 ms
+/// from 400 Hz up, where a slip costs most. A hint landing within this
+/// interval is our correction; a later landing remains a sung change.
+pub const HINT_LEAP_MS: f32 = 10.0;
 /// A one-millisecond attack lets the fast level see the start of a syllable.
 pub const FAST_ATTACK_MS: f32 = 1.0;
 /// Ten milliseconds sees a short syllable dip; low notes need longer release.
@@ -54,7 +58,8 @@ pub struct VoiceTracker {
     veto: u8,
     vetoed: bool,
     previous_cycle: Option<f32>,
-    last_leap: u64,
+    hinted: Option<(u64, f32)>,
+    pub(super) last_leap: u64,
     pub(super) fold: f32,
     hz: f32,
     gate: Gate,
@@ -87,6 +92,7 @@ impl VoiceTracker {
             veto: 0,
             vetoed: false,
             previous_cycle: None,
+            hinted: None,
             last_leap: 0,
             fold: 0.0,
             hz: 0.0,
@@ -193,9 +199,17 @@ impl VoiceTracker {
             .filter(|_| !self.vetoed && !self.invalid_frame);
         let current = fc.map(|e| e.hz);
         if let Some(hz) = current {
-            if self
-                .previous_cycle
-                .is_none_or(|previous| (1200.0 * (hz / previous).log2()).abs() > LEAP_CENTS)
+            let hint_landed = self.hinted.is_some_and(|(at, hinted_hz)| {
+                self.samples.saturating_sub(at) as f32 <= HINT_LEAP_MS * self.rate / 1000.0
+                    && (1200.0 * (hz / hinted_hz).log2()).abs() <= 50.0
+            });
+            if hint_landed {
+                self.hinted = None;
+            }
+            if !hint_landed
+                && self
+                    .previous_cycle
+                    .is_none_or(|previous| (1200.0 * (hz / previous).log2()).abs() > LEAP_CENTS)
             {
                 self.last_leap = self.samples;
             }
@@ -224,6 +238,7 @@ impl VoiceTracker {
             self.hz = estimate.hz * fold.exp2();
             if fold != 0.0 && (fold - self.fold).abs() > 0.5 {
                 self.cycle.hint(self.rate / self.hz);
+                self.hinted = Some((self.samples, self.hz));
             }
             self.fold = fold;
             let release_ms = FAST_RELEASE_MIN_MS
@@ -283,6 +298,7 @@ impl VoiceTracker {
         self.veto = 0;
         self.vetoed = false;
         self.previous_cycle = None;
+        self.hinted = None;
         self.last_leap = 0;
         self.fold = 0.0;
         self.hz = 0.0;

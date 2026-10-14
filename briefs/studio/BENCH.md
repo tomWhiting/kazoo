@@ -837,3 +837,44 @@ head. The 3x target is NOT CONFIRMED. A load-independent count (instructions and
 cycles per block for a fixed number of renders, `/usr/bin/time -l`) was
 being built when the review was stopped at 08:40 for Tom's 09:00 deadline,
 and no numbers came from it. Log: `target/kz-review/ab1.log`.
+
+## KZ-V12 high notes
+
+14 October 2026, write-only round. Base and unchanged HEAD:
+`dd1bfc606ebfd152164c8b3092ed6f9b52657472`, branch `lane/kz-V12`.
+The code changes are uncommitted. `uptime` at 10:55 AEDT reported load averages
+31.76, 39.13 and 43.79. `sysctl -n vm.loadavg` was refused with
+`Operation not permitted`. Disk available at the start: 53 GiB (`df -g /`).
+
+Before and after score tables were not measured: Tom reserved the CPU and
+prohibited all build, test and benchmark commands in this round. No numerical
+result or red/green result is claimed. The tests write the scoreboard tables
+and counts of octave error steps after 100 ms before asserting their targets.
+Their files are relative to the worktree:
+
+| test | rows | table written when run |
+|---|---|---|
+| `high_whistles_hold` | 800, 1100, 1500, 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_whistles_hold.md` |
+| `high_sung_seconds_hold` | 800, 1100, 1500, 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_sung_seconds_hold.md` |
+| `high_sung_thirds_hold` | 800, 1100, 1500, 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_sung_thirds_hold.md` |
+| `high_splices_hold` | 800, 1100, 1500, 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_splices_hold.md` |
+| `high_notes_hold_at_96k` | whistle and sung second at 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_notes_hold_at_96k.md` |
+| `high_notes_hold_through_the_engine_judge` | whistle and sung second at all four pitches; engine-configured voice | `target/kz-logs/kz-v12/high_notes_hold_through_the_engine_judge.md` |
+
+B1 and B2 were not built. Their selection requires these measurements; the
+write-only rule prevents deciding that neither is needed. The build round
+must apply the stated cycle-then-voice decision rule without changing targets.
+Fix A uses the full voice range and its rate-scaled hop and bins. Fix A2
+exempts a matching hint landing within 10 ms from the sung-leap clock.
+
+At this base the engine still constructs its detector for `analysis_thread`;
+`ProcessingState` has no voice tracker and `start` has no `judge::spawn` call.
+The range check is therefore before detector construction and audio-device
+preparation. V06's engine wiring must be present in the integrated tree to
+prove the live mouth outcome. The offline engine-judge tests exercise its
+configuration through `FusedUnderTest::with_judge`.
+
+The cached pYIN 1.2.0 source accepts a maximum equal to Nyquist, and the local
+validator permits the 50–4000 Hz, 512-sample-hop configuration at 8000 Hz.
+The conditional 0.45 × rate cap was not applied; construction at every listed
+device rate remains unverified until the build round.
