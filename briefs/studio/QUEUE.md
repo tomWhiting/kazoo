@@ -187,3 +187,4 @@ START KZ-R01 base=dd1bfc6 branch=lane/kz-R01 df=96GB at 12:59
 START KZ-T04a base=dd1bfc6 branch=lane/kz-T04a df=95GB at 12:59
 START KZ-R02 base=8ed511d branch=lane/kz-R02 df=74GB at 13:55
 START KZ-R03 base=8ed511d branch=lane/kz-R03 df=74GB at 13:56
+- Tom, 14 Oct 19:5x, on the mouth after the build round: sounds good, high end much better; the front end is hard. Waveform not reachable, effects not reachable or not visibly doing anything, help a wall of text, gate hard to find; wants mouse, a voice oscilloscope and more to see, a vocoder-ish voice-through blend; maybe extra latency (AirPods; check with wired IEMs; add a latency readout). Next mouth lanes: V09a-d (briefs by Cassio).
