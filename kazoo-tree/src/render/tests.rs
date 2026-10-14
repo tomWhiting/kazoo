@@ -217,6 +217,19 @@ fn a_new_day_on_a_limb_is_marked_in_the_viewers_own_zone() {
             (10, "Thu 15 Oct 2026".to_owned()),
         ]
     );
+    // A bud grown on the day it started says its day too (Tom, 15 Oct:
+    // "this new branch was on the 15th too").
+    let mut same_day = history.clone();
+    let fork = same_day.limbs[1].from.expect("a bud");
+    let bud_start = same_day.limbs[1].moments[0];
+    let fork_time = same_day.moments[fork].time;
+    std::sync::Arc::make_mut(&mut same_day.moments[bud_start]).time = fork_time + 60;
+    assert!(
+        days(&same_day, &melbourne)
+            .iter()
+            .any(|d| d.moment == bud_start && d.words == "Wed 14 Oct 2026"),
+        "a new branch always says its day"
+    );
     // In UTC the trunk starts on the 13th and the 14th begins at moment 2
     // (02:00); the bud's first moment is 02:00 on the 15th.
     let utc: Vec<(usize, String)> = days(&history, &chrono::Utc)
@@ -625,9 +638,15 @@ const fn history_after(i: usize, first: usize) -> bool {
 fn a_bud_grown_from_a_moment_on_no_limb_blends_from_its_own_start() {
     let mut orphan = striped();
     let from = orphan.limbs[1].from.expect("a bud");
-    // The moment it grew from is on no limb (its branch was deleted).
+    // The moment it grew from is on no limb (its branch was deleted): off
+    // the trunk, and every place after it on the trunk one closer.
+    orphan.limbs[0].moments.retain(|&m| m != from);
     orphan.place[from] = None;
+    for (p, &m) in orphan.limbs[0].moments.iter().enumerate() {
+        orphan.place[m] = Some((0, p));
+    }
     let (growth, gestures, line) = scene_parts(&orphan);
+    assert_eq!(growth.look[from], None, "off every limb, it never grew");
     let scene = Scene {
         history: &orphan,
         growth: &growth,
@@ -639,6 +658,7 @@ fn a_bud_grown_from_a_moment_on_no_limb_blends_from_its_own_start() {
     };
     let bud = &orphan.limbs[1].moments;
     let running = |m: usize| growth.look[m].expect("grown").running;
+    assert_eq!(running(bud[0]).moments, 1, "the bud's sums start with it");
     for p in [3_usize, 6] {
         for window in [p + 1, p + 2, 40] {
             assert_eq!(

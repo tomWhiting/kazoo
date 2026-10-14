@@ -582,8 +582,8 @@ impl Gesture {
     }
 }
 
-/// A day mark: the first moment on a limb made on a new day, where the
-/// day is read in `zone` (the viewer's own, in the app).
+/// A day mark: a limb's first moment, or a moment on a limb made on a new
+/// day, where the day is read in `zone` (the viewer's own, in the app).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Day {
     /// The moment.
@@ -594,9 +594,9 @@ pub struct Day {
 
 /// Every day mark in the tree, limb by limb.
 ///
-/// A day mark is each moment whose day is not
-/// the day of the moment before it on its limb (for a limb's first moment,
-/// the moment it grew from). The trunk's first moment is always one.
+/// A day mark is each limb's first moment, so every branch says the day it
+/// grew, and each later moment whose day is not the day of the moment
+/// before it on its limb.
 #[must_use]
 pub fn days<Z: chrono::TimeZone>(history: &History, zone: &Z) -> Vec<Day>
 where
@@ -608,7 +608,7 @@ where
     };
     let mut out = Vec::new();
     for limb in &history.limbs {
-        let mut before = limb.from.and_then(day_of);
+        let mut before = None;
         for &m in &limb.moments {
             let day = day_of(m);
             if day.is_some() && day != before {
