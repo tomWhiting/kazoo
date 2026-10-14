@@ -205,3 +205,5 @@ START KZ-T05g base=5c5280e branch=lane/kz-T05g df=25GB at 01:39
 START KZ-D18 base=2a430f0 branch=lane/kz-D18 df=99GB at 02:07
 START KZ-T11a base=f44489e branch=lane/kz-T11a df=99GB at 02:25
 START KZ-T10a base=f44489e branch=lane/kz-T10a df=99GB at 02:25
+START KZ-T04g base=72b8d51 branch=lane/kz-T04g df=94GB at 02:34
+START KZ-D18b base=015c825 branch=lane/kz-D18b df=79GB at 03:23
