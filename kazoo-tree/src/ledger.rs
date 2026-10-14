@@ -14,15 +14,19 @@
 //!
 //! ```text
 //! limb\t<branch name>
-//! step\t<commit of the limb's first moment>\t<step number on the limb>
+//! step\t<commit of the limb's first moment>\t<step number on the limb>\tfirst=<commit of the step's first moment>\t<start x>\t<start y>\t<end x>\t<end y>\t<heading>
 //! ```
 //!
 //! A `limb` line is the order the branches made by hand claimed their
-//! moments; a `step` line is the order the steps of growth grew. A line seen
-//! twice counts once (two `kazoo tree`s may both write what they grew), and
-//! an unfinished last line (a write cut off) waits until it is finished.
+//! moments; a `step` line is the order the steps of growth grew, and where
+//! each was drawn. A step's `first=` and its shape may be missing (lines
+//! written before they were kept): a later line for the same step fills in
+//! what an earlier one lacked, and never changes what it has. Otherwise a
+//! line seen twice counts once (two `kazoo tree`s may both write what they
+//! grew), and an unfinished last line (a write cut off) waits until it is
+//! finished.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
@@ -54,12 +58,16 @@ pub struct Shape {
     pub heading: f64,
 }
 
-/// A step as the ledger keeps it: its name, and where it was drawn (a line
-/// written without it grows by the rules).
+/// A step as the ledger keeps it: its name, the moment it starts at, and
+/// where it was drawn (a line written without it grows by the rules).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Saved {
     /// The step.
     pub key: StepKey,
+    /// The commit of the step's first moment, so a shape is never drawn
+    /// for other moments than its own (a line from before it was kept has
+    /// none).
+    pub first: Option<String>,
     /// Where it was drawn.
     pub shape: Option<Shape>,
 }
@@ -77,7 +85,8 @@ pub struct Ledger {
     /// The steps, in the order they grew, each where it was drawn.
     pub steps: Vec<Saved>,
     seen_limbs: HashSet<String>,
-    seen_steps: HashSet<StepKey>,
+    /// Each step's place in `steps`.
+    seen_steps: HashMap<StepKey, usize>,
     /// Lines that did not read, counted.
     pub unreadable: usize,
     /// Why the ledger could not be read, when it could not.
@@ -192,6 +201,17 @@ impl Ledger {
                     self.unreadable += 1;
                     return;
                 };
+                let (first, rest) = match rest {
+                    [first, rest @ ..] if first.starts_with("first=") => {
+                        let Some(id) = first.strip_prefix("first=").filter(|id| !id.is_empty())
+                        else {
+                            self.unreadable += 1;
+                            return;
+                        };
+                        (Some(id.to_owned()), rest)
+                    }
+                    _ => (None, rest),
+                };
                 let mut numbers = Vec::with_capacity(rest.len());
                 for n in rest {
                     match n.parse::<f64>() {
@@ -219,6 +239,7 @@ impl Ledger {
                         limb: (*limb).to_owned(),
                         index,
                     },
+                    first,
                     shape,
                 });
             }
@@ -235,13 +256,26 @@ impl Ledger {
         }
     }
 
-    fn hold_step(&mut self, step: Saved) -> bool {
-        if self.seen_steps.insert(step.key.clone()) {
-            self.steps.push(step);
-            true
-        } else {
-            false
+    /// Hold `step`: a new one at the end, or what a held one lacks (its
+    /// first moment, its shape) filled in from it. Answers its place when
+    /// anything was held that was not before.
+    fn hold_step(&mut self, step: Saved) -> Option<usize> {
+        if let Some(&at) = self.seen_steps.get(&step.key) {
+            let held = &mut self.steps[at];
+            let first = held.first.is_none() && step.first.is_some();
+            if first {
+                held.first = step.first;
+            }
+            let shape = held.shape.is_none() && step.shape.is_some();
+            if shape {
+                held.shape = step.shape;
+            }
+            return (first || shape).then_some(at);
         }
+        let at = self.steps.len();
+        self.seen_steps.insert(step.key.clone(), at);
+        self.steps.push(step);
+        Some(at)
     }
 
     /// Whether `name` has claimed its moments already.
@@ -251,7 +285,7 @@ impl Ledger {
     }
 
     /// Add what was grown for the first time, in the order it grew, and
-    /// write it down in one append.
+    /// what a step held lacked, and write it down in one append.
     pub fn record(&mut self, limbs: &[String], steps: &[Saved]) {
         // Read to the file's end first: what another view wrote comes
         // before what this one writes, here as in the file.
@@ -263,8 +297,8 @@ impl Ledger {
             }
         }
         for step in steps {
-            if self.hold_step(step.clone()) {
-                step_line(&mut text, step);
+            if let Some(at) = self.hold_step(step.clone()) {
+                step_line(&mut text, &self.steps[at]);
             }
         }
         let Some(path) = self.path.clone() else {
@@ -331,6 +365,10 @@ fn step_line(text: &mut String, step: &Saved) {
     text.push_str(&step.key.limb);
     text.push('\t');
     text.push_str(&step.key.index.to_string());
+    if let Some(first) = &step.first {
+        text.push_str("\tfirst=");
+        text.push_str(first);
+    }
     if let Some(shape) = step.shape {
         for n in [
             shape.start.0,

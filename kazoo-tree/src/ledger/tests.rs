@@ -6,6 +6,7 @@ fn key(limb: &str, index: usize) -> Saved {
             limb: limb.to_owned(),
             index,
         },
+        first: None,
         shape: None,
     }
 }
@@ -119,4 +120,52 @@ fn a_view_holds_the_ledger_until_it_lets_go() {
     );
     drop(held);
     assert!(two.hold().expect("held after").is_some());
+}
+
+#[test]
+fn a_later_line_fills_in_what_an_earlier_one_lacked_and_nothing_else() {
+    let dir = tempfile::tempdir().expect("a folder");
+    let shape = Shape {
+        start: (1.0, 2.0),
+        end: (3.0, 4.0),
+        heading: 0.5,
+    };
+    let other = Shape {
+        start: (9.0, 9.0),
+        ..shape
+    };
+    let mut ledger = Ledger::of_tree(dir.path());
+    // A line from before the first moment and shape were kept.
+    ledger.record(&[], &[key("aa", 0)]);
+    let full = Saved {
+        first: Some("c0ffee".to_owned()),
+        ..shaped("aa", 0, shape)
+    };
+    ledger.record(&[], std::slice::from_ref(&full));
+    let length = std::fs::metadata(dir.path().join(LEDGER))
+        .expect("written")
+        .len();
+    // Again, and with another shape: nothing more is written.
+    ledger.record(&[], std::slice::from_ref(&full));
+    ledger.record(
+        &[],
+        &[Saved {
+            first: Some("c0ffee".to_owned()),
+            ..shaped("aa", 0, other)
+        }],
+    );
+    assert_eq!(
+        std::fs::metadata(dir.path().join(LEDGER))
+            .expect("written")
+            .len(),
+        length
+    );
+    let mut again = Ledger::of_tree(dir.path());
+    again.refresh();
+    assert_eq!(again.steps, [full]);
+    assert_eq!(again.unreadable, 0);
+    // A first= with no commit does not read.
+    let mut broken = Ledger::in_memory();
+    broken.take("step\taa\t1\tfirst=\t1\t2\t3\t4\t5");
+    assert_eq!(broken.unreadable, 1);
 }

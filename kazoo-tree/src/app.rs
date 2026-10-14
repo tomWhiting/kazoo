@@ -227,6 +227,7 @@ impl Grower {
         if let Some(problem) = self.ledger.problem() {
             history.problems.push(problem);
         }
+        history.problems.extend(self.growth.refused.iter().cloned());
         if self.ledger.unreadable > 0 {
             history.problems.push(format!(
                 "{} lines of the order the tree grew in did not read and were skipped",
