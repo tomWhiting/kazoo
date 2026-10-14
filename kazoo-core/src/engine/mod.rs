@@ -134,7 +134,7 @@ pub fn judge_config(asked: &PitchDetectorConfig, rate: u32) -> PitchDetectorConf
 
 /// Compute capacities for all ring buffers based on buffer size.
 struct RingBufferCapacities {
-    /// Mic input: `buffer_size` * 4.
+    /// Mic input: at least four blocks or 200 ms at the engine rate.
     mic: usize,
     /// Display state: 4 slots.
     display: usize,
@@ -151,14 +151,14 @@ struct RingBufferCapacities {
 }
 
 impl RingBufferCapacities {
-    fn from_buffer_size(buffer_size: usize) -> Self {
+    fn new(buffer_size: usize, rate: u32) -> Self {
         let bs = buffer_size.max(1);
         Self {
-            // Mic and analysis use ×4: enough headroom for scheduling jitter
-            // while keeping latency low (at 128 samples / 44.1 kHz ≈ 12 ms
-            // maximum backlog). Disk stays at ×32 because writes are bursty
-            // and latency-insensitive.
-            mic: bs.saturating_mul(4),
+            // Native-rate input callbacks may deliver many engine blocks.
+            // The consumer skips stale samples, so headroom adds no latency.
+            mic: bs
+                .saturating_mul(4)
+                .max(usize::try_from(rate / 5).unwrap_or(usize::MAX)),
             display: 4,
             display_frames: 4 + 3,
             analysis_input: bs.saturating_mul(4),
@@ -211,7 +211,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // -----------------------------------------------------------------------
     // 1. Create ring buffers
     // -----------------------------------------------------------------------
-    let caps = RingBufferCapacities::from_buffer_size(buffer_size);
+    let caps = RingBufferCapacities::new(buffer_size, sample_rate);
 
     // Mic input: cpal input callback -> output callback.
     let (mic_prod, mic_cons) = HeapRb::<f32>::new(caps.mic).split();
@@ -244,12 +244,23 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // callback owns all processing state and does the actual audio work:
     // draining commands, running the mixer, applying effects, and writing
     // directly to the cpal output buffer.
-    let input_callback = make_input_callback(
+    let mic_stats = Arc::clone(&stats);
+    let mic = crate::io::mic::open_mic(
+        crate::io::mic::MicRequest {
+            device: stream_config.input_device.clone().map_or(
+                crate::host::audio::DeviceChoice::Default,
+                crate::host::audio::DeviceChoice::Named,
+            ),
+            channel: stream_config.input_channel,
+        },
+        crate::io::mic::MicTarget {
+            rate: sample_rate,
+            frames: buffer_size,
+        },
         mic_prod,
-        usize::from(stream_config.input_channels.max(1)),
-        buffer_size,
-        Arc::clone(&stats),
-    );
+        Arc::new(move |offered, accepted| mic_stats.record_mic_push(offered, accepted)),
+    )?;
+    stats.set_mic(mic.shared())?;
 
     // Create processing state and I/O handles. These are moved into the
     // output callback closure — the callback owns all processing state.
@@ -296,17 +307,12 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     )?;
     let disk_handle = spawn_disk_thread(disk_cons, disk_cmd_rx, sample_rate, Arc::clone(&stats))?;
 
-    let streams = crate::io::device::build_streams_with_output(
-        stream_config,
-        prepared,
-        input_callback,
-        move |data| {
-            // Output callback: run the entire audio processing pipeline.
-            // ProcessingState and ProcessingIO are owned by this closure.
-            processing::process_block(&mut proc_state, &mut proc_io, data);
-        },
-    )?;
-    let (stream_holder_handle, stream_shutdown) = hold_streams(streams, &stats)?;
+    let output = crate::io::device::open_engine_output(prepared, move |data| {
+        // Output callback: run the entire audio processing pipeline.
+        // ProcessingState and ProcessingIO are owned by this closure.
+        processing::process_block(&mut proc_state, &mut proc_io, data);
+    })?;
+    let (stream_holder_handle, stream_shutdown) = hold_streams(output, mic, &stats)?;
 
     // -----------------------------------------------------------------------
     // 5. Connect MIDI input (auto-discover first available device)
@@ -351,19 +357,21 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
 /// stored in the [`EngineHandle`]; the flag lets the thread exit cleanly
 /// when the handle is dropped.
 fn hold_streams(
-    streams: crate::io::AudioStreams,
+    output: crate::host::audio::OpenedOutput,
+    mic: crate::io::mic::Mic,
     stats: &EngineStats,
 ) -> Result<(JoinHandle<()>, Arc<AtomicBool>)> {
-    stats.set_audio_health([streams.input.health(), streams.output.health()])?;
+    stats.set_audio_health(output.health())?;
     let stream_shutdown = Arc::new(AtomicBool::new(false));
     let shutdown = Arc::clone(&stream_shutdown);
     let holder = std::thread::Builder::new()
         .name("kazoo-streams".into())
         .spawn(move || {
-            let _keep_alive = streams;
             while !shutdown.load(Ordering::Acquire) {
                 std::thread::park();
             }
+            drop(output);
+            drop(mic);
         })
         .map_err(|e| crate::Error::Stream(format!("failed to spawn streams holder: {e}")))?;
     Ok((holder, stream_shutdown))
@@ -403,44 +411,6 @@ fn start_desk_link_config(
             handle::DeskLink::Failed(format!("could not start the desk link: {err}")),
             None,
         ),
-    }
-}
-
-/// Build the cpal input callback: push mic samples into the ring buffer as
-/// mono, averaging across channels when the device delivers multi-channel
-/// data.
-///
-/// The downmix scratch buffer is pre-allocated here and moved into the
-/// closure, and the channel reciprocal is pre-computed — no allocation or
-/// division in the hot path. Samples that do not fit in the ring buffer are
-/// counted in [`EngineStats`].
-fn make_input_callback(
-    mut mic_prod: HeapProd<f32>,
-    input_channels: usize,
-    buffer_size: usize,
-    stats: Arc<EngineStats>,
-) -> impl FnMut(&[f32]) + Send + 'static {
-    let input_channels = input_channels.max(1);
-    let inv_ch = 1.0_f32 / input_channels as f32;
-    let mut downmix_scratch = vec![0.0f32; buffer_size];
-
-    move |data: &[f32]| {
-        if input_channels <= 1 {
-            let pushed = mic_prod.push_slice(data);
-            stats.record_mic_push(data.len(), pushed);
-            return;
-        }
-        let available_frames = data.len() / input_channels;
-        let frames = available_frames.min(downmix_scratch.len());
-        for (out, frame) in downmix_scratch
-            .iter_mut()
-            .zip(data.chunks_exact(input_channels))
-        {
-            *out = frame.iter().sum::<f32>() * inv_ch;
-        }
-        let pushed = mic_prod.push_slice(&downmix_scratch[..frames]);
-        // Frames beyond the scratch capacity are lost too.
-        stats.record_mic_push(available_frames, pushed);
     }
 }
 
@@ -669,8 +639,8 @@ mod tests {
 
     #[test]
     fn ring_buffer_capacities_default_buffer_size() {
-        let caps = RingBufferCapacities::from_buffer_size(128);
-        assert_eq!(caps.mic, 128 * 4);
+        let caps = RingBufferCapacities::new(128, 48_000);
+        assert_eq!(caps.mic, 9_600);
         assert_eq!(caps.display, 4);
         assert!(caps.display_frames > caps.display + 1);
         assert_eq!(caps.analysis_input, 128 * 4);
@@ -680,18 +650,24 @@ mod tests {
 
     #[test]
     fn ring_buffer_capacities_large_buffer_size() {
-        let caps = RingBufferCapacities::from_buffer_size(1024);
-        assert_eq!(caps.mic, 1024 * 4);
+        let caps = RingBufferCapacities::new(1024, 48_000);
+        assert_eq!(caps.mic, 9_600);
         assert_eq!(caps.analysis_input, 1024 * 4);
         assert_eq!(caps.disk, 1024 * 32);
     }
 
     #[test]
     fn ring_buffer_capacities_zero_buffer_size_uses_one() {
-        let caps = RingBufferCapacities::from_buffer_size(0);
-        assert_eq!(caps.mic, 4);
+        let caps = RingBufferCapacities::new(0, 48_000);
+        assert_eq!(caps.mic, 9_600);
         assert_eq!(caps.analysis_input, 4);
         assert_eq!(caps.disk, 32);
+    }
+
+    #[test]
+    fn ring_buffer_capacity_covers_four_large_engine_blocks() {
+        let caps = RingBufferCapacities::new(4_096, 48_000);
+        assert_eq!(caps.mic, 16_384);
     }
 
     #[test]

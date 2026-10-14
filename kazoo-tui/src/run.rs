@@ -2,18 +2,27 @@ use std::io::Write;
 
 use color_eyre::Result;
 use kazoo_core::engine::EngineConfig;
+use kazoo_core::io::StreamConfig;
 
 use crate::app;
 
-/// What the command line gave: this application takes no arguments.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Args;
+/// Microphone selection, or input enumeration without starting the engine.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Args {
+    pub input: Option<String>,
+    pub input_channel: Option<u16>,
+    pub list_inputs: bool,
+}
 
 /// Help text for both ways to start the application.
 pub const USAGE: &str = "kazoo-tui: mouth synth, tracking views, mixing desk
 
 usage: kazoo mouth
        kazoo-tui
+
+  --input <name>       Choose an input device by name.
+  --input-channel <n>  Choose one channel (1 to 64); otherwise average all.
+  --list-inputs        List input devices and exit without opening a stream.
 
 It plugs into the kazoo-mix desk whenever one is running, and plays on its
 own otherwise. Keys are on the panel.
@@ -22,18 +31,44 @@ own otherwise. Keys are on the panel.
 /// Read arguments after the program name. `Ok(None)` requests help,
 /// wherever it stands; an error names the first unknown argument.
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, String> {
-    let mut unknown = None;
-    for arg in args {
-        if matches!(arg.as_str(), "-h" | "--help") {
-            return Ok(None);
-        }
-        if unknown.is_none() {
-            unknown = Some(arg);
+    let args: Vec<String> = args.into_iter().collect();
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        return Ok(None);
+    }
+    let mut words = args.into_iter();
+    let mut parsed = Args::default();
+    while let Some(arg) = words.next() {
+        match arg.as_str() {
+            "--input" => {
+                let name = words
+                    .next()
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| "--input needs a device name".to_owned())?;
+                if name.is_empty() {
+                    return Err("--input needs a device name".to_owned());
+                }
+                parsed.input = Some(name);
+            }
+            "--input-channel" => {
+                let text = words
+                    .next()
+                    .ok_or_else(|| "--input-channel needs a number from 1 to 64".to_owned())?;
+                let channel: u16 = text
+                    .parse()
+                    .map_err(|_| "--input-channel needs a number from 1 to 64".to_owned())?;
+                if !(1..=64).contains(&channel) {
+                    return Err("--input-channel needs a number from 1 to 64".to_owned());
+                }
+                parsed.input_channel = Some(channel);
+            }
+            "--list-inputs" => parsed.list_inputs = true,
+            _ => return Err(format!("unknown argument '{arg}'")),
         }
     }
-    unknown.map_or(Ok(Some(Args)), |arg| {
-        Err(format!("unknown argument '{arg}'"))
-    })
+    Ok(Some(parsed))
 }
 
 /// Print help or start the application from command-line arguments.
@@ -63,6 +98,26 @@ pub fn cli(args: impl IntoIterator<Item = String>) -> Result<()> {
 ///
 /// Returns runtime, audio, or terminal errors.
 pub fn run(args: Args) -> Result<()> {
+    if args.list_inputs {
+        let devices = kazoo_core::io::enumerate_input_devices()?;
+        let mut stdout = std::io::stdout().lock();
+        for device in devices {
+            let default = if device.is_default { "  (default)" } else { "" };
+            let rates = device
+                .supported_sample_rates
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(
+                stdout,
+                "{}{default}  up to {} channels  rates: {rates}",
+                device.name, device.max_input_channels
+            )?;
+        }
+        stdout.flush()?;
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -72,10 +127,10 @@ pub fn run(args: Args) -> Result<()> {
 /// The name this synth plugs into the kazoo-mix desk under.
 const DESK_NAME: &str = "kazoo-tui";
 
-async fn main_loop(Args: Args) -> Result<()> {
+async fn main_loop(args: Args) -> Result<()> {
     #[cfg(test)]
     if tests::STAND_IN.get() {
-        return tests::stand_in(Args).await;
+        return tests::stand_in(args).await;
     }
 
     // Start the audio engine *before* entering the alternate screen so that
@@ -83,6 +138,11 @@ async fn main_loop(Args: Args) -> Result<()> {
     // user's normal terminal. The engine plugs into the kazoo-mix desk (the
     // studio's hub) whenever one is running, and plays standalone otherwise.
     let engine = kazoo_core::engine::start(EngineConfig {
+        stream: StreamConfig {
+            input_device: args.input,
+            input_channel: args.input_channel,
+            ..StreamConfig::default()
+        },
         desk_instrument_name: Some(DESK_NAME.to_owned()),
         ..EngineConfig::default()
     })?;
@@ -125,7 +185,8 @@ mod tests {
         pub(super) static STAND_IN: Cell<bool> = const { Cell::new(false) };
     }
 
-    pub(super) async fn stand_in(Args: Args) -> color_eyre::Result<()> {
+    pub(super) async fn stand_in(args: Args) -> color_eyre::Result<()> {
+        assert_eq!(args, Args::default());
         tokio::spawn(async { tokio::runtime::Handle::current() }).await?;
         Ok(())
     }
@@ -140,7 +201,7 @@ mod tests {
         ] {
             assert_eq!(parse_args(args.into_iter().map(String::from)), Ok(None));
         }
-        assert_eq!(parse_args([]), Ok(Some(Args)));
+        assert_eq!(parse_args([]), Ok(Some(Args::default())));
     }
 
     #[test]
@@ -166,9 +227,61 @@ mod tests {
     #[test]
     fn run_builds_its_own_runtime() -> color_eyre::Result<()> {
         STAND_IN.set(true);
-        run(Args)?;
-        run(Args)?;
+        run(Args::default())?;
+        run(Args::default())?;
         STAND_IN.set(false);
         Ok(())
+    }
+
+    #[test]
+    fn mic_arguments_choose_the_device_and_channel() {
+        assert_eq!(
+            parse_args(["--input", "AirPods Pro", "--input-channel", "2"].map(String::from)),
+            Ok(Some(Args {
+                input: Some("AirPods Pro".into()),
+                input_channel: Some(2),
+                list_inputs: false
+            }))
+        );
+    }
+
+    #[test]
+    fn invalid_mic_arguments_are_refused_by_name() {
+        for args in [
+            vec!["--input"],
+            vec!["--input", "--list-inputs"],
+            vec!["--input-channel", "0"],
+            vec!["--input-channel", "x"],
+            vec!["--input-channel", "65"],
+        ] {
+            let flag = args[0];
+            let error = parse_args(args.into_iter().map(String::from)).unwrap_err();
+            assert!(error.contains(flag), "{error}");
+        }
+    }
+
+    #[test]
+    fn list_inputs_is_an_argument_and_empty_arguments_use_defaults() {
+        assert_eq!(
+            parse_args(["--list-inputs".into()]),
+            Ok(Some(Args {
+                list_inputs: true,
+                ..Args::default()
+            }))
+        );
+        assert_eq!(parse_args([]), Ok(Some(Args::default())));
+        for flag in ["--input", "--input-channel", "--list-inputs"] {
+            assert!(USAGE.contains(flag));
+        }
+    }
+
+    #[test]
+    fn help_wins_over_invalid_mic_arguments() {
+        for args in [
+            vec!["--input", "--help"],
+            vec!["--input-channel", "x", "-h"],
+        ] {
+            assert_eq!(parse_args(args.into_iter().map(String::from)), Ok(None));
+        }
     }
 }

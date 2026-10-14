@@ -57,7 +57,21 @@ pub enum Command {
     /// Text notation to events or sound.
     Play(PlayArgs),
     /// The mouth: the voice-driven synth (kazoo-tui).
-    Mouth,
+    Mouth(MouthArgs),
+}
+
+/// Microphone device selection and enumeration.
+#[derive(Debug, Args, Default, PartialEq, Eq)]
+pub struct MouthArgs {
+    /// Input device name; omit to follow the system default.
+    #[arg(long)]
+    pub input: Option<String>,
+    /// Input channel, 1-based; omit to average all channels.
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=64))]
+    pub input_channel: Option<u16>,
+    /// List input devices without opening a stream.
+    #[arg(long)]
+    pub list_inputs: bool,
 }
 
 /// Desk startup options.
@@ -225,6 +239,16 @@ fn seat_name(text: &str) -> Result<String, String> {
             "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
             text.escape_default()
         ))
+    }
+}
+
+impl From<MouthArgs> for kazoo_tui::Args {
+    fn from(args: MouthArgs) -> Self {
+        Self {
+            input: args.input,
+            input_channel: args.input_channel,
+            list_inputs: args.list_inputs,
+        }
     }
 }
 

@@ -385,6 +385,7 @@ mod tests {
         // A snapshot with every counter distinct: each must be read by
         // exactly one entry, so a new counter cannot be silently missed.
         let latest = EngineStatsSnapshot {
+            mic: kazoo_core::io::mic::MicStatus::default(),
             mic_samples_dropped: 1,
             analysis_samples_dropped: 2,
             analysis_results_dropped: 3,

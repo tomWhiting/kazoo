@@ -11,7 +11,6 @@ use crate::io::device::{
 };
 use crate::{Error, Result};
 
-pub(crate) use super::audio_open::open_input_with_frames;
 pub use super::audio_open::{open_input, open_output};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
