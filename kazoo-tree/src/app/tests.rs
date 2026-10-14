@@ -9,6 +9,7 @@ fn app(history: History) -> App {
         history: History::default(),
         growth: Growth::default(),
         gestures: Vec::new(),
+        days: Vec::new(),
         line: Vec::new(),
         view: None,
         selected: None,
@@ -17,6 +18,7 @@ fn app(history: History) -> App {
         area: (80, 30),
         drag: None,
         quit: false,
+        wants_reading: false,
     };
     app.take(history);
     app.selected = app.history.here;

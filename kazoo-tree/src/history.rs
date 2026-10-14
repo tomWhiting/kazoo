@@ -7,8 +7,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Write as _;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use kazoo_wall::tree::git::git_command;
 use kazoo_wall::tree::thread::here::name_of;
@@ -76,6 +77,9 @@ pub struct Moment {
     pub sound: Option<Sound>,
     /// Modules alive at this moment.
     pub modules: u32,
+    /// What did not read in its commit: said in the details, never a
+    /// reason not to open the tree.
+    pub problems: Vec<String>,
 }
 
 /// A run of moments grown from one moment of an older limb.
@@ -113,15 +117,53 @@ pub struct History {
     pub marks: Vec<Mark>,
     /// The moment the wall is at.
     pub here: Option<usize>,
+    /// What did not read in the tree's refs.
+    pub problems: Vec<String>,
+    /// Each commit's moment.
+    index: HashMap<String, usize>,
+    /// The tips read so far: everything behind them is held.
+    tips: Vec<String>,
 }
 
 const RECORD: char = '\u{1e}';
 const BODY_END: char = '\u{1f}';
 
+/// The log's format: commit, parents, committer time, author, subject, and
+/// only the wall's own trailers (never the whole message: a `Kazoo-Change`
+/// trailer holds a page of JSON, and a million of them would be most of
+/// the read).
+const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,unfold)%x1f";
+
+/// Git as the tree reads it: the wall's own way to run git, with the
+/// person's own settings that would change what `log` says held fixed.
+/// `log.showRoot=false` would drop a root commit's files, and with them
+/// every module count; a signature or colour setting would mix other lines
+/// into the answer; a quoted path would hide a module's file.
+fn git(dir: &Path, name: &str) -> Command {
+    let mut command = git_command(name, Some(dir));
+    let settings = [
+        ("log.showRoot", "true"),
+        ("log.showSignature", "false"),
+        ("color.ui", "never"),
+        ("core.quotePath", "false"),
+        ("i18n.logOutputEncoding", "UTF-8"),
+    ];
+    command.env("GIT_CONFIG_COUNT", settings.len().to_string());
+    for (i, (key, value)) in settings.iter().enumerate() {
+        command.env(format!("GIT_CONFIG_KEY_{i}"), key);
+        command.env(format!("GIT_CONFIG_VALUE_{i}"), value);
+    }
+    command
+}
+
 fn run(command: &mut Command) -> Result<String, HistoryError> {
     let output = command
         .output()
         .map_err(|err| HistoryError::Git(format!("git could not run: {err}")))?;
+    answer(command, &output)
+}
+
+fn answer(command: &Command, output: &std::process::Output) -> Result<String, HistoryError> {
     if !output.status.success() {
         return Err(HistoryError::Git(format!(
             "git failed ({:?}): {}",
@@ -129,57 +171,234 @@ fn run(command: &mut Command) -> Result<String, HistoryError> {
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
-    String::from_utf8(output.stdout).map_err(|err| {
+    String::from_utf8(output.stdout.clone()).map_err(|err| {
         HistoryError::Broken(format!("git answered in bytes that are not text: {err}"))
     })
 }
 
-impl History {
-    /// Read the tree at `dir` (a bare repository).
+/// Run `command` with `input` on its standard input. The input is written
+/// from its own thread, so a long list of tips can never wait on git
+/// while git waits on its answer being read.
+fn run_with(command: &mut Command, input: &str) -> Result<String, HistoryError> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|err| HistoryError::Git(format!("git could not run: {err}")))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| HistoryError::Git("git took no input".to_owned()))?;
+    let output = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || {
+            let mut stdin = stdin;
+            stdin.write_all(input.as_bytes())
+        });
+        let output = child.wait_with_output();
+        let written = writer
+            .join()
+            .map_err(|_| HistoryError::Git("the thread writing to git panicked".to_owned()))?;
+        written
+            .map_err(|err| HistoryError::Git(format!("git's input could not be written: {err}")))?;
+        output.map_err(|err| HistoryError::Git(format!("git could not be waited for: {err}")))
+    })?;
+    answer(command, &output)
+}
+
+/// Every ref and HEAD, read together before the log.
+///
+/// The log is then read for exactly these tips and always holds every commit they name. Also
+/// what is compared every few seconds to see whether the tree has grown.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    /// `for-each-ref`'s answer: name, object, and a tag's commit.
+    refs: String,
+    /// HEAD's commit.
+    head: Option<String>,
+}
+
+impl Snapshot {
+    /// Read the refs and HEAD of the tree at `dir`.
     ///
     /// # Errors
     ///
-    /// When git cannot run or the tree holds a merge or an unknown parent.
+    /// When git cannot run.
     pub fn read(dir: &Path) -> Result<Self, HistoryError> {
-        let log = run(git_command("log", Some(dir)).args([
-            "--all",
-            "--topo-order",
-            "--reverse",
-            "--no-renames",
-            "--name-status",
-            "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%B%x1f",
-        ]))?;
-        let refs = run(git_command("for-each-ref", Some(dir))
-            .args(["--format=%(refname)%00%(objectname)%00%(*objectname)"]))?;
-        let here = head(dir)?;
-        Self::from_git(&log, &refs, here.as_deref())
+        let refs =
+            run(git(dir, "for-each-ref")
+                .args(["--format=%(refname)%00%(objectname)%00%(*objectname)"]))?;
+        let head = head(dir)?;
+        Ok(Self { refs, head })
     }
 
-    /// Build the tree from git's own words: `log` as `read` asks for it,
+    /// Every commit a ref or HEAD names, once each.
+    fn tips(&self) -> Vec<String> {
+        let mut tips: Vec<String> = read_refs(&self.refs)
+            .map(|r| r.commit.to_owned())
+            .chain(self.head.clone())
+            .collect();
+        tips.sort_unstable();
+        tips.dedup();
+        tips
+    }
+}
+
+impl History {
+    /// Read the tree at `dir` (a bare repository), whole.
+    ///
+    /// # Errors
+    ///
+    /// When git cannot run, or the tree holds a merge, a moment whose parent
+    /// it does not hold, or a branch naming a commit it does not hold.
+    pub fn read(dir: &Path) -> Result<Self, HistoryError> {
+        let snapshot = Snapshot::read(dir)?;
+        let mut history = Self::default();
+        history.grow(dir, &snapshot)?;
+        Ok(history)
+    }
+
+    /// Bring the tree up to `snapshot`: read only the commits not already
+    /// held (everything behind a tip read before is held already, since a
+    /// branch only grows), then lay the limbs, marks and HEAD out again.
+    /// Answers how many moments were added.
+    ///
+    /// # Errors
+    ///
+    /// As [`History::read`]. A failure leaves every moment already held
+    /// valid, and the next grow reads again from the last good tips.
+    pub fn grow(&mut self, dir: &Path, snapshot: &Snapshot) -> Result<usize, HistoryError> {
+        let tips = snapshot.tips();
+        let added = if tips.is_empty() {
+            0
+        } else {
+            let mut input = tips.join("\n");
+            if !self.tips.is_empty() {
+                input.push_str("\n--not\n");
+                input.push_str(&self.tips.join("\n"));
+            }
+            input.push('\n');
+            let log = run_with(
+                git(dir, "log").args([
+                    "--stdin",
+                    "--topo-order",
+                    "--reverse",
+                    "--root",
+                    "--no-renames",
+                    "--no-show-signature",
+                    "--no-color",
+                    "--encoding=UTF-8",
+                    "--name-status",
+                    LOG_FORMAT,
+                ]),
+                &input,
+            )?;
+            self.append(&log)?
+        };
+        self.lay_out(&snapshot.refs, snapshot.head.as_deref())?;
+        self.tips = tips;
+        Ok(added)
+    }
+
+    /// Build the tree from git's own words: `log` as `grow` asks for it,
     /// `refs` from `for-each-ref`, and HEAD's commit.
     ///
     /// # Errors
     ///
-    /// When a moment has two parents, names a parent not seen before it, or
-    /// a field does not read.
+    /// When a moment has two parents or names a parent not seen before it,
+    /// or a branch names a commit the log did not hold.
     pub fn from_git(log: &str, refs: &str, here: Option<&str>) -> Result<Self, HistoryError> {
         let mut history = Self::default();
-        let mut index: HashMap<String, usize> = HashMap::new();
+        history.append(log)?;
+        history.lay_out(refs, here)?;
+        Ok(history)
+    }
+
+    /// Add the moments in `log`, all or none. A moment already held is
+    /// skipped, so reading a commit twice never doubles it.
+    fn append(&mut self, log: &str) -> Result<usize, HistoryError> {
+        let mut fresh: Vec<Moment> = Vec::new();
+        let mut fresh_index: HashMap<String, usize> = HashMap::new();
         for record in log.split(RECORD).filter(|record| !record.trim().is_empty()) {
-            let moment = moment(record, &index, &history.moments)?;
-            index.insert(moment.id.clone(), history.moments.len());
-            history.moments.push(moment);
+            let moment = moment(
+                record,
+                |id| {
+                    self.index
+                        .get(id)
+                        .copied()
+                        .or_else(|| fresh_index.get(id).map(|&i| self.moments.len() + i))
+                },
+                |m| {
+                    if m < self.moments.len() {
+                        self.moments[m].modules
+                    } else {
+                        fresh[m - self.moments.len()].modules
+                    }
+                },
+            )?;
+            if self.index.contains_key(&moment.id) || fresh_index.contains_key(&moment.id) {
+                continue;
+            }
+            fresh_index.insert(moment.id.clone(), fresh.len());
+            fresh.push(moment);
         }
-        history.limbs = limbs(refs, &index, &history.moments)?;
-        history.place = vec![None; history.moments.len()];
-        for (l, limb) in history.limbs.iter().enumerate() {
+        let added = fresh.len();
+        let base = self.moments.len();
+        for (id, i) in fresh_index {
+            self.index.insert(id, base + i);
+        }
+        self.moments.extend(fresh);
+        Ok(added)
+    }
+
+    /// Lay the limbs, marks, problems and the wall's place out again from
+    /// the refs and HEAD.
+    fn lay_out(&mut self, refs: &str, here: Option<&str>) -> Result<(), HistoryError> {
+        let mut problems = Vec::new();
+        let limbs = limbs(refs, &self.index, &self.moments)?;
+        let mut place = vec![None; self.moments.len()];
+        for (l, limb) in limbs.iter().enumerate() {
             for (at, &m) in limb.moments.iter().enumerate() {
-                history.place[m] = Some((l, at));
+                place[m] = Some((l, at));
             }
         }
-        history.marks = marks(refs, &index);
-        history.here = here.and_then(|id| index.get(id).copied());
-        Ok(history)
+        let marks = marks(refs, &self.index, &mut problems);
+        let here = match here {
+            None => None,
+            Some(id) => {
+                let found = self.index.get(id).copied();
+                if found.is_none() {
+                    problems.push(format!(
+                        "the wall's place, {id:.10}, is a commit the tree does not hold"
+                    ));
+                }
+                found
+            }
+        };
+        self.limbs = limbs;
+        self.place = place;
+        self.marks = marks;
+        self.here = here;
+        self.problems = problems;
+        Ok(())
+    }
+
+    /// Add a moment made by hand (the tests' made-up trees), on no limb
+    /// until one claims it.
+    #[cfg(test)]
+    pub(crate) fn push(&mut self, moment: Moment) -> usize {
+        let m = self.moments.len();
+        self.index.insert(moment.id.clone(), m);
+        self.moments.push(moment);
+        self.place.push(None);
+        m
+    }
+
+    /// The moment that is `commit`.
+    #[must_use]
+    pub fn moment_of(&self, commit: &str) -> Option<usize> {
+        self.index.get(commit).copied()
     }
 
     /// The limb a moment is on, and its place there.
@@ -187,26 +406,19 @@ impl History {
     pub fn place_of(&self, moment: usize) -> Option<(usize, usize)> {
         self.place.get(moment).copied().flatten()
     }
-}
 
-/// What changes whenever the tree grows or the wall moves: every ref and
-/// HEAD. Cheap to read every few seconds; the log is read only when it
-/// changes.
-///
-/// # Errors
-///
-/// When git cannot run.
-pub fn stamp(dir: &Path) -> Result<String, HistoryError> {
-    let refs =
-        run(git_command("for-each-ref", Some(dir)).args(["--format=%(refname) %(objectname)"]))?;
-    let here = head(dir)?.unwrap_or_default();
-    Ok(format!("{refs}HEAD {here}"))
+    /// Every problem found reading the tree: the tree's own, and each
+    /// moment's.
+    #[must_use]
+    pub fn problem_count(&self) -> usize {
+        self.problems.len() + self.moments.iter().map(|m| m.problems.len()).sum::<usize>()
+    }
 }
 
 /// HEAD's commit; `None` for a tree with no moment yet, which `rev-parse
 /// --verify -q` answers with exit 1 and nothing on either stream.
 fn head(dir: &Path) -> Result<Option<String>, HistoryError> {
-    let mut command = git_command("rev-parse", Some(dir));
+    let mut command = git(dir, "rev-parse");
     command.args(["-q", "--verify", "HEAD^{commit}"]);
     let output = command
         .output()
@@ -224,15 +436,26 @@ fn head(dir: &Path) -> Result<Option<String>, HistoryError> {
     )))
 }
 
+/// Text from a commit as it may be shown: a control character (an escape
+/// that would drive the terminal, a tab, a newline) becomes `�`.
+#[must_use]
+pub fn clean(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect()
+}
+
+/// One log record as a moment. `index` finds a parent's place, `modules`
+/// the modules alive at a place.
 fn moment(
     record: &str,
-    index: &HashMap<String, usize>,
-    moments: &[Moment],
+    index: impl Fn(&str) -> Option<usize>,
+    modules_at: impl Fn(usize) -> u32,
 ) -> Result<Moment, HistoryError> {
     let (head, files) = record.split_once(BODY_END).ok_or_else(|| {
         HistoryError::Broken(format!("a log record without its end: {record:.80}"))
     })?;
-    let mut fields = head.splitn(5, '\0');
+    let mut fields = head.splitn(6, '\0');
     let mut field = |what: &str| {
         fields.next().ok_or_else(|| {
             HistoryError::Broken(format!("a log record without its {what}: {head:.80}"))
@@ -241,12 +464,13 @@ fn moment(
     let id = field("commit")?.trim().to_owned();
     let parents = field("parents")?;
     let time = field("time")?;
-    let seat = field("author")?.to_owned();
-    let body = field("message")?;
+    let seat = clean(field("author")?);
+    let summary = clean(field("subject")?);
+    let trailers = field("trailers")?;
     let mut parents = parents.split_whitespace();
     let parent = match (parents.next(), parents.next()) {
         (None, _) => None,
-        (Some(one), None) => Some(*index.get(one).ok_or_else(|| {
+        (Some(one), None) => Some(index(one).ok_or_else(|| {
             HistoryError::Broken(format!(
                 "{id:.10} grew from {one:.10}, which the tree does not hold before it"
             ))
@@ -261,26 +485,26 @@ fn moment(
         .trim()
         .parse::<i64>()
         .map_err(|err| HistoryError::Broken(format!("{id:.10}'s time does not read: {err}")))?;
-    let summary = body.lines().next().unwrap_or_default().to_owned();
+    let mut problems = Vec::new();
     let mut kind = String::new();
     let mut seq = None;
     let mut beat = None;
     let mut tempo = None;
     let mut sound = None;
-    for line in body.lines() {
+    for line in trailers.lines() {
         if let Some(value) = line.strip_prefix("Kazoo-Kind: ") {
-            value.trim().clone_into(&mut kind);
+            kind = clean(value.trim());
         } else if let Some(value) = line.strip_prefix("Kazoo-Seq: ") {
-            seq = Some(number(&id, "Kazoo-Seq", value)?);
+            seq = keep(&mut problems, number("Kazoo-Seq", value));
         } else if let Some(value) = line.strip_prefix("Kazoo-Beat: ") {
-            beat = Some(number(&id, "Kazoo-Beat", value)?);
+            beat = keep(&mut problems, number("Kazoo-Beat", value));
         } else if let Some(value) = line.strip_prefix("Kazoo-Tempo: ") {
-            tempo = Some(number(&id, "Kazoo-Tempo", value)?);
+            tempo = keep(&mut problems, number("Kazoo-Tempo", value));
         } else if let Some(value) = line.strip_prefix("Kazoo-Sound: ") {
-            sound = Some(sound_of(&id, value)?);
+            sound = keep(&mut problems, sound_of(value));
         }
     }
-    let before = parent.map_or(0, |p| moments[p].modules);
+    let before = parent.map_or(0, &modules_at);
     let mut modules = i64::from(before);
     for line in files.lines() {
         let mut parts = line.splitn(2, '\t');
@@ -296,6 +520,11 @@ fn moment(
             _ => {}
         }
     }
+    if modules < 0 {
+        problems.push(format!(
+            "removes more modules than were alive ({before} alive, {modules} after); counted as none"
+        ));
+    }
     Ok(Moment {
         id,
         parent,
@@ -308,32 +537,45 @@ fn moment(
         tempo,
         sound,
         modules: u32::try_from(modules.max(0)).unwrap_or(u32::MAX),
+        problems,
     })
 }
 
-fn number<T: std::str::FromStr>(id: &str, key: &str, value: &str) -> Result<T, HistoryError>
+/// A trailer's value, or `None` with what was wrong said in `problems`.
+fn keep<T>(problems: &mut Vec<String>, result: Result<T, String>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(problem) => {
+            problems.push(problem);
+            None
+        }
+    }
+}
+
+fn number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, String>
 where
     T::Err: fmt::Display,
 {
-    value.trim().parse().map_err(|err| {
-        HistoryError::Broken(format!("{id:.10}'s {key} does not read ({value}): {err}"))
-    })
+    value
+        .trim()
+        .parse()
+        .map_err(|err| format!("its {key} does not read ({}): {err}", clean(value.trim())))
 }
 
 /// Read `rms=-27.2 peak=-9.9 centroid=599 low=0.284 mid=0.712 high=0.004 onsets=3.0`.
-fn sound_of(id: &str, value: &str) -> Result<Sound, HistoryError> {
+fn sound_of(value: &str) -> Result<Sound, String> {
     let mut found: HashMap<&str, f32> = HashMap::new();
     for pair in value.split_whitespace() {
-        let (key, number_text) = pair.split_once('=').ok_or_else(|| {
-            HistoryError::Broken(format!("{id:.10}'s Kazoo-Sound has {pair}, not key=value"))
-        })?;
-        found.insert(key, number(id, "Kazoo-Sound", number_text)?);
+        let (key, number_text) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("its Kazoo-Sound has {}, not key=value", clean(pair)))?;
+        found.insert(key, number("Kazoo-Sound", number_text)?);
     }
     let get = |key: &str| {
         found
             .get(key)
             .copied()
-            .ok_or_else(|| HistoryError::Broken(format!("{id:.10}'s Kazoo-Sound has no {key}")))
+            .ok_or_else(|| format!("its Kazoo-Sound has no {key}"))
     };
     Ok(Sound {
         rms_db: get("rms")?,
@@ -365,60 +607,139 @@ fn read_refs(refs: &str) -> impl Iterator<Item = Ref<'_>> {
     })
 }
 
-/// The order limbs are claimed in: the trunk, then buds by the time in
-/// their names (a bud only grows from a moment that already existed, so a
-/// parent bud is always claimed before its children), then any branch made
-/// by hand, by its tip's time.
+/// The limbs, each claiming its own moments. The trunk first. Then the
+/// buds by the time in their names: a bud's name also says the moment it
+/// grew from (`bud/<from>/<time>`, `<from>` its commit's first 12 hex or
+/// the mark it grew from), so its walk stops exactly there and a bud never
+/// takes another limb's moments, whatever order they are claimed in. Then
+/// the branches made by hand, one at a time, the one whose first moment of
+/// its own is oldest first (then by name). Nothing in any of this changes
+/// as a limb grows, so a moment never changes limb and the past is never
+/// redrawn.
 fn limbs(
     refs: &str,
     index: &HashMap<String, usize>,
     moments: &[Moment],
 ) -> Result<Vec<Limb>, HistoryError> {
-    let mut heads: Vec<(String, usize)> = Vec::new();
+    let mut grown: Vec<(String, usize)> = Vec::new();
+    let mut by_hand: Vec<(String, usize)> = Vec::new();
+    let mut mark_commits: HashMap<&str, usize> = HashMap::new();
     for r in read_refs(refs) {
+        if let Some(part) = r.name.strip_prefix("refs/tags/mark/")
+            && let Some(&m) = index.get(r.commit)
+        {
+            mark_commits.insert(part, m);
+        }
         if let Some(name) = r.name.strip_prefix("refs/heads/") {
             let tip = *index.get(r.commit).ok_or_else(|| {
                 HistoryError::Broken(format!(
-                    "the branch {name} names {:.10}, which the log did not hold",
+                    "the branch {} names {:.10}, which the log did not hold",
+                    clean(name),
                     r.commit
                 ))
             })?;
-            heads.push((name.to_owned(), tip));
+            if rank(name) < 2 {
+                grown.push((name.to_owned(), tip));
+            } else {
+                by_hand.push((name.to_owned(), tip));
+            }
         }
     }
-    heads.sort_by(|(a, a_tip), (b, b_tip)| {
+    grown.sort_by(|(a, _), (b, _)| {
         rank(a)
             .cmp(&rank(b))
             .then_with(|| bud_time(a).cmp(bud_time(b)))
-            .then_with(|| moments[*a_tip].time.cmp(&moments[*b_tip].time))
             .then_with(|| a.cmp(b))
     });
     let mut claimed = vec![false; moments.len()];
-    let mut limbs = Vec::with_capacity(heads.len());
-    for (name, tip) in heads {
-        let mut own = Vec::new();
-        let mut at = Some(tip);
-        let mut from = None;
-        while let Some(m) = at {
-            if claimed[m] {
-                from = Some(m);
-                break;
-            }
-            claimed[m] = true;
-            own.push(m);
-            at = moments[m].parent;
-        }
-        own.reverse();
-        if own.is_empty() && from.is_none() {
-            continue;
-        }
-        limbs.push(Limb {
-            name,
-            moments: own,
-            from,
+    let mut limbs = Vec::with_capacity(grown.len() + by_hand.len());
+    for (name, tip) in grown {
+        let stop = bud_from(&name).and_then(|from| {
+            mark_commits.get(from).copied().or_else(|| {
+                // The commit's 12 hex: the first moment on the walk whose
+                // commit starts with them.
+                let mut at = Some(tip);
+                while let Some(m) = at {
+                    if from.len() >= 7 && moments[m].id.starts_with(from) && m != tip {
+                        return Some(m);
+                    }
+                    at = moments[m].parent;
+                }
+                None
+            })
         });
+        limbs.push(claim(&mut claimed, moments, &name, tip, stop));
+    }
+    // Each hand-made branch's oldest unclaimed moment, kept and looked at
+    // again only once claimed: a walk that meets the last limb claimed
+    // follows it down, so its oldest moment is then claimed too.
+    let mut oldest: Vec<Option<usize>> = by_hand
+        .iter()
+        .map(|&(_, tip)| first_unclaimed(tip, &claimed, moments))
+        .collect();
+    while !by_hand.is_empty() {
+        for (i, &(_, tip)) in by_hand.iter().enumerate() {
+            if oldest[i].is_some_and(|m| claimed[m]) {
+                oldest[i] = first_unclaimed(tip, &claimed, moments);
+            }
+        }
+        let time = |m: Option<usize>| m.map_or(i64::MAX, |m| moments[m].time);
+        let first = (0..by_hand.len())
+            .min_by(|&a, &b| {
+                time(oldest[a])
+                    .cmp(&time(oldest[b]))
+                    .then_with(|| by_hand[a].0.cmp(&by_hand[b].0))
+            })
+            .unwrap_or(0);
+        let (name, tip) = by_hand.swap_remove(first);
+        oldest.swap_remove(first);
+        limbs.push(claim(&mut claimed, moments, &name, tip, None));
     }
     Ok(limbs)
+}
+
+/// The oldest moment a branch would claim: its first-parent walk from
+/// `tip` down to the first claimed moment, the last step before it.
+fn first_unclaimed(tip: usize, claimed: &[bool], moments: &[Moment]) -> Option<usize> {
+    let mut at = Some(tip);
+    let mut oldest = None;
+    while let Some(m) = at {
+        if claimed[m] {
+            break;
+        }
+        oldest = Some(m);
+        at = moments[m].parent;
+    }
+    oldest
+}
+
+/// Walk a branch from its tip, claiming each moment not yet claimed, down
+/// to the first claimed one or to `stop`: that is where it grew from.
+fn claim(
+    claimed: &mut [bool],
+    moments: &[Moment],
+    name: &str,
+    tip: usize,
+    stop: Option<usize>,
+) -> Limb {
+    let mut own = Vec::new();
+    let mut at = Some(tip);
+    let mut from = None;
+    while let Some(m) = at {
+        if claimed[m] || stop == Some(m) {
+            from = Some(m);
+            break;
+        }
+        claimed[m] = true;
+        own.push(m);
+        at = moments[m].parent;
+    }
+    own.reverse();
+    Limb {
+        name: clean(name),
+        moments: own,
+        from,
+    }
 }
 
 fn rank(name: &str) -> u8 {
@@ -438,21 +759,53 @@ fn bud_time(name: &str) -> &str {
         .map_or("", |(_, time)| time)
 }
 
-fn marks(refs: &str, index: &HashMap<String, usize>) -> Vec<Mark> {
-    let mut marks: Vec<Mark> = read_refs(refs)
-        .filter_map(|r| {
-            let (part, save) = match r.name.strip_prefix("refs/tags/mark/") {
-                Some(part) => (part, false),
-                None => (r.name.strip_prefix("refs/tags/save/")?, true),
-            };
-            let moment = *index.get(r.commit)?;
-            Some(Mark {
-                name: name_of(part),
-                save,
-                moment,
-            })
-        })
-        .collect();
+/// `bud/<from>/<time>[-n]`: the part saying where it grew from.
+fn bud_from(name: &str) -> Option<&str> {
+    name.strip_prefix("bud/")
+        .and_then(|rest| rest.rsplit_once('/'))
+        .map(|(from, _)| from)
+}
+
+/// Every mark and save. A save's tag is `save/<name>/<time>` (the wall's
+/// own reading drops the time the same way); one the tree cannot place is
+/// said among its problems.
+fn marks(refs: &str, index: &HashMap<String, usize>, problems: &mut Vec<String>) -> Vec<Mark> {
+    let mut marks = Vec::new();
+    for r in read_refs(refs) {
+        let (part, save) = if let Some(part) = r.name.strip_prefix("refs/tags/mark/") {
+            (part, false)
+        } else if let Some(part) = r.name.strip_prefix("refs/tags/save/") {
+            (part, true)
+        } else {
+            continue;
+        };
+        let name = if save {
+            if let Some((name, _time)) = part.rsplit_once('/') {
+                name
+            } else {
+                problems.push(format!(
+                    "the save mark {} has no time; shown by its whole name",
+                    clean(r.name)
+                ));
+                part
+            }
+        } else {
+            part
+        };
+        let Some(&moment) = index.get(r.commit) else {
+            problems.push(format!(
+                "the mark {} names {:.10}, which is not a moment",
+                clean(r.name),
+                r.commit
+            ));
+            continue;
+        };
+        marks.push(Mark {
+            name: clean(&name_of(name)),
+            save,
+            moment,
+        });
+    }
     marks.sort_by(|a, b| a.moment.cmp(&b.moment).then_with(|| a.name.cmp(&b.name)));
     marks
 }

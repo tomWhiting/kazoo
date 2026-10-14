@@ -8,12 +8,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 use crate::growth::Growth;
 use crate::history::{History, HistoryError};
-use crate::render::{self, Gesture, Level, MAX_SCALE, MIN_SCALE, View};
+use crate::render::{self, Day, Gesture, Level, MAX_SCALE, View};
 
 /// Zoom per key press or wheel notch.
-const ZOOM: f32 = 1.5;
+const ZOOM: f64 = 1.5;
 /// The details panel's width, when the terminal is wide enough for it.
 pub const PANEL: u16 = 44;
+/// How far Shift pans, as a share of the view.
+const FAR: f64 = 0.5;
 /// Moments per `{` / `}` jump.
 const JUMP: isize = 16;
 
@@ -28,6 +30,8 @@ pub struct App {
     pub growth: Growth,
     /// Its gestures.
     pub gestures: Vec<Gesture>,
+    /// Its day marks, in the viewer's own time zone.
+    pub days: Vec<Day>,
     /// The wall's own line, root to where it is.
     pub line: Vec<bool>,
     /// What is in view; `None` until the first frame fits the tree.
@@ -41,9 +45,41 @@ pub struct App {
     /// The picture's size at the last frame.
     pub area: (u16, u16),
     /// Where a mouse drag started: the cell and the view's centre then.
-    drag: Option<((u16, u16), (f32, f32))>,
+    drag: Option<((u16, u16), (f64, f64))>,
     /// Quit at the next turn of the loop.
     pub quit: bool,
+    /// The tree was asked to be read again (`r`): the reader is told.
+    pub wants_reading: bool,
+}
+
+/// A tree read and grown, ready to show: made off the screen's thread, so
+/// reading and growing a large tree never stops the screen.
+#[derive(Debug, Default)]
+pub struct Grown {
+    /// The tree.
+    pub history: History,
+    /// Where it grew.
+    pub growth: Growth,
+    /// Its gestures.
+    pub gestures: Vec<Gesture>,
+    /// Its day marks, in the viewer's own time zone.
+    pub days: Vec<Day>,
+    /// The wall's own line.
+    pub line: Vec<bool>,
+}
+
+impl Grown {
+    /// Grow `history` and find everything drawn from it.
+    #[must_use]
+    pub fn of(history: History) -> Self {
+        Self {
+            growth: Growth::grow(&history),
+            gestures: render::gestures(&history),
+            days: render::days(&history, &chrono::Local),
+            line: render::line_to(&history, history.here),
+            history,
+        }
+    }
 }
 
 impl App {
@@ -54,11 +90,18 @@ impl App {
     /// When the tree cannot be read.
     pub fn open(dir: PathBuf) -> Result<Self, HistoryError> {
         let history = History::read(&dir)?;
+        Ok(Self::showing(dir, Grown::of(history)))
+    }
+
+    /// The app showing `grown`, read from `dir`, the wall's place selected.
+    #[must_use]
+    pub fn showing(dir: PathBuf, grown: Grown) -> Self {
         let mut app = Self {
             dir,
             history: History::default(),
             growth: Growth::default(),
             gestures: Vec::new(),
+            days: Vec::new(),
             line: Vec::new(),
             view: None,
             selected: None,
@@ -67,41 +110,47 @@ impl App {
             area: (0, 0),
             drag: None,
             quit: false,
+            wants_reading: false,
         };
-        app.take(history);
+        app.show(grown);
         app.selected = app
             .history
             .here
             .or_else(|| app.history.moments.len().checked_sub(1));
-        Ok(app)
+        app
     }
 
-    /// Take a freshly read tree, keeping the view and the selection (by
-    /// commit, which never moves: the past is never redrawn).
+    /// Take a freshly read tree, growing it here: for tests and `--print`.
     pub fn take(&mut self, history: History) {
-        let selected_id = self.selected.map(|m| self.history.moments[m].id.clone());
-        self.growth = Growth::grow(&history);
-        self.gestures = render::gestures(&history);
-        self.line = render::line_to(&history, history.here);
-        self.selected = selected_id.and_then(|id| history.moments.iter().position(|m| m.id == id));
-        self.history = history;
+        self.show(Grown::of(history));
     }
 
-    /// Read the tree again.
-    pub fn reload(&mut self) {
-        match History::read(&self.dir) {
-            Ok(history) => {
-                let before = self.history.moments.len();
-                self.take(history);
-                let grown = self.history.moments.len().saturating_sub(before);
-                self.said = if grown == 0 {
-                    "read again: nothing new".to_owned()
-                } else {
-                    format!("read again: {grown} new moments")
-                };
-            }
-            Err(err) => self.said = format!("the tree could not be read: {err}"),
+    /// Show a tree read and grown, keeping the view and the selection (by
+    /// commit, which never moves: the past is never redrawn). Says how
+    /// many moments are new.
+    pub fn show(&mut self, grown: Grown) {
+        let selected_id = self.selected.map(|m| self.history.moments[m].id.clone());
+        let before = self.history.moments.len();
+        self.selected = selected_id.and_then(|id| grown.history.moment_of(&id));
+        let new = grown.history.moments.len().saturating_sub(before);
+        self.history = grown.history;
+        self.growth = grown.growth;
+        self.gestures = grown.gestures;
+        self.days = grown.days;
+        self.line = grown.line;
+        if before > 0 {
+            self.said = match new {
+                0 => "read again: nothing new".to_owned(),
+                1 => "read again: 1 new moment".to_owned(),
+                n => format!("read again: {n} new moments"),
+            };
         }
+    }
+
+    /// Ask for the tree to be read again now.
+    pub fn reload(&mut self) {
+        self.wants_reading = true;
+        "reading the tree again…".clone_into(&mut self.said);
     }
 
     /// The view, fitted to the tree the first time it is asked for.
@@ -111,10 +160,11 @@ impl App {
             .get_or_insert_with(|| View::fit(self.growth.bounds, cols, rows))
     }
 
-    fn zoom_about(&mut self, factor: f32, cell: Option<(u16, u16)>) {
+    fn zoom_about(&mut self, factor: f64, cell: Option<(u16, u16)>) {
         let (cols, rows) = self.area;
         let mut view = self.view(cols, rows);
-        let scale = (view.scale * factor).clamp(MIN_SCALE, MAX_SCALE);
+        let least = render::min_scale(self.growth.bounds, cols, rows);
+        let scale = (view.scale * factor).clamp(least, MAX_SCALE);
         if let Some((col, row)) = cell {
             // Keep the point under the cursor where it is.
             let world = view.to_world(col, row, cols, rows);
@@ -128,11 +178,11 @@ impl App {
         self.view = Some(view);
     }
 
-    fn pan(&mut self, cols_share: f32, rows_share: f32) {
+    fn pan(&mut self, cols_share: f64, rows_share: f64) {
         let (cols, rows) = self.area;
         let mut view = self.view(cols, rows);
-        view.centre.0 += cols_share * f32::from(cols) * 2.0 / view.scale;
-        view.centre.1 += rows_share * f32::from(rows) * 4.0 / view.scale;
+        view.centre.0 += cols_share * f64::from(cols) * 2.0 / view.scale;
+        view.centre.1 += rows_share * f64::from(rows) * 4.0 / view.scale;
         self.view = Some(view);
     }
 
@@ -155,11 +205,18 @@ impl App {
         self.centre_on_selected();
     }
 
-    /// The marks, the wall's place, in moment order: what Tab walks.
+    /// When a moment was made, for walking in time: its time, then its
+    /// commit (never its place in the reading, which is git's choice).
+    fn when(&self, m: usize) -> (i64, &str) {
+        let moment = &self.history.moments[m];
+        (moment.time, &moment.id)
+    }
+
+    /// The marks and the wall's place, oldest first: what Tab walks.
     fn stops(&self) -> Vec<usize> {
         let mut stops: Vec<usize> = self.history.marks.iter().map(|m| m.moment).collect();
         stops.extend(self.history.here);
-        stops.sort_unstable();
+        stops.sort_by(|&a, &b| self.when(a).cmp(&self.when(b)));
         stops.dedup();
         stops
     }
@@ -170,17 +227,23 @@ impl App {
             "no marks yet: nothing to jump to".clone_into(&mut self.said);
             return;
         }
-        let at = self.selected.unwrap_or(0);
-        let next = if forward {
-            stops.iter().copied().find(|&m| m > at).unwrap_or(stops[0])
-        } else {
-            stops
-                .iter()
-                .rev()
-                .copied()
-                .find(|&m| m < at)
-                .unwrap_or(stops[stops.len() - 1])
-        };
+        let next = self.selected.map_or(stops[0], |at| {
+            let now = self.when(at);
+            if forward {
+                stops
+                    .iter()
+                    .copied()
+                    .find(|&m| self.when(m) > now)
+                    .unwrap_or(stops[0])
+            } else {
+                stops
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|&m| self.when(m) < now)
+                    .unwrap_or(stops[stops.len() - 1])
+            }
+        });
         self.select(next);
     }
 
@@ -214,33 +277,57 @@ impl App {
         let view = self.view?;
         let level = Level::of(view.scale);
         let target = (
-            f32::from(col).mul_add(2.0, 1.0),
-            f32::from(row).mul_add(4.0, 2.0),
+            f64::from(col).mul_add(2.0, 1.0),
+            f64::from(row).mul_add(4.0, 2.0),
         );
-        let mut best: Option<(f32, usize)> = None;
+        // Only what is within reach of the click is looked at: six dots
+        // either way, in world units.
+        let reach = 6.0 / view.scale;
+        let click = view.to_world(col, row, cols, rows);
+        let near = (
+            click.0 - reach,
+            click.1 - reach,
+            click.0 + reach,
+            click.1 + reach,
+        );
+        let mut best: Option<(f64, usize)> = None;
         let mut consider = |m: usize| {
-            if let Some(p) = self.growth.at.get(m).copied().flatten() {
+            if let Some(p) = self.growth.at.get(m).copied().flatten()
+                && p.0 >= near.0
+                && p.0 <= near.2
+                && p.1 >= near.1
+                && p.1 <= near.3
+            {
                 let (x, y) = view.to_dots(p, cols, rows);
-                let d = (x - target.0).hypot((y - target.1) * 0.5);
+                let d = libm::hypot(x - target.0, (y - target.1) * 0.5);
                 if d <= 6.0 && best.is_none_or(|(b, _)| d < b) {
                     best = Some((d, m));
                 }
             }
         };
-        if level >= Level::Every {
-            (0..self.history.moments.len()).for_each(&mut consider);
-        } else {
-            self.history
-                .marks
-                .iter()
-                .for_each(|mark| consider(mark.moment));
-            self.history.here.into_iter().for_each(&mut consider);
-            for step in &self.growth.steps {
-                consider(self.history.limbs[step.limb].moments[step.last]);
+        for step in &self.growth.steps {
+            let pad = step.widest + reach;
+            if step.start.0.max(step.end.0) + pad < click.0
+                || step.start.0.min(step.end.0) - pad > click.0
+                || step.start.1.max(step.end.1) + pad < click.1
+                || step.start.1.min(step.end.1) - pad > click.1
+            {
+                continue;
             }
-            if level >= Level::Close {
-                self.gestures.iter().for_each(|g| consider(g.last));
+            let moments = &self.history.limbs[step.limb].moments[step.first..=step.last];
+            if level >= Level::Every {
+                moments.iter().copied().for_each(&mut consider);
+            } else if let Some(&last) = moments.last() {
+                consider(last);
             }
+        }
+        self.history
+            .marks
+            .iter()
+            .for_each(|mark| consider(mark.moment));
+        self.history.here.into_iter().for_each(&mut consider);
+        if level == Level::Close {
+            self.gestures.iter().for_each(|g| consider(g.last));
         }
         best.map(|(_, m)| m)
     }
@@ -254,7 +341,7 @@ impl App {
             return;
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let step = if shift { 0.5 } else { 0.125 };
+        let step = if shift { FAR } else { 0.125 };
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
@@ -263,6 +350,11 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => self.pan(step, 0.0),
             KeyCode::Up | KeyCode::Char('k') => self.pan(0.0, step),
             KeyCode::Down | KeyCode::Char('j') => self.pan(0.0, -step),
+            // Shift with a letter arrives as the capital, Shift or not.
+            KeyCode::Char('H') => self.pan(-FAR, 0.0),
+            KeyCode::Char('L') => self.pan(FAR, 0.0),
+            KeyCode::Char('K') => self.pan(0.0, FAR),
+            KeyCode::Char('J') => self.pan(0.0, -FAR),
             KeyCode::Char('+' | '=') => self.zoom_about(ZOOM, None),
             KeyCode::Char('-' | '_') => self.zoom_about(1.0 / ZOOM, None),
             KeyCode::Char('0') => {
@@ -303,8 +395,8 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(((c0, r0), centre)) = self.drag {
                     let mut view = self.view(cols, rows);
-                    let dx = (f32::from(col) - f32::from(c0)) * 2.0 / view.scale;
-                    let dy = (f32::from(row) - f32::from(r0)) * 4.0 / view.scale;
+                    let dx = (f64::from(col) - f64::from(c0)) * 2.0 / view.scale;
+                    let dy = (f64::from(row) - f64::from(r0)) * 4.0 / view.scale;
                     view.centre = (centre.0 - dx, centre.1 + dy);
                     self.view = Some(view);
                 }
@@ -367,7 +459,13 @@ impl App {
         if self.history.here == Some(m) {
             lines.push((String::new(), "◉ the wall is here".to_owned()));
         }
+        for problem in &moment.problems {
+            lines.push(("problem".to_owned(), problem.clone()));
+        }
         lines.push(("commit".to_owned(), moment.id.chars().take(12).collect()));
+        for problem in &self.history.problems {
+            lines.push(("tree".to_owned(), problem.clone()));
+        }
         lines
     }
 }
@@ -419,10 +517,13 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("◉", "where the wall is"),
             ("◆ ▪", "a mark, a save's mark"),
             ("•", "a gesture or a moment (zoomed in)"),
+            ("╴ Wed 14 Oct", "a new day begins on the limb"),
             ("bright limb", "the wall's own line"),
+            ("lighter limb", "grown in the last hour"),
             ("thickness", "modules alive"),
             ("colour", "sound: amber low, blue bright"),
-            ("bark colour", "sound not kept for it"),
+            ("grey", "its sound was not kept"),
+            ("roots", "where a tree began"),
         ],
     ),
 ];

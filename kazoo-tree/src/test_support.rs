@@ -24,22 +24,21 @@ pub fn moment(
         tempo: Some(100.0),
         sound: None,
         modules,
+        problems: Vec::new(),
     }
 }
 
 fn add(history: &mut History, parent: Option<usize>, seat: &str) -> usize {
     let n = history.moments.len();
     let summary = format!("{seat} turned vcf{} cutoff {n}", (n / 5) % 3);
-    history.moments.push(moment(
+    history.push(moment(
         n,
         parent,
         1_000 + i64::try_from(n).expect("a small tree"),
         seat,
         &summary,
         10 + (n % 40) as u32,
-    ));
-    history.place.push(None);
-    n
+    ))
 }
 
 /// Grow `limb` by `length` moments at its tip; a new trunk when the tree

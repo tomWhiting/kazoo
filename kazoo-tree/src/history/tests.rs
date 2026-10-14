@@ -120,7 +120,7 @@ fn planted() -> tempfile::TempDir {
     let six = stream.commit(BUD, Some(two), 6, &[("modules/env1.toml", Some("d"))], None);
     stream.commit(BUD, Some(six), 7, &[("wall.toml", Some("v"))], None);
     stream.tag("mark/before+the+rock", three);
-    stream.tag("save/the+rock+100", four);
+    stream.tag("save/the+rock+100/20261014T101010Z", four);
     stream.import(dir.path());
     let status = Command::new("git")
         .arg("-C")
@@ -198,13 +198,16 @@ fn an_empty_tree_reads_empty() {
     assert!(history.moments.is_empty());
     assert!(history.limbs.is_empty());
     assert_eq!(history.here, None);
-    assert_eq!(stamp(dir.path()).expect("stamped"), "HEAD ");
+    assert_eq!(
+        Snapshot::read(dir.path()).expect("read"),
+        Snapshot::default()
+    );
 }
 
 #[test]
-fn the_stamp_moves_when_the_tree_grows() {
+fn the_snapshot_moves_when_the_wall_moves() {
     let dir = planted();
-    let before = stamp(dir.path()).expect("stamped");
+    let before = Snapshot::read(dir.path()).expect("read");
     let status = Command::new("git")
         .arg("-C")
         .arg(dir.path())
@@ -212,11 +215,18 @@ fn the_stamp_moves_when_the_tree_grows() {
         .status()
         .expect("HEAD moves");
     assert!(status.success());
-    assert_ne!(stamp(dir.path()).expect("stamped again"), before);
+    assert_ne!(Snapshot::read(dir.path()).expect("read again"), before);
 }
 
 fn record(id: &str, parents: &str, body: &str, files: &str) -> String {
-    format!("\u{1e}{id}\0{parents}\01000\0Tom\0{body}\u{1f}\n{files}")
+    record_at(id, parents, 1000, body, files)
+}
+
+/// A log record as `grow` asks for it: `body` is the subject, then after a
+/// blank line the trailers.
+fn record_at(id: &str, parents: &str, time: i64, body: &str, files: &str) -> String {
+    let (subject, trailers) = body.split_once("\n\n").unwrap_or((body, ""));
+    format!("\u{1e}{id}\0{parents}\0{time}\0Tom\0{subject}\0{trailers}\u{1f}\n{files}")
 }
 
 #[test]
@@ -238,13 +248,31 @@ fn an_unknown_parent_is_refused() {
 }
 
 #[test]
-fn a_bad_sound_is_an_error_not_silence() {
-    let log = record("a", "", "one\n\nKazoo-Sound: rms=loud", "");
-    let err = History::from_git(&log, "", None).expect_err("a bad sound");
-    assert!(err.to_string().contains("Kazoo-Sound"), "{err}");
-    let log = record("a", "", "one\n\nKazoo-Sound: rms=-3", "");
-    let err = History::from_git(&log, "", None).expect_err("a short sound");
-    assert!(err.to_string().contains("no peak"), "{err}");
+fn a_bad_trailer_is_a_problem_said_not_silence_and_not_a_closed_tree() {
+    let log = [
+        record(
+            "a",
+            "",
+            "one\n\nKazoo-Sound: rms=loud\nKazoo-Seq: seven",
+            "",
+        ),
+        record("b", "a", "two\n\nKazoo-Sound: rms=-3", ""),
+        record("c", "b", "three\n\nKazoo-Seq: 3", ""),
+    ]
+    .concat();
+    let history = History::from_git(&log, "refs/heads/trunk\0c\0\n", None).expect("it opens");
+    let one = &history.moments[0];
+    assert_eq!((one.sound, one.seq), (None, None));
+    assert_eq!(one.problems.len(), 2, "{:?}", one.problems);
+    assert!(
+        one.problems[0].contains("Kazoo-Sound"),
+        "{:?}",
+        one.problems
+    );
+    assert!(one.problems[1].contains("Kazoo-Seq"), "{:?}", one.problems);
+    assert!(history.moments[1].problems[0].contains("no peak"));
+    assert_eq!(history.moments[2].seq, Some(3));
+    assert_eq!(history.problem_count(), 3);
 }
 
 #[test]
@@ -269,4 +297,254 @@ fn buds_are_claimed_in_the_order_they_grew() {
     assert_eq!(history.limbs[1].from, Some(0));
     assert_eq!(history.limbs[2].from, Some(1));
     assert_eq!(history.here, Some(3));
+}
+
+/// The limb each moment is on, by name.
+fn owners(history: &History) -> Vec<Option<&str>> {
+    history
+        .place
+        .iter()
+        .map(|p| p.map(|(limb, _)| history.limbs[limb].name.as_str()))
+        .collect()
+}
+
+#[test]
+fn a_branch_made_by_hand_keeps_its_place_as_it_grows() {
+    // From the trunk's b: "zebra" grew first (z1 at 1003), "apple" later
+    // (p1 at 1004), and "stack" on top of zebra's z1 (s1 at 1005). Then
+    // zebra grows again, so its tip is the newest. Nothing changes hands.
+    let early = [
+        record_at("a", "", 1000, "one", ""),
+        record_at("b", "a", 1001, "two", ""),
+        record_at("c", "b", 1002, "three", ""),
+        record_at("z1", "b", 1003, "zebra one", ""),
+        record_at("p1", "b", 1004, "apple one", ""),
+        record_at("s1", "z1", 1005, "stack one", ""),
+    ]
+    .concat();
+    let refs = "refs/heads/trunk\0c\0\nrefs/heads/zebra\0z1\0\nrefs/heads/apple\0p1\0\nrefs/heads/stack\0s1\0\n";
+    let before = History::from_git(&early, refs, None).expect("reads");
+    let grown = [early, record_at("z2", "z1", 1006, "zebra two", "")].concat();
+    let refs = "refs/heads/trunk\0c\0\nrefs/heads/zebra\0z2\0\nrefs/heads/apple\0p1\0\nrefs/heads/stack\0s1\0\n";
+    let after = History::from_git(&grown, refs, None).expect("reads");
+    let names = |h: &History| h.limbs.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&before), ["trunk", "stack", "apple", "zebra"]);
+    assert_eq!(names(&after), names(&before), "the order holds");
+    assert_eq!(
+        owners(&after)[..6],
+        owners(&before)[..],
+        "no moment changes limb"
+    );
+    assert_eq!(owners(&after)[6], Some("zebra"));
+}
+
+#[test]
+fn thousands_of_buds_are_all_kept() {
+    let mut log = record_at("t0", "", 0, "root", "");
+    let mut refs = String::from("refs/heads/trunk\0t0\0\n");
+    for n in 0..3_000 {
+        log.push_str(&record_at(&format!("b{n}"), "t0", n + 1, "a bud", ""));
+        writeln!(refs, "refs/heads/bud/t0/20261014T{n:06}Z\0b{n}\0").expect("a String takes it");
+    }
+    let history = History::from_git(&log, &refs, None).expect("reads");
+    assert_eq!(history.limbs.len(), 3_001);
+    assert!(
+        history.place.iter().all(Option::is_some),
+        "every moment is on a limb"
+    );
+}
+
+/// One more change on the trunk, made from outside, as the wall makes one.
+fn grow_trunk(dir: &std::path::Path, n: u32) {
+    let tip = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "refs/heads/trunk"])
+        .output()
+        .expect("rev-parse runs");
+    let tip = String::from_utf8(tip.stdout).expect("text");
+    let message = format!("Tom turned vcf1 cutoff {n}\n\nKazoo-Kind: change\nKazoo-Seq: {n}\n");
+    let at = 1_000 + n;
+    let text = format!(
+        "commit refs/heads/trunk\ncommitter Tom <tom@kazoo.invalid> {at} +0000\ndata {}\n{message}\nfrom {}\nM 100644 inline modules/vco{n}.toml\ndata 1\nx\n\n",
+        message.len(),
+        tip.trim()
+    );
+    Stream { text, marks: 0 }.import(dir);
+}
+
+#[test]
+fn a_change_made_during_a_read_waits_for_the_next_read() {
+    let dir = planted();
+    let mut history = History::default();
+    let snapshot = Snapshot::read(dir.path()).expect("read");
+    // The wall writes between the refs being read and the log.
+    grow_trunk(dir.path(), 8);
+    let added = history
+        .grow(dir.path(), &snapshot)
+        .expect("no error, no race");
+    assert_eq!(added, 7, "only what the snapshot names");
+    assert_eq!(history.limbs[0].moments.len(), 5);
+    let now = Snapshot::read(dir.path()).expect("read again");
+    assert_ne!(now, snapshot);
+    assert_eq!(history.grow(dir.path(), &now).expect("grows"), 1);
+    assert_eq!(history.limbs[0].moments.len(), 6);
+    let tip = history.limbs[0].moments[5];
+    assert_eq!(history.moments[tip].modules, 3, "counted from its parent");
+}
+
+#[test]
+fn reading_on_from_where_it_was_is_reading_it_whole() {
+    let dir = planted();
+    let mut history = History::read(dir.path()).expect("read");
+    grow_trunk(dir.path(), 8);
+    grow_trunk(dir.path(), 9);
+    history
+        .grow(dir.path(), &Snapshot::read(dir.path()).expect("read"))
+        .expect("grows");
+    let whole = History::read(dir.path()).expect("read whole");
+    let by_id = |h: &History| {
+        let mut ids: Vec<(String, Option<String>, u32)> = h
+            .moments
+            .iter()
+            .map(|m| {
+                (
+                    m.id.clone(),
+                    m.parent.map(|p| h.moments[p].id.clone()),
+                    m.modules,
+                )
+            })
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(by_id(&history), by_id(&whole));
+    let limbs = |h: &History| -> Vec<(String, Vec<String>)> {
+        h.limbs
+            .iter()
+            .map(|l| {
+                (
+                    l.name.clone(),
+                    l.moments.iter().map(|&m| h.moments[m].id.clone()).collect(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(limbs(&history), limbs(&whole));
+    // And the same tree grows from both: every commit in the same place.
+    let (a, b) = (
+        crate::growth::Growth::grow(&history),
+        crate::growth::Growth::grow(&whole),
+    );
+    for (m, moment) in history.moments.iter().enumerate() {
+        let w = whole.moment_of(&moment.id).expect("held");
+        assert_eq!(a.at[m], b.at[w], "{}", moment.id);
+    }
+}
+
+#[test]
+fn the_persons_git_settings_change_nothing() {
+    let dir = planted();
+    let before = History::read(dir.path()).expect("read");
+    for (key, value) in [
+        ("log.showRoot", "false"),
+        ("log.showSignature", "true"),
+        ("color.ui", "always"),
+        ("core.quotePath", "true"),
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", key, value])
+            .status()
+            .expect("config runs");
+        assert!(status.success());
+    }
+    let after = History::read(dir.path()).expect("read");
+    let modules = |h: &History| h.moments.iter().map(|m| m.modules).collect::<Vec<_>>();
+    assert_eq!(modules(&after), modules(&before));
+    assert_eq!(modules(&after)[..5], [1, 2, 3, 2, 2]);
+    assert_eq!(after.marks, before.marks);
+}
+
+#[test]
+fn a_save_without_its_time_is_said_and_still_shown() {
+    let log = record("a", "", "one", "");
+    let refs =
+        "refs/heads/trunk\0a\0\nrefs/tags/save/old+name\0a\0\nrefs/tags/mark/nowhere\0f00\0\n";
+    let history = History::from_git(&log, refs, None).expect("reads");
+    assert_eq!(history.marks.len(), 1);
+    assert_eq!(history.marks[0].name, "old name");
+    assert_eq!(history.problems.len(), 2, "{:?}", history.problems);
+    assert!(history.problems[0].contains("no time"));
+    assert!(history.problems[1].contains("not a moment"));
+}
+
+#[test]
+fn words_from_a_commit_cannot_drive_the_terminal() {
+    let log = record("a", "", "Tom \u{1b}[2Jcleared\u{7}", "");
+    let refs = "refs/heads/tru\u{1b}nk\0a\0\n";
+    let history = History::from_git(&log, refs, None).expect("reads");
+    assert_eq!(history.moments[0].summary, "Tom \u{fffd}[2Jcleared\u{fffd}");
+    assert_eq!(history.limbs[0].name, "tru\u{fffd}nk");
+}
+
+#[test]
+fn a_bud_from_a_bud_made_the_same_second_keeps_to_its_own_moments() {
+    // Two buds named for the same second: the first grew from the trunk's
+    // f…, the second from the first bud's b…. By name the second sorts
+    // first ("bud/bbbb…" before "bud/ffff…"), yet it stops where its name
+    // says it grew from, so the first bud keeps its own moment.
+    let log = [
+        record("ffffffffffffffff", "", "one", ""),
+        record(
+            "bbbbbbbbbbbbbbbb",
+            "ffffffffffffffff",
+            "on the first bud",
+            "",
+        ),
+        record(
+            "cccccccccccccccc",
+            "bbbbbbbbbbbbbbbb",
+            "on the second bud",
+            "",
+        ),
+        record(
+            "dddddddddddddddd",
+            "cccccccccccccccc",
+            "on the second bud",
+            "",
+        ),
+    ]
+    .concat();
+    let refs = "refs/heads/trunk\0ffffffffffffffff\0\nrefs/heads/bud/ffffffffffff/20261014T120000Z\0bbbbbbbbbbbbbbbb\0\nrefs/heads/bud/bbbbbbbbbbbb/20261014T120000Z\0dddddddddddddddd\0\n";
+    let history = History::from_git(&log, refs, None).expect("reads");
+    let names: Vec<&str> = history.limbs.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "trunk",
+            "bud/bbbbbbbbbbbb/20261014T120000Z",
+            "bud/ffffffffffff/20261014T120000Z"
+        ]
+    );
+    assert_eq!(history.limbs[1].moments, [2, 3]);
+    assert_eq!(history.limbs[1].from, Some(1));
+    assert_eq!(history.limbs[2].moments, [1], "the first bud keeps b");
+    assert_eq!(history.limbs[2].from, Some(0));
+    // Grown on, the first bud keeps b all the same.
+    let log = [
+        log,
+        record(
+            "eeeeeeeeeeeeeeee",
+            "bbbbbbbbbbbbbbbb",
+            "first bud grows",
+            "",
+        ),
+    ]
+    .concat();
+    let refs = refs.replace("Z\0bbbbbbbbbbbbbbbb", "Z\0eeeeeeeeeeeeeeee");
+    let grown = History::from_git(&log, &refs, None).expect("reads");
+    assert_eq!(grown.limbs[2].moments, [1, 4]);
+    assert_eq!(grown.limbs[1].moments, [2, 3]);
 }

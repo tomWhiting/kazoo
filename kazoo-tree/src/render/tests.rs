@@ -23,8 +23,10 @@ fn picture(
         history,
         growth: &growth,
         gestures: &gestures,
+        days: &[],
         line: &line,
         selected,
+        newest: newest(history),
     };
     draw(&scene, &view, cols, rows)
 }
@@ -95,8 +97,10 @@ fn labels_never_cover_a_glyph_or_leave_the_picture() {
         history: &history,
         growth: &growth,
         gestures: &gestures,
+        days: &[],
         line: &line,
         selected: Some(40),
+        newest: newest(&history),
     };
     let drawn = draw(&scene, &view, 60, 20);
     assert_eq!(drawn.cells.len(), 60 * 20);
@@ -146,7 +150,7 @@ fn levels_follow_the_scale() {
 
 #[test]
 fn colour_follows_the_sound() {
-    assert_eq!(colour_of(None), BARK);
+    assert_eq!(colour_of(None), UNHEARD);
     let sound = |centroid_hz: f32, rms_db: f32| Sound {
         rms_db,
         peak_db: 0.0,
@@ -184,7 +188,11 @@ fn gestures_fold_one_seats_same_change() {
     // Summaries change subject every five moments: 0-4, 5-9, 10-11.
     let counts: Vec<usize> = folded.iter().map(|g| g.count).collect();
     assert_eq!(counts, [5, 5, 2]);
-    assert!(folded[0].words.ends_with("×5"), "{}", folded[0].words);
+    assert_eq!(folded[0].words, "Tom turned vcf0 cutoff 0 → 4 (5 changes)");
+    assert_eq!(
+        folded[2].words,
+        "Tom turned vcf2 cutoff 10 → 11 (2 changes)"
+    );
     assert_eq!(folded[0].last, 4);
 }
 
@@ -208,4 +216,57 @@ fn a_view_round_trips_between_cells_and_the_world() {
         (x - 61.0).abs() < 1e-3 && (y - 50.0).abs() < 1e-3,
         "{x} {y}"
     );
+}
+
+#[test]
+fn a_new_day_on_a_limb_is_marked_in_the_viewers_own_zone() {
+    // Moments three hours apart from 20:00 UTC on Tuesday 13 Oct 2026. In
+    // Melbourne (UTC+11) that is 07:00 on the 14th, and the 15th begins
+    // at moment 6 (01:00 there). The bud grows from moment 2 (13:00 on the
+    // 14th there) and its first moment, 10, is 13:00 on the 15th there.
+    let start = 1_791_921_600; // 2026-10-13 20:00 UTC
+    let mut history = grown(10, &[(0, 2, 3)]);
+    for (i, moment) in history.moments.iter_mut().enumerate() {
+        moment.time = start + 3 * 3_600 * i64::try_from(i).expect("small");
+    }
+    let melbourne = chrono::FixedOffset::east_opt(11 * 3_600).expect("an offset");
+    let marked: Vec<(usize, String)> = days(&history, &melbourne)
+        .into_iter()
+        .map(|d| (d.moment, d.words))
+        .collect();
+    assert_eq!(
+        marked,
+        [
+            (0, "Wed 14 Oct".to_owned()),
+            (6, "Thu 15 Oct".to_owned()),
+            (10, "Thu 15 Oct".to_owned()),
+        ]
+    );
+    // In UTC the trunk starts on the 13th and the 14th begins at moment 2
+    // (02:00); the bud's first moment is 02:00 on the 15th.
+    let utc: Vec<(usize, String)> = days(&history, &chrono::Utc)
+        .into_iter()
+        .map(|d| (d.moment, d.words))
+        .collect();
+    assert_eq!(
+        utc,
+        [
+            (0, "Tue 13 Oct".to_owned()),
+            (2, "Wed 14 Oct".to_owned()),
+            (10, "Thu 15 Oct".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn growth_from_the_last_hour_is_lit() {
+    let mut history = grown(64, &[]);
+    for (i, moment) in history.moments.iter_mut().enumerate() {
+        moment.time = 600 * i64::try_from(i).expect("small");
+    }
+    let old = colour_of(None);
+    assert!(lit(old).0 > old.0 && lit(old).2 > old.2);
+    assert_eq!(lit((255, 255, 255)), (255, 255, 255));
+    assert_eq!(newest(&history), 600 * 63);
+    assert_eq!(newest(&History::default()), 0);
 }
