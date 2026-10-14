@@ -1,0 +1,20 @@
+[package]
+name = "kazoo-tree"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "The wall's tree: every moment it has been, grown as a tree you can walk"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+crossterm = "0.29.0"
+kazoo-wall = { path = "../kazoo-wall" }
+ratatui = "0.30.0"
+
+[dev-dependencies]
+tempfile = "3"

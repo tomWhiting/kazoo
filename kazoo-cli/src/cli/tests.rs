@@ -6,9 +6,9 @@ use kazoo_wall::daemon::{AudioMode, DaemonConfig, DeskMode};
 
 use super::{Cli, Command, WallCommand};
 
-const COMMANDS: [&str; 16] = [
+const COMMANDS: [&str; 17] = [
     "808", "303", "cs80", "mini", "juno", "prophet", "dx", "string", "glass", "arp", "play",
-    "mouth", "tui", "mix", "wall", "mcp",
+    "mouth", "tui", "mix", "wall", "mcp", "tree",
 ];
 
 #[test]
@@ -33,6 +33,7 @@ fn every_instrument_is_a_subcommand() {
             Command::Play(_) => name == "play",
             Command::Mouth(_) => name == "mouth",
             Command::Tui => name == "tui",
+            Command::Tree(args) => name == "tree" && !args.print,
             Command::Mix(args) => name == "mix" && !args.demo,
             Command::Wall { command } => name == "wall" && command.is_none(),
             Command::Mcp(args) => name == "mcp" && args.seat == "Tom",
@@ -406,4 +407,19 @@ fn wall_tree_import_parses() {
         }
     );
     assert!(Cli::try_parse_from(["kazoo", "wall", "tree", "import", "--unknown"]).is_err());
+}
+
+#[test]
+fn tree_prints_at_a_size_or_walks() {
+    assert_eq!(
+        Cli::try_parse_from(["kazoo", "tree", "--print", "--cols", "80", "--rows", "24"])
+            .unwrap()
+            .command,
+        Command::Tree(super::TreeArgs {
+            print: true,
+            cols: 80,
+            rows: 24
+        })
+    );
+    assert!(Cli::try_parse_from(["kazoo", "tree", "--cols", "5"]).is_err());
 }

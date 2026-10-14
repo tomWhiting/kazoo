@@ -1476,6 +1476,7 @@ dependencies = [
  "kazoo-play",
  "kazoo-prophet",
  "kazoo-string",
+ "kazoo-tree",
  "kazoo-tui",
  "kazoo-wall",
  "serde",
@@ -1751,6 +1752,17 @@ dependencies = [
  "kazoo-core",
  "kazoo-host",
  "ratatui",
+]
+
+[[package]]
+name = "kazoo-tree"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossterm",
+ "kazoo-wall",
+ "ratatui",
+ "tempfile",
 ]
 
 [[package]]

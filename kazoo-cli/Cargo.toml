@@ -36,3 +36,4 @@ kazoo-arp = { path = "../kazoo-arp" }
 kazoo-play = { path = "../kazoo-play" }
 kazoo-tui = { path = "../kazoo-tui" }
 kazoo-mouth = { path = "../kazoo-mouth" }
+kazoo-tree = { path = "../kazoo-tree" }

@@ -43,6 +43,7 @@ fn main() -> ExitCode {
         },
         Command::Mouth(args) => finish(kazoo_mouth::run(args.into())),
         Command::Tui => finish(kazoo_tui::run(kazoo_tui::Args::default())),
+        Command::Tree(args) => finish(tree(&args)),
     }
 }
 
@@ -54,6 +55,16 @@ fn finish(result: color_eyre::Result<()>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn tree(args: &kazoo::cli::TreeArgs) -> color_eyre::Result<()> {
+    let dir = kazoo_tree::tree_dir()?;
+    if args.print {
+        print!("{}", kazoo_tree::print(dir, args.cols, args.rows)?);
+    } else {
+        kazoo_tree::run(dir)?;
+    }
+    Ok(())
 }
 
 fn wall(command: Option<WallCommand>) -> color_eyre::Result<()> {
