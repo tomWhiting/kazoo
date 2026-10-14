@@ -205,6 +205,7 @@ fn wall_remove_and_undo_bring_the_loop_and_its_tape_back() {
 fn the_ninth_loop_on_a_wall_is_refused_by_name() {
     let (mut wall, _engine) = loaded(Patch::empty(120.0), reels_dir().path());
     let add = Request::Add {
+        alias: None,
         kind: "loop".into(),
         name: None,
         place: None,
@@ -267,6 +268,7 @@ fn a_loop_nobody_hears_is_still_rendered() {
         ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: kind.into(),
                 name: None,
                 place: None,

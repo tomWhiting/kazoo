@@ -223,7 +223,7 @@ pub fn stamp_births(
                     births.push((module.id.clone(), birth));
                 }
             }
-            What::Chain { changes, .. } => {
+            What::Batch { changes, .. } | What::Chain { changes, .. } => {
                 for change in changes {
                     walk(change, seq, at, print, salt, n, births);
                 }
@@ -258,7 +258,7 @@ pub fn stamp_births(
 pub(crate) fn has_add(what: &What) -> bool {
     match what {
         What::Add { .. } => true,
-        What::Chain { changes, .. } => changes.iter().any(has_add),
+        What::Batch { changes, .. } | What::Chain { changes, .. } => changes.iter().any(has_add),
         What::Turn { .. }
         | What::Patch { .. }
         | What::Unpatch { .. }

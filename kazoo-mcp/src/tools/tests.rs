@@ -197,8 +197,9 @@ fn wall_loop_needs_exactly_one_of_erase_and_from() {
 }
 
 /// Every tool, in the router's order.
-const TOOLS: [&str; 23] = [
+const TOOLS: [&str; 24] = [
     "wall_add",
+    "wall_batch",
     "wall_catalogue",
     "wall_chain",
     "wall_go",
@@ -303,4 +304,46 @@ fn arguments_are_strict() {
     let tree: TreeArgs = serde_json::from_str(r#"{"recent":50}"#).unwrap();
     assert_eq!(tree.recent, Some(50));
     assert!(serde_json::from_str::<TreeArgs>(r#"{"limit":5}"#).is_err());
+}
+
+/// Each property in `schema` with no description, by its path; the op tag
+/// (a constant) says itself.
+fn undescribed(schema: &serde_json::Value, path: &str, missing: &mut Vec<String>) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            if let Some(serde_json::Value::Object(properties)) = object.get("properties") {
+                for (name, property) in properties {
+                    let constant =
+                        property.get("const").is_some() || property.get("enum").is_some();
+                    if !constant && property.get("description").is_none() {
+                        missing.push(format!("{path}.{name}"));
+                    }
+                }
+            }
+            for (key, value) in object {
+                undescribed(value, &format!("{path}/{key}"), missing);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                undescribed(item, &format!("{path}[{index}]"), missing);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn wall_batch_describes_its_note_its_changes_and_every_field_of_a_step() {
+    let tools = Seat::tool_router().list_all();
+    let batch = tools
+        .iter()
+        .find(|tool| tool.name == "wall_batch")
+        .map(|tool| serde_json::Value::Object(tool.input_schema.as_ref().clone()))
+        .unwrap_or_default();
+    let mut missing = Vec::new();
+    undescribed(&batch, "", &mut missing);
+    assert!(missing.is_empty(), "undescribed: {missing:?}\n{batch:#}");
+    let text = batch.to_string();
+    assert!(text.contains("@label"), "{batch:#}");
 }

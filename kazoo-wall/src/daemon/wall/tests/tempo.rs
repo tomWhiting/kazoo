@@ -414,3 +414,43 @@ fn a_desk_jump_moves_a_held_go_to_the_bar_after_it_and_keeps_the_origin() {
     drop((engine, control, link));
     hearing.join().unwrap();
 }
+
+#[test]
+fn a_batch_tempo_on_the_desk_starts_from_what_plays_as_a_single_tempo_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let (link, (audio, mut stream)) = a_desk(dir.path(), 120.0);
+    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), Some(audio));
+    let mut patch = seed().unwrap();
+    patch.tempo = 120.0;
+    let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
+    wall.tick(Instant::now());
+    // The desk moves; the wall's tick has not heard it yet.
+    sync(&mut stream, 105.0);
+    hear(&wall, &mut engine, 105.0);
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "op": "batch",
+        "note": "faster",
+        "changes": [{"op": "tempo", "bpm": 100.0}]
+    }))
+    .unwrap();
+    wall.request("Tom", &request, Instant::now()).unwrap();
+    let logged: Vec<What> = wall.log.iter().map(|change| change.what.clone()).collect();
+    assert_eq!(
+        logged,
+        vec![
+            What::Tempo {
+                from: 120.0,
+                to: 105.0,
+                desk: true
+            },
+            What::Batch {
+                note: "faster".to_string(),
+                changes: vec![What::Tempo {
+                    from: 105.0,
+                    to: 100.0,
+                    desk: true
+                }],
+            },
+        ]
+    );
+}
