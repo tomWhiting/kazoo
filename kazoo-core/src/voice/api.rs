@@ -1,7 +1,7 @@
 /// Middle C: the nearest f32 to 440 × 2^(−9/12), the wall's zero volts.
 pub const C4_HZ: f32 = 261.625_58;
-/// A fixed 64-sample hop gives a steady frame clock across callback sizes,
-/// finer than a cycle below 750 Hz at 48 kHz.
+/// The normal frame hop is finer than a cycle below 750 Hz at 48 kHz.
+/// Pick attacks halve it for twenty milliseconds.
 pub const VOICE_HOP: usize = 64;
 /// −60 dBFS maps to zero loudness; full scale maps to one.
 pub const LOUDNESS_FLOOR_DB: f32 = -60.0;

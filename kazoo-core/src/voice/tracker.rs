@@ -3,7 +3,7 @@ use super::judge::JudgeResult;
 use super::{LOUDNESS_FLOOR_DB, VOICE_HOP, VoiceFrame, volts_from_hz};
 use crate::analysis::{
     EnvelopeFollower, PitchEstimate,
-    cycle::{CycleSettings, CycleTracker},
+    cycle::{CycleEstimate, CycleSettings, CycleTracker},
 };
 use crate::sanitize_sample;
 
@@ -108,6 +108,7 @@ pub struct VoiceTracker {
     rate: f32,
     pub(super) samples: u64,
     hop: usize,
+    fast_until: u64,
     judge: Option<PitchEstimate>,
     judge_at: u64,
     judge_frame: u64,
@@ -130,6 +131,7 @@ pub struct VoiceTracker {
     breath_coefficient: f32,
     invalid_frame: bool,
     provisional: bool,
+    provisional_frame: Option<CycleEstimate>,
     previous_reading: Option<u64>,
     pick: super::attack::Attack,
 }
@@ -153,6 +155,7 @@ impl VoiceTracker {
             rate: sr,
             samples: 0,
             hop: 0,
+            fast_until: 0,
             judge: None,
             judge_at: 0,
             judge_frame: settings.judge_config(rate).frame_length as u64,
@@ -175,6 +178,7 @@ impl VoiceTracker {
             breath_coefficient: coefficient(BREATH_SMOOTH_MS, sr / VOICE_HOP as f32),
             invalid_frame: false,
             provisional: false,
+            provisional_frame: None,
             previous_reading: None,
             pick: super::attack::Attack::new(rate),
         }
@@ -183,7 +187,13 @@ impl VoiceTracker {
     /// Receive a memory-free verdict from the judge, on the callback's sample clock.
     pub fn judge(&mut self, result: JudgeResult) {
         match result {
-            JudgeResult::Provisional(estimate) => self.cycle.provisional(estimate),
+            JudgeResult::Provisional(estimate) => {
+                if self.cycle.provisional(estimate) {
+                    self.provisional_frame = Some(estimate);
+                    self.gate.pick_reading();
+                    self.gate.reading();
+                }
+            }
             JudgeResult::Pitch(mut pitch) => {
                 pitch.frequency = pitch.frequency.filter(|hz| hz.is_finite() && *hz > 0.0);
                 pitch.voiced_probability =
@@ -219,10 +229,14 @@ impl VoiceTracker {
     /// Samples still to come before the next frame, 1 to [`VOICE_HOP`].
     #[must_use]
     pub const fn until_frame(&self) -> usize {
-        VOICE_HOP - self.hop
+        if self.samples < self.fast_until {
+            VOICE_HOP / 2 - self.hop
+        } else {
+            VOICE_HOP - self.hop
+        }
     }
 
-    /// Process arbitrary callback sizes, emitting once per fixed 64-sample hop.
+    /// Process arbitrary callback sizes, using 32-sample frames for 20 ms after a pick.
     pub fn process(&mut self, mic: &[f32], mut emit: impl FnMut(VoiceFrame)) {
         for &sample in mic {
             let x = if sample.is_finite() && sample.abs() <= INPUT_FAULT_LEVEL {
@@ -230,6 +244,7 @@ impl VoiceTracker {
             } else {
                 self.invalid_frame = true;
                 self.cycle.unlock();
+                self.provisional_frame = None;
                 self.gate.reset();
                 self.fast = 0.0;
                 self.valley = 0.0;
@@ -257,11 +272,23 @@ impl VoiceTracker {
             self.loudness.process_sample(x);
             self.samples = self.samples.saturating_add(1);
             self.hop += 1;
-            if self.hop == VOICE_HOP {
+            if self.samples % VOICE_HOP as u64 == 0
+                && self.settings.jump_onset_cents.is_some()
+                && self.pick.frame(coefficient(FAST_RELEASE_MIN_MS, self.rate))
+            {
+                let at = self.samples.saturating_sub(self.pick.behind() as u64);
+                self.gate.attack(at);
+                self.cycle.pick_attack(self.pick.behind());
+                self.fast_until = at + (0.020 * self.rate) as u64;
+                self.hop = (self.samples - at) as usize % (VOICE_HOP / 2);
+            }
+            let frame_hop = if self.samples < self.fast_until {
+                VOICE_HOP / 2
+            } else {
+                VOICE_HOP
+            };
+            if self.hop >= frame_hop {
                 self.hop = 0;
-                if self.settings.jump_onset_cents.is_some() && self.pick.frame(self.release) {
-                    self.gate.attack(self.samples);
-                }
                 emit(self.frame());
                 self.invalid_frame = false;
             }
@@ -273,8 +300,9 @@ impl VoiceTracker {
             self.vetoed = false;
         }
         let fc = self
-            .cycle
-            .estimate()
+            .provisional_frame
+            .take()
+            .or_else(|| self.cycle.estimate())
             .filter(|_| !self.vetoed && !self.invalid_frame);
         let current = fc.map(|e| e.hz);
         if let Some(hz) = current {
@@ -382,6 +410,9 @@ impl VoiceTracker {
         let reading = voiced.then(|| self.cycle.reading_id());
         if reading.is_some() && reading != self.previous_reading {
             self.gate.reading();
+            if !provisional {
+                self.gate.initial_reading();
+            }
         }
         self.previous_reading = reading;
         let correction = self.provisional && voiced && !provisional;
@@ -420,6 +451,7 @@ impl VoiceTracker {
         self.cycle.reset();
         self.samples = 0;
         self.hop = 0;
+        self.fast_until = 0;
         self.judge = None;
         self.judge_at = 0;
         self.veto = 0;
@@ -436,6 +468,7 @@ impl VoiceTracker {
         self.breath = 0.0;
         self.invalid_frame = false;
         self.provisional = false;
+        self.provisional_frame = None;
         self.previous_reading = None;
         self.pick.reset();
         self.release = coefficient(FAST_RELEASE_MIN_MS, self.rate);

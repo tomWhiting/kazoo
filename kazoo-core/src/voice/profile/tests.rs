@@ -23,11 +23,23 @@ fn frames(take: &Take, profile: InputProfile) -> Vec<VoiceFrame> {
     let mut output = Vec::with_capacity(take.samples.len() / 64);
     let mut judge =
         crate::analysis::cycle::ProvisionalJudge::new(take.rate, profile.tracking().cycle);
-    for &sample in &take.samples {
+    for (at, &sample) in take.samples.iter().enumerate() {
         if let Some(estimate) = judge.push(sample) {
             tracker.judge(JudgeResult::Provisional(estimate));
         }
-        tracker.process(std::slice::from_ref(&sample), |frame| output.push(frame));
+        tracker.process(std::slice::from_ref(&sample), |frame| {
+            if frame.onset {
+                println!(
+                    "EVENT take={} profile={profile:?} stamp={} delivery={} hz={} clarity={}",
+                    take.name,
+                    frame.at,
+                    at + 1,
+                    frame.hz,
+                    frame.confidence
+                );
+            }
+            output.push(frame);
+        });
     }
     output
 }
@@ -257,9 +269,21 @@ fn a_sweep_is_one_onset_per_note() {
     let output = frames(take, InputProfile::Guitar);
     let onsets: Vec<_> = output.iter().filter(|frame| frame.onset).collect();
     println!("sweep onsets={onsets:?}");
+    for (frame, &pluck) in onsets.iter().zip(&take.onsets) {
+        let hz = truth_at(take, pluck + SCORE_STEP).expect("pluck truth");
+        println!(
+            "sweep pluck={pluck} truth={hz:.5} published={:.5} cents={:.3}",
+            frame.hz,
+            cents(frame.hz, hz)
+        );
+    }
     assert_eq!(onsets.len(), 6, "{onsets:?}");
     for (frame, &pluck) in onsets.iter().zip(&take.onsets) {
         let hz = truth_at(take, pluck + SCORE_STEP).expect("pluck truth");
+        assert!(
+            cents(frame.hz, hz) <= 50.0,
+            "pluck {pluck}, {hz} Hz: {frame:?}"
+        );
         assert!(
             frame.at >= pluck as u64
                 && (frame.at - pluck as u64) as f32 / 48.0 <= 2000.0 / hz + 3.0,
@@ -478,7 +502,14 @@ fn processing_never_allocates_with_any_profile() {
                 before,
                 "{profile:?} {name}"
             );
-            assert_eq!(count, 7500);
+            if profile.tracking().jump_onset_cents.is_some() {
+                assert!(
+                    (7500..=15_000).contains(&count),
+                    "{profile:?} {name}: {count} frames"
+                );
+            } else {
+                assert_eq!(count, 7500);
+            }
         }
     }
 }

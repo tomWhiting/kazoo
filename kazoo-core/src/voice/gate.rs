@@ -26,6 +26,12 @@ struct Pending {
     steps: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickReading {
+    Waiting,
+    Ready,
+}
+
 #[derive(Debug)]
 pub(super) struct Gate {
     settings: TrackSettings,
@@ -47,6 +53,7 @@ pub(super) struct Gate {
     jump_window: u64,
     amplitude_at: Option<u64>,
     attack_at: Option<u64>,
+    pick_reading: PickReading,
 }
 
 impl Gate {
@@ -76,6 +83,7 @@ impl Gate {
             jump_window: 2 * settings.judge_config(rate as u32).hop_length as u64,
             amplitude_at: None,
             attack_at: None,
+            pick_reading: PickReading::Waiting,
         }
     }
     pub(super) fn set(&mut self, settings: super::GateSettings, rate: u32) {
@@ -95,6 +103,15 @@ impl Gate {
     }
     pub(super) const fn attack(&mut self, at: u64) {
         self.attack_at = Some(at);
+        self.pick_reading = PickReading::Waiting;
+    }
+    pub(super) const fn initial_reading(&mut self) {
+        if self.last_onset.is_none() {
+            self.pick_reading = PickReading::Ready;
+        }
+    }
+    pub(super) const fn pick_reading(&mut self) {
+        self.pick_reading = PickReading::Ready;
     }
     #[cfg(test)]
     pub(super) fn frame(&mut self, at: u64, voiced: bool, db: f32, valley_db: f32) -> (bool, bool) {
@@ -110,6 +127,7 @@ impl Gate {
         hz: f32,
     ) -> (bool, bool) {
         self.reading();
+        self.pick_reading();
         self.frame_with_level(at, voiced, db, valley_db, hz, db)
     }
 
@@ -146,7 +164,7 @@ impl Gate {
             .is_none_or(|last| at.saturating_sub(last) >= self.refractory);
         let current = (voiced && hz.is_finite() && hz > 0.0).then_some(hz);
         if self.settings.jump_onset_cents.is_some() {
-            return self.instrument_frame(at, was_high, ready, current);
+            return self.instrument_frame(at, was_high, ready, current, reading);
         }
         let jump = match (self.settings.jump_onset_cents, current, self.published) {
             (Some(cents), Some(now), Some(before)) => {
@@ -234,17 +252,20 @@ impl Gate {
         was_high: bool,
         ready: bool,
         current: Option<f32>,
+        reading: bool,
     ) -> (bool, bool) {
         // Pitch stays continuous through an unpicked fretted change. A pick
         // already articulates the string even when its pitch has not moved.
         self.published = current.or(self.published);
         let attack = self
             .attack_at
-            .filter(|&stamp| stamp <= at && at - stamp <= self.amplitude_window);
+            .filter(|&stamp| stamp <= at && at - stamp <= 3 * self.amplitude_window);
         let onset = self.high
             && ready
-            && (attack.is_some_and(|stamp| stamp == at || !was_high)
-                || (!was_high && self.last_onset.is_none()));
+            && (attack.is_some() && reading && self.pick_reading == PickReading::Ready
+                || (!was_high
+                    && self.last_onset.is_none()
+                    && (attack.is_none() || self.pick_reading == PickReading::Ready)));
         if onset {
             // Acquisition may take longer than the jump-pairing window. The
             // first pick still starts the note and its refractory interval.
@@ -254,6 +275,7 @@ impl Gate {
                 attack.unwrap_or(at)
             };
             self.last_onset = Some(self.onset_at);
+            self.attack_at = None;
         }
         (self.high, onset)
     }
@@ -289,5 +311,6 @@ impl Gate {
         self.fresh_reading = false;
         self.amplitude_at = None;
         self.attack_at = None;
+        self.pick_reading = PickReading::Waiting;
     }
 }

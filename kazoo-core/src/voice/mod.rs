@@ -1,7 +1,7 @@
 //! Steady voice frames, with callback-safe tracking and a worker-side judge.
 
 mod api;
-mod attack;
+pub(crate) mod attack;
 pub mod gate;
 mod gate_settings;
 pub use gate_settings::GateSettings;

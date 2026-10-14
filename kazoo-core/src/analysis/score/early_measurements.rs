@@ -1,4 +1,4 @@
-use super::{InputProfile, SCORE_STEP, fixtures, instrument_frames, instrument_suite};
+use super::{InputProfile, SCORE_STEP, fixtures, instrument_suite};
 
 #[test]
 fn candidate_and_onset_measurements() {
@@ -49,18 +49,45 @@ fn provisional_arrival_measurements() {
         ("guitar_open_noise", InputProfile::Guitar),
     ] {
         let take = fixtures::named(&takes, name);
-        let frames = instrument_frames(take, profile, true);
+        let mut tracker = crate::voice::VoiceTracker::with_settings(take.rate, profile.tracking());
+        let mut judge =
+            crate::analysis::cycle::ProvisionalJudge::new(take.rate, profile.tracking().cycle);
+        let mut frames = Vec::new();
+        let mut readings = Vec::new();
+        for (at, &sample) in take.samples.iter().enumerate() {
+            if let Some(estimate) = judge.push(sample) {
+                readings.push((at + 1, estimate));
+                tracker.judge(crate::voice::judge::JudgeResult::Provisional(estimate));
+            }
+            tracker.process(std::slice::from_ref(&sample), |frame| {
+                frames.push((at + 1, frame));
+            });
+        }
         for (note, &onset) in take.onsets.iter().enumerate() {
             let end = fixtures::note_end(take, note);
             let truth = fixtures::truth_at(take, onset + SCORE_STEP).expect("note truth");
-            let first = frames.iter().find(|frame| {
+            let first = frames.iter().find(|(_, frame)| {
                 frame.at >= onset as u64
                     && frame.at < end as u64
                     && frame.voiced
                     && frame.gate
                     && fixtures::cents(frame.hz, truth) <= 50.0
             });
-            let latency = first.map(|frame| (frame.at - onset as u64) as f32 / 48.0);
+            let latency = first.map(|(_, frame)| (frame.at - onset as u64) as f32 / 48.0);
+            let delivered = frames
+                .iter()
+                .find(|(at, frame)| {
+                    *at >= onset
+                        && *at < end
+                        && frame.voiced
+                        && frame.gate
+                        && fixtures::cents(frame.hz, truth) <= 50.0
+                })
+                .map(|(at, _)| (*at - onset) as f32 / 48.0);
+            let candidate = readings.iter().find(|(at, _)| *at >= onset && *at < end);
+            println!(
+                "{name} note={note} delivered_ms={delivered:?} first_provisional={candidate:?}"
+            );
             println!(
                 "{name} note={note} hz={truth:.5} after_ms={latency:?} limit_ms={:.5}",
                 if name.ends_with("_noise") {
@@ -71,7 +98,7 @@ fn provisional_arrival_measurements() {
                     + 2.0
             );
         }
-        let provisional = frames.iter().filter(|frame| frame.provisional).count();
+        let provisional = frames.iter().filter(|(_, frame)| frame.provisional).count();
         println!("{name}: provisional_frames={provisional}");
     }
 }

@@ -302,6 +302,7 @@ pub struct CycleTracker {
     glide: Option<(f32, f64)>,
     early: early::Early,
     acquisition: Option<f32>,
+    attack_until: f64,
 }
 
 impl CycleTracker {
@@ -362,6 +363,7 @@ impl CycleTracker {
             glide: None,
             early: early::Early::new(),
             acquisition: None,
+            attack_until: 0.0,
         }
     }
 
@@ -519,6 +521,7 @@ impl CycleTracker {
         self.falling.clear();
         self.marks = 0;
         self.last_clarity = 0.0;
+        self.attack_until = 0.0;
         self.last_accepted_mark = 0.0;
         self.unlock();
     }
@@ -655,6 +658,10 @@ impl CycleTracker {
         }
     }
 
+    pub(crate) fn pick_attack(&mut self, behind: usize) {
+        self.attack_until = self.time + f64::from(0.030 * self.rate) - count_f64(behind);
+    }
+
     fn consider(&self, period: f32, choice: &mut Choice) {
         let Some(start) = lag_from(f64::from(period)) else {
             return;
@@ -687,6 +694,10 @@ impl CycleTracker {
                 CLARITY_ON
             };
             let replace = choice.chosen.is_none_or(|old| {
+                if self.time < self.attack_until {
+                    return (peak.clarity >= old.clarity / 0.9)
+                        || (peak.clarity >= 0.9 * choice.best && peak.period < old.period);
+                }
                 let old_held = self.estimate.is_some_and(|estimate| {
                     (1200.0 * (old.period / estimate.period).log2()).abs() <= HOLD_CENTS
                 });

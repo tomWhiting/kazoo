@@ -2,7 +2,7 @@ use super::VOICE_HOP;
 
 /// Pick transients retain high frequencies that a ringing string has lost.
 #[derive(Debug)]
-pub(super) struct Attack {
+pub struct Attack {
     b: [f32; 3],
     a: [f32; 2],
     state: [f32; 2],
@@ -11,10 +11,14 @@ pub(super) struct Attack {
     valley_db: f32,
     valley_rise: f32,
     level: f32,
+    samples: usize,
+    crossing: Option<usize>,
+    behind: usize,
+    trigger_power: f32,
 }
 
 impl Attack {
-    pub(super) fn new(rate: u32) -> Self {
+    pub fn new(rate: u32) -> Self {
         let rate = rate.max(1) as f32;
         let omega = std::f32::consts::TAU * 6000.0 / rate.max(12_001.0);
         let cosine = omega.cos();
@@ -35,18 +39,26 @@ impl Attack {
             valley_db: -120.0,
             valley_rise: (-1000.0 * VOICE_HOP as f32 / (80.0 * rate)).exp(),
             level: 0.0,
+            samples: 0,
+            crossing: None,
+            behind: 0,
+            trigger_power: 64.0 * 1e-12 * 10.0_f32.powf(0.8),
         }
     }
 
-    pub(super) fn push(&mut self, sample: f32) {
+    pub fn push(&mut self, sample: f32) {
         self.input_power = sample.mul_add(sample, self.input_power);
         let filtered = self.b[0].mul_add(sample, self.state[0]);
         self.state[0] = self.b[1].mul_add(sample, self.a[0].mul_add(-filtered, self.state[1]));
         self.state[1] = self.b[2].mul_add(sample, -self.a[1] * filtered);
         self.power = filtered.mul_add(filtered, self.power);
+        self.samples += 1;
+        if self.crossing.is_none() && self.power >= self.trigger_power {
+            self.crossing = Some(self.samples);
+        }
     }
 
-    pub(super) fn frame(&mut self, release: f32) -> bool {
+    pub fn frame(&mut self, release: f32) -> bool {
         // The broadband follower also bridges troughs within a cycle; raw
         // hop minima would count a ringing string's corners as fresh picks.
         self.level = (self.power / VOICE_HOP as f32)
@@ -63,14 +75,26 @@ impl Attack {
             self.valley_rise
                 .mul_add(self.valley_db, (1.0 - self.valley_rise) * db)
         };
+        self.behind = self.samples - self.crossing.unwrap_or(self.samples);
+        self.samples = 0;
+        self.crossing = None;
+        self.trigger_power = VOICE_HOP as f32 * 10.0_f32.powf((self.valley_db + 8.0) / 10.0);
         attack
     }
 
-    pub(super) const fn reset(&mut self) {
+    pub const fn behind(&self) -> usize {
+        self.behind
+    }
+
+    pub const fn reset(&mut self) {
         self.state = [0.0; 2];
         self.power = 0.0;
         self.input_power = 0.0;
         self.valley_db = -120.0;
         self.level = 0.0;
+        self.samples = 0;
+        self.crossing = None;
+        self.behind = 0;
+        self.trigger_power = 64.0 * 1e-12 * 6.309_573_7;
     }
 }
