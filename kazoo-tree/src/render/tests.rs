@@ -26,7 +26,7 @@ fn picture(
         days: &[],
         line: &line,
         selected,
-        newest: newest(history),
+        now: 0,
     };
     draw(&scene, &view, cols, rows)
 }
@@ -100,7 +100,7 @@ fn labels_never_cover_a_glyph_or_leave_the_picture() {
         days: &[],
         line: &line,
         selected: Some(40),
-        newest: newest(&history),
+        now: 0,
     };
     let drawn = draw(&scene, &view, 60, 20);
     assert_eq!(drawn.cells.len(), 60 * 20);
@@ -188,9 +188,12 @@ fn gestures_fold_one_seats_same_change() {
     // Summaries change subject every five moments: 0-4, 5-9, 10-11.
     let counts: Vec<usize> = folded.iter().map(|g| g.count).collect();
     assert_eq!(counts, [5, 5, 2]);
-    assert_eq!(folded[0].words, "Tom turned vcf0 cutoff 0 → 4 (5 changes)");
     assert_eq!(
-        folded[2].words,
+        folded[0].words(&history),
+        "Tom turned vcf0 cutoff 0 → 4 (5 changes)"
+    );
+    assert_eq!(
+        folded[2].words(&history),
         "Tom turned vcf2 cutoff 10 → 11 (2 changes)"
     );
     assert_eq!(folded[0].last, 4);
@@ -226,7 +229,12 @@ fn a_new_day_on_a_limb_is_marked_in_the_viewers_own_zone() {
     // 14th there) and its first moment, 10, is 13:00 on the 15th there.
     let start = 1_791_921_600; // 2026-10-13 20:00 UTC
     let mut history = grown(10, &[(0, 2, 3)]);
-    for (i, moment) in history.moments.iter_mut().enumerate() {
+    for (i, moment) in history
+        .moments
+        .iter_mut()
+        .map(std::sync::Arc::make_mut)
+        .enumerate()
+    {
         moment.time = start + 3 * 3_600 * i64::try_from(i).expect("small");
     }
     let melbourne = chrono::FixedOffset::east_opt(11 * 3_600).expect("an offset");
@@ -237,9 +245,9 @@ fn a_new_day_on_a_limb_is_marked_in_the_viewers_own_zone() {
     assert_eq!(
         marked,
         [
-            (0, "Wed 14 Oct".to_owned()),
-            (6, "Thu 15 Oct".to_owned()),
-            (10, "Thu 15 Oct".to_owned()),
+            (0, "Wed 14 Oct 2026".to_owned()),
+            (6, "Thu 15 Oct 2026".to_owned()),
+            (10, "Thu 15 Oct 2026".to_owned()),
         ]
     );
     // In UTC the trunk starts on the 13th and the 14th begins at moment 2
@@ -251,22 +259,52 @@ fn a_new_day_on_a_limb_is_marked_in_the_viewers_own_zone() {
     assert_eq!(
         utc,
         [
-            (0, "Tue 13 Oct".to_owned()),
-            (2, "Wed 14 Oct".to_owned()),
-            (10, "Thu 15 Oct".to_owned()),
+            (0, "Tue 13 Oct 2026".to_owned()),
+            (2, "Wed 14 Oct 2026".to_owned()),
+            (10, "Thu 15 Oct 2026".to_owned()),
         ]
     );
 }
 
 #[test]
-fn growth_from_the_last_hour_is_lit() {
-    let mut history = grown(64, &[]);
-    for (i, moment) in history.moments.iter_mut().enumerate() {
-        moment.time = 600 * i64::try_from(i).expect("small");
+fn a_tip_grown_in_the_last_hour_wears_a_light_and_its_limb_is_unchanged() {
+    let mut history = grown(64, &[(0, 20, 10)]);
+    // The wall's ◉ would sit over the bud's tip's light.
+    history.here = None;
+    let growth = Growth::grow(&history);
+    let (_, gestures, line) = scene_parts(&history);
+    let view = View::fit(growth.bounds, 80, 30);
+    let at = |now: i64| Scene {
+        history: &history,
+        growth: &growth,
+        gestures: &gestures,
+        days: &[],
+        line: &line,
+        selected: None,
+        now,
+    };
+    let lights = |picture: &Picture| {
+        picture
+            .cells
+            .iter()
+            .filter(|c| c.text == Some(Glyph::Growing.char()))
+            .count()
+    };
+    let tip = history
+        .moments
+        .iter()
+        .map(|m| m.time)
+        .max()
+        .expect("moments");
+    let soon = draw(&at(tip + 60), &view, 80, 30);
+    let later = draw(&at(tip + 2 * 3_600), &view, 80, 30);
+    assert_eq!(lights(&soon), 2, "both tips grew in the last hour");
+    assert_eq!(lights(&later), 0, "nothing grew in the last hour");
+    // The limbs themselves are drawn the same either way: only the cells
+    // the lights sit on differ.
+    for (a, b) in soon.cells.iter().zip(&later.cells) {
+        if a.text != Some(Glyph::Growing.char()) {
+            assert_eq!((a.dots, a.colour, a.text), (b.dots, b.colour, b.text));
+        }
     }
-    let old = colour_of(None);
-    assert!(lit(old).0 > old.0 && lit(old).2 > old.2);
-    assert_eq!(lit((255, 255, 255)), (255, 255, 255));
-    assert_eq!(newest(&history), 600 * 63);
-    assert_eq!(newest(&History::default()), 0);
 }

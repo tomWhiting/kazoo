@@ -11,8 +11,35 @@ use crate::history::History;
 pub struct Row {
     /// The moment on this row.
     pub moment: usize,
-    /// The graph: two characters a lane, left to right.
-    pub graph: String,
+    /// The lane the row's own moment is on.
+    pub lane: usize,
+}
+
+/// One limb's lane: the rows it runs down, from its tip to the row it
+/// ends on (the moment it grew from, where it joins its parent's lane, or
+/// its own first moment).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Span {
+    /// The limb.
+    pub limb: usize,
+    /// Its lane.
+    pub lane: usize,
+    /// The row of its tip.
+    pub top: usize,
+    /// The row it ends on.
+    pub bottom: usize,
+}
+
+/// The lanes laid out: every row, and every lane's span.
+///
+/// A row's graph is drawn only when it is shown ([`Lanes::graph`]), so a tree of a million
+/// moments lays out in one pass and draws only what is on screen.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Lanes {
+    /// One row a moment, newest first.
+    pub rows: Vec<Row>,
+    /// Every limb's lane, by its top row.
+    pub spans: Vec<Span>,
 }
 
 /// What a lane is doing on one row.
@@ -28,86 +55,150 @@ enum Mark {
     Empty,
 }
 
-/// Lay out every moment as a row, newest first.
+/// Lay out every moment as a row, newest first, each limb on a lane.
 #[must_use]
-pub fn layout(history: &History) -> Vec<Row> {
+pub fn layout(history: &History) -> Lanes {
+    // Each moment's causal time: its own, held no earlier than the moment
+    // it grew from (the wall dates a gap after changes it covers), and its
+    // depth from the root; parents come before their children in the
+    // history, so one pass fills both.
+    let mut key: Vec<(i64, usize)> = Vec::with_capacity(history.moments.len());
+    for moment in &history.moments {
+        let (time, depth) = moment
+            .parent
+            .map_or((i64::MIN, 0), |p| (key[p].0, key[p].1 + 1));
+        key.push((moment.time.max(time), depth));
+    }
     let mut order: Vec<usize> = (0..history.moments.len())
         .filter(|&m| history.place_of(m).is_some())
         .collect();
+    // Newest first: a child is never below the moment it grew from.
     order.sort_by(|&a, &b| {
-        history.moments[b]
-            .time
-            .cmp(&history.moments[a].time)
-            .then(b.cmp(&a))
+        key[b]
+            .cmp(&key[a])
+            .then_with(|| history.moments[b].id.cmp(&history.moments[a].id))
     });
-    // The lane each active limb holds, and for each limb the moment its
-    // lane ends on (the moment it grew from, or its own first moment).
-    let mut lane_of: Vec<Option<usize>> = vec![None; history.limbs.len()];
-    let mut lanes: Vec<Option<usize>> = Vec::new();
-    // The trunk keeps the first lane all the way down, so it is always the
-    // line on the left.
-    if !history.limbs.is_empty() {
-        lanes.push(Some(0));
-        lane_of[0] = Some(0);
-    }
+    // Where each limb's lane ends: the moment it grew from when that is on
+    // the tree, else its own first moment.
     let ends: Vec<Option<usize>> = history
         .limbs
         .iter()
-        .map(|limb| limb.from.or_else(|| limb.moments.first().copied()))
+        .map(|limb| {
+            limb.from
+                .filter(|&m| history.place_of(m).is_some())
+                .or_else(|| limb.moments.first().copied())
+        })
         .collect();
-    // A lane is drawn only from its limb's tip down: the trunk's lane is
-    // kept for it from the top, but empty until its tip.
-    let mut started = vec![false; history.limbs.len()];
-    let mut rows = Vec::with_capacity(order.len());
-    for m in order {
+    // Which limbs end on each moment, to free their lanes there.
+    let mut ending: Vec<Vec<usize>> = vec![Vec::new(); history.moments.len()];
+    for (l, end) in ends.iter().enumerate() {
+        if let Some(m) = *end {
+            ending[m].push(l);
+        }
+    }
+    // The lane each limb holds while it runs. The trunk keeps the first
+    // lane all the way down, so it is always the line on the left.
+    let mut lane_of: Vec<Option<usize>> = vec![None; history.limbs.len()];
+    let mut free: Vec<bool> = Vec::new();
+    if !history.limbs.is_empty() {
+        free.push(false);
+        lane_of[0] = Some(0);
+    }
+    let mut span_of: Vec<Option<usize>> = vec![None; history.limbs.len()];
+    let mut lanes = Lanes {
+        rows: Vec::with_capacity(order.len()),
+        spans: Vec::new(),
+    };
+    for (r, m) in order.into_iter().enumerate() {
         let Some((limb, _)) = history.place_of(m) else {
             continue;
         };
-        if lane_of[limb].is_none() {
-            let free = lanes
-                .iter()
-                .position(Option::is_none)
-                .unwrap_or(lanes.len());
-            if free == lanes.len() {
-                lanes.push(None);
+        let lane = lane_of[limb].unwrap_or_else(|| {
+            let lane = free.iter().position(|&f| f).unwrap_or(free.len());
+            if lane == free.len() {
+                free.push(false);
             }
-            lanes[free] = Some(limb);
-            lane_of[limb] = Some(free);
+            free[lane] = false;
+            lane_of[limb] = Some(lane);
+            lane
+        });
+        if span_of[limb].is_none() {
+            span_of[limb] = Some(lanes.spans.len());
+            lanes.spans.push(Span {
+                limb,
+                lane,
+                top: r,
+                bottom: r,
+            });
         }
-        started[limb] = true;
-        let mut marks = vec![Mark::Empty; lanes.len()];
+        lanes.rows.push(Row { moment: m, lane });
+        // Lanes that end on this row are free from the next one down.
+        for &l in &ending[m] {
+            if let Some(s) = span_of[l] {
+                lanes.spans[s].bottom = r;
+            }
+            if let Some(lane) = lane_of[l].take() {
+                free[lane] = true;
+            }
+        }
+    }
+    // A limb whose end was never reached runs to the last row.
+    let last = lanes.rows.len().saturating_sub(1);
+    for (l, span) in span_of.iter().enumerate() {
+        if let Some(s) = *span
+            && lane_of[l].is_some()
+        {
+            lanes.spans[s].bottom = last;
+        }
+    }
+    lanes
+}
+
+impl Lanes {
+    /// The spans that cross rows `from..to`: what [`Lanes::graph`] needs
+    /// for those rows, found once a frame.
+    #[must_use]
+    pub fn crossing(&self, from: usize, to: usize) -> Vec<&Span> {
+        self.spans
+            .iter()
+            .filter(|span| span.top < to && span.bottom >= from)
+            .collect()
+    }
+
+    /// Row `r`'s graph: two characters a lane, from the spans crossing it
+    /// (all of [`Lanes::crossing`] for a range holding `r` will do).
+    #[must_use]
+    pub fn graph(&self, history: &History, spans: &[&Span], r: usize) -> String {
+        let Some(row) = self.rows.get(r) else {
+            return String::new();
+        };
+        let Some((limb, _)) = history.place_of(row.moment) else {
+            return String::new();
+        };
+        let width = spans
+            .iter()
+            .filter(|span| span.top <= r && span.bottom >= r)
+            .map(|span| span.lane + 1)
+            .max()
+            .unwrap_or(0)
+            .max(row.lane + 1);
+        let mut marks = vec![Mark::Empty; width];
         let mut joining = Vec::new();
-        for (lane, held) in lanes.iter().enumerate() {
-            let Some(l) = *held else { continue };
-            if !started[l] {
+        for span in spans {
+            if span.top > r || span.bottom < r {
                 continue;
             }
-            marks[lane] = if l == limb {
+            marks[span.lane] = if span.limb == limb {
                 Mark::Here
-            } else if history.limbs[l].from == Some(m) {
-                joining.push(lane);
+            } else if history.limbs[span.limb].from == Some(row.moment) {
+                joining.push(span.lane);
                 Mark::Join
             } else {
                 Mark::Pass
             };
         }
-        let own = lane_of[limb].unwrap_or(0);
-        rows.push(Row {
-            moment: m,
-            graph: draw_row(&marks, own, &joining, history.here == Some(m)),
-        });
-        // Lanes that end on this row are free from the next one down.
-        for held in &mut lanes {
-            if let Some(l) = *held
-                && ends[l] == Some(m)
-                && (l != limb || history.limbs[l].from.is_none())
-            {
-                *held = None;
-                lane_of[l] = None;
-            }
-        }
+        draw_row(&marks, row.lane, &joining, history.here == Some(row.moment))
     }
-    rows
 }
 
 /// One row's graph: two characters a lane. The row's own moment on its

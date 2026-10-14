@@ -11,12 +11,14 @@ fn app(history: History) -> App {
         gestures: Vec::new(),
         days: Vec::new(),
         line: Vec::new(),
-        rows: Vec::new(),
+        lanes: Lanes::default(),
         shown: Shown::Tree,
         lane_top: 0,
         view: None,
         selected: None,
         help: false,
+        help_top: 0,
+        yank: None,
         said: String::new(),
         area: (80, 30),
         drag: None,
@@ -214,12 +216,41 @@ fn v_turns_to_the_lanes_where_up_and_down_walk_the_rows() {
     // Newest first: the wall's place (the bud's tip, 13) is the top row.
     assert_eq!(app.selected_row(), Some(0));
     press(&mut app, KeyCode::Down);
-    assert_eq!(app.selected, Some(app.rows[1].moment));
+    assert_eq!(app.selected, Some(app.lanes.rows[1].moment));
     press(&mut app, KeyCode::End);
     assert_eq!(app.selected, Some(0), "the oldest moment is the last row");
-    assert_eq!(app.lanes_from(5), app.rows.len() - 5, "scrolled to it");
+    assert_eq!(
+        app.lanes_from(5),
+        app.lanes.rows.len() - 5,
+        "scrolled to it"
+    );
     press(&mut app, KeyCode::Home);
     assert_eq!(app.lanes_from(5), 0);
     press(&mut app, KeyCode::Char('v'));
     assert_eq!(app.shown, Shown::Tree);
+}
+
+#[test]
+fn a_click_off_the_lanes_selects_nothing() {
+    let mut app = app(grown(100, &[]));
+    app.shown = Shown::Lanes;
+    app.area = (80, 30);
+    let before = app.selected;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 30);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 85, 3);
+    mouse(&mut app, MouseEventKind::ScrollDown, 90, 3);
+    assert_eq!(app.selected, before);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 3);
+    assert_ne!(app.selected, before);
+}
+
+#[test]
+fn y_copies_the_whole_commit() {
+    let mut app = app(grown(10, &[]));
+    press(&mut app, KeyCode::Char('y'));
+    let id = app.history.moments[app.selected.expect("selected")]
+        .id
+        .to_string();
+    assert_eq!(app.yank.as_deref(), Some(id.as_str()));
+    assert_eq!(id.len(), 40);
 }

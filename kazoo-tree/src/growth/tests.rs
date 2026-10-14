@@ -110,7 +110,7 @@ fn a_tip_filling_never_redraws_what_is_drawn() {
     // A tip step of 5, then filled to 16 with louder, busier moments: the
     // first five stretches keep their width and colour.
     let mut history = grown(5, &[]);
-    for moment in &mut history.moments {
+    for moment in history.moments.iter_mut().map(std::sync::Arc::make_mut) {
         moment.sound = Some(crate::history::Sound {
             rms_db: -30.0,
             peak_db: -12.0,
@@ -123,7 +123,10 @@ fn a_tip_filling_never_redraws_what_is_drawn() {
     }
     let before = Growth::grow(&history);
     lengthen(&mut history, 0, 11);
-    for moment in &mut history.moments[5..] {
+    for moment in history.moments[5..]
+        .iter_mut()
+        .map(std::sync::Arc::make_mut)
+    {
         moment.modules = 90;
         moment.sound = Some(crate::history::Sound {
             rms_db: -6.0,
@@ -147,7 +150,12 @@ fn time_stepping_back_never_scrambles_a_limb() {
     // every other step of the trunk is dated an hour back, and a bud grows
     // from a moment in one of those.
     let mut history = grown(160, &[(0, 40, 50)]);
-    for (i, moment) in history.moments.iter_mut().enumerate() {
+    for (i, moment) in history
+        .moments
+        .iter_mut()
+        .map(std::sync::Arc::make_mut)
+        .enumerate()
+    {
         if (i / GROWTH_STEP) % 2 == 1 {
             moment.time -= 3_600;
         }
@@ -187,7 +195,7 @@ fn trees_that_share_nothing_stand_apart_and_stay_put() {
     lengthen(&mut history, n, 40);
     // Its first moment grew from nothing.
     let first = history.limbs[n].moments[0];
-    history.moments[first].parent = None;
+    std::sync::Arc::make_mut(&mut history.moments[first]).parent = None;
     let growth = Growth::grow(&history);
     assert_eq!(growth.roots.len(), 2);
     let trunk_right = growth.limb_steps[0]
@@ -201,7 +209,7 @@ fn trees_that_share_nothing_stand_apart_and_stay_put() {
 /// grows fails here, and is made on purpose, with [`GROWTH_VERSION`].
 #[test]
 fn the_shape_is_pinned() {
-    assert_eq!(GROWTH_VERSION, 2);
+    assert_eq!(GROWTH_VERSION, 3);
     let growth = Growth::grow(&grown(64, &[(0, 20, 32)]));
     let pins: Vec<(usize, f64, f64)> = [0_usize, 2, 3, 5]
         .iter()
@@ -225,8 +233,81 @@ fn the_shape_is_pinned() {
 
 /// Steps 0, 2, 3 (the trunk) and 5 (the bud): limb, and where each ends.
 const PINNED: [(usize, f64, f64); 4] = [
-    (0, 0.440_547_486_106_022_9, 3.975_665_719_409_224),
-    (0, 1.078_379_782_930_204_9, 11.947_211_355_570_89),
-    (0, 1.529_009_326_612_658_3, 15.921_746_927_730_3),
-    (1, 6.709_760_337_413_961, 10.253_693_850_296_017),
+    (0, 0.212_754_037_460_759_22, 3.994_337_957_602_504),
+    (0, 1.542_087_093_207_413_8, 11.879_382_987_066_093),
+    (0, 2.493_484_577_078_811, 15.764_591_196_117_852),
+    (1, -3.767_680_979_023_85, 12.011_703_033_119_787),
 ];
+
+#[test]
+fn growing_on_with_the_ledger_never_moves_the_past() {
+    // A trunk, then a tree of its own made by hand after it: it stands to
+    // the right of everything grown before it.
+    let mut history = grown(40, &[]);
+    let n = history.limbs.len();
+    history.limbs.push(crate::history::Limb {
+        name: "by-hand".to_owned(),
+        moments: Vec::new(),
+        from: None,
+    });
+    lengthen(&mut history, n, 40);
+    let first = history.limbs[n].moments[0];
+    std::sync::Arc::make_mut(&mut history.moments[first]).parent = None;
+    let mut growth = Growth::default();
+    let known = growth.grow_on(&history, &[]);
+    let before = growth.clone();
+    let held = history.moments.len();
+    // The trunk grows on with moments dated before the other tree began (a
+    // gap written late): by their times alone they would grow first, and
+    // push the other tree further right.
+    lengthen(&mut history, 0, 40);
+    for m in held..history.moments.len() {
+        std::sync::Arc::make_mut(&mut history.moments[m]).time = 1_000;
+    }
+    let mut on = growth.clone();
+    let more = on.grow_on(&history, &known);
+    assert_eq!(more.len(), 2, "two new steps of trunk, for the ledger");
+    let mut afresh = Growth::default();
+    afresh.grow_on(&history, &[known.clone(), more].concat());
+    for m in 0..held {
+        assert_eq!(on.at[m], before.at[m], "moment {m} moved growing on");
+        assert_eq!(afresh.at[m], before.at[m], "moment {m} moved grown afresh");
+        assert_eq!(on.look[m], before.look[m]);
+    }
+    assert_eq!(
+        on.at, afresh.at,
+        "growing on is growing afresh in the ledger's order"
+    );
+    assert_eq!(on.roots, before.roots);
+    // Without the ledger the same history grows in another order: the new
+    // trunk ahead of the other tree, whose room would then be taken first.
+    // That order is what the ledger keeps from happening.
+    let plain = Growth::grow(&history);
+    let first_of = |g: &Growth| g.steps.iter().position(|step| step.limb == n);
+    assert!(
+        first_of(&plain) > first_of(&on),
+        "{:?} {:?}",
+        first_of(&plain),
+        first_of(&on)
+    );
+}
+
+#[test]
+fn a_second_trees_place_never_depends_on_how_wide_the_first_grew() {
+    let mut history = grown(80, &[]);
+    let n = history.limbs.len();
+    history.limbs.push(crate::history::Limb {
+        name: "by-hand".to_owned(),
+        moments: Vec::new(),
+        from: None,
+    });
+    lengthen(&mut history, n, 40);
+    let first = history.limbs[n].moments[0];
+    std::sync::Arc::make_mut(&mut history.moments[first]).parent = None;
+    let thin = Growth::grow(&history);
+    for m in 0..80 {
+        std::sync::Arc::make_mut(&mut history.moments[m]).modules = 400;
+    }
+    let thick = Growth::grow(&history);
+    assert_eq!(thin.roots, thick.roots);
+}

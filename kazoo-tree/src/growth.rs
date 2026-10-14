@@ -23,12 +23,13 @@ use std::collections::HashMap;
 use std::f64::consts::FRAC_PI_2;
 
 use crate::history::{History, Sound};
+use crate::ledger::StepKey;
 
 /// The version of how the tree grows.
 ///
 /// Every constant here shapes every tree drawn; changing one moves every place a person remembers, so it is
 /// done only on purpose: this moves with it, and so does the golden test.
-pub const GROWTH_VERSION: u32 = 2;
+pub const GROWTH_VERSION: u32 = 3;
 /// Moments per step of growth. Fixed, never derived from the tree's size,
 /// so a step's shape never changes as the tree grows.
 pub const GROWTH_STEP: usize = 16;
@@ -60,6 +61,8 @@ const TREE_GAP: f64 = 40.0;
 /// One step of growth: up to [`GROWTH_STEP`] moments of one limb.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Step {
+    /// Its place in [`Growth::steps`].
+    pub id: usize,
     /// The limb it is on.
     pub limb: usize,
     /// Its first moment's place on the limb.
@@ -106,11 +109,26 @@ pub struct Growth {
     pub roots: Vec<(f64, f64)>,
     /// The tree's extent: `(min_x, min_y, max_x, max_y)`.
     pub bounds: (f64, f64, f64, f64),
+    /// Each step's name, for the ledger.
+    keys: Vec<StepKey>,
+    /// Each step's first moment, to see that a history read again still
+    /// lines up with what was grown.
+    firsts: Vec<usize>,
+    /// Which grid cells hold growth.
+    room: Room,
+    /// Each limb's line of growth by its key, numbered in the order first
+    /// grown: what the room knows a limb by.
+    lines: HashMap<String, usize>,
+    /// Each line's own wander.
+    seeds: Vec<Seeded>,
+    /// The right edge of everything grown, counting every step as wide as
+    /// any can be drawn: where a separate tree stands.
+    right: f64,
 }
 
 /// A small, fixed random source (`SplitMix64`), so a limb's wander is the
 /// same on every machine and every run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Seeded(u64);
 
 impl Seeded {
@@ -141,8 +159,8 @@ impl Seeded {
 }
 
 /// Which grid cells hold growth: each cell lists the steps that grew
-/// through it, as `(limb, step on the limb)`.
-#[derive(Debug, Default)]
+/// through it, as `(line, step on the line)`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Room(HashMap<(i64, i64), Vec<(usize, usize)>>);
 
 /// How many of its own latest steps a limb does not count as crowding: the
@@ -184,8 +202,11 @@ impl Room {
 /// thin, a full one thick.
 #[must_use]
 pub fn width_for(modules: u32) -> f64 {
-    f64::from(modules).sqrt().mul_add(0.55, 1.0).min(8.0)
+    f64::from(modules).sqrt().mul_add(0.55, 1.0).min(WIDEST)
 }
+
+/// The widest a moment is ever drawn, world units.
+pub const WIDEST: f64 = 8.0;
 
 /// The mean of `sounds`.
 fn mean_of(sounds: &[Sound]) -> Option<Sound> {
@@ -244,51 +265,142 @@ fn limb_ranks(history: &History) -> Vec<usize> {
     rank
 }
 
+/// A limb's name for growing: the commit of its first moment of its own,
+/// which never changes however the tree is read or what its branch is
+/// called. `None` for a limb with no moments yet.
+fn limb_key(history: &History, limb: usize) -> Option<&str> {
+    history.limbs[limb]
+        .moments
+        .first()
+        .map(|&m| &*history.moments[m].id)
+}
+
 impl Growth {
-    /// Grow the tree for `history`.
+    /// Grow the tree for `history` afresh, in the order its own times
+    /// give (no ledger).
     #[must_use]
     pub fn grow(history: &History) -> Self {
-        let moments = history.moments.len();
-        let mut growth = Self {
-            steps: Vec::new(),
-            limb_steps: vec![Vec::new(); history.limbs.len()],
-            at: vec![None; moments],
-            step_of: vec![None; moments],
-            look: vec![None; moments],
-            roots: Vec::new(),
-            bounds: (0.0, 0.0, 0.0, 0.0),
-        };
-        let order = Self::order(history);
-        let mut room = Room::default();
-        let mut seeds: Vec<Seeded> = history
-            .limbs
-            .iter()
-            .map(|limb| Seeded::of(&limb.name))
-            .collect();
-        let mut right = f64::MIN;
-        for pending in order {
-            growth.grow_step(
-                history,
-                &mut room,
-                &mut seeds[pending.limb],
-                &pending,
-                right,
-            );
-            if let Some(step) = growth.steps.last() {
-                right = right.max(step.start.0.max(step.end.0) + step.widest);
-            }
-            if let Some(&(x, _)) = growth.roots.last() {
-                right = right.max(x + ROOT_REACH);
-            }
-        }
-        growth.bounds = growth.measure();
+        let mut growth = Self::default();
+        growth.grow_on(history, &[]);
         growth
     }
 
-    /// Every step, in the order it grows: by its causal key (its first
-    /// moment's time, held no earlier than the step before it on its limb,
-    /// and for a limb's first step, the step holding the moment it grew
-    /// from), then parents before their buds, then step order.
+    /// Grow on to `history`: first every step `known` names (the ledger's
+    /// order, the order the tree first grew in) that is not grown yet, then
+    /// every step still not grown, by its causal key (its first moment's
+    /// time, held no earlier than the step before it on its limb, and for a
+    /// limb's first step, the step holding the moment it grew from), then
+    /// parents before their buds, then step order. What was grown before is
+    /// kept as it is; only its tips fill in. Answers the steps grown now
+    /// that `known` did not name, in the order they grew, for the ledger.
+    ///
+    /// A history read afresh, whose steps no longer line up with what was
+    /// grown, is grown again from nothing, still in `known`'s order.
+    pub fn grow_on(&mut self, history: &History, known: &[StepKey]) -> Vec<StepKey> {
+        if !self.lines_up(history) {
+            *self = Self::default();
+        }
+        self.reindex(history);
+        // Every limb's last step grown may have filled since: its new
+        // moments are placed before anything grows after it.
+        for l in 0..history.limbs.len() {
+            if let Some(&last) = self.limb_steps[l].last() {
+                self.place(history, last);
+            }
+        }
+        let mut fresh = Vec::new();
+        let mut grown: Vec<Vec<bool>> = history
+            .limbs
+            .iter()
+            .map(|limb| vec![false; limb.moments.len().div_ceil(GROWTH_STEP)])
+            .collect();
+        for (l, steps) in self.limb_steps.iter().enumerate() {
+            for (i, _) in steps.iter().enumerate() {
+                grown[l][i] = true;
+            }
+        }
+        let by_key: HashMap<&str, usize> = (0..history.limbs.len())
+            .filter_map(|l| limb_key(history, l).map(|key| (key, l)))
+            .collect();
+        let ready = |grown: &[Vec<bool>], limb: usize, index: usize| {
+            if index > 0 {
+                return grown[limb][index - 1];
+            }
+            history.limbs[limb]
+                .from
+                .and_then(|m| history.place_of(m))
+                .is_none_or(|(parent, at)| grown[parent][at / GROWTH_STEP])
+        };
+        for key in known {
+            let Some(&limb) = by_key.get(key.limb.as_str()) else {
+                continue;
+            };
+            if key.index < grown[limb].len()
+                && !grown[limb][key.index]
+                && ready(&grown, limb, key.index)
+            {
+                self.grow_step(history, limb, key.index);
+                grown[limb][key.index] = true;
+            }
+        }
+        for pending in Self::order(history) {
+            if grown[pending.limb][pending.index] {
+                continue;
+            }
+            self.grow_step(history, pending.limb, pending.index);
+            grown[pending.limb][pending.index] = true;
+            if let Some(limb) = limb_key(history, pending.limb) {
+                fresh.push(StepKey {
+                    limb: limb.to_owned(),
+                    index: pending.index,
+                });
+            }
+        }
+        self.bounds = self.measure();
+        fresh
+    }
+
+    /// Whether what was grown is still `history`'s: each step's limb is
+    /// still there, by its first commit, with the same moment first in the
+    /// step.
+    fn lines_up(&self, history: &History) -> bool {
+        if history.moments.len() < self.at.len() {
+            return false;
+        }
+        let by_key: HashMap<&str, usize> = (0..history.limbs.len())
+            .filter_map(|l| limb_key(history, l).map(|key| (key, l)))
+            .collect();
+        self.steps.iter().zip(&self.keys).all(|(step, key)| {
+            by_key.get(key.limb.as_str()).is_some_and(|&l| {
+                history.limbs[l].moments.get(step.first) == Some(&self.firsts[step.id])
+            })
+        })
+    }
+
+    /// Fit the grown steps to `history`'s limbs, which may be numbered
+    /// differently now (a new bud sorts among the old ones), and make room
+    /// for its new moments.
+    fn reindex(&mut self, history: &History) {
+        let moments = history.moments.len();
+        self.at.resize(moments, None);
+        self.step_of.resize(moments, None);
+        self.look.resize(moments, None);
+        let by_key: HashMap<&str, usize> = (0..history.limbs.len())
+            .filter_map(|l| limb_key(history, l).map(|key| (key, l)))
+            .collect();
+        self.limb_steps = vec![Vec::new(); history.limbs.len()];
+        for (s, key) in self.keys.iter().enumerate() {
+            if let Some(&l) = by_key.get(key.limb.as_str()) {
+                self.steps[s].limb = l;
+                self.limb_steps[l].push(s);
+            }
+        }
+        for steps in &mut self.limb_steps {
+            steps.sort_by_key(|&s| self.steps[s].first);
+        }
+    }
+
+    /// Every step not grown yet, in its causal order (see [`Self::grow_on`]).
     fn order(history: &History) -> Vec<Pending> {
         let rank = limb_ranks(history);
         let mut by_rank: Vec<usize> = (0..history.limbs.len()).collect();
@@ -332,32 +444,35 @@ impl Growth {
         order
     }
 
-    fn grow_step(
-        &mut self,
-        history: &History,
-        room: &mut Room,
-        seed: &mut Seeded,
-        pending: &Pending,
-        right: f64,
-    ) {
-        let limb = &history.limbs[pending.limb];
-        let first = pending.index * GROWTH_STEP;
-        let last = (first + GROWTH_STEP).min(limb.moments.len()) - 1;
-        let own = &limb.moments[first..=last];
-        let (start, mut heading) = if let Some(&previous) = self.limb_steps[pending.limb].last() {
+    /// Grow step `index` of `limb`: choose where it heads, take its room,
+    /// and place its moments.
+    fn grow_step(&mut self, history: &History, limb: usize, index: usize) {
+        let Some(key) = limb_key(history, limb).map(str::to_owned) else {
+            return;
+        };
+        let line = if let Some(&line) = self.lines.get(&key) {
+            line
+        } else {
+            let line = self.lines.len();
+            self.lines.insert(key.clone(), line);
+            self.seeds.push(Seeded::of(&key));
+            line
+        };
+        let first = index * GROWTH_STEP;
+        let (start, heading) = if let Some(&previous) = self.limb_steps[limb].last() {
             let step = &self.steps[previous];
             (step.end, step.heading)
         } else {
-            self.sprout(history, pending.limb, seed, right)
+            self.sprout(history, limb, line)
         };
         let mut best: Option<(f64, f64, (f64, f64))> = None;
         for turn in TURNS {
-            let angle = turn.mul_add(TURN, heading) + seed.between(-WANDER, WANDER);
+            let angle = turn.mul_add(TURN, heading) + self.seeds[line].between(-WANDER, WANDER);
             let end = (
                 libm::cos(angle).mul_add(STEP_LENGTH, start.0),
                 libm::sin(angle).mul_add(STEP_LENGTH, start.1),
             );
-            let crowd = room.crowd(end.0, end.1, pending.limb, pending.index) as f64;
+            let crowd = self.room.crowd(end.0, end.1, line, index) as f64;
             let mut score = LIGHT.mul_add(libm::sin(angle), (-CROWD).mul_add(crowd, -turn.abs()));
             if end.1 < GROUND {
                 score -= 50.0;
@@ -369,21 +484,44 @@ impl Growth {
         let Some((_, angle, end)) = best else {
             return;
         };
-        heading = angle;
-        room.take(end.0, end.1, pending.limb, pending.index);
-        room.take(
+        self.room.take(end.0, end.1, line, index);
+        self.room.take(
             f64::midpoint(start.0, end.0),
             f64::midpoint(start.1, end.1),
-            pending.limb,
-            pending.index,
+            line,
+            index,
         );
         let id = self.steps.len();
+        self.steps.push(Step {
+            id,
+            limb,
+            first,
+            last: first,
+            start,
+            end,
+            heading: angle,
+            widest: 1.0,
+        });
+        self.keys.push(StepKey { limb: key, index });
+        self.firsts.push(history.limbs[limb].moments[first]);
+        self.limb_steps[limb].push(id);
+        self.right = self.right.max(start.0.max(end.0) + WIDEST);
+        self.place(history, id);
+    }
+
+    /// Place step `id`'s moments, as many as its limb holds now. A moment's
+    /// place on its step is by its place in the step, out of a full step,
+    /// never out of how many the step holds yet: a step still filling keeps
+    /// every moment where it first sat, and so does any bud grown from one
+    /// of them.
+    fn place(&mut self, history: &History, id: usize) {
+        let step = &self.steps[id];
+        let moments = &history.limbs[step.limb].moments;
+        let last = (step.first + GROWTH_STEP).min(moments.len()) - 1;
+        let (start, end, first) = (step.start, step.end, step.first);
+        let own = &moments[first..=last];
         let mut sounds = Vec::new();
         let mut widest: f64 = 1.0;
-        // A moment's place on its step is by its place in the step, out of
-        // a full step, never out of how many the step holds yet: a step
-        // still filling keeps every moment where it first sat, and so does
-        // any bud grown from one of them.
         for (i, &m) in own.iter().enumerate() {
             let t = (i + 1) as f64 / GROWTH_STEP as f64;
             self.at[m] = Some((
@@ -402,46 +540,56 @@ impl Growth {
                 sound: mean_of(&sounds),
             });
         }
-        self.steps.push(Step {
-            limb: pending.limb,
-            first,
-            last,
-            start,
-            end,
-            heading,
-            widest,
-        });
-        self.limb_steps[pending.limb].push(id);
+        let step = &mut self.steps[id];
+        step.last = last;
+        step.widest = widest;
     }
 
     /// Where a limb's first step starts and which way it heads: from the
     /// moment it grew from, turned off its parent's heading to one side. A
     /// limb with no parent is a tree of its own: the first stands at the
     /// origin, and each after it to the right of everything grown before
-    /// it (`right`), so separate trees never grow into each other and,
-    /// once placed, never move.
-    fn sprout(
-        &mut self,
-        history: &History,
-        limb: usize,
-        seed: &mut Seeded,
-        right: f64,
-    ) -> ((f64, f64), f64) {
-        let side: f64 = if seed.next() & 1 == 0 { -1.0 } else { 1.0 };
+    /// it, counting every step as wide as any can be drawn, so separate
+    /// trees never grow into each other and, once placed, never move.
+    fn sprout(&mut self, history: &History, limb: usize, line: usize) -> ((f64, f64), f64) {
+        let seed = &mut self.seeds[line];
+        let mut side: f64 = if seed.next() & 1 == 0 { -1.0 } else { 1.0 };
         let spread = seed.between(0.6, 1.1);
         let from = history.limbs[limb].from;
         if let Some(moment) = from
             && let Some(step) = self.step_of.get(moment).copied().flatten()
             && let Some(at) = self.at[moment]
         {
-            return (at, side.mul_add(spread, self.steps[step].heading));
+            // Bud toward the side with more room, a few steps out; the
+            // limb's own seed decides only when both sides are as open.
+            let parent = self.steps[step].heading;
+            let crowd = |side: f64| {
+                let heading = side.mul_add(spread, parent);
+                (1..=3)
+                    .map(|reach| {
+                        let far = STEP_LENGTH * f64::from(reach);
+                        self.room.crowd(
+                            libm::cos(heading).mul_add(far, at.0),
+                            libm::sin(heading).mul_add(far, at.1),
+                            line,
+                            0,
+                        )
+                    })
+                    .sum::<usize>()
+            };
+            let (here, there) = (crowd(side), crowd(-side));
+            if there < here {
+                side = -side;
+            }
+            return (at, side.mul_add(spread, parent));
         }
         let x = if self.roots.is_empty() {
             0.0
         } else {
-            right + TREE_GAP + ROOT_REACH
+            self.right + TREE_GAP + ROOT_REACH
         };
         self.roots.push((x, 0.0));
+        self.right = self.right.max(x + ROOT_REACH);
         ((x, 0.0), FRAC_PI_2)
     }
 

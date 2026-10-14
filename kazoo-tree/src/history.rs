@@ -7,9 +7,10 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::io::Write as _;
+use std::io::{self, Write as _};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 use kazoo_wall::tree::git::git_command;
 use kazoo_wall::tree::thread::here::name_of;
@@ -56,7 +57,7 @@ pub struct Sound {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Moment {
     /// The commit, 40 hex.
-    pub id: String,
+    pub id: Arc<str>,
     /// The moment it grew from.
     pub parent: Option<usize>,
     /// Committer time, unix seconds.
@@ -107,8 +108,9 @@ pub struct Mark {
 /// The whole tree.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct History {
-    /// Every moment, each after the one it grew from.
-    pub moments: Vec<Moment>,
+    /// Every moment, each after the one it grew from. Shared, so a tree
+    /// handed to the screen costs a count each, never a copy.
+    pub moments: Vec<Arc<Moment>>,
     /// The trunk first, then buds in the order they grew.
     pub limbs: Vec<Limb>,
     /// For every moment on a limb, that limb and the moment's place on it.
@@ -119,13 +121,16 @@ pub struct History {
     pub here: Option<usize>,
     /// What did not read in the tree's refs.
     pub problems: Vec<String>,
+    /// The branches made by hand, in the order they claimed their moments:
+    /// what the ledger keeps, so a new branch never takes an older one's.
+    pub by_hand: Vec<String>,
     /// Each commit's moment.
-    index: HashMap<String, usize>,
+    index: HashMap<Arc<str>, usize>,
     /// The tips read so far: everything behind them is held.
     tips: Vec<String>,
 }
 
-const RECORD: char = '\u{1e}';
+const RECORD: u8 = 0x1e;
 const BODY_END: char = '\u{1f}';
 
 /// The log's format: commit, parents, committer time, author, subject, and
@@ -138,10 +143,17 @@ const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailer
 /// person's own settings that would change what `log` says held fixed.
 /// `log.showRoot=false` would drop a root commit's files, and with them
 /// every module count; a signature or colour setting would mix other lines
-/// into the answer; a quoted path would hide a module's file.
+/// into the answer; a quoted path would hide a module's file; another
+/// trailer separator would hide every trailer. The person's own and the
+/// system's settings are not read at all, and git's replacements are
+/// never followed: the tree is read as the wall wrote it.
 fn git(dir: &Path, name: &str) -> Command {
     let mut command = git_command(name, Some(dir));
+    command.env("GIT_CONFIG_NOSYSTEM", "1");
+    command.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    command.env("GIT_NO_REPLACE_OBJECTS", "1");
     let settings = [
+        ("trailer.separators", ":"),
         ("log.showRoot", "true"),
         ("log.showSignature", "false"),
         ("color.ui", "never"),
@@ -160,26 +172,46 @@ fn run(command: &mut Command) -> Result<String, HistoryError> {
     let output = command
         .output()
         .map_err(|err| HistoryError::Git(format!("git could not run: {err}")))?;
-    answer(command, &output)
+    answer(command, output)
 }
 
-fn answer(command: &Command, output: &std::process::Output) -> Result<String, HistoryError> {
+fn answer(command: &Command, output: std::process::Output) -> Result<String, HistoryError> {
+    let bytes = answer_bytes(command, output, None)?;
+    String::from_utf8(bytes).map_err(|err| {
+        HistoryError::Broken(format!("git answered in bytes that are not text: {err}"))
+    })
+}
+
+/// Git's answer as bytes, or why it failed. Git's own failure is said
+/// first; a failure to write its input (`written`) is said after it, since
+/// git stopping early is what breaks the pipe.
+fn answer_bytes(
+    command: &Command,
+    output: std::process::Output,
+    written: Option<io::Error>,
+) -> Result<Vec<u8>, HistoryError> {
     if !output.status.success() {
+        let also = written.map_or_else(String::new, |err| {
+            format!("; and its input could not all be written: {err}")
+        });
         return Err(HistoryError::Git(format!(
-            "git failed ({:?}): {}",
+            "git failed ({:?}): {}{also}",
             command.get_args().collect::<Vec<_>>(),
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
-    String::from_utf8(output.stdout.clone()).map_err(|err| {
-        HistoryError::Broken(format!("git answered in bytes that are not text: {err}"))
-    })
+    if let Some(err) = written {
+        return Err(HistoryError::Git(format!(
+            "git's input could not be written: {err}"
+        )));
+    }
+    Ok(output.stdout)
 }
 
 /// Run `command` with `input` on its standard input. The input is written
 /// from its own thread, so a long list of tips can never wait on git
 /// while git waits on its answer being read.
-fn run_with(command: &mut Command, input: &str) -> Result<String, HistoryError> {
+fn run_with(command: &mut Command, input: &str) -> Result<Vec<u8>, HistoryError> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -191,7 +223,7 @@ fn run_with(command: &mut Command, input: &str) -> Result<String, HistoryError> 
         .stdin
         .take()
         .ok_or_else(|| HistoryError::Git("git took no input".to_owned()))?;
-    let output = std::thread::scope(|scope| {
+    let (output, written) = std::thread::scope(|scope| {
         let writer = scope.spawn(move || {
             let mut stdin = stdin;
             stdin.write_all(input.as_bytes())
@@ -200,12 +232,18 @@ fn run_with(command: &mut Command, input: &str) -> Result<String, HistoryError> 
         let written = writer
             .join()
             .map_err(|_| HistoryError::Git("the thread writing to git panicked".to_owned()))?;
-        written
-            .map_err(|err| HistoryError::Git(format!("git's input could not be written: {err}")))?;
-        output.map_err(|err| HistoryError::Git(format!("git could not be waited for: {err}")))
+        let output = output
+            .map_err(|err| HistoryError::Git(format!("git could not be waited for: {err}")))?;
+        Ok::<_, HistoryError>((output, written.err()))
     })?;
-    answer(command, &output)
+    answer_bytes(command, output, written)
 }
+
+/// The refs the tree is made of: the wall's branches, marks and saves.
+/// Nothing else (notes, a stash, a remote's copy) is a moment of the wall.
+const REF_BRANCHES: &str = "refs/heads/";
+const REF_MARKS: &str = "refs/tags/mark/";
+const REF_SAVES: &str = "refs/tags/save/";
 
 /// Every ref and HEAD, read together before the log.
 ///
@@ -226,10 +264,15 @@ impl Snapshot {
     ///
     /// When git cannot run.
     pub fn read(dir: &Path) -> Result<Self, HistoryError> {
-        let refs =
-            run(git(dir, "for-each-ref")
-                .args(["--format=%(refname)%00%(objectname)%00%(*objectname)"]))?;
+        // HEAD first: the wall may commit between the two reads, and then
+        // HEAD is behind its branch's tip, on the branch, never past it.
         let head = head(dir)?;
+        let refs = run(git(dir, "for-each-ref").args([
+            "--format=%(refname)%00%(objectname)%00%(*objectname)",
+            REF_BRANCHES,
+            REF_MARKS,
+            REF_SAVES,
+        ]))?;
         Ok(Self { refs, head })
     }
 
@@ -255,7 +298,7 @@ impl History {
     pub fn read(dir: &Path) -> Result<Self, HistoryError> {
         let snapshot = Snapshot::read(dir)?;
         let mut history = Self::default();
-        history.grow(dir, &snapshot)?;
+        history.grow(dir, &snapshot, &[])?;
         Ok(history)
     }
 
@@ -268,7 +311,12 @@ impl History {
     ///
     /// As [`History::read`]. A failure leaves every moment already held
     /// valid, and the next grow reads again from the last good tips.
-    pub fn grow(&mut self, dir: &Path, snapshot: &Snapshot) -> Result<usize, HistoryError> {
+    pub fn grow(
+        &mut self,
+        dir: &Path,
+        snapshot: &Snapshot,
+        known: &[String],
+    ) -> Result<usize, HistoryError> {
         let tips = snapshot.tips();
         let added = if tips.is_empty() {
             0
@@ -296,7 +344,7 @@ impl History {
             )?;
             self.append(&log)?
         };
-        self.lay_out(&snapshot.refs, snapshot.head.as_deref())?;
+        self.lay_out(&snapshot.refs, snapshot.head.as_deref(), known)?;
         self.tips = tips;
         Ok(added)
     }
@@ -310,19 +358,41 @@ impl History {
     /// or a branch names a commit the log did not hold.
     pub fn from_git(log: &str, refs: &str, here: Option<&str>) -> Result<Self, HistoryError> {
         let mut history = Self::default();
-        history.append(log)?;
-        history.lay_out(refs, here)?;
+        history.append(log.as_bytes())?;
+        history.lay_out(refs, here, &[])?;
         Ok(history)
+    }
+
+    /// Lay the limbs out again from `refs`, the branches made by hand that
+    /// claimed before (`known`) claiming in that order.
+    ///
+    /// # Errors
+    ///
+    /// As [`History::from_git`].
+    #[cfg(test)]
+    pub(crate) fn lay_out_with(
+        &mut self,
+        refs: &str,
+        here: Option<&str>,
+        known: &[String],
+    ) -> Result<(), HistoryError> {
+        self.lay_out(refs, here, known)
     }
 
     /// Add the moments in `log`, all or none. A moment already held is
     /// skipped, so reading a commit twice never doubles it.
-    fn append(&mut self, log: &str) -> Result<usize, HistoryError> {
+    fn append(&mut self, log: &[u8]) -> Result<usize, HistoryError> {
         let mut fresh: Vec<Moment> = Vec::new();
-        let mut fresh_index: HashMap<String, usize> = HashMap::new();
-        for record in log.split(RECORD).filter(|record| !record.trim().is_empty()) {
-            let moment = moment(
-                record,
+        let mut fresh_index: HashMap<Arc<str>, usize> = HashMap::new();
+        for bytes in log.split(|&byte| byte == RECORD) {
+            // Each record is read on its own, so one commit's bad bytes
+            // are that commit's problem, never the whole tree's.
+            let record = String::from_utf8_lossy(bytes);
+            if record.trim().is_empty() {
+                continue;
+            }
+            let mut moment = moment(
+                &record,
                 |id| {
                     self.index
                         .get(id)
@@ -340,7 +410,13 @@ impl History {
             if self.index.contains_key(&moment.id) || fresh_index.contains_key(&moment.id) {
                 continue;
             }
-            fresh_index.insert(moment.id.clone(), fresh.len());
+            if matches!(record, std::borrow::Cow::Owned(_)) {
+                moment.problems.push(
+                    "its words are not all UTF-8; what could not be read shows as \u{fffd}"
+                        .to_owned(),
+                );
+            }
+            fresh_index.insert(Arc::clone(&moment.id), fresh.len());
             fresh.push(moment);
         }
         let added = fresh.len();
@@ -348,15 +424,20 @@ impl History {
         for (id, i) in fresh_index {
             self.index.insert(id, base + i);
         }
-        self.moments.extend(fresh);
+        self.moments.extend(fresh.into_iter().map(Arc::new));
         Ok(added)
     }
 
     /// Lay the limbs, marks, problems and the wall's place out again from
     /// the refs and HEAD.
-    fn lay_out(&mut self, refs: &str, here: Option<&str>) -> Result<(), HistoryError> {
+    fn lay_out(
+        &mut self,
+        refs: &str,
+        here: Option<&str>,
+        known: &[String],
+    ) -> Result<(), HistoryError> {
         let mut problems = Vec::new();
-        let limbs = limbs(refs, &self.index, &self.moments)?;
+        let (limbs, by_hand) = limbs(refs, &self.index, &self.moments, known, &mut problems)?;
         let mut place = vec![None; self.moments.len()];
         for (l, limb) in limbs.iter().enumerate() {
             for (at, &m) in limb.moments.iter().enumerate() {
@@ -377,6 +458,7 @@ impl History {
             }
         };
         self.limbs = limbs;
+        self.by_hand = by_hand;
         self.place = place;
         self.marks = marks;
         self.here = here;
@@ -389,8 +471,8 @@ impl History {
     #[cfg(test)]
     pub(crate) fn push(&mut self, moment: Moment) -> usize {
         let m = self.moments.len();
-        self.index.insert(moment.id.clone(), m);
-        self.moments.push(moment);
+        self.index.insert(Arc::clone(&moment.id), m);
+        self.moments.push(Arc::new(moment));
         self.place.push(None);
         m
     }
@@ -461,7 +543,7 @@ fn moment(
             HistoryError::Broken(format!("a log record without its {what}: {head:.80}"))
         })
     };
-    let id = field("commit")?.trim().to_owned();
+    let id: Arc<str> = Arc::from(field("commit")?.trim());
     let parents = field("parents")?;
     let time = field("time")?;
     let seat = clean(field("author")?);
@@ -607,20 +689,28 @@ fn read_refs(refs: &str) -> impl Iterator<Item = Ref<'_>> {
     })
 }
 
-/// The limbs, each claiming its own moments. The trunk first. Then the
-/// buds by the time in their names: a bud's name also says the moment it
-/// grew from (`bud/<from>/<time>`, `<from>` its commit's first 12 hex or
-/// the mark it grew from), so its walk stops exactly there and a bud never
-/// takes another limb's moments, whatever order they are claimed in. Then
-/// the branches made by hand, one at a time, the one whose first moment of
-/// its own is oldest first (then by name). Nothing in any of this changes
-/// as a limb grows, so a moment never changes limb and the past is never
-/// redrawn.
+/// The limbs, each claiming its own moments, and the branches made by hand
+/// in the order they claimed theirs.
+///
+/// The trunk first. Then the buds, in the order the wall grew them (the
+/// time in their names, then the number after a taken name): a bud's name
+/// also says the moment it grew from (`bud/<from>/<time>`, `<from>` its
+/// commit's first 12 hex or the mark it grew from), so its walk stops
+/// exactly there and a bud never takes another limb's moments, whatever
+/// order they are claimed in. Then the branches made by hand: those that
+/// have claimed before (`known`, from the ledger) in the order they first
+/// did, then any new one, the one whose first moment of its own is oldest
+/// first (then by name). A new branch never takes an older one's moments.
+/// Last, every moment no branch holds (a deleted branch's, or HEAD's when
+/// it is on no branch) is its own limb, said among the problems: nothing
+/// read is ever left out.
 fn limbs(
     refs: &str,
-    index: &HashMap<String, usize>,
-    moments: &[Moment],
-) -> Result<Vec<Limb>, HistoryError> {
+    index: &HashMap<Arc<str>, usize>,
+    moments: &[Arc<Moment>],
+    known: &[String],
+    problems: &mut Vec<String>,
+) -> Result<(Vec<Limb>, Vec<String>), HistoryError> {
     let mut grown: Vec<(String, usize)> = Vec::new();
     let mut by_hand: Vec<(String, usize)> = Vec::new();
     let mut mark_commits: HashMap<&str, usize> = HashMap::new();
@@ -648,13 +738,14 @@ fn limbs(
     grown.sort_by(|(a, _), (b, _)| {
         rank(a)
             .cmp(&rank(b))
-            .then_with(|| bud_time(a).cmp(bud_time(b)))
+            .then_with(|| bud_order(a).cmp(&bud_order(b)))
             .then_with(|| a.cmp(b))
     });
     let mut claimed = vec![false; moments.len()];
     let mut limbs = Vec::with_capacity(grown.len() + by_hand.len());
     for (name, tip) in grown {
-        let stop = bud_from(&name).and_then(|from| {
+        let from = bud_from(&name);
+        let stop = from.and_then(|from| {
             mark_commits.get(from).copied().or_else(|| {
                 // The commit's 12 hex: the first moment on the walk whose
                 // commit starts with them.
@@ -668,10 +759,28 @@ fn limbs(
                 None
             })
         });
-        limbs.push(claim(&mut claimed, moments, &name, tip, stop));
+        let limb = claim(&mut claimed, moments, &name, tip, stop);
+        if let Some(from) = from
+            && (stop.is_none() || limb.from != stop)
+        {
+            problems.push(format!(
+                "{} says it grew from {}, which is not on its line (a mark moved or gone?); it is shown down to where its line meets another",
+                clean(&name),
+                clean(from)
+            ));
+        }
+        limbs.push(limb);
     }
-    // Each hand-made branch's oldest unclaimed moment, kept and looked at
-    // again only once claimed: a walk that meets the last limb claimed
+    let mut order = Vec::with_capacity(by_hand.len());
+    for name in known {
+        if let Some(i) = by_hand.iter().position(|(n, _)| n == name) {
+            let (name, tip) = by_hand.swap_remove(i);
+            limbs.push(claim(&mut claimed, moments, &name, tip, None));
+            order.push(name);
+        }
+    }
+    // Each new hand-made branch's oldest unclaimed moment, kept and looked
+    // at again only once claimed: a walk that meets the last limb claimed
     // follows it down, so its oldest moment is then claimed too.
     let mut oldest: Vec<Option<usize>> = by_hand
         .iter()
@@ -694,13 +803,51 @@ fn limbs(
         let (name, tip) = by_hand.swap_remove(first);
         oldest.swap_remove(first);
         limbs.push(claim(&mut claimed, moments, &name, tip, None));
+        order.push(name);
     }
-    Ok(limbs)
+    unbranched(&mut limbs, &mut claimed, moments, problems);
+    Ok((limbs, order))
+}
+
+/// What a limb on no branch is called.
+pub const NO_BRANCH: &str = "(no branch)";
+
+/// Every moment no branch claimed, as limbs of their own: one from each
+/// such moment with no unclaimed moment after it, oldest tip first.
+fn unbranched(
+    limbs: &mut Vec<Limb>,
+    claimed: &mut [bool],
+    moments: &[Arc<Moment>],
+    problems: &mut Vec<String>,
+) {
+    let mut has_child = vec![false; moments.len()];
+    for (m, moment) in moments.iter().enumerate() {
+        if !claimed[m]
+            && let Some(parent) = moment.parent
+            && !claimed[parent]
+        {
+            has_child[parent] = true;
+        }
+    }
+    let mut count = 0;
+    for tip in 0..moments.len() {
+        if claimed[tip] || has_child[tip] {
+            continue;
+        }
+        let limb = claim(claimed, moments, NO_BRANCH, tip, None);
+        count += limb.moments.len();
+        limbs.push(limb);
+    }
+    if count > 0 {
+        problems.push(format!(
+            "{count} moments are on no branch (a branch was deleted, or HEAD is on none); they are drawn as {NO_BRANCH}"
+        ));
+    }
 }
 
 /// The oldest moment a branch would claim: its first-parent walk from
 /// `tip` down to the first claimed moment, the last step before it.
-fn first_unclaimed(tip: usize, claimed: &[bool], moments: &[Moment]) -> Option<usize> {
+fn first_unclaimed(tip: usize, claimed: &[bool], moments: &[Arc<Moment>]) -> Option<usize> {
     let mut at = Some(tip);
     let mut oldest = None;
     while let Some(m) = at {
@@ -717,7 +864,7 @@ fn first_unclaimed(tip: usize, claimed: &[bool], moments: &[Moment]) -> Option<u
 /// to the first claimed one or to `stop`: that is where it grew from.
 fn claim(
     claimed: &mut [bool],
-    moments: &[Moment],
+    moments: &[Arc<Moment>],
     name: &str,
     tip: usize,
     stop: Option<usize>,
@@ -752,11 +899,20 @@ fn rank(name: &str) -> u8 {
     }
 }
 
-/// `bud/<from>/<time>[-n]`: the time part, which sorts as text.
-fn bud_time(name: &str) -> &str {
-    name.strip_prefix("bud/")
+/// `bud/<from>/<time>[-n]`: the order the wall grew it in: the time (a
+/// compact UTC time, which sorts as text), then `n`, the number after a
+/// name already taken, as a number (so `-10` comes after `-2`), none first.
+fn bud_order(name: &str) -> (&str, u64) {
+    let time = name
+        .strip_prefix("bud/")
         .and_then(|rest| rest.rsplit_once('/'))
-        .map_or("", |(_, time)| time)
+        .map_or("", |(_, time)| time);
+    match time.rsplit_once('-') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+            (base, n.parse().unwrap_or(u64::MAX).saturating_add(1))
+        }
+        _ => (time, 0),
+    }
 }
 
 /// `bud/<from>/<time>[-n]`: the part saying where it grew from.
@@ -769,7 +925,7 @@ fn bud_from(name: &str) -> Option<&str> {
 /// Every mark and save. A save's tag is `save/<name>/<time>` (the wall's
 /// own reading drops the time the same way); one the tree cannot place is
 /// said among its problems.
-fn marks(refs: &str, index: &HashMap<String, usize>, problems: &mut Vec<String>) -> Vec<Mark> {
+fn marks(refs: &str, index: &HashMap<Arc<str>, usize>, problems: &mut Vec<String>) -> Vec<Mark> {
     let mut marks = Vec::new();
     for r in read_refs(refs) {
         let (part, save) = if let Some(part) = r.name.strip_prefix("refs/tags/mark/") {

@@ -13,7 +13,7 @@ pub fn moment(
     modules: u32,
 ) -> Moment {
     Moment {
-        id: format!("{n:040x}"),
+        id: std::sync::Arc::from(format!("{n:040x}")),
         parent,
         time,
         seat: seat.to_owned(),

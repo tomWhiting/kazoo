@@ -381,13 +381,13 @@ fn a_change_made_during_a_read_waits_for_the_next_read() {
     // The wall writes between the refs being read and the log.
     grow_trunk(dir.path(), 8);
     let added = history
-        .grow(dir.path(), &snapshot)
+        .grow(dir.path(), &snapshot, &[])
         .expect("no error, no race");
     assert_eq!(added, 7, "only what the snapshot names");
     assert_eq!(history.limbs[0].moments.len(), 5);
     let now = Snapshot::read(dir.path()).expect("read again");
     assert_ne!(now, snapshot);
-    assert_eq!(history.grow(dir.path(), &now).expect("grows"), 1);
+    assert_eq!(history.grow(dir.path(), &now, &[]).expect("grows"), 1);
     assert_eq!(history.limbs[0].moments.len(), 6);
     let tip = history.limbs[0].moments[5];
     assert_eq!(history.moments[tip].modules, 3, "counted from its parent");
@@ -400,7 +400,7 @@ fn reading_on_from_where_it_was_is_reading_it_whole() {
     grow_trunk(dir.path(), 8);
     grow_trunk(dir.path(), 9);
     history
-        .grow(dir.path(), &Snapshot::read(dir.path()).expect("read"))
+        .grow(dir.path(), &Snapshot::read(dir.path()).expect("read"), &[])
         .expect("grows");
     let whole = History::read(dir.path()).expect("read whole");
     let by_id = |h: &History| {
@@ -409,8 +409,8 @@ fn reading_on_from_where_it_was_is_reading_it_whole() {
             .iter()
             .map(|m| {
                 (
-                    m.id.clone(),
-                    m.parent.map(|p| h.moments[p].id.clone()),
+                    m.id.to_string(),
+                    m.parent.map(|p| h.moments[p].id.to_string()),
                     m.modules,
                 )
             })
@@ -425,7 +425,10 @@ fn reading_on_from_where_it_was_is_reading_it_whole() {
             .map(|l| {
                 (
                     l.name.clone(),
-                    l.moments.iter().map(|&m| h.moments[m].id.clone()).collect(),
+                    l.moments
+                        .iter()
+                        .map(|&m| h.moments[m].id.to_string())
+                        .collect(),
                 )
             })
             .collect()
@@ -451,6 +454,7 @@ fn the_persons_git_settings_change_nothing() {
         ("log.showSignature", "true"),
         ("color.ui", "always"),
         ("core.quotePath", "true"),
+        ("trailer.separators", "#"),
     ] {
         let status = Command::new("git")
             .arg("-C")
@@ -464,6 +468,12 @@ fn the_persons_git_settings_change_nothing() {
     let modules = |h: &History| h.moments.iter().map(|m| m.modules).collect::<Vec<_>>();
     assert_eq!(modules(&after), modules(&before));
     assert_eq!(modules(&after)[..5], [1, 2, 3, 2, 2]);
+    let seqs = |h: &History| h.moments.iter().map(|m| m.seq).collect::<Vec<_>>();
+    assert_eq!(seqs(&after), seqs(&before));
+    assert!(
+        after.moments.iter().all(|m| m.seq.is_some()),
+        "every trailer still reads"
+    );
     assert_eq!(after.marks, before.marks);
 }
 
@@ -547,4 +557,168 @@ fn a_bud_from_a_bud_made_the_same_second_keeps_to_its_own_moments() {
     let grown = History::from_git(&log, &refs, None).expect("reads");
     assert_eq!(grown.limbs[2].moments, [1, 4]);
     assert_eq!(grown.limbs[1].moments, [2, 3]);
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "git {args:?}");
+}
+
+#[test]
+fn only_the_walls_own_refs_are_moments() {
+    let dir = planted();
+    let before = History::read(dir.path()).expect("read");
+    // A lantern's note, a stash-like ref and a remote's copy: none is a
+    // moment of the wall.
+    git_in(
+        dir.path(),
+        &[
+            "notes",
+            "--ref=lanterns",
+            "add",
+            "-m",
+            "a lantern",
+            "refs/heads/trunk",
+        ],
+    );
+    git_in(
+        dir.path(),
+        &[
+            "update-ref",
+            "refs/remotes/away/trunk",
+            "refs/heads/trunk~1",
+        ],
+    );
+    let after = History::read(dir.path()).expect("read");
+    assert_eq!(after.moments.len(), before.moments.len());
+    assert_eq!(after.problems, before.problems);
+    assert!(after.limbs.iter().all(|limb| limb.name != NO_BRANCH));
+}
+
+#[test]
+fn a_deleted_branchs_moments_stay_drawn_and_are_said() {
+    let dir = planted();
+    let mut history = History::default();
+    history
+        .grow(dir.path(), &Snapshot::read(dir.path()).expect("read"), &[])
+        .expect("grows");
+    git_in(dir.path(), &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
+    git_in(
+        dir.path(),
+        &["update-ref", "-d", &format!("refs/heads/{BUD}")],
+    );
+    history
+        .grow(dir.path(), &Snapshot::read(dir.path()).expect("read"), &[])
+        .expect("grows");
+    let lost: Vec<&Limb> = history
+        .limbs
+        .iter()
+        .filter(|limb| limb.name == NO_BRANCH)
+        .collect();
+    assert_eq!(lost.len(), 1);
+    assert_eq!(lost[0].moments.len(), 2, "the bud's two moments");
+    assert!(
+        lost[0].from.is_some_and(|m| history.place_of(m).is_some()),
+        "it still grows from its moment on the trunk"
+    );
+    assert!(
+        history
+            .problems
+            .iter()
+            .any(|p| p.contains("2 moments are on no branch")),
+        "{:?}",
+        history.problems
+    );
+    assert!(
+        history
+            .moments
+            .iter()
+            .enumerate()
+            .all(|(m, _)| history.place_of(m).is_some())
+    );
+}
+
+#[test]
+fn the_wall_writing_while_the_tree_is_read_never_leaves_its_place_off_the_tree() {
+    let dir = planted();
+    git_in(dir.path(), &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
+    let writer = {
+        let path = dir.path().to_path_buf();
+        std::thread::spawn(move || {
+            for n in 10..40 {
+                grow_trunk(&path, n);
+            }
+        })
+    };
+    let mut history = History::default();
+    for _ in 0..30 {
+        let snapshot = Snapshot::read(dir.path()).expect("read");
+        history.grow(dir.path(), &snapshot, &[]).expect("grows");
+        let here = history.here.expect("HEAD is a moment");
+        assert!(
+            history.place_of(here).is_some(),
+            "the wall's place is on a limb"
+        );
+        assert!(history.limbs.iter().all(|limb| limb.name != NO_BRANCH));
+    }
+    writer.join().expect("the writer ends");
+}
+
+#[test]
+fn a_new_branch_made_by_hand_never_takes_an_older_ones_moments() {
+    let log = [
+        record_at("a", "", 1000, "one", ""),
+        record_at("b", "a", 1001, "two", ""),
+        record_at("z1", "b", 1002, "three", ""),
+        record_at("z2", "z1", 1003, "four", ""),
+    ]
+    .concat();
+    let refs = "refs/heads/trunk\0b\0\nrefs/heads/zebra\0z2\0\n";
+    let mut history = History::from_git(&log, refs, None).expect("reads");
+    assert_eq!(history.by_hand, ["zebra"]);
+    let zebra = |h: &History| -> Vec<String> {
+        let limb = h.limbs.iter().find(|l| l.name == "zebra").expect("zebra");
+        limb.moments
+            .iter()
+            .map(|&m| h.moments[m].id.to_string())
+            .collect()
+    };
+    assert_eq!(zebra(&history), ["z1", "z2"]);
+    let later = format!("{refs}refs/heads/apple\0z1\0\n");
+    let known = history.by_hand.clone();
+    history
+        .lay_out_with(&later, None, &known)
+        .expect("lays out");
+    assert_eq!(zebra(&history), ["z1", "z2"], "zebra keeps what it had");
+    assert_eq!(history.by_hand, ["zebra", "apple"]);
+}
+
+#[test]
+fn buds_with_a_taken_name_sort_by_their_number() {
+    assert!(bud_order("bud/aa/20261014T100000Z") < bud_order("bud/aa/20261014T100000Z-2"));
+    assert!(bud_order("bud/aa/20261014T100000Z-2") < bud_order("bud/aa/20261014T100000Z-10"));
+    assert!(bud_order("bud/aa/20261014T100000Z-10") < bud_order("bud/aa/20261014T100001Z"));
+}
+
+#[test]
+fn one_commit_in_bytes_that_are_not_text_is_its_own_problem() {
+    let mut log = record("a", "", "one", "").into_bytes();
+    let mut bad = record("b", "a", "tw", "").into_bytes();
+    let at = bad.iter().position(|&b| b == b'w').expect("a w");
+    bad[at] = 0xff;
+    log.extend(bad);
+    let mut history = History::default();
+    history.append(&log).expect("reads");
+    history
+        .lay_out_with("refs/heads/trunk\0b\0\n", None, &[])
+        .expect("lays out");
+    assert_eq!(history.moments.len(), 2);
+    assert!(history.moments[0].problems.is_empty());
+    assert!(history.moments[1].problems[0].contains("not all UTF-8"));
+    assert!(history.moments[1].summary.contains('\u{fffd}'));
 }

@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::growth::Growth;
-use crate::history::{History, HistoryError};
-use crate::lanes::{self, Row};
+use crate::history::{History, HistoryError, Snapshot};
+use crate::lanes::{self, Lanes};
+use crate::ledger::Ledger;
 use crate::render::{self, Day, Gesture, Level, MAX_SCALE, View};
 
 /// Zoom per key press or wheel notch.
@@ -35,8 +36,8 @@ pub struct App {
     pub days: Vec<Day>,
     /// The wall's own line, root to where it is.
     pub line: Vec<bool>,
-    /// The lanes view's rows, newest first.
-    pub rows: Vec<Row>,
+    /// The lanes view: its rows, newest first, and its lanes.
+    pub lanes: Lanes,
     /// Which view is shown (`v` turns between them).
     pub shown: Shown,
     /// The lanes view's first row on screen.
@@ -47,6 +48,12 @@ pub struct App {
     pub selected: Option<usize>,
     /// The help card is open.
     pub help: bool,
+    /// The help card's first line on screen, when it is taller than the
+    /// screen.
+    pub help_top: usize,
+    /// Text to put on the terminal's clipboard at the next turn of the
+    /// loop (`y`).
+    pub yank: Option<String>,
     /// The last word to show in the footer: what just happened, or why not.
     pub said: String,
     /// The picture's size at the last frame.
@@ -82,22 +89,97 @@ pub struct Grown {
     pub days: Vec<Day>,
     /// The wall's own line.
     pub line: Vec<bool>,
-    /// The lanes view's rows, newest first.
-    pub rows: Vec<Row>,
+    /// The lanes view: its rows, newest first, and its lanes.
+    pub lanes: Lanes,
 }
 
 impl Grown {
-    /// Grow `history` and find everything drawn from it.
+    /// Grow `history` afresh and find everything drawn from it.
     #[must_use]
     pub fn of(history: History) -> Self {
+        let growth = Growth::grow(&history);
+        Self::with(history, growth)
+    }
+
+    /// Everything drawn from `history`, grown as `growth`.
+    #[must_use]
+    pub fn with(history: History, growth: Growth) -> Self {
         Self {
-            growth: Growth::grow(&history),
+            growth,
             gestures: render::gestures(&history),
             days: render::days(&history, &chrono::Local),
             line: render::line_to(&history, history.here),
-            rows: lanes::layout(&history),
+            lanes: lanes::layout(&history),
             history,
         }
+    }
+}
+
+/// Reads a tree and grows it on, keeping the order it grew in.
+///
+/// Each read takes only the commits new since the last, and grows only the
+/// steps new since then, in the ledger's order, so nothing grown before
+/// ever moves.
+#[derive(Debug)]
+pub struct Grower {
+    dir: PathBuf,
+    history: History,
+    growth: Growth,
+    ledger: Ledger,
+}
+
+impl Grower {
+    /// A grower for the tree at `dir`, keeping its order in `ledger`.
+    #[must_use]
+    pub fn new(dir: PathBuf, ledger: Ledger) -> Self {
+        Self {
+            dir,
+            history: History::default(),
+            growth: Growth::default(),
+            ledger,
+        }
+    }
+
+    /// Read on to `snapshot` and grow, answering what to show. A read that
+    /// fails partway is tried again whole; when that fails too, nothing
+    /// held is lost and the next read starts from the last good one.
+    ///
+    /// # Errors
+    ///
+    /// When the tree cannot be read, either way.
+    pub fn read(&mut self, snapshot: &Snapshot) -> Result<Grown, HistoryError> {
+        self.ledger.refresh();
+        if let Err(grow) = self.history.grow(&self.dir, snapshot, &self.ledger.limbs) {
+            let mut whole = History::default();
+            whole
+                .grow(&self.dir, snapshot, &self.ledger.limbs)
+                .map_err(|read| HistoryError::Git(format!("{grow}; and read whole: {read}")))?;
+            self.history = whole;
+        }
+        Ok(self.grow())
+    }
+
+    fn grow(&mut self) -> Grown {
+        let new_limbs: Vec<String> = self
+            .history
+            .by_hand
+            .iter()
+            .filter(|name| !self.ledger.knows_limb(name))
+            .cloned()
+            .collect();
+        let fresh = self.growth.grow_on(&self.history, &self.ledger.steps);
+        self.ledger.record(&new_limbs, &fresh);
+        let mut history = self.history.clone();
+        if let Some(problem) = &self.ledger.problem {
+            history.problems.push(problem.clone());
+        }
+        if self.ledger.unreadable > 0 {
+            history.problems.push(format!(
+                "{} lines of the order the tree grew in did not read and were skipped",
+                self.ledger.unreadable
+            ));
+        }
+        Grown::with(history, self.growth.clone())
     }
 }
 
@@ -107,9 +189,10 @@ impl App {
     /// # Errors
     ///
     /// When the tree cannot be read.
-    pub fn open(dir: PathBuf) -> Result<Self, HistoryError> {
-        let history = History::read(&dir)?;
-        Ok(Self::showing(dir, Grown::of(history)))
+    pub fn open(dir: PathBuf, ledger: Ledger) -> Result<Self, HistoryError> {
+        let snapshot = Snapshot::read(&dir)?;
+        let grown = Grower::new(dir.clone(), ledger).read(&snapshot)?;
+        Ok(Self::showing(dir, grown))
     }
 
     /// The app showing `grown`, read from `dir`, the wall's place selected.
@@ -122,12 +205,14 @@ impl App {
             gestures: Vec::new(),
             days: Vec::new(),
             line: Vec::new(),
-            rows: Vec::new(),
+            lanes: Lanes::default(),
             shown: Shown::Tree,
             lane_top: 0,
             view: None,
             selected: None,
             help: false,
+            help_top: 0,
+            yank: None,
             said: String::new(),
             area: (0, 0),
             drag: None,
@@ -135,10 +220,9 @@ impl App {
             wants_reading: false,
         };
         app.show(grown);
-        app.selected = app
-            .history
-            .here
-            .or_else(|| app.history.moments.len().checked_sub(1));
+        app.selected = app.history.here.or_else(|| {
+            (0..app.history.moments.len()).max_by_key(|&m| (app.history.moments[m].time, m))
+        });
         app
     }
 
@@ -152,6 +236,13 @@ impl App {
     /// many moments are new.
     pub fn show(&mut self, grown: Grown) {
         let selected_id = self.selected.map(|m| self.history.moments[m].id.clone());
+        // The lanes keep the row at their top where it is when rows arrive
+        // above it, so what is being read does not slide away.
+        let top_id = self
+            .lanes
+            .rows
+            .get(self.lane_top)
+            .map(|row| self.history.moments[row.moment].id.clone());
         let before = self.history.moments.len();
         self.selected = selected_id.and_then(|id| grown.history.moment_of(&id));
         let new = grown.history.moments.len().saturating_sub(before);
@@ -160,8 +251,19 @@ impl App {
         self.gestures = grown.gestures;
         self.days = grown.days;
         self.line = grown.line;
-        self.rows = grown.rows;
-        if before > 0 {
+        self.lanes = grown.lanes;
+        if let Some(top) = top_id.and_then(|id| self.history.moment_of(&id))
+            && let Some(at) = self.lanes.rows.iter().position(|row| row.moment == top)
+        {
+            self.lane_top = at;
+        }
+        let now = self.history.moments.len();
+        if before > now {
+            self.said = format!(
+                "read again whole: {} moments are no longer in the tree",
+                before - now
+            );
+        } else if before > 0 {
             self.said = match new {
                 0 => "read again: nothing new".to_owned(),
                 1 => "read again: 1 new moment".to_owned(),
@@ -358,8 +460,14 @@ impl App {
     /// A key.
     pub fn key(&mut self, key: KeyEvent) {
         if self.help {
-            if matches!(key.code, KeyCode::Char('?' | 'q') | KeyCode::Esc) {
-                self.help = false;
+            match key.code {
+                KeyCode::Char('?' | 'q') | KeyCode::Esc => self.help = false,
+                KeyCode::Up | KeyCode::Char('k') => self.help_top = self.help_top.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => self.help_top += 1,
+                KeyCode::PageUp => self.help_top = self.help_top.saturating_sub(10),
+                KeyCode::PageDown | KeyCode::Char(' ') => self.help_top += 10,
+                KeyCode::Home => self.help_top = 0,
+                _ => {}
             }
             return;
         }
@@ -371,7 +479,11 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
-            KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('?') => {
+                self.help = true;
+                self.help_top = 0;
+            }
+            KeyCode::Char('y') => self.copy_selected(),
             KeyCode::Left | KeyCode::Char('h') => self.pan(-step, 0.0),
             KeyCode::Right | KeyCode::Char('l') => self.pan(step, 0.0),
             KeyCode::Up | KeyCode::Char('k') => self.pan(0.0, step),
@@ -409,11 +521,23 @@ impl App {
         }
     }
 
+    /// Put the selected moment's whole commit on the terminal's clipboard.
+    fn copy_selected(&mut self) {
+        match self.selected {
+            Some(m) => {
+                let id = self.history.moments[m].id.to_string();
+                self.said = format!("copied {id}");
+                self.yank = Some(id);
+            }
+            None => "nothing is selected to copy".clone_into(&mut self.said),
+        }
+    }
+
     /// The selected moment's row in the lanes view.
     #[must_use]
     pub fn selected_row(&self) -> Option<usize> {
         let m = self.selected?;
-        self.rows.iter().position(|row| row.moment == m)
+        self.lanes.rows.iter().position(|row| row.moment == m)
     }
 
     /// A key the lanes view takes for itself: up and down move a row,
@@ -436,8 +560,8 @@ impl App {
 
     /// Select row `to` of the lanes view, or the last when past it.
     fn select_row(&mut self, to: usize) {
-        if let Some(last) = self.rows.len().checked_sub(1) {
-            self.selected = Some(self.rows[to.min(last)].moment);
+        if let Some(last) = self.lanes.rows.len().checked_sub(1) {
+            self.selected = Some(self.lanes.rows[to.min(last)].moment);
         }
     }
 
@@ -452,30 +576,30 @@ impl App {
                 self.lane_top = at + 1 - height;
             }
         }
-        self.lane_top = self.lane_top.min(self.rows.len().saturating_sub(1));
+        self.lane_top = self.lane_top.min(self.lanes.rows.len().saturating_sub(1));
         self.lane_top
     }
 
     /// A mouse event over the picture (`col`, `row` inside it).
     pub fn mouse(&mut self, event: MouseEvent) {
+        let (cols, rows) = self.area;
+        let inside = event.column < cols && event.row < rows;
         if self.shown == Shown::Lanes {
             let at = self.selected_row().unwrap_or(0);
             match event.kind {
-                MouseEventKind::Down(MouseButton::Left) => {
+                MouseEventKind::Down(MouseButton::Left) if inside => {
                     let row = self.lane_top + usize::from(event.row);
-                    if row < self.rows.len() {
+                    if row < self.lanes.rows.len() {
                         self.select_row(row);
                     }
                 }
-                MouseEventKind::ScrollUp => self.select_row(at.saturating_sub(3)),
-                MouseEventKind::ScrollDown => self.select_row(at + 3),
+                MouseEventKind::ScrollUp if inside => self.select_row(at.saturating_sub(3)),
+                MouseEventKind::ScrollDown if inside => self.select_row(at + 3),
                 _ => {}
             }
             return;
         }
-        let (cols, rows) = self.area;
         let (col, row) = (event.column, event.row);
-        let inside = col < cols && row < rows;
         match event.kind {
             MouseEventKind::ScrollUp if inside => self.zoom_about(ZOOM, Some((col, row))),
             MouseEventKind::ScrollDown if inside => self.zoom_about(1.0 / ZOOM, Some((col, row))),
@@ -556,7 +680,7 @@ impl App {
         for problem in &moment.problems {
             lines.push(("problem".to_owned(), problem.clone()));
         }
-        lines.push(("commit".to_owned(), moment.id.chars().take(12).collect()));
+        lines.push(("commit".to_owned(), moment.id.to_string()));
         for problem in &self.history.problems {
             lines.push(("tree".to_owned(), problem.clone()));
         }
@@ -590,7 +714,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "find a moment",
         &[
             ("click", "select the nearest moment"),
-            ("Tab, Shift-Tab", "next or previous mark"),
+            ("Tab, Shift-Tab", "next or previous mark or the wall"),
             ("[ ]", "one moment back or on"),
             ("{ }", "sixteen moments back or on"),
             (".", "where the wall is"),
@@ -601,9 +725,20 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "the tree",
         &[
             ("v", "the tree, or lanes: one row a moment"),
+            ("y", "copy the selected moment's commit"),
+            ("Shift-drag", "select text (Option-drag in iTerm2)"),
             ("r", "read the tree again"),
             ("?", "this card"),
             ("q, Esc", "quit"),
+        ],
+    ),
+    (
+        "in the lanes",
+        &[
+            ("up down, j k", "one row up or down"),
+            ("PgUp PgDn", "a screen up or down"),
+            ("Home End", "the newest or the oldest"),
+            ("click, wheel", "select a row, move three"),
         ],
     ),
     (
@@ -612,9 +747,9 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("◉", "where the wall is"),
             ("◆ ▪", "a mark, a save's mark"),
             ("•", "a gesture or a moment (zoomed in)"),
-            ("╴ Wed 14 Oct", "a new day begins on the limb"),
+            ("╴ Wed 14 Oct 2026", "a new day begins on the limb"),
+            ("✧", "a tip that grew in the last hour"),
             ("bright limb", "the wall's own line"),
-            ("lighter limb", "grown in the last hour"),
             ("thickness", "modules alive"),
             ("colour", "sound: amber low, blue bright"),
             ("grey", "its sound was not kept"),

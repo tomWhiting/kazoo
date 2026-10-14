@@ -152,6 +152,8 @@ pub enum Glyph {
     Moment,
     /// The first moment of a new day on a limb.
     Day,
+    /// A limb's tip that grew in the last hour, by the clock.
+    Growing,
 }
 
 impl Glyph {
@@ -164,6 +166,7 @@ impl Glyph {
             Self::Save => '▪',
             Self::Moment => '•',
             Self::Day => '╴',
+            Self::Growing => '✧',
         }
     }
 }
@@ -417,9 +420,12 @@ pub const LABEL: (u8, u8, u8) = (200, 200, 190);
 pub const UNHEARD: (u8, u8, u8) = (140, 140, 136);
 /// Day marks: faint, beside the growth.
 const DAY: (u8, u8, u8) = (120, 120, 116);
-/// How long growth counts as new and is drawn a little lit: an hour
-/// before the newest moment.
-const NEWEST_SECONDS: i64 = 3_600;
+/// How long a tip counts as growing: it grew within this long before now,
+/// by the clock.
+const GROWING_SECONDS: i64 = 3_600;
+/// A growing tip's glyph: a little light at the end of the limb, never a
+/// change to how the limb itself is drawn.
+const GROWING: (u8, u8, u8) = (200, 235, 190);
 /// Roots.
 const ROOT: (u8, u8, u8) = (110, 90, 70);
 /// The wall's own glyph.
@@ -478,12 +484,12 @@ fn hsl(hue: f64, saturation: f64, light: f64) -> (u8, u8, u8) {
 /// A gesture: a run of one seat's moments doing the same thing on one limb.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gesture {
+    /// Its first moment.
+    pub first: usize,
     /// Its last moment.
     pub last: usize,
     /// How many moments.
     pub count: usize,
-    /// Its words: what the run did.
-    pub words: String,
 }
 
 /// A word that is a number, with any unit or punctuation stuck to it
@@ -494,57 +500,65 @@ fn is_number(word: &str) -> bool {
         .is_ok()
 }
 
-/// What a moment does, for grouping: its words with every number left
-/// out, so `Cassio turned vcf1 cutoff to 720 Hz` and `… to 1800 Hz` are one
+/// Whether two moments do the same thing, for grouping: their words are
+/// the same with every number left out, so `Cassio turned vcf1 cutoff to 720 Hz` and `… to 1800 Hz` are one
 /// gesture while `… lfo1.out to vcf1.cutoff` and `… to vco2.pitch` are two.
 /// Only the seats' changes group; the wall's own moments (a start, a gap,
 /// a go) each stand alone.
-fn subject(moment: &crate::history::Moment) -> Option<String> {
-    (moment.kind == "change").then(|| {
-        moment
-            .summary
-            .split_whitespace()
-            .map(|word| if is_number(word) { "#" } else { word })
-            .collect::<Vec<_>>()
-            .join(" ")
-    })
+fn same_subject(a: &crate::history::Moment, b: &crate::history::Moment) -> bool {
+    if a.kind != "change" || b.kind != "change" {
+        return false;
+    }
+    let mut left = a.summary.split_whitespace();
+    let mut right = b.summary.split_whitespace();
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) if x == y || (is_number(x) && is_number(y)) => {}
+            _ => return false,
+        }
+    }
 }
 
-/// Every gesture in the tree, limb by limb.
+/// Every gesture in the tree, limb by limb. Only where each begins and
+/// ends is found here; its words are made when it is shown.
 #[must_use]
 pub fn gestures(history: &History) -> Vec<Gesture> {
     let mut out = Vec::new();
     for limb in &history.limbs {
-        let mut run: Option<(Option<String>, usize, usize, usize)> = None;
+        let mut run: Option<Gesture> = None;
         for &m in &limb.moments {
-            let what = subject(&history.moments[m]);
             match &mut run {
-                Some((Some(words), _, last, count)) if what.as_ref() == Some(words) => {
-                    *last = m;
-                    *count += 1;
+                Some(g) if same_subject(&history.moments[g.last], &history.moments[m]) => {
+                    g.last = m;
+                    g.count += 1;
                 }
                 _ => {
-                    if let Some((_, first, last, count)) = run.take() {
-                        out.push(gesture(history, first, last, count));
-                    }
-                    run = Some((what, m, m, 1));
+                    out.extend(run.take());
+                    run = Some(Gesture {
+                        first: m,
+                        last: m,
+                        count: 1,
+                    });
                 }
             }
         }
-        if let Some((_, first, last, count)) = run {
-            out.push(gesture(history, first, last, count));
-        }
+        out.extend(run);
     }
     out
 }
 
-/// A gesture's words: the last moment's, with each number that moved
-/// over the run said as where it went from and to, and how many changes:
-/// `Cassio turned vcf1 cutoff to 720 → 1800 Hz (12 changes)`.
-fn gesture(history: &History, first: usize, last: usize, count: usize) -> Gesture {
-    let end = &history.moments[last].summary;
-    let words = if count > 1 {
-        let start = &history.moments[first].summary;
+impl Gesture {
+    /// Its words: the last moment's, with each number that moved over the
+    /// run said as where it went from and to, and how many changes:
+    /// `Cassio turned vcf1 cutoff to 720 → 1800 Hz (12 changes)`.
+    #[must_use]
+    pub fn words(&self, history: &History) -> String {
+        let end = &history.moments[self.last].summary;
+        if self.count == 1 {
+            return end.clone();
+        }
+        let start = &history.moments[self.first].summary;
         let moved: Vec<String> = start
             .split_whitespace()
             .zip(end.split_whitespace())
@@ -556,11 +570,8 @@ fn gesture(history: &History, first: usize, last: usize, count: usize) -> Gestur
                 }
             })
             .collect();
-        format!("{} ({count} changes)", moved.join(" "))
-    } else {
-        end.clone()
-    };
-    Gesture { last, count, words }
+        format!("{} ({} changes)", moved.join(" "), self.count)
+    }
 }
 
 /// A day mark: the first moment on a limb made on a new day, where the
@@ -595,7 +606,7 @@ where
             if day.is_some() && day != before {
                 out.push(Day {
                     moment: m,
-                    words: day.map_or_else(String::new, |d| d.format("%a %-d %b").to_string()),
+                    words: day.map_or_else(String::new, |d| d.format("%a %-d %b %Y").to_string()),
                 });
             }
             before = day;
@@ -619,14 +630,9 @@ pub struct Scene<'a> {
     pub line: &'a [bool],
     /// The selected moment.
     pub selected: Option<usize>,
-    /// The newest moment's time: growth within an hour of it is lit.
-    pub newest: i64,
-}
-
-/// The newest moment's time, or 0 for an empty tree.
-#[must_use]
-pub fn newest(history: &History) -> i64 {
-    history.moments.iter().map(|m| m.time).max().unwrap_or(0)
+    /// The clock, unix seconds: a limb whose tip grew in the hour before
+    /// it wears a [`Glyph::Growing`] at its tip.
+    pub now: i64,
 }
 
 /// The moments from the root to `here`, as a mask over every moment.
@@ -658,6 +664,8 @@ enum Words {
     Day(usize),
     /// The wall's place.
     Here,
+    /// No words: the glyph says it.
+    None,
 }
 
 /// Draw `scene` as seen through `view` in `cols` × `rows`. Only what is in
@@ -720,6 +728,7 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
             Glyph::Mark | Glyph::Save => MARK,
             Glyph::Moment => LABEL,
             Glyph::Day => DAY,
+            Glyph::Growing => GROWING,
         };
         if let Some((col, row)) = picture.glyph(to(p), glyph, colour, scene.selected == Some(m)) {
             if let Some(i) = picture.index(col, row) {
@@ -737,8 +746,9 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
         let rank = match glyph {
             Glyph::Here => 0,
             Glyph::Mark | Glyph::Save => 1,
-            Glyph::Moment => 2,
-            Glyph::Day => 3,
+            Glyph::Growing => 2,
+            Glyph::Moment => 3,
+            Glyph::Day => 4,
         };
         (rank, std::cmp::Reverse(m))
     });
@@ -747,7 +757,7 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
             continue;
         }
         let show = match glyph {
-            Glyph::Here => true,
+            Glyph::Here | Glyph::Growing => true,
             Glyph::Mark | Glyph::Save | Glyph::Day => level >= Level::Near,
             Glyph::Moment => level >= Level::Close,
         };
@@ -756,10 +766,11 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
         }
         let text = match words {
             Words::Summary => short(&scene.history.moments[m].summary),
-            Words::Gesture(i) => short(&scene.gestures[i].words),
+            Words::Gesture(i) => short(&scene.gestures[i].words(scene.history)),
             Words::Mark(i) => short(&scene.history.marks[i].name),
             Words::Day(i) => scene.days[i].words.clone(),
             Words::Here => "the wall is here".to_owned(),
+            Words::None => continue,
         };
         picture.label(col + 2, row, &text, &mut taken);
     }
@@ -830,6 +841,14 @@ fn hangings(
             hang.push((mark.moment, glyph, Words::Mark(i)));
         }
     }
+    for limb in &scene.history.limbs {
+        if let Some(&tip) = limb.moments.last()
+            && (0..GROWING_SECONDS).contains(&(scene.now - scene.history.moments[tip].time))
+            && on_screen(tip).is_some()
+        {
+            hang.push((tip, Glyph::Growing, Words::None));
+        }
+    }
     if let Some(here) = scene.history.here
         && on_screen(here).is_some()
     {
@@ -863,10 +882,7 @@ fn draw_step(
         let wide = (look.width * view.scale)
             .max(look.width * FAR_THICKNESS)
             .clamp(1.0, MAX_DOTS_WIDE);
-        let mut colour = colour_of(look.sound);
-        if scene.newest - scene.history.moments[m].time < NEWEST_SECONDS {
-            colour = lit(colour);
-        }
+        let colour = colour_of(look.sound);
         let bright = scene.line.get(m).copied().unwrap_or(false);
         let style = Style {
             wide,
@@ -910,12 +926,6 @@ struct Style {
     wide: f64,
     colour: (u8, u8, u8),
     bright: bool,
-}
-
-/// A colour a quarter of the way to white: new growth, a little lit.
-fn lit((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
-    let up = |c: u8| c.saturating_add((255 - c) / 4);
-    (up(r), up(g), up(b))
 }
 
 /// The words a moment hangs with: its summary, at most 48 characters.

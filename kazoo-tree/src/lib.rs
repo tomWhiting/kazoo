@@ -9,13 +9,14 @@ pub mod app;
 pub mod growth;
 pub mod history;
 pub mod lanes;
+pub mod ledger;
 pub mod render;
 #[cfg(test)]
 mod test_support;
 
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
@@ -34,8 +35,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::app::{App, Grown, HELP, PANEL, Shown};
-use crate::history::{History, HistoryError, Snapshot};
+use crate::app::{App, Grower, Grown, HELP, PANEL, Shown};
+use crate::history::{HistoryError, Snapshot};
+use crate::ledger::Ledger;
 use crate::render::{Level, Picture, Scene};
 
 /// How often the tree is checked for new growth.
@@ -81,7 +83,8 @@ fn planted(dir: &Path) -> io::Result<()> {
 /// When there is no tree at `dir`, or it cannot be read.
 pub fn print(dir: PathBuf, cols: u16, rows: u16) -> io::Result<String> {
     planted(&dir)?;
-    let mut app = App::open(dir).map_err(io::Error::other)?;
+    let ledger = Ledger::of_tree(&dir);
+    let mut app = App::open(dir, ledger).map_err(io::Error::other)?;
     let view = app.view(cols, rows);
     let scene = Scene {
         history: &app.history,
@@ -90,7 +93,7 @@ pub fn print(dir: PathBuf, cols: u16, rows: u16) -> io::Result<String> {
         days: &app.days,
         line: &app.line,
         selected: None,
-        newest: render::newest(&app.history),
+        now: chrono::Utc::now().timestamp(),
     };
     Ok(render::draw(&scene, &view, cols, rows).text())
 }
@@ -107,19 +110,25 @@ pub fn run(dir: PathBuf) -> io::Result<()> {
     // says so plainly; the snapshot comes first, so the reader's first look
     // compares against exactly what was read.
     let snapshot = Snapshot::read(&dir).map_err(io::Error::other)?;
-    let mut history = History::default();
-    history.grow(&dir, &snapshot).map_err(io::Error::other)?;
-    let mut app = App::showing(dir.clone(), Grown::of(history.clone()));
-    let reader = Reader::start(dir, history, snapshot)?;
+    let mut grower = Grower::new(dir.clone(), Ledger::of_tree(&dir));
+    let grown = grower.read(&snapshot).map_err(io::Error::other)?;
+    let mut app = App::showing(dir.clone(), grown);
+    let reader = Reader::start(dir, grower, snapshot)?;
     // A terminal closed, a `kill`, or ^C from outside the raw terminal:
-    // each ends the walk the ordinary way, so the terminal is put back.
-    let stop = Arc::new(AtomicBool::new(false));
+    // each ends the walk the ordinary way, so the terminal is put back,
+    // and then ends the process as that signal would have.
+    let caught = Arc::new(AtomicUsize::new(0));
     let mut signals = Vec::new();
     for signal in [SIGTERM, SIGHUP, SIGINT] {
-        signals.push(signal_hook::flag::register(signal, Arc::clone(&stop))?);
+        let number = usize::try_from(signal).map_err(io::Error::other)?;
+        signals.push(signal_hook::flag::register_usize(
+            signal,
+            Arc::clone(&caught),
+            number,
+        )?);
     }
     let walked = Screen::enter().and_then(|mut screen| {
-        let walked = walk(&mut app, &mut screen.terminal, &reader, &stop);
+        let walked = walk(&mut app, &mut screen.terminal, &reader, &caught);
         let left = screen.leave();
         match (walked, left) {
             (Ok(()), Ok(())) => Ok(()),
@@ -130,7 +139,17 @@ pub fn run(dir: PathBuf) -> io::Result<()> {
         }
     });
     for id in signals {
-        signal_hook::low_level::unregister(id);
+        if !signal_hook::low_level::unregister(id) {
+            eprintln!("kazoo tree: a signal's handler had already gone");
+        }
+    }
+    let signal = caught.load(Ordering::Relaxed);
+    if signal != 0 && walked.is_ok() {
+        // As if the signal had come with nothing to catch it: the shell
+        // sees the walk ended by it.
+        signal_hook::low_level::emulate_default_handler(
+            i32::try_from(signal).map_err(io::Error::other)?,
+        )?;
     }
     walked
 }
@@ -140,32 +159,37 @@ type News = Result<Grown, HistoryError>;
 
 /// Reads the tree off the screen's thread: looks every [`LOOK_AGAIN`], or
 /// at once when asked, and sends a freshly grown tree whenever the refs or
-/// HEAD have moved. It reads only the commits new since its last good read,
-/// and moves on from a snapshot only once the read from it has worked, so a
-/// read that fails is tried again at the next look.
+/// HEAD have moved, or a look before failed. It reads and grows only what
+/// is new since its last good read. At most one tree waits to be shown: the
+/// reader waits for the screen to take it before reading on, so a screen
+/// that is slow to draw is never sent a pile of trees.
 struct Reader {
     asks: mpsc::Sender<()>,
     news: mpsc::Receiver<News>,
 }
 
 impl Reader {
-    fn start(dir: PathBuf, history: History, snapshot: Snapshot) -> io::Result<Self> {
+    fn start(dir: PathBuf, grower: Grower, snapshot: Snapshot) -> io::Result<Self> {
         let (asks, asked) = mpsc::channel::<()>();
-        let (tell, news) = mpsc::channel::<News>();
+        let (tell, news) = mpsc::sync_channel::<News>(1);
         std::thread::Builder::new()
-            .name("kazoo-tree-reader".to_owned())
-            .spawn(move || read_on(&dir, history, snapshot, &asked, &tell))?;
+            .name(READER.to_owned())
+            .spawn(move || read_on(&dir, grower, snapshot, &asked, &tell))?;
         Ok(Self { asks, news })
     }
 }
 
+/// The reader thread's name.
+const READER: &str = "kazoo-tree-reader";
+
 fn read_on(
     dir: &Path,
-    mut history: History,
+    mut grower: Grower,
     mut last: Snapshot,
     asked: &mpsc::Receiver<()>,
-    tell: &mpsc::Sender<News>,
+    tell: &mpsc::SyncSender<News>,
 ) {
+    let mut failing = false;
     loop {
         let forced = match asked.recv_timeout(LOOK_AGAIN) {
             Ok(()) => true,
@@ -173,30 +197,52 @@ fn read_on(
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
         let news = match Snapshot::read(dir) {
-            Err(err) => Err(err),
-            Ok(snapshot) if snapshot == last && !forced => continue,
-            Ok(snapshot) => match history.grow(dir, &snapshot) {
-                Ok(_) => {
-                    last = snapshot;
-                    Ok(Grown::of(history.clone()))
-                }
-                // A grow that failed leaves the tree's moments good but its
-                // tips behind; reading it whole starts clean.
-                Err(grow) => match History::read(dir) {
-                    Ok(whole) => {
-                        history = whole;
+            Err(err) => {
+                failing = true;
+                Err(err)
+            }
+            Ok(snapshot) if snapshot == last && !forced && !failing => continue,
+            Ok(snapshot) => {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    grower.read(&snapshot)
+                })) {
+                    Ok(Ok(grown)) => {
                         last = snapshot;
-                        Ok(Grown::of(history.clone()))
+                        failing = false;
+                        Ok(grown)
                     }
-                    Err(read) => Err(HistoryError::Git(format!("{grow}; and read whole: {read}"))),
-                },
-            },
+                    Ok(Err(err)) => {
+                        failing = true;
+                        Err(err)
+                    }
+                    Err(panic) => {
+                        // Whatever the grower held may be half changed:
+                        // start again from nothing at the next look.
+                        grower = Grower::new(dir.to_path_buf(), Ledger::of_tree(dir));
+                        last = Snapshot::default();
+                        failing = true;
+                        Err(HistoryError::Broken(format!(
+                            "reading the tree failed inside ({}); it is read again whole at the next look",
+                            panic_words(panic.as_ref())
+                        )))
+                    }
+                }
+            }
         };
         if tell.send(news).is_err() {
             // The screen is gone: nothing is left to read for.
             return;
         }
     }
+}
+
+/// What a panic said, as far as it can be read.
+fn panic_words(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|words| (*words).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "with no words".to_owned())
 }
 
 /// A panic hook, as the standard library keeps one.
@@ -217,9 +263,15 @@ impl Screen {
         enable_raw_mode()?;
         let previous: Arc<Hook> = Arc::new(std::panic::take_hook());
         let before = Arc::clone(&previous);
+        let screen = std::thread::current().id();
         std::panic::set_hook(Box::new(move |info| {
-            restore();
-            before(info);
+            // Only the screen's own thread puts the terminal back: a panic
+            // on the reader is caught there and said in the footer, and the
+            // screen goes on. Its words are not written over the screen.
+            if std::thread::current().id() == screen {
+                restore();
+                before(info);
+            }
         }));
         let mut stdout = io::stdout();
         if let Err(err) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
@@ -298,11 +350,17 @@ fn walk(
     app: &mut App,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     reader: &Reader,
-    stop: &AtomicBool,
+    stop: &AtomicUsize,
 ) -> io::Result<()> {
     let mut dirty = true;
     let mut reader_gone = false;
-    while !app.quit && !stop.load(Ordering::Relaxed) {
+    while !app.quit && stop.load(Ordering::Relaxed) == 0 {
+        if let Some(text) = app.yank.take() {
+            // OSC 52: the terminal puts it on the clipboard.
+            let backend = terminal.backend_mut();
+            write!(backend, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
+            backend.flush()?;
+        }
         if dirty {
             terminal.draw(|frame| frame_of(app, frame.area(), frame.buffer_mut()))?;
             dirty = false;
@@ -359,7 +417,7 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
         days: &app.days,
         line: &app.line,
         selected: app.selected,
-        newest: render::newest(&app.history),
+        now: chrono::Utc::now().timestamp(),
     };
     if app.shown == Shown::Lanes {
         lanes(app, tree, buf);
@@ -399,7 +457,7 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
         .style(Style::new().fg(Color::Gray))
         .render_into(footer, buf);
     if app.help {
-        help(area, buf);
+        help(app, area, buf);
     }
 }
 
@@ -451,35 +509,53 @@ fn paint(picture: &Picture, area: Rect, buf: &mut Buffer) {
 /// then a swatch of how it sounded, its words, who and when.
 fn lanes(app: &mut App, area: Rect, buf: &mut Buffer) {
     let top = app.lanes_from(area.height);
-    let graph_width = app
-        .rows
+    let bottom = (top + usize::from(area.height)).min(app.lanes.rows.len());
+    let crossing = app.lanes.crossing(top, bottom);
+    let graphs: Vec<String> = (top..bottom)
+        .map(|r| app.lanes.graph(&app.history, &crossing, r))
+        .collect();
+    let widest = graphs
         .iter()
-        .skip(top)
-        .take(usize::from(area.height))
-        .map(|row| row.graph.chars().count())
+        .map(|graph| graph.chars().count())
         .max()
-        .unwrap_or(0)
-        .min(usize::from(area.width / 2));
-    let lines: Vec<Line<'_>> = app
-        .rows
+        .unwrap_or(0);
+    let room = widest.min(usize::from(area.width / 2));
+    // The graph scrolls sideways to keep the selected row's own lane in
+    // view; a row cut on either side says so with ‹ or ›.
+    let left = app
+        .selected_row()
+        .and_then(|at| app.lanes.rows.get(at))
+        .map_or(0, |row| (row.lane * 2 + 2).saturating_sub(room));
+    let lines: Vec<Line<'_>> = app.lanes.rows[top..bottom]
         .iter()
-        .skip(top)
-        .take(usize::from(area.height))
-        .map(|row| {
+        .zip(&graphs)
+        .map(|(row, full)| {
             let moment = &app.history.moments[row.moment];
             let (r, g, b) = render::colour_of(moment.sound);
-            let graph: String = row.graph.chars().take(graph_width).collect();
-            let pad = graph_width.saturating_sub(graph.chars().count());
+            let length = full.chars().count();
+            let mut graph: Vec<char> = full.chars().skip(left).take(room).collect();
+            if left > 0
+                && let Some(first) = graph.first_mut()
+            {
+                *first = '‹';
+            }
+            if length > left + room
+                && let Some(last) = graph.last_mut()
+            {
+                *last = '›';
+            }
+            let graph: String = graph.into_iter().collect();
+            let pad = room.saturating_sub(graph.chars().count());
             let on_line = app.line.get(row.moment).copied().unwrap_or(false);
             let mut graph_style = Style::new().fg(Color::Rgb(r, g, b));
             if on_line {
                 graph_style = graph_style.add_modifier(Modifier::BOLD);
             }
             let when = chrono::DateTime::from_timestamp(moment.time, 0).map_or_else(
-                || "--:--".to_owned(),
+                || format!("(time {} does not read)", moment.time),
                 |utc| {
                     utc.with_timezone(&chrono::Local)
-                        .format("%H:%M")
+                        .format("%Y-%m-%d %H:%M")
                         .to_string()
                 },
             );
@@ -523,7 +599,7 @@ fn details(app: &App, area: Rect, buf: &mut Buffer) {
         .render_into(area, buf);
 }
 
-fn help(area: Rect, buf: &mut Buffer) {
+fn help(app: &mut App, area: Rect, buf: &mut Buffer) {
     let mut lines = Vec::new();
     for (heading, keys) in HELP {
         lines.push(Line::styled(
@@ -532,7 +608,7 @@ fn help(area: Rect, buf: &mut Buffer) {
         ));
         for (key, what) in *keys {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {key:<16}"), Style::new().fg(Color::Yellow)),
+                Span::styled(format!("  {key:<18}"), Style::new().fg(Color::Yellow)),
                 Span::raw(*what),
             ]));
         }
@@ -541,7 +617,21 @@ fn help(area: Rect, buf: &mut Buffer) {
     let height = u16::try_from(lines.len() + 2)
         .unwrap_or(u16::MAX)
         .min(area.height);
-    let width = 56.min(area.width);
+    let inside = usize::from(height.saturating_sub(2));
+    // Taller than the screen: it scrolls, and says so.
+    app.help_top = app.help_top.min(lines.len().saturating_sub(inside));
+    let cut = lines.len() > inside;
+    let title = if cut {
+        format!(
+            " the tree: keys and marks ({}–{} of {}; up and down for more) ",
+            app.help_top + 1,
+            (app.help_top + inside).min(lines.len()),
+            lines.len()
+        )
+    } else {
+        " the tree: keys and marks ".to_owned()
+    };
+    let width = 62.min(area.width);
     let card = Rect {
         x: area.x + (area.width - width) / 2,
         y: area.y + (area.height - height) / 2,
@@ -549,7 +639,29 @@ fn help(area: Rect, buf: &mut Buffer) {
         height,
     };
     Clear.render_into(card, buf);
-    Paragraph::new(lines)
-        .block(Block::bordered().title(" the tree: keys and marks "))
+    Paragraph::new(lines.into_iter().skip(app.help_top).collect::<Vec<_>>())
+        .block(Block::bordered().title(title))
         .render_into(card, buf);
+}
+
+/// `bytes` in base64 (RFC 4648, with padding): what OSC 52 carries.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
