@@ -303,14 +303,32 @@ impl Commit {
             .timestamp();
         let json = serde_json::to_string(change)
             .map_err(|err| TreeError::Git(format!("change JSON: {err}")))?;
-        Ok(Self {
-            seat: change.seat.clone(),
-            unix,
-            message: format!(
+        let message = if let crate::protocol::What::Batch { note, changes } = &change.what {
+            let mut message = format!(
+                "{}: {note}\n\n{}Kazoo-Note: {note}\n",
+                change.seat,
+                trailers("batch", change.seq, change.clock.as_ref(), None)
+            );
+            for step in changes {
+                message.push_str("Kazoo-Step: ");
+                message.push_str(&crate::change::describe(step));
+                message.push('\n');
+            }
+            message.push_str("Kazoo-Change: ");
+            message.push_str(&json);
+            message.push('\n');
+            message
+        } else {
+            format!(
                 "{}\n\n{}Kazoo-Change: {json}\n",
                 change.summary.replace(['\r', '\n'], " "),
                 trailers("change", change.seq, change.clock.as_ref(), None)
-            ),
+            )
+        };
+        Ok(Self {
+            seat: change.seat.clone(),
+            unix,
+            message,
             whole: false,
             files,
         })
@@ -599,3 +617,7 @@ impl Drop for Importer {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "batch_tests.rs"]
+mod batch_tests;

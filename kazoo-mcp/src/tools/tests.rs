@@ -197,8 +197,9 @@ fn wall_loop_needs_exactly_one_of_erase_and_from() {
 }
 
 /// Every tool, in the router's order.
-const TOOLS: [&str; 23] = [
+const TOOLS: [&str; 24] = [
     "wall_add",
+    "wall_batch",
     "wall_catalogue",
     "wall_chain",
     "wall_go",

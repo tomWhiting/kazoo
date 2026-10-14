@@ -45,6 +45,9 @@ pub fn summarise_with(
         }
     }
     let body = describe_with(what, undoes.is_some(), &kind_of);
+    if matches!(what, What::Batch { .. }) && undoes.is_none() {
+        return format!("{seat}: {body}");
+    }
     undoes.map_or_else(
         || format!("{seat} {body}"),
         |change| format!("{seat} undid change {change}: {body}"),
@@ -61,6 +64,7 @@ pub fn describe(what: &What) -> String {
 /// load that brought a wall back from one that cleared it).
 fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind>) -> String {
     match what {
+        What::Batch { note, changes } => described_batch(note, changes, undo, kind_of),
         What::Take {
             module, tape, why, ..
         } => taken(module, tape.as_ref(), *why, undo),
@@ -511,6 +515,25 @@ fn loop_from(module: &str, from: Option<&str>) -> String {
         || format!("set {module} to record what is patched into it"),
         |from| format!("set {module} to record from {from}"),
     )
+}
+
+fn described_batch(
+    note: &str,
+    changes: &[What],
+    undo: bool,
+    kind_of: &impl Fn(&str) -> Option<Kind>,
+) -> String {
+    let list = changes
+        .iter()
+        .map(|change| describe_with(change, undo, kind_of))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let list = if list.chars().count() > 240 {
+        format!("{}…", list.chars().take(239).collect::<String>())
+    } else {
+        list
+    };
+    format!("\"{note}\" ({} changes: {list})", changes.len())
 }
 
 #[cfg(test)]

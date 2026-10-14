@@ -4,6 +4,7 @@
 //! Sockets live elsewhere ([`super::control`]); this is plain state with
 //! methods, so it can be tested without any.
 
+mod batch;
 mod chains;
 mod cost;
 mod delay_lines;
@@ -1991,6 +1992,7 @@ impl Wall {
     /// Mirror a change into the engine.
     fn mirror(&mut self, what: &What) {
         match what {
+            What::Batch { changes, .. } => self.mirror_batch(changes),
             What::Chain { changes, .. } => self.mirror_chain(changes),
             What::Turn {
                 module,
@@ -2109,9 +2111,11 @@ impl Wall {
             for (id, birth) in
                 crate::tree::stamp_births(&mut change.what, change.seq, &change.at, print, salt)
             {
-                if !self.patch.mark_birth(&id, birth) {
+                let removed = batch::stamp_removed_birth(&mut change.what, &id, &birth);
+                if !self.patch.mark_birth(&id, birth) && !removed {
                     self.unmade = true;
                     return Err(WallError {
+                        step: None,
                         code: ErrorCode::Internal,
                         message: format!("newborn module '{id}' is missing"),
                     });
@@ -2119,6 +2123,10 @@ impl Wall {
             }
         }
         self.record(&change)?;
+        if let Err(err) = self.ask_batch_tempo(&change.what) {
+            self.not_made(change.seq);
+            return Err(err);
+        }
         Ok(self.apply(change))
     }
 
@@ -2713,6 +2721,7 @@ impl Wall {
             | Request::Unpatch { .. }
             | Request::Add { .. }
             | Request::Remove { .. }
+            | Request::Batch { .. }
             | Request::ChainAdd { .. }
             | Request::Loop { .. } => Before::Whole(Box::new(self.patch.clone())),
             Request::Undo { change } => {
@@ -2728,6 +2737,7 @@ impl Wall {
                             | What::Add { .. }
                             | What::Remove { .. }
                             | What::Restore { .. }
+                            | What::Batch { .. }
                             | What::Chain { .. }
                             | What::Take { .. }
                             | What::Erase { .. }
@@ -2769,6 +2779,7 @@ impl Wall {
             | Request::Patch { .. }
             | Request::Speak { .. }
             | Request::ChainAdd { .. } => true,
+            Request::Batch { changes, .. } => changes.iter().any(|change| self.grows(change)),
             Request::Group { join, .. } => *join,
             Request::Undo { change } => self.log.iter().any(|logged| {
                 logged.seq == *change
@@ -2837,9 +2848,7 @@ impl Wall {
                 };
                 self.changed(seat, what, None, None, None)
             }
-            Request::Add { kind, name, place } => {
-                self.add(seat, kind, name.as_deref(), place.as_ref())
-            }
+            Request::Add { .. } => self.batch_add(seat, request),
             Request::Remove { module } => {
                 let what = self.patch.remove(module, &[])?;
                 self.changed(seat, what, None, None, None)
@@ -2867,6 +2876,7 @@ impl Wall {
                 modules,
                 overwrite,
             } => self.chain_save(name, modules, console && *overwrite),
+            Request::Batch { note, changes } => self.batch(seat, note, changes, now),
             Request::ChainAdd { name } => self.chain_add(seat, name, now),
             Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change),
@@ -3338,11 +3348,16 @@ impl Wall {
         if let What::Tempo { from, .. } = what {
             return self.tempo(seat, from, Some(seq));
         }
+        if matches!(what, What::Batch { .. }) {
+            return self.undo_batch_change(seat, seq, &what);
+        }
         // Undoing a removal brings a module, its cables and its words back,
         // and undoing an unplugging brings a cable back: more work, like
         // any other addition. Every other undo adds nothing.
         let growth = match &what {
-            What::Chain { changes, .. } => chains::undo_growth(changes),
+            What::Batch { changes, .. } | What::Chain { changes, .. } => {
+                chains::undo_growth(changes)
+            }
             What::Remove { cables, .. } => Growth {
                 modules: 1,
                 cables: cables.len(),
@@ -3374,6 +3389,21 @@ impl Wall {
         } else {
             self.patch.tempo
         };
+        if self.chain_batch.is_some() {
+            let from = self.patch.tempo;
+            self.patch.tempo = bpm;
+            return self.changed(
+                seat,
+                What::Tempo {
+                    from,
+                    to: bpm,
+                    desk,
+                },
+                undoes,
+                None,
+                None,
+            );
+        }
         if desk {
             // A desk move not yet heard by a tick is logged before the ask,
             // so the tick after the ask hears nothing new until the desk

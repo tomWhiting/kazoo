@@ -30,6 +30,32 @@ pub struct ChainCable {
 }
 
 impl Patch {
+    pub(super) fn undo_batch(&mut self, note: &str, changes: &[What]) -> Result<What, WallError> {
+        let mut staged = self.clone();
+        let mut inverse = Vec::with_capacity(changes.len());
+        for change in changes.iter().rev() {
+            let undone = if let What::Tempo { from, to, desk } = change {
+                if !from.is_finite() || !to.is_finite() {
+                    return Err(error(ErrorCode::BadRequest, "a batch tempo is not finite"));
+                }
+                staged.tempo = *from;
+                What::Tempo {
+                    from: *to,
+                    to: *from,
+                    desk: *desk,
+                }
+            } else {
+                staged.undo(change)?
+            };
+            inverse.push(undone);
+        }
+        *self = staged;
+        Ok(What::Batch {
+            note: note.to_string(),
+            changes: inverse,
+        })
+    }
+
     pub(super) fn undo_chain(&mut self, name: &str, changes: &[What]) -> Result<What, WallError> {
         let mut staged = self.clone();
         let mut inverse = Vec::with_capacity(changes.len());
@@ -166,6 +192,7 @@ impl Chain {
             };
             ids.push(record.id);
             requests.push(Request::Add {
+                alias: None,
                 kind: module.kind.clone(),
                 name: module.label.clone(),
                 place: Some(place),

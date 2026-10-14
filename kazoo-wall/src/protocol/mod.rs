@@ -20,9 +20,11 @@ pub mod client;
 pub mod codec;
 pub mod tree;
 
+pub(crate) mod batch;
 mod chains;
 mod loops;
 
+pub use batch::BatchResult;
 pub use chains::{ChainSaveResult, ChainsResult};
 pub use loops::{LoopState, LoopView, LoopsMeet};
 pub use tree::{BranchView, MarkKind, MarkResult, MarkView, MomentView, TreePlace, TreeResult};
@@ -239,6 +241,8 @@ pub enum Request {
     },
     /// Add a module.
     Add {
+        #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+        alias: Option<String>,
         /// Kind, e.g. `lfo`.
         kind: String,
         /// Display name (see [`valid_name`]).
@@ -249,6 +253,10 @@ pub enum Request {
         /// row. (A wall older than the rack's rows ignores it.)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         place: Option<Place>,
+    },
+    Batch {
+        note: String,
+        changes: Vec<Self>,
     },
     /// Take a module away, with its cables.
     Remove {
@@ -425,6 +433,7 @@ impl Request {
     #[must_use]
     pub const fn op(&self) -> &'static str {
         match self {
+            Self::Batch { .. } => "batch",
             Self::Hello { .. } => "hello",
             Self::Look => "look",
             Self::Catalogue => "catalogue",
@@ -468,7 +477,8 @@ impl Request {
     pub const fn acts_on_modules(&self) -> bool {
         matches!(
             self,
-            Self::Turn { .. }
+            Self::Batch { .. }
+                | Self::Turn { .. }
                 | Self::Patch { .. }
                 | Self::Unpatch { .. }
                 | Self::Add { .. }
@@ -488,7 +498,8 @@ impl Request {
     pub const fn is_change(&self) -> bool {
         matches!(
             self,
-            Self::Turn { .. }
+            Self::Batch { .. }
+                | Self::Turn { .. }
                 | Self::Patch { .. }
                 | Self::Unpatch { .. }
                 | Self::Add { .. }
@@ -679,6 +690,8 @@ pub struct WallError {
     pub code: ErrorCode,
     /// A sentence for people.
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<usize>,
 }
 
 impl WallError {
@@ -688,6 +701,7 @@ impl WallError {
         Self {
             code,
             message: message.into(),
+            step: None,
         }
     }
 }
@@ -771,6 +785,10 @@ pub enum TakeWhy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum What {
+    Batch {
+        note: String,
+        changes: Vec<Self>,
+    },
     /// A loop's tape erased (`tape` none), or put back by the erase's
     /// undo (`tape` the reel put back). Undone, the loop holds `was` again.
     Erase {
