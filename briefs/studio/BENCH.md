@@ -878,3 +878,63 @@ The cached pYIN 1.2.0 source accepts a maximum equal to Nyquist, and the local
 validator permits the 50–4000 Hz, 512-sample-hop configuration at 8000 Hz.
 The conditional 0.45 × rate cap was not applied; construction at every listed
 device rate remains unverified until the build round.
+
+## KZ-P06 profiles
+
+Date: 2026-10-14 11:37 AEDT. Base and HEAD: `dd1bfc606ebfd152164c8b3092ed6f9b52657472`,
+branch `lane/kz-P06`, changes uncommitted. Load at source writing: 60.12, 32.12, 32.71.
+This is a write-only round with the CPU reserved. No build, test, scoreboard or benchmark ran.
+All measurements below are **not verified**; no previous voice result is reused as instrument proof.
+
+`judge/hop/48k/bass`: not run. The implemented row uses the bass range (29–500 Hz),
+a 4096-sample frame, the unchanged 512-sample hop and a complete judge history before measurement.
+The acceptance ceiling is 4.2 ms per run; neither a before value nor an after value was measured.
+
+The `voice_score` example writes pitch and gate tables for both profiles and all eight exact takes.
+The instrument fixture directory contains no takes in this checkout. If recordings are added, the
+example loads them with the line profile's 4096-sample reference window so B0 is inside its range.
+
+| tracker | take | pitch measurements | gate and onset measurements |
+|---|---|---|---|
+| voice:guitar | bass_open | not run | not run |
+| voice:guitar | guitar_open | not run | not run |
+| voice:guitar | sweep | not run | not run |
+| voice:guitar | slide | not run | not run |
+| voice:guitar | bend | not run | not run |
+| voice:guitar | vibrato | not run | not run |
+| voice:guitar | glide | not run | not run |
+| voice:guitar | noise_hum | not run | not run |
+| voice:bass | bass_open | not run | not run |
+| voice:bass | guitar_open | not run | not run |
+| voice:bass | sweep | not run | not run |
+| voice:bass | slide | not run | not run |
+| voice:bass | bend | not run | not run |
+| voice:bass | vibrato | not run | not run |
+| voice:bass | glide | not run | not run |
+| voice:bass | noise_hum | not run | not run |
+
+## KZ-P07 low notes
+
+Date: 2026-10-14 12:04 AEDT. Base: `dd1bfc6`. HEAD:
+`a7adc01d2a9743bd2fca02bfc670fe259191b1b2`, branch `lane/kz-P07`.
+Load average at source writing: 59.62, 52.49, 46.27.
+This write-only round reserves the CPU. No build, test, scoreboard or benchmark ran.
+Neither latency, accuracy, octave rate, handover smoothness nor callback cost is verified.
+
+The `early_meets_its_targets` scoreboard test prints the instrument table with
+early disabled and enabled, with delayed real judge verdicts. It also prints each
+note's first voiced gated frame, its individual period-based latency budget and
+its settled cents error after 100 ms. These are measured only when the test runs.
+
+| tracker | take | onset latency max | cents median after 100 ms | octave rate |
+|---|---|---|---|---|
+| early off | bass_open | not run | not run | not run |
+| early on | bass_open | not run | not run | not run |
+| early off | guitar_open | not run | not run | not run |
+| early on | guitar_open | not run | not run | not run |
+
+The B0 deadline is 50.6 ms and the E1 deadline is 38.4 ms. These are acceptance
+targets, not measurements. The search is bounded to 18 NSDF lag evaluations
+per unlock. Its elapsed time and the 64-frame callback budget are not measured.
+The low-B listening comparison with the live follower remains for the integrated
+input path and an actual bass performance.

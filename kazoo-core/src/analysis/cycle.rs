@@ -11,6 +11,11 @@ use std::f32::consts::TAU;
 use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
 use crate::sanitize_sample;
 
+mod early;
+
+#[cfg(test)]
+pub(crate) use early::fixtures;
+
 #[cfg(test)]
 mod tests;
 
@@ -25,9 +30,6 @@ const LP_FACTOR: f32 = 3.0;
 /// The filter never closes below 100 Hz, so a 50 Hz hum's fundamental passes
 /// at full strength.
 const LP_MIN_HZ: f32 = 100.0;
-/// Unlocked, the filter sits at `VOICE_MAX_HZ`: nothing is filtered away that
-/// could be the note, and the first lock costs no filter delay.
-const UNLOCKED_CUTOFF: f32 = VOICE_MAX_HZ;
 /// A cycle mark needs the filtered signal to go below −0.2 × peak and then
 /// above +0.2 × peak (or the mirror for a falling mark): well above harmonic
 /// ripple on a hummed note, well below the fundamental's swing.
@@ -86,6 +88,51 @@ const STEP_CENTS: f64 = 50.0;
 const TREND_AGREEMENT: f64 = 2.0;
 const CENTS_PER_OCTAVE: f64 = 1200.0;
 
+/// Instrument-dependent range and filter times; the cycle method stays fixed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CycleSettings {
+    /// Lowest fundamental; sizes the history for two periods and a margin.
+    pub min_hz: f32,
+    /// Highest fundamental and the unlocked tracking-filter cutoff.
+    pub max_hz: f32,
+    /// DC rejection below the lowest note to reduce DC and handling rumble.
+    pub dc_hz: f32,
+    /// Peak decay must be long compared with the lowest note's period.
+    pub peak_release_ms: f32,
+    /// Confirm a negative half-cycle before the normal marks can lock.
+    pub early: bool,
+}
+
+impl CycleSettings {
+    /// The original voice range, DC blocker and peak follower, exactly.
+    pub const VOICE: Self = Self {
+        min_hz: VOICE_MIN_HZ,
+        max_hz: VOICE_MAX_HZ,
+        dc_hz: DC_HZ,
+        peak_release_ms: PEAK_RELEASE_MS,
+        early: false,
+    };
+
+    pub(crate) const fn validate(self) {
+        assert!(
+            self.min_hz.is_finite() && self.min_hz >= 1.0,
+            "invalid minimum pitch"
+        );
+        assert!(
+            self.max_hz.is_finite() && self.max_hz > self.min_hz,
+            "invalid maximum pitch"
+        );
+        assert!(
+            self.dc_hz.is_finite() && self.dc_hz > 0.0 && self.dc_hz < self.min_hz,
+            "invalid DC cutoff"
+        );
+        assert!(
+            self.peak_release_ms.is_finite() && self.peak_release_ms > 0.0,
+            "invalid peak release"
+        );
+    }
+}
+
 /// The newest accepted cycle's pitch and periodicity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CycleEstimate {
@@ -97,6 +144,8 @@ pub struct CycleEstimate {
     /// Normalised autocorrelation at `period` over the reading's window, 0..=1
     /// (1 = perfectly periodic; `McLeod`'s NSDF, clamped at 0).
     pub clarity: f32,
+    /// A half-cycle reading, retained until a normal mark accepts a period.
+    pub provisional: bool,
 }
 
 /// The last `MARK_RING` mark times of one crossing direction.
@@ -191,6 +240,7 @@ impl Choice {
 /// A preallocated, sample-by-sample voice pitch converter.
 #[derive(Debug)]
 pub struct CycleTracker {
+    settings: CycleSettings,
     rate: f32,
     min_period: f32,
     max_period: f32,
@@ -226,20 +276,30 @@ pub struct CycleTracker {
     /// Along a steady glide: the per-sample factor on the published period,
     /// and the sample time after which it is no longer carried forward.
     glide: Option<(f32, f64)>,
+    early: early::Early,
 }
 
 impl CycleTracker {
     /// Allocates the history once; nothing after this allocates.
     #[must_use]
     pub fn new(rate: u32) -> Self {
+        Self::with_settings(rate, CycleSettings::VOICE)
+    }
+
+    /// Allocate history for the selected range once, before processing audio.
+    /// Invalid settings are rejected at construction.
+    #[must_use]
+    pub fn with_settings(rate: u32, settings: CycleSettings) -> Self {
+        settings.validate();
         let rate = rate.max(1);
-        let longest = lag_from(f64::from(rate) / f64::from(VOICE_MIN_HZ)).unwrap_or(0);
+        let longest = lag_from(f64::from(rate) / f64::from(settings.min_hz)).unwrap_or(0);
         let length = (2 * longest + 8).next_power_of_two();
         let rate = rate as f32;
-        let max_period = rate / VOICE_MIN_HZ;
+        let max_period = rate / settings.min_hz;
         Self {
+            settings,
             rate,
-            min_period: rate / VOICE_MAX_HZ,
+            min_period: rate / settings.max_hz,
             max_period,
             max_lag: longest + 2,
             min_window: lag_from(f64::from(rate * MIN_WINDOW_MS / 1000.0)).unwrap_or(1),
@@ -247,13 +307,13 @@ impl CycleTracker {
             mask: length - 1,
             position: 0,
             time: 0.0,
-            dc_coefficient: (-TAU * DC_HZ / rate).exp(),
+            dc_coefficient: (-TAU * settings.dc_hz / rate).exp(),
             dc_previous: 0.0,
             dc_output: 0.0,
-            lp_coefficient: (-TAU * UNLOCKED_CUTOFF / rate).exp(),
+            lp_coefficient: (-TAU * settings.max_hz / rate).exp(),
             lp_first: 0.0,
             lp_second: 0.0,
-            release: (-1000.0 / (PEAK_RELEASE_MS * rate)).exp(),
+            release: (-1000.0 / (settings.peak_release_ms * rate)).exp(),
             peak: 0.0,
             previous: 0.0,
             armed_rising: false,
@@ -273,6 +333,7 @@ impl CycleTracker {
             }; TREND_READINGS],
             trend_count: 0,
             glide: None,
+            early: early::Early::new(),
         }
     }
 
@@ -301,6 +362,9 @@ impl CycleTracker {
             self.last_fall = crossing();
         }
         self.previous = filtered;
+        if self.settings.early && self.estimate.is_none() {
+            self.early_push(previous, filtered);
+        }
         self.schmitt(filtered);
         self.carry_glide();
         if self.estimate.is_some_and(|e| {
@@ -335,7 +399,7 @@ impl CycleTracker {
     /// A period (samples) to try as an extra candidate until 4 more cycles
     /// are marked;
     /// when its NSDF reaches `CLARITY_ON` it is taken over every other
-    /// candidate. A period outside the voice range is ignored.
+    /// candidate. A period outside the configured range is ignored.
     pub fn hint(&mut self, period: f32) {
         if period.is_finite() && (self.min_period..=self.max_period).contains(&period) {
             self.hint = Some((period, HINT_MARKS));
@@ -345,10 +409,11 @@ impl CycleTracker {
     /// Drop the lock now, with any hint and glide, and reopen the filter.
     pub fn unlock(&mut self) {
         self.estimate = None;
-        self.lp_coefficient = (-TAU * UNLOCKED_CUTOFF / self.rate).exp();
+        self.lp_coefficient = (-TAU * self.settings.max_hz / self.rate).exp();
         self.hint = None;
         self.trend_count = 0;
         self.glide = None;
+        self.early = early::Early::new();
     }
 
     /// Cycle marks seen since `new` or `reset`: one per cycle, at its rising
@@ -542,8 +607,10 @@ impl CycleTracker {
             period,
             hz: self.rate / period,
             clarity: peak.clarity,
+            provisional: false,
         });
-        let cutoff = (LP_FACTOR * self.rate / peak.period).clamp(LP_MIN_HZ, VOICE_MAX_HZ);
+        let cutoff = (LP_FACTOR * self.rate / peak.period)
+            .clamp(LP_MIN_HZ.min(self.settings.max_hz), self.settings.max_hz);
         self.lp_coefficient = (-TAU * cutoff / self.rate).exp();
     }
 
@@ -596,7 +663,7 @@ impl CycleTracker {
     /// The NSDF peak nearest `period`, climbed from its rounded lag for at
     /// most `CLIMB_FRACTION` of it and refined by a parabola through the
     /// peak and its neighbours. `None` when no peak is within reach or the
-    /// peak leaves the voice range.
+    /// peak leaves the configured range.
     fn refine(&self, period: f32) -> Option<Peak> {
         if !(self.min_period..=self.max_period).contains(&period) {
             return None;

@@ -1,7 +1,10 @@
-use super::gate::{GATE_ON_DB, Gate};
+use super::gate::{GATE_OFF_DB, GATE_ON_DB, Gate, ONSET_RISE_DB};
 use super::judge::JudgeResult;
 use super::{LOUDNESS_FLOOR_DB, VOICE_HOP, VoiceFrame, volts_from_hz};
-use crate::analysis::{EnvelopeFollower, PitchDetectorConfig, PitchEstimate, cycle::CycleTracker};
+use crate::analysis::{
+    EnvelopeFollower, PitchEstimate,
+    cycle::{CycleSettings, CycleTracker},
+};
 use crate::sanitize_sample;
 
 /// Fourteen judge hops is the longest a verdict can still describe the note.
@@ -44,9 +47,61 @@ pub const BREATH_SMOOTH_MS: f32 = 20.0;
 /// tracker clips it.
 pub const INPUT_FAULT_LEVEL: f32 = 4.0;
 
+/// Instrument-dependent settings for the cycle tracker, judge and gate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackSettings {
+    pub cycle: CycleSettings,
+    /// The pYIN frame at 48 kHz, scaled with the stream rate.
+    pub judge_frame_48k: usize,
+    /// Opening level above the source's noise floor.
+    pub gate_on_db: f32,
+    /// Closing level below the opening level, providing hysteresis.
+    pub gate_off_db: f32,
+    /// Recovery from a recent valley that counts as another articulation.
+    pub onset_rise_db: f32,
+    /// `Some(c)`: a voiced move of at least c cents within two frames is an onset.
+    pub jump_onset_cents: Option<f32>,
+}
+
+impl TrackSettings {
+    /// The original voice judge, gate and level onset; sung legato never retriggers.
+    pub const VOICE: Self = Self {
+        cycle: CycleSettings::VOICE,
+        judge_frame_48k: 2048,
+        gate_on_db: GATE_ON_DB,
+        gate_off_db: GATE_OFF_DB,
+        onset_rise_db: ONSET_RISE_DB,
+        jump_onset_cents: None,
+    };
+
+    pub(crate) const fn validate(self) {
+        self.cycle.validate();
+        assert!(
+            self.judge_frame_48k >= 4
+                && self.judge_frame_48k.is_power_of_two()
+                && self.judge_frame_48k <= usize::MAX / 8,
+            "invalid judge frame"
+        );
+        assert!(
+            self.gate_on_db.is_finite()
+                && self.gate_off_db.is_finite()
+                && self.gate_off_db < self.gate_on_db,
+            "invalid gate thresholds"
+        );
+        assert!(
+            self.onset_rise_db.is_finite() && self.onset_rise_db > 0.0,
+            "invalid onset rise"
+        );
+        if let Some(cents) = self.jump_onset_cents {
+            assert!(cents.is_finite() && cents > 0.0, "invalid pitch jump");
+        }
+    }
+}
+
 /// Callback-safe voice facts from a preallocated cycle history and judge verdicts.
 #[derive(Debug)]
 pub struct VoiceTracker {
+    settings: TrackSettings,
     pub(super) cycle: CycleTracker,
     rate: f32,
     pub(super) samples: u64,
@@ -78,16 +133,24 @@ impl VoiceTracker {
     /// Allocate the cycle history once; processing and resetting never allocate.
     #[must_use]
     pub fn new(rate: u32) -> Self {
+        Self::with_settings(rate, TrackSettings::VOICE)
+    }
+
+    /// Allocate the selected profile's history once. Invalid settings are rejected here.
+    #[must_use]
+    pub fn with_settings(rate: u32, settings: TrackSettings) -> Self {
+        settings.validate();
         let rate = rate.max(1);
         let sr = rate as f32;
         Self {
-            cycle: CycleTracker::new(rate),
+            settings,
+            cycle: CycleTracker::with_settings(rate, settings.cycle),
             rate: sr,
             samples: 0,
             hop: 0,
             judge: None,
             judge_at: 0,
-            judge_frame: PitchDetectorConfig::for_rate(rate).frame_length as u64,
+            judge_frame: settings.judge_config(rate).frame_length as u64,
             fresh_samples: JUDGE_FRESH_MS * u64::from(rate) / 1000,
             veto: 0,
             vetoed: false,
@@ -96,7 +159,7 @@ impl VoiceTracker {
             last_leap: 0,
             fold: 0.0,
             hz: 0.0,
-            gate: Gate::new(rate),
+            gate: Gate::with_settings(rate, settings),
             fast: 0.0,
             attack: coefficient(FAST_ATTACK_MS, sr),
             release: coefficient(FAST_RELEASE_MIN_MS, sr),
@@ -190,7 +253,7 @@ impl VoiceTracker {
     }
 
     fn frame(&mut self) -> VoiceFrame {
-        if db(self.fast) < GATE_ON_DB && self.cycle.estimate().is_none() {
+        if db(self.fast) < self.settings.gate_on_db && self.cycle.estimate().is_none() {
             self.vetoed = false;
         }
         let fc = self
@@ -219,10 +282,11 @@ impl VoiceTracker {
         let judge_hz = self.judge.filter(|_| fresh).and_then(|p| p.frequency);
         if let Some(estimate) = fc {
             let mut fold = 0.0;
-            if self
-                .judge_at
-                .checked_sub(self.judge_frame)
-                .is_some_and(|from| from >= self.last_leap)
+            if !estimate.provisional
+                && self
+                    .judge_at
+                    .checked_sub(self.judge_frame)
+                    .is_some_and(|from| from >= self.last_leap)
                 && self
                     .judge
                     .is_some_and(|p| p.voiced_probability >= JUDGE_MIN_PROB)
@@ -247,13 +311,13 @@ impl VoiceTracker {
         }
         let voiced = fc.is_some();
         let fast_db = db(self.fast);
-        let (gate, onset) = self
-            .gate
-            .frame(self.samples, voiced, fast_db, db(self.valley));
+        let (gate, onset) =
+            self.gate
+                .frame_with_pitch(self.samples, voiced, fast_db, db(self.valley), self.hz);
         if onset {
             self.valley = self.fast;
         }
-        let raw_breath = if fast_db < GATE_ON_DB {
+        let raw_breath = if fast_db < self.settings.gate_on_db {
             0.0
         } else if voiced {
             (2.0 * (1.0 - self.cycle.last_clarity())).clamp(0.0, 1.0)
@@ -264,7 +328,9 @@ impl VoiceTracker {
             .breath_coefficient
             .mul_add(self.breath, (1.0 - self.breath_coefficient) * raw_breath);
         let mut confidence = fc.map_or(0.0, |e| e.clarity);
-        if judge_hz.is_some_and(|hz| (1200.0 * (hz / self.hz).log2()).abs() > DISAGREE_CENTS) {
+        if fc.is_none_or(|estimate| !estimate.provisional)
+            && judge_hz.is_some_and(|hz| (1200.0 * (hz / self.hz).log2()).abs() > DISAGREE_CENTS)
+        {
             confidence *= 0.5;
         }
         let valid_hz = self.hz.is_finite();

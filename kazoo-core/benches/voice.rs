@@ -5,6 +5,7 @@ use kazoo_core::analysis::{
     PitchDetector, PitchDetectorConfig, cycle::CycleTracker, score::signals,
 };
 use kazoo_core::engine::{EngineConfig, judge_config};
+use kazoo_core::host::live::InputProfile;
 
 fn saw_samples(length: u32) -> Vec<f32> {
     let mut saw: Vec<f64> = (0..length)
@@ -22,19 +23,20 @@ fn saw_samples(length: u32) -> Vec<f32> {
     saw.into_iter().map(|sample| sample as f32).collect()
 }
 
-fn judge(c: &mut Criterion, name: &str, config: &PitchDetectorConfig) {
+fn judge(c: &mut Criterion, name: &str, label: &str, config: &PitchDetectorConfig) {
     let hop = config.hop_length;
-    let samples = saw_samples(u32::try_from(4096 + hop).expect("small bench signal"));
+    let warmup = 4096.max(config.frame_length + 2 * hop);
+    let samples = saw_samples(u32::try_from(warmup + hop).expect("small bench signal"));
     let mut group = c.benchmark_group(name);
-    group.bench_function(BenchmarkId::new("hop", "48k"), |b| {
+    group.bench_function(BenchmarkId::new("hop", label), |b| {
         b.iter_batched_ref(
             || {
                 let mut detector =
                     PitchDetector::new(config.clone()).expect("valid detector configuration");
-                black_box(detector.push_samples(&samples[..4096]));
+                black_box(detector.push_samples(&samples[..warmup]));
                 detector
             },
-            |detector| black_box(detector.push_samples(black_box(&samples[4096..]))),
+            |detector| black_box(detector.push_samples(black_box(&samples[warmup..]))),
             BatchSize::PerIteration,
         );
     });
@@ -90,11 +92,19 @@ fn main() {
             judge(
                 &mut criterion,
                 "judge",
+                "48k",
                 &PitchDetectorConfig::for_rate(48_000),
             );
             judge(
                 &mut criterion,
+                "judge",
+                "48k/bass",
+                &InputProfile::Bass.tracking().judge_config(48_000),
+            );
+            judge(
+                &mut criterion,
                 "engine",
+                "48k",
                 &judge_config(&EngineConfig::default().pitch, 48_000),
             );
             cycle(&mut criterion);

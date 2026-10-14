@@ -1,3 +1,4 @@
+use super::TrackSettings;
 use super::VOICE_HOP;
 
 /// Open above −50 dBFS with a voiced pitch, well above the noise floor.
@@ -17,6 +18,8 @@ pub const ONSET_REFRACTORY_MS: u64 = 60;
 
 #[derive(Debug)]
 pub(super) struct Gate {
+    settings: TrackSettings,
+    pitch: [Option<f32>; 2],
     high: bool,
     off_frames: u64,
     hold_frames: u64,
@@ -29,9 +32,15 @@ pub(super) struct Gate {
 }
 
 impl Gate {
+    #[cfg(test)]
     pub(super) fn new(rate: u32) -> Self {
+        Self::with_settings(rate, TrackSettings::VOICE)
+    }
+    pub(super) fn with_settings(rate: u32, settings: TrackSettings) -> Self {
         let rate = u64::from(rate.max(1));
         Self {
+            settings,
+            pitch: [None; 2],
             high: false,
             off_frames: 0,
             hold_frames: (GATE_OFF_HOLD_MS * rate).div_ceil(1000 * VOICE_HOP as u64),
@@ -46,10 +55,21 @@ impl Gate {
     pub(super) const fn flux(&mut self, at: u64) {
         self.flux = Some(at);
     }
+    #[cfg(test)]
     pub(super) fn frame(&mut self, at: u64, voiced: bool, db: f32, valley_db: f32) -> (bool, bool) {
+        self.frame_with_pitch(at, voiced, db, valley_db, 0.0)
+    }
+    pub(super) fn frame_with_pitch(
+        &mut self,
+        at: u64,
+        voiced: bool,
+        db: f32,
+        valley_db: f32,
+        hz: f32,
+    ) -> (bool, bool) {
         let was_high = self.high;
         if self.high {
-            if !voiced || db < GATE_OFF_DB {
+            if !voiced || db < self.settings.gate_off_db {
                 self.off_frames = self.off_frames.saturating_add(1);
                 if self.off_frames >= self.hold_frames {
                     self.high = false;
@@ -57,7 +77,7 @@ impl Gate {
             } else {
                 self.off_frames = 0;
             }
-        } else if voiced && db >= GATE_ON_DB {
+        } else if voiced && db >= self.settings.gate_on_db {
             self.high = true;
             self.off_frames = 0;
         }
@@ -78,7 +98,16 @@ impl Gate {
         let ready = self
             .last_onset
             .is_none_or(|last| at.saturating_sub(last) >= self.refractory);
-        let onset = self.high && (!was_high || (ready && (rise >= ONSET_RISE_DB || paired)));
+        let current = (voiced && hz.is_finite() && hz > 0.0).then_some(hz);
+        let jump = match (self.settings.jump_onset_cents, current, self.pitch[0]) {
+            (Some(cents), Some(now), Some(before)) => {
+                (1200.0 * (now / before).log2()).abs() >= cents
+            }
+            _ => false,
+        };
+        self.pitch = [self.pitch[1], current];
+        let onset = self.high
+            && (!was_high || (ready && (rise >= self.settings.onset_rise_db || paired || jump)));
         if onset {
             self.last_onset = Some(at);
             self.flux = None;
@@ -99,5 +128,6 @@ impl Gate {
         self.flux = None;
         self.rise = None;
         self.rise_active = false;
+        self.pitch = [None; 2];
     }
 }
