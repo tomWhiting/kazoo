@@ -11,6 +11,24 @@ use crate::tree::thread::{Answered, TREE_QUEUE, TreeHandle, TreeItem, WholeKind}
 
 const AT: &str = "2026-10-13T09:01:07Z";
 
+#[test]
+fn listed_parents_cover_buds_beyond_the_recent_rows() {
+    let mut rig = Rig::new();
+    let root = rig.here();
+    let first = rig.change(400.0);
+    let second = rig.change(500.0);
+    rig.go(first.clone(), None);
+    let bud = rig.change(600.0);
+    let line = read_line(rig.path()).unwrap().0;
+    let listing = super::list(rig.path(), &line, 4, Some(1)).unwrap();
+    assert_eq!(listing.recent.len(), 1);
+    let value = serde_json::to_value(listing).unwrap();
+    assert_eq!(value["parents"][&bud.commit], first.commit);
+    assert_eq!(value["parents"][&second.commit], first.commit);
+    assert_eq!(value["parents"][&first.commit], root.commit);
+    assert!(value["parents"][&root.commit].is_null());
+}
+
 fn command(tree: &Path, args: &[&str]) -> String {
     let result = git::git_command(args[0], Some(tree))
         .args(&args[1..])

@@ -9,6 +9,7 @@ mod cost;
 mod delay_lines;
 mod loops;
 mod moments;
+mod storage;
 pub(super) mod unheard;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -1299,15 +1300,13 @@ fn save_info(name: &str, patch: &Patch, at: SystemTime, version: u32) -> SaveInf
 }
 
 impl Wall {
-    /// A wall playing `patch` on `engine`, remembering `history` (oldest
-    /// first) and saving to `store`.
-    #[must_use]
-    pub fn new(
+    pub(super) fn new_with_reels(
         mut patch: Patch,
         mut engine: EngineControl,
         desk: Option<HubLink>,
         history: Vec<Change>,
         store: Option<Store>,
+        reels_dir: Option<std::path::PathBuf>,
     ) -> Self {
         // A seed is built by plain adds, never numbered as changes: its
         // modules are found here, as a file's are as it loads. Every module
@@ -1335,7 +1334,7 @@ impl Wall {
         );
         let recorder = Recorder::new(recordings, &mut engine);
         let probe_ring = engine.take_probes().map(ProbeRing);
-        let loops = Loops::new();
+        let loops = reels_dir.map_or_else(Loops::new, Loops::with_reels_dir);
         loops.observe_takes(history.iter(), &patch);
         let mut wall = Self {
             tree: None,

@@ -76,6 +76,10 @@ pub struct DaemonConfig {
     pub desk: DeskMode,
     /// Where recordings go.
     pub recordings: PathBuf,
+    /// The tree to attach, selected explicitly for headless tests.
+    pub tree_dir: Option<PathBuf>,
+    /// The reel store for tests; standard daemons use the configured reel root.
+    pub reels_dir: Option<PathBuf>,
     /// Whether the wall refuses more work while rendering takes most of the
     /// time it has (see [`wall::LOAD_GUARD`]). On for every daemon that
     /// plays for people; a test daemon in a debug build, which renders far
@@ -93,9 +97,13 @@ impl DaemonConfig {
     /// Fails if there is no state or recordings directory to use (see
     /// [`paths::state_dir`] and [`paths::recordings_dir`]).
     pub fn standard() -> io::Result<Self> {
+        let state_dir = paths::state_dir()?;
+        let tree_dir = crate::tree::git::tree_dir(&state_dir);
         Ok(Self {
             socket: paths::socket_path(),
-            state_dir: paths::state_dir()?,
+            state_dir,
+            tree_dir,
+            reels_dir: None,
             audio: AudioMode::Device { sample_rate: None },
             desk: DeskMode::Discover,
             recordings: paths::recordings_dir()?,
@@ -104,13 +112,15 @@ impl DaemonConfig {
     }
 
     /// A daemon for tests: socket in `runtime_dir`, state in `state_dir`
-    /// and recordings in its `recordings` directory, no audio device (the
+    /// with recordings, tree and reels beneath it, no audio device (the
     /// headless loop at 48 kHz), no desk, and the load guard on.
     #[must_use]
     pub fn headless(runtime_dir: &Path, state_dir: &Path) -> Self {
         Self {
             socket: runtime_dir.join(SOCKET_NAME),
             state_dir: state_dir.to_path_buf(),
+            tree_dir: Some(state_dir.join("tree")),
+            reels_dir: Some(state_dir.join("reels")),
             audio: AudioMode::Headless {
                 sample_rate: 48_000,
             },
@@ -159,7 +169,7 @@ impl Daemon {
     /// cannot be set aside, another daemon is serving on the socket, or a
     /// thread cannot start.
     pub fn start(config: DaemonConfig) -> Result<Self, DaemonError> {
-        let tree_dir = crate::tree::git::tree_dir(&config.state_dir);
+        let tree_dir = config.tree_dir.clone();
         Self::start_with_tree(config, tree_dir)
     }
 
@@ -198,6 +208,7 @@ impl Daemon {
             config.socket.display()
         );
         let recordings = config.recordings;
+        let reels_dir = config.reels_dir;
         let load_guard = config.load_guard;
         let setup = control::Setup {
             audio: config.audio,
@@ -207,7 +218,8 @@ impl Daemon {
             stop: Arc::clone(&stop),
             accept,
             build: Box::new(move |engine, link| {
-                let mut wall = Wall::new(patch, engine, link, changes, Some(store));
+                let mut wall =
+                    Wall::new_with_reels(patch, engine, link, changes, Some(store), reels_dir);
                 if let Some(dir) = &tree_dir {
                     wall.find_tree(dir);
                 }
@@ -833,6 +845,8 @@ mod tests {
         assert_eq!(headless.socket, Path::new("/r").join(SOCKET_NAME));
         assert_eq!(headless.desk, DeskMode::Off);
         assert_eq!(headless.recordings, Path::new("/s").join("recordings"));
+        assert_eq!(headless.tree_dir, Some(Path::new("/s").join("tree")));
+        assert_eq!(headless.reels_dir, Some(Path::new("/s").join("reels")));
         assert!(headless.load_guard);
     }
 

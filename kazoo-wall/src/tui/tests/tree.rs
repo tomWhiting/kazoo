@@ -50,6 +50,7 @@ fn moment(n: u64) -> MomentView {
 
 fn listed() -> TreeResult {
     TreeResult {
+        parents: std::collections::BTreeMap::new(),
         here: Some(place()),
         through: 812,
         revision: 814,
@@ -152,27 +153,69 @@ fn a_mark_name_taken_reopens_the_prompt_with_it() {
 }
 
 #[test]
-fn capital_b_lists_the_tree_and_enter_then_y_goes() {
+fn capital_b_lists_the_tree_and_enter_goes_without_a_question() {
     let mut app = open_list();
     for _ in 0..3 {
         press(&mut app, KeyCode::Char('j'));
     }
     press(&mut app, KeyCode::Enter);
     let screen = text(&render(&mut app, 120, 40));
-    assert!(screen.contains("go to “dusk”"), "{screen}");
-    press(&mut app, KeyCode::Enter);
-    assert!(calls(&mut app).is_empty());
-    assert!(format!("{:?}", app.mode()).starts_with("Go"));
-    press(&mut app, KeyCode::Char('n'));
-    assert_eq!(format!("{:?}", app.mode()), "Tree { index: 3 }");
-    press(&mut app, KeyCode::Enter);
-    press(&mut app, KeyCode::Char('y'));
+    assert!(!screen.contains("go to “dusk”"), "{screen}");
+    assert_eq!(*app.mode(), Mode::Normal);
     assert_eq!(
         calls(&mut app),
         [Request::Go {
             moment: "dusk".into()
         }]
     );
+}
+
+#[test]
+fn y_and_n_do_nothing_in_the_tree_list() {
+    let mut app = open_list();
+    for key in ['y', 'n'] {
+        press(&mut app, KeyCode::Char(key));
+        assert_eq!(*app.mode(), Mode::Tree { index: 0 });
+        assert!(calls(&mut app).is_empty());
+    }
+}
+
+#[test]
+fn moving_the_tree_cursor_says_the_distance_from_the_wall() {
+    let mut app = open_list();
+    let mut result = listed();
+    result.here.as_mut().unwrap().commit = moment(16).commit;
+    result.branches[0].tip = moment(16);
+    result.branches[1].tip = moment(24);
+    result.marks[0].moment = moment(13);
+    result.recent.clear();
+    let mut value = serde_json::to_value(result).unwrap();
+    let mut parents: serde_json::Map<String, serde_json::Value> = (1..=24)
+        .map(|n| {
+            let parent = if n == 17 { 12 } else { n - 1 };
+            (moment(n).commit, serde_json::json!(moment(parent).commit))
+        })
+        .collect();
+    parents.insert(moment(0).commit, serde_json::Value::Null);
+    value["parents"] = serde_json::json!(parents);
+    app.on_reply(
+        Reply::Answer {
+            request: Request::Tree { recent: None },
+            outcome: Ok(value),
+        },
+        Instant::now(),
+    );
+    press(&mut app, KeyCode::Down);
+    assert_eq!(
+        status(&app),
+        "12 changes from the wall: 4 back to where they part, 8 on"
+    );
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(status(&app), "3 changes back from the wall");
+    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(status(&app), "the wall is here");
+    assert!(calls(&mut app).is_empty(), "moving only looks");
 }
 
 #[test]
@@ -266,6 +309,8 @@ fn the_commands_mark_go_and_tree() {
         }]
     );
     command(&mut app, "go #812");
+    assert!(calls(&mut app).is_empty());
+    press(&mut app, KeyCode::Char('y'));
     assert_eq!(
         calls(&mut app),
         [Request::Go {
@@ -273,7 +318,10 @@ fn the_commands_mark_go_and_tree() {
         }]
     );
     command(&mut app, "tree");
-    assert_eq!(calls(&mut app), [Request::Tree { recent: None }]);
+    assert!(
+        calls(&mut app).is_empty(),
+        "the command line already asked for the tree"
+    );
     answer(&mut app, Request::Tree { recent: None }, &listed());
     assert!(
         app.completions("go da")
@@ -303,15 +351,29 @@ fn help_lists_b_and_capital_b() {
 
 #[test]
 fn a_go_question_keeps_the_keys_visible_for_long_names() {
-    let mut app = open_list();
-    let mut result = listed();
-    result.marks[0].name = "a".repeat(64);
-    answer(&mut app, Request::Tree { recent: None }, &result);
-    press(&mut app, KeyCode::Char('j'));
-    press(&mut app, KeyCode::Char('j'));
-    press(&mut app, KeyCode::Enter);
+    let mut app = connected();
+    command(&mut app, &format!("go {}", "a".repeat(64)));
+    assert!(calls(&mut app).is_empty());
     let screen = text(&render(&mut app, 120, 40));
     assert!(screen.contains("y goes · n stays"), "{screen}");
+}
+
+#[test]
+fn a_typed_go_asks_before_sending_and_n_stays() {
+    let mut app = connected();
+    command(&mut app, "go #812");
+    assert!(calls(&mut app).is_empty());
+    assert!(matches!(app.mode(), Mode::Go { moment, .. } if moment == "#812"));
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(*app.mode(), Mode::Normal);
+    command(&mut app, "go #812");
+    press(&mut app, KeyCode::Char('y'));
+    assert_eq!(
+        calls(&mut app),
+        [Request::Go {
+            moment: "#812".into()
+        }]
+    );
 }
 
 #[test]
@@ -436,8 +498,6 @@ fn the_tree_cursor_follows_the_commit_and_clamps_when_gone() {
     result.branch_count += 1;
     answer(&mut app, Request::Tree { recent: None }, &result);
     assert_eq!(*app.mode(), Mode::Tree { index: 7 });
-    press(&mut app, KeyCode::Enter);
-    assert!(matches!(app.mode(), Mode::Go { moment, .. } if moment == "#810"));
     result.branches.clear();
     result.marks.clear();
     result.recent = vec![moment(900)];
@@ -446,6 +506,13 @@ fn the_tree_cursor_follows_the_commit_and_clamps_when_gone() {
     answer(&mut app, Request::Tree { recent: None }, &result);
     press(&mut app, KeyCode::Char('n'));
     assert_eq!(*app.mode(), Mode::Tree { index: 0 });
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        calls(&mut app),
+        [Request::Go {
+            moment: "#900".into()
+        }]
+    );
 }
 
 #[test]
@@ -531,15 +598,10 @@ fn undoing_go_and_load_keeps_the_backup_and_notes() {
 fn the_tree_help_lists_every_available_key() {
     let mut app = open_list();
     let screen = text(&render(&mut app, 120, 40));
-    for keys in [
-        "j k ↑ ↓ move",
-        "⏎ go",
-        "r again",
-        "b marks",
-        "B Esc q close",
-    ] {
-        assert!(screen.contains(keys), "missing {keys}: {screen}");
-    }
+    assert!(
+        screen.contains("j k move · ⏎ go there · z undo · Esc closes"),
+        "{screen}"
+    );
 }
 
 #[test]

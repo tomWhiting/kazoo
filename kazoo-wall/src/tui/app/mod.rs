@@ -30,6 +30,7 @@ mod prefs;
 mod rack;
 mod saves;
 mod tree;
+mod tree_distance;
 
 pub(super) use tree::{RowKind, TreeList};
 

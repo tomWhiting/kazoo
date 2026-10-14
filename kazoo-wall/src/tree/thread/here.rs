@@ -17,6 +17,8 @@ use crate::tree::TreeError;
 use crate::tree::git::{Importer, Planted};
 use crate::tree::{Files, git};
 
+mod ancestry;
+
 /// A whole sentence explaining why a tree job could not be answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HereError {
@@ -805,7 +807,9 @@ pub(super) fn list(
     } else {
         Vec::new()
     };
+    let parents = ancestry::read(tree, &by_id, here.as_ref())?;
     Ok(TreeResult {
+        parents,
         here,
         through,
         revision: 0,

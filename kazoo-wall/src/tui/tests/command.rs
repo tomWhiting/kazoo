@@ -35,10 +35,35 @@ fn error(app: &App) -> Option<String> {
     }
 }
 
-/// Open the command line, with the saves list asked for and taken.
+/// Open the command line, with saves and tree moments requested.
 fn open(app: &mut App) {
     press(app, KeyCode::Char(':'));
-    assert_eq!(calls(app), vec![Request::Saves]);
+    assert_eq!(
+        calls(app),
+        vec![Request::Saves, Request::Tree { recent: None }]
+    );
+}
+
+#[test]
+fn go_tab_offers_a_moment_without_opening_b() {
+    let mut app = connected();
+    open(&mut app);
+    super::answer(
+        &mut app,
+        Request::Tree { recent: None },
+        &serde_json::json!({
+            "here": {"commit": "a".repeat(40), "branch": "trunk", "change": 1},
+            "through": 1, "revision": 1,
+            "branches": [{"name": "trunk", "tip": {
+                "commit": "a".repeat(40), "short": "a".repeat(12), "change": 1,
+                "seat": "Tom", "at": "2026-10-13T10:00:00Z", "summary": "turned cutoff"
+            }}],
+            "branch_count": 1, "marks": [], "mark_count": 0, "recent": []
+        }),
+    );
+    type_text(&mut app, "go ");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(line(&app), "go trunk ");
 }
 
 #[test]
@@ -140,7 +165,7 @@ fn a_wrong_line_says_why_and_stays_open() {
     assert!(
         calls(&mut app)
             .iter()
-            .all(|request| *request == Request::Saves)
+            .all(|request| matches!(request, Request::Saves | Request::Tree { .. }))
     );
 }
 

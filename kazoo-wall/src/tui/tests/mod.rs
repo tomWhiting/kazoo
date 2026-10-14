@@ -394,7 +394,7 @@ fn cursor_skips_folded_members() {
     assert!(
         app.take_jobs()
             .iter()
-            .all(|job| matches!(job, Job::Call(Request::Saves)))
+            .all(|job| matches!(job, Job::Call(Request::Saves | Request::Tree { .. })))
     );
     let before = serde_json::to_value(app.snapshot()).expect("snapshot encodes");
     for key in ['H', 'J', 'K', 'L', '=', 'x', 'p', 'u'] {
