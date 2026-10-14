@@ -130,6 +130,63 @@ fn hysteresis_holds_then_lets_go() {
 }
 
 #[test]
+fn a_new_note_picks_its_own_nearest_note() {
+    let mut quantiser = Quantiser::new(RATE);
+    quantiser.set(QuantiseSettings {
+        scale: 0,
+        root: 0,
+        hysteresis_cents: 30.0,
+        ..instant(false)
+    });
+    for index in 0..8 {
+        let mut input = frame(9.0, index == 0);
+        quantiser.process(&mut input);
+        assert!(input.snapped_volts.mul_add(12.0, -9.0).abs() < 1e-5);
+    }
+    let mut silence = frame(9.0, false);
+    silence.voiced = false;
+    silence.gate = false;
+    quantiser.process(&mut silence);
+
+    for index in 0..8 {
+        let mut input = frame(9.6, index == 0);
+        quantiser.process(&mut input);
+        assert!(
+            input.snapped_volts.mul_add(12.0, -10.0).abs() < 1e-5,
+            "expected A# (10 semitones) on frame {index}, got {} semitones",
+            input.snapped_volts * 12.0
+        );
+        assert!(cents(input.snapped_hz, hz_from_volts(10.0 / 12.0)).abs() < 0.01);
+    }
+}
+
+#[test]
+fn hysteresis_still_holds_a_wavering_note() {
+    let mut quantiser = Quantiser::new(RATE);
+    quantiser.set(QuantiseSettings {
+        scale: 0,
+        root: 0,
+        hysteresis_cents: 30.0,
+        ..instant(false)
+    });
+    for index in 0..8 {
+        let mut input = frame(9.0, index == 0);
+        quantiser.process(&mut input);
+        assert!(input.snapped_volts.mul_add(12.0, -9.0).abs() < 1e-5);
+    }
+    for pitch in [9.2, 9.4, 9.6, 9.4, 9.2, 9.6] {
+        let mut input = frame(pitch, false);
+        quantiser.process(&mut input);
+        assert!(
+            input.snapped_volts.mul_add(12.0, -9.0).abs() < 1e-5,
+            "expected held A (9 semitones) at {pitch}, got {} semitones",
+            input.snapped_volts * 12.0
+        );
+        assert!(cents(input.snapped_hz, 440.0).abs() < 0.01);
+    }
+}
+
+#[test]
 fn scale_and_root_follow_the_wall_rule() {
     let cases = [
         (0.0, 0, 0.0, 0.0),
