@@ -552,6 +552,7 @@ pub struct Wall {
     engine: EngineControl,
     clock_line: ClockLine,
     desk: Option<HubLink>,
+    desk_tempo: tempo_sync::DeskTempo,
     log: VecDeque<Change>,
     next_seq: u64,
     /// The latest change made (and logged): what `revision` says. Behind
@@ -1370,6 +1371,7 @@ impl Wall {
             rack: Rack::default(),
             engine,
             clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
+            desk_tempo: tempo_sync::DeskTempo::default(),
             desk,
             log: history.into_iter().skip(skip).collect(),
             next_seq,
@@ -2074,6 +2076,7 @@ impl Wall {
             | What::SetAside { .. }
             | What::Unknown => {}
             What::Tempo { to, desk, .. } => {
+                self.patch.tempo = *to;
                 if !desk {
                     self.engine.send(Command::Tempo(*to));
                 }
@@ -3371,6 +3374,12 @@ impl Wall {
         } else {
             self.patch.tempo
         };
+        if desk {
+            // A desk move not yet heard by a tick is logged before the ask,
+            // so the tick after the ask hears nothing new until the desk
+            // answers it.
+            self.sync_desk_tempo(from);
+        }
         // The log first: the desk is asked only once the change is in it,
         // so a tempo the log cannot take never moves the desk (whose tempo
         // the wall then follows and saves).
@@ -3415,6 +3424,7 @@ impl Wall {
                     ),
                 });
             }
+            self.desk_tempo.asked(bpm);
         } else {
             self.patch.tempo = bpm;
         }
@@ -4891,11 +4901,12 @@ impl Wall {
         // it; off the desk only `tempo` changes it, which saves it itself
         // (the engine may not have heard that change yet).
         if self.desk.as_ref().is_some_and(HubLink::is_connected) {
-            let bpm = clamp_bpm(self.engine.shared().bpm());
-            if (bpm - self.patch.tempo).abs() > 1e-9 {
-                self.patch.tempo = bpm;
-                self.dirty = true;
+            let bpm = self.engine.shared().bpm();
+            if bpm.is_finite() {
+                self.sync_desk_tempo(clamp_bpm(bpm));
             }
+        } else {
+            self.desk_tempo.disconnected();
         }
         self.take_readings(now);
         let (left, right) = self.engine.shared().take_peaks();
@@ -5186,3 +5197,5 @@ mod tests;
 
 #[cfg(test)]
 mod clock_tests;
+
+mod tempo_sync;
