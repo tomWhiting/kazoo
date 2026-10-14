@@ -7,6 +7,9 @@ use crate::engine::{Engine, EngineConfig, engine};
 use crate::protocol::{MarkResult, TreeResult};
 use crate::tree::{git, thread::TreeHandle};
 
+mod costs;
+mod savings;
+
 struct Rig {
     wall: Wall,
     engine: Engine,
@@ -554,6 +557,13 @@ fn the_backups_goes_need_are_not_pruned() {
     }
     rig.wall.prune();
     for backup in backups {
-        assert!(rig.wall.saves_store().unwrap().read_save(&backup).is_ok());
+        if let Some(commit) = backup.strip_prefix("tree:") {
+            assert_eq!(
+                command(rig.tree.path(), &["cat-file", "-t", commit]),
+                "commit"
+            );
+        } else {
+            assert!(rig.wall.saves_store().unwrap().read_save(&backup).is_ok());
+        }
     }
 }

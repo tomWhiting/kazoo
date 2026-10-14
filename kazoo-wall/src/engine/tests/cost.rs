@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn an_empty_engine_measures_only_fixed_work_without_allocating() {
+    let (mut engine, control) = fresh();
+    let mut buffer = [0.0; SUB_BLOCK * 2];
+    on_audio_thread(|| engine.render(&mut buffer, 2));
+    let load = control.shared().render_load();
+    let fixed = control.shared().fixed_load();
+    assert!(fixed > 0.0, "load={load}, fixed={fixed}");
+    assert_eq!(load.to_bits(), fixed.to_bits());
+}
+
+#[test]
 fn every_heard_module_is_timed_in_turn() {
     let (mut engine, mut control) = fresh();
     let mut model = Model::default();

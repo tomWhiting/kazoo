@@ -32,12 +32,21 @@ fn hello_refuses_reserved_seat_names() {
         desk_refusals: link_diagnostics::DeskRefusals::default(),
         reported_link_shutdowns: link_diagnostics::LinkShutdowns::default(),
     };
-    for seat in ["desk", "kazoo-wall"] {
+    for seat in [
+        "desk",
+        "Desk",
+        "DESK",
+        "kazoo-wall",
+        "Kazoo-Wall",
+        "KAZOO-WALL",
+    ] {
         let response = control.hello(1, 2, seat, "test", false, false);
         assert!(!response.ok, "{seat} must be reserved");
         let error = response.error.unwrap();
         assert_eq!(error.code, ErrorCode::BadName);
-        assert!(error.message.contains("reserved"));
-        assert!(error.message.contains(seat));
+        assert_eq!(
+            error.message,
+            format!("'{seat}' is a reserved seat name; choose another name.")
+        );
     }
 }

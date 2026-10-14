@@ -5,7 +5,7 @@ mod tests;
 
 use std::time::{Duration, Instant};
 
-use super::{Bucket, Kept, Outcome, Source, Wall, encode, error, save_error, unchanged};
+use super::{Bucket, Kept, Outcome, Print, Source, Wall, encode, error, save_error, unchanged};
 use super::{SAVE_BURST, SAVE_REFILL_PER_SECOND, SAVES_BURST, SAVES_REFILL_PER_SECOND};
 use crate::patch::Patch;
 use crate::protocol::tree::MAX_MOMENT;
@@ -71,6 +71,36 @@ fn here_error(err: &HereError) -> WallError {
 }
 
 impl Wall {
+    pub(super) fn remember_tree_moment(&mut self, source: &Source, print: Print) {
+        self.tree_kept = match source {
+            Source::Moment { to, .. } | Source::Back { to, .. } => {
+                Some((Some(to.commit.clone()), print))
+            }
+            Source::Save(_) | Source::Empty | Source::Undo { .. } => None,
+        };
+    }
+
+    pub(super) fn keeping_before(
+        &self,
+        source: &Source,
+    ) -> Result<(Kept, Option<Vec<u8>>), SaveError> {
+        if let Source::Moment { from, .. } | Source::Back { from, .. } = source {
+            if let Some((commit, print)) = &self.tree_kept {
+                if commit.as_ref().is_none_or(|commit| *commit == from.commit) && self.still(print)
+                {
+                    return Ok((
+                        Kept {
+                            name: format!("tree:{:.12}", from.commit),
+                            hash: self.patch.fingerprint(),
+                        },
+                        None,
+                    ));
+                }
+            }
+        }
+        self.keeping(source.how())
+    }
+
     pub(super) fn read_backup(
         &mut self,
         seq: u64,
@@ -276,7 +306,21 @@ impl Wall {
     ) -> Result<Outcome, WallError> {
         self.tree_ready()?;
         let ticket = self.tree_ticket()?;
-        self.tree_send(TreeItem::Here { ticket })?;
+        let job = if backup.starts_with("tree:") {
+            if backup != format!("tree:{:.12}", back_to.commit) {
+                return Err(error(
+                    ErrorCode::BrokenSave,
+                    "the go's tree backup names a different moment; nothing was changed",
+                ));
+            }
+            TreeItem::Resolve {
+                ticket,
+                moment: back_to.commit.clone(),
+            }
+        } else {
+            TreeItem::Here { ticket }
+        };
+        self.tree_send(job)?;
         Ok(self.tree_pending(
             ticket,
             Waiting {
@@ -325,7 +369,24 @@ impl Wall {
                     moment: moment.clone(),
                 },
             ),
-            Asked::Back { made, tries, .. } => (made, tries, TreeItem::Here { ticket }),
+            Asked::Back {
+                made,
+                tries,
+                backup,
+                back_to,
+                ..
+            } => (
+                made,
+                tries,
+                if backup.starts_with("tree:") {
+                    TreeItem::Resolve {
+                        ticket,
+                        moment: back_to.commit.clone(),
+                    }
+                } else {
+                    TreeItem::Here { ticket }
+                },
+            ),
             Asked::Mark | Asked::List => return Ok(false),
         };
         if *made == self.made {
@@ -385,6 +446,42 @@ impl Wall {
                     back_to,
                     ..
                 },
+                Answered::Resolved { to, here, wall },
+            ) if backup.starts_with("tree:") => {
+                let (incoming, notes) =
+                    Patch::load(&wall).map_err(|err| error(ErrorCode::BrokenSave, err))?;
+                if to.commit != back_to.commit
+                    || fingerprint.is_empty()
+                    || incoming.fingerprint() != *fingerprint
+                {
+                    return Err(error(
+                        ErrorCode::BrokenSave,
+                        "the go's tree backup no longer holds the same wall; nothing was changed",
+                    ));
+                }
+                self.replace(
+                    seat,
+                    incoming,
+                    &Source::Back {
+                        go: *go,
+                        kept: Kept {
+                            name: backup.clone(),
+                            hash: fingerprint.clone(),
+                        },
+                        to: back_to.clone(),
+                        from: here,
+                    },
+                    notes,
+                )
+            }
+            (
+                Asked::Back {
+                    go,
+                    backup,
+                    fingerprint,
+                    back_to,
+                    ..
+                },
                 Answered::Here(here),
             ) => {
                 let read = self.read_backup(*go, backup, fingerprint)?;
@@ -413,7 +510,7 @@ impl Wall {
     /// Complete tree requests without waiting; expired requests are answered once.
     pub fn tree_answers(&mut self, now: Instant) -> Vec<(u64, Result<Outcome, WallError>)> {
         let mut replies = Vec::new();
-        for (ticket, _, answer) in std::mem::take(&mut self.tree_answered) {
+        for (ticket, through, answer) in std::mem::take(&mut self.tree_answered) {
             let Some(mut waiting) = self.tree_waiting.remove(&ticket) else {
                 continue;
             };
@@ -430,7 +527,19 @@ impl Wall {
                         self.tree_waiting.insert(ticket, waiting);
                         continue;
                     }
-                    Ok(false) => self.act_tree(&waiting, answer),
+                    Ok(false) => {
+                        // A start is usable only once the ordered writer has
+                        // taken the whole wall that supplied its fingerprint.
+                        if through != self.made
+                            && self
+                                .tree_kept
+                                .as_ref()
+                                .is_some_and(|(commit, _)| commit.is_none())
+                        {
+                            self.tree_kept = None;
+                        }
+                        self.act_tree(&waiting, answer)
+                    }
                     Err(err) => Err(err),
                 },
             };

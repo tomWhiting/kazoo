@@ -248,7 +248,7 @@ fn busy_clause(busy: f32) -> String {
 
 impl Wall {
     /// How many times its bench cost the wall up now takes to render: its
-    /// render load over the sum of the bench shares of the modules the
+    /// render load less fixed work over the sum of the bench shares of the modules the
     /// engine renders now, held to 1 to [`BUSY_MAX`]; 1 for a wall too small
     /// to say (below [`BUSY_MIN_BENCH`]) or a load not measured.
     pub(super) fn busy(&self) -> f32 {
@@ -283,13 +283,11 @@ impl Wall {
             .filter_map(|(_, kind)| kind)
             .map(|kind| kind_share(kind, rate))
             .sum();
-        let load = self.engine.shared().render_load();
-        if bench < BUSY_MIN_BENCH || !load.is_finite() {
+        let load = self.engine.shared().render_load() - self.engine.shared().fixed_load();
+        if bench < BUSY_MIN_BENCH || !load.is_finite() || load <= 0.0 {
             return 1.0;
         }
-        // Both measures cover the whole render. A module's own timing omits
-        // the source, sink and engine work included in its bench row. The
-        // bench errs high deliberately, so quiet work keeps its bench cost.
+        // Bench rows err high, so quiet module work keeps its bench cost.
         (load / bench).clamp(1.0, BUSY_MAX)
     }
 
@@ -311,23 +309,17 @@ impl Wall {
     }
 
     pub(super) fn module_share(&self, id: &str, kind: Kind, busy: f32) -> f32 {
+        // A sleeping module's old timing cannot describe its next wake.
+        if self.unheard.iter().any(|unheard| unheard == id) {
+            return self.kind_share_now(kind, busy);
+        }
         let rate = self.engine.sample_rate();
         self.rack
             .slot_of(id)
             .and_then(|slot| self.engine.cost(slot))
             .map_or_else(
                 || self.kind_share_now(kind, busy),
-                // A sub-block is small; timings need relative precision.
-                |ns| {
-                    let share = ns / (SUB_BLOCK as f32 * 1e9 / rate as f32);
-                    // Culled modules retain a timing from when they were
-                    // last heard, so their cost needs the current factor.
-                    if self.unheard.iter().any(|unheard| unheard == id) {
-                        share * busy
-                    } else {
-                        share
-                    }
-                },
+                |ns| ns / (SUB_BLOCK as f32 * 1e9 / rate as f32),
             )
     }
 
@@ -400,15 +392,8 @@ impl Wall {
             .iter()
             .map(|&index| self.kind_share_now(incoming.modules()[index].kind, busy))
             .sum();
-        let current: f32 = heard_modules(&self.patch)
-            .iter()
-            .map(|&index| {
-                let module = &self.patch.modules()[index];
-                self.module_share(&module.id, module.kind, busy)
-            })
-            .sum();
-        let rest = (self.engine.shared().render_load() - current).max(0.0);
-        (heard.len(), sum, rest + sum, busy)
+        let fixed = self.engine.shared().fixed_load();
+        (heard.len(), sum, fixed + sum, busy)
     }
 
     pub(super) fn load_room(&self, incoming: &Patch) -> Result<(), WallError> {
@@ -437,7 +422,7 @@ impl Wall {
         source: &Source,
         notes: &mut Vec<String>,
     ) -> Result<Option<String>, WallError> {
-        if !console {
+        if !console && !matches!(source, Source::Moment { .. } | Source::Back { .. }) {
             self.load_room(incoming)?;
             return Ok(None);
         }

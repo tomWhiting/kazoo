@@ -1,5 +1,7 @@
 use super::*;
 
+mod fixed;
+
 fn request(wall: &mut Wall, request: &Request) -> Result<Outcome, WallError> {
     let seat = format!("Cost{}", wall.next_seq);
     wall.request_as(&seat, false, request, Instant::now())
@@ -37,37 +39,30 @@ fn chain(wall: &mut Wall, kind: Kind, count: usize) -> Vec<String> {
 }
 
 fn audio_kind(dearest: bool) -> Kind {
-    let rows = super::super::cost::KIND_BENCH_NS;
-    let mut audio: Vec<(Kind, u32)> = rows
-        .iter()
-        .filter_map(|&(name, ns)| {
-            let kind = Kind::from_name(name)?;
-            // A loop is always heard (it records whether or not anything
-            // listens), and a wall holds eight: no cable wakes a set of them.
-            (kind != Kind::LOOP
-                && kind
-                    .spec()
-                    .inputs
-                    .iter()
-                    .any(|port| port.signal == crate::catalogue::Signal::Audio)
-                && kind
-                    .spec()
-                    .outputs
-                    .iter()
-                    .any(|port| port.signal == crate::catalogue::Signal::Audio))
-            .then_some((kind, ns))
-        })
-        .collect();
-    audio.sort_by_key(|(_, ns)| *ns);
-    if dearest {
-        audio.last().unwrap().0
-    } else {
-        audio[0].0
-    }
+    let kind = Kind::from_name(if dearest { "screamer" } else { "mix" }).unwrap();
+    assert_audio(kind);
+    kind
+}
+
+fn assert_audio(kind: Kind) {
+    assert!(
+        kind.spec()
+            .inputs
+            .iter()
+            .any(|port| port.signal == crate::catalogue::Signal::Audio)
+    );
+    assert!(
+        kind.spec()
+            .outputs
+            .iter()
+            .any(|port| port.signal == crate::catalogue::Signal::Audio)
+    );
 }
 
 fn heavy() -> Kind {
-    audio_kind(true)
+    let kind = Kind::from_name("screamer").unwrap();
+    assert_audio(kind);
+    kind
 }
 fn last_output(ids: &[String], kind: Kind) -> String {
     format!("{}.{}", ids.last().unwrap(), kind.spec().outputs[0].name)
@@ -178,11 +173,11 @@ fn a_measured_cost_is_used_before_the_bench_cost() {
     assert!(wall.unheard.iter().any(|id| id == "vco1"));
     drop(cable);
     guarded(&mut wall, 0.10);
-    let err = request(&mut wall, &patch("vco1.out", "out1.left")).unwrap_err();
-    assert_eq!(err.code, ErrorCode::Full);
-    assert!(err.message.contains("wake 1 modules"), "{}", err.message);
-    wall.engine.forget_cost(slot);
+    let busy = wall.busy();
+    let share = super::super::cost::kind_share(Kind::VCO, 48_000) * busy;
     request(&mut wall, &patch("vco1.out", "out1.left")).unwrap();
+    assert!((wall.load_watch.recent.back().unwrap().2 - share).abs() < 1e-6);
+    assert!((wall.module_share("vco1", Kind::VCO, busy) - 0.9).abs() < 1e-6);
 }
 
 #[test]
@@ -306,17 +301,16 @@ fn a_cable_waking_a_cheap_set_is_allowed() {
     let kind = audio_kind(false);
     let ids = chain(&mut wall, kind, 40);
     let ns = 100.0;
-    let share = ns / (SUB_BLOCK as f32 * 1e9 / 48_000.0);
+    let share = super::super::cost::kind_share(kind, 48_000);
     for id in &ids {
         wall.engine.set_cost(wall.rack.slot_of(id).unwrap(), ns);
     }
     let before = wall.held();
     guarded(&mut wall, 0.30);
-    // The seed's bench sum is below 0.30, so the machine reads busy, and
-    // the culled modules' timings (taken when they were last heard) are
-    // scaled by the factor, as their bench shares would be (KZ-D03c).
+    wall.engine.shared().set_fixed_load(0.15);
+    // Sleeping modules use the current bench factor rather than old timings.
     let busy = wall.busy();
-    assert!(busy > 1.0, "{busy}");
+    assert!((busy - 1.0).abs() < f32::EPSILON, "{busy}");
     assert!(
         (0.30 / before as f32).mul_add(2.0, 40.0f32.mul_add(share * busy, 0.30))
             < LOAD_GUARD * SETTLE_SHARE
@@ -524,13 +518,7 @@ fn a_busy_machine_costs_new_modules_higher() {
     guarded(&mut wall, 2.0 * bench);
     let busy = wall.busy();
     assert!((busy - 2.0).abs() < f32::EPSILON);
-    let current: f32 = wall
-        .patch
-        .modules()
-        .iter()
-        .map(|module| wall.module_share(&module.id, module.kind, busy))
-        .sum();
-    let rest = (wall.engine.shared().render_load() - current).max(0.0);
+    let rest = wall.engine.shared().fixed_load();
     let sum: f32 = incoming
         .modules()
         .iter()
@@ -570,6 +558,7 @@ fn a_quiet_machine_is_costed_at_the_bench() {
     // A larger bench sum keeps the factor quiet while exercising refusal text.
     heard_chain(&mut wall, 6);
     guarded(&mut wall, 0.75);
+    wall.engine.shared().set_fixed_load(0.75);
     for module in wall.patch.modules() {
         wall.engine
             .set_cost(wall.rack.slot_of(&module.id).unwrap(), 0.0);
@@ -598,6 +587,7 @@ fn a_quiet_machine_is_costed_at_the_bench() {
     assert_eq!(notes, [warning]);
     measured_chain(&mut wall);
     guarded(&mut wall, 0.25);
+    wall.engine.shared().set_fixed_load(0.0);
     request(&mut wall, &load).unwrap();
     assert_eq!(wall.patch.to_file().modules, incoming.to_file().modules);
 }
@@ -670,7 +660,7 @@ fn a_measured_module_is_not_scaled() {
     );
     assert!((wall.module_share(&heard, kind, busy) - share).abs() < 1e-6);
     assert!(wall.unheard.contains(&dormant));
-    let stale_share = 2.0 * share;
+    let stale_share = wall.kind_share_now(heavy(), busy);
     assert!((wall.module_share(&dormant, heavy(), busy) - stale_share).abs() < 1e-6);
     wall.engine.forget_cost(wall.rack.slot_of(&heard).unwrap());
     let new_share = 2.0 * super::super::cost::kind_share(kind, wall.engine.sample_rate());
