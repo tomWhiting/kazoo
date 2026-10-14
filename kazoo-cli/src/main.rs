@@ -43,6 +43,7 @@ fn main() -> ExitCode {
         },
         Command::Mouth(args) => finish(kazoo_mouth::run(args.into())),
         Command::Tui => finish(kazoo_tui::run(kazoo_tui::Args::default())),
+        Command::Tree(args) => finish(tree(&args)),
     }
 }
 
@@ -54,6 +55,26 @@ fn finish(result: color_eyre::Result<()>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn tree(args: &kazoo::cli::TreeArgs) -> color_eyre::Result<()> {
+    let dir = kazoo_tree::tree_dir()?;
+    if args.print {
+        let text = kazoo_tree::print(dir, args.cols, args.rows)?;
+        let mut out = std::io::stdout().lock();
+        let written = std::io::Write::write_all(&mut out, text.as_bytes())
+            .and_then(|()| std::io::Write::flush(&mut out));
+        // A reader that stops early (`| head`) took all it wanted: done.
+        let stopped_early = written
+            .as_ref()
+            .is_err_and(|err| err.kind() == std::io::ErrorKind::BrokenPipe);
+        if !stopped_early {
+            written?;
+        }
+    } else {
+        kazoo_tree::run(dir)?;
+    }
+    Ok(())
 }
 
 fn wall(command: Option<WallCommand>) -> color_eyre::Result<()> {

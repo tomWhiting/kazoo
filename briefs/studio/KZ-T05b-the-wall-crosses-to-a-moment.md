@@ -8,6 +8,8 @@ Read by Cassio, 13 Oct evening, line by line. Changes: the lane opens only after
 
 Time: about 75 minutes of a builder's work. One mechanism: the wall moving its engine from one wall to another by birth mark, over time, with every fade timed in frames and finished by the tick. Crates: kazoo-wall, and kazoo-mcp for one test literal. Depends: T04a, T04b, T04c, T04d (a go, its undo, `What::Go`), KZ-D03b (`kind_share`, `is_sink`, `load_room_as`) and T05a (`Route::glide`, `Command::TempoGlide`), all of which must have landed before this lane opens.
 
+**Amended by Cassio, 15 Oct 00:4x, for KZ-T11a (which runs first):** the wall keeps an `origin`, the song position its modules count from. A crossing's arriving modules start at the crossing's start, and the arrival is set on a bar, so the arriving wall's origin is that downbeat and a moment sounds the same every time it is reached.
+
 Files (ten):
 1. `kazoo-wall/src/protocol/mod.rs`: `What::Go` gains `beats`; `DEFAULT_CROSS_BEATS`, `MAX_CROSS_BEATS`.
 2. `kazoo-wall/src/change.rs`: a go's words say its crossing; its test literals gain `beats`.

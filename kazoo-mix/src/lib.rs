@@ -20,9 +20,14 @@ pub mod song;
 pub mod source;
 pub mod studio_clock;
 pub mod tap;
+mod tempo_store;
 #[cfg(test)]
 mod test_support;
 pub mod ui;
 pub mod worker;
 
 pub use run::{Args, USAGE, cli, parse_args, run};
+
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;

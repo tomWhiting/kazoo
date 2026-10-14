@@ -29,7 +29,9 @@ It does not play, audition or burn anything. Those belong to the wall.
 It looks like a tree, not a git graph.
 
 - **It grows from roots,** with the trunk rising from the ground. Branches leave where they budded and wander outward, sideways, a little up or down, looking for room, the way branches look for light.
-- **Old growth never moves.** Each branch keeps the shape it grew with, decided by its own seed and by the space that was free when it grew. New buds only fill free space. Your past is fixed, so its picture is too: a place you remember in the tree is where you left it, next week and next year. This is the main thing that makes it different from a git graph, where everything shifts every time something new arrives.
+- **Old growth never moves.** Each branch keeps the shape it grew with, decided by its own seed and by the space that was free when it grew. New buds only fill free space. Your past is fixed, so its picture is too: a place you remember in the tree is where you left it, next week and next year. This is the main thing that makes it different from a git graph, where everything shifts every time something new arrives. To keep that promise, the order the tree first grew in is written down beside the tree (a small ledger in the tree's own folder) and every later drawing follows it. Times alone cannot keep it: two branches can grow in the same second, the wall dates a gap after the changes it covers, and a branch made by hand can appear at any time with old moments in it.
+- **Old growth never changes its look either.** What is new is shown by a small light (✧) at the tip of a limb that grew in the last hour by the clock, never by colouring the limb itself, so nothing already drawn changes when the hour passes.
+- **Nothing read is left out.** A moment that no branch holds any more (a branch deleted by hand) is still drawn, on a limb of its own marked "(no branch)", and the footer says so.
 - **Thickness is how much was alive:** many modules make a thick limb, a sparse wall a thin one.
 - **Colour is how it sounded,** drawn from what the wall heard at each moment: its brightness, where the energy sat, how busy it was. A dark, slow evening reads differently from a bright, busy afternoon, at a glance.
 - **Marks hang off it:** bookmarks (◆), saves, the wall's own place (◉), and later memories and lanterns (●) and comments (✎).
@@ -71,7 +73,7 @@ It draws with the terminal's graphics protocol where it can (Ghostty and Kitty, 
 2. Each moment records its sound from now on (KZ-T08c), which gives the colours.
 3. The lanes view.
 4. The graphics-protocol drawing, with colour.
-5. Going to a moment from the tree. That waits for the wall's own "go to a moment" (KZ-T04b, being built), and for the journey over N beats (KZ-T05b, T05c).
+5. Going to a moment from the tree, and flowing through them (Tom, 15 Oct 00:0x: "the arrow keys should just be... to move up or over to a branch... with sort of auto confirmation. Since it's all saved"). Up and Down walk the changes along a branch, Right steps into the nearest branch ahead, Left back to where the branch grew; while following (`f`, on from the start) the wall goes wherever the selection rests for 150 ms, one go at a time, and `g` goes at once. The tree goes as Tom's console, so a go is never refused for the wall's guess at its cost (it is put up, with a note). For now the wall jumps; the journey over N beats comes with KZ-T05b and T05c. Every go is undoable: the wall keeps itself as it was first.
 
 ## For Cally
 

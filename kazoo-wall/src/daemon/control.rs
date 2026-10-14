@@ -21,6 +21,8 @@ use kazoo_core::host::link::connect_config_or_direct;
 use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig};
 
 mod link_diagnostics;
+#[cfg(test)]
+mod tempo_tests;
 
 use super::DeskMode;
 use super::audio::headless_lead_frames;
@@ -741,6 +743,15 @@ impl Control {
         console: bool,
         watcher: bool,
     ) -> Response {
+        if matches!(seat, "desk" | "kazoo-wall") {
+            return Response::failure(
+                id,
+                WallError::new(
+                    ErrorCode::BadName,
+                    format!("'{seat}' is a reserved seat name; choose another name."),
+                ),
+            );
+        }
         if !valid_name(seat) {
             return Response::failure(
                 id,

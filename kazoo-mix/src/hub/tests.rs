@@ -2,6 +2,7 @@
 //! real audio callback path (patchbay, engine, shared state).
 
 mod named_link;
+pub mod tempo;
 mod transport;
 mod wake;
 
@@ -43,7 +44,11 @@ fn unique_socket() -> PathBuf {
 
 impl Rig {
     fn new(reserved: [bool; DESK_CHANNELS]) -> Self {
-        let shared = Arc::new(SharedState::new());
+        Self::with_shared(reserved, SharedState::new())
+    }
+
+    fn with_shared(reserved: [bool; DESK_CHANNELS], shared: SharedState) -> Self {
+        let shared = Arc::new(shared);
         let (hub_end, callback_end) = patchbay(PATCH_CAPACITY);
         let socket = unique_socket();
         let hub = Hub::start(
@@ -57,7 +62,7 @@ impl Rig {
             hub_end,
         )
         .unwrap();
-        let engine = MixerEngine::new(DESK_CHANNELS, RATE).unwrap();
+        let engine = MixerEngine::with_tempo(DESK_CHANNELS, RATE, shared.transport().bpm).unwrap();
         let callback =
             AudioCallback::new(engine, Arc::clone(&shared), 2).with_patchbay(callback_end);
         Self {
