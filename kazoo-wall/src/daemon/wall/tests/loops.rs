@@ -11,10 +11,11 @@ use crate::protocol::LoopOp;
 
 /// A wall that has just loaded `patch`, its reel store at `dir`.
 fn loaded(patch: Patch, dir: &std::path::Path) -> (Wall, Engine) {
-    let (mut wall, engine) = wall();
+    let (mut wall, mut engine) = wall();
     wall.loops = Loops::with_reels_dir(dir.to_path_buf());
     wall.patch = patch;
     wall.swap_engine();
+    land(&wall, &mut engine);
     (wall, engine)
 }
 
@@ -393,7 +394,7 @@ use kazoo_core::reels::ReelStore;
 
 fn taking_wall(dir: &std::path::Path) -> (Wall, Engine, tempfile::TempDir) {
     let state_dir = reels_dir();
-    let (mut wall, engine) = saved_wall(None, dir);
+    let (mut wall, mut engine) = saved_wall(None, dir);
     wall.store = Some(Store::open(state_dir.path()).unwrap());
     wall.patch.add("vco", None, None).unwrap();
     wall.patch
@@ -401,6 +402,7 @@ fn taking_wall(dir: &std::path::Path) -> (Wall, Engine, tempfile::TempDir) {
         .unwrap();
     wall.patch.turn("loop1", "bars", 1.0, Some(0.0)).unwrap();
     wall.swap_engine();
+    land(&wall, &mut engine);
     (wall, engine, state_dir)
 }
 
@@ -606,6 +608,7 @@ fn a_snapshot_reports_loop_seams_and_paused_checkpoints() {
     wall.loops = Loops::with_reels_dir(dir.path().to_path_buf());
     wall.patch = patch;
     wall.swap_engine();
+    land(&wall, &mut engine);
     wall.loops.wait_install_for_test();
     render(&mut engine, 4_096);
     wall.tick(Instant::now());
@@ -623,6 +626,7 @@ fn a_snapshot_reports_loop_seams_and_paused_checkpoints() {
     record.tape.as_mut().unwrap().anchor = 8.0;
     wall.patch.set_loop("loop2", record).unwrap();
     wall.swap_engine();
+    land(&wall, &mut engine);
     wall.loops.wait_install_for_test();
     render(&mut engine, 4_096);
     wall.tick(Instant::now());

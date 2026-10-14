@@ -96,6 +96,7 @@ pub enum TreeItem {
     /// The whole wall, after change `seq`.
     Whole {
         kind: WholeKind,
+        changes: Vec<u64>,
         seq: u64,
         clock: Option<ClockStamp>,
         files: Files,
@@ -205,6 +206,7 @@ impl TreeItem {
                 }
                 Self::Whole {
                     files: whole,
+                    changes,
                     clock,
                     ..
                 } => {
@@ -213,6 +215,7 @@ impl TreeItem {
                         .map(|(p, b)| p.len() + b.len() + 64)
                         .sum::<usize>()
                         + clock.as_ref().map_or(0, |c| c.line.len() + 32)
+                        + changes.len() * std::mem::size_of::<u64>()
                 }
                 Self::Mark { name, .. } => name.len(),
                 Self::SaveMark { name, at } => name.len() + at.len(),
@@ -718,6 +721,7 @@ impl Writer {
             }
             TreeItem::Whole {
                 kind,
+                changes,
                 seq,
                 clock,
                 files,
@@ -752,9 +756,10 @@ impl Writer {
                     WholeKind::Start => "start",
                     WholeKind::Gap => "gap",
                 };
-                let commit = Commit::whole(kind, seq, clock.as_ref(), files, self.through);
-                if seq > self.through.unwrap_or(0) {
-                    self.gaps.push((self.through.unwrap_or(0) + 1, seq));
+                let missing = git::missing_changes(dir, &changes, self.through)?;
+                let commit = Commit::whole(kind, seq, clock.as_ref(), files, &missing);
+                if let (Some(&first), Some(&last)) = (missing.first(), missing.last()) {
+                    self.gaps.push((first, last));
                 }
                 (commit, seq, crate::change::utc_now())
             }
@@ -992,3 +997,6 @@ pub fn files_diff(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod restart_tests;
