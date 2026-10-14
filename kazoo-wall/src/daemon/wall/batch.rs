@@ -96,7 +96,7 @@ impl Wall {
             .iter()
             .any(|request| matches!(request, Request::Tempo { .. }))
         {
-            self.hear_the_desk_first();
+            self.hear_the_desk_first(now);
         }
         let before = self.patch.clone();
         let reckoning = (self.file_bytes, self.file_grown, self.file_measured_at);
@@ -149,9 +149,9 @@ impl Wall {
 
     /// Log a desk move no tick has heard yet (see [`Self::sync_desk_tempo`]),
     /// when the wall follows a desk.
-    fn hear_the_desk_first(&mut self) {
+    fn hear_the_desk_first(&mut self, now: Instant) {
         if self.on_the_desk() {
-            self.sync_desk_tempo(clamp_bpm(self.engine.shared().bpm()));
+            self.sync_desk_tempo(clamp_bpm(self.engine.shared().bpm()), now);
             self.finish_desk_tempo();
         }
     }
@@ -214,6 +214,7 @@ impl Wall {
         seat: &str,
         seq: u64,
         what: &What,
+        now: Instant,
     ) -> Result<Outcome, WallError> {
         let What::Batch { changes, .. } = what else {
             return Err(error(ErrorCode::Internal, "a batch undo needs a batch"));
@@ -223,7 +224,7 @@ impl Wall {
             .iter()
             .any(|change| matches!(change, What::Tempo { .. }));
         if tempo {
-            self.hear_the_desk_first();
+            self.hear_the_desk_first(now);
         }
         let now = if desk {
             clamp_bpm(self.engine.shared().bpm())

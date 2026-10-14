@@ -5,6 +5,7 @@ mod tests;
 
 use std::time::{Duration, Instant};
 
+use super::go_tempo::TreeOutcome;
 use super::{Bucket, Kept, Outcome, Source, Wall, encode, error, save_error, unchanged};
 use super::{SAVE_BURST, SAVE_REFILL_PER_SECOND, SAVES_BURST, SAVES_REFILL_PER_SECOND};
 use crate::patch::Patch;
@@ -343,10 +344,15 @@ impl Wall {
         Ok(true)
     }
 
-    fn act_tree(&mut self, waiting: &Waiting, answer: Answered) -> Result<Outcome, WallError> {
+    fn act_tree(
+        &mut self,
+        waiting: &Waiting,
+        answer: Answered,
+        now: Instant,
+    ) -> Result<TreeOutcome, WallError> {
         let seat = (waiting.seat.as_str(), waiting.console);
         match (&waiting.what, answer) {
-            (Asked::Mark, Answered::Marked(mark)) => Ok(Outcome {
+            (Asked::Mark, Answered::Marked(mark)) => Ok(TreeOutcome::Ready(Outcome {
                 result: encode(&mark)?,
                 change: None,
                 event: Some(Event::Marked {
@@ -356,10 +362,10 @@ impl Wall {
                     at: mark.at,
                 }),
                 pending: None,
-            }),
+            })),
             (Asked::List, Answered::Listed(mut tree)) => {
                 tree.revision = self.revision();
-                encode(&tree).map(unchanged)
+                encode(&tree).map(unchanged).map(TreeOutcome::Ready)
             }
             (Asked::Go { .. }, Answered::Resolved { to, here, wall }) => {
                 if to.commit == here.commit {
@@ -375,7 +381,14 @@ impl Wall {
                 }
                 let (incoming, notes) =
                     Patch::load(&wall).map_err(|err| error(ErrorCode::BrokenSave, err))?;
-                self.replace(seat, incoming, &Source::Moment { to, from: here }, notes)
+                self.replace(
+                    seat,
+                    incoming,
+                    &Source::Moment { to, from: here },
+                    notes,
+                    now,
+                )
+                .map(TreeOutcome::Loaded)
             }
             (
                 Asked::Back {
@@ -401,7 +414,9 @@ impl Wall {
                         from: here,
                     },
                     read.notes,
+                    now,
                 )
+                .map(TreeOutcome::Loaded)
             }
             _ => Err(error(
                 ErrorCode::Internal,
@@ -430,7 +445,7 @@ impl Wall {
                         self.tree_waiting.insert(ticket, waiting);
                         continue;
                     }
-                    Ok(false) => self.act_tree(&waiting, answer),
+                    Ok(false) => self.act_tree(&waiting, answer, now),
                     Err(err) => Err(err),
                 },
             };
@@ -438,13 +453,12 @@ impl Wall {
                 self.refund_tree(&waiting, err, false);
             }
             match result {
-                Ok(outcome)
-                    if self.on_desk()
-                        && matches!(waiting.what, Asked::Go { .. } | Asked::Back { .. }) =>
-                {
-                    self.wait_for_desk_tempo(ticket, outcome);
+                Ok(TreeOutcome::Loaded(loaded)) if self.on_desk() => {
+                    self.wait_for_desk_tempo(ticket, loaded);
                 }
-                other => replies.push((ticket, other)),
+                Ok(TreeOutcome::Loaded(loaded)) => replies.push((ticket, self.answer_load(loaded))),
+                Ok(TreeOutcome::Ready(outcome)) => replies.push((ticket, Ok(outcome))),
+                Err(error) => replies.push((ticket, Err(error))),
             }
         }
         let expired: Vec<_> = self

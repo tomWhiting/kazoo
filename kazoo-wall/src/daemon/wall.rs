@@ -43,10 +43,10 @@ use crate::probe;
 use crate::protocol::{
     ArrangeResult, BrokenSave, CatalogueResult, Change, ChangeResult, ClockSource, ClockStamp,
     DeleteSaveResult, EngineHealth, ErrorCode, Event, Faults, GroupsResult, KindInfo, KnobInfo,
-    KnobView, Levels, Listen, ListenResult, LoadResult, LogHealth, LogPage, MAX_PROBES,
-    MAX_SAVE_NAME, ModuleTiming, ModuleView, Place, PortInfo, Probe, ProbeResult, RecordResult,
-    Recording, Request, SaveInfo, SaveMark, SaveResult, SavesResult, Snapshot, TempoResult,
-    Timings, WallError, What, is_auto_save, valid_save_name, widen,
+    KnobView, Levels, Listen, ListenResult, LogHealth, LogPage, MAX_PROBES, MAX_SAVE_NAME,
+    ModuleTiming, ModuleView, Place, PortInfo, Probe, ProbeResult, RecordResult, Recording,
+    Request, SaveInfo, SaveMark, SaveResult, SavesResult, Snapshot, TempoResult, Timings,
+    WallError, What, is_auto_save, valid_save_name, widen,
 };
 use crate::store::{LoadWriteError, Need, SaveError, Store};
 use crate::{MAX_INPUTS, MAX_KNOBS};
@@ -546,6 +546,7 @@ pub struct Wall {
     pub tree_answered: Vec<crate::tree::thread::TreeAnswer>,
     tree_waiting: BTreeMap<u64, moments::Waiting>,
     desk_go_waiting: BTreeMap<u64, go_tempo::Waiting>,
+    desk_go_settled: Vec<(u64, Result<Outcome, WallError>)>,
     next_tree_ticket: u64,
     mark_buckets: HashMap<String, Bucket>,
     tree_buckets: HashMap<String, Bucket>,
@@ -1374,6 +1375,7 @@ impl Wall {
             clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
             desk_tempo: tempo_sync::DeskTempo::default(),
             desk_go_waiting: BTreeMap::new(),
+            desk_go_settled: Vec::new(),
             desk,
             log: history.into_iter().skip(skip).collect(),
             next_seq,
@@ -1420,8 +1422,11 @@ impl Wall {
     /// rebuilt: every module goes in afresh, knobs at their targets. A
     /// recording under way ends with the old engine, and carries on in a
     /// new file on the new one (whose rate may differ); both are logged,
-    /// and told at the next [`Self::tick`].
-    pub fn attach(&mut self, mut engine: EngineControl, desk: Option<HubLink>) {
+    /// and told at the next [`Self::tick`]. Pending go asks are settled
+    /// before the swap counter resets, with replies at [`Self::tree_answers`].
+    pub fn attach(&mut self, mut engine: EngineControl, desk: Option<HubLink>, now: Instant) {
+        self.desk = desk;
+        self.settle_desk_go(now);
         self.note_loop_restart();
         let before = self.recorder.sample_rate();
         let stopped = self.recorder.attach(&mut engine);
@@ -1431,7 +1436,6 @@ impl Wall {
         // and has measured no load yet.
         self.engine_counts = (0, 0);
         self.spare_table = None;
-        self.desk = desk;
         // A new engine has no swap to take in, and has taken in no cable
         // table: everything goes in afresh.
         self.swaps_sent = 0;
@@ -1582,8 +1586,9 @@ impl Wall {
     /// knobs at their targets and nothing gliding, with fresh lines at
     /// delayed jacks, and the master fades back in (see
     /// [`Command::Hush`]). The engine's clock, the desk link and a
-    /// recording under way carry on through it; the wall's own tempo
-    /// becomes the patch's, unless the desk keeps the tempo.
+    /// recording under way carry on through it. A go asks the linked desk
+    /// for the patch's tempo at the landing bar; off the desk the engine
+    /// takes the patch's tempo directly.
     fn swap_engine(&mut self, ask_desk: bool) {
         self.engine.begin_swap();
         self.engine.send(Command::Hush);
@@ -2661,8 +2666,6 @@ impl Wall {
     ) -> Result<Outcome, WallError> {
         if request.is_change() {
             self.finish_desk_tempo();
-        }
-        if request.is_change() {
             let bucket = self
                 .buckets
                 .entry(seat.to_string())
@@ -2928,8 +2931,8 @@ impl Wall {
             Request::Batch { note, changes } => self.batch(seat, note, changes, now),
             Request::ChainAdd { name } => self.chain_add(seat, name, now),
             Request::Chains => self.chains(),
-            Request::Undo { change } => self.undo((seat, console), *change),
-            Request::Tempo { bpm } => self.tempo(seat, *bpm, None),
+            Request::Undo { change } => self.undo((seat, console), *change, now),
+            Request::Tempo { bpm } => self.tempo(seat, *bpm, None, now),
             Request::Loop { module, op } => self.loop_change(seat, module, op),
             Request::Speak {
                 module,
@@ -2945,8 +2948,8 @@ impl Wall {
             Request::Go { moment } => self.go((seat, console), moment, now),
             Request::Tree { recent } => self.tree(seat, *recent, now),
             Request::Saves => self.saves(),
-            Request::Load { name } => self.load((seat, console), name),
-            Request::New => self.blank((seat, console)),
+            Request::Load { name } => self.load((seat, console), name, now),
+            Request::New => self.blank((seat, console), now),
             Request::DeleteSave { name } => self.delete_save(seat, name),
             Request::Hello { .. }
             | Request::Subscribe
@@ -3328,7 +3331,12 @@ impl Wall {
         })
     }
 
-    fn undo(&mut self, (seat, console): (&str, bool), seq: u64) -> Result<Outcome, WallError> {
+    fn undo(
+        &mut self,
+        (seat, console): (&str, bool),
+        seq: u64,
+        now: Instant,
+    ) -> Result<Outcome, WallError> {
         // A change that did not happen (whether or not its line is in the
         // log), or a load whose wall did not come back up when the wall
         // started again, left nothing to undo.
@@ -3389,16 +3397,16 @@ impl Wall {
             ..
         } = what
         {
-            return self.undo_load((seat, console), seq, &backup, &fingerprint);
+            return self.undo_load((seat, console), seq, &backup, &fingerprint, now);
         }
         if !self.walls().holds(seq) {
             return Err(self.replaced_since(seq));
         }
         if let What::Tempo { from, .. } = what {
-            return self.tempo(seat, from, Some(seq));
+            return self.tempo(seat, from, Some(seq), now);
         }
         if matches!(what, What::Batch { .. }) {
-            return self.undo_batch_change(seat, seq, &what);
+            return self.undo_batch_change(seat, seq, &what, now);
         }
         // Undoing a removal brings a module, its cables and its words back,
         // and undoing an unplugging brings a cable back: more work, like
@@ -3422,7 +3430,13 @@ impl Wall {
         self.changed(seat, inverse, Some(seq), None, None)
     }
 
-    fn tempo(&mut self, seat: &str, bpm: f64, undoes: Option<u64>) -> Result<Outcome, WallError> {
+    fn tempo(
+        &mut self,
+        seat: &str,
+        bpm: f64,
+        undoes: Option<u64>,
+        now: Instant,
+    ) -> Result<Outcome, WallError> {
         if !bpm.is_finite() {
             return Err(error(ErrorCode::BadRequest, "the tempo must be a number"));
         }
@@ -3455,7 +3469,7 @@ impl Wall {
             // A desk move not yet heard by a tick is logged before the ask,
             // so the tick after the ask hears nothing new until the desk
             // answers it.
-            self.sync_desk_tempo(from);
+            self.sync_desk_tempo(from, now);
             self.finish_desk_tempo();
         }
         // The log first: the desk is asked only once the change is in it,
@@ -3792,7 +3806,12 @@ impl Wall {
     }
 
     /// Replace the wall with the save `name`, for `seat`.
-    fn load(&mut self, (seat, console): (&str, bool), name: &str) -> Result<Outcome, WallError> {
+    fn load(
+        &mut self,
+        (seat, console): (&str, bool),
+        name: &str,
+        now: Instant,
+    ) -> Result<Outcome, WallError> {
         check_save_name(name)?;
         let read = self
             .saves_store()?
@@ -3814,14 +3833,22 @@ impl Wall {
             name: read.name,
             hash: read.hash,
         };
-        self.replace((seat, console), *read.patch, &Source::Save(kept), notes)
+        self.replace(
+            (seat, console),
+            *read.patch,
+            &Source::Save(kept),
+            notes,
+            now,
+        )
+        .and_then(|loaded| self.answer_load(loaded))
     }
 
     /// Replace the wall with an empty one at the same tempo, for `seat`.
-    fn blank(&mut self, (seat, console): (&str, bool)) -> Result<Outcome, WallError> {
+    fn blank(&mut self, (seat, console): (&str, bool), now: Instant) -> Result<Outcome, WallError> {
         let mut empty = Patch::empty(self.patch.tempo);
         empty.seed = crate::chance::fresh_wall_seed();
-        self.replace((seat, console), empty, &Source::Empty, Vec::new())
+        self.replace((seat, console), empty, &Source::Empty, Vec::new(), now)
+            .and_then(|loaded| self.answer_load(loaded))
     }
 
     /// Undo load `seq`, for `seat`: bring back the wall it replaced, from
@@ -3835,6 +3862,7 @@ impl Wall {
         seq: u64,
         backup: &str,
         fingerprint: &str,
+        now: Instant,
     ) -> Result<Outcome, WallError> {
         let read = self.read_backup(seq, backup, fingerprint)?;
         self.replace(
@@ -3848,7 +3876,9 @@ impl Wall {
                 },
             },
             read.notes,
+            now,
         )
+        .and_then(|loaded| self.answer_load(loaded))
     }
 
     /// Where the wall as it is will be kept before it is replaced: the
@@ -3930,8 +3960,9 @@ impl Wall {
     /// The tempo that will play once `incoming` is up: its own, or the
     /// desk's while the wall follows it. What else a load should say about
     /// what goes on through it goes in `notes`.
-    fn playing_after(&self, incoming: &Patch, notes: &mut Vec<String>) -> f64 {
-        let playing = if self.on_desk() {
+    fn playing_after(&self, incoming: &Patch, source: &Source, notes: &mut Vec<String>) -> f64 {
+        let go = matches!(source, Source::Moment { .. } | Source::Back { .. });
+        let playing = if self.on_desk() && !go {
             let desk = clamp_bpm(self.engine.shared().bpm());
             if (incoming.tempo - desk).abs() > 1e-9 {
                 notes.push(format!(
@@ -3967,14 +3998,15 @@ impl Wall {
         mut incoming: Patch,
         source: &Source,
         mut notes: Vec<String>,
-    ) -> Result<Outcome, WallError> {
+        now: Instant,
+    ) -> Result<go_tempo::Loaded, WallError> {
         if self.store.is_none() {
             return Err(no_saves());
         }
         let warning = self.load_room_as(console, &incoming, source, &mut notes)?;
         let how = source.how();
         if matches!(source, Source::Moment { .. } | Source::Back { .. }) && self.on_desk() {
-            self.sync_desk_tempo(clamp_bpm(self.engine.shared().bpm()));
+            self.sync_desk_tempo(clamp_bpm(self.engine.shared().bpm()), now);
         }
         self.finish_desk_tempo();
         // The daemon's own changes owed to the log go first (they take
@@ -3986,7 +4018,7 @@ impl Wall {
             self.engine.sample_rate(),
             &backup.name,
         ));
-        let playing = self.tempo_after_go(&incoming, source, &mut notes);
+        let playing = self.playing_after(&incoming, source, &mut notes);
         let incoming_print = Print::of(&incoming);
         let what = source.replacement(&backup, &incoming, playing, console);
         // The wall put up starts a clock line with this change. Should the
@@ -4063,22 +4095,13 @@ impl Wall {
             "lands on bar {:.0}",
             self.engine.landing_beat() / 4.0 + 1.0
         ));
-        let result = encode(&LoadResult {
-            change: change.clone(),
-            backup: backup.name.clone(),
+        Ok(go_tempo::Loaded::new(
+            change,
+            seat,
+            save,
+            backup.name,
             notes,
-        })?;
-        Ok(Outcome {
-            result,
-            event: Some(Event::Loaded {
-                seq: change.seq,
-                seat: seat.to_string(),
-                save,
-                backup: backup.name,
-            }),
-            change: Some(change),
-            pending: None,
-        })
+        ))
     }
 
     /// Delete the save `name` for `seat` (a console). Not a change; every
@@ -4426,6 +4449,7 @@ impl Wall {
     /// and `patch.json` stays where the log is, so the next start numbers
     /// on from what was written and nothing told is ever numbered again.
     pub fn close(&mut self, now: Instant) -> Vec<Event> {
+        self.settle_desk_go(now);
         self.finish_desk_tempo();
         self.save(now);
         self.finish_tree();

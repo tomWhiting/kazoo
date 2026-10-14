@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::*;
+use crate::protocol::LoadResult;
 mod moments;
 use crate::SUB_BLOCK;
 use crate::dsp::{Io, Module as DspModule, Tick};
@@ -1194,7 +1195,7 @@ fn a_new_engine_rate_measures_latency_again() {
         flanger_at(1.0, 48_000.0)
     );
     let (_engine, control) = engine(EngineConfig::new(96_000, 120.0, 0.0), None);
-    wall.attach(control, None);
+    wall.attach(control, None, Instant::now());
     assert_eq!(
         latency_of_module(&wall, "flanger1"),
         flanger_at(1.0, 96_000.0)
@@ -1663,7 +1664,7 @@ fn a_rebuilt_engine_carries_the_recording_on_into_a_new_file() {
     engine.render(&mut buffer, 2);
     drop(engine);
     let (mut rebuilt, control) = crate::engine::engine(EngineConfig::new(44_100, 120.0, 0.0), None);
-    wall.attach(control, None);
+    wall.attach(control, None, Instant::now());
     let shown = wall.snapshot().recording.unwrap();
     assert_ne!(shown.path, first);
     assert_eq!(shown.seat, "Tom", "still Tom's recording");
@@ -3448,7 +3449,7 @@ fn a_seat_that_is_not_a_console_has_a_save_allowance_and_a_cap() {
 /// A link to a desk on a socket in `dir` that takes one instrument at
 /// `bpm`, and what to keep for as long as the link should stay up: its
 /// audio half and the desk's end.
-fn a_desk(
+pub(super) fn a_desk(
     dir: &std::path::Path,
     bpm: f32,
 ) -> (
@@ -4054,7 +4055,7 @@ fn an_engine_rebuilt_mid_swap_plays_the_new_walls_tempo() {
     // audio is rebuilt on a new engine started at the old wall's tempo.
     load_save(&mut wall, "slow").unwrap();
     let (mut rebuilt, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
-    wall.attach(control, None);
+    wall.attach(control, None, Instant::now());
     play(&mut wall, &mut rebuilt);
     assert!(
         (wall.engine_mut().shared().bpm() - 97.0).abs() < 1e-9,
@@ -4799,7 +4800,7 @@ fn a_rebuilt_engine_at_another_rate_measures_afresh() {
     render_only(&mut engine, 4_800);
     drop(engine);
     let (mut rebuilt, control) = crate::engine::engine(EngineConfig::new(96_000, 120.0, 0.0), None);
-    wall.attach(control, None);
+    wall.attach(control, None, Instant::now());
     assert!(wall.readings.is_empty());
     assert!(probed(&mut wall, None).probes[0].scope.is_none());
     let mut buffer = vec![0.0_f32; 1_920 * 2];

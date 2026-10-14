@@ -41,8 +41,8 @@ impl DeskTempo {
 }
 
 impl Wall {
-    pub(super) fn sync_desk_tempo(&mut self, bpm: f64) {
-        self.sync_desk_tempo_at(bpm, Instant::now());
+    pub(super) fn sync_desk_tempo(&mut self, bpm: f64, now: Instant) {
+        self.sync_desk_tempo_at(bpm, now);
     }
 
     pub(super) fn sync_desk_tempo_at(&mut self, bpm: f64, now: Instant) {
@@ -97,7 +97,9 @@ impl Wall {
     }
 
     pub(super) fn finish_desk_tempo(&mut self) {
-        if let Some(gesture) = self.desk_tempo.gesture.take() {
+        if let Some(gesture) = self.desk_tempo.gesture.take()
+            && (gesture.to - gesture.from).abs() > TEMPO_THRESHOLD
+        {
             let paid = self.commit_own(
                 "desk",
                 What::Tempo {
@@ -110,11 +112,11 @@ impl Wall {
         }
     }
 
-    pub(super) fn desk_kept_tempo(&mut self, bpm: f64) {
+    pub(super) fn desk_kept_tempo(&mut self, bpm: f64, now: Instant) {
         self.desk_tempo.asked.clear();
         self.desk_tempo.heard = None;
         self.desk_tempo.last = Some(self.patch.tempo);
-        self.sync_desk_tempo(bpm);
+        self.sync_desk_tempo(bpm, now);
         self.finish_desk_tempo();
     }
 }
@@ -151,13 +153,13 @@ mod tests {
         for bpm in [100.0, 105.0, 110.0] {
             wall.desk_tempo.asked(bpm);
         }
-        wall.sync_desk_tempo(105.0);
+        wall.sync_desk_tempo(105.0, Instant::now());
         assert_eq!(wall.desk_tempo.asked.len(), 1);
         assert_eq!(
             wall.desk_tempo.asked.front().copied().unwrap().to_bits(),
             110.0_f64.to_bits()
         );
-        wall.sync_desk_tempo(108.0);
+        wall.sync_desk_tempo(108.0, Instant::now());
         assert!(wall.desk_tempo.asked.is_empty());
     }
 }

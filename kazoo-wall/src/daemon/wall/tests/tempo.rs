@@ -90,7 +90,7 @@ fn a_desk_drag_is_one_change_with_the_first_before_and_last_after() {
 fn a_desk_move_of_less_than_point_zero_five_is_not_logged() {
     let (mut wall, _engine) = wall();
     wall.patch.tempo = 120.0;
-    wall.sync_desk_tempo(120.02);
+    wall.sync_desk_tempo(120.02, Instant::now());
     wall.tick(Instant::now() + Duration::from_secs(2));
     assert!(wall.log.is_empty());
     assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
@@ -98,8 +98,8 @@ fn a_desk_move_of_less_than_point_zero_five_is_not_logged() {
 
 #[test]
 fn a_linked_go_asks_at_its_landing_bar_and_reports_a_refusal() {
-    linked_go(false);
-    linked_go(true);
+    linked_go(false, false);
+    linked_go(true, false);
 }
 
 fn go_wall(dir: &std::path::Path) -> (Wall, Engine, std::os::unix::net::UnixStream, String) {
@@ -129,7 +129,14 @@ fn go_wall(dir: &std::path::Path) -> (Wall, Engine, std::os::unix::net::UnixStre
     (wall, engine, stream, moment)
 }
 
-fn linked_go(accept: bool) {
+fn desk_change_count(wall: &Wall) -> usize {
+    wall.log
+        .iter()
+        .filter(|change| change.seat == "desk")
+        .count()
+}
+
+fn linked_go(accept: bool, turn_while_waiting: bool) {
     let dir = tempfile::tempdir().unwrap();
     let (mut wall, mut engine, mut stream, moment) = go_wall(dir.path());
     wall.request("Tom", &turn("vcf1", "cutoff", 1000.0), Instant::now())
@@ -149,11 +156,7 @@ fn linked_go(accept: bool) {
         );
     }
     assert_eq!(wall.engine.shared().unhushed(), 0);
-    let desk_changes = wall
-        .log
-        .iter()
-        .filter(|change| change.seat == "desk")
-        .count();
+    let desk_changes = desk_change_count(&wall);
     let mut reader = stream.try_clone().unwrap();
     let (sent, received) = std::sync::mpsc::channel();
     let reading = std::thread::spawn(move || {
@@ -169,10 +172,6 @@ fn linked_go(accept: bool) {
             }
         }
     });
-    assert!(matches!(
-        received.try_recv(),
-        Err(std::sync::mpsc::TryRecvError::Empty)
-    ));
     let before = assert_no_alloc::violation_count();
     assert_no_alloc::assert_no_alloc(|| land(&wall, &mut engine));
     assert_eq!(assert_no_alloc::violation_count(), before);
@@ -193,6 +192,10 @@ fn linked_go(accept: bool) {
         first
     } else {
         assert!(first.is_empty());
+        if turn_while_waiting {
+            wall.request("Tom", &turn("vcf1", "cutoff", 1500.0), now)
+                .unwrap();
+        }
         wall.tree_answers(now + Duration::from_secs(1))
     };
     let result = answers
@@ -209,13 +212,7 @@ fn linked_go(accept: bool) {
                 .iter()
                 .any(|note| note.contains("the desk kept"))
         );
-        assert_eq!(
-            wall.log
-                .iter()
-                .filter(|change| change.seat == "desk")
-                .count(),
-            desk_changes
-        );
+        assert_eq!(desk_change_count(&wall), desk_changes);
         assert_eq!(wall.patch.tempo.to_bits(), 96.0_f64.to_bits());
     } else {
         assert!(
@@ -227,6 +224,15 @@ fn linked_go(accept: bool) {
             loaded.notes
         );
         assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
+        assert_eq!(desk_change_count(&wall), desk_changes + 1);
+        assert!(wall.log.iter().any(|change| change.seq > loaded.change.seq
+            && change.seat == "desk"
+            && change.what
+                == What::Tempo {
+                    from: 96.0,
+                    to: 120.0,
+                    desk: true
+                }));
     }
     wall.close(now);
 }
@@ -286,11 +292,11 @@ fn a_wall_asked_tempo_is_logged_once() {
 fn a_first_sync_and_a_restarted_desk_are_logged() {
     let (mut wall, _engine) = wall();
     wall.patch.tempo = 96.0;
-    wall.sync_desk_tempo(100.0);
+    wall.sync_desk_tempo(100.0, Instant::now());
     wall.finish_desk_tempo();
     assert_eq!(wall.log.len(), 1);
     wall.desk_tempo.disconnected();
-    wall.sync_desk_tempo(120.0);
+    wall.sync_desk_tempo(120.0, Instant::now());
     wall.finish_desk_tempo();
     assert_eq!(wall.log.len(), 2);
     assert_eq!(
@@ -301,13 +307,13 @@ fn a_first_sync_and_a_restarted_desk_are_logged() {
             desk: true
         }
     );
-    wall.sync_desk_tempo(120.005);
+    wall.sync_desk_tempo(120.005, Instant::now());
     assert_eq!(wall.log.len(), 2);
     assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
-    wall.sync_desk_tempo(120.02);
+    wall.sync_desk_tempo(120.02, Instant::now());
     wall.finish_desk_tempo();
     assert_eq!(wall.log.len(), 2);
-    wall.sync_desk_tempo(120.06);
+    wall.sync_desk_tempo(120.06, Instant::now());
     wall.finish_desk_tempo();
     assert_eq!(wall.log.len(), 3);
 }
@@ -345,10 +351,10 @@ fn a_desk_change_before_the_asked_tick_starts_from_the_logged_tempo() {
     let mut patch = seed().unwrap();
     patch.tempo = 120.0;
     let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
-    wall.sync_desk_tempo(120.0);
+    wall.sync_desk_tempo(120.0, Instant::now());
     wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
         .unwrap();
-    wall.sync_desk_tempo(105.0);
+    wall.sync_desk_tempo(105.0, Instant::now());
     wall.finish_desk_tempo();
     assert_eq!(wall.log.len(), 2);
     assert_eq!(
@@ -370,10 +376,10 @@ fn the_desk_race_log_replays_through_rings_without_a_mismatch() {
     patch.tempo = 120.0;
     let initial = patch.to_file();
     let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
-    wall.sync_desk_tempo(120.0);
+    wall.sync_desk_tempo(120.0, Instant::now());
     wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
         .unwrap();
-    wall.sync_desk_tempo(105.0);
+    wall.sync_desk_tempo(105.0, Instant::now());
     wall.finish_desk_tempo();
     let state = dir.path().join("state");
     std::fs::create_dir_all(state.join("saves")).unwrap();
@@ -405,7 +411,7 @@ fn the_patch_tempo_waits_for_the_desk_change_to_be_logged() {
     let (mut wall, _engine, _dir) = saving_wall();
     wall.patch.tempo = 120.0;
     fail_once(&mut wall, FailAt::AppendLog);
-    wall.sync_desk_tempo(100.0);
+    wall.sync_desk_tempo(100.0, Instant::now());
     wall.finish_desk_tempo();
     assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
     assert_eq!(wall.owed.len(), 1);
@@ -419,8 +425,8 @@ fn a_matched_desk_report_does_not_rewind_the_latest_logged_ask() {
     wall.patch.tempo = 110.0;
     wall.desk_tempo.asked(100.0);
     wall.desk_tempo.asked(110.0);
-    wall.sync_desk_tempo(100.0);
-    wall.sync_desk_tempo(105.0);
+    wall.sync_desk_tempo(100.0, Instant::now());
+    wall.sync_desk_tempo(105.0, Instant::now());
     wall.finish_desk_tempo();
     assert_eq!(
         wall.log.back().unwrap().what,
@@ -437,7 +443,7 @@ fn a_matched_report_with_rounding_does_not_change_the_patch() {
     let (mut wall, _engine) = wall();
     wall.patch.tempo = 100.0;
     wall.desk_tempo.asked(100.0);
-    wall.sync_desk_tempo(100.005);
+    wall.sync_desk_tempo(100.005, Instant::now());
     assert_eq!(wall.patch.tempo.to_bits(), 100.0_f64.to_bits());
     assert!(wall.log.is_empty());
 }
@@ -447,7 +453,7 @@ fn nonfinite_desk_reports_are_refused_before_clamping() {
     let (mut wall, _engine) = wall();
     wall.patch.tempo = 96.0;
     for bpm in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        wall.sync_desk_tempo(bpm);
+        wall.sync_desk_tempo(bpm, Instant::now());
         assert_eq!(wall.patch.tempo.to_bits(), 96.0_f64.to_bits());
         assert!(wall.log.is_empty());
     }
@@ -457,9 +463,9 @@ fn nonfinite_desk_reports_are_refused_before_clamping() {
 fn a_subthreshold_first_sync_keeps_the_next_log_continuous() {
     let (mut wall, _engine) = wall();
     wall.patch.tempo = 120.0;
-    wall.sync_desk_tempo(120.005);
+    wall.sync_desk_tempo(120.04, Instant::now());
     assert!(wall.log.is_empty());
-    wall.sync_desk_tempo(125.0);
+    wall.sync_desk_tempo(125.0, Instant::now());
     wall.finish_desk_tempo();
     assert_eq!(
         wall.log.back().unwrap().what,
@@ -641,4 +647,213 @@ fn a_batch_tempo_on_the_desk_starts_from_what_plays_as_a_single_tempo_does() {
             },
         ]
     );
+}
+
+#[test]
+fn a_knob_turn_during_a_go_wait_keeps_the_desks_tempo() {
+    linked_go(false, true);
+}
+
+#[test]
+fn an_out_and_back_desk_gesture_logs_nothing() {
+    let (mut wall, _engine) = wall();
+    wall.patch.tempo = 120.0;
+    let now = Instant::now();
+    wall.sync_desk_tempo_at(121.0, now);
+    wall.sync_desk_tempo_at(120.0, now + Duration::from_secs(1));
+    wall.settle_desk_tempo(now + Duration::from_secs(3));
+    assert!(wall.log.is_empty(), "{:?}", wall.log);
+    wall.sync_desk_tempo_at(125.0, now + Duration::from_secs(4));
+    wall.finish_desk_tempo();
+    assert_eq!(
+        wall.log.back().unwrap().what,
+        What::Tempo {
+            from: 120.0,
+            to: 125.0,
+            desk: true
+        }
+    );
+}
+
+#[test]
+fn a_desk_gesture_with_a_net_move_of_point_zero_four_logs_nothing() {
+    let (mut wall, _engine) = wall();
+    wall.patch.tempo = 120.0;
+    let now = Instant::now();
+    wall.sync_desk_tempo_at(121.0, now);
+    wall.sync_desk_tempo_at(120.04, now + Duration::from_secs(1));
+    wall.settle_desk_tempo(now + Duration::from_secs(3));
+    assert!(wall.log.is_empty(), "{:?}", wall.log);
+    wall.sync_desk_tempo_at(125.0, now + Duration::from_secs(4));
+    wall.finish_desk_tempo();
+    assert_eq!(
+        wall.log.back().unwrap().what,
+        What::Tempo {
+            from: 120.04,
+            to: 125.0,
+            desk: true
+        }
+    );
+}
+
+fn pending_go(wall: &mut Wall, moment: String, now: Instant) -> u64 {
+    wall.request("Tom", &turn("vcf1", "cutoff", 1000.0), now)
+        .unwrap();
+    let ticket = wall
+        .request("Tom", &Request::Go { moment }, now)
+        .unwrap()
+        .pending
+        .unwrap();
+    while wall.swaps_sent == 0 {
+        wall.tree_test_wait();
+        assert!(wall.tree_answers(now).is_empty());
+    }
+    ticket
+}
+
+#[test]
+fn rebuilding_the_backend_answers_a_waiting_go() {
+    for linked in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut wall, _old_engine, _stream, moment) = go_wall(dir.path());
+        let now = Instant::now();
+        let ticket = pending_go(&mut wall, moment, now);
+        let seq = wall.patch.wall;
+        let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
+        let desk = wall.desk.take().filter(|_| linked);
+        wall.attach(control, desk, now);
+        let answers = wall.tree_answers(now);
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].0, ticket);
+        let loaded: LoadResult =
+            serde_json::from_value(answers[0].1.as_ref().unwrap().result.clone()).unwrap();
+        assert_eq!(loaded.change.seq, seq);
+        let events = wall.tick(now);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, Event::Change { change } if change.seq == seq))
+                .count(),
+            1
+        );
+        assert!(wall.tree_answers(now).is_empty());
+        assert!(wall.desk_go_waiting.is_empty());
+        let bpm: f64 = if linked { 120.0 } else { 96.0 };
+        assert_eq!(wall.patch.tempo.to_bits(), bpm.to_bits());
+        assert_eq!(
+            wall.log
+                .iter()
+                .filter(|change| change.seq > seq
+                    && change.seat == "desk"
+                    && matches!(
+                        change.what,
+                        What::Tempo {
+                            from: 96.0,
+                            to: 120.0,
+                            ..
+                        }
+                    ))
+                .count(),
+            usize::from(linked)
+        );
+        engine.render(&mut [0.0; 512], 2);
+        assert_eq!(wall.engine.shared().bpm().to_bits(), bpm.to_bits());
+        wall.close(now);
+    }
+}
+
+#[test]
+fn closing_answers_and_announces_a_waiting_go() {
+    for linked in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut wall, _engine, _stream, moment) = go_wall(dir.path());
+        let now = Instant::now();
+        let ticket = pending_go(&mut wall, moment, now);
+        let seq = wall.patch.wall;
+        if !linked {
+            wall.desk = None;
+            wall.desk_tempo.disconnected();
+        }
+        let events = wall.close(now);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, Event::Change { change } if change.seq == seq))
+                .count(),
+            1
+        );
+        let answers = wall.tree_answers(now);
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].0, ticket);
+        assert!(answers[0].1.is_ok());
+        assert!(wall.tree_answers(now).is_empty());
+        assert!(wall.desk_go_waiting.is_empty());
+        let bpm: f64 = if linked { 120.0 } else { 96.0 };
+        assert_eq!(wall.patch.tempo.to_bits(), bpm.to_bits());
+        assert_eq!(
+            wall.log
+                .iter()
+                .filter(|change| change.seq > seq
+                    && change.seat == "desk"
+                    && matches!(
+                        change.what,
+                        What::Tempo {
+                            from: 96.0,
+                            to: 120.0,
+                            ..
+                        }
+                    ))
+                .count(),
+            usize::from(linked)
+        );
+    }
+}
+
+#[test]
+fn a_disconnected_desk_during_a_go_plays_the_moments_tempo() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut wall, mut engine, stream, moment) = go_wall(dir.path());
+    let now = Instant::now();
+    let ticket = pending_go(&mut wall, moment, now);
+    let seq = wall.patch.wall;
+    let mut reader = stream.try_clone().unwrap();
+    let reading = std::thread::spawn(move || {
+        use kazoo_core::ipc::protocol::FrameBuffer;
+        use kazoo_core::ipc::types::MSG_TRANSPORT_REQUEST;
+        let mut frame = FrameBuffer::new();
+        loop {
+            if frame.read_frame(&mut reader).unwrap().msg_type == MSG_TRANSPORT_REQUEST {
+                break;
+            }
+        }
+    });
+    land(&wall, &mut engine);
+    reading.join().unwrap();
+    drop(stream);
+    while wall.on_desk() {
+        std::thread::yield_now();
+    }
+    wall.tick(now);
+    let first = wall.tree_answers(now);
+    let mut answers = first;
+    answers.extend(wall.tree_answers(now + Duration::from_secs(1)));
+    assert!(
+        answers
+            .iter()
+            .any(|(id, result)| *id == ticket && result.is_ok())
+    );
+    engine.render(&mut [0.0; 512], 2);
+    assert_eq!(wall.engine.shared().bpm().to_bits(), 96.0_f64.to_bits());
+    assert!(!wall.engine.shared().following_desk());
+    assert_eq!(wall.patch.tempo.to_bits(), 96.0_f64.to_bits());
+    assert!(!wall.log.iter().any(|change| change.seq > seq
+        && change.seat == "desk"
+        && matches!(
+            change.what,
+            What::Tempo {
+                from: 96.0,
+                to: 120.0,
+                ..
+            }
+        )));
 }

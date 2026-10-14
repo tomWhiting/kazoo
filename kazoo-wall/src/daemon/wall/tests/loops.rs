@@ -324,7 +324,7 @@ fn an_engine_rebuilt_after_a_device_change_puts_the_tapes_back() {
     tape_arrives(&mut wall, &mut engine);
     let (mut replacement, control) =
         crate::engine::engine(EngineConfig::new(48_000, 120.0, 0.0), None);
-    wall.attach(control, None);
+    wall.attach(control, None, Instant::now());
     assert_eq!(state(&wall), LoopState::Blank as u8);
     tape_arrives(&mut wall, &mut replacement);
     holds_the_reel(&wall, &mut replacement);
