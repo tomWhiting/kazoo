@@ -11,6 +11,8 @@ use super::git::{self, Commit, Importer, Planted};
 use super::{Files, TreeError};
 use crate::protocol::{Change, ClockStamp, MarkResult, TreeHealth, TreePlace, TreeResult, What};
 
+#[cfg(test)]
+mod finish;
 pub mod here;
 pub use here::HereError;
 
@@ -18,7 +20,7 @@ pub use here::HereError;
 pub type Tip = Option<String>;
 
 /// The wall is on a line, or at a detached immutable moment.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
     On {
         branch: String,
@@ -164,7 +166,7 @@ impl TreeItem {
         }
     }
 
-    fn ticket(&self) -> Option<u64> {
+    const fn ticket(&self) -> Option<u64> {
         match self {
             Self::Mark { ticket, .. }
             | Self::Resolve { ticket, .. }
@@ -802,7 +804,7 @@ fn remember(
 ) {
     match item {
         TreeItem::Moved { to } => {
-            *moved = Some((to.clone(), None, "the wall moved to a moment".into()))
+            *moved = Some((to.clone(), None, "the wall moved to a moment".into()));
         }
         TreeItem::Change { change, .. } => {
             if let What::Go { to, .. } = &change.what {
@@ -898,12 +900,12 @@ fn worker(
             tell(news, News::Finished(result));
             return;
         }
-        let received = match &outcome {
+        let arrived = match &outcome {
             Ok(item) => Some(item),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        if let Some(item) = received {
+        if let Some(item) = arrived {
             remember(
                 item,
                 &mut moved,

@@ -9,33 +9,33 @@ use super::Command;
 use super::fx::Ramp;
 
 /// A hand looper holds a sung phrase or two: sixteen bars at 120 BPM.
-pub(crate) const LOOP_SECONDS: f64 = 32.0;
+pub const LOOP_SECONDS: f64 = 32.0;
 /// Thirty-two seconds at 96 kHz bounds memory even on faster devices.
-pub(crate) const MAX_LOOP_FRAMES: usize = 3_072_000;
+pub const MAX_LOOP_FRAMES: usize = 3_072_000;
 /// A 45 degree tape splice at 30 ips lasts 8.3 ms: short enough to preserve hits.
-pub(crate) const SEAM_SECONDS: f32 = 0.008;
+pub const SEAM_SECONDS: f32 = 0.008;
 /// Four tracks retain three undoable layers and a recording buffer, using
 /// 24.6 MB at 48 kHz and 49.2 MB at 96 kHz, including splice continuations.
-pub(crate) const BUFFERS: usize = 4;
+pub const BUFFERS: usize = 4;
 /// Sixty-four cells per frame merge a thirty-two second loop in half a second.
-pub(crate) const MERGE_CELLS_PER_FRAME: usize = 64;
+pub const MERGE_CELLS_PER_FRAME: usize = 64;
 /// Sixty-four cells per frame copy a thirty-two second loop in half a second.
-pub(crate) const BOUNCE_CELLS_PER_FRAME: usize = 64;
+pub const BOUNCE_CELLS_PER_FRAME: usize = 64;
 /// A close shorter than a quarter second is a slip of the finger.
-pub(crate) const MIN_TAKE_SECONDS: f64 = 0.25;
-pub(crate) const VOLUME_DEFAULT: f32 = 0.8;
-pub(crate) const BAR_CHOICES: [u8; 5] = [1, 2, 4, 8, 16];
-pub(crate) const BEATS_PER_BAR: f64 = 4.0;
+pub const MIN_TAKE_SECONDS: f64 = 0.25;
+pub const VOLUME_DEFAULT: f32 = 0.8;
+pub const BAR_CHOICES: [u8; 5] = [1, 2, 4, 8, 16];
+pub const BEATS_PER_BAR: f64 = 4.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum LoopLength {
+pub enum LoopLength {
     #[default]
     Free,
     Bars(u8),
 }
 
 impl LoopLength {
-    pub(crate) const fn bars(self) -> u8 {
+    pub const fn bars(self) -> u8 {
         match self {
             Self::Free => 0,
             Self::Bars(bars) => bars,
@@ -45,7 +45,7 @@ impl LoopLength {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum State {
+pub enum State {
     Blank,
     Armed,
     Taking,
@@ -58,7 +58,7 @@ pub(crate) enum State {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum Note {
+pub enum Note {
     None,
     NoTape,
     TooShort,
@@ -69,26 +69,26 @@ pub(crate) enum Note {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct LoopGauges {
-    pub(crate) state: AtomicU8,
-    pub(crate) n: AtomicUsize,
-    pub(crate) capacity: AtomicUsize,
-    pub(crate) head: AtomicUsize,
-    pub(crate) taken: AtomicUsize,
-    pub(crate) layers: AtomicU8,
-    pub(crate) merging: AtomicBool,
-    pub(crate) saving: AtomicBool,
-    pub(crate) bars: AtomicU8,
-    pub(crate) loop_bpm: AtomicU64,
-    pub(crate) off_tempo: AtomicBool,
-    pub(crate) arcs: [[AtomicU64; 2]; BUFFERS],
-    pub(crate) beat_in_bar: AtomicU64,
-    pub(crate) note: AtomicU8,
-    pub(crate) note_seq: AtomicU32,
+pub struct LoopGauges {
+    pub state: AtomicU8,
+    pub n: AtomicUsize,
+    pub capacity: AtomicUsize,
+    pub head: AtomicUsize,
+    pub taken: AtomicUsize,
+    pub layers: AtomicU8,
+    pub merging: AtomicBool,
+    pub saving: AtomicBool,
+    pub bars: AtomicU8,
+    pub loop_bpm: AtomicU64,
+    pub off_tempo: AtomicBool,
+    pub arcs: [[AtomicU64; 2]; BUFFERS],
+    pub beat_in_bar: AtomicU64,
+    pub note: AtomicU8,
+    pub note_seq: AtomicU32,
 }
 
 #[derive(Debug)]
-pub(crate) enum LoopOut {
+pub enum LoopOut {
     Bounced {
         samples: Box<[f32]>,
         rate: u32,
@@ -97,10 +97,10 @@ pub(crate) enum LoopOut {
     Refused(Box<[f32]>),
 }
 
-pub(crate) struct LoopFeed {
-    pub(crate) bounce_in: HeapProd<Box<[f32]>>,
-    pub(crate) out: HeapCons<LoopOut>,
-    pub(crate) gauges: Arc<LoopGauges>,
+pub struct LoopFeed {
+    pub bounce_in: HeapProd<Box<[f32]>>,
+    pub out: HeapCons<LoopOut>,
+    pub gauges: Arc<LoopGauges>,
 }
 
 impl std::fmt::Debug for LoopFeed {
@@ -136,7 +136,7 @@ struct Locate {
     elapsed: usize,
 }
 
-pub(crate) struct Looper {
+pub struct Looper {
     buffers: [Box<[f32]>; BUFFERS],
     n: Option<usize>,
     stack: [Layer; BUFFERS],
@@ -188,7 +188,7 @@ fn resident(cells: usize) -> Result<Box<[f32]>, std::collections::TryReserveErro
 }
 
 impl Looper {
-    pub(crate) fn new(rate: u32, length: LoopLength, volume: f32) -> (Self, LoopFeed) {
+    pub fn new(rate: u32, length: LoopLength, volume: f32) -> (Self, LoopFeed) {
         let capacity = ((LOOP_SECONDS * f64::from(rate)).round() as usize).min(MAX_LOOP_FRAMES);
         let (mut looper, feed) = Self::with_capacity(rate, capacity);
         looper.length = length;
@@ -201,19 +201,18 @@ impl Looper {
         (looper, feed)
     }
 
-    pub(crate) fn with_capacity(rate: u32, capacity: usize) -> (Self, LoopFeed) {
+    pub fn with_capacity(rate: u32, capacity: usize) -> (Self, LoopFeed) {
         let capacity = capacity.min(MAX_LOOP_FRAMES);
         let tail = (SEAM_SECONDS * rate as f32).round().max(1.0) as usize;
         let mut buffers: [Box<[f32]>; BUFFERS] = std::array::from_fn(|_| Box::default());
         let mut ready = capacity > 0 && rate > 0;
         if ready {
             for buffer in &mut buffers {
-                match resident(capacity + tail) {
-                    Ok(memory) => *buffer = memory,
-                    Err(_) => {
-                        ready = false;
-                        break;
-                    }
+                if let Ok(memory) = resident(capacity + tail) {
+                    *buffer = memory;
+                } else {
+                    ready = false;
+                    break;
                 }
             }
         }
@@ -276,7 +275,7 @@ impl Looper {
         self.gauges.note_seq.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn command(&mut self, command: Command, bpm: f64) {
+    pub fn command(&mut self, command: Command, bpm: f64) {
         if self.state == State::NoTape {
             self.note(Note::NoTape);
             return;
@@ -297,10 +296,8 @@ impl Looper {
                 }
             }
             Command::LoopPlay(on) => self.set_playing(on),
-            Command::LoopVolume(volume) => {
-                if !volume.is_nan() {
-                    self.volume.aim(volume.clamp(0.0, 1.0));
-                }
+            Command::LoopVolume(volume) if !volume.is_nan() => {
+                self.volume.aim(volume.clamp(0.0, 1.0));
             }
             _ => {}
         }
@@ -699,18 +696,12 @@ impl Looper {
         }
     }
 
-    pub(crate) fn process(&mut self, live: &[f32], beats: &[f64], bpm: f64, output: &mut [f32]) {
+    pub fn process(&mut self, live: &[f32], beats: &[f64], bpm: f64, output: &mut [f32]) {
         self.process_audio(live, beats, bpm, output);
         self.publish(bpm);
     }
 
-    pub(crate) fn process_audio(
-        &mut self,
-        live: &[f32],
-        beats: &[f64],
-        bpm: f64,
-        output: &mut [f32],
-    ) {
+    pub fn process_audio(&mut self, live: &[f32], beats: &[f64], bpm: f64, output: &mut [f32]) {
         self.service_rings();
         for (index, to) in output.iter_mut().enumerate() {
             let beat = beats.get(index).copied().unwrap_or(f64::NAN);
@@ -752,7 +743,7 @@ impl Looper {
         }
     }
 
-    pub(crate) fn publish(&self, bpm: f64) {
+    pub fn publish(&self, bpm: f64) {
         let gauges = &self.gauges;
         gauges.state.store(self.state as u8, Ordering::Relaxed);
         gauges.n.store(self.n.unwrap_or(0), Ordering::Relaxed);

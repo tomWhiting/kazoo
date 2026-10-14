@@ -476,9 +476,9 @@ impl Importer {
         if !name.starts_with("refs/")
             || name.contains("..")
             || name.ends_with('/')
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'))
+            || !name.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'+' | b'=')
+            })
         {
             return Err(TreeError::Git("invalid tree ref name".into()));
         }

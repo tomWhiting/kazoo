@@ -350,10 +350,10 @@ impl Document {
         if let Some(looper) = self.looper {
             match looper.length {
                 Length::Free(name) if name == "free" => {
-                    loaded.settings.loop_length = LoopLength::Free
+                    loaded.settings.loop_length = LoopLength::Free;
                 }
                 Length::Bars(bars) if BAR_CHOICES.contains(&bars) => {
-                    loaded.settings.loop_length = LoopLength::Bars(bars)
+                    loaded.settings.loop_length = LoopLength::Bars(bars);
                 }
                 _ => loaded.notes.push("unknown loop length: using free".into()),
             }

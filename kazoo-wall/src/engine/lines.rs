@@ -71,7 +71,7 @@ enum Gate {
 
 /// One line's reading state.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Tap {
+pub(super) struct Tap {
     /// The cable that owns the line (0: nobody yet).
     tag: u32,
     /// Where the next frame is written.
@@ -97,7 +97,7 @@ struct Tap {
 }
 
 impl Tap {
-    const EMPTY: Self = Self {
+    pub(super) const EMPTY: Self = Self {
         tag: 0,
         write: 0,
         at: 0.0,
@@ -110,6 +110,55 @@ impl Tap {
         gain_step: 0.0,
         gain_left: 0,
     };
+}
+
+impl Tap {
+    pub(super) fn carry_direct(&mut self, route: &Route, source: &Block, out: &mut Block) {
+        if self.tag != route.tag {
+            let gain = if route.glide > 0 { 0.0 } else { route.amount };
+            *self = Self {
+                tag: route.tag,
+                gain,
+                aim: gain,
+                ..Self::EMPTY
+            };
+        }
+        self.prepare_gain(route);
+        *out = *source;
+        self.scale(out);
+    }
+
+    fn prepare_gain(&mut self, route: &Route) {
+        if route.amount.to_bits() != self.aim.to_bits() {
+            if route.glide == 0 {
+                self.gain = route.amount;
+                self.aim = route.amount;
+                self.gain_left = 0;
+            } else {
+                // Frame counts are close enough in f32 for the line;
+                // computing from the aim makes the last frame exact.
+                self.gain_step = (route.amount - self.gain) / route.glide as f32;
+                self.gain_left = route.glide;
+                self.aim = route.amount;
+            }
+        }
+    }
+
+    fn scale(&mut self, out: &mut Block) {
+        for sample in out.iter_mut() {
+            if self.gain_left > 0 {
+                self.gain_left -= 1;
+                // Frame counts are close enough in f32 for the line;
+                // the final frame has none left and lands on the aim.
+                self.gain = (-self.gain_step).mul_add(self.gain_left as f32, self.aim);
+                if !self.gain.is_finite() {
+                    self.gain = self.aim;
+                    self.gain_left = 0;
+                }
+            }
+            *sample = finite(*sample * self.gain);
+        }
+    }
 }
 
 /// One cable's delay line: its history, and where it is read from.
@@ -169,6 +218,16 @@ impl Line {
     /// A new owner starts empty; a joining cable keeps its first block
     /// at zero delay before moving toward the route's delay. Real-time safe.
     pub fn carry(&mut self, route: &Route, source: &Block, out: &mut Block) {
+        self.carry_from(route, source, out, None);
+    }
+
+    pub(super) fn carry_from(
+        &mut self,
+        route: &Route,
+        source: &Block,
+        out: &mut Block,
+        direct: Option<&mut Tap>,
+    ) {
         let mut tap = self.tap;
         let (shortest, longest) = (self.shortest, self.longest);
         let Some(samples) = self.samples.get_mut(..LINE_LEN) else {
@@ -202,19 +261,13 @@ impl Line {
         } else {
             *route
         };
-        if route.amount.to_bits() != tap.aim.to_bits() {
-            if route.glide == 0 {
-                tap.gain = route.amount;
-                tap.aim = route.amount;
-                tap.gain_left = 0;
-            } else {
-                // Frame counts are close enough in f32 for the line;
-                // computing from the aim makes the last frame exact.
-                tap.gain_step = (route.amount - tap.gain) / route.glide as f32;
-                tap.gain_left = route.glide;
-                tap.aim = route.amount;
-            }
+        if let Some(previous) = direct.as_ref().filter(|previous| previous.tag == route.tag) {
+            tap.gain = previous.gain;
+            tap.aim = previous.aim;
+            tap.gain_step = previous.gain_step;
+            tap.gain_left = previous.gain_left;
         }
+        tap.prepare_gain(&route);
         for (frame, sample) in source.iter().enumerate() {
             samples[(tap.write + frame) & (LINE_LEN - 1)] = *sample;
         }
@@ -230,21 +283,12 @@ impl Line {
             }
             glide_block(samples, &mut tap, out);
         }
-        for sample in out.iter_mut() {
-            if tap.gain_left > 0 {
-                tap.gain_left -= 1;
-                // Frame counts are close enough in f32 for the line;
-                // the final frame has none left and lands on the aim.
-                tap.gain = (-tap.gain_step).mul_add(tap.gain_left as f32, tap.aim);
-                if !tap.gain.is_finite() {
-                    tap.gain = tap.aim;
-                    tap.gain_left = 0;
-                }
-            }
-            *sample = finite(*sample * tap.gain);
-        }
+        tap.scale(out);
         tap.write = (tap.write + SUB_BLOCK) & (LINE_LEN - 1);
         self.tap = tap;
+        if let Some(direct) = direct {
+            *direct = tap;
+        }
     }
 }
 

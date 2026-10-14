@@ -106,7 +106,7 @@ fn loop_keys_send_their_commands() {
                 | ('l', Command::LoopLength(LoopLength::Bars(1)))
                 | ('o', Command::LoopPlay(false)) => {}
                 ('-' | '=' | '_' | '+', Command::LoopVolume(volume)) => {
-                    assert!((volume - app.accepted.loop_volume).abs() < f32::EPSILON)
+                    assert!((volume - app.accepted.loop_volume).abs() < f32::EPSILON);
                 }
                 unexpected => panic!("wrong loop command: {unexpected:?}"),
             }
@@ -125,6 +125,11 @@ fn loop_keys_send_their_commands() {
             panic!("blank fake tape accepted a bounce");
         };
         assert_eq!(samples.len(), 48_000);
+        // Rendering the blank looper republishes its real length over the fake gauge.
+        app.loop_gauges()
+            .unwrap()
+            .n
+            .store(48_000, Ordering::Relaxed);
         key(&mut app, &sender, KeyCode::Char('w'), false, now);
         assert_eq!(app.notice(now), Some("already saving"));
         app.loop_gauges()

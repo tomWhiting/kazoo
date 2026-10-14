@@ -383,15 +383,17 @@ impl Wall {
                 }).collect();
             let answer = self
                 .write_loop_save(&saving.seat, &saving.name, saving.overwrite)
-                .map(|mut outcome| {
-                    if let Some(saved_notes) = outcome
-                        .result
-                        .get_mut("notes")
-                        .and_then(serde_json::Value::as_array_mut)
-                    {
-                        saved_notes.extend(notes.into_iter().map(serde_json::Value::String));
-                    }
-                    outcome
+                .and_then(|mut outcome| {
+                    let mut saved: crate::protocol::SaveResult =
+                        serde_json::from_value(outcome.result).map_err(|err| {
+                            error(
+                                crate::protocol::ErrorCode::Internal,
+                                format!("the loop save result could not be read: {err}"),
+                            )
+                        })?;
+                    saved.notes.extend(notes);
+                    outcome.result = super::encode(&saved)?;
+                    Ok(outcome)
                 });
             for (_, ticket, _) in saving.takes {
                 if let Some(ticket) = ticket {

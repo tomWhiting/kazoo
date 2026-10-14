@@ -309,10 +309,10 @@ impl Session {
             })
         });
         drop(self.hub.take());
-        let reported = match kazoo_core::host::link::exit_report() {
-            Some(report) => writeln!(io::stderr().lock(), "{report}").map_err(Into::into),
-            None => Ok(()),
-        };
+        let reported = kazoo_core::host::link::exit_report().map_or_else(
+            || Ok(()),
+            |report| writeln!(io::stderr().lock(), "{report}").map_err(Into::into),
+        );
         combine(writers, combine(joined, reported))
     }
 
@@ -379,16 +379,20 @@ impl Session {
                                     save_loop(&directory, &samples, rate, time.as_secs())
                                 });
                             let message = match result {
-                                Ok(path) => match path.file_name() {
-                                    Some(name) => format!(
-                                        "saved ~/.kazoo/mouth/loops/{} ({seconds:.2} s)",
-                                        name.to_string_lossy()
-                                    ),
-                                    None => format!(
-                                        "loop not saved: saved path has no filename: {}",
-                                        path.display()
-                                    ),
-                                },
+                                Ok(path) => path.file_name().map_or_else(
+                                    || {
+                                        format!(
+                                            "loop not saved: saved path has no filename: {}",
+                                            path.display()
+                                        )
+                                    },
+                                    |name| {
+                                        format!(
+                                            "saved ~/.kazoo/mouth/loops/{} ({seconds:.2} s)",
+                                            name.to_string_lossy()
+                                        )
+                                    },
+                                ),
                                 Err(error) => format!("loop not saved: {error} ({layers} layers)"),
                             };
                             if let Err(error) = report.send(message) {

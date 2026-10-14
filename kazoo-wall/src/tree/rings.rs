@@ -449,6 +449,11 @@ impl Walk<'_> {
         let differences = differences(&self.model.file, &file, evidence.seeded);
         if differences.is_empty() {
             let current = self.model.files(None)?;
+            let mut file = file;
+            // A reused load backup can still name the wall it was first saved from.
+            if evidence.is_backup() {
+                file.wall = self.model.file.wall;
+            }
             self.model.adopt(&file, seq, Found::File)?;
             if current != self.model.files(None)? {
                 let subject = format!(

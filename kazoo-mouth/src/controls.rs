@@ -117,7 +117,7 @@ impl Control {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Settings {
+pub struct Settings {
     pub(crate) quantise: QuantiseSettings,
     pub(crate) synth: SynthSettings,
     pub(crate) silent: bool,

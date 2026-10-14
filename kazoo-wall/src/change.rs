@@ -66,15 +66,7 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
             from,
             to,
             glide_beats,
-        } => {
-            let (from, to) = knob_values(kind_of(module), knob, *from, *to);
-            let glide = if *glide_beats > 0.0 {
-                format!("over {}", format::beats(*glide_beats))
-            } else {
-                "at once".to_string()
-            };
-            format!("turned {module} {knob} {from} → {to} {glide}")
-        }
+        } => turned(module, knob, *from, *to, *glide_beats, kind_of(module)),
         What::Patch { cable, replaced } => patched(cable, replaced.as_ref()),
         What::Unpatch { cable, replugged } => {
             let mut parts = vec![format!("unplugged {}", cable_words(cable))];
@@ -151,6 +143,23 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
         } => went(to, undo, backup, (*modules, *cables, *tempo)),
         What::Abandoned { .. } | What::Resumed { .. } | What::SetAside { .. } => noted(what),
     }
+}
+
+fn turned(
+    module: &str,
+    knob: &str,
+    from: f64,
+    to: f64,
+    glide_beats: f64,
+    kind: Option<Kind>,
+) -> String {
+    let (from, to) = knob_values(kind, knob, from, to);
+    let glide = if glide_beats > 0.0 {
+        format!("over {}", format::beats(glide_beats))
+    } else {
+        "at once".to_string()
+    };
+    format!("turned {module} {knob} {from} → {to} {glide}")
 }
 
 fn patched(cable: &CableRecord, replaced: Option<&CableRecord>) -> String {
@@ -254,18 +263,23 @@ fn went(
     backup: &str,
     (modules, cables, bpm): (u32, u32, f64),
 ) -> String {
-    let mut place = if let Some(mark) = &to.mark {
-        format!("mark \"{mark}\"")
-    } else if let Some(branch) = &to.branch {
-        branch.clone()
-    } else if let Some(change) = to.change {
-        format!("the moment after change {change}")
-    } else {
-        format!("moment {}", to.commit.chars().take(12).collect::<String>())
-    };
+    let mut place = to.mark.as_ref().map_or_else(
+        || {
+            to.branch.as_ref().map_or_else(
+                || {
+                    to.change.map_or_else(
+                        || format!("moment {}", to.commit.chars().take(12).collect::<String>()),
+                        |change| format!("the moment after change {change}"),
+                    )
+                },
+                Clone::clone,
+            )
+        },
+        |mark| format!("mark \"{mark}\""),
+    );
     if to.mark.is_some() || to.branch.is_some() {
         if let Some(change) = to.change {
-            place.push_str(&format!(", after change {change}"));
+            place = format!("{place}, after change {change}");
         }
     }
     let direction = if undo { "back to" } else { "to" };

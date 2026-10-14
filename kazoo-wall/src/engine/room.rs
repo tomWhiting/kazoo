@@ -20,7 +20,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use super::lines::Line;
+use super::lines::{Line, Tap};
 use super::{Glide, slice_of};
 use crate::catalogue::Kind;
 use crate::dsp::{Block, Module, Sweep};
@@ -45,6 +45,7 @@ pub type CostCells = Box<[AtomicU32]>;
 /// [`SLOTS_PER_PAGE`] slots' state, with one optional line per jack.
 pub struct Page {
     pub(super) lines: Box<[Option<Box<Line>>]>,
+    pub(super) taps: Box<[Tap]>,
     pub(super) modules: Box<[Option<Box<dyn Module>>]>,
     pub(super) tags: Box<[u32]>,
     pub(super) kinds: Box<[Option<Kind>]>,
@@ -83,6 +84,7 @@ impl Page {
         Some(Self {
             modules: slice_of(SLOTS_PER_PAGE, || None)?,
             lines: slice_of(SLOTS_PER_PAGE * MAX_JACKS, || None)?,
+            taps: slice_of(SLOTS_PER_PAGE * MAX_JACKS, || Tap::EMPTY)?,
             tags: slice_of(SLOTS_PER_PAGE, || 0)?,
             kinds: slice_of(SLOTS_PER_PAGE, || None)?,
             glides: slice_of(SLOTS_PER_PAGE, || [Glide::at(0.0, 0.0); MAX_KNOBS])?,

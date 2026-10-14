@@ -316,7 +316,7 @@ impl<D: DeskOut> MouthEngine<D> {
     }
 
     fn apply_loop_commands(&mut self, bpm: f64) {
-        for command in self.loop_commands[..self.loop_command_count].iter_mut() {
+        for command in &mut self.loop_commands[..self.loop_command_count] {
             if let Some(command) = command.take() {
                 self.looper.command(command, bpm);
             }

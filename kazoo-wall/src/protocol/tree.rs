@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A place in the tree: a commit, and the line and mark it was reached by.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreePlace {
     pub commit: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -15,7 +15,7 @@ pub struct TreePlace {
 }
 
 /// One moment's identity and human-readable commit metadata.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MomentView {
     pub commit: String,
     pub short: String,
@@ -26,7 +26,7 @@ pub struct MomentView {
 }
 
 /// A line and the moment from which it grew.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchView {
     pub name: String,
     pub tip: MomentView,
@@ -35,7 +35,7 @@ pub struct BranchView {
 }
 
 /// Which kind of immutable name a tag supplies.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MarkKind {
     Mark,
@@ -43,7 +43,7 @@ pub enum MarkKind {
 }
 
 /// An immutable name and the moment it names.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkView {
     pub name: String,
     pub kind: MarkKind,
@@ -52,7 +52,7 @@ pub struct MarkView {
 }
 
 /// The name just given to the wall's current moment.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkResult {
     pub name: String,
     pub tag: String,
@@ -60,7 +60,7 @@ pub struct MarkResult {
 }
 
 /// A bounded listing with counts for the names beyond the screen.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeResult {
     pub here: Option<TreePlace>,
     pub through: u64,

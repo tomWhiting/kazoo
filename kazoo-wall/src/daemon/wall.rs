@@ -2490,8 +2490,8 @@ impl Wall {
     }
 
     #[cfg(test)]
-    pub(crate) fn tree_test_apply(&mut self, file: crate::patch::PatchFile, change: Change) {
-        self.patch = Patch::from_file(&file).unwrap();
+    pub(crate) fn tree_test_apply(&mut self, file: &crate::patch::PatchFile, change: Change) {
+        self.patch = Patch::from_file(file).unwrap();
         self.apply(change);
     }
 

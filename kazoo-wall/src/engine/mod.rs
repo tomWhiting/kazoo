@@ -645,6 +645,10 @@ impl std::fmt::Debug for EngineControl {
 /// half, when the wall is joining the desk.
 #[must_use]
 pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, EngineControl) {
+    // Catalogue construction allocates; finish it before any callback can use a kind.
+    for skipped in crate::catalogue::registry().skipped() {
+        eprintln!("kazoo-wall: catalogue left out {skipped}");
+    }
     let bpm = clamp_bpm(config.bpm);
     let beat = if config.beat.is_finite() {
         config.beat
@@ -1221,16 +1225,24 @@ impl Engine {
                 .room
                 .page_mut(slot)
                 .and_then(|(page, at)| page.lines[at * MAX_JACKS + jack].take());
+            let mut tap = self
+                .room
+                .page(slot)
+                .map_or(lines::Tap::EMPTY, |(page, at)| {
+                    page.taps[at * MAX_JACKS + jack]
+                });
             gather(
                 &self.cables,
                 &self.room,
                 line.as_deref_mut(),
+                &mut tap,
                 slot,
                 jack,
                 buffer,
             );
             if let Some((page, at)) = self.room.page_mut(slot) {
                 page.lines[at * MAX_JACKS + jack] = line;
+                page.taps[at * MAX_JACKS + jack] = tap;
             }
             pending &= pending - 1;
         }
@@ -1391,6 +1403,7 @@ fn gather(
     cables: &CableTable,
     room: &Room,
     line: Option<&mut Line>,
+    tap: &mut lines::Tap,
     slot: usize,
     jack: usize,
     buffer: &mut Block,
@@ -1402,11 +1415,9 @@ fn gather(
     });
     if let Some((source, route)) = source {
         if let Some(line) = line {
-            line.carry(&route, source, buffer);
+            line.carry_from(&route, source, buffer, Some(tap));
         } else {
-            for (out, sample) in buffer.iter_mut().zip(source) {
-                *out = crate::dsp::finite(*sample * route.amount);
-            }
+            tap.carry_direct(&route, source, buffer);
         }
         true
     } else {

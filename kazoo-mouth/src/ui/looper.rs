@@ -24,7 +24,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let bars = gauges.bars.load(Ordering::Relaxed);
     let bpm = f64::from_bits(gauges.loop_bpm.load(Ordering::Relaxed));
     let glyphs = ['◐', '◓', '◑', '◒'];
-    let step = if n > 0 { head.saturating_mul(8) / n } else { 0 };
+    let step = head.saturating_mul(8).checked_div(n).unwrap_or(0);
     let reels = format!("{}{}", glyphs[step % 4], glyphs[(step + 2) % 4]);
     let status = status(gauges, rate);
     let mode = if bars == 0 {

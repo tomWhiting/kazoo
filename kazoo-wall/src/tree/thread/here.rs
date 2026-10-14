@@ -18,7 +18,7 @@ use crate::tree::git::{Importer, Planted};
 use crate::tree::{Files, git};
 
 /// A whole sentence explaining why a tree job could not be answered.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HereError {
     UnknownMoment(String),
     MarkExists(String),
@@ -54,7 +54,7 @@ pub fn ref_part(name: &str) -> String {
         });
         previous = Some(ch);
     }
-    if part.ends_with(".lock") {
+    if part.as_bytes().ends_with(b".lock") {
         let dot = part.len() - 5;
         part.replace_range(dot..=dot, "=");
     }
@@ -653,7 +653,7 @@ pub(super) fn files(tree: &Path, commit: &str) -> Result<Files, HereError> {
                 reader.read_exact(&mut end).map_err(|err| {
                     HereError::Broken(format!("the tree could not finish blob {oid}: {err}"))
                 })?;
-                if end != [b'\n'] {
+                if end != *b"\n" {
                     return Err(HereError::Broken(
                         "the tree's blob has no terminating newline".into(),
                     ));

@@ -233,6 +233,12 @@ fn a_file_that_disagrees_with_the_log_is_adopted_by_a_gap_commit() {
 fn a_file_without_a_knob_at_its_default_agrees() {
     let (state, mut file, changes) = fixture(3);
     with_start(state.path());
+    let patch = Patch::load(&file).unwrap().0;
+    let mut dye = crate::fingerprints::Dye::new();
+    for change in &changes {
+        dye.touch(&change.seat, &change.what, &patch);
+    }
+    file.dye = dye.deposits().clone();
     let vcf = file.modules.iter_mut().find(|m| m.id == "vcf1").unwrap();
     let spec = crate::catalogue::Kind::from_name("vcf").unwrap().spec();
     let knob = spec

@@ -619,7 +619,11 @@ fn the_tree_repacks_and_keeps_every_commit() {
     let dir = planted();
     let (news, _heard) = mpsc::channel();
     let planted = git::read(dir.path()).unwrap();
-    let mut writer = thread::Writer::new(dir.path(), &planted).unwrap();
+    let line = thread::Line::On {
+        branch: planted.branch.strip_prefix("refs/heads/").unwrap().into(),
+        tip: planted.tip,
+    };
+    let mut writer = thread::Writer::new(dir.path(), line, planted.through).unwrap();
     let mut file = crate::seed::seed().unwrap().to_file();
     let mut mirror = crate::tree::to_files(&file).unwrap();
     writer
@@ -774,13 +778,13 @@ fn evening_tree_cost() {
             generation: 1,
         });
     }
-    // Offered at once, the thread takes them back to back; `finish`
+    // Offered at once, the thread takes them back to back; finishing
     // checkpoints the last of them and waits for git to exit.
     let started = Instant::now();
     for item in items {
         assert!(handle.offer(item));
     }
-    handle.finish().unwrap();
+    handle.finish_for_test().unwrap();
     let seconds = started.elapsed().as_secs_f64();
     assert_eq!(commits(dir.path()).len(), 1_001);
     let profile = if cfg!(debug_assertions) {

@@ -47,10 +47,10 @@ impl Rig {
         let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
         let patch = crate::patch::Patch::from_file(file).unwrap();
         let mut wall = Wall::new(patch, control, None, Vec::new(), None);
-        let handle = match latch {
-            Some(latch) => TreeHandle::attach_paused(dir.path(), latch).unwrap(),
-            None => TreeHandle::attach(dir.path()).unwrap(),
-        };
+        let handle = latch.map_or_else(
+            || TreeHandle::attach(dir.path()).unwrap(),
+            |latch| TreeHandle::attach_paused(dir.path(), latch).unwrap(),
+        );
         wall.attach_tree(handle);
         Self {
             wall,
@@ -122,7 +122,7 @@ impl Rig {
             glide_beats: 0.0,
         };
         let change = make_change(file.last_seq + 1, what);
-        self.wall.tree_test_apply(file, change);
+        self.wall.tree_test_apply(&file, change);
         self.here()
     }
 
@@ -142,7 +142,7 @@ impl Rig {
         };
         let mut change = make_change(seq, what);
         change.undoes = undoes;
-        self.wall.tree_test_apply(file, change);
+        self.wall.tree_test_apply(&file, change);
         self.here()
     }
 }
@@ -361,7 +361,7 @@ fn a_go_the_queue_dropped_is_still_taken_before_the_gap() {
         tempo: 120.0,
         by_console: true,
     };
-    rig.wall.tree_test_apply(file, make_change(4, what));
+    rig.wall.tree_test_apply(&file, make_change(4, what));
     release.send(()).unwrap();
     while rig.wall.snapshot().tree.unwrap().through != Some(4) {
         rig.wall.tree_test_wait();
@@ -846,12 +846,23 @@ fn here_runs_only_these_git_commands() {
     }
     assert_eq!(source.matches("git_command(\"update-ref\"").count(), 1);
     let update = source.split("git_command(\"update-ref\"").nth(1).unwrap();
-    assert!(
-        update
-            .split(';')
-            .next()
-            .unwrap()
-            .contains("[\"--no-deref\", \"-m\", &message, \"HEAD\", commit]")
+    let arguments = update
+        .split(';')
+        .next()
+        .unwrap()
+        .split_once(".args([")
+        .unwrap()
+        .1
+        .split(']')
+        .next()
+        .unwrap()
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        arguments,
+        ["\"--no-deref\"", "\"-m\"", "&message", "\"HEAD\"", "commit"]
     );
     assert!(!source.contains("--force"));
 }

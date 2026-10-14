@@ -128,7 +128,7 @@ fn a_sustained_sound_does_not_dip_at_the_seam() {
             seed ^= seed << 13;
             seed ^= seed >> 17;
             seed ^= seed << 5;
-            (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * 0.251_188_64
+            (seed as f32 / u32::MAX as f32).mul_add(2.0, -1.0) * 0.251_188_64
         })
         .collect();
     looper.command(Command::LoopRecord, 120.0);
@@ -309,7 +309,7 @@ fn a_fourth_layer_merges_the_oldest_two_and_nothing_is_heard_to_change() {
     let before = looper.read(looper.head);
     looper.command(Command::LoopClear, 120.0);
     let output = constant(&mut looper, 0.0, tail);
-    assert!((output[0] - before * (1.0 - 1.0 / tail as f32)).abs() < 1e-6);
+    assert!(before.mul_add(-(1.0 - 1.0 / tail as f32), output[0]).abs() < 1e-6);
     assert_eq!(looper.state, State::Blank);
 }
 
@@ -373,7 +373,7 @@ fn bars_mode_takes_its_bars_from_the_desks_bar_line() {
     looper.process(&[0.25; BLOCK], &[2.5; BLOCK], 120.0, &mut out);
     looper.command(Command::LoopRecord, 120.0);
     let until_bar = ((4.0 - 2.6) * 24_000.0_f64).round() as usize;
-    let beats: Vec<_> = (0..until_bar + 96_000 + 1)
+    let beats: Vec<_> = (0..=until_bar + 96_000)
         .map(|frame| 2.6 + frame as f64 / 24_000.0)
         .collect();
     let live = vec![0.25; beats.len()];
@@ -416,7 +416,7 @@ fn bars_mode_follows_a_desk_locate_without_a_click() {
     looper.previous_beat = 9.3;
     looper.head = 31_200;
     let tail = looper.tail;
-    let beats: Vec<_> = (0..tail + 1)
+    let beats: Vec<_> = (0..=tail)
         .map(|frame| 6.0 + frame as f64 / 24_000.0)
         .collect();
     let mut output = vec![0.0; beats.len()];
@@ -442,8 +442,11 @@ fn bars_mode_without_a_desk_uses_the_mouths_tempo() {
 fn a_tempo_change_keeps_the_loops_pitch_and_says_off_tempo() {
     let mut looper = anchored_sine();
     looper.previous_beat = f64::NAN;
-    let before = render(&mut looper, &vec![0.0; N], 120.0);
-    let after = render(&mut looper, &vec![0.0; N], 128.0);
+    // Equal tape positions avoid counting different boundary crossings in half passes.
+    let frames = looper.n.unwrap();
+    let before = render(&mut looper, &vec![0.0; frames], 120.0);
+    let after = render(&mut looper, &vec![0.0; frames], 128.0);
+    assert_eq!(before, after);
     let crossings = |samples: &[f32]| {
         samples
             .windows(2)
@@ -583,7 +586,7 @@ fn the_loop_is_recorded_before_the_effects_and_played_through_them() -> color_ey
     engine.fx = crate::engine::fx::FxChain::new(RATE, BLOCK, &settings)?;
     engine.render(&mut out, 2);
     reference.process(
-        &kazoo_fx::Context { bpm: 120.0 },
+        kazoo_fx::Context { bpm: 120.0 },
         &engine.loop_output,
         [&mut left, &mut right],
         &engine.stats,
@@ -779,7 +782,7 @@ fn render_with_the_looper_never_allocates() -> color_eyre::Result<()> {
             );
             match block {
                 0 | 376 | 400 | 800 | 850 | 1250 | 1300 | 1700 => {
-                    engine.looper.command(Command::LoopRecord, 120.0)
+                    engine.looper.command(Command::LoopRecord, 120.0);
                 }
                 1800 => engine.looper.command(Command::LoopUndo, 120.0),
                 2000 => assert!(feed.bounce_in.try_push(bounce.take().unwrap()).is_ok()),

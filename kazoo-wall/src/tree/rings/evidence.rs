@@ -70,6 +70,10 @@ fn decode(path: &Path) -> Result<Decoded, String> {
 }
 
 impl Evidence {
+    pub const fn is_backup(&self) -> bool {
+        self.rank == 0
+    }
+
     fn decoded(&self) -> Result<Decoded, TreeError> {
         let failed = |why: String| {
             TreeError::NotOneWall(format!(
