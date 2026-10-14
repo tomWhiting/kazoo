@@ -303,7 +303,11 @@ impl Commit {
             .timestamp();
         let json = serde_json::to_string(change)
             .map_err(|err| TreeError::Git(format!("change JSON: {err}")))?;
-        let message = if let crate::protocol::What::Batch { note, changes } = &change.what {
+        // A batch sent is one knot with its note; an undo of one is said as
+        // the undo it is, like any other change, never as the batch again.
+        let message = if let (crate::protocol::What::Batch { note, changes }, None) =
+            (&change.what, change.undoes)
+        {
             let mut message = format!(
                 "{}: {note}\n\n{}Kazoo-Note: {note}\n",
                 change.seat,

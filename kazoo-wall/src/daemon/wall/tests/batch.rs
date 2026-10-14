@@ -209,3 +209,78 @@ fn a_batch_of_one_change_says_one_change() {
         "{summary}"
     );
 }
+
+#[test]
+fn a_batch_is_kept_in_the_log_and_grows_one_knot_with_its_note_and_steps() {
+    let (mut wall, _engine, dir) = saving_wall();
+    let initial = wall.patch.to_file();
+    let made = ask(
+        &mut wall,
+        &batch(
+            "A moving voice",
+            serde_json::json!([
+                {"op":"add", "kind":"lfo", "as":"osc"},
+                {"op":"patch", "from":"@osc.out", "to":"vcf1.cutoff"},
+                {"op":"turn", "module":"@osc", "knob":"rate", "value":3.0, "glide_beats":4.0},
+                {"op":"tempo", "bpm":140.0}
+            ]),
+        ),
+    )
+    .unwrap();
+    let seq = made["change"]["seq"].as_u64().unwrap();
+    ask(&mut wall, &Request::Undo { change: seq }).unwrap();
+    let log = std::fs::read_to_string(dir.path().join("log.jsonl")).unwrap();
+    let kept: Vec<Change> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(kept, wall.log.iter().cloned().collect::<Vec<_>>());
+    let state = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(state.path().join("saves")).unwrap();
+    std::fs::write(
+        state.path().join("patch.before-1.json"),
+        serde_json::to_vec(&initial).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        state.path().join("patch.json"),
+        serde_json::to_vec(&wall.patch.to_file()).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(state.path().join("log.jsonl"), log).unwrap();
+    let tree = state.path().join("tree");
+    let grown = crate::tree::rings::grow(state.path(), &tree, false).unwrap();
+    assert_eq!(grown.gaps, 0, "{}", grown.report);
+    assert_eq!(grown.settles, 0, "{}", grown.report);
+    assert_eq!(grown.changes, 2, "{}", grown.report);
+    let output = crate::tree::git::git_command("log", Some(&tree))
+        .args([
+            "--all",
+            "--reverse",
+            "--format=%s%x1f%(trailers:key=Kazoo-Kind,key=Kazoo-Note,key=Kazoo-Step,unfold)%x1e",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let records: Vec<&str> = text
+        .split('\u{1e}')
+        .map(str::trim)
+        .filter(|record| record.contains("Kazoo-Kind: batch") || record.contains("undid"))
+        .collect();
+    assert_eq!(records.len(), 2, "{text}");
+    let (subject, trailers) = records[0].split_once('\u{1f}').unwrap();
+    assert_eq!(subject, "Tom: A moving voice");
+    let trailers: Vec<&str> = trailers.lines().collect();
+    assert_eq!(trailers[0], "Kazoo-Kind: batch");
+    assert_eq!(trailers[1], "Kazoo-Note: A moving voice");
+    assert_eq!(trailers.len(), 6, "{trailers:?}");
+    assert!(
+        trailers[2..]
+            .iter()
+            .all(|line| line.starts_with("Kazoo-Step: "))
+    );
+    let (undo, trailers) = records[1].split_once('\u{1f}').unwrap();
+    assert!(undo.starts_with("Tom undid change "), "{undo}");
+    assert_eq!(trailers.trim(), "Kazoo-Kind: change");
+}

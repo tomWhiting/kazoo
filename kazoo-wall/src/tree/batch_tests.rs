@@ -34,3 +34,15 @@ fn batch_commit_preserves_note_and_every_ordered_step() {
         format!("unused\n\nKazoo-Kind: change\nKazoo-Seq: 7\nKazoo-Change: {json}\n")
     );
 }
+
+#[test]
+fn an_undone_batch_is_committed_as_its_undo_not_as_the_batch_again() {
+    let change: Change = serde_json::from_value(serde_json::json!({"seq":8,"at":"2026-10-14T10:00:00Z","seat":"Tom","undoes":7,"summary":"Tom undid change 7: \"A voice\" (1 change: tempo 130 BPM → 120 BPM)","what":{"op":"batch","note":"A voice","changes":[{"op":"tempo","from":130.0,"to":120.0,"desk":false}]}})).unwrap();
+    let json = serde_json::to_string(&change).unwrap();
+    assert_eq!(
+        Commit::change(&change, Vec::new()).unwrap().message,
+        format!(
+            "Tom undid change 7: \"A voice\" (1 change: tempo 130 BPM → 120 BPM)\n\nKazoo-Kind: change\nKazoo-Seq: 8\nKazoo-Change: {json}\n"
+        )
+    );
+}
