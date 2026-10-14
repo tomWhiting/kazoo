@@ -64,7 +64,7 @@ fn a_loop_panel_has_one_line_with_its_lamp_bars_and_source() {
                 &mut app,
                 at + std::time::Duration::from_secs(2),
                 Some(NOW),
-            )
+            );
         })
         .unwrap();
     assert!(text(terminal.backend().buffer()).contains("7/17"));

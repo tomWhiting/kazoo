@@ -242,7 +242,7 @@ impl Retention {
         })
     }
 
-    pub fn uncertain(&mut self) {
+    pub const fn uncertain(&mut self) {
         self.complete = false;
     }
 

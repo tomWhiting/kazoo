@@ -12,7 +12,7 @@ use crate::engine::fx::{FxSettings, Slot, mouth_default};
 use crate::engine::{Command, Stats};
 use kazoo_fx::Curve;
 
-pub(crate) mod settings;
+pub mod settings;
 use crate::synth::SynthSettings;
 
 #[cfg(test)]
@@ -25,7 +25,7 @@ const SHAPES: [OscillatorShape; 4] = [
     OscillatorShape::Square,
 ];
 
-pub(crate) trait CommandSender {
+pub trait CommandSender {
     fn try_send(&self, command: Command) -> Result<(), TrySendError<Command>>;
 }
 
@@ -36,7 +36,7 @@ impl CommandSender for Sender<Command> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Control {
+pub enum Control {
     Quantise,
     Scale,
     Root,
@@ -52,7 +52,7 @@ pub(crate) enum Control {
 }
 
 impl Control {
-    pub(crate) const ALL: [Self; 12] = [
+    pub const ALL: [Self; 12] = [
         Self::Quantise,
         Self::Scale,
         Self::Root,
@@ -67,7 +67,7 @@ impl Control {
         Self::Silent,
     ];
 
-    pub(crate) const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Quantise => "quantise",
             Self::Scale => "scale",
@@ -84,7 +84,7 @@ impl Control {
         }
     }
 
-    pub(crate) const fn help(self) -> &'static str {
+    pub const fn help(self) -> &'static str {
         match self {
             Self::Quantise => "Pull to the scale, or sing hertz for hertz.",
             Self::Scale => "Choose which notes the voice is pulled to.",
@@ -113,13 +113,13 @@ impl Control {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Settings {
-    pub(crate) quantise: QuantiseSettings,
-    pub(crate) synth: SynthSettings,
-    pub(crate) silent: bool,
-    pub(crate) last_blend: f32,
-    pub(crate) fx: FxSettings,
-    pub(crate) own_bpm: f64,
+pub struct Settings {
+    pub quantise: QuantiseSettings,
+    pub synth: SynthSettings,
+    pub silent: bool,
+    pub last_blend: f32,
+    pub fx: FxSettings,
+    pub own_bpm: f64,
 }
 
 impl Default for Settings {
@@ -150,11 +150,11 @@ impl Settings {
         match control {
             Control::Quantise => self.toggle_quantise(),
             Control::Scale => {
-                self.quantise.scale = index_step(self.quantise.scale, SCALE_NAMES.len(), right)
+                self.quantise.scale = index_step(self.quantise.scale, SCALE_NAMES.len(), right);
             }
             Control::Root => {
                 self.quantise.root =
-                    index_step(usize::from(self.quantise.root), NOTE_NAMES.len(), right) as u8
+                    index_step(usize::from(self.quantise.root), NOTE_NAMES.len(), right) as u8;
             }
             Control::Snap => {
                 self.quantise.snap_ms = step(
@@ -162,7 +162,7 @@ impl Settings {
                     direction,
                     if shift { 50.0 } else { 5.0 },
                     400.0,
-                )
+                );
             }
             Control::Vibrato => self.quantise.keep_vibrato = !self.quantise.keep_vibrato,
             Control::Hysteresis => {
@@ -171,7 +171,7 @@ impl Settings {
                     direction,
                     if shift { 25.0 } else { 5.0 },
                     50.0,
-                )
+                );
             }
             Control::Blend => {
                 self.quantise.blend = step(
@@ -196,7 +196,7 @@ impl Settings {
             Control::Cutoff => {
                 self.synth.cutoff_hz = (self.synth.cutoff_hz
                     * (direction / if shift { 1.0 } else { 12.0 }).exp2())
-                .clamp(100.0, 12_000.0)
+                .clamp(100.0, 12_000.0);
             }
             Control::Air => {
                 self.synth.air = step(
@@ -204,7 +204,7 @@ impl Settings {
                     direction,
                     if shift { 0.25 } else { 0.05 },
                     1.0,
-                )
+                );
             }
             Control::Volume => {
                 self.synth.volume = step(
@@ -212,7 +212,7 @@ impl Settings {
                     direction,
                     if shift { 0.25 } else { 0.05 },
                     1.0,
-                )
+                );
             }
             Control::Silent => self.silent = !self.silent,
         }
@@ -225,7 +225,7 @@ impl Settings {
         }
     }
 
-    pub(crate) fn value(&self, control: Control) -> String {
+    pub fn value(&self, control: Control) -> String {
         match control {
             Control::Quantise => on_off(self.quantise.blend > 0.0).into(),
             Control::Scale => SCALE_NAMES[self.quantise.scale].into(),
@@ -250,31 +250,31 @@ impl Settings {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Action {
+pub enum Action {
     Continue,
     Quit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Focus {
+pub enum Focus {
     Synth,
     Fx,
 }
 
 #[derive(Debug)]
-pub(crate) struct App {
-    pub(crate) accepted: Settings,
-    pub(crate) selected: Control,
-    pub(crate) help: bool,
-    pub(crate) help_scroll: Cell<u16>,
-    pub(crate) focus: Focus,
-    pub(crate) selected_slot: Slot,
-    pub(crate) selected_cell: usize,
-    pub(crate) desk_bpm: Option<f64>,
-    pub(crate) moving: u64,
-    pub(crate) fx_faults: u64,
-    pub(crate) fx_refused: u64,
-    pub(crate) settings_path: PathBuf,
+pub struct App {
+    pub accepted: Settings,
+    pub selected: Control,
+    pub help: bool,
+    pub help_scroll: Cell<u16>,
+    pub focus: Focus,
+    pub selected_slot: Slot,
+    pub selected_cell: usize,
+    pub desk_bpm: Option<f64>,
+    pub moving: u64,
+    pub fx_faults: u64,
+    pub fx_refused: u64,
+    pub settings_path: PathBuf,
     busy_until: Option<Instant>,
     dirty_at: Option<Instant>,
     save_error: Option<String>,
@@ -287,7 +287,7 @@ pub(crate) struct App {
 
 impl App {
     #[cfg(test)]
-    pub(crate) fn new(quantise: QuantiseSettings, silent: bool) -> Self {
+    pub fn new(quantise: QuantiseSettings, silent: bool) -> Self {
         let quantise = quantise.held();
         let accepted = Settings {
             quantise,
@@ -310,7 +310,7 @@ impl App {
         )
     }
 
-    pub(crate) fn loaded(loaded: settings::Loaded, path: PathBuf, now: Instant) -> Self {
+    pub fn loaded(loaded: settings::Loaded, path: PathBuf, now: Instant) -> Self {
         Self {
             accepted: loaded.settings,
             selected: Control::Quantise,
@@ -335,11 +335,11 @@ impl App {
         }
     }
 
-    pub(crate) fn busy(&self, now: Instant) -> bool {
+    pub fn busy(&self, now: Instant) -> bool {
         self.busy_until.is_some_and(|until| now < until)
     }
 
-    pub(crate) fn notice(&self, now: Instant) -> Option<&str> {
+    pub fn notice(&self, now: Instant) -> Option<&str> {
         if let Some(error) = &self.save_error {
             return Some(error);
         }
@@ -353,7 +353,7 @@ impl App {
         self.notes.get(index).map(String::as_str)
     }
 
-    pub(crate) fn sync_stats(&mut self, stats: &Stats, now: Instant) {
+    pub fn sync_stats(&mut self, stats: &Stats, now: Instant) {
         let bits = stats.desk_bpm.load(Ordering::Relaxed);
         self.desk_bpm = if bits == 0 {
             None
@@ -374,14 +374,14 @@ impl App {
         self.fx_refused = stats.fx_refused.load(Ordering::Relaxed);
     }
 
-    pub(crate) fn save_if_due(&mut self, now: Instant, quitting: bool) {
+    pub fn save_if_due(&mut self, now: Instant, quitting: bool) {
         if !self.writable || self.settings_path.as_os_str().is_empty() {
             return;
         }
         if !quitting
-            && !self
+            && self
                 .dirty_at
-                .is_some_and(|at| now.saturating_duration_since(at) >= Duration::from_secs(1))
+                .is_none_or(|at| now.saturating_duration_since(at) < Duration::from_secs(1))
         {
             return;
         }
@@ -417,7 +417,7 @@ impl App {
         Ok(Action::Continue)
     }
 
-    pub(crate) fn handle_key(
+    pub fn handle_key(
         &mut self,
         key: KeyEvent,
         sender: &impl CommandSender,

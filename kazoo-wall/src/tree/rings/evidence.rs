@@ -295,13 +295,13 @@ impl Proofs {
             {
                 let source = saved_before(state, name, change, *modules, *cables, *tempo).and_then(
                     |source| {
-                        let changed = differences(&source, &file, false);
-                        if changed.is_empty() {
+                        let mismatches = differences(&source, &file, false);
+                        if mismatches.is_empty() {
                             Ok(source)
                         } else {
                             Err(format!(
                                 "it differs from the snapshot: {}",
-                                describe(&changed)
+                                describe(&mismatches)
                             ))
                         }
                     },
@@ -339,16 +339,14 @@ impl Proofs {
             return Ok((file, None));
         }
         if let Some(undone) = change.undoes {
-            return match self
-                .files
-                .iter()
+            return self.files.iter()
                 .find(|e| e.rank == 0 && e.after == undone.saturating_sub(1))
-            {
-                Some(e) => e.file().map(|file| (file, None)).map_err(|e| e.to_string()),
-                None => Err(format!(
-                    "the backup of the wall load {undone} replaced does not hold its fingerprint"
-                )),
-            };
+                .map_or_else(
+                    || Err(format!(
+                        "the backup of the wall load {undone} replaced does not hold its fingerprint"
+                    )),
+                    |e| e.file().map(|file| (file, None)).map_err(|e| e.to_string()),
+                );
         }
         let name = save.as_deref().unwrap_or_default();
         saved_before(state, name, change, *modules, *cables, *tempo).map(|file| (file, None))

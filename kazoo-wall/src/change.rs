@@ -75,13 +75,7 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
             };
             format!("turned {module} {knob} {from} → {to} {glide}")
         }
-        What::Patch { cable, replaced } => {
-            let mut parts = vec![format!("patched {}", cable_words(cable))];
-            if let Some(old) = replaced {
-                parts.push(format!("; it replaced cable {} from {}", old.id, old.from));
-            }
-            parts.concat()
-        }
+        What::Patch { cable, replaced } => patched(cable, replaced.as_ref()),
         What::Unpatch { cable, replugged } => {
             let mut parts = vec![format!("unplugged {}", cable_words(cable))];
             if let Some(back) = replugged {
@@ -149,6 +143,14 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
         } => loaded(save.as_deref(), undo, backup, (*modules, *cables, *tempo)),
         What::Abandoned { .. } | What::Resumed { .. } | What::SetAside { .. } => noted(what),
     }
+}
+
+fn patched(cable: &CableRecord, replaced: Option<&CableRecord>) -> String {
+    let mut parts = vec![format!("patched {}", cable_words(cable))];
+    if let Some(old) = replaced {
+        parts.push(format!("; it replaced cable {} from {}", old.id, old.from));
+    }
+    parts.concat()
 }
 
 /// What a note the daemon makes of its own accord says.

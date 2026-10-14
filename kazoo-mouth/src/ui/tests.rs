@@ -311,7 +311,7 @@ fn trail_capacity_tracks_the_device_rate_and_unvoiced_frames_leave_gaps() {
     for rate in [44_100, 48_000, 96_000] {
         let mut display = Display::new(rate);
         let count = rate as usize * 4 / VOICE_HOP;
-        for index in 0..count + 1 {
+        for index in 0..=count {
             display.push(voice((index as u64 + 1) * VOICE_HOP as u64, 9.0, 9.0));
         }
         assert_eq!(display.frames.len(), count);

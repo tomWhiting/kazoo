@@ -9,7 +9,7 @@ use super::{BRIGHT, DIM};
 use crate::controls::{App, Focus};
 use crate::engine::fx::{MAX_PARAMS, Slot};
 
-pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut chips = Vec::with_capacity(6);
     for (index, slot) in app.accepted.fx.order.into_iter().enumerate() {
         let saved = app.accepted.fx.slots[slot as usize];
@@ -111,7 +111,7 @@ fn chip_name(slot: Slot, kind: usize, values: &[f32; MAX_PARAMS]) -> &'static st
         Slot::Delay => "delay",
         Slot::Echo => "echo",
         Slot::Distortion | Slot::Reverb | Slot::Megaphone => {
-            slot.ids().get(kind).copied().unwrap_or(slot.name())
+            slot.ids().get(kind).copied().unwrap_or_else(|| slot.name())
         }
     }
 }
@@ -157,7 +157,7 @@ fn cell(spec: &ParamSpec, value: f32) -> String {
         return format!("{}  {label}", spec.name);
     }
     let travel = match spec.curve {
-        Curve::Log => (value / spec.min).ln() / (spec.max / spec.min).ln(),
+        Curve::Log => (value / spec.min).log(spec.max / spec.min),
         Curve::Linear => (value - spec.min) / (spec.max - spec.min),
         Curve::Stepped { .. } => 0.0,
     }

@@ -15,7 +15,7 @@ mod fx;
 mod pitch;
 mod trail;
 
-pub(crate) use trail::Display;
+pub use trail::Display;
 
 #[cfg(test)]
 mod tests;
@@ -50,7 +50,7 @@ const FONT: [(char, [u8; 5]); 19] = [
     ('-', [0b000, 0b000, 0b111, 0b000, 0b000]),
 ];
 
-pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now: Instant) {
+pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now: Instant) {
     let area = frame.area();
     if area.width < 80 || area.height < 24 {
         frame.render_widget(
@@ -125,7 +125,7 @@ fn header(frame: &mut Frame<'_>, area: Rect, app: &App, display: &Display, link:
     } else {
         "○"
     };
-    let line = Line::from(vec![
+    let title = Line::from(vec![
         Span::styled(
             format!("{gate} kazoo mouth"),
             Style::default().fg(BRIGHT).add_modifier(Modifier::BOLD),
@@ -141,17 +141,19 @@ fn header(frame: &mut Frame<'_>, area: Rect, app: &App, display: &Display, link:
     ]);
     let mut badges = String::new();
     if app.fx_faults > 0 {
-        badges.push_str(&format!(" fx_faults {}", app.fx_faults));
+        badges.push_str(" fx_faults ");
+        badges.push_str(&app.fx_faults.to_string());
     }
     if app.fx_refused > 0 {
-        badges.push_str(&format!(" fx_refused {}", app.fx_refused));
+        badges.push_str(" fx_refused ");
+        badges.push_str(&app.fx_refused.to_string());
     }
     if app.accepted.silent {
         badges.push_str(" · silent");
     }
     let silent_width = (badges.chars().count() as u16).min(area.width);
     frame.render_widget(
-        Paragraph::new(line),
+        Paragraph::new(title),
         Rect::new(area.x, area.y, area.width - silent_width, 1),
     );
     if silent_width > 0 {

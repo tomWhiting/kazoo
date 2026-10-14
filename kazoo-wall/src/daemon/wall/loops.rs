@@ -70,46 +70,7 @@ impl Wall {
 
     pub(super) fn tick_loops(&mut self, now: Instant) {
         self.loop_work.now = Some(now);
-        let stamp = self.store.as_ref().map(rotation).transpose();
-        match stamp {
-            Ok(stamp) => {
-                let stamp = stamp.flatten();
-                if self.loop_work.refs.is_none() || stamp != self.loop_work.rotation {
-                    self.refresh_loop_refs(true);
-                    self.loop_work.rotation = stamp;
-                } else if self.loop_work.seen != self.revision() {
-                    let file = self.patch.to_file();
-                    if let Some(refs) = self.loop_work.refs.as_mut() {
-                        let changes: Vec<_> = self
-                            .log
-                            .iter()
-                            .filter(|change| change.seq > self.loop_work.seen)
-                            .collect();
-                        let mut failure = None;
-                        for change in changes {
-                            if let Err(error) = refs.add(change.seq, &change.what) {
-                                failure = Some(error);
-                                break;
-                            }
-                        }
-                        if let Err(error) = refs.set_patch(&file) {
-                            failure = Some(error);
-                        }
-                        if let Some(error) = failure {
-                            self.loops.uncertain_refs(format!(
-                                "reel references cannot be updated: {error}"
-                            ));
-                        } else {
-                            self.loops.queue_pin(refs.clone(), false);
-                            self.loop_work.seen = self.made;
-                        }
-                    }
-                }
-            }
-            Err(error) => self.loops.uncertain_refs(format!(
-                "reel log rotation cannot be read: {error}; no reels are reclaimed"
-            )),
-        }
+        self.update_loop_refs();
         self.loops.poll();
         self.loops.checkpoint(now);
         while let Some(take) = self.loops.recordings.finished.pop_front() {
@@ -171,6 +132,49 @@ impl Wall {
             self.loop_work.awaiting_log.remove(&ticket);
             self.loops.recordings.logged.insert(ticket);
             self.loops.recordings.last.insert(module, (now, frame, at));
+        }
+    }
+
+    fn update_loop_refs(&mut self) {
+        let stamp = self.store.as_ref().map(rotation).transpose();
+        match stamp {
+            Ok(stamp) => {
+                let stamp = stamp.flatten();
+                if self.loop_work.refs.is_none() || stamp != self.loop_work.rotation {
+                    self.refresh_loop_refs(true);
+                    self.loop_work.rotation = stamp;
+                } else if self.loop_work.seen != self.revision() {
+                    let file = self.patch.to_file();
+                    if let Some(refs) = self.loop_work.refs.as_mut() {
+                        let changes: Vec<_> = self
+                            .log
+                            .iter()
+                            .filter(|change| change.seq > self.loop_work.seen)
+                            .collect();
+                        let mut failure = None;
+                        for change in changes {
+                            if let Err(error) = refs.add(change.seq, &change.what) {
+                                failure = Some(error);
+                                break;
+                            }
+                        }
+                        if let Err(error) = refs.set_patch(&file) {
+                            failure = Some(error);
+                        }
+                        if let Some(error) = failure {
+                            self.loops.uncertain_refs(format!(
+                                "reel references cannot be updated: {error}"
+                            ));
+                        } else {
+                            self.loops.queue_pin(refs.clone(), false);
+                            self.loop_work.seen = self.made;
+                        }
+                    }
+                }
+            }
+            Err(error) => self.loops.uncertain_refs(format!(
+                "reel log rotation cannot be read: {error}; no reels are reclaimed"
+            )),
         }
     }
 
@@ -249,7 +253,7 @@ impl Wall {
         } = &change.what
         {
             let mut record = self.patch.loop_record(module).cloned().unwrap_or_default();
-            record.tape = tape.clone();
+            record.tape.clone_from(tape);
             self.loop_work.names.remove(&(module.clone(), *frame));
             if let Err(error) = self.patch.set_loop(module, record) {
                 self.loops.report(format!(

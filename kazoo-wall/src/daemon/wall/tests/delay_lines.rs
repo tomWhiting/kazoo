@@ -222,7 +222,7 @@ fn a_direct_cable_heard_again_starts_silent_at_its_first_delay() {
             .iter()
             .all(|cell| cell.load(Ordering::Relaxed) == 0.0_f32.to_bits())
     );
-    for _ in 0..delay.div_ceil(SUB_BLOCK) + 1 {
+    for _ in 0..=delay.div_ceil(SUB_BLOCK) {
         hear_block(&mut engine);
     }
     assert!(

@@ -6,6 +6,7 @@
 //! come from the protocol already rounded to what was meant (see
 //! [`kazoo_wall::protocol::widen`]), so they print as sent.
 
+mod cables;
 mod loops;
 
 use kazoo_wall::catalogue::{Curve, JackLaw, Signal};
@@ -102,22 +103,7 @@ pub fn look(snapshot: &Snapshot) -> String {
         );
     }
     loops::footer(&mut out, snapshot);
-    line(
-        &mut out,
-        format_args!("\nCables ({}):", snapshot.cables.len()),
-    );
-    if snapshot.cables.is_empty() {
-        line(&mut out, format_args!("  none"));
-    }
-    for cable in &snapshot.cables {
-        line(
-            &mut out,
-            format_args!(
-                "  #{} {} → {} amount {}",
-                cable.id, cable.from, cable.to, cable.amount
-            ),
-        );
-    }
+    cables::block(&mut out, snapshot);
     unheard::line(&mut out, &snapshot.timing.unheard);
     timing(&mut out, &snapshot.timing);
     out.push_str(

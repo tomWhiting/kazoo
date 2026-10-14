@@ -233,20 +233,30 @@ pub struct LoopArgs {
     pub erase: Option<bool>,
     /// A desk strip label, or null to record the patched inputs.
     #[serde(default, deserialize_with = "loop_from")]
-    pub from: Option<Option<String>>,
+    #[schemars(with = "Option<String>")]
+    pub from: Option<LoopSource>,
+}
+
+/// A supplied source distinguishes patched inputs from a named desk strip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoopSource {
+    Patched,
+    Strip(String),
 }
 
 fn loop_from<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> Result<Option<Option<String>>, D::Error> {
-    Option::<String>::deserialize(deserializer).map(Some)
+) -> Result<Option<LoopSource>, D::Error> {
+    Option::<String>::deserialize(deserializer)
+        .map(|source| Some(source.map_or(LoopSource::Patched, LoopSource::Strip)))
 }
 
 impl LoopArgs {
     fn request(self) -> Result<Request, &'static str> {
         let op = match (self.erase == Some(true), self.from) {
             (true, None) => LoopOp::Erase,
-            (false, Some(from)) => LoopOp::From { from },
+            (false, Some(LoopSource::Patched)) => LoopOp::From { from: None },
+            (false, Some(LoopSource::Strip(from))) => LoopOp::From { from: Some(from) },
             (true, Some(_)) | (false, None) => {
                 return Err(
                     "Give exactly one of erase: true or from (a desk strip label, or null for patched inputs).",

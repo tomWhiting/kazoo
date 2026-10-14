@@ -319,7 +319,7 @@ impl<D: DeskOut> MouthEngine<D> {
             .render(&self.mic[start..count], &mut self.mono[start..count]);
         self.samples = self.samples.saturating_add(count as u64);
         self.fx.process(
-            &context,
+            context,
             &self.mono[..count],
             [&mut self.left[..count], &mut self.right[..count]],
             &self.stats,

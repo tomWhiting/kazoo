@@ -50,7 +50,7 @@ fn render(chain: &mut FxChain, input: &[f32], bpm: f64, stats: &Stats) -> [Vec<f
     let mut right = [0.0; BLOCK];
     for chunk in input.chunks(BLOCK) {
         chain.process(
-            &Context { bpm },
+            Context { bpm },
             chunk,
             [&mut left[..chunk.len()], &mut right[..chunk.len()]],
             stats,
@@ -158,7 +158,10 @@ fn band_energy(samples: &[f32], low: f64, high: f64) -> f64 {
         .iter()
         .enumerate()
         .map(|(i, value)| {
-            let window = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / count as f64).cos();
+            let window = 0.5_f64.mul_add(
+                -(std::f64::consts::TAU * i as f64 / count as f64).cos(),
+                0.5,
+            );
             (f64::from(*value) * window, 0.0_f64)
         })
         .collect();
@@ -222,7 +225,7 @@ fn the_megaphone_is_the_radios_horn() {
     let output = render(&mut chain, &input, 120.0, &Stats::default());
     let window = &output[0][output[0].len() - 8192..];
     assert!(band_energy(window, 0.0, 250.0) < band_energy(window, 1000.0, 3000.0) * 0.01);
-    let silence = render(&mut chain, &[0.0; 4800], 120.0, &Stats::default());
+    let silence = render(&mut chain, &vec![0.0; 4800], 120.0, &Stats::default());
     assert!(silence.iter().all(|side| {
         side[2400..]
             .iter()
@@ -292,7 +295,7 @@ fn a_delay_rings_out_after_it_is_switched_off() {
     let mut right = [0.0; BLOCK];
     for (index, chunk) in input[2400..].chunks(BLOCK).enumerate() {
         chain.process(
-            &Context { bpm: 120.0 },
+            Context { bpm: 120.0 },
             chunk,
             [&mut left[..chunk.len()], &mut right[..chunk.len()]],
             &stats,
@@ -481,7 +484,7 @@ fn kinds_switch_without_allocating_or_clicking() {
                 chain.kind(slot, kind as u8, &stats);
                 for chunk in input[..4800].chunks(BLOCK) {
                     chain.process(
-                        &Context { bpm: 120.0 },
+                        Context { bpm: 120.0 },
                         chunk,
                         [&mut left[..chunk.len()], &mut right[..chunk.len()]],
                         &stats,

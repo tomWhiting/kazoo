@@ -9,14 +9,14 @@ use kazoo_core::synthesis::OscillatorShape;
 use kazoo_core::voice::quantise::{NOTE_NAMES, SCALE_NAMES};
 use serde::{Deserialize, Serialize};
 
-pub(crate) use super::Settings;
+pub use super::Settings;
 use crate::engine::fx::{Slot, mouth_default, permutation};
 
 #[derive(Debug)]
-pub(crate) struct Loaded {
-    pub(crate) settings: Settings,
-    pub(crate) notes: Vec<String>,
-    pub(crate) writable: bool,
+pub struct Loaded {
+    pub settings: Settings,
+    pub notes: Vec<String>,
+    pub writable: bool,
 }
 
 impl Default for Loaded {
@@ -146,7 +146,7 @@ impl From<&Settings> for Document {
     }
 }
 
-pub(crate) const fn shape_name(shape: OscillatorShape) -> &'static str {
+pub const fn shape_name(shape: OscillatorShape) -> &'static str {
     match shape {
         OscillatorShape::Sine => "sine",
         OscillatorShape::Triangle => "triangle",
@@ -156,12 +156,10 @@ pub(crate) const fn shape_name(shape: OscillatorShape) -> &'static str {
 }
 
 fn finite(value: Option<f32>, default: f32, name: &str, notes: &mut Vec<String>) -> f32 {
-    if let Some(value) = value.filter(|value| value.is_finite()) {
-        value
-    } else {
+    value.filter(|value| value.is_finite()).unwrap_or_else(|| {
         notes.push(format!("{name} is not finite: using its default"));
         default
-    }
+    })
 }
 
 impl Quantise {
@@ -328,7 +326,7 @@ impl Document {
     }
 }
 
-pub(crate) fn load(path: &Path) -> Loaded {
+pub fn load(path: &Path) -> Loaded {
     let mut loaded = Loaded::default();
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
@@ -339,12 +337,9 @@ pub(crate) fn load(path: &Path) -> Loaded {
             return loaded;
         }
     };
-    let value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
-        Ok(value) => value,
-        Err(_) => {
-            quarantine(path, &mut loaded);
-            return loaded;
-        }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        quarantine(path, &mut loaded);
+        return loaded;
     };
     if value
         .get("version")
@@ -427,7 +422,7 @@ fn quarantine_name(path: &Path, mut seconds: u64) -> io::Result<std::path::PathB
     }
 }
 
-pub(crate) fn save(path: &Path, settings: &Settings) -> io::Result<()> {
+pub fn save(path: &Path, settings: &Settings) -> io::Result<()> {
     // Keep newer documents intact even if a caller misses Loaded::writable.
     match fs::read(path) {
         Ok(bytes) => {
@@ -464,7 +459,7 @@ fn write_settings(path: &Path, settings: &Settings) -> io::Result<()> {
     })
 }
 
-pub(crate) fn atomic_write(
+pub fn atomic_write(
     path: &Path,
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {

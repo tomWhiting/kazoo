@@ -136,12 +136,11 @@ pub fn parse_args(
 }
 
 pub fn cli(words: impl IntoIterator<Item = String>) -> Result<()> {
-    match parse_args(words).map_err(|error| eyre!(error))? {
-        Some(args) => run(args),
-        None => {
-            write!(io::stdout().lock(), "{USAGE}")?;
-            Ok(())
-        }
+    if let Some(args) = parse_args(words).map_err(|error| eyre!(error))? {
+        run(args)
+    } else {
+        write!(io::stdout().lock(), "{USAGE}")?;
+        Ok(())
     }
 }
 
@@ -287,10 +286,10 @@ impl Session {
             })
         });
         drop(self.hub.take());
-        let reported = match kazoo_core::host::link::exit_report() {
-            Some(report) => writeln!(io::stderr().lock(), "{report}").map_err(Into::into),
-            None => Ok(()),
-        };
+        let reported = kazoo_core::host::link::exit_report().map_or_else(
+            || Ok(()),
+            |report| writeln!(io::stderr().lock(), "{report}").map_err(Into::into),
+        );
         combine(joined, reported)
     }
 }

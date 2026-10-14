@@ -8,12 +8,12 @@ use super::Stats;
 #[cfg(test)]
 mod tests;
 
-pub(crate) const MAX_PARAMS: usize = 16;
-pub(crate) const RAMP_SECONDS: f32 = 0.010;
+pub const MAX_PARAMS: usize = 16;
+pub const RAMP_SECONDS: f32 = 0.010;
 const SEED: u64 = 0x6D6F_7574_6800;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Slot {
+pub enum Slot {
     Megaphone,
     Distortion,
     Delay,
@@ -22,7 +22,7 @@ pub(crate) enum Slot {
 }
 
 impl Slot {
-    pub(crate) const ALL: [Self; 5] = [
+    pub const ALL: [Self; 5] = [
         Self::Megaphone,
         Self::Distortion,
         Self::Delay,
@@ -30,7 +30,7 @@ impl Slot {
         Self::Reverb,
     ];
 
-    pub(crate) const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Megaphone => "megaphone",
             Self::Distortion => "distortion",
@@ -40,7 +40,7 @@ impl Slot {
         }
     }
 
-    pub(crate) const fn ids(self) -> &'static [&'static str] {
+    pub const fn ids(self) -> &'static [&'static str] {
         match self {
             Self::Megaphone => &["radio"],
             Self::Distortion => &["fuzz", "screamer", "amp", "crush"],
@@ -50,7 +50,7 @@ impl Slot {
         }
     }
 
-    pub(crate) fn kind(self, index: usize) -> Option<&'static EffectKind> {
+    pub fn kind(self, index: usize) -> Option<&'static EffectKind> {
         self.ids().get(index).and_then(|id| kazoo_fx::find(id))
     }
 
@@ -58,7 +58,7 @@ impl Slot {
         matches!(self, Self::Delay | Self::Echo | Self::Reverb)
     }
 
-    pub(crate) fn seed(self, kind: usize) -> u64 {
+    pub fn seed(self, kind: usize) -> u64 {
         let before: usize = Self::ALL[..self as usize]
             .iter()
             .map(|slot| slot.ids().len())
@@ -71,7 +71,7 @@ impl Slot {
 /// separate distortion. Noise 0 prevents hiss while the synth gate is silent.
 /// Left sync 7 is a dotted eighth against right sync 9's quarter note;
 /// routing 1 spreads those repeats across stereo with ping-pong.
-pub(crate) fn mouth_default(slot: Slot, kind: usize, spec: &ParamSpec) -> f32 {
+pub fn mouth_default(slot: Slot, kind: usize, spec: &ParamSpec) -> f32 {
     match (slot, kind, spec.name) {
         (Slot::Megaphone, 0, "model") => 3.0,
         (Slot::Megaphone, 0, "drive") => 50.0,
@@ -83,23 +83,23 @@ pub(crate) fn mouth_default(slot: Slot, kind: usize, spec: &ParamSpec) -> f32 {
     }
 }
 
-pub(crate) fn permutation(order: [Slot; 5]) -> bool {
+pub fn permutation(order: [Slot; 5]) -> bool {
     Slot::ALL
         .iter()
         .all(|slot| order.iter().filter(|entry| *entry == slot).count() == 1)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct SlotSettings {
-    pub(crate) on: bool,
-    pub(crate) active: usize,
-    pub(crate) values: [[f32; MAX_PARAMS]; 4],
+pub struct SlotSettings {
+    pub on: bool,
+    pub active: usize,
+    pub values: [[f32; MAX_PARAMS]; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct FxSettings {
-    pub(crate) order: [Slot; 5],
-    pub(crate) slots: [SlotSettings; 5],
+pub struct FxSettings {
+    pub order: [Slot; 5],
+    pub slots: [SlotSettings; 5],
 }
 
 impl Default for FxSettings {
@@ -127,7 +127,7 @@ impl Default for FxSettings {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Ramp {
+pub struct Ramp {
     value: f32,
     target: f32,
     step: f32,
@@ -136,7 +136,7 @@ pub(crate) struct Ramp {
 }
 
 impl Ramp {
-    pub(crate) const fn new(value: f32, frames: usize) -> Self {
+    pub const fn new(value: f32, frames: usize) -> Self {
         Self {
             value,
             target: value,
@@ -146,7 +146,7 @@ impl Ramp {
         }
     }
 
-    pub(crate) fn aim(&mut self, target: f32) {
+    pub fn aim(&mut self, target: f32) {
         if target.to_bits() == self.value.to_bits() {
             self.snap(target);
             return;
@@ -156,14 +156,14 @@ impl Ramp {
         self.step = (target - self.value) / self.remaining as f32;
     }
 
-    pub(crate) const fn snap(&mut self, value: f32) {
+    pub const fn snap(&mut self, value: f32) {
         self.value = value;
         self.target = value;
         self.remaining = 0;
         self.step = 0.0;
     }
 
-    pub(crate) const fn next(&mut self) -> f32 {
+    pub const fn next(&mut self) -> f32 {
         if self.remaining > 0 {
             self.remaining -= 1;
             self.value = if self.remaining == 0 {
@@ -175,7 +175,7 @@ impl Ramp {
         self.value
     }
 
-    pub(crate) const fn moving(self) -> bool {
+    pub const fn moving(self) -> bool {
         self.remaining > 0
     }
 }
@@ -272,7 +272,7 @@ impl Pedal {
 
     fn fading_sample(
         &mut self,
-        context: &Context,
+        context: Context,
         input: [f32; 2],
         stats: &Stats,
         second: usize,
@@ -282,7 +282,7 @@ impl Pedal {
         let mut new_l = [0.0];
         let mut new_r = [0.0];
         self.kinds[self.active].effect.process(
-            context,
+            &context,
             [&[fed[0]], &[fed[1]]],
             [&mut new_l, &mut new_r],
         );
@@ -290,7 +290,7 @@ impl Pedal {
         let mut old_r = [0.0];
         if let Some(old) = self.fading_from {
             self.kinds[old].effect.process(
-                context,
+                &context,
                 [&[fed[0]], &[fed[1]]],
                 [&mut old_l, &mut old_r],
             );
@@ -325,7 +325,7 @@ impl Pedal {
 
     fn split_process(
         &mut self,
-        context: &Context,
+        context: Context,
         buffers: Buffers<'_>,
         stats: &Stats,
         second: usize,
@@ -339,15 +339,15 @@ impl Pedal {
         } = buffers;
         let (left_before, left_after) = left.split_at_mut(split);
         let (right_before, right_after) = right.split_at_mut(split);
-        let (spare_l_before, spare_l_after) = spare_l.split_at_mut(split);
-        let (spare_r_before, spare_r_after) = spare_r.split_at_mut(split);
+        let (spare_left_prefix, spare_left_suffix) = spare_l.split_at_mut(split);
+        let (scratch_right_prefix, scratch_right_suffix) = spare_r.split_at_mut(split);
         let (gains_before, gains_after) = gains.split_at_mut(split);
         self.process(
             context,
             Buffers {
                 input: [&input[0][..split], &input[1][..split]],
                 output: [left_before, right_before],
-                spare: [spare_l_before, spare_r_before],
+                spare: [spare_left_prefix, scratch_right_prefix],
                 gains: gains_before,
             },
             stats,
@@ -358,7 +358,7 @@ impl Pedal {
             Buffers {
                 input: [&input[0][split..], &input[1][split..]],
                 output: [left_after, right_after],
-                spare: [spare_l_after, spare_r_after],
+                spare: [spare_left_suffix, scratch_right_suffix],
                 gains: gains_after,
             },
             stats,
@@ -366,7 +366,7 @@ impl Pedal {
         );
     }
 
-    fn process(&mut self, context: &Context, buffers: Buffers<'_>, stats: &Stats, second: usize) {
+    fn process(&mut self, context: Context, buffers: Buffers<'_>, stats: &Stats, second: usize) {
         if !self.trail
             && !self.on
             && self.fading_from.is_none()
@@ -432,7 +432,7 @@ impl Pedal {
         };
         self.kinds[self.active]
             .effect
-            .process(context, fed, [&mut *left, &mut *right]);
+            .process(&context, fed, [&mut *left, &mut *right]);
         if left.iter().chain(right.iter()).any(|x| !x.is_finite()) {
             self.fault(stats);
         }
@@ -450,7 +450,7 @@ impl Pedal {
                         if self.trail { wet[side] } else { g * wet[side] },
                     )
                 };
-                *to = if p == 1.0 {
+                *to = if p.to_bits() == 1.0_f32.to_bits() {
                     slot
                 } else {
                     (1.0 - p).mul_add(input[side][i], p * slot)
@@ -462,8 +462,8 @@ impl Pedal {
 }
 
 #[derive(Debug)]
-pub(crate) struct FxChain {
-    pub(crate) order: [Slot; 5],
+pub struct FxChain {
+    pub order: [Slot; 5],
     pedals: [Pedal; 5],
     pending: Option<[Slot; 5]>,
     a: [Box<[f32]>; 2],
@@ -474,7 +474,7 @@ pub(crate) struct FxChain {
 }
 
 impl FxChain {
-    pub(crate) fn new(rate: u32, block: usize, settings: &FxSettings) -> kazoo_core::Result<Self> {
+    pub fn new(rate: u32, block: usize, settings: &FxSettings) -> kazoo_core::Result<Self> {
         if rate == 0 || block == 0 {
             return Err(kazoo_core::Error::Config(
                 "mouth effects need a positive rate and block".into(),
@@ -553,11 +553,11 @@ impl FxChain {
         })
     }
 
-    pub(crate) fn on(&mut self, slot: Slot, on: bool) {
+    pub fn on(&mut self, slot: Slot, on: bool) {
         self.pedals[slot as usize].turn(on);
     }
 
-    pub(crate) fn kind(&mut self, slot: Slot, kind: u8, stats: &Stats) {
+    pub fn kind(&mut self, slot: Slot, kind: u8, stats: &Stats) {
         let pedal = &mut self.pedals[slot as usize];
         if usize::from(kind) < pedal.kinds.len() {
             pedal.switch(usize::from(kind));
@@ -566,7 +566,7 @@ impl FxChain {
         }
     }
 
-    pub(crate) fn param(&mut self, slot: Slot, kind: u8, index: u8, value: f32, stats: &Stats) {
+    pub fn param(&mut self, slot: Slot, kind: u8, index: u8, value: f32, stats: &Stats) {
         let pedal = &mut self.pedals[slot as usize];
         if let Some(kind) = pedal.kinds.get_mut(usize::from(kind))
             && let Some(spec) = kind.description.params.get(usize::from(index))
@@ -581,7 +581,7 @@ impl FxChain {
         }
     }
 
-    pub(crate) fn reorder(&mut self, order: [Slot; 5], stats: &Stats) {
+    pub fn reorder(&mut self, order: [Slot; 5], stats: &Stats) {
         if !permutation(order) {
             stats.fx_refused.fetch_add(1, Ordering::Relaxed);
             return;
@@ -597,9 +597,9 @@ impl FxChain {
         }
     }
 
-    pub(crate) fn process(
+    pub fn process(
         &mut self,
-        context: &Context,
+        context: Context,
         mono: &[f32],
         output: [&mut [f32]; 2],
         stats: &Stats,
@@ -680,7 +680,7 @@ impl FxChain {
     }
 }
 
-pub(crate) fn ceiling(sample: f32) -> f32 {
+pub fn ceiling(sample: f32) -> f32 {
     let sample = sanitize_sample(sample);
     if sample.abs() <= 0.8 {
         sample

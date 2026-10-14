@@ -1759,13 +1759,13 @@ impl Wall {
                 gate: carries_gate(&kinds, cable),
                 ..Route::new(from, port, cable.amount, tag)
             };
-            if !table.set(to, jack, Some(route)) {
+            if table.set(to, jack, Some(route)) {
+                routed.insert(cable.id, (to, jack));
+            } else {
                 eprintln!(
                     "kazoo-wall: cable {} could not go in the engine's table and is not played",
                     cable.id
                 );
-            } else {
-                routed.insert(cable.id, (to, jack));
             }
         }
         self.place_lines(&routed, &heard_before);

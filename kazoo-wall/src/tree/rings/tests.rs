@@ -309,7 +309,14 @@ fn a_version_1_stretch_is_the_version_2_wall_its_migration_makes() {
     let right = |file: &PatchFile| -> Vec<u32> {
         file.cables
             .iter()
-            .filter(|c| c.from.ends_with(".right") || c.to.ends_with(".right"))
+            .filter(|c| {
+                c.from
+                    .rsplit_once('.')
+                    .is_some_and(|(_, port)| port == "right")
+                    || c.to
+                        .rsplit_once('.')
+                        .is_some_and(|(_, port)| port == "right")
+            })
             .map(|c| c.id)
             .collect()
     };
@@ -333,11 +340,10 @@ fn a_version_1_stretch_is_the_version_2_wall_its_migration_makes() {
             .unwrap()
             .knobs["highcut"]
     };
-    assert_ne!(highcut(&all[0].0), highcut(&all[1].0));
+    assert!((highcut(&all[0].0) - highcut(&all[1].0)).abs() > f64::EPSILON);
 }
 
-#[test]
-fn births_follow_the_log_and_cross_loads_of_the_same_wall() {
+fn birth_lineage_state() -> tempfile::TempDir {
     let state = tempfile::tempdir().unwrap();
     fs::create_dir_all(state.path().join("saves")).unwrap();
     with_start(state.path());
@@ -381,7 +387,7 @@ fn births_follow_the_log_and_cross_loads_of_the_same_wall() {
     wall.last_seq = 11;
     let backup = save(state.path(), "backup12", &wall, 12);
     changes.push(load(12, "kept", "backup12", backup, &kept_wall));
-    let mut loaded = kept_wall.clone();
+    let mut loaded = kept_wall;
     changes.push(turn(13, 306.0, 313.0));
     *cutoff(&mut loaded) = 313.0;
     loaded.last_seq = 13;
@@ -399,6 +405,12 @@ fn births_follow_the_log_and_cross_loads_of_the_same_wall() {
     other.last_seq = 15;
     other.wall = 14;
     write_state(state.path(), &other, &changes);
+    state
+}
+
+#[test]
+fn births_follow_the_log_and_cross_loads_of_the_same_wall() {
+    let state = birth_lineage_state();
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
     let a = grow(state.path(), first.path(), false).unwrap();

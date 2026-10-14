@@ -13,7 +13,7 @@ use ratatui::widgets::canvas::{Canvas, Line, Points};
 use super::{BRIGHT, DIM, SCALE_LINE, pitch};
 
 #[derive(Debug)]
-pub(crate) struct Display {
+pub struct Display {
     pub(super) frames: VecDeque<VoiceFrame>,
     pub(super) latest: Option<VoiceFrame>,
     pub(super) held: Option<VoiceFrame>,
@@ -25,7 +25,7 @@ pub(crate) struct Display {
 }
 
 impl Display {
-    pub(crate) fn new(rate: u32) -> Self {
+    pub fn new(rate: u32) -> Self {
         let rate = rate.max(1);
         let capacity = (rate as usize * 4 / VOICE_HOP).max(1);
         Self {
@@ -40,7 +40,7 @@ impl Display {
         }
     }
 
-    pub(crate) fn push(&mut self, mut voice: VoiceFrame) {
+    pub fn push(&mut self, mut voice: VoiceFrame) {
         voice.voiced &= [voice.volts, voice.snapped_volts, voice.hz, voice.snapped_hz]
             .iter()
             .all(|value| value.is_finite())
@@ -71,7 +71,7 @@ impl Display {
         self.frames.push_back(voice);
     }
 
-    pub(crate) fn recentre(&mut self) {
+    pub fn recentre(&mut self) {
         self.median.clear();
         self.median.extend(
             self.frames

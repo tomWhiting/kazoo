@@ -16,7 +16,7 @@ fn the_tempo_glides_a_sub_block_at_a_time() {
     render(&mut engine, 24_000, &mut buffer);
     assert_eq!(control.shared().bpm().to_bits(), 90.0_f64.to_bits());
     assert_eq!(engine.tempo_left, 0);
-    let integral = ((120.0 + 90.0) / 2.0) / 60.0;
+    let integral = f64::midpoint(120.0, 90.0) / 60.0;
     // SUB_BLOCK is 32: exact in f64.
     let one_block = 120.0 * SUB_BLOCK as f64 / (60.0 * f64::from(RATE));
     assert!((control.shared().beat() - integral).abs() < one_block);

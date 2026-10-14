@@ -58,10 +58,7 @@ pub fn meet(lengths: &[u64], anchors: &[i64], after_beat: f64) -> Option<u64> {
         .div_euclid(period)
         .checked_add(1)?;
     let next = position.checked_add(cycles.checked_mul(period)?)?;
-    match u64::try_from(next / 4) {
-        Ok(bar) => bar.checked_add(1),
-        Err(_) => None,
-    }
+    u64::try_from(next / 4).map_or(None, |bar| bar.checked_add(1))
 }
 
 /// Meeting report for at least two loops holding tape.

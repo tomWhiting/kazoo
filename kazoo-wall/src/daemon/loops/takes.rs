@@ -317,7 +317,7 @@ impl Loops {
                 }
             }
             answer @ (TapeDone::Fetched { .. } | TapeDone::Blanked { .. }) => {
-                self.finish(ticket, answer)
+                self.finish(ticket, answer);
             }
         }
     }

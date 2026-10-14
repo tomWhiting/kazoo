@@ -150,9 +150,8 @@ fn crossings(samples: &[f32]) -> Vec<f32> {
     samples
         .windows(2)
         .enumerate()
-        .filter_map(|(index, pair)| {
-            (pair[0] <= 0.0 && pair[1] > 0.0).then(|| index as f32 - pair[0] / (pair[1] - pair[0]))
-        })
+        .filter(|(_, pair)| pair[0] <= 0.0 && pair[1] > 0.0)
+        .map(|(index, pair)| index as f32 - pair[0] / (pair[1] - pair[0]))
         .collect()
 }
 

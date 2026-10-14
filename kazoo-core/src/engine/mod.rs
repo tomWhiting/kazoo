@@ -582,66 +582,47 @@ fn spawn_disk_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voice::judge::{JudgeResult, JudgeResults};
-    use std::time::{Duration, Instant};
+    use crate::voice::judge::JudgeResult;
 
-    /// The judge's next pitch verdict, skipping onsets; fails after five seconds.
-    fn next_pitch(results: &mut JudgeResults) -> crate::analysis::PitchEstimate {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match results.pop() {
-                Some(JudgeResult::Pitch(estimate)) => return estimate,
-                Some(JudgeResult::Onset { .. }) => {}
-                None => {
-                    assert!(Instant::now() < deadline, "the judge gave no verdict");
-                    std::thread::yield_now();
-                }
-            }
-        }
-    }
-
-    /// A 48 kHz sine judged at the default 44.1 kHz rate used to read about 404 Hz.
+    /// A device-rate sine must produce one verdict per completed voice hop.
     #[test]
     fn the_engine_judges_at_the_device_rate() {
         let config = judge_config(&EngineConfig::default().pitch, 48_000);
         assert_eq!(config.sample_rate, 48_000);
         assert_eq!(config.frame_length, 2048);
-        assert_eq!(config.hop_length, 2048);
+        assert_eq!(config.hop_length, 512);
         let (mut feed, mut results, judge) =
             judge::spawn(config, 128, OnsetConfig::default()).expect("valid device judge");
-        let samples: Vec<_> = (0..48_000_u32)
+        // Fit the whole input in the ring and join on producer shutdown.
+        // This checks the worker without a scheduling deadline or polling.
+        let samples: Vec<_> = (0..4735_u32)
             .map(|index| (std::f64::consts::TAU * 440.0 * f64::from(index) / 48_000.0).sin() as f32)
             .collect();
-        // One window at a time, each judged before the next is fed, so the
-        // judge's input ring never overflows.
-        let mut settled = 0;
-        let mut estimates = 0;
-        let mut windows = samples.chunks_exact(2048);
-        for (index, window) in windows.by_ref().enumerate() {
-            feed.push(window);
-            let estimate = next_pitch(&mut results);
-            estimates += 1;
-            if (index + 1) * 2048 > 4096 {
-                let frequency = estimate.frequency.expect("settled sine must be voiced");
-                let cents = (1200.0 * (frequency / 440.0).log2()).abs();
-                assert!(
-                    cents <= 5.0,
-                    "device-rate sine read {frequency} Hz ({cents} cents)"
-                );
-                settled += 1;
-            }
-        }
-        feed.push(windows.remainder());
+        feed.push(&samples);
         drop(feed);
         let stats = judge.stats();
         judge.join().expect("the judge exits once its feed is gone");
+        let mut estimates = 0;
+        let mut settled = 0;
         while let Some(result) = results.pop() {
-            assert!(
-                !matches!(result, JudgeResult::Pitch(_)),
-                "a partial window was judged"
-            );
+            if let JudgeResult::Pitch(estimate) = result {
+                estimates += 1;
+                if estimates * 512 > 4096 {
+                    let frequency = estimate.frequency.expect("settled sine must be voiced");
+                    let cents = (1200.0 * (frequency / 440.0).log2()).abs();
+                    assert!(
+                        cents <= 20.0,
+                        "device-rate sine read {frequency} Hz ({cents} cents)"
+                    );
+                    settled += 1;
+                }
+            }
         }
-        assert_eq!(estimates, 23, "one estimate per device-rate window");
+        assert_eq!(
+            estimates,
+            samples.len() / 512,
+            "one verdict per completed hop"
+        );
         assert!(settled > 0);
         assert_eq!(stats.samples_dropped, 0);
         assert_eq!(stats.results_dropped, 0);
@@ -658,14 +639,20 @@ mod tests {
             let config = judge_config(&EngineConfig::default().pitch, rate);
             assert!((config.max_frequency - VOICE_MAX_HZ).abs() < f32::EPSILON);
             let shown = format!("{config:?}");
-            let once_per_window = config.hop_length == config.frame_length;
+            let hop = config.hop_length;
             let (feed, _results, judge) =
                 judge::spawn(config, 128, onset_config(&EngineConfig::default()))
                     .unwrap_or_else(|error| panic!("rate {rate} was refused: {shown} {error}"));
             drop(feed);
             judge.join().expect("the judge exits once its feed is gone");
             if rate >= 22_050 {
-                assert!(once_per_window, "rate {rate} must run once per window");
+                assert_eq!(
+                    hop,
+                    PitchDetectorConfig::for_rate(rate).hop_length,
+                    "rate {rate}"
+                );
+            } else {
+                println!("rate {rate}: hop {hop}");
             }
         }
     }

@@ -1,5 +1,6 @@
-//! The first rings: the wall's change log replayed into the tree's trunk,
-//! one commit per change, exact wherever the log and the wall's own files
+//! Replay the wall's change log into the tree's trunk.
+//!
+//! One commit per change, exact wherever the log and the wall's own files
 //! allow, with every gap a commit that says what is not known.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -174,7 +175,7 @@ fn existing(tree: &Path, dry_run: bool) -> Result<Option<Rings>, RingsError> {
         }
     }
     match (end, trunk) {
-        (Some(end), Some(trunk)) => in_already(tree, end, trunk).map(Some),
+        (Some(end), Some(trunk)) => in_already(tree, &end, trunk).map(Some),
         (Some(end), None) => {
             let report = if dry_run {
                 format!(
@@ -225,12 +226,12 @@ fn existing(tree: &Path, dry_run: bool) -> Result<Option<Rings>, RingsError> {
     }
 }
 
-fn in_already(tree: &Path, end: String, trunk: String) -> Result<Rings, RingsError> {
-    let ancestor = git_output(tree, "merge-base", &["--is-ancestor", &end, &trunk])?;
+fn in_already(tree: &Path, end: &str, trunk: String) -> Result<Rings, RingsError> {
+    let ancestor = git_output(tree, "merge-base", &["--is-ancestor", end, &trunk])?;
     if ancestor.status.code() == Some(1) {
         return Err(RingsError::Diverged(format!(
             "trunk does not grow from the import's last ring (rings/end at {}); nothing is changed",
-            short(&end)
+            short(end)
         )));
     }
     if !ancestor.status.success() {
@@ -247,7 +248,7 @@ fn in_already(tree: &Path, end: String, trunk: String) -> Result<Rings, RingsErr
         &[
             "--reverse",
             "--format=%(trailers:key=Kazoo-Seq,valueonly)",
-            &end,
+            end,
         ],
     )?;
     let numbers = seqs
@@ -264,7 +265,7 @@ fn in_already(tree: &Path, end: String, trunk: String) -> Result<Rings, RingsErr
     Ok(Rings {
         report: format!(
             "the first rings are in already: trunk holds changes {first} to {last} from the import (rings/end at {}), and {since} commits since\n",
-            short(&end)
+            short(end)
         ),
         trunk,
         ..Rings::default()
@@ -793,22 +794,24 @@ impl Walk<'_> {
         let (tip_seq, tip_at) = &self.tip;
         let mut trunk = format!("trunk: {} (change {tip_seq}, {tip_at})", self.report.trunk);
         if *tip_seq < last.seq {
-            trunk.push_str(&format!(
-                "; changes {} to {} are not in it: {}",
+            trunk = format!(
+                "{trunk}; changes {} to {} are not in it: {}",
                 tip_seq + 1,
                 last.seq,
                 self.unknown_reason
-            ));
+            );
         }
         match patch.map(|e| e.after) {
             Some(after) if after == last.seq && model.known => {
                 trunk.push_str(", as patch.json has it");
             }
-            Some(after) => trunk.push_str(&format!(
-                "; patch.json is after change {after}: the wall's next start says so"
-            )),
+            Some(after) => {
+                trunk = format!(
+                    "{trunk}; patch.json is after change {after}: the wall's next start says so"
+                );
+            }
             None => {
-                trunk.push_str("; there is no readable patch.json: the wall's next start says so")
+                trunk.push_str("; there is no readable patch.json: the wall's next start says so");
             }
         }
         let knobs = model.omitted.iter().filter(|s| s.contains('.')).count();
@@ -827,10 +830,7 @@ impl Walk<'_> {
             self.report.changes,
             self.report.gaps,
             self.report.settles,
-            self.gap_lines
-                .iter()
-                .map(|l| format!("{l}\n"))
-                .collect::<String>(),
+            joined_lines(&self.gap_lines),
             model.found_start,
             model.born,
             model.kept_load,
@@ -946,7 +946,7 @@ fn report_text(
         || "planted and grown".into(),
         |dir| format!("dry run: grown in {}, then removed", dir.display()),
     );
-    let lines = |items: &[String]| items.iter().map(|l| format!("{l}\n")).collect::<String>();
+
     format!(
         "the first rings: {} → {} ({mode})\nlog: changes {first} to {last} ({} lines, {}.{:03} MB); {} unreadable, {} repeated, {abandoned} abandoned\nevidence: {} wall files; {} load backups hold their fingerprints, {} do not ({}); {} unreadable ({})\n{}{summary}{}took {:.3} s\n",
         state.display(),
@@ -962,8 +962,16 @@ fn report_text(
         proofs.bad_backups.join(", "),
         proofs.unreadable.len(),
         proofs.unreadable.join(", "),
-        lines(&proofs.disagreements),
+        joined_lines(&proofs.disagreements),
         cleanup.unwrap_or_default(),
         started.elapsed().as_secs_f64()
     )
+}
+
+fn joined_lines(items: &[String]) -> String {
+    items.iter().fold(String::new(), |mut text, item| {
+        text.push_str(item);
+        text.push('\n');
+        text
+    })
 }

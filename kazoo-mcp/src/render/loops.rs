@@ -85,7 +85,7 @@ pub(super) fn describe(view: &LoopView, wear: f64, tempo: f64, beat: f64) -> Str
         let mut ages: Vec<_> = view.ages.iter().copied().filter(|age| *age > 0).collect();
         ages.sort_unstable();
         ages.dedup();
-        let aged: Vec<_> = ages
+        let descriptions: Vec<_> = ages
             .iter()
             .map(|age| {
                 let bars = runs(view.ages.iter().map(|value| value == age));
@@ -95,10 +95,10 @@ pub(super) fn describe(view: &LoopView, wear: f64, tempo: f64, beat: f64) -> Str
                 )
             })
             .collect();
-        let detail = if aged.is_empty() {
+        let detail = if descriptions.is_empty() {
             String::new()
         } else {
-            format!(": {}", aged.join("; "))
+            format!(": {}", descriptions.join("; "))
         };
         parts.push(format!("wear {:.2}{detail}", round(wear, 2)));
     }
