@@ -456,6 +456,10 @@ pub struct EngineConfig {
     pub bpm: f64,
     /// Starting song position, so a rebuilt engine carries on the beat.
     pub beat: f64,
+    /// The song position the wall playing started at (see
+    /// [`Shared::origin`]), so a rebuilt engine's modules carry on from it:
+    /// 0 for an engine that starts the wall.
+    pub origin: f64,
     /// Mono samples the listen ring holds.
     pub listen_frames: usize,
     /// Stereo frames the record ring holds.
@@ -475,6 +479,7 @@ impl EngineConfig {
             sample_rate,
             bpm,
             beat,
+            origin: 0.0,
             listen_frames: sample_rate.max(1) as usize,
             record_frames: sample_rate.max(1) as usize * RECORD_SECONDS,
             audible: true,
@@ -682,6 +687,15 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
     } else {
         0.0
     };
+    // The wall carries on from its origin only when it has one: an engine
+    // that starts the wall reads the song position itself, as before
+    // origins were kept.
+    let origin = if config.origin.is_finite() {
+        config.origin
+    } else {
+        0.0
+    };
+    let wall_beat = (origin.abs() > 0.0).then_some(beat - origin);
     let sample_rate = config.sample_rate.max(8_000);
     let (command_tx, command_rx) = HeapRb::<Command>::new(COMMAND_BACKLOG).split();
     let (retired_tx, retired_rx) = HeapRb::<Retired>::new(RETIRE_BACKLOG).split();
@@ -704,6 +718,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
     // 8 kHz to a few hundred kHz: exact in f32.
     let rate = sample_rate as f32;
     let shared = Arc::new(Shared::new(bpm, beat, config.audible, room.len(), 0));
+    shared.origin.store(origin.to_bits(), Ordering::Relaxed);
     let engine = Engine {
         sample_rate: rate,
         sweeps: [Sweep::REST; MAX_KNOBS],
@@ -732,8 +747,8 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         tempo_step: 0.0,
         tempo_left: 0,
         beat,
-        origin: 0.0,
-        wall_beat: None,
+        origin,
+        wall_beat,
         following_desk: false,
         rendered: 0,
         master: master::Master::new(rate),

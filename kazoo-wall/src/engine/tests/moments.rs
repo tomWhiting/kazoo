@@ -304,3 +304,26 @@ fn moment_a_second_go_while_the_first_fades_lands_on_the_same_bar() {
     );
     assert_eq!(control.shared().origin().to_bits(), 40.0_f64.to_bits());
 }
+
+#[test]
+fn moment_an_engine_built_again_carries_the_wall_s_origin() {
+    // The audio was rebuilt (another device) at song beat 437.25, on a
+    // wall that landed on beat 400: its modules carry on at 37.25.
+    let config = EngineConfig {
+        origin: 400.0,
+        ..EngineConfig::new(MOMENT_RATE, 120.0, 437.25)
+    };
+    let (mut engine, mut control) = engine(config, None);
+    assert_eq!(control.shared().origin().to_bits(), 400.0_f64.to_bits());
+    let seen = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+    control.send(Command::Insert {
+        slot: 0,
+        tag: 1,
+        kind: Kind::CLOCK,
+        module: Box::new(BeatProbe(Arc::clone(&seen))),
+        knobs: [0.0; MAX_KNOBS],
+    });
+    control.send(Command::Order(Box::new(Order::new(&[0], &[]))));
+    render(&mut engine, 1);
+    assert_eq!(seen.load(Ordering::Relaxed), 37.25_f64.to_bits());
+}
