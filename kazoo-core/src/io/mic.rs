@@ -773,8 +773,6 @@ impl<B: MicBackend> Supervisor<B> {
         self.delivery = (now, self.shared.frames.load(Ordering::Relaxed));
         self.recheck_at = now;
         self.recheck_wait = FACTS_EVERY;
-        self.search_at = now + FACTS_EVERY;
-        self.search_wait = FACTS_EVERY;
         Ok(())
     }
 
@@ -799,8 +797,10 @@ impl<B: MicBackend> Supervisor<B> {
         self.last_error = Some(reason);
         self.status.state = MicState::Lost;
         self.last_facts = now;
-        self.search_at = now + FACTS_EVERY;
-        self.search_wait = FACTS_EVERY;
+        // The search goes on from the wait it reached unless the mic has
+        // since delivered at its rate: a mic that drops as soon as it opens
+        // would otherwise be reopened, host audio units and all, every second.
+        self.search_at = now + self.search_wait;
         self.release();
     }
 
@@ -870,7 +870,8 @@ impl<B: MicBackend> Supervisor<B> {
     /// Whether the frames since the last look stray more than a quarter
     /// from the rate the mic was opened at, and the device is due to be
     /// asked again. Each look in a row that finds nothing changed doubles the
-    /// wait, up to [`RECHECK_MOST`]; frames at the rate start it over.
+    /// wait, up to [`RECHECK_MOST`]; frames at the rate start it over, and
+    /// start over the wait between searches for the mic should it go.
     fn delivery_strays(&mut self, now: Instant) -> bool {
         let frames = self.shared.frames.load(Ordering::Relaxed);
         let (since, from) = self.delivery;
@@ -882,6 +883,7 @@ impl<B: MicBackend> Supervisor<B> {
         if delivered * 4 >= expected * 3 && delivered * 3 <= expected * 4 {
             self.recheck_at = now;
             self.recheck_wait = FACTS_EVERY;
+            self.search_wait = FACTS_EVERY;
             return false;
         }
         if now < self.recheck_at {

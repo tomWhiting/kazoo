@@ -786,10 +786,49 @@ fn a_lost_mic_search_slows_and_finds_the_return_within_one_wait() {
     assert_eq!(rig.status().state, MicState::Live);
     assert_eq!(rig.status().reopens, 1);
     assert_eq!(rig.control.lock().unwrap().searches - before, 8);
-    // A successful reopen resets the wait for the next loss.
-    rig.fault(MicFault::Lost("unplugged again".into()));
+    // A reopened mic that delivers at its rate resets the wait for the next loss.
+    rig.feed(&second_of(48_000, 1), 1, 512);
+    rig.output();
     rig.supervisor.tick(now + FACTS_EVERY * 128);
+    rig.fault(MicFault::Lost("unplugged again".into()));
     rig.supervisor.tick(now + FACTS_EVERY * 129);
+    assert_eq!(rig.status().state, MicState::Lost);
+    rig.supervisor.tick(now + FACTS_EVERY * 130);
     assert_eq!(rig.status().state, MicState::Live);
     assert_eq!(rig.status().reopens, 2);
+}
+
+#[test]
+fn a_mic_that_drops_as_soon_as_it_opens_is_opened_less_and_less_often() {
+    let mut rig = Rig::new(48_000, 48_000, 1, None, false);
+    rig.start();
+    let now = rig.supervisor.last_facts;
+    // A Bluetooth mic mid-connect: every stream it gives drops before a
+    // second of frames arrives. Each open builds host audio units.
+    for second in 1..=100 {
+        if rig.status().state == MicState::Live {
+            rig.fault(MicFault::Lost("dropped while connecting".into()));
+        }
+        rig.supervisor.tick(now + FACTS_EVERY * second);
+    }
+    let opens = rig.control.lock().unwrap().opens.len();
+    // 1 at start, then after 1, 2, 4, 8, 16, 32, 32 seconds of trying.
+    assert!(opens <= 9, "{opens} opens in 100 seconds of a flapping mic");
+    // A mic that delivers at its rate for a second is back for real: the
+    // next loss is looked for after one second again.
+    rig.control.lock().unwrap().faults.clear();
+    let mut second = 101;
+    while rig.status().state != MicState::Live {
+        rig.supervisor.tick(now + FACTS_EVERY * second);
+        second += 1;
+    }
+    rig.feed(&second_of(48_000, 1), 1, 512);
+    rig.output();
+    rig.supervisor.tick(now + FACTS_EVERY * second);
+    assert_eq!(rig.status().state, MicState::Live);
+    rig.fault(MicFault::Lost("unplugged".into()));
+    rig.supervisor.tick(now + FACTS_EVERY * (second + 1));
+    assert_eq!(rig.status().state, MicState::Lost);
+    rig.supervisor.tick(now + FACTS_EVERY * (second + 2));
+    assert_eq!(rig.status().state, MicState::Live);
 }
