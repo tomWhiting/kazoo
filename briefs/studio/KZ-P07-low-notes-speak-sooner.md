@@ -112,3 +112,4 @@ The control clauses assumed V03's path takes about two periods on a plucked low 
 - Test 1's control becomes: with `early` off, B0 and E1 arrive no sooner than with `early` on, and with `early` on the first frame within 50 cents is marked provisional whenever the early path fired first. The absolute targets (50.6 ms and 38.4 ms) stand.
 - Test 5 asserts the provisional frame only when the early path fires before V03's lock; whichever frame comes first must be within 30 cents of the truth at its time, and the no-step rule after it stands.
 - Every other target in this brief stands unchanged.
+- (14 Oct, 18:5x) Test 6 follows the same rule: when V03 locks before the early deadline (measured 36.3 ms against 38.3 ms on the vibrato E1), there is no provisional frame and so no handover; the test then asserts no frame-to-frame change over 10 cents across the first locked frames. When the early path fires first, the handover clause stands as written.
