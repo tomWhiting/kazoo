@@ -35,29 +35,33 @@ impl Fuel {
     /// The line through `anchor`, with the points `before` it and `after`
     /// it each nearest first; points that are not numbers are left off,
     /// and with them every one past them, and at most [`PATH`] are kept,
-    /// shared evenly either side.
+    /// shared evenly either side. Every point is held to an eighth of a
+    /// dot, so the same branch seen again lays out the same. `None` when
+    /// the moment's own point is not a number.
     #[must_use]
-    pub fn line(before: &[(f32, f32)], anchor: (f32, f32), after: &[(f32, f32)]) -> Self {
+    pub fn line(before: &[(f32, f32)], anchor: (f32, f32), after: &[(f32, f32)]) -> Option<Self> {
         if !(anchor.0.is_finite() && anchor.1.is_finite()) {
-            return Self::at((0.0, 0.0));
+            return None;
         }
+        let held = |p: (f32, f32)| ((p.0 * 8.0).round() / 8.0, (p.1 * 8.0).round() / 8.0);
+        let anchor = held(anchor);
         let sound = |p: &&(f32, f32)| p.0.is_finite() && p.1.is_finite();
         let side = (PATH - 1) / 2;
         let back = before.iter().take_while(sound).take(side).count();
         let mut fuel = Self::at(anchor);
         fuel.len = 0;
         for &p in before[..back].iter().rev() {
-            fuel.pts[fuel.len] = p;
+            fuel.pts[fuel.len] = held(p);
             fuel.len += 1;
         }
         fuel.anchor = fuel.len;
         fuel.pts[fuel.len] = anchor;
         fuel.len += 1;
         for &p in after.iter().take_while(sound).take(side) {
-            fuel.pts[fuel.len] = p;
+            fuel.pts[fuel.len] = held(p);
             fuel.len += 1;
         }
-        fuel
+        Some(fuel)
     }
 
     /// The line's points, in order along the branch.
@@ -85,17 +89,17 @@ impl Fuel {
         s
     }
 
-    /// The point `s` dots along the line from the moment, held to the
+    /// The point `way` dots along the line from the moment, held to the
     /// line's ends.
     #[must_use]
-    pub fn point_at(&self, s: f32) -> (f32, f32) {
+    pub fn point_at(&self, way: f32) -> (f32, f32) {
         let along = self.along();
-        let s = if s.is_finite() { s } else { 0.0 };
+        let way = if way.is_finite() { way } else { 0.0 };
         for i in 1..self.len {
             let (lo, hi) = (along[i - 1], along[i]);
-            if s <= hi || i == self.len - 1 {
+            if way <= hi || i == self.len - 1 {
                 let frac = if hi > lo {
-                    ((s - lo) / (hi - lo)).clamp(0.0, 1.0)
+                    ((way - lo) / (hi - lo)).clamp(0.0, 1.0)
                 } else {
                     0.0
                 };
@@ -113,10 +117,15 @@ impl Fuel {
     /// from the moment its nearest point is.
     #[must_use]
     pub fn nearest(&self, dot: (f32, f32)) -> (f32, f32) {
+        self.nearest_on(dot, &self.along())
+    }
+
+    /// [`Self::nearest`], with each point's way along the line already
+    /// worked out.
+    fn nearest_on(&self, dot: (f32, f32), along: &[f32; PATH]) -> (f32, f32) {
         if self.len == 1 {
             return (dist(dot, self.pts[0]), 0.0);
         }
-        let along = self.along();
         let mut best = (f32::INFINITY, 0.0);
         for i in 1..self.len {
             let (start, end) = (self.pts[i - 1], self.pts[i]);
@@ -138,22 +147,46 @@ impl Fuel {
 
     /// Lay the fuel out over a field of `shape`: each dot's share of the
     /// fuel, `0.0..=1.0`, into `weight`, and its way along the branch into
-    /// `way`; both row by row, `shape.w` wide.
+    /// `way`; both row by row, `shape.w` wide, as many rows of the field
+    /// as they hold (the field's own buffers hold every row). Only dots
+    /// near the line are measured: the rest have no fuel.
     pub fn lay(&self, shape: &Shape, weight: &mut [f32], way: &mut [f32]) {
-        let n = shape.w * shape.h;
-        if weight.len() < n || way.len() < n {
-            return;
+        let along = self.along();
+        // The line's box, widened by how far the fuel lies from it.
+        let pad = shape.thick.mul_add(1.6, 1.0);
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        );
+        for &(px, py) in self.points() {
+            (x0, y0, x1, y1) = (
+                x0.min(px - pad),
+                y0.min(py - pad),
+                x1.max(px + pad),
+                y1.max(py + pad),
+            );
         }
-        for y in 0..shape.h {
-            for x in 0..shape.w {
-                let i = y * shape.w + x;
-                let (d, s) = self.nearest((x as f32, y as f32));
+        let rows = weight
+            .chunks_exact_mut(shape.w)
+            .zip(way.chunks_exact_mut(shape.w));
+        for (y, (weights, ways)) in rows.take(shape.h).enumerate() {
+            let yf = y as f32;
+            for (x, (weight, way)) in weights.iter_mut().zip(ways.iter_mut()).enumerate() {
+                let xf = x as f32;
+                if xf < x0 || xf > x1 || yf < y0 || yf > y1 {
+                    *weight = 0.0;
+                    *way = 0.0;
+                    continue;
+                }
+                let (d, s) = self.nearest_on((xf, yf), &along);
                 // Thickest at the moment, thinning along the branch, and
                 // hottest on its line.
                 let reach = 1.0 - smooth(shape.reach * 0.6, shape.reach, s.abs());
                 let across = 1.0 - smooth(shape.thick * 0.6, shape.thick * 1.6, d);
-                weight[i] = (reach * across).clamp(0.0, 1.0);
-                way[i] = s;
+                *weight = (reach * across).clamp(0.0, 1.0);
+                *way = s;
             }
         }
     }

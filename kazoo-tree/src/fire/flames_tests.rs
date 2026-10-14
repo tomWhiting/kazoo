@@ -31,7 +31,7 @@ fn branch(shape: &Shape, slope: f32) -> Fuel {
     };
     let before: Vec<_> = (1..=8).map(|k| point(-(k as f32))).collect();
     let after: Vec<_> = (1..=8).map(|k| point(k as f32)).collect();
-    Fuel::line(&before, middle, &after)
+    Fuel::line(&before, middle, &after).expect("the moment is a number")
 }
 
 /// The heat drawn at dot `(x, y)`.
@@ -49,22 +49,28 @@ fn burn(field: &mut Field, seconds: f32) {
 }
 
 #[test]
-fn nothing_burns_at_the_fields_edges_so_it_has_no_box() {
+fn nothing_burns_near_the_fields_edges_so_it_has_no_box() {
     for level in [Level::Far, Level::Near, Level::Close, Level::Every] {
         let mut field = burning_on(level, 0.0);
         let Shape { w, h, .. } = field.shape();
+        // The outer quarter of the band the heat fades across: at most
+        // about a sixth as hot as the flames, whatever burns inside it.
+        let side = ((w as f32 * 0.12).max(3.0) * 0.25).ceil() as usize;
+        let top = ((h as f32 * 0.15).max(4.0) * 0.25).ceil() as usize;
         let mut hottest = 0.0f32;
         for _ in 0..600 {
             field.step(1.0 / 120.0);
             for y in 0..h {
-                for x in [0, w - 1] {
+                for x in (0..side).chain(w - side..w) {
                     let v = heat(&field, x, y);
-                    assert!(v < 0.02, "{level:?}: heat {v} at the side, {x}, {y}");
+                    assert!(v < 0.17, "{level:?}: heat {v} at the side, {x}, {y}");
                 }
             }
-            for x in 0..w {
-                let v = heat(&field, x, 0);
-                assert!(v < 0.02, "{level:?}: heat {v} at the top, {x}");
+            for y in 0..top {
+                for x in 0..w {
+                    let v = heat(&field, x, y);
+                    assert!(v < 0.17, "{level:?}: heat {v} at the top, {x}, {y}");
+                }
             }
             hottest = field.seen().iter().fold(hottest, |a, &b| a.max(b));
         }
@@ -77,23 +83,34 @@ fn nothing_burns_at_the_fields_edges_so_it_has_no_box() {
 
 #[test]
 fn the_branch_burns_in_ragged_tongues_never_a_flat_floor() {
-    let mut field = burning_on(Level::Every, 0.0);
-    burn(&mut field, 2.0);
-    let shape = field.shape();
-    let reach = shape.reach as usize;
-    let middle = shape.w / 2;
-    // Every row near the branch is uneven along it, every frame.
-    for _ in 0..60 {
-        field.step(1.0 / 120.0);
-        for y in shape.base - 4..=shape.base {
-            let row: Vec<f32> = (middle - reach / 2..=middle + reach / 2)
-                .map(|x| heat(&field, x, y))
-                .collect();
-            let (lo, hi) = row
-                .iter()
-                .fold((1.0f32, 0.0f32), |(lo, hi), &v| (lo.min(v), hi.max(v)));
-            assert!(hi - lo > 0.1, "row {y} is flat: {lo}..{hi}");
+    for level in [Level::Close, Level::Every] {
+        let mut field = burning_on(level, 0.0);
+        burn(&mut field, 2.0);
+        let shape = field.shape();
+        let middle = (shape.w / 2) as f32;
+        // Along the branch, either side of the moment's own core: the
+        // tongues' roots stand apart, so every frame the row falls cool
+        // between them. Fed evenly, it never falls below about 0.55.
+        let span = shape.reach * 0.7;
+        let row: Vec<usize> = ((middle - span) as usize..=(middle + span) as usize)
+            .filter(|&x| (x as f32 - middle).abs() > shape.thick * 1.5)
+            .collect();
+        let mut hottest = 0.0f32;
+        for _ in 0..240 {
+            field.step(1.0 / 120.0);
+            for y in shape.base - 2..=shape.base {
+                let (lo, hi) = row.iter().fold((1.0f32, 0.0f32), |(lo, hi), &x| {
+                    let v = heat(&field, x, y);
+                    (lo.min(v), hi.max(v))
+                });
+                assert!(lo < 0.48, "{level:?}: row {y} is a flat floor: {lo}..{hi}");
+                hottest = hottest.max(hi);
+            }
         }
+        assert!(
+            hottest > 0.7,
+            "{level:?}: the control: the tongues burned, {hottest}"
+        );
     }
 }
 
@@ -166,35 +183,67 @@ fn total(field: &Field) -> f32 {
     field.seen().iter().sum()
 }
 
-#[test]
-fn a_moment_left_behind_dies_down_where_it_was_as_the_next_catches() {
-    let (mut history, growth) = tree();
-    let first = history.here.expect("the wall has a place");
-    let area = ratatui::layout::Rect::new(0, 0, 160, 50);
-    let mut buf = ratatui::buffer::Buffer::empty(area);
-    let at = growth.at[first].expect("grown");
-    let view = View {
-        centre: at,
-        scale: 4.0,
-    };
-    let mut blaze = Blaze::default();
-    let draw = |blaze: &mut Blaze, history: &History, buf: &mut ratatui::buffer::Buffer| {
-        let scene = Scene {
+/// The tree, the wall's moment and a view on it, to draw a blaze into.
+struct Stage {
+    history: History,
+    growth: Growth,
+    view: View,
+    buf: ratatui::buffer::Buffer,
+}
+
+impl Stage {
+    fn new() -> (Self, usize) {
+        let (history, growth) = tree();
+        let first = history.here.expect("the wall has a place");
+        let at = growth.at[first].expect("grown");
+        let area = ratatui::layout::Rect::new(0, 0, 160, 50);
+        let stage = Self {
             history,
-            growth: &growth,
+            growth,
+            view: View {
+                centre: at,
+                scale: 4.0,
+            },
+            buf: ratatui::buffer::Buffer::empty(area),
+        };
+        (stage, first)
+    }
+
+    fn draw(&mut self, blaze: &mut Blaze) {
+        let scene = Scene {
+            history: &self.history,
+            growth: &self.growth,
             gestures: &[],
             days: &[],
             line: &[],
             selected: None,
             now: 0,
         };
-        blaze.draw(&scene, &view, area, buf);
-    };
-    draw(&mut blaze, &history, &mut buf);
-    for _ in 0..240 {
-        blaze.burn(1.0 / 120.0);
-        draw(&mut blaze, &history, &mut buf);
+        let area = self.buf.area;
+        blaze.draw(&scene, &self.view, area, &mut self.buf);
     }
+
+    /// Burn on for `seconds`, a frame drawn each step.
+    fn burn(&mut self, blaze: &mut Blaze, seconds: f32) {
+        for _ in 0..(seconds * 120.0) as usize {
+            blaze.burn(1.0 / 120.0);
+            self.draw(blaze);
+        }
+    }
+
+    /// Put the wall at `here`, and draw the frame that sees it.
+    fn go(&mut self, blaze: &mut Blaze, here: Option<usize>) {
+        self.history.here = here;
+        self.draw(blaze);
+    }
+}
+
+#[test]
+fn a_moment_left_behind_dies_down_where_it_was_as_the_next_catches() {
+    let (mut stage, first) = Stage::new();
+    let mut blaze = Blaze::default();
+    stage.draw(&mut blaze);
+    stage.burn(&mut blaze, 2.0);
     let was = blaze.placed().expect("in view");
     let burning = total(blaze.field());
     assert!(
@@ -202,8 +251,7 @@ fn a_moment_left_behind_dies_down_where_it_was_as_the_next_catches() {
         "the control: the first moment burned, {burning}"
     );
     // The wall goes back along the trunk, well away on screen.
-    history.here = Some(first - 40);
-    draw(&mut blaze, &history, &mut buf);
+    stage.go(&mut blaze, Some(first - 40));
     let behind = blaze.left_behind().expect("the first moment dies down");
     assert!(
         (total(behind) - burning).abs() < 1.0,
@@ -215,10 +263,7 @@ fn a_moment_left_behind_dies_down_where_it_was_as_the_next_catches() {
     // new one grows. A flicker either way is not a flare.
     let (mut old, mut new) = (burning, 0.0f32);
     for quarter in 0..24 {
-        for _ in 0..30 {
-            blaze.burn(1.0 / 120.0);
-            draw(&mut blaze, &history, &mut buf);
-        }
+        stage.burn(&mut blaze, 0.25);
         let now = blaze.left_behind().map_or(0.0, total);
         assert!(
             now <= old.mul_add(1.05, 0.5),
@@ -239,6 +284,62 @@ fn a_moment_left_behind_dies_down_where_it_was_as_the_next_catches() {
         "the old fire never went out: {old}"
     );
     assert!(new > burning * 0.5, "the new fire never caught: {new}");
+}
+
+#[test]
+fn every_moment_left_dies_down_on_its_own_until_all_are_out() {
+    let (mut stage, first) = Stage::new();
+    let mut blaze = Blaze::default();
+    stage.draw(&mut blaze);
+    stage.burn(&mut blaze, 2.0);
+    // A, then B, then C, a moment apart: A and B both die down.
+    stage.go(&mut blaze, Some(first - 20));
+    stage.burn(&mut blaze, 0.1);
+    stage.go(&mut blaze, Some(first - 40));
+    assert_eq!(blaze.dying(), 2, "A and B both die down");
+    let b = total(blaze.left_behind().expect("B dies down"));
+    assert!(b > 0.0, "the control: B had caught, {b}");
+    stage.burn(&mut blaze, 6.0);
+    assert_eq!(blaze.dying(), 0, "every fire left went out");
+    assert!(total(blaze.field()) > 10.0, "C caught");
+}
+
+#[test]
+fn going_back_to_a_moment_takes_its_fire_up_where_it_was() {
+    let (mut stage, first) = Stage::new();
+    let mut blaze = Blaze::default();
+    stage.draw(&mut blaze);
+    stage.burn(&mut blaze, 2.0);
+    // A to B, and straight back to A while it still burns.
+    stage.go(&mut blaze, Some(first - 40));
+    stage.burn(&mut blaze, 0.1);
+    let a = total(blaze.left_behind().expect("A dies down"));
+    stage.go(&mut blaze, Some(first));
+    assert_eq!(blaze.dying(), 1, "B dies down, A burns again");
+    let back = total(blaze.field());
+    assert!(
+        a > 10.0 && (back - a).abs() < 1.0,
+        "A takes up where it was, not from cold: {a} -> {back}"
+    );
+    stage.burn(&mut blaze, 2.0);
+    assert!(total(blaze.field()) > 10.0, "A burns on");
+    assert_eq!(blaze.dying(), 0, "B went out");
+}
+
+#[test]
+fn a_wall_at_no_moment_lets_its_fire_die_down() {
+    let (mut stage, _) = Stage::new();
+    let mut blaze = Blaze::default();
+    stage.draw(&mut blaze);
+    stage.burn(&mut blaze, 2.0);
+    let burning = total(blaze.field());
+    assert!(burning > 10.0, "the control: it burned, {burning}");
+    stage.go(&mut blaze, None);
+    assert_eq!(blaze.dying(), 1, "the moment left dies down");
+    assert!(blaze.placed().is_none(), "nothing burns for no moment");
+    stage.burn(&mut blaze, 6.0);
+    assert_eq!(blaze.dying(), 0, "and goes out");
+    assert!(!blaze.live(), "with nothing burning, no frames are drawn");
 }
 
 /// The field as braille, for looking at.

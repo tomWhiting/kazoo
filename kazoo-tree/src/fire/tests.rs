@@ -30,6 +30,10 @@ fn assert_sound(field: &Field) {
             x >= 0.0 && x < shape.w as f32,
             "a spark left the field: {x}"
         );
+        assert!(
+            y >= 0.0 && y < shape.h as f32,
+            "a spark left the field: {y}"
+        );
     }
 }
 

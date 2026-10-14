@@ -100,7 +100,7 @@ impl Placement {
             anchor,
             origin,
             shape,
-            fuel: Fuel::line(&before, middle, &after),
+            fuel: Fuel::line(&before, middle, &after)?,
         })
     }
 

@@ -33,11 +33,18 @@ impl Rng {
     }
 }
 
+/// How many lattice steps every axis of the noise repeats after.
+pub const PERIOD: i32 = 4_096;
+
 /// A lattice point's value, in `-1.0..=1.0`.
+///
+/// Every axis repeats every [`PERIOD`] lattice steps, so a clock that
+/// wraps at a whole number of periods never jumps.
 fn hash(x: i32, y: i32, z: i32) -> f32 {
-    let mut h = (x as u32).wrapping_mul(0x8da6_b343)
-        ^ (y as u32).wrapping_mul(0xd816_3841)
-        ^ (z as u32).wrapping_mul(0xcb1a_b31f);
+    let wrap = |v: i32| v.rem_euclid(PERIOD) as u32;
+    let mut h = wrap(x).wrapping_mul(0x8da6_b343)
+        ^ wrap(y).wrapping_mul(0xd816_3841)
+        ^ wrap(z).wrapping_mul(0xcb1a_b31f);
     h ^= h >> 13;
     h = h.wrapping_mul(0x5bd1_e995);
     h ^= h >> 15;

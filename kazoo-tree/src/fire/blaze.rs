@@ -112,8 +112,8 @@ impl Fire {
     }
 }
 
-/// The fire, as the app keeps it: the wall's moment burning, and the
-/// moment it was at before dying down where it was.
+/// The fire, as the app keeps it: the wall's moment burning, and every
+/// moment it has just left dying down where it was.
 #[derive(Debug)]
 pub struct Blaze {
     /// Lit (the default) or out: `b` turns it.
@@ -124,9 +124,13 @@ pub struct Blaze {
     reuse: bool,
     /// The wall's moment, burning.
     now: Fire,
-    /// The moment the wall left, dying down.
-    then: Fire,
-    /// Whether any of either fire was on screen at the last frame.
+    /// The moments the wall has left, dying down, the oldest first: each
+    /// until it is cold, a few seconds.
+    dying: Vec<Fire>,
+    /// Fires burned out, kept to be lit again, so a move of the wall
+    /// allocates nothing once there have been as many fires at once.
+    spare: Vec<Fire>,
+    /// Whether any fire was on screen at the last frame.
     seen: bool,
     /// When the fire last burned on.
     last: Option<Instant>,
@@ -139,7 +143,8 @@ impl Default for Blaze {
             on: true,
             reuse: false,
             now: Fire::new(),
-            then: Fire::new(),
+            dying: Vec::new(),
+            spare: Vec::new(),
             seen: false,
             last: None,
             kept: None,
@@ -154,7 +159,10 @@ impl Blaze {
         self.on = !self.on;
         self.last = None;
         self.now.light(None);
-        self.then.light(None);
+        while let Some(mut fire) = self.dying.pop() {
+            fire.light(None);
+            self.spare.push(fire);
+        }
         if self.on {
             "the wall's moment is ablaze (b puts it out)"
         } else {
@@ -200,15 +208,17 @@ impl Blaze {
         &self.now.field
     }
 
-    /// The field of the moment the wall left, dying down, while it burns:
-    /// for tests and measures.
+    /// The field of the moment the wall left last, dying down, while it
+    /// burns: for tests and measures.
     #[must_use]
-    pub const fn left_behind(&self) -> Option<&Field> {
-        if self.then.id.is_some() {
-            Some(&self.then.field)
-        } else {
-            None
-        }
+    pub fn left_behind(&self) -> Option<&Field> {
+        self.dying.last().map(|fire| &fire.field)
+    }
+
+    /// How many moments the wall has left are still dying down.
+    #[must_use]
+    pub fn dying(&self) -> usize {
+        self.dying.len()
     }
 
     /// Burn on to `now`: by the time since the last tick. The first tick
@@ -222,18 +232,53 @@ impl Blaze {
     }
 
     /// Burn on by `dt` seconds, with no clock: the wall's moment catching,
-    /// the one it left dying down until it is cold.
+    /// the ones it left dying down until each is cold.
     pub fn burn(&mut self, dt: f32) {
         if self.now.id.is_some() {
             self.now.tend(dt, true);
             self.now.field.step(dt);
         }
-        if self.then.id.is_some() {
-            self.then.tend(dt, false);
-            self.then.field.step(dt);
-            if self.then.lit <= 0.0 && self.then.ember <= 0.0 && self.then.field.is_cold() {
-                self.then.light(None);
+        let mut i = 0;
+        while i < self.dying.len() {
+            let fire = &mut self.dying[i];
+            fire.tend(dt, false);
+            fire.field.step(dt);
+            if fire.lit <= 0.0 && fire.ember <= 0.0 && fire.field.is_cold() {
+                self.retire(i);
+            } else {
+                i += 1;
             }
+        }
+    }
+
+    /// The dying fire at `i` is out: kept to be lit again.
+    fn retire(&mut self, i: usize) {
+        let mut fire = self.dying.remove(i);
+        fire.light(None);
+        self.spare.push(fire);
+    }
+
+    /// The wall has moved to `here`: the moment it left dies down where it
+    /// was, and `here` catches; from where it was, if it is still dying
+    /// down from the wall being there before, else from a spark.
+    fn move_to(&mut self, here: Option<Arc<str>>) {
+        let back = here.as_ref().and_then(|id| {
+            self.dying
+                .iter()
+                .position(|fire| fire.id.as_ref() == Some(id))
+        });
+        let next = if let Some(i) = back {
+            self.dying.remove(i)
+        } else {
+            let mut fire = self.spare.pop().unwrap_or_else(Fire::new);
+            fire.light(here);
+            fire
+        };
+        let left = std::mem::replace(&mut self.now, next);
+        if left.id.is_some() {
+            self.dying.push(left);
+        } else {
+            self.spare.push(left);
         }
     }
 
@@ -266,8 +311,8 @@ impl Blaze {
     }
 
     /// Draw the fire for `scene` through `view` over the tree's picture
-    /// already drawn in `area`, when lit: the moment the wall left first,
-    /// dying down where it was, then the wall's moment over it.
+    /// already drawn in `area`, when lit: the moments the wall left first,
+    /// dying down where they were, then the wall's moment over them.
     pub fn draw(&mut self, scene: &Scene<'_>, view: &View, area: Rect, buf: &mut Buffer) {
         if !self.on {
             self.out_of_view();
@@ -278,44 +323,59 @@ impl Blaze {
             .and_then(|m| scene.history.moments.get(m))
             .map(|m| m.id.clone());
         if self.now.id != here_id {
-            if self.now.id.is_some() {
-                // The wall moved on: what burned dies down where it was.
-                std::mem::swap(&mut self.now, &mut self.then);
-            }
-            self.now.light(here_id);
-        }
-        let then = self
-            .then
-            .id
-            .as_deref()
-            .and_then(|id| scene.history.moment_of(id));
-        if self.then.id.is_some() && then.is_none() {
-            // Its moment is no longer on the tree read.
-            self.then.light(None);
+            self.move_to(here_id);
         }
         let mut seen = false;
-        for (fire, moment) in [(&mut self.then, then), (&mut self.now, here)] {
-            fire.place =
-                moment.and_then(|m| Placement::of(scene, view, area.width, area.height, m));
-            let Some(place) = fire.place else { continue };
-            fire.field.keep_time(
-                moment
-                    .and_then(|m| scene.history.moments.get(m))
-                    .and_then(|m| m.tempo),
-            );
-            if place.shape != fire.field.shape() {
-                fire.field.reshape(place.shape);
+        let mut i = 0;
+        while i < self.dying.len() {
+            let moment = self.dying[i]
+                .id
+                .as_deref()
+                .and_then(|id| scene.history.moment_of(id));
+            if moment.is_none() {
+                // Its moment is no longer on the tree read.
+                self.retire(i);
+                continue;
             }
-            fire.field.burn_on(&place.fuel);
-            if place.visible(area.width, area.height) {
-                seen = true;
-                paint(&fire.field, &place, area, buf);
-            }
+            seen |= show(&mut self.dying[i], moment, scene, view, area, buf);
+            i += 1;
         }
+        seen |= show(&mut self.now, here, scene, view, area, buf);
         if seen {
             self.seen = true;
         } else {
             self.out_of_view();
         }
+    }
+}
+
+/// Place `fire` on `moment` for `scene` through `view`, and draw it over
+/// `area` if any of it is in view: answers whether it was.
+fn show(
+    fire: &mut Fire,
+    moment: Option<usize>,
+    scene: &Scene<'_>,
+    view: &View,
+    area: Rect,
+    buf: &mut Buffer,
+) -> bool {
+    fire.place = moment.and_then(|m| Placement::of(scene, view, area.width, area.height, m));
+    let Some(place) = fire.place else {
+        return false;
+    };
+    fire.field.keep_time(
+        moment
+            .and_then(|m| scene.history.moments.get(m))
+            .and_then(|m| m.tempo),
+    );
+    if place.shape != fire.field.shape() {
+        fire.field.reshape(place.shape);
+    }
+    fire.field.burn_on(&place.fuel);
+    if place.visible(area.width, area.height) {
+        paint(&fire.field, &place, area, buf);
+        true
+    } else {
+        false
     }
 }

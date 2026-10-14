@@ -34,6 +34,8 @@ pub struct Flick {
     span: f32,
     /// How bright it is now, `0.0..=1.0`.
     pub glow: f32,
+    /// How bright it was born.
+    born: f32,
     /// A wisp's size, dots.
     pub size: f32,
 }
@@ -52,6 +54,7 @@ impl Flick {
             life: span,
             span,
             glow: 1.0,
+            born: 1.0,
             size: 0.0,
         }
     }
@@ -69,6 +72,7 @@ impl Flick {
             life: span,
             span,
             glow,
+            born: glow,
             size,
         }
     }
@@ -107,7 +111,7 @@ impl Flick {
         self.glow = match self.kind {
             // Crackling: each frame a little brighter or dimmer.
             Kind::Spark => 0.55f32.mul_add(left, 0.45) * rng.unit().mul_add(0.3, 0.7) * top,
-            Kind::Wisp => self.glow.min(left.sqrt()) * top,
+            Kind::Wisp => self.born.min(left.sqrt()) * top,
         };
         self.life > 0.0
             && self.x.is_finite()

@@ -66,6 +66,18 @@ fn rgb(c: [f32; 3], share: f32) -> Color {
     Color::Rgb(r, g, b)
 }
 
+/// Glow behind `cell` as `colour`, unless it already glows brighter (where
+/// two fires overlap, the brighter glow stays).
+fn brighten_bg(cell: &mut ratatui::buffer::Cell, colour: Color) {
+    let level = |c: Color| match c {
+        Color::Rgb(r, g, b) => u16::from(r) + u16::from(g) + u16::from(b),
+        _ => 0,
+    };
+    if level(colour) > level(cell.bg) {
+        cell.set_bg(colour);
+    }
+}
+
 /// The threshold a dot's heat must beat to be lit, at dither place `rank`.
 fn threshold(rank: u32) -> f32 {
     ((rank as f32 + 0.5) / 8.0).mul_add(0.85, 0.08)
@@ -156,10 +168,10 @@ pub fn paint(field: &Field, place: &Placement, area: Rect, buf: &mut Buffer) {
                     }
                 }
                 if glows {
-                    cell.set_bg(rgb(glow, GLOW));
+                    brighten_bg(cell, rgb(glow, GLOW));
                 }
             } else if glows {
-                cell.set_bg(rgb(glow, GLOW_BEHIND_TEXT));
+                brighten_bg(cell, rgb(glow, GLOW_BEHIND_TEXT));
             }
         }
     }

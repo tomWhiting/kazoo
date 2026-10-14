@@ -15,15 +15,17 @@
 
 use super::flicks::{Flick, Kind, MAX_FLICKS};
 use super::fuel::Fuel;
-use super::noise::{Rng, fractal, noise, noise_wrapped, smooth};
+use super::noise::{PERIOD, Rng, fractal, noise, noise_wrapped, smooth};
 pub use super::shape::{MAX_H, MAX_W, Shape};
 
 /// The longest a step is taken as, in seconds: a pause (the screen busy,
 /// the fire out of view) resumes where it was, never with a lurch.
 const LONGEST_STEP: f32 = 0.05;
-/// The fire's clock wraps here (seconds), so its turbulence keeps its
-/// precision however long the tree is open.
-const CLOCK_WRAP: f32 = 4_096.0;
+/// The fire's clock wraps here (seconds), so it keeps its precision however
+/// long the tree is open. Every rate the clock is read at is a whole number
+/// of tenths, so at the wrap every phase is a whole number of the noise's
+/// periods, and nothing jumps.
+const CLOCK_WRAP: f64 = PERIOD as f64 * 10.0;
 /// The cooling texture's height, dots: it repeats, and scrolls up with
 /// the flames forever.
 const COOL_H: usize = 128;
@@ -62,9 +64,11 @@ pub struct Field {
     flicks: Vec<Flick>,
     rng: Rng,
     /// The fire's own clock, seconds.
-    t: f32,
+    t: f64,
     /// How far the cooling texture has risen, dots.
     scroll: f32,
+    /// How far its slower second layer has risen, dots.
+    scroll_slow: f32,
     /// Sparks owed, carried between steps so a low rate still sends some.
     sparks_due: f32,
     /// Wisps owed.
@@ -112,6 +116,7 @@ impl Field {
             rng: Rng::new(0x9e37_79b9_7f4a_7c15),
             t: 0.0,
             scroll: 0.0,
+            scroll_slow: 53.0,
             sparks_due: 0.0,
             wisps_due: 0.0,
             frame: 0,
@@ -256,6 +261,9 @@ impl Field {
             .retain(|f| f.x >= 0.0 && f.x < wf && f.y >= 0.0 && f.y < hf);
         self.shape = shape;
         self.fuel = None;
+        // The embers lie along the branch as it was laid at the old size:
+        // they are laid again by the next step, never drawn sheared.
+        self.embers[..shape.w * shape.h].fill(0.0);
         self.prepare();
         self.compose();
     }
@@ -313,7 +321,13 @@ impl Field {
             i32::try_from(self.shape.w).unwrap_or(i32::MAX),
             i32::try_from(self.shape.h).unwrap_or(i32::MAX),
         );
-        if !(x.is_finite() && y.is_finite()) || x <= -1.0 || y <= -1.0 {
+        // Outside the field, and a dot's width past it, is cold.
+        if !(x.is_finite() && y.is_finite())
+            || x <= -1.0
+            || y <= -1.0
+            || x >= self.shape.w as f32
+            || y >= self.shape.h as f32
+        {
             return 0.0;
         }
         let (fx, fy) = (x.floor(), y.floor());
@@ -331,6 +345,12 @@ impl Field {
         (bottom - top).mul_add(ty, top)
     }
 
+    /// The clock read at `rate` turns a second, in the noise's period: it
+    /// never jumps, however long it burns.
+    fn phase(&self, rate: f64) -> f32 {
+        (self.t * rate).rem_euclid(f64::from(PERIOD)) as f32
+    }
+
     /// Dots the flames climb a second.
     fn rate(&self) -> f32 {
         0.35f32.mul_add(self.shape.tall, 18.0)
@@ -340,17 +360,15 @@ impl Field {
     /// or below zero, burns nothing; a long one is taken as
     /// [`LONGEST_STEP`].
     pub fn step(&mut self, dt: f32) {
-        let dt = dt * self.pace;
+        // A pause is held to the longest step before the tempo speeds it,
+        // so a fast tempo keeps its pace however slow the frames come.
         let dt = if dt.is_finite() {
-            dt.clamp(0.0, LONGEST_STEP)
+            dt.clamp(0.0, LONGEST_STEP) * self.pace
         } else {
             0.0
         };
         self.frame = self.frame.wrapping_add(1);
-        self.t += dt;
-        if self.t >= CLOCK_WRAP {
-            self.t -= CLOCK_WRAP;
-        }
+        self.t = (self.t + f64::from(dt)).rem_euclid(CLOCK_WRAP);
         if self.fuel.is_none() {
             let fuel = Fuel::at(Self::moment(&self.shape));
             self.burn_on(&fuel);
@@ -362,7 +380,8 @@ impl Field {
     }
 
     /// Carry the heat up along the turbulence, cooling it as it climbs by
-    /// the rising texture, and fading it toward the edges.
+    /// the rising texture. Heat carried past the field's edges is gone;
+    /// what is drawn fades before them (see [`Self::compose`]).
     fn rise(&mut self, dt: f32) {
         let Shape {
             w,
@@ -372,15 +391,18 @@ impl Field {
             tall,
             ..
         } = self.shape;
-        let t = self.t;
+        let (drift, swirl, sway_at) = (self.phase(1.4), self.phase(0.6), self.phase(0.5));
         let up = self.rate() * dt;
         self.scroll = (self.scroll + up) % COOL_H as f32;
+        // The second layer rises slower, on its own: it never jumps when the
+        // first wraps.
+        self.scroll_slow = up.mul_add(0.61, self.scroll_slow) % COOL_H as f32;
         // Cooling is by height climbed, so how tall the flames reach is
         // the same at any speed.
         let climbed = up / tall;
         let lean = reach.mul_add(1.0, 4.0) * dt;
         let (across, down) = (1.0 / reach.mul_add(1.2, 2.0), 1.0 / (tall * 0.5));
-        let scroll = [self.scroll, self.scroll.mul_add(0.61, 53.0) % COOL_H as f32];
+        let scroll = [self.scroll, self.scroll_slow];
         let middle = (w / 2) as f32;
         // The flames gather toward the moment as they climb: far from it
         // they cool faster, so the fire tapers into tongues over its heart.
@@ -392,21 +414,19 @@ impl Field {
             let rows = scroll.map(|s| (y + s as usize) % COOL_H);
             // The texture sways from side to side as it rises, so the
             // tongues it carves curl rather than stand in columns.
-            let sway = noise(y as f32 * down * 2.0, t * 0.5, 11.0) * reach * 0.6;
+            let sway = noise(y as f32 * down * 2.0, sway_at, 11.0) * reach * 0.6;
             for x in 0..w {
-                let n = noise(
-                    x as f32 * across,
-                    (y as f32).mul_add(down, t * 1.4),
-                    t * 0.6,
-                );
+                let n = noise(x as f32 * across, (y as f32).mul_add(down, drift), swirl);
                 let v = self.sample(n.mul_add(lean * (0.3 + height), x as f32), y as f32 + up);
-                let tx = ((x as f32 + sway).rem_euclid(wf)) as usize;
+                // Held inside the texture: near the edges, where nothing is
+                // drawn, a column repeats rather than wrapping to a seam.
+                let tx = (x as f32 + sway).clamp(0.0, wf - 1.0) as usize;
                 let tex = (self.cool[rows[0] * MAX_W + tx] + self.cool[rows[1] * MAX_W + x]) * 0.5;
                 let off = (x as f32 - middle) * narrow;
                 let taper = (1.4 * height).mul_add(off * off, 1.0);
                 let lost = cool * 1.7f32.mul_add(tex, 0.2) * taper;
                 let i = y * w + x;
-                self.next[i] = ((v - lost) * self.edge[i]).clamp(0.0, 1.0);
+                self.next[i] = (v - lost).clamp(0.0, 1.0);
             }
         }
         std::mem::swap(&mut self.heat, &mut self.next);
@@ -418,7 +438,7 @@ impl Field {
         let Shape {
             w, h, reach, thick, ..
         } = self.shape;
-        let t = self.t;
+        let (flicker, wander) = (self.phase(7.0), self.phase(0.9));
         let spread = reach * 0.88f32.mul_add(self.gain, 0.12);
         let tongue = 1.0 / (reach * 0.35).max(1.5);
         for i in 0..w * h {
@@ -428,9 +448,9 @@ impl Field {
                 continue;
             }
             let s = self.way[i];
-            let flick = noise(s * 0.5, t * 7.0, 3.0).mul_add(0.5, 0.5);
+            let flick = noise(s * 0.5, flicker, 3.0).mul_add(0.5, 0.5);
             let flame = if s.abs() <= spread {
-                let root = smooth(0.05, 0.35, fractal(s * tongue, t * 0.9, 5.0, 2));
+                let root = smooth(0.05, 0.35, fractal(s * tongue, wander, 5.0, 2));
                 let core = 1.0 - smooth(0.0, thick * 1.5, s.abs());
                 weight
                     * self.gain
@@ -504,7 +524,7 @@ impl Field {
         if self.wisps_due >= 1.0 {
             self.wisps_due = 0.0;
         }
-        let (t, rng) = (self.t, &mut self.rng);
+        let (t, rng) = (self.phase(1.0), &mut self.rng);
         self.flicks.retain_mut(|f| f.fly(dt, t, (wf, hf), rng));
         for f in &self.flicks {
             if f.kind == Kind::Wisp {
