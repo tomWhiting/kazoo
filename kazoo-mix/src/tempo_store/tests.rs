@@ -287,3 +287,27 @@ fn missing_home_starts_with_a_warning() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[test]
+fn failed_writes_kept_for_the_exit_are_bounded() {
+    let dir = directory();
+    let path = dir.path().join("blocked/tempo");
+    fs::write(dir.path().join("blocked"), "a file").unwrap();
+    let mut store = TempoStore::open(path);
+    let shared = SharedState::new();
+    let now = Instant::now();
+    for step in 0..1_000_u32 {
+        shared.set_tempo(if step % 2 == 0 { 96.0 } else { 100.0 });
+        let at = now + SETTLE * (step * 2);
+        store.poll(shared.transport(), at);
+        assert!(store.poll(shared.transport(), at + SETTLE));
+    }
+    let kept = store.failed_writes();
+    assert!(kept.len() <= FAILED_WRITES_KEPT + 1, "{}", kept.len());
+    assert!(kept[0].contains("tempo could not be saved"), "{kept:?}");
+    assert!(
+        kept.last().unwrap().contains("999 more"),
+        "{:?}",
+        kept.last()
+    );
+}

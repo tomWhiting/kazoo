@@ -12,6 +12,9 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 
 const SETTLE: Duration = Duration::from_millis(500);
 
+/// The failed writes kept to print at the exit; later ones are counted.
+const FAILED_WRITES_KEPT: usize = 16;
+
 #[derive(Debug)]
 pub struct TempoStore {
     path: Result<PathBuf, String>,
@@ -23,6 +26,7 @@ pub struct TempoStore {
     last_written: f32,
     warning_at: Option<Instant>,
     failed_writes: Vec<String>,
+    failed_writes_unkept: u64,
 }
 
 impl TempoStore {
@@ -61,6 +65,7 @@ impl TempoStore {
             last_written: bpm,
             warning_at,
             failed_writes: Vec::new(),
+            failed_writes_unkept: 0,
         }
     }
 
@@ -79,6 +84,7 @@ impl TempoStore {
                 last_written: DEFAULT_BPM,
                 warning_at: Some(Instant::now()),
                 failed_writes: Vec::new(),
+                failed_writes_unkept: 0,
             },
         }
     }
@@ -90,8 +96,28 @@ impl TempoStore {
         })
     }
 
-    pub(crate) fn failed_writes(&self) -> &[String] {
-        &self.failed_writes
+    /// The failed writes to print once the terminal is back: the first
+    /// [`FAILED_WRITES_KEPT`] that differ from the one before, then how many
+    /// more there were.
+    pub(crate) fn failed_writes(&self) -> Vec<String> {
+        let mut lines = self.failed_writes.clone();
+        if self.failed_writes_unkept > 0 {
+            lines.push(format!(
+                "kazoo-mix: the tempo failed to save {} more times",
+                self.failed_writes_unkept
+            ));
+        }
+        lines
+    }
+
+    fn keep_failed_write(&mut self, warning: String) {
+        if self.failed_writes.len() < FAILED_WRITES_KEPT
+            && self.failed_writes.last() != Some(&warning)
+        {
+            self.failed_writes.push(warning);
+        } else {
+            self.failed_writes_unkept = self.failed_writes_unkept.saturating_add(1);
+        }
     }
 
     pub(crate) fn flush(&mut self, transport: Transport) -> Result<(), String> {
@@ -148,7 +174,7 @@ impl TempoStore {
             return false;
         }
         if let Err(warning) = self.save() {
-            self.failed_writes.push(warning);
+            self.keep_failed_write(warning);
         }
         true
     }
