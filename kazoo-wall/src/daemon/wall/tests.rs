@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::*;
+mod moments;
 use crate::SUB_BLOCK;
 use crate::dsp::{Io, Module as DspModule, Tick};
 use crate::engine::{Engine, EngineConfig, engine};
@@ -12,6 +13,7 @@ use crate::patch::PatchFile;
 use crate::protocol::{ChangeResult, ProbeResult, Snapshot};
 use crate::seed::seed;
 use crate::store::{FailAt, Loaded};
+use moments::land;
 
 mod batch;
 mod delay_lines;
@@ -4649,6 +4651,7 @@ fn a_wall_of_scopes_and_readouts_saves_and_loads_back_and_measures_again() {
     play(&mut wall, &mut engine);
     assert!(wall.snapshot().probes.is_empty());
     load_save(&mut wall, "probes").unwrap();
+    land(&wall, &mut engine);
     play(&mut wall, &mut engine);
     plays_at_its_targets(&wall, &saved);
     assert_eq!(wall.snapshot().cables, cables);
@@ -4769,6 +4772,7 @@ fn readings_follow_a_load_and_its_undo() {
     let loaded = load_save(&mut wall, "measured").unwrap();
     // Nothing of the empty wall, nor of the scope before it went.
     assert!(wall.readings.is_empty());
+    land(&wall, &mut engine);
     run_for(&mut wall, &mut engine, 0.5);
     let scope = probed(&mut wall, Some("scope1")).probes[0]
         .scope
@@ -4777,6 +4781,7 @@ fn readings_follow_a_load_and_its_undo() {
     assert!(scope.input_a.connected, "{scope:?}");
     // Undone, the empty wall is back: no probes, no readings.
     undo_load(&mut wall, loaded.change.seq);
+    land(&wall, &mut engine);
     assert!(wall.readings.is_empty());
     run_for(&mut wall, &mut engine, 0.2);
     assert!(wall.snapshot().probes.is_empty());

@@ -1584,8 +1584,10 @@ impl Wall {
     /// recording under way carry on through it; the wall's own tempo
     /// becomes the patch's, unless the desk keeps the tempo.
     fn swap_engine(&mut self) {
+        self.engine.begin_swap();
         self.engine.send(Command::Hush);
-        for slot in self.rack.empty() {
+        self.rack.empty();
+        for slot in 0..self.engine.slots() {
             self.engine.send(Command::Remove { slot });
         }
         self.speech.replace_wall();
@@ -1616,6 +1618,7 @@ impl Wall {
             self.engine.send(Command::Tempo(self.patch.tempo));
         }
         self.engine.send(Command::Unhush);
+        self.engine.end_swap();
         self.swaps_sent += 1;
     }
 
@@ -2378,6 +2381,40 @@ impl Wall {
     }
 
     fn whole_tree(&mut self, kind: crate::tree::thread::WholeKind) {
+        // The changes the commit may name come after what the tree holds:
+        // the changes kept in memory (the last `MEMORY_CHANGES`) have them
+        // all unless the tree is further behind than that, and only then
+        // is the log read from disk (every go asks for this commit).
+        let first_owed = self
+            .tree
+            .as_ref()
+            .and_then(|tree| tree.through)
+            .map_or(1, |through| through.saturating_add(1));
+        let in_memory = self
+            .log
+            .front()
+            .is_none_or(|change| change.seq <= first_owed);
+        let from_disk = self.store.as_ref().filter(|_| !in_memory);
+        let history = match from_disk.map(Store::load_log).transpose() {
+            Ok(Some(log)) => log.changes,
+            Ok(None) => self.log.iter().cloned().collect(),
+            Err(err) => {
+                self.tree_failed(&crate::tree::TreeError::Git(format!(
+                    "read change log for tree gap: {err}"
+                )));
+                return;
+            }
+        };
+        let abandoned = abandoned_changes(history.iter());
+        let changes = history
+            .iter()
+            .filter(|change| {
+                change.seq <= self.made
+                    && !matches!(change.what, What::Go { .. })
+                    && !abandoned.contains(&change.seq)
+            })
+            .map(|change| change.seq)
+            .collect();
         let files = match crate::tree::to_files(&self.patch.to_file()) {
             Ok(files) => files,
             Err(err) => {
@@ -2399,6 +2436,7 @@ impl Wall {
             self.tree_mirror = files.clone();
             let accepted = tree.offer(crate::tree::thread::TreeItem::Whole {
                 kind,
+                changes,
                 seq: self.made,
                 clock,
                 files,
@@ -4005,6 +4043,10 @@ impl Wall {
         });
         self.kept_in = source.kept().map(|kept| (kept.clone(), incoming_print));
         self.prune();
+        notes.push(format!(
+            "lands on bar {:.0}",
+            self.engine.landing_beat() / 4.0 + 1.0
+        ));
         let result = encode(&LoadResult {
             change: change.clone(),
             backup: backup.name.clone(),
@@ -4876,7 +4918,9 @@ impl Wall {
             })
             .collect();
         ModuleView {
-            tape: self.loops.view(&module.id, &self.patch),
+            tape: self
+                .loops
+                .view(&module.id, &self.patch, self.engine.shared().origin()),
             id: module.id.clone(),
             kind: module.kind.name().to_string(),
             name: module.name.clone(),

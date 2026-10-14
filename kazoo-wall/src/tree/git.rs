@@ -1,5 +1,8 @@
 //! Canonical, durable commits through git's own importer.
 
+mod restart;
+pub(super) use restart::missing_changes;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::DirBuilderExt;
@@ -338,36 +341,31 @@ impl Commit {
         })
     }
 
-    /// A start or gap commit holding the whole wall after change `seq`,
-    /// naming the changes after `through` it holds without their own
-    /// commits.
+    /// A whole-wall commit naming only logged changes missing from the tree.
     #[must_use]
     pub fn whole(
         kind: &str,
         seq: u64,
         clock: Option<&ClockStamp>,
         files: super::Files,
-        through: Option<u64>,
+        missing: &[u64],
     ) -> Self {
-        let previous = through.unwrap_or(0);
-        let gap = (seq > previous).then(|| (previous + 1, seq));
-        let summary = match (kind, gap, previous > seq) {
-            ("start", Some((first, last)), _) => format!(
-                "the wall started after change {seq}; the tree did not hold changes {first} to {last} one by one"
-            ),
-            ("start", None, true) => format!(
-                "the tree held changes up to {previous}; the wall started from change {seq}"
-            ),
-            ("start", None, false) => format!("the wall started after change {seq}"),
-            (_, Some((first, last)), _) => {
-                format!("the tree holds changes {first} to {last} as one commit")
+        let (names, gaps) = restart::describe(missing);
+        let summary = if missing.is_empty() {
+            if kind == "start" {
+                format!("the wall started again after change {seq}")
+            } else {
+                format!("the tree holds the wall after change {seq}")
             }
-            _ => format!("the tree holds the wall after change {seq}"),
+        } else if let [one] = missing {
+            format!("the tree holds change {one} as one commit")
+        } else {
+            format!("the tree holds changes {names} as one commit")
         };
         Self {
             seat: "kazoo-wall".into(),
             unix: chrono::Utc::now().timestamp(),
-            message: format!("{summary}\n\n{}", trailers(kind, seq, clock, gap)),
+            message: format!("{summary}\n\n{}{gaps}", trailers(kind, seq, clock, None)),
             whole: true,
             files: files.into_iter().map(|(p, b)| (p, Some(b))).collect(),
         }

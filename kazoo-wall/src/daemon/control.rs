@@ -270,7 +270,7 @@ pub fn run(setup: Setup) {
     let (backend, engine, link) = start_audio(
         setup.audio,
         &setup.desk,
-        (setup.tempo, 0.0),
+        (setup.tempo, 0.0, 0.0),
         false,
         &listen_tx,
         None,
@@ -322,13 +322,14 @@ pub fn run(setup: Setup) {
 }
 
 /// Start the engine on the device (or the headless loop), with its desk
-/// link and listening thread, at `(bpm, beat)`, heard or silent.
+/// link and listening thread, at `(bpm, beat)` with the wall playing from
+/// `origin`, heard or silent.
 /// `failed_before` is when the device last failed, if it did (the failure
 /// is then not reported again).
 fn start_audio(
     mode: AudioMode,
     desk: &DeskMode,
-    (bpm, beat): (f64, f64),
+    (bpm, beat, origin): (f64, f64, f64),
     heard: bool,
     listen_tx: &Sender<Listen>,
     failed_before: Option<Instant>,
@@ -340,7 +341,8 @@ fn start_audio(
                 let rate = device.sample_rate();
                 let link = link_to_desk(desk, rate, Pacing::Device);
                 let (hub, link) = split_link(link);
-                let (engine, mut control) = engine(engine_config(rate, (bpm, beat), heard), hub);
+                let (engine, mut control) =
+                    engine(engine_config(rate, (bpm, beat, origin), heard), hub);
                 let health = Arc::new(StreamHealth::default());
                 match device.play(engine, &health) {
                     Ok(stream) => {
@@ -372,7 +374,7 @@ fn start_audio(
     };
     let link = link_to_desk(desk, rate, Pacing::Timer);
     let (hub, link) = split_link(link);
-    let (engine, mut control) = engine(engine_config(rate, (bpm, beat), heard), hub);
+    let (engine, mut control) = engine(engine_config(rate, (bpm, beat, origin), heard), hub);
     let retry_at = matches!(mode, AudioMode::Device { .. }).then(|| Instant::now() + DEVICE_RETRY);
     let running = match Headless::start(engine, rate) {
         Ok(headless) => Running::Headless(headless),
@@ -390,11 +392,12 @@ fn start_audio(
     )
 }
 
-/// An engine at `rate` carrying on from `(bpm, beat)`, heard or silent
-/// from its first frame.
-fn engine_config(rate: u32, (bpm, beat): (f64, f64), heard: bool) -> EngineConfig {
+/// An engine at `rate` carrying on from `(bpm, beat)` and the wall's
+/// `origin`, heard or silent from its first frame.
+fn engine_config(rate: u32, (bpm, beat, origin): (f64, f64, f64), heard: bool) -> EngineConfig {
     EngineConfig {
         audible: heard,
+        origin,
         ..EngineConfig::new(rate, bpm, beat)
     }
 }
@@ -969,7 +972,8 @@ impl Control {
 
     fn rebuild(&mut self, now: Instant) {
         let shared = Arc::clone(self.wall.engine_mut().shared());
-        let (bpm, beat) = (shared.bpm(), shared.beat());
+        // The wall playing carries on from the bar it landed on.
+        let (bpm, beat, origin) = (shared.bpm(), shared.beat(), shared.origin());
         let device_failed = matches!(
             self.backend.as_ref().map(|b| &b.running),
             Some(Running::Device { .. })
@@ -986,7 +990,8 @@ impl Control {
             let rate = FALLBACK_RATE;
             let link = link_to_desk(&self.desk, rate, Pacing::Timer);
             let (hub, link) = split_link(link);
-            let (engine, mut control) = engine(engine_config(rate, (bpm, beat), self.heard), hub);
+            let (engine, mut control) =
+                engine(engine_config(rate, (bpm, beat, origin), self.heard), hub);
             let running = match Headless::start(engine, rate) {
                 Ok(headless) => Running::Headless(headless),
                 Err(err) => {
@@ -1006,7 +1011,7 @@ impl Control {
             start_audio(
                 self.audio,
                 &self.desk,
-                (bpm, beat),
+                (bpm, beat, origin),
                 self.heard,
                 &self.listen_tx,
                 Some(now),
@@ -1158,13 +1163,15 @@ mod tests {
     #[test]
     fn a_built_or_rebuilt_engine_is_heard_as_the_wall_was() {
         for heard in [false, true] {
-            let config = engine_config(48_000, (96.0, 12.5), heard);
+            let config = engine_config(48_000, (96.0, 12.5, 8.0), heard);
             assert_eq!(config.audible, heard);
             assert_eq!(config.sample_rate, 48_000);
             assert!((config.bpm - 96.0).abs() < f64::EPSILON);
             assert!((config.beat - 12.5).abs() < f64::EPSILON);
             let (_engine, control) = engine(config, None);
             assert_eq!(control.shared().audible(), heard);
+            // The wall playing carries on from the bar it landed on.
+            assert_eq!(control.shared().origin().to_bits(), 8.0_f64.to_bits());
         }
     }
 }

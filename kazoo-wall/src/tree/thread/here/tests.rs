@@ -342,6 +342,7 @@ fn a_go_the_queue_dropped_is_still_taken_before_the_gap() {
     for _ in 1..TREE_QUEUE {
         assert!(rig.wall.tree_test_ask(TreeItem::Whole {
             kind: WholeKind::Gap,
+            changes: Vec::new(),
             seq: 0,
             clock: None,
             files: Files::new(),
