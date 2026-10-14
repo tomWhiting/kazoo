@@ -3355,9 +3355,7 @@ impl Wall {
         // and undoing an unplugging brings a cable back: more work, like
         // any other addition. Every other undo adds nothing.
         let growth = match &what {
-            What::Batch { changes, .. } | What::Chain { changes, .. } => {
-                chains::undo_growth(changes)
-            }
+            What::Chain { changes, .. } => chains::undo_growth(changes),
             What::Remove { cables, .. } => Growth {
                 modules: 1,
                 cables: cables.len(),
@@ -3390,7 +3388,7 @@ impl Wall {
             self.patch.tempo
         };
         if self.chain_batch.is_some() {
-            let from = self.patch.tempo;
+            let from = self.batch_tempo_from(desk);
             self.patch.tempo = bpm;
             return self.changed(
                 seat,

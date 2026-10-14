@@ -196,6 +196,42 @@ fn batch_add_then_remove_keeps_a_complete_moment() {
 }
 
 #[test]
+fn a_loop_added_in_a_batch_is_reckoned_at_its_worst_as_a_single_add_is() {
+    let (mut single, _single_engine) = wall();
+    ask(&mut single, &add("loop")).unwrap();
+    let (mut batched, _batched_engine) = wall();
+    ask(
+        &mut batched,
+        &batch("a loop", serde_json::json!([{"op":"add","kind":"loop"}])),
+    )
+    .unwrap();
+    assert_eq!(batched.file_grown, single.file_grown);
+}
+
+#[test]
+fn a_cable_that_replaces_one_in_a_batch_grows_nothing_as_a_single_patch() {
+    let (mut single, _single_engine) = wall();
+    let cable = single.patch.to_file().cables[0].clone();
+    let (from, to) = (cable.from, cable.to);
+    let replace = Request::Patch {
+        from: from.clone(),
+        to: to.clone(),
+        amount: Some(0.5),
+    };
+    ask(&mut single, &replace).unwrap();
+    let (mut batched, _batched_engine) = wall();
+    ask(
+        &mut batched,
+        &batch(
+            "a softer cable",
+            serde_json::json!([{"op":"patch","from":from,"to":to,"amount":0.5}]),
+        ),
+    )
+    .unwrap();
+    assert_eq!(batched.file_grown, single.file_grown);
+}
+
+#[test]
 fn a_batch_of_one_change_says_one_change() {
     let (mut wall, _engine) = wall();
     let result = ask(
@@ -208,6 +244,44 @@ fn a_batch_of_one_change_says_one_change() {
         summary.starts_with("Tom: \"faster\" (1 change: "),
         "{summary}"
     );
+}
+
+#[test]
+fn a_batch_tempo_asked_of_the_desk_is_undone_once_the_desk_is_gone() {
+    let (mut wall, _engine) = wall();
+    wall.patch.tempo = 100.0;
+    let what = What::Batch {
+        note: "faster".to_string(),
+        changes: vec![What::Tempo {
+            from: 120.0,
+            to: 100.0,
+            desk: true,
+        }],
+    };
+    let change = wall.new_change("Tom", what, None);
+    let seq = change.seq;
+    wall.next_seq = seq + 1;
+    wall.log.push_back(change);
+    let undone = ask(&mut wall, &Request::Undo { change: seq }).unwrap();
+    assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
+    assert_eq!(undone["change"]["what"]["changes"][0]["desk"], false);
+}
+
+#[test]
+fn undoing_a_batch_tempo_starts_from_the_tempo_now_as_a_single_undo_does() {
+    let (mut wall, _engine) = wall();
+    let first = wall.patch.tempo;
+    let made = ask(
+        &mut wall,
+        &batch("faster", serde_json::json!([{"op":"tempo","bpm":130.0}])),
+    )
+    .unwrap();
+    ask(&mut wall, &Request::Tempo { bpm: 140.0 }).unwrap();
+    let seq = made["change"]["seq"].as_u64().unwrap();
+    let undone = ask(&mut wall, &Request::Undo { change: seq }).unwrap();
+    assert_eq!(undone["change"]["what"]["changes"][0]["from"], 140.0);
+    assert_eq!(undone["change"]["what"]["changes"][0]["to"], first);
+    assert_eq!(wall.patch.tempo.to_bits(), first.to_bits());
 }
 
 #[test]
