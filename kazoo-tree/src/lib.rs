@@ -15,6 +15,8 @@ pub mod ledger;
 pub mod render;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod tests;
 
 use std::io::{self, Stdout, Write as _};
 use std::path::{Path, PathBuf};
@@ -353,7 +355,15 @@ fn walk(
     let mut dirty = true;
     let mut reader_gone = false;
     let goes = Goes::to(kazoo_wall::paths::socket_path());
+    // The shell that started the walk: when it goes (its terminal closed
+    // with no hang-up sent), the walk is orphaned, and a terminal that is
+    // gone reads as always ready with nothing in it, so the walk ends.
+    let parent = std::os::unix::process::parent_id();
     while !app.quit && stop.load(Ordering::Relaxed) == 0 {
+        if orphaned(parent, std::os::unix::process::parent_id()) {
+            eprintln!("kazoo tree: the terminal it ran in has gone; ending");
+            break;
+        }
         if let Some(moment) = app.go_due(Instant::now()) {
             goes.send(&moment);
             dirty = true;
@@ -414,6 +424,13 @@ fn walk(
         }
     }
     Ok(())
+}
+
+/// Whether the walk has been orphaned: started under `started`, it is now
+/// under another parent (the shell that ran it has gone).
+#[must_use]
+pub const fn orphaned(started: u32, now: u32) -> bool {
+    started != now
 }
 
 /// Draw the whole frame: the tree, the details panel when there is room,
