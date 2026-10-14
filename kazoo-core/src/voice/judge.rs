@@ -1,6 +1,7 @@
 //! Worker-side pitch and spectral-flux analysis with callback-safe rings.
 
 use super::TrackSettings;
+use crate::analysis::cycle::{CycleEstimate, ProvisionalJudge};
 use crate::analysis::{OnsetDetector, PitchDetector, PitchDetectorConfig, PitchEstimate};
 use ringbuf::{
     HeapCons, HeapProd, HeapRb,
@@ -32,6 +33,7 @@ impl TrackSettings {
 pub enum JudgeResult {
     Pitch(PitchEstimate),
     Onset { strength: f32 },
+    Provisional(CycleEstimate),
 }
 
 /// Onset settings at 48 kHz, scaled with the voice judge at higher rates.
@@ -94,6 +96,25 @@ pub fn spawn(
     block: usize,
     onsets: OnsetConfig,
 ) -> crate::Result<(JudgeFeed, JudgeResults, Judge)> {
+    spawn_config(pitch, block, onsets, None)
+}
+
+/// Start the profile's partial-cycle worker alongside its normal pitch judge.
+pub fn spawn_with_settings(
+    settings: TrackSettings,
+    rate: u32,
+    block: usize,
+    onsets: OnsetConfig,
+) -> crate::Result<(JudgeFeed, JudgeResults, Judge)> {
+    spawn_config(settings.judge_config(rate), block, onsets, Some(settings))
+}
+
+fn spawn_config(
+    pitch: PitchDetectorConfig,
+    block: usize,
+    onsets: OnsetConfig,
+    settings: Option<TrackSettings>,
+) -> crate::Result<(JudgeFeed, JudgeResults, Judge)> {
     let rate = pitch.sample_rate;
     let hop = pitch.hop_length;
     let mut detector = PitchDetector::new(pitch)?;
@@ -119,6 +140,9 @@ pub fn spawn(
     let stats = Arc::new(JudgeStats::default());
     let worker_stats = Arc::clone(&stats);
     let mut buffer = vec![0.0; block.max(256)];
+    let mut early = settings
+        .filter(|settings| settings.cycle.early)
+        .map(|settings| ProvisionalJudge::new(rate, settings.cycle));
     let handle = std::thread::Builder::new()
         .name("kazoo-judge".into())
         .spawn(move || {
@@ -132,7 +156,16 @@ pub fn spawn(
                     continue;
                 }
                 // A detector call returns its newest pitch only, so never span multiple hops.
-                for samples in buffer[..count].chunks(hop) {
+                for samples in buffer[..count].chunks(hop.min(super::VOICE_HOP)) {
+                    if let Some(early) = early.as_mut() {
+                        for &sample in samples {
+                            if let Some(estimate) = early.push(sample) {
+                                if output.try_push(JudgeResult::Provisional(estimate)).is_err() {
+                                    worker_stats.results_dropped.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
                     if let Some(estimate) = detector.push_samples(samples) {
                         if output.try_push(JudgeResult::Pitch(estimate)).is_err() {
                             worker_stats.results_dropped.fetch_add(1, Ordering::Relaxed);

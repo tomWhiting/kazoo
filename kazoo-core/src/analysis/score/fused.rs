@@ -1,4 +1,5 @@
 use super::{TrackerUnderTest, gate::GateUnderTest};
+use crate::analysis::cycle::ProvisionalJudge;
 use crate::analysis::{OnsetDetector, PitchDetector, PitchDetectorConfig};
 use crate::voice::{
     TrackSettings, VoiceFrame, VoiceTracker,
@@ -17,6 +18,7 @@ pub struct FusedUnderTest {
     lag: u64,
     latest: Option<VoiceFrame>,
     onsets: u64,
+    early: Option<ProvisionalJudge>,
     #[cfg(test)]
     recording: Option<Recording>,
 }
@@ -66,6 +68,10 @@ impl FusedUnderTest {
             lag,
             latest: None,
             onsets: 0,
+            early: settings
+                .cycle
+                .early
+                .then(|| ProvisionalJudge::new(rate, settings.cycle)),
             #[cfg(test)]
             recording: None,
         })
@@ -101,6 +107,11 @@ impl TrackerUnderTest for FusedUnderTest {
                 }
             }
             let input = std::slice::from_ref(sample);
+            if let Some(early) = self.early.as_mut() {
+                if let Some(estimate) = early.push(*sample) {
+                    self.tracker.judge(JudgeResult::Provisional(estimate));
+                }
+            }
             self.tracker.process(input, |frame| {
                 self.latest = Some(frame);
                 self.onsets += u64::from(frame.onset);
@@ -126,6 +137,9 @@ impl TrackerUnderTest for FusedUnderTest {
     }
     fn hz(&self) -> Option<f32> {
         self.latest.filter(|f| f.voiced).map(|f| f.hz)
+    }
+    fn provisional(&self) -> bool {
+        self.latest.is_some_and(|frame| frame.provisional)
     }
 }
 impl GateUnderTest for FusedUnderTest {

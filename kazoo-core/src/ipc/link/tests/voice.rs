@@ -107,6 +107,7 @@ fn frame(at: u16) -> VoiceFrame {
         gate: true,
         onset: at % 2 == 0,
         voiced: true,
+        provisional: false,
     }
 }
 

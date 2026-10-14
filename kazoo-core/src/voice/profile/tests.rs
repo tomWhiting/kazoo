@@ -21,7 +21,14 @@ fn named<'a>(takes: &'a [Take], name: &str) -> &'a Take {
 fn frames(take: &Take, profile: InputProfile) -> Vec<VoiceFrame> {
     let mut tracker = VoiceTracker::with_settings(take.rate, profile.tracking());
     let mut output = Vec::with_capacity(take.samples.len() / 64);
-    tracker.process(&take.samples, |frame| output.push(frame));
+    let mut judge =
+        crate::analysis::cycle::ProvisionalJudge::new(take.rate, profile.tracking().cycle);
+    for &sample in &take.samples {
+        if let Some(estimate) = judge.push(sample) {
+            tracker.judge(JudgeResult::Provisional(estimate));
+        }
+        tracker.process(std::slice::from_ref(&sample), |frame| output.push(frame));
+    }
     output
 }
 
@@ -441,9 +448,11 @@ fn jumps_need_voiced_history_and_obey_the_refractory_time() {
     for hop in 2_u64..=48 {
         assert!(!gate.frame_with_pitch(hop * 64, true, -12.0, -12.0, 110.0).1);
     }
-    assert!(gate.frame_with_pitch(49 * 64, true, -12.0, -12.0, 130.81).1);
+    assert!(!gate.frame_with_pitch(49 * 64, true, -12.0, -12.0, 130.81).1);
     assert!(!gate.frame_with_pitch(50 * 64, true, -12.0, -12.0, 146.83).1);
-    for hop in 51_u64..=96 {
+    assert!(!gate.frame_with_pitch(51 * 64, true, -12.0, -12.0, 146.83).1);
+    assert!(gate.frame_with_pitch(52 * 64, true, -12.0, -12.0, 146.83).1);
+    for hop in 53_u64..=96 {
         assert!(
             !gate
                 .frame_with_pitch(hop * 64, true, -12.0, -12.0, 146.83)
@@ -451,7 +460,8 @@ fn jumps_need_voiced_history_and_obey_the_refractory_time() {
         );
     }
     assert!(!gate.frame_with_pitch(97 * 64, false, -12.0, -12.0, 0.0).1);
-    assert!(gate.frame_with_pitch(98 * 64, true, -12.0, -12.0, 196.0).1);
+    assert!(!gate.frame_with_pitch(98 * 64, true, -12.0, -12.0, 196.0).1);
+    assert!(gate.frame_with_pitch(99 * 64, true, -12.0, -12.0, 196.0).1);
     gate.reset();
     assert!(gate.frame_with_pitch(64, true, -12.0, -12.0, 110.0).1);
     for hop in 2_u64..=48 {

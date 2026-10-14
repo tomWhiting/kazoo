@@ -15,6 +15,9 @@ mod tests;
 #[cfg(test)]
 mod high_notes;
 
+#[cfg(test)]
+mod provisional_tests;
+
 use super::{PitchDetector, PitchDetectorConfig, cycle::CycleTracker};
 
 /// Trajectories are compared every 32 samples (0.67 ms at 48 kHz).
@@ -26,6 +29,9 @@ pub trait TrackerUnderTest {
     fn push(&mut self, block: &[f32]);
     /// The latest pitch, or `None` when unvoiced.
     fn hz(&self) -> Option<f32>;
+    fn provisional(&self) -> bool {
+        false
+    }
 }
 
 /// Samples and truth at the centre of each scoring step.
@@ -149,15 +155,18 @@ impl TrackerUnderTest for CycleUnderTest {
 /// Feed a fresh tracker through a take, then measure its trajectory.
 #[must_use]
 pub fn score(tracker: &mut dyn TrackerUnderTest, take: &Take) -> Score {
-    let estimates: Vec<_> = take
+    let (estimates, provisional): (Vec<_>, Vec<_>) = take
         .samples
         .chunks(SCORE_STEP)
         .map(|block| {
             tracker.push(block);
-            tracker.hz().filter(|hz| hz.is_finite() && *hz > 0.0)
+            (
+                tracker.hz().filter(|hz| hz.is_finite() && *hz > 0.0),
+                tracker.provisional(),
+            )
         })
-        .collect();
-    metrics::measure(take, &estimates)
+        .unzip();
+    metrics::measure(take, &estimates, &provisional)
 }
 
 fn number(value: f32) -> String {

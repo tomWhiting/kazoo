@@ -1,6 +1,9 @@
 use super::TrackSettings;
 use super::VOICE_HOP;
 
+#[cfg(test)]
+mod tests;
+
 /// Open above −50 dBFS with a voiced pitch, well above the noise floor.
 pub const GATE_ON_DB: f32 = -50.0;
 /// Six dB of hysteresis exceeds the fast envelope ripple at 50 Hz.
@@ -16,6 +19,13 @@ pub const ONSET_FLUX_WINDOW_MS: u64 = 30;
 /// Sixty milliseconds prevents duplicate onsets within a fast syllable.
 pub const ONSET_REFRACTORY_MS: u64 = 60;
 
+#[derive(Debug, Clone, Copy)]
+struct Pending {
+    hz: f32,
+    at: u64,
+    steps: u8,
+}
+
 #[derive(Debug)]
 pub(super) struct Gate {
     settings: TrackSettings,
@@ -29,6 +39,10 @@ pub(super) struct Gate {
     flux: Option<u64>,
     rise: Option<u64>,
     rise_active: bool,
+    pending: Option<Pending>,
+    published: Option<f32>,
+    onset_at: u64,
+    amplitude_window: u64,
 }
 
 impl Gate {
@@ -50,6 +64,10 @@ impl Gate {
             flux: None,
             rise: None,
             rise_active: false,
+            pending: None,
+            published: None,
+            onset_at: 0,
+            amplitude_window: 10 * rate / 1000,
         }
     }
     pub(super) const fn flux(&mut self, at: u64) {
@@ -115,18 +133,50 @@ impl Gate {
             .last_onset
             .is_none_or(|last| at.saturating_sub(last) >= self.refractory);
         let current = (voiced && hz.is_finite() && hz > 0.0).then_some(hz);
-        let jump = match (self.settings.jump_onset_cents, current, self.pitch[0]) {
+        let amplitude = !was_high || rise >= self.settings.onset_rise_db || paired;
+        let jump = match (self.settings.jump_onset_cents, current, self.published) {
             (Some(cents), Some(now), Some(before)) => {
-                (1200.0 * (now / before).log2()).abs() >= cents
+                self.pitch[0].is_some() && (1200.0 * (now / before).log2()).abs() > cents
             }
             _ => false,
         };
         self.pitch = [self.pitch[1], current];
-        let onset = self.high
-            && ready
-            && (!was_high || rise >= self.settings.onset_rise_db || paired || jump);
+        let mut confirmed = None;
+        if let Some(mut pending) = self.pending.take() {
+            pending.steps += 1;
+            let stable =
+                current.is_some_and(|hz| (1200.0 * (hz / pending.hz).log2()).abs() <= 30.0);
+            let attacked = self
+                .flux
+                .is_some_and(|at| at.abs_diff(pending.at) <= self.amplitude_window)
+                || (amplitude && at.abs_diff(pending.at) <= self.amplitude_window);
+            if self.high && (stable || attacked) && pending.steps <= 2 {
+                confirmed = Some(pending.at);
+                self.published = current.or(Some(pending.hz));
+            } else if pending.steps < 2 {
+                self.pending = Some(pending);
+            }
+        }
+        if self.high && jump && self.pending.is_none() && confirmed.is_none() {
+            if let Some(hz) = current {
+                let attacked = amplitude
+                    || self
+                        .flux
+                        .is_some_and(|stamp| stamp.abs_diff(at) <= self.amplitude_window);
+                if attacked {
+                    confirmed = Some(at);
+                    self.published = current;
+                } else {
+                    self.pending = Some(Pending { hz, at, steps: 0 });
+                }
+            }
+        } else if !jump && self.pending.is_none() {
+            self.published = current.or(self.published);
+        }
+        let onset = self.high && ready && (amplitude || confirmed.is_some());
         if onset {
-            self.last_onset = Some(at);
+            self.onset_at = confirmed.unwrap_or(at);
+            self.last_onset = Some(self.onset_at);
             self.flux = None;
             self.rise = None;
             // The rest of the rise that made this onset is this onset: the
@@ -138,6 +188,17 @@ impl Gate {
         }
         (self.high, onset)
     }
+    pub(super) const fn published_pitch(&self) -> Option<f32> {
+        self.published
+    }
+    pub(super) const fn onset_at(&self) -> u64 {
+        self.onset_at
+    }
+    pub(super) const fn correct_pitch(&mut self, hz: f32) {
+        self.pending = None;
+        self.published = Some(hz);
+        self.pitch = [Some(hz); 2];
+    }
     pub(super) const fn reset(&mut self) {
         self.high = false;
         self.off_frames = 0;
@@ -146,5 +207,8 @@ impl Gate {
         self.rise = None;
         self.rise_active = false;
         self.pitch = [None; 2];
+        self.pending = None;
+        self.published = None;
+        self.onset_at = 0;
     }
 }

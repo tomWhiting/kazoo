@@ -7,6 +7,9 @@ use crate::analysis::{
 };
 use crate::{host::live::InputProfile, voice::VoiceTracker};
 
+#[path = "early_measurements.rs"]
+mod measurements;
+
 #[test]
 fn voice_and_line_are_unchanged() -> crate::Result<()> {
     let takes = signals::suite(fixtures::RATE);
@@ -197,8 +200,40 @@ fn instrument_frames(
     settings.cycle.early = early;
     let mut tracker = VoiceTracker::with_settings(take.rate, settings);
     let mut output = Vec::new();
-    tracker.process(&take.samples, |frame| output.push(frame));
+    let mut judge = crate::analysis::cycle::ProvisionalJudge::new(take.rate, settings.cycle);
+    for &sample in &take.samples {
+        if let Some(estimate) = judge.push(sample) {
+            tracker.judge(crate::voice::judge::JudgeResult::Provisional(estimate));
+        }
+        tracker.process(std::slice::from_ref(&sample), |frame| output.push(frame));
+    }
     output
+}
+
+#[test]
+fn a_provisional_low_e_is_right() {
+    let takes = instrument_suite(fixtures::RATE);
+    let take = fixtures::named(&takes, "guitar_open");
+    let frames = instrument_frames(take, InputProfile::Guitar, true);
+    let provisional: Vec<_> = frames.iter().filter(|frame| frame.provisional).collect();
+    assert!(
+        !provisional.is_empty(),
+        "guitar_open published no provisional readings"
+    );
+    for frame in provisional {
+        let truth = fixtures::truth_at(take, frame.at as usize).expect("provisional note truth");
+        let corrected = frames.iter().any(|later| {
+            later.at >= frame.at
+                && (later.at - frame.at) as f32 <= 2.0 * take.rate as f32 / truth
+                && later.voiced
+                && !later.provisional
+                && fixtures::cents(later.hz, truth) <= 50.0
+        });
+        assert!(
+            fixtures::cents(frame.hz, truth) <= 50.0 || corrected,
+            "{frame:?}, truth {truth}"
+        );
+    }
 }
 
 fn check_instrument_frames(

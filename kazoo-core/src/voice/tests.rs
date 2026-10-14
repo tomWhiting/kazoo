@@ -287,7 +287,7 @@ fn the_judge_thread_comes_and_goes() -> crate::Result<()> {
                     }
                     break;
                 }
-                Some(JudgeResult::Onset { .. }) => {}
+                Some(JudgeResult::Onset { .. } | JudgeResult::Provisional(_)) => {}
                 None => {
                     assert!(
                         std::time::Instant::now() < deadline,

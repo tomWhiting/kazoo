@@ -170,7 +170,7 @@ fn event_latency(event: Event, take: &Take, delay: Option<f32>) -> EventLatency 
     }
 }
 
-pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
+pub(super) fn measure(take: &Take, estimates: &[Option<f32>], provisional: &[bool]) -> Score {
     let length = take.truth.len().min(estimates.len());
     let truth = &take.truth[..length];
     let estimates = &estimates[..length];
@@ -211,14 +211,18 @@ pub(super) fn measure(take: &Take, estimates: &[Option<f32>]) -> Score {
     let mut release_end = 0;
     for index in 0..length {
         if let Some(hz) = valid(truth[index]) {
-            if !settled[index] {
+            let provisional_error = provisional.get(index).copied().unwrap_or(false)
+                && valid(estimates[index]).is_some_and(|estimate| cents(estimate, hz).abs() > 50.0);
+            if !settled[index] && !provisional_error {
                 continue;
             }
             scored += 1;
             if let Some(estimate) = valid(estimates[index]) {
                 let error = cents(estimate, hz);
                 let octaves = (error / 1200.0).round();
-                if octaves != 0.0 && 1200.0_f32.mul_add(-octaves, error).abs() <= 100.0 {
+                if provisional_error
+                    || (octaves != 0.0 && 1200.0_f32.mul_add(-octaves, error).abs() <= 100.0)
+                {
                     octave += 1;
                 } else if error.abs() > 100.0 {
                     gross += 1;

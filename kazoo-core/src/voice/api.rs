@@ -47,6 +47,8 @@ pub struct VoiceFrame {
     pub onset: bool,
     /// A pitch is available in this frame, independent of the gate hold.
     pub voiced: bool,
+    /// A worker's partial-cycle pitch awaiting normal acquisition.
+    pub provisional: bool,
     /// Normalised dBFS above the loudness floor, clamped to 0..=1.
     pub loudness: f32,
     /// Smoothed breath relative to tone, 0..=1.

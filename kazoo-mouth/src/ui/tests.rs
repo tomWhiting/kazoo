@@ -23,6 +23,7 @@ fn voice(at: u64, semitones: f32, snapped: f32) -> VoiceFrame {
         gate: true,
         onset: false,
         voiced: true,
+        provisional: false,
         loudness: 0.7,
         breath: 0.25,
         confidence: 0.9,

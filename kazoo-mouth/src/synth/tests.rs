@@ -34,6 +34,7 @@ fn unvoiced_frames_hold_pitch_and_closed_gate_releases() -> kazoo_core::ParamRes
         gate: true,
         onset: true,
         voiced: true,
+        provisional: false,
         loudness: 1.0,
         breath: 0.0,
         confidence: 1.0,

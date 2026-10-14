@@ -47,7 +47,10 @@ pub fn encode_frame(f: &VoiceFrame, out: &mut [u8; VOICE_FRAME_WIRE]) {
     for (value, bytes) in values.into_iter().zip(out[8..36].chunks_exact_mut(4)) {
         bytes.copy_from_slice(&value.to_le_bytes());
     }
-    out[36] = u8::from(f.gate) | (u8::from(f.onset) << 1) | (u8::from(f.voiced) << 2);
+    out[36] = u8::from(f.gate)
+        | (u8::from(f.onset) << 1)
+        | (u8::from(f.voiced) << 2)
+        | (u8::from(f.provisional) << 3);
 }
 
 const fn float_at(b: &[u8; VOICE_FRAME_WIRE], offset: usize) -> f32 {
@@ -78,6 +81,7 @@ pub const fn decode_frame(b: &[u8; VOICE_FRAME_WIRE]) -> VoiceFrame {
         gate: b[36] & 1 != 0 && hz.is_finite(),
         onset: b[36] & 2 != 0,
         voiced: b[36] & 4 != 0 && hz.is_finite(),
+        provisional: b[36] & 8 != 0 && hz.is_finite(),
     }
 }
 

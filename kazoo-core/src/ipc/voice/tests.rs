@@ -14,6 +14,7 @@ const fn frame() -> VoiceFrame {
         gate: true,
         onset: true,
         voiced: true,
+        provisional: false,
     }
 }
 
@@ -32,11 +33,12 @@ fn bits(f: VoiceFrame) -> [u32; 7] {
 
 #[test]
 fn a_frame_round_trips_bit_for_bit() {
-    for flags in 0..8 {
+    for flags in 0..16 {
         let original = VoiceFrame {
             gate: flags & 1 != 0,
             onset: flags & 2 != 0,
             voiced: flags & 4 != 0,
+            provisional: flags & 8 != 0,
             ..frame()
         };
         let mut bytes = [0xff; VOICE_FRAME_WIRE];
@@ -45,8 +47,18 @@ fn a_frame_round_trips_bit_for_bit() {
         assert_eq!(decoded.at, original.at);
         assert_eq!(bits(decoded), bits(original));
         assert_eq!(
-            (decoded.gate, decoded.onset, decoded.voiced),
-            (original.gate, original.onset, original.voiced)
+            (
+                decoded.gate,
+                decoded.onset,
+                decoded.voiced,
+                decoded.provisional
+            ),
+            (
+                original.gate,
+                original.onset,
+                original.voiced,
+                original.provisional
+            )
         );
         assert_eq!(&bytes[37..], &[0, 0, 0]);
     }
@@ -171,7 +183,7 @@ fn reserved_bytes_and_flag_bits_are_ignored() {
     let mut payload = [0; VOICE_BATCH_WIRE];
     let len = encode_batch(&[frame()], &mut payload);
     payload[1..4].fill(0xff);
-    payload[4 + 36] |= 0xf8;
+    payload[4 + 36] |= 0xf0;
     payload[4 + 37..len].fill(0xff);
     let mut decoded = None;
     assert_eq!(decode_batch(&payload[..len], |f| decoded = Some(f)), Ok(1));

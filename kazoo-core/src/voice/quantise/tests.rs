@@ -16,6 +16,7 @@ fn frame(semitones: f32, onset: bool) -> VoiceFrame {
         gate: true,
         onset,
         voiced: true,
+        provisional: false,
         loudness: 0.8,
         breath: 0.0,
         confidence: 1.0,

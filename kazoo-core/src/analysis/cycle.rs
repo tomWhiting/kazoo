@@ -14,6 +14,9 @@ use crate::{sanitize_sample, voice::VOICE_HOP};
 mod early;
 mod level;
 mod motion;
+mod provisional;
+
+pub use provisional::ProvisionalJudge;
 
 #[cfg(test)]
 pub(crate) use early::fixtures;
@@ -662,9 +665,22 @@ impl CycleTracker {
                 choice.best_peak = Some(peak);
             }
             let held = self.estimate.is_some_and(|estimate| {
-                (1200.0 * (peak.period / estimate.period).log2()).abs() <= HOLD_CENTS
+                !estimate.provisional
+                    && (1200.0 * (peak.period / estimate.period).log2()).abs() <= HOLD_CENTS
             });
-            let threshold = if held { HOLD_CLARITY } else { CLARITY_ON };
+            let strong_hold = self.estimate.is_some_and(|estimate| {
+                !estimate.provisional
+                    && self
+                        .refine(estimate.period)
+                        .is_some_and(|own| own.clarity >= HOLD_CLARITY)
+            });
+            let threshold = if held {
+                HOLD_CLARITY
+            } else if strong_hold {
+                CLARITY_ON + 0.08
+            } else {
+                CLARITY_ON
+            };
             let replace = choice.chosen.is_none_or(|old| {
                 let old_held = self.estimate.is_some_and(|estimate| {
                     (1200.0 * (old.period / estimate.period).log2()).abs() <= HOLD_CENTS

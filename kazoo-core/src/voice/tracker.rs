@@ -129,6 +129,7 @@ pub struct VoiceTracker {
     breath: f32,
     breath_coefficient: f32,
     invalid_frame: bool,
+    provisional: bool,
 }
 
 impl VoiceTracker {
@@ -171,12 +172,14 @@ impl VoiceTracker {
             breath: 0.0,
             breath_coefficient: coefficient(BREATH_SMOOTH_MS, sr / VOICE_HOP as f32),
             invalid_frame: false,
+            provisional: false,
         }
     }
 
     /// Receive a memory-free verdict from the judge, on the callback's sample clock.
     pub fn judge(&mut self, result: JudgeResult) {
         match result {
+            JudgeResult::Provisional(estimate) => self.cycle.provisional(estimate),
             JudgeResult::Pitch(mut pitch) => {
                 pitch.frequency = pitch.frequency.filter(|hz| hz.is_finite() && *hz > 0.0);
                 pitch.voiced_probability =
@@ -312,8 +315,9 @@ impl VoiceTracker {
             self.release = coefficient(release_ms, self.rate);
         }
         let voiced = fc.is_some();
+        let provisional = fc.is_some_and(|estimate| estimate.provisional);
         let fast_db = db(self.fast);
-        let (gate, onset) = self.gate_frame(voiced, fast_db);
+        let (gate, onset) = self.gate_frame(voiced, fast_db, provisional);
         if onset {
             self.valley = self.fast;
         }
@@ -337,7 +341,7 @@ impl VoiceTracker {
         let hz = sanitize_sample(self.hz);
         let volts = sanitize_sample(volts_from_hz(hz));
         VoiceFrame {
-            at: self.samples,
+            at: self.frame_at(onset),
             hz,
             volts,
             snapped_hz: hz,
@@ -345,6 +349,7 @@ impl VoiceTracker {
             gate: gate && valid_hz && !self.invalid_frame,
             onset: onset && valid_hz && !self.invalid_frame,
             voiced: voiced && valid_hz,
+            provisional,
             loudness: sanitize_sample(
                 (db(self.loudness.current()) - LOUDNESS_FLOOR_DB) / -LOUDNESS_FLOOR_DB,
             )
@@ -354,15 +359,34 @@ impl VoiceTracker {
         }
     }
 
-    fn gate_frame(&mut self, voiced: bool, fast_db: f32) -> (bool, bool) {
-        self.gate.frame_with_level(
+    const fn frame_at(&self, onset: bool) -> u64 {
+        if onset {
+            self.gate.onset_at()
+        } else {
+            self.samples
+        }
+    }
+
+    fn gate_frame(&mut self, voiced: bool, fast_db: f32, provisional: bool) -> (bool, bool) {
+        let correction = self.provisional && voiced && !provisional;
+        if correction {
+            self.gate.correct_pitch(self.hz);
+        }
+        self.provisional = provisional;
+        let (gate, onset) = self.gate.frame_with_level(
             self.samples,
             voiced,
             fast_db,
             db(self.valley),
             self.hz,
             db(self.cycle.periodic_level()),
-        )
+        );
+        if self.settings.jump_onset_cents.is_some() {
+            if let Some(hz) = self.gate.published_pitch() {
+                self.hz = hz;
+            }
+        }
+        (gate, onset && !correction)
     }
 
     /// Clear history, verdicts and frame clock without allocating.
@@ -385,6 +409,7 @@ impl VoiceTracker {
         self.loudness.reset();
         self.breath = 0.0;
         self.invalid_frame = false;
+        self.provisional = false;
         self.release = coefficient(FAST_RELEASE_MIN_MS, self.rate);
     }
 }

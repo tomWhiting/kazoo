@@ -14,6 +14,7 @@ pub(super) const INITIAL_FRAME: VoiceFrame = VoiceFrame {
     gate: false,
     onset: false,
     voiced: false,
+    provisional: false,
     loudness: 0.0,
     breath: 0.0,
     confidence: 0.0,
