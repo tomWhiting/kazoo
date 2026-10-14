@@ -3,7 +3,7 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::controls::App;
 
@@ -57,10 +57,21 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     } else {
         2
     };
+    let mic = format!("mic: {}", app.input_label);
+    let mic_rows = u16::try_from(mic.chars().count().div_ceil(usize::from(area.width)))
+        .unwrap_or(u16::MAX)
+        .max(1);
+    let link_rows = u16::try_from(link.chars().count().div_ceil(usize::from(area.width)))
+        .unwrap_or(u16::MAX)
+        .max(1);
+    let header_rows = 1_u16
+        .saturating_add(mic_rows)
+        .saturating_add(link_rows)
+        .min(area.height.saturating_sub(5));
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(header_rows),
             Constraint::Length(voice_height),
             Constraint::Min(0),
             Constraint::Length(2),
@@ -74,8 +85,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     };
     let bpm = app.desk_bpm.unwrap_or(app.accepted.own_bpm);
     let title = format!(
-        "{gate} kazoo mouth · {} {} Hz · {link} · ♩{bpm:.1} · latency --{}",
-        app.input_label,
+        "{gate} kazoo mouth · {} Hz · ♩{bpm:.1} · latency --{}",
         app.loop_sample_rate,
         if app.accepted.silent {
             " · silent"
@@ -83,7 +93,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
             ""
         }
     );
-    frame.render_widget(Paragraph::new(title), areas[0]);
+    frame.render_widget(
+        Paragraph::new(format!("{title}\n{link}\n{mic}")).wrap(Wrap { trim: true }),
+        areas[0],
+    );
     let strip = areas[1];
     let meter_width = strip.width.min(38);
     let plot_width = strip.width.saturating_sub(meter_width);

@@ -79,7 +79,7 @@ fn unvoiced_is_dim_and_held() {
     assert!(screen.contains("sung A4"), "{screen}");
     assert!(screen.contains("snapped A4"), "{screen}");
     assert!(screen.contains("○ kazoo mouth"), "{screen}");
-    for row in buffer.content.chunks(120).skip(1).take(5) {
+    for row in buffer.content.chunks(120).skip(3).take(5) {
         for cell in row.iter().take(82).filter(|cell| cell.symbol() != " ") {
             assert_eq!(cell.fg, DIM);
             assert!(cell.modifier.contains(Modifier::DIM));
@@ -552,4 +552,31 @@ fn an_idle_effect_shows_flat() {
     }
     let (before, after) = read();
     assert!((before - after).abs() > 0.000_01);
+}
+
+#[test]
+fn mic_choice_and_desk_refusal_are_readable_together() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.input_label =
+        "MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)".into();
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    let display = Display::new(RATE);
+    terminal
+        .draw(|frame| {
+            draw(
+                frame,
+                &app,
+                &display,
+                "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)",
+                Instant::now(),
+            );
+        })
+        .unwrap();
+    let screen = text(terminal.backend().buffer());
+    assert!(screen.contains(
+        "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)"
+    ));
+    assert!(screen.contains(
+        "mic: MacBook Pro Microphone (not the AirPods' mic: it would drop them to phone quality)"
+    ));
 }

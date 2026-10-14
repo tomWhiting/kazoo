@@ -15,6 +15,8 @@ use rubato::{
     WindowFunction,
 };
 
+mod watch;
+
 use super::channel_adapt::InputAdapter;
 use crate::host::audio::{DeviceChoice, OpenedInput, OutputRequest, RateChoice};
 use crate::{Error, Result, sanitize_sample};
@@ -208,8 +210,14 @@ pub fn open_mic(
         .name("kazoo-mic".into())
         .spawn(move || {
             // Stream creation and destruction stay on the owning thread.
-            let mut supervisor =
-                Supervisor::new(CpalMic, request, target, sink, counted, thread_shared);
+            let mut supervisor = Supervisor::new(
+                CpalMic::default(),
+                request,
+                target,
+                sink,
+                counted,
+                thread_shared,
+            );
             let result = supervisor.start();
             let running = result.is_ok();
             if let Err(error) = started.send(result) {
@@ -262,8 +270,20 @@ pub(crate) trait MicBackend: Send + 'static {
     fn fault(&mut self, stream: &Self::Stream) -> Option<MicFault>;
 }
 
-#[derive(Debug)]
-struct CpalMic;
+#[derive(Default)]
+struct CpalMic {
+    facts: watch::FactsCache<cpal::DeviceId>,
+    named: Option<cpal::Device>,
+}
+
+impl std::fmt::Debug for CpalMic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CpalMic")
+            .field("facts", &self.facts)
+            .finish_non_exhaustive()
+    }
+}
 
 impl MicBackend for CpalMic {
     type Stream = OpenedInput;
@@ -273,17 +293,36 @@ impl MicBackend for CpalMic {
             DeviceChoice::Default => None,
             DeviceChoice::Named(name) => Some(name.as_str()),
         };
-        let device = super::device::resolve_input_device(&cpal::default_host(), name)?;
-        let name = super::device::device_name(&device);
-        let config = device.default_input_config().map_err(|error| {
-            Error::Device(format!(
-                "input device '{name}': cannot read native configuration: {error}"
-            ))
-        })?;
-        Ok(MicFacts {
-            name,
-            rate: config.sample_rate(),
-            channels: config.channels(),
+        let device = if name.is_some() {
+            if let Some(device) = &self.named {
+                device.clone()
+            } else {
+                let device = super::device::resolve_input_device(&cpal::default_host(), name)?;
+                self.named = Some(device.clone());
+                device
+            }
+        } else {
+            super::device::resolve_input_device(&cpal::default_host(), None)?
+        };
+        let identity = device
+            .id()
+            .map_err(|error| Error::Device(format!("cannot identify input: {error}")))?;
+        // Configuration and description probes create host audio units; only probe a changed device.
+        self.facts.read(identity, || {
+            let description = device
+                .description()
+                .map_err(|error| Error::Device(format!("cannot name input: {error}")))?;
+            let config = device.default_input_config().map_err(|error| {
+                Error::Device(format!(
+                    "input device '{}': cannot read native configuration: {error}",
+                    description.name()
+                ))
+            })?;
+            Ok(MicFacts {
+                name: description.name().to_owned(),
+                rate: config.sample_rate(),
+                channels: config.channels(),
+            })
         })
     }
 
@@ -301,6 +340,7 @@ impl MicBackend for CpalMic {
         }
         .prepare_input_with_frames(frames)?;
         let info = prepared.info();
+        self.facts.invalidate();
         if info.rate != facts.rate
             || info.channels != facts.channels
             || self.facts(device)? != *facts
@@ -315,7 +355,7 @@ impl MicBackend for CpalMic {
 
     fn fault(&mut self, stream: &Self::Stream) -> Option<MicFault> {
         let mut fault = None;
-        match stream.check_error_with_handler(|error| {
+        let outcome = match stream.check_error_with_handler(|error| {
             fault = Some(match error {
                 cpal::StreamError::BufferUnderrun => MicFault::Glitch,
                 other => MicFault::Lost(other.to_string()),
@@ -323,7 +363,12 @@ impl MicBackend for CpalMic {
         }) {
             Ok(()) => None,
             Err(error) => Some(fault.unwrap_or_else(|| MicFault::Lost(error.to_string()))),
+        };
+        if matches!(outcome, Some(MicFault::Lost(_))) {
+            self.facts.invalidate();
+            self.named = None;
         }
+        outcome
     }
 }
 
