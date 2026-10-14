@@ -3,6 +3,7 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
+use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use crate::controls::App;
@@ -13,6 +14,18 @@ mod pitch;
 mod trail;
 
 pub use trail::Display;
+
+/// `text` in rows of at most `width` characters; an empty text is one row.
+fn rows_of(text: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() || width == 0 {
+        return vec![String::new()];
+    }
+    chars
+        .chunks(width)
+        .map(|row| row.iter().collect())
+        .collect()
+}
 
 #[cfg(test)]
 mod tests;
@@ -57,16 +70,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     } else {
         2
     };
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(voice_height),
-            Constraint::Min(0),
-            Constraint::Length(2),
-            Constraint::Length(1),
-        ])
-        .split(area);
     let gate = if display.latest.is_some_and(|voice| voice.gate) {
         "●"
     } else {
@@ -74,8 +77,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     };
     let bpm = app.desk_bpm.unwrap_or(app.accepted.own_bpm);
     let title = format!(
-        "{gate} kazoo mouth · {} {} Hz · {link} · ♩{bpm:.1} · latency --{}",
-        app.input_label,
+        "{gate} kazoo mouth · {} Hz · ♩{bpm:.1} · latency --{}",
         app.loop_sample_rate,
         if app.accepted.silent {
             " · silent"
@@ -83,7 +85,28 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
             ""
         }
     );
-    frame.render_widget(Paragraph::new(title), areas[0]);
+    let mic = format!("mic: {}", app.input_label);
+    // Cut at the width, not at words, so the rows counted are the rows drawn.
+    let width = usize::from(area.width);
+    let header: Vec<Line<'_>> = [title.as_str(), link, mic.as_str()]
+        .into_iter()
+        .flat_map(|text| rows_of(text, width))
+        .map(Line::from)
+        .collect();
+    let header_rows = u16::try_from(header.len())
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(5));
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(header_rows),
+            Constraint::Length(voice_height),
+            Constraint::Min(0),
+            Constraint::Length(2),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    frame.render_widget(Paragraph::new(header), areas[0]);
     let strip = areas[1];
     let meter_width = strip.width.min(38);
     let plot_width = strip.width.saturating_sub(meter_width);
