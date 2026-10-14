@@ -783,7 +783,7 @@ fn a_batch_missing_its_words_is_said_and_still_shown() {
         record(
             "c",
             "b",
-            "a change with a note\n\nKazoo-Kind: change\nKazoo-Note: kept",
+            "a change with a note\n\nKazoo-Kind: change\nKazoo-Note: kept\nKazoo-Step: stray",
             "",
         ),
     ]
@@ -794,10 +794,36 @@ fn a_batch_missing_its_words_is_said_and_still_shown() {
     assert_eq!(batch.note, "Cassio: lost note");
     assert!(batch.steps.is_empty());
     assert_eq!(lost.problems.len(), 2, "{:?}", lost.problems);
-    let kept = history.moments[2]
-        .batch
-        .as_deref()
-        .expect("its note is kept");
-    assert_eq!(kept.note, "kept");
-    assert!(history.moments[2].problems.is_empty());
+    let stray = &history.moments[2];
+    assert_eq!(stray.batch, None, "only a batch is a knot");
+    assert_eq!(
+        stray.problems,
+        [
+            "a note on a moment that is not a batch: kept",
+            "a batch's change on a moment that is not a batch: stray"
+        ]
+    );
+    assert_eq!(history.knots, [vec![1]]);
+}
+
+#[test]
+fn a_record_mark_in_the_words_never_splits_a_commit_or_closes_the_tree() {
+    let log = [
+        record("a", "", "one", "A\tmodules/vco1.toml\n"),
+        record(
+            "b",
+            "a",
+            "Cassio: take\u{1e}two\u{1f}three\n\nKazoo-Kind: batch\nKazoo-Note: take\u{1e}two\u{1f}three\nKazoo-Step: added lfo3",
+            "A\tmodules/lfo3.toml\n",
+        ),
+        record("c", "b", "after", ""),
+    ]
+    .concat();
+    let history = History::from_git(&log, "refs/heads/trunk\0c\0\n", None).expect("it opens");
+    assert_eq!(history.moments.len(), 3);
+    let batch = history.moments[1].batch.as_deref().expect("a batch");
+    assert_eq!(batch.note, "take\u{fffd}two\u{fffd}three");
+    assert_eq!(batch.steps, ["added lfo3"]);
+    assert_eq!(history.moments[1].modules, 2, "its files still read");
+    assert_eq!(history.moments[2].summary, "after");
 }

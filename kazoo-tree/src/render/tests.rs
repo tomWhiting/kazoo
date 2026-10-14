@@ -303,9 +303,13 @@ fn a_batch_is_a_knot_with_its_note_and_opens_close_in() {
         scale: 1.0,
     };
     let text = picture(&history, None, Some(near), 80, 30).text();
+    let knot = text
+        .lines()
+        .find(|line| line.contains('❖'))
+        .expect("the knot");
     assert!(
-        text.contains("❖ the brass breathes") || text.contains("the brass breathes"),
-        "{text}"
+        knot.contains("the brass breathes"),
+        "the note is on the knot's row: {text}"
     );
     assert!(
         !text.contains("added lfo3"),
@@ -346,7 +350,7 @@ fn a_selected_batch_says_its_note_and_its_changes() {
 }
 
 #[test]
-fn a_batch_with_more_changes_than_room_says_how_many_more() {
+fn a_batch_with_more_changes_than_room_says_exactly_how_many_more() {
     let mut history = grown(40, &[]);
     let steps: Vec<String> = (0..30)
         .map(|i| format!("turned vco{i} pitch 0.{i}"))
@@ -359,6 +363,101 @@ fn a_batch_with_more_changes_than_room_says_how_many_more() {
         scale: 1.0,
     };
     let text = picture(&history, Some(10), Some(view), 80, 12).text();
-    assert!(text.contains("more"), "{text}");
-    assert!(text.contains("· turned vco0 pitch 0.0"), "{text}");
+    let lines: Vec<&str> = text.lines().collect();
+    let note = lines
+        .iter()
+        .position(|l| l.contains("a long one"))
+        .expect("the note");
+    let below = 12 - note - 1;
+    for (i, line) in lines[note + 1..note + below].iter().enumerate() {
+        assert!(line.contains(&format!("· turned vco{i} pitch")), "{text}");
+    }
+    let more = format!("· and {} more", 30 - (below - 1));
+    assert!(lines[11].contains(&more), "{more}: {text}");
+}
+
+#[test]
+fn a_list_that_meets_something_drawn_ends_saying_how_many_more() {
+    let mut drawn = Picture::new(60, 10);
+    let mut taken = vec![false; drawn.cells.len()];
+    // Something already drawn three rows under the note.
+    for col in 0..60 {
+        let i = drawn.index(col, 3).expect("in the picture");
+        taken[i] = true;
+    }
+    let batch = Batch {
+        note: "five".to_owned(),
+        steps: (1..=5).map(|i| format!("step {i}")).collect(),
+    };
+    hang_steps(&mut drawn, &batch, (0, 0), &mut taken);
+    let text = drawn.text();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[1].contains("· step 1"), "{text}");
+    assert!(lines[2].contains("· and 4 more"), "{text}");
+    assert!(!lines[2].contains("step 2"), "{text}");
+    // With nowhere for even the count, nothing hangs.
+    let mut full = Picture::new(60, 10);
+    let mut taken = vec![false; full.cells.len()];
+    for col in 0..60 {
+        let i = full.index(col, 1).expect("in the picture");
+        taken[i] = true;
+    }
+    hang_steps(&mut full, &batch, (0, 0), &mut taken);
+    assert!(!full.text().contains('·'), "{}", full.text());
+}
+
+#[test]
+fn a_selected_batchs_changes_never_take_the_walls_words() {
+    let mut history = grown(40, &[]);
+    // The wall gone back to moment 20; the batch grew after it, so it is
+    // drawn above, with the wall's place under its note.
+    let here = 20;
+    history.here = Some(here);
+    let steps: Vec<String> = (0..20).map(|i| format!("turned vco{i} pitch")).collect();
+    let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
+    batch(&mut history, here + 3, "above the wall", &steps);
+    let growth = Growth::grow(&history);
+    // Close enough in that the two are on rows of their own, the wall's
+    // under the batch's note, where its changes would hang.
+    let view = View {
+        centre: growth.at[here].expect("placed"),
+        scale: 4.0,
+    };
+    let text = picture(&history, Some(here + 3), Some(view), 80, 30).text();
+    let lines: Vec<&str> = text.lines().collect();
+    let note = lines
+        .iter()
+        .position(|l| l.contains("above the wall"))
+        .expect("the note");
+    let wall = lines
+        .iter()
+        .position(|l| l.contains('◉'))
+        .expect("the wall's place");
+    assert!(wall > note, "the wall is drawn under the note: {text}");
+    assert!(lines[wall].contains("the wall is here"), "{text}");
+    // No room under the note once the wall's words are hung: the list
+    // stays closed rather than shown cut short (the details list it all).
+    assert!(!text.contains("· turned"), "{text}");
+}
+
+#[test]
+fn close_in_a_batch_says_its_note() {
+    let mut history = grown(60, &[]);
+    batch(&mut history, 30, "the brass breathes", &STEPS);
+    let growth = Growth::grow(&history);
+    let close = View {
+        centre: growth.at[30].expect("placed"),
+        scale: 4.0,
+    };
+    assert_eq!(Level::of(close.scale), Level::Close);
+    let text = picture(&history, None, Some(close), 100, 40).text();
+    let knot = text
+        .lines()
+        .find(|line| line.contains('❖'))
+        .expect("the knot");
+    assert!(knot.contains("the brass breathes"), "{text}");
+    assert!(
+        !text.contains("added lfo3"),
+        "close, the batch stays closed: {text}"
+    );
 }

@@ -110,6 +110,5 @@ pub fn batch(history: &mut History, m: usize, note: &str, steps: &[&str]) {
         note: note.to_owned(),
         steps: steps.iter().map(|&step| step.to_owned()).collect(),
     }));
-    history.batches.push(m);
-    history.batches.sort_unstable();
+    history.knots = crate::history::knots(&history.limbs, &history.moments);
 }

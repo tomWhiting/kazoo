@@ -136,9 +136,9 @@ pub struct History {
     pub place: Vec<Option<(usize, usize)>>,
     /// Every mark and save.
     pub marks: Vec<Mark>,
-    /// Every moment that is a batch, oldest first: the knots, found
-    /// without looking at every moment.
-    pub batches: Vec<usize>,
+    /// For each limb, the places on it of its batches, in order: the
+    /// knots, found for the limbs in view without looking at every moment.
+    pub knots: Vec<Vec<usize>>,
     /// The moment the wall is at.
     pub here: Option<usize>,
     /// What did not read in the tree's refs.
@@ -406,7 +406,7 @@ impl History {
     fn append(&mut self, log: &[u8]) -> Result<usize, HistoryError> {
         let mut fresh: Vec<Moment> = Vec::new();
         let mut fresh_index: HashMap<Arc<str>, usize> = HashMap::new();
-        for bytes in log.split(|&byte| byte == RECORD) {
+        for bytes in records(log) {
             // Each record is read on its own, so one commit's bad bytes
             // are that commit's problem, never the whole tree's.
             let record = String::from_utf8_lossy(bytes);
@@ -444,13 +444,6 @@ impl History {
         }
         let added = fresh.len();
         let base = self.moments.len();
-        self.batches.extend(
-            fresh
-                .iter()
-                .enumerate()
-                .filter(|(_, moment)| moment.batch.is_some())
-                .map(|(i, _)| base + i),
-        );
         for (id, i) in fresh_index {
             self.index.insert(id, base + i);
         }
@@ -487,6 +480,7 @@ impl History {
                 found
             }
         };
+        self.knots = knots(&limbs, &self.moments);
         self.limbs = limbs;
         self.by_hand = by_hand;
         self.place = place;
@@ -501,9 +495,6 @@ impl History {
     #[cfg(test)]
     pub(crate) fn push(&mut self, moment: Moment) -> usize {
         let m = self.moments.len();
-        if moment.batch.is_some() {
-            self.batches.push(m);
-        }
         self.index.insert(Arc::clone(&moment.id), m);
         self.moments.push(Arc::new(moment));
         self.place.push(None);
@@ -567,7 +558,9 @@ fn moment(
     index: impl Fn(&str) -> Option<usize>,
     alive_at: impl Fn(usize) -> (u32, Kinds),
 ) -> Result<Moment, HistoryError> {
-    let (head, files) = record.split_once(BODY_END).ok_or_else(|| {
+    // The last end mark: the files after it are the wall's own paths,
+    // while a subject or a note before it may hold the mark's byte.
+    let (head, files) = record.rsplit_once(BODY_END).ok_or_else(|| {
         HistoryError::Broken(format!("a log record without its end: {record:.80}"))
     })?;
     let mut fields = head.splitn(6, '\0');
@@ -648,10 +641,11 @@ fn moment(
 }
 
 /// A moment's batch, from its kind and its `Kazoo-Note` and `Kazoo-Step`
-/// trailers. A batch with no note is shown by its subject (the wall
-/// writes it `{seat}: {note}`), and with no steps as one with none; each
-/// is said in `problems`. A note or steps on a moment that is not a batch
-/// are kept: the words are the sender's, and nothing is thrown away.
+/// trailers: only a `batch` is one. A batch with no note is shown by its
+/// subject (the wall writes it `{seat}: {note}`), and with no steps as one
+/// with none; each is said in `problems`. A note or steps on a moment that
+/// is not a batch make no knot, and are said in `problems` word for word:
+/// they are someone's words, and nothing is thrown away.
 fn batch_of(
     kind: &str,
     summary: &str,
@@ -659,20 +653,67 @@ fn batch_of(
     steps: Vec<String>,
     problems: &mut Vec<String>,
 ) -> Option<Box<Batch>> {
-    let batch = kind == "batch";
-    if !batch && note.is_none() && steps.is_empty() {
+    if kind != "batch" {
+        if let Some(note) = note {
+            problems.push(format!("a note on a moment that is not a batch: {note}"));
+        }
+        for step in steps {
+            problems.push(format!(
+                "a batch's change on a moment that is not a batch: {step}"
+            ));
+        }
         return None;
     }
-    if batch && steps.is_empty() {
+    if steps.is_empty() {
         problems.push("a batch whose changes are not listed (no Kazoo-Step)".to_owned());
     }
     let note = note.unwrap_or_else(|| {
-        if batch {
-            problems.push("a batch without its note (no Kazoo-Note)".to_owned());
-        }
+        problems.push("a batch without its note (no Kazoo-Note)".to_owned());
         summary.to_owned()
     });
     Some(Box::new(Batch { note, steps }))
+}
+
+/// The log's records. A record starts at a `RECORD` byte followed by a
+/// commit id and a NUL (which no commit's words can hold); a `RECORD`
+/// byte anywhere else is part of the words before it (a subject or a note
+/// may hold any other byte), so it never splits one commit in two or
+/// stops the tree reading.
+fn records(log: &[u8]) -> Vec<&[u8]> {
+    let starts_record = |i: usize| {
+        let rest = &log[i + 1..];
+        let id = rest
+            .iter()
+            .take_while(|byte| byte.is_ascii_alphanumeric())
+            .count();
+        id > 0 && rest.get(id) == Some(&0)
+    };
+    let mut starts: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .filter(|&(i, &byte)| byte == RECORD && starts_record(i))
+        .map(|(i, _)| i + 1)
+        .collect();
+    let first = starts.first().map_or(log.len(), |&at| at - 1);
+    starts.push(log.len() + 1);
+    std::iter::once(&log[..first])
+        .chain(starts.windows(2).map(|pair| &log[pair[0]..pair[1] - 1]))
+        .collect()
+}
+
+/// For each limb, the places on it of its batches, in order.
+pub(crate) fn knots(limbs: &[Limb], moments: &[Arc<Moment>]) -> Vec<Vec<usize>> {
+    limbs
+        .iter()
+        .map(|limb| {
+            limb.moments
+                .iter()
+                .enumerate()
+                .filter(|&(_, &m)| moments[m].batch.is_some())
+                .map(|(at, _)| at)
+                .collect()
+        })
+        .collect()
 }
 
 /// What a record's files did to the modules: how many are alive after it
