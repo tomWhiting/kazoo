@@ -152,7 +152,7 @@ fn profiles_use_the_declared_ranges_and_times() {
                     max_hz,
                     dc_hz: dc,
                     peak_release_ms: release,
-                    early: false
+                    early: matches!(profile, InputProfile::Guitar | InputProfile::Bass)
                 },
                 judge_frame_48k: frame,
                 gate_on_db: on,

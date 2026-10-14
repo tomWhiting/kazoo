@@ -3,6 +3,9 @@ use crate::analysis::score::{
 };
 use std::path::{Path, PathBuf};
 
+#[path = "early_tests.rs"]
+mod early;
+
 #[derive(Debug)]
 struct Oracle {
     truth: Vec<Option<f32>>,

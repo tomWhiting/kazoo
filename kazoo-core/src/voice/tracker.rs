@@ -262,10 +262,11 @@ impl VoiceTracker {
         let judge_hz = self.judge.filter(|_| fresh).and_then(|p| p.frequency);
         if let Some(estimate) = fc {
             let mut fold = 0.0;
-            if self
-                .judge_at
-                .checked_sub(self.judge_frame)
-                .is_some_and(|from| from >= self.last_leap)
+            if !estimate.provisional
+                && self
+                    .judge_at
+                    .checked_sub(self.judge_frame)
+                    .is_some_and(|from| from >= self.last_leap)
                 && self
                     .judge
                     .is_some_and(|p| p.voiced_probability >= JUDGE_MIN_PROB)
@@ -306,7 +307,9 @@ impl VoiceTracker {
             .breath_coefficient
             .mul_add(self.breath, (1.0 - self.breath_coefficient) * raw_breath);
         let mut confidence = fc.map_or(0.0, |e| e.clarity);
-        if judge_hz.is_some_and(|hz| (1200.0 * (hz / self.hz).log2()).abs() > DISAGREE_CENTS) {
+        if fc.is_none_or(|estimate| !estimate.provisional)
+            && judge_hz.is_some_and(|hz| (1200.0 * (hz / self.hz).log2()).abs() > DISAGREE_CENTS)
+        {
             confidence *= 0.5;
         }
         let valid_hz = self.hz.is_finite();

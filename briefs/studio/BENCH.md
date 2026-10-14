@@ -771,3 +771,29 @@ example loads them with the line profile's 4096-sample reference window so B0 is
 | voice:bass | vibrato | not run | not run |
 | voice:bass | glide | not run | not run |
 | voice:bass | noise_hum | not run | not run |
+
+## KZ-P07 low notes
+
+Date: 2026-10-14 12:04 AEDT. Base: `dd1bfc6`. HEAD:
+`a7adc01d2a9743bd2fca02bfc670fe259191b1b2`, branch `lane/kz-P07`.
+Load average at source writing: 59.62, 52.49, 46.27.
+This write-only round reserves the CPU. No build, test, scoreboard or benchmark ran.
+Neither latency, accuracy, octave rate, handover smoothness nor callback cost is verified.
+
+The `early_meets_its_targets` scoreboard test prints the instrument table with
+early disabled and enabled, with delayed real judge verdicts. It also prints each
+note's first voiced gated frame, its individual period-based latency budget and
+its settled cents error after 100 ms. These are measured only when the test runs.
+
+| tracker | take | onset latency max | cents median after 100 ms | octave rate |
+|---|---|---|---|---|
+| early off | bass_open | not run | not run | not run |
+| early on | bass_open | not run | not run | not run |
+| early off | guitar_open | not run | not run | not run |
+| early on | guitar_open | not run | not run | not run |
+
+The B0 deadline is 50.6 ms and the E1 deadline is 38.4 ms. These are acceptance
+targets, not measurements. The search is bounded to 18 NSDF lag evaluations
+per unlock. Its elapsed time and the 64-frame callback budget are not measured.
+The low-B listening comparison with the live follower remains for the integrated
+input path and an actual bass performance.

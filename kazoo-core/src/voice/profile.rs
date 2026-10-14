@@ -41,6 +41,12 @@ impl InputProfile {
     /// 2.7 cents, and 30-cent vibrato at 6 Hz at most 1.5 cents. The threshold
     /// clears those continuous movements and catches fretted steps. Voice
     /// and line leave pitch onsets off; sung legato stays one articulation.
+    ///
+    /// Guitar and bass use early half-cycle readings: plucked strings start
+    /// with their cleanest cycles, and low notes gain the most time. Voice
+    /// keeps early readings off because breathy sung onsets have irregular
+    /// lobes and the voice scoreboard was tuned on normal marks. Line keeps
+    /// them off because its source is unknown.
     #[must_use]
     pub const fn tracking(self) -> TrackSettings {
         let (min_hz, max_hz) = self.range_hz();
@@ -64,7 +70,7 @@ impl InputProfile {
                 max_hz,
                 dc_hz,
                 peak_release_ms,
-                early: false,
+                early: matches!(self, Self::Guitar | Self::Bass),
             },
             judge_frame_48k,
             gate_on_db,

@@ -11,6 +11,11 @@ use std::f32::consts::TAU;
 use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
 use crate::sanitize_sample;
 
+mod early;
+
+#[cfg(test)]
+pub(crate) use early::fixtures;
+
 #[cfg(test)]
 mod tests;
 
@@ -94,7 +99,7 @@ pub struct CycleSettings {
     pub dc_hz: f32,
     /// Peak decay must be long compared with the lowest note's period.
     pub peak_release_ms: f32,
-    /// Reserved for half-cycle estimation; all current profiles leave it off.
+    /// Confirm a negative half-cycle before the normal marks can lock.
     pub early: bool,
 }
 
@@ -125,7 +130,6 @@ impl CycleSettings {
             self.peak_release_ms.is_finite() && self.peak_release_ms > 0.0,
             "invalid peak release"
         );
-        assert!(!self.early, "early estimates must be disabled");
     }
 }
 
@@ -140,6 +144,8 @@ pub struct CycleEstimate {
     /// Normalised autocorrelation at `period` over the reading's window, 0..=1
     /// (1 = perfectly periodic; `McLeod`'s NSDF, clamped at 0).
     pub clarity: f32,
+    /// A half-cycle reading, retained until a normal mark accepts a period.
+    pub provisional: bool,
 }
 
 /// The last `MARK_RING` mark times of one crossing direction.
@@ -270,6 +276,7 @@ pub struct CycleTracker {
     /// Along a steady glide: the per-sample factor on the published period,
     /// and the sample time after which it is no longer carried forward.
     glide: Option<(f32, f64)>,
+    early: early::Early,
 }
 
 impl CycleTracker {
@@ -326,6 +333,7 @@ impl CycleTracker {
             }; TREND_READINGS],
             trend_count: 0,
             glide: None,
+            early: early::Early::new(),
         }
     }
 
@@ -354,6 +362,9 @@ impl CycleTracker {
             self.last_fall = crossing();
         }
         self.previous = filtered;
+        if self.settings.early && self.estimate.is_none() {
+            self.early_push(previous, filtered);
+        }
         self.schmitt(filtered);
         self.carry_glide();
         if self.estimate.is_some_and(|e| {
@@ -402,6 +413,7 @@ impl CycleTracker {
         self.hint = None;
         self.trend_count = 0;
         self.glide = None;
+        self.early = early::Early::new();
     }
 
     /// Cycle marks seen since `new` or `reset`: one per cycle, at its rising
@@ -595,6 +607,7 @@ impl CycleTracker {
             period,
             hz: self.rate / period,
             clarity: peak.clarity,
+            provisional: false,
         });
         let cutoff = (LP_FACTOR * self.rate / peak.period)
             .clamp(LP_MIN_HZ.min(self.settings.max_hz), self.settings.max_hz);
