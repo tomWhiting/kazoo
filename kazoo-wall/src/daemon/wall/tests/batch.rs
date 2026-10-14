@@ -393,3 +393,28 @@ fn a_batch_the_log_refuses_as_the_engine_grows_leaves_it_its_old_room() {
     engine.render(&mut [0.0; 128], 2);
     assert_eq!(wall.engine.shared().slots(), wall.engine.slots());
 }
+
+#[test]
+fn a_long_batch_summary_is_cut_at_240_characters_and_keeps_every_step() {
+    let (mut wall, _engine) = wall();
+    let turns = (0..20)
+        .map(|n| {
+            serde_json::json!({"op":"turn","module":"vcf1","knob":"cutoff","value":300.0 + f64::from(n)})
+        })
+        .collect::<Vec<_>>();
+    let result = ask(&mut wall, &batch("a sweep", serde_json::json!(turns))).unwrap();
+    let summary = result["change"]["summary"].as_str().unwrap();
+    let list = summary
+        .strip_prefix("Tom: \"a sweep\" (20 changes: ")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("{summary}"));
+    assert_eq!(list.chars().count(), 240, "{list}");
+    assert!(list.ends_with('…'), "{list}");
+    assert_eq!(
+        result["change"]["what"]["changes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        20
+    );
+}
