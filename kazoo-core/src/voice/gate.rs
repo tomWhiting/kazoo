@@ -52,6 +52,15 @@ impl Gate {
             rise_active: false,
         }
     }
+    pub(super) fn set(&mut self, settings: super::GateSettings, rate: u32) {
+        let settings = settings.held();
+        self.settings.gate_on_db = settings.open_db;
+        self.settings.gate_off_db = settings.close_db;
+        self.hold_frames =
+            (settings.hold_ms * rate as f32 / (1000.0 * VOICE_HOP as f32)).ceil() as u64;
+        self.off_frames = 0;
+    }
+
     pub(super) const fn flux(&mut self, at: u64) {
         self.flux = Some(at);
     }

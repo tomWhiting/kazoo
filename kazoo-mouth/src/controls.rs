@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -16,13 +16,14 @@ use crate::engine::{Command, Stats};
 use kazoo_fx::Curve;
 use ringbuf::traits::Producer;
 
+pub mod panels;
 pub mod settings;
 use crate::synth::SynthSettings;
 
 #[cfg(test)]
 mod tests;
 
-const SHAPES: [OscillatorShape; 4] = [
+pub const SHAPES: [OscillatorShape; 4] = [
     OscillatorShape::Sine,
     OscillatorShape::Triangle,
     OscillatorShape::Saw,
@@ -53,10 +54,14 @@ pub enum Control {
     Air,
     Volume,
     Silent,
+    GateOpen,
+    GateClose,
+    GateHold,
 }
 
 impl Control {
-    pub const ALL: [Self; 12] = [
+    #[cfg(test)]
+    pub const ALL: [Self; 15] = [
         Self::Quantise,
         Self::Scale,
         Self::Root,
@@ -69,6 +74,9 @@ impl Control {
         Self::Air,
         Self::Volume,
         Self::Silent,
+        Self::GateOpen,
+        Self::GateClose,
+        Self::GateHold,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -85,6 +93,9 @@ impl Control {
             Self::Air => "air",
             Self::Volume => "volume",
             Self::Silent => "silent",
+            Self::GateOpen => "open",
+            Self::GateClose => "close",
+            Self::GateHold => "hold",
         }
     }
 
@@ -102,17 +113,10 @@ impl Control {
             Self::Air => "Mix breath noise into the tone, from 0 to 1.",
             Self::Volume => "Set the synth's output level, from 0 to 1.",
             Self::Silent => "Publish the voice while muting the synth.",
+            Self::GateOpen => "Open the voice gate above this input level in dBFS.",
+            Self::GateClose => "Close below this level, at least 3 dB below open.",
+            Self::GateHold => "Bridge quiet gaps for this many milliseconds.",
         }
-    }
-
-    const fn next(self, forward: bool) -> Self {
-        let index = self as usize;
-        let index = if forward {
-            (index + 1) % Self::ALL.len()
-        } else {
-            (index + Self::ALL.len() - 1) % Self::ALL.len()
-        };
-        Self::ALL[index]
     }
 }
 
@@ -120,6 +124,7 @@ impl Control {
 pub struct Settings {
     pub(crate) quantise: QuantiseSettings,
     pub(crate) synth: SynthSettings,
+    pub(crate) gate: kazoo_core::voice::GateSettings,
     pub(crate) silent: bool,
     pub(crate) last_blend: f32,
     pub(crate) fx: FxSettings,
@@ -133,6 +138,7 @@ impl Default for Settings {
         Self {
             quantise: QuantiseSettings::default(),
             synth: SynthSettings::default(),
+            gate: kazoo_core::voice::GateSettings::default(),
             silent: false,
             last_blend: 1.0,
             fx: FxSettings::default(),
@@ -223,12 +229,31 @@ impl Settings {
                 );
             }
             Control::Silent => self.silent = !self.silent,
+            Control::GateOpen | Control::GateClose | Control::GateHold => {
+                let (min, max, value) = self.dial(control).unwrap_or((0.0, 1.0, 0.0));
+                let amount = if control == Control::GateHold {
+                    if shift { 50.0 } else { 5.0 }
+                } else if shift {
+                    6.0
+                } else {
+                    1.0
+                };
+                if let Some(command) = self.set_fraction(
+                    control,
+                    (direction.mul_add(amount, value) - min) / (max - min),
+                ) {
+                    return command;
+                }
+            }
         }
         match control {
             Control::Shape | Control::Cutoff | Control::Air | Control::Volume => {
                 Command::SetSynth(self.synth)
             }
             Control::Silent => Command::SetSilent(self.silent),
+            Control::GateOpen | Control::GateClose | Control::GateHold => {
+                Command::SetGate(self.gate)
+            }
             _ => Command::SetQuantise(self.quantise),
         }
     }
@@ -253,6 +278,9 @@ impl Settings {
             Control::Air => format!("{:.2}", self.synth.air),
             Control::Volume => format!("{:.2}", self.synth.volume),
             Control::Silent => on_off(self.silent).into(),
+            Control::GateOpen => format!("{:.0} dBFS", self.gate.open_db),
+            Control::GateClose => format!("{:.0} dBFS", self.gate.close_db),
+            Control::GateHold => format!("{:.0} ms", self.gate.hold_ms),
         }
     }
 }
@@ -266,6 +294,8 @@ pub enum Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Synth,
+    Pitch,
+    Gate,
     Fx,
 }
 
@@ -274,6 +304,13 @@ pub struct App {
     pub accepted: Settings,
     pub selected: Control,
     pub help: bool,
+    pub(crate) help_filter: Option<String>,
+    pub(crate) hits: RefCell<Vec<panels::Hit>>,
+    pub(crate) fx_input: [f32; 5],
+    pub(crate) fx_output: [f32; 5],
+    pub(crate) mic_rms: f32,
+    pub(crate) output_rms: f32,
+    pub(crate) input_label: String,
     pub help_scroll: Cell<u16>,
     pub focus: Focus,
     pub selected_slot: Slot,
@@ -327,8 +364,15 @@ impl App {
             accepted: loaded.settings,
             selected: Control::Quantise,
             help: false,
+            help_filter: None,
+            hits: RefCell::new(Vec::new()),
+            fx_input: [0.0; 5],
+            fx_output: [0.0; 5],
+            mic_rms: 0.0,
+            output_rms: 0.0,
+            input_label: "input".into(),
             help_scroll: Cell::new(0),
-            focus: Focus::Synth,
+            focus: Focus::Pitch,
             selected_slot: Slot::Megaphone,
             selected_cell: 0,
             desk_bpm: None,
@@ -544,6 +588,14 @@ impl App {
             }
         }
         self.moving = stats.fx_moving.load(Ordering::Relaxed);
+        self.fx_input = std::array::from_fn(|index| {
+            f32::from_bits(stats.fx_input[index].load(Ordering::Relaxed))
+        });
+        self.fx_output = std::array::from_fn(|index| {
+            f32::from_bits(stats.fx_output[index].load(Ordering::Relaxed))
+        });
+        self.mic_rms = f32::from_bits(stats.mic_rms.load(Ordering::Relaxed));
+        self.output_rms = f32::from_bits(stats.output_rms.load(Ordering::Relaxed));
         self.fx_faults = stats.fx_faults.load(Ordering::Relaxed);
         self.fx_refused = stats.fx_refused.load(Ordering::Relaxed);
     }
@@ -607,6 +659,11 @@ impl App {
         }
         if key.code == KeyCode::Esc {
             if self.help {
+                if self.help_filter.is_some() {
+                    self.help_filter = None;
+                    self.help_scroll.set(0);
+                    return Ok(Action::Continue);
+                }
                 self.help = false;
                 return Ok(Action::Continue);
             }
@@ -617,36 +674,50 @@ impl App {
             self.help_scroll.set(0);
             return Ok(Action::Continue);
         }
-        if let KeyCode::Char(key @ ('r' | 'u' | 'C' | 'l' | 'o' | '-' | '=' | '_' | '+' | 'w')) =
-            key.code
+        if self.help {
+            self.help_key(key.code);
+            return Ok(Action::Continue);
+        }
+        if key.code == KeyCode::Char('w') && !key.modifiers.contains(KeyModifiers::SHIFT) {
+            return self.next_waveform(sender, now);
+        }
+        if matches!(key.code, KeyCode::Char('W' | 'w')) {
+            return self.loop_key('w', sender, now);
+        }
+        if let KeyCode::Char(key @ ('r' | 'u' | 'C' | 'l' | 'o' | '-' | '=' | '_' | '+')) = key.code
         {
             return self.loop_key(key, sender, now);
         }
-        if self.help {
-            match key.code {
-                KeyCode::Down => self
-                    .help_scroll
-                    .set(self.help_scroll.get().saturating_add(1)),
-                KeyCode::Up => self
-                    .help_scroll
-                    .set(self.help_scroll.get().saturating_sub(1)),
-                KeyCode::PageDown => self
-                    .help_scroll
-                    .set(self.help_scroll.get().saturating_add(10)),
-                KeyCode::PageUp => self
-                    .help_scroll
-                    .set(self.help_scroll.get().saturating_sub(10)),
-                _ => {}
-            }
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.next_panel(
+                key.code == KeyCode::Tab && !key.modifiers.contains(KeyModifiers::SHIFT),
+            );
             return Ok(Action::Continue);
         }
-        if key.code == KeyCode::Tab {
-            self.focus = if self.focus == Focus::Synth {
-                Focus::Fx
-            } else {
-                Focus::Synth
-            };
+        if let KeyCode::Char(number @ '1'..='5') = key.code {
+            self.selected_slot = self.accepted.fx.order[number as usize - '1' as usize];
+            self.selected_cell = 0;
+            self.focus = Focus::Fx;
             return Ok(Action::Continue);
+        }
+        if key.code == KeyCode::Enter {
+            self.message(self.description().to_owned(), now);
+            return Ok(Action::Continue);
+        }
+        if key.code == KeyCode::Char('b') {
+            return self.fx_key(key, sender, now);
+        }
+        if key.code == KeyCode::Char(' ') && self.focus == Focus::Fx {
+            return self.fx_key(
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+                sender,
+                now,
+            );
+        }
+        if key.code == KeyCode::Char('d') && self.focus != Focus::Fx {
+            let mut proposed = self.accepted;
+            let command = proposed.restore(self.selected);
+            return self.send_change(&proposed, command, sender, now);
         }
         if matches!(key.code, KeyCode::Char(',' | '.' | '<' | '>')) {
             return self.tempo_key(key.code, sender, now);
@@ -657,11 +728,14 @@ impl App {
         }
         let control = match key.code {
             KeyCode::Up | KeyCode::Down => {
-                self.selected = self.selected.next(key.code == KeyCode::Down);
+                self.next_control(key.code == KeyCode::Down);
                 return Ok(Action::Continue);
             }
             KeyCode::Left | KeyCode::Right => self.selected,
-            KeyCode::Char(' ') => Control::Quantise,
+            KeyCode::Char(' ') => match self.selected {
+                Control::Silent | Control::Vibrato | Control::Quantise => self.selected,
+                _ => return Ok(Action::Continue),
+            },
             KeyCode::Char('v' | 'V') => Control::Vibrato,
             KeyCode::Char('s' | 'S') => Control::Silent,
             _ => return Ok(Action::Continue),

@@ -406,3 +406,29 @@ fn backlog_keeps_the_newest_block_and_display_keeps_the_oldest() -> Result<()> {
     rig.finish();
     Ok(())
 }
+
+#[test]
+fn the_meters_never_allocate() -> Result<()> {
+    let mut rig = Rig::new(true, BLOCK)?;
+    let input = [0.2; BLOCK];
+    let mut output = [0.0; BLOCK * 2];
+    for meter in rig.stats.fx_input.iter().chain(&rig.stats.fx_output) {
+        meter.store(f32::NAN.to_bits(), Ordering::Relaxed);
+    }
+    let before = assert_no_alloc::violation_count();
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..40 {
+            rig.block(&input, &mut output);
+        }
+    });
+    assert_eq!(assert_no_alloc::violation_count(), before);
+    assert!(
+        f32::from_bits(rig.stats.mic_rms.load(Ordering::Relaxed)) > 0.0,
+        "mic RMS was not published"
+    );
+    for meter in rig.stats.fx_input.iter().chain(&rig.stats.fx_output) {
+        assert!(f32::from_bits(meter.load(Ordering::Relaxed)).is_finite());
+    }
+    rig.finish();
+    Ok(())
+}

@@ -2,6 +2,8 @@
 
 mod api;
 pub mod gate;
+mod gate_settings;
+pub use gate_settings::GateSettings;
 pub mod judge;
 pub mod profile;
 pub mod quantise;

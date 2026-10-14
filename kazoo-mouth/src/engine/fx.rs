@@ -471,6 +471,8 @@ pub struct FxChain {
     spare: [Box<[f32]>; 2],
     gains: Box<[f32]>,
     second: usize,
+    input_meters: [super::meters::Rms; 5],
+    output_meters: [super::meters::Rms; 5],
 }
 
 impl FxChain {
@@ -550,6 +552,8 @@ impl FxChain {
             spare: std::array::from_fn(|_| vec![0.0; block].into_boxed_slice()),
             gains: vec![0.0; block].into_boxed_slice(),
             second: rate as usize,
+            input_meters: [super::meters::Rms::default(); 5],
+            output_meters: [super::meters::Rms::default(); 5],
         })
     }
 
@@ -641,6 +645,12 @@ impl FxChain {
                 let [a_l, a_r] = &self.a;
                 let [b_l, b_r] = &mut self.b;
                 let [s_l, s_r] = &mut self.spare;
+                self.input_meters[slot as usize].stereo(
+                    &a_l[..size],
+                    &a_r[..size],
+                    self.second / 10,
+                    &stats.fx_input[slot as usize],
+                );
                 self.pedals[slot as usize].process(
                     context,
                     Buffers {
@@ -651,6 +661,12 @@ impl FxChain {
                     },
                     stats,
                     self.second,
+                );
+                self.output_meters[slot as usize].stereo(
+                    &b_l[..size],
+                    &b_r[..size],
+                    self.second / 10,
+                    &stats.fx_output[slot as usize],
                 );
                 std::mem::swap(&mut self.a, &mut self.b);
             }

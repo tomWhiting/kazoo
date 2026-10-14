@@ -68,6 +68,7 @@ fn assert_whole_command(app: &App, sender: &FakeSender, control: Control) {
             assert_eq!(control, Control::Silent);
             assert_eq!(silent, app.accepted.silent);
         }
+        Command::SetGate(settings) => assert_eq!(settings, app.accepted.gate),
         Command::Shutdown
         | Command::FxOn { .. }
         | Command::FxKind { .. }
@@ -116,7 +117,7 @@ fn loop_keys_send_their_commands() {
         let gauges = app.loop_gauges().unwrap();
         gauges.n.store(48_000, Ordering::Relaxed);
         gauges.state.store(State::Playing as u8, Ordering::Relaxed);
-        key(&mut app, &sender, KeyCode::Char('w'), false, now);
+        key(&mut app, &sender, KeyCode::Char('W'), false, now);
         assert!(sender.commands.borrow().is_empty());
         looper.process(&[0.0; 128], &[f64::NAN; 128], 120.0, &mut [0.0; 128]);
         let crate::engine::looper::LoopOut::Refused(samples) =
@@ -130,7 +131,7 @@ fn loop_keys_send_their_commands() {
             .unwrap()
             .n
             .store(48_000, Ordering::Relaxed);
-        key(&mut app, &sender, KeyCode::Char('w'), false, now);
+        key(&mut app, &sender, KeyCode::Char('W'), false, now);
         assert_eq!(app.notice(now), Some("already saving"));
         app.loop_gauges()
             .unwrap()
@@ -319,6 +320,7 @@ fn a_full_channel_says_busy_and_keeps_the_engines_value() {
     }
     assert!(!app.busy(now + Duration::from_secs(1)));
     sender.commands.borrow_mut().clear();
+    app.selected = Control::Quantise;
     key(&mut app, &sender, KeyCode::Char(' '), false, now);
     assert_whole_command(&app, &sender, Control::Quantise);
     key(&mut app, &sender, KeyCode::Char(' '), false, now);
@@ -332,7 +334,7 @@ fn selection_help_and_shortcuts_have_no_hidden_commands() {
     let now = Instant::now();
     let mut app = App::new(QuantiseSettings::default(), false);
     key(&mut app, &sender, KeyCode::Up, false, now);
-    assert_eq!(app.selected, Control::Silent);
+    assert_eq!(app.selected, Control::Blend);
     key(&mut app, &sender, KeyCode::Down, false, now);
     assert_eq!(app.selected, Control::Quantise);
     key(&mut app, &sender, KeyCode::Char('?'), false, now);
@@ -393,6 +395,8 @@ fn fx_keys_select_turn_bypass_and_move() {
     let sender = FakeSender::default();
     let now = Instant::now();
     let mut app = App::new(QuantiseSettings::default(), false);
+    key(&mut app, &sender, KeyCode::Tab, false, now);
+    assert_eq!(app.focus, Focus::Gate);
     key(&mut app, &sender, KeyCode::Tab, false, now);
     assert_eq!(app.focus, Focus::Fx);
     key(&mut app, &sender, KeyCode::Char(']'), false, now);
@@ -597,4 +601,61 @@ fn a_queued_tempo_is_not_replaced_by_an_older_callback_snapshot() {
     stats.own_bpm.store(150.0_f64.to_bits(), Ordering::Relaxed);
     app.sync_stats(&stats, now);
     assert_eq!(app.accepted.own_bpm.to_bits(), 150.0_f64.to_bits());
+}
+
+#[test]
+fn the_waveform_is_one_key_away() {
+    for focus in super::Focus::ALL {
+        for control in Control::ALL {
+            let mut app = App::new(QuantiseSettings::default(), false);
+            app.focus = focus;
+            app.selected = control;
+            let sender = FakeSender::default();
+            key(&mut app, &sender, KeyCode::Char('w'), false, Instant::now());
+            assert_eq!(
+                app.accepted.synth.shape,
+                OscillatorShape::Square,
+                "{focus:?} {control:?}"
+            );
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+            terminal
+                .draw(|frame| {
+                    crate::ui::draw(
+                        frame,
+                        &app,
+                        &crate::ui::Display::new(48_000),
+                        "direct",
+                        Instant::now(),
+                    );
+                })
+                .unwrap();
+            let hit = app
+                .hits
+                .borrow()
+                .iter()
+                .find(|hit| hit.target == super::panels::Target::Shape(3))
+                .copied()
+                .unwrap();
+            assert_eq!(
+                terminal.backend().buffer()[(hit.area.x, hit.area.y)].bg,
+                ratatui::style::Color::Cyan
+            );
+            key(&mut app, &sender, KeyCode::Char('w'), false, Instant::now());
+            assert_eq!(app.accepted.synth.shape, OscillatorShape::Sine);
+        }
+    }
+}
+
+#[test]
+fn enter_explains_without_changing_sound() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = super::Focus::Fx;
+    let before = app.accepted;
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    key(&mut app, &sender, KeyCode::Enter, false, now);
+    assert_eq!(app.accepted, before);
+    assert!(sender.commands.borrow().is_empty());
+    assert!(app.notice(now).is_some());
 }

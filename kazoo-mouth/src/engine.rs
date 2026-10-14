@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crossbeam_channel::Receiver;
 use kazoo_core::host::link::HubEvent;
@@ -17,6 +17,7 @@ use crate::synth::{SynthSettings, VoiceSynth};
 
 pub(crate) mod fx;
 pub(crate) mod looper;
+mod meters;
 use fx::{FxChain, Slot};
 use looper::{LoopFeed, LoopLength, Looper};
 
@@ -57,6 +58,7 @@ impl DeskOut for HubLinkAudio {
 pub(crate) enum Command {
     SetQuantise(QuantiseSettings),
     SetSynth(SynthSettings),
+    SetGate(kazoo_core::voice::GateSettings),
     SetSilent(bool),
     Shutdown,
     FxOn {
@@ -98,6 +100,10 @@ pub struct Stats {
     pub own_bpm: AtomicU64,
     pub desk_bpm: AtomicU64,
     pub fx_moving: AtomicU64,
+    pub fx_input: [AtomicU32; 5],
+    pub fx_output: [AtomicU32; 5],
+    pub mic_rms: AtomicU32,
+    pub output_rms: AtomicU32,
 }
 
 pub struct EngineSetup<D> {
@@ -138,6 +144,8 @@ pub struct MouthEngine<D> {
     loop_commands: [Option<Command>; 64],
     loop_command_count: usize,
     rate: u32,
+    mic_meter: meters::Rms,
+    output_meter: meters::Rms,
     silent: bool,
     samples: u64,
     stats: Arc<Stats>,
@@ -180,6 +188,8 @@ impl<D: DeskOut> MouthEngine<D> {
         let block = setup.block.min(4096);
         let mut synth = VoiceSynth::new(setup.rate, block)?;
         synth.set(settings.synth)?;
+        let mut tracker = VoiceTracker::new(setup.rate);
+        tracker.set_gate(settings.gate);
         let mut quantiser = Quantiser::new(setup.rate);
         quantiser.set(settings.quantise);
         let own_bpm = if settings.own_bpm.is_finite() {
@@ -200,7 +210,7 @@ impl<D: DeskOut> MouthEngine<D> {
             desk: setup.desk,
             judge_feed: setup.judge.0,
             judge_results: setup.judge.1,
-            tracker: VoiceTracker::new(setup.rate),
+            tracker,
             quantiser,
             synth,
             mic: vec![0.0; block],
@@ -220,6 +230,8 @@ impl<D: DeskOut> MouthEngine<D> {
             loop_commands: [None; 64],
             loop_command_count: 0,
             rate: setup.rate,
+            mic_meter: meters::Rms::default(),
+            output_meter: meters::Rms::default(),
             silent: settings.silent,
             samples: 0,
             stats: setup.stats,
@@ -245,6 +257,7 @@ impl<D: DeskOut> MouthEngine<D> {
                         self.stats.synth_fault.store(true, Ordering::Relaxed);
                     }
                 }
+                Command::SetGate(settings) => self.tracker.set_gate(settings),
                 Command::SetSilent(silent) => self.silent = silent,
                 Command::FxOn { slot, on } => self.fx.on(slot, on),
                 Command::FxKind { slot, kind } => self.fx.kind(slot, kind, &self.stats),
@@ -324,6 +337,15 @@ impl<D: DeskOut> MouthEngine<D> {
         self.loop_command_count = 0;
     }
 
+    fn publish_mic(&mut self, count: usize) {
+        self.mic_meter.stereo(
+            &self.mic[..count],
+            &self.mic[..count],
+            (self.rate / 10) as usize,
+            &self.stats.mic_rms,
+        );
+    }
+
     fn render_chunk(&mut self, out: &mut [f32], channels: usize) {
         let count = out.len() / channels;
         if count == 0 {
@@ -337,6 +359,7 @@ impl<D: DeskOut> MouthEngine<D> {
         for sample in &mut self.mic[..filled] {
             *sample = sanitize_sample(*sample);
         }
+        self.publish_mic(count);
         self.judge_feed.push(&self.mic[..count]);
         while let Some(result) = self.judge_results.pop() {
             self.tracker.judge(result);
@@ -390,6 +413,17 @@ impl<D: DeskOut> MouthEngine<D> {
             self.right[i] = fx::ceiling(self.right[i]);
             stereo[0] = if mute { 0.0 } else { self.left[i] };
             stereo[1] = if mute { 0.0 } else { self.right[i] };
+        }
+        if mute {
+            self.output_meter = meters::Rms::default();
+            self.stats.output_rms.store(0, Ordering::Relaxed);
+        } else {
+            self.output_meter.stereo(
+                &self.left[..count],
+                &self.right[..count],
+                (self.rate / 10) as usize,
+                &self.stats.output_rms,
+            );
         }
         let connected = self.desk.is_connected();
         let accepted = self
