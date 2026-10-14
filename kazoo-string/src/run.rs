@@ -561,6 +561,8 @@ mod tests {
             messages_dropped: 0,
             connections: 0,
             last_refusal: None,
+            follows_voice: false,
+            desk_carries_voice: false,
         }
     }
 

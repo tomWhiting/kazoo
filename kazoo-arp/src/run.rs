@@ -235,6 +235,9 @@ fn release_driven(shared: &EngineShared, target: [u8; 16], hub: &HubLink) -> Res
         Err(RequestError::Invalid) => Err(
             "the last driven note could not be released: the link refused it as invalid".to_owned(),
         ),
+        Err(RequestError::Unsupported) => Err(
+            "the last driven note could not be released: the desk is too old for that request".to_owned(),
+        ),
     }
 }
 

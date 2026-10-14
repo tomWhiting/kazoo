@@ -3315,6 +3315,10 @@ impl Wall {
                     RequestError::Invalid => {
                         error(ErrorCode::BadRequest, "the desk refused that tempo")
                     }
+                    RequestError::Unsupported => error(
+                        ErrorCode::BadRequest,
+                        "the desk is too old to take a tempo from the wall",
+                    ),
                 });
             }
         } else {

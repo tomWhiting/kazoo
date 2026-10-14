@@ -216,7 +216,9 @@ impl AudioEngine {
                     self.stop();
                 }
             }
-            Err(RequestError::Full | RequestError::Invalid) => self.desk_lost(),
+            Err(RequestError::Full | RequestError::Invalid | RequestError::Unsupported) => {
+                self.desk_lost();
+            }
         }
     }
 
@@ -231,7 +233,9 @@ impl AudioEngine {
         match self.hub.request_tempo(bpm as f32) {
             Ok(()) => {}
             Err(RequestError::NotConnected) => self.set_bpm(bpm),
-            Err(RequestError::Full | RequestError::Invalid) => self.desk_lost(),
+            Err(RequestError::Full | RequestError::Invalid | RequestError::Unsupported) => {
+                self.desk_lost();
+            }
         }
     }
 

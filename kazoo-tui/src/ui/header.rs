@@ -785,6 +785,8 @@ mod tests {
             messages_dropped: 0,
             connections: 0,
             last_refusal: None,
+            follows_voice: false,
+            desk_carries_voice: false,
         }
     }
 
@@ -820,6 +822,8 @@ mod tests {
 
         app.desk = DeskView::Link(kazoo_core::ipc::link::LinkStatus {
             last_refusal: Some("desk is full".to_owned()),
+            follows_voice: false,
+            desk_carries_voice: false,
             ..link(false)
         });
         let text = render_header(&app, 120);

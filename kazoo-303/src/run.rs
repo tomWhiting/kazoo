@@ -496,6 +496,8 @@ mod tests {
             messages_dropped: 0,
             connections: 1,
             last_refusal: None,
+            follows_voice: false,
+            desk_carries_voice: false,
         };
         app.hub = Some(status.clone());
         assert_eq!(app.link_label(), "\u{2192} kazoo-mix strip 3");
@@ -562,6 +564,8 @@ mod tests {
             messages_dropped: 0,
             connections: 1,
             last_refusal: None,
+            follows_voice: false,
+            desk_carries_voice: false,
         });
         assert_eq!(
             app.link_label(),

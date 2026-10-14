@@ -104,7 +104,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &s
         areas[6],
     );
     if app.help {
-        help(frame, area);
+        help(frame, area, app);
     }
 }
 
@@ -218,7 +218,7 @@ fn controls(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
-fn help(frame: &mut Frame<'_>, area: Rect) {
+fn help(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let overlay = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
     frame.render_widget(Clear, overlay);
     let mut lines = vec![

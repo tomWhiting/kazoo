@@ -66,7 +66,7 @@ fn the_amount_scales_what_arrives() {
 
 #[test]
 fn a_glide_of_nothing_is_todays_cable_bit_for_bit() {
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     let signal =
         |frame: usize| [1.0, -0.0, 0.0, -1.0, 0.1, f32::NAN, f32::INFINITY, f32::MAX][frame % 8];
     let amount = |frame| if frame < 64 { -0.5 } else { 0.75 };
@@ -80,12 +80,12 @@ fn a_glide_of_nothing_is_todays_cable_bit_for_bit() {
         let old = finite(signal(frame) * amount(frame));
         assert_eq!(sample.to_bits(), old.to_bits(), "frame {frame}");
     }
-    assert_eq!(Route::new(0, 0, 1.0, 3, 7).glide, 0);
+    assert_eq!(Route::new(0, 0, 1.0, 7).glide, 0);
 }
 
 #[test]
 fn a_new_cable_with_a_glide_comes_in_from_silence() {
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     let cable = Route {
         glide: 4_800,
         ..route(0, false)
@@ -111,7 +111,7 @@ fn a_new_cable_with_a_glide_comes_in_from_silence() {
 
 #[test]
 fn a_new_amount_glides_from_where_the_cable_is() {
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     run(&mut lines, SUB_BLOCK, |_| 1.0, |_| route(0, false));
     let fade = Route {
         amount: 0.0,
@@ -161,7 +161,7 @@ fn the_same_amount_sent_again_does_not_restart_a_glide() {
         glide: 4_800,
         ..route(0, false)
     };
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     let out = run(
         &mut lines,
         4_832,
@@ -171,7 +171,7 @@ fn the_same_amount_sent_again_does_not_restart_a_glide() {
             ..cable
         },
     );
-    let mut reference = Lines::new(RATE, 4);
+    let mut reference = Line::new(RATE).unwrap();
     let expected = run(&mut reference, 4_832, |_| 1.0, |_| cable);
     for (sample, want) in out.iter().zip(&expected) {
         assert_eq!(sample.to_bits(), want.to_bits());
@@ -186,7 +186,7 @@ fn the_same_amount_sent_again_does_not_restart_a_glide() {
 
 #[test]
 fn a_gliding_cable_never_passes_a_nan() {
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     let cable = Route {
         glide: 1_000,
         ..route(0, false)
@@ -218,7 +218,7 @@ fn a_gliding_cable_never_passes_a_nan() {
 #[test]
 fn a_long_glide_lands_exactly() {
     const FRAMES: usize = 20_000_000;
-    let mut lines = Lines::new(RATE, 4);
+    let mut lines = Line::new(RATE).unwrap();
     let cable = Route {
         glide: u32::try_from(FRAMES).unwrap(),
         ..route(0, false)

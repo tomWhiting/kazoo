@@ -504,6 +504,8 @@ mod tests {
             messages_dropped: 0,
             connections: u64::from(connected),
             last_refusal: None,
+            follows_voice: false,
+            desk_carries_voice: false,
         }
     }
 
@@ -520,6 +522,8 @@ mod tests {
 
         app.hub = Some(LinkStatus {
             last_refusal: Some("every strip is taken".to_owned()),
+            follows_voice: false,
+            desk_carries_voice: false,
             ..status(false)
         });
         assert_eq!(
@@ -558,6 +562,8 @@ mod tests {
             messages_dropped: 0,
             connections: 0,
             last_refusal: Some("every strip is taken".to_owned()),
+            follows_voice: false,
+            desk_carries_voice: false,
         });
         assert_eq!(
             app.hub_badge(),
@@ -575,6 +581,8 @@ mod tests {
             messages_dropped: 0,
             connections: 1,
             last_refusal: None,
+            follows_voice: false,
+            desk_carries_voice: false,
         });
         assert_eq!(
             app.hub_badge(),

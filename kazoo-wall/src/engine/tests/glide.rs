@@ -194,7 +194,7 @@ fn gliding_allocates_nothing() {
     let mut resting = CableTable::with_slots(129).unwrap();
     for line in 0..64 {
         let number = u32::try_from(line).unwrap();
-        assert!(resting.set(line + 1, 0, Some(Route::new(0, 0, 1.0, number, number + 1))));
+        assert!(resting.set(line + 1, 0, Some(Route::new(0, 0, 1.0, number + 1))));
     }
     control.send(Command::Cables(Box::new(resting)));
     let mut buffer = Vec::new();
@@ -218,7 +218,7 @@ fn gliding_allocates_nothing() {
             0,
             Some(Route {
                 glide: 96_000,
-                ..Route::new(0, 0, if line < 64 { 0.0 } else { 1.0 }, number, number + 1)
+                ..Route::new(0, 0, if line < 64 { 0.0 } else { 1.0 }, number + 1)
             }),
         ));
     }

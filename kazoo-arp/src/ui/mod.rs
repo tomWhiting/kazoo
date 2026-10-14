@@ -382,6 +382,7 @@ fn alert_line(app: &App) -> Line<'static> {
             1 => "desk disconnected",
             2 => "desk queue full",
             3 => "invalid note",
+            4 => "desk too old",
             _ => "unknown delivery error",
         };
         spans.push(Span::styled(
@@ -502,6 +503,8 @@ mod tests {
                 messages_dropped: 0,
                 connections: 0,
                 last_refusal: None,
+                follows_voice: false,
+                desk_carries_voice: false,
             };
             let text = screen_with_link(KeyMode::Hold, Some(hub));
             assert!(text.contains("desk link at normal priority"), "{text}");
