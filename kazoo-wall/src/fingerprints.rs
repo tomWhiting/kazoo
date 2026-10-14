@@ -179,7 +179,7 @@ impl Dye {
     /// changed).
     pub fn touch(&mut self, seat: &str, what: &What, patch: &Patch) {
         match what {
-            What::Chain { changes, .. } => {
+            What::Batch { changes, .. } | What::Chain { changes, .. } => {
                 for change in changes {
                     self.touch(seat, change, patch);
                 }

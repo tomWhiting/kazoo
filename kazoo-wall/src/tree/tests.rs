@@ -99,6 +99,7 @@ fn ask(wall: &mut Wall, request: &Request, now: Instant) -> Change {
 
 fn add() -> Request {
     Request::Add {
+        alias: None,
         kind: "lfo".into(),
         name: None,
         place: None,
