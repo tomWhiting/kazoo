@@ -240,13 +240,18 @@ fn effects_area(frame: &mut Frame<'_>, area: Rect, focused: bool) -> Rect {
     Rect::new(area.x, area.y, area.width, content_height)
 }
 
-/// A harmony level at the bottom is off, and a shift moves in whole
-/// semitones, so the rows say so.
-fn harmony_label(index: usize, value: f32) -> Option<String> {
-    match index {
-        1 | 3 | 5 | 7 if value <= -60.0 => Some("off".to_owned()),
-        2 | 4 | 6 => Some(format!("{value:+.0} st")),
-        _ => None,
+/// A knob's value as its row reads it. A harmony level at the bottom is
+/// off, and a harmony shift moves in whole semitones, so the rows say so.
+fn value_label(slot: Slot, index: usize, spec: &kazoo_fx::ParamSpec, value: f32) -> String {
+    match (slot, index, spec.curve) {
+        (Slot::Harmony, 1 | 3 | 5 | 7, _) if value <= -60.0 => "off".to_owned(),
+        (Slot::Harmony, 2 | 4 | 6, _) => format!("{value:+.0} st"),
+        (_, _, Curve::Stepped { labels }) => labels
+            .get((value - spec.min) as usize)
+            .copied()
+            .unwrap_or("?")
+            .to_owned(),
+        _ => format!("{value:.2} {}", spec.unit),
     }
 }
 
@@ -318,20 +323,11 @@ pub(super) fn effects(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Curve::Log => (value / spec.min).log(spec.max / spec.min),
                 _ => (value - spec.min) / (spec.max - spec.min),
             };
-            let label = if app.selected_slot == Slot::Harmony
-                && let Some(label) = harmony_label(index, value)
-            {
-                label
-            } else if let Curve::Stepped { labels } = spec.curve {
-                labels
-                    .get((value - spec.min) as usize)
-                    .copied()
-                    .unwrap_or("?")
-                    .to_owned()
-            } else {
-                format!("{value:.2} {}", spec.unit)
-            };
-            (spec.name, label, fraction)
+            (
+                spec.name,
+                value_label(app.selected_slot, index, spec, value),
+                fraction,
+            )
         }));
     for (cell, (name, value, fraction)) in cells.enumerate() {
         let row = Slot::ALL.len() + cell;
