@@ -28,6 +28,7 @@ fn app(history: History) -> App {
         wants_reading: false,
         go: Go::Idle,
         follow: Follow::On(None),
+        fire: crate::fire::Blaze::default(),
     };
     app.take(history);
     app.selected = app.history.here;
