@@ -59,8 +59,8 @@ Up/Down choose a control. Left/Right change it; Shift makes a big step.
 Space toggles the focused switch. w steps waveform. v toggles vibrato. s toggles silent. ? shows help.
 Tab/Shift-Tab walks panels. 1..5 select FX. [/] choose slot; b bypasses; {/} move; d resets a knob.
 ,/. change own tempo by 1 BPM; </> by 10. The desk owns synced tempo.
-r records or punches; u undoes; C clears; l chooses length; p stops/starts.
-o cycles scope; k shows/hides spectrum; L shows latency breakdown.
+r records or punches; u undoes; C clears; l chooses length; o stops/starts.
+O cycles scope; k shows/hides spectrum; L shows latency breakdown.
 -/= change loop volume; _/+ make a big step; w saves ~/.kazoo/mouth/loops/.
 Esc closes help or quits. Ctrl-C quits.
 ";
@@ -250,7 +250,7 @@ impl Session {
             info.frames,
             OnsetConfig::default(),
         )?;
-        let stats = Arc::new(Stats::default());
+        let stats = Arc::new(Stats::new(info.rate));
         let loop_directory = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or_else(|| eyre!("HOME is missing: cannot locate saved loops"))?
@@ -536,6 +536,10 @@ fn event_loop(
     app: &mut App,
 ) -> Result<()> {
     let mut display = Display::new(session.rate);
+    // Both copies are allocated here, once: a read lands in `fresh` and only a
+    // whole one is swapped into the app.
+    app.scope = session.stats.capture.frames();
+    let mut fresh = session.stats.capture.frames();
     let period = Duration::from_secs_f64(1.0 / 30.0);
     let mut draw_at = Instant::now();
     let mut quitting = false;
@@ -559,13 +563,10 @@ fn event_loop(
                 display.push(voice);
             }
             display.recentre();
-            let mut voice = [0.0; crate::engine::capture::SAMPLES];
-            let mut synth = [0.0; crate::engine::capture::SAMPLES];
-            if session.stats.capture.read(&mut voice, &mut synth) {
-                app.scope_voice = voice;
-                app.scope_synth = synth;
+            if session.stats.capture.read(&mut fresh) {
+                std::mem::swap(&mut app.scope, &mut fresh);
                 if app.plots.spectrum_visible {
-                    app.spectrum.update(&app.scope_voice, session.rate);
+                    app.spectrum.update(app.scope.voice(), session.rate);
                 }
             }
             let rate = f64::from(session.rate);
@@ -583,6 +584,8 @@ fn event_loop(
                 effects: Some(
                     session.stats.fx_latency.load(Ordering::Relaxed) as f64 * 1000.0 / rate,
                 ),
+                device_buffers_only: kazoo_core::host::audio::LATENCY_COVERS
+                    == kazoo_core::host::audio::LatencyCovers::BufferOnly,
                 output: if session
                     .hub
                     .as_ref()

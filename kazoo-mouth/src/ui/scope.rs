@@ -1,4 +1,6 @@
 use kazoo_core::sanitize_sample;
+
+use crate::engine::capture::{LOWEST_HZ, PERIODS};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -8,6 +10,8 @@ use ratatui::widgets::canvas::{Canvas, Points};
 
 pub(super) const VOICE: Color = Color::Green;
 pub(super) const SYNTH: Color = Color::Magenta;
+const SCOPE_CELLS: u16 = 40;
+const TRAIL_CELLS: u16 = 20;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -28,9 +32,11 @@ impl Mode {
 }
 
 fn window(samples: &[f32], rate: u32, hz: Option<f32>) -> (f64, f64) {
+    // The capture holds four periods of the tracker's lowest pitch and one more
+    // to find the trigger in; a lower reading is drawn at that floor.
     let duration = hz
         .filter(|hz| hz.is_finite() && *hz > 0.0)
-        .map_or(0.020, |hz| 4.0 / f64::from(hz));
+        .map_or(0.020, |hz| PERIODS as f64 / f64::from(hz.max(LOWEST_HZ)));
     let length = (duration * f64::from(rate))
         .min(samples.len().saturating_sub(1) as f64)
         .max(1.0);
@@ -78,12 +84,12 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, app: &crate::controls::App
     }
     let width = usize::from(area.width) * 2;
     let trigger = if app.plots.mode == Mode::Synth {
-        &app.scope_synth
+        app.scope.synth()
     } else {
-        &app.scope_voice
+        app.scope.voice()
     };
-    let voice = points(&app.scope_voice, trigger, app.loop_sample_rate, hz, width);
-    let synth = points(&app.scope_synth, trigger, app.loop_sample_rate, hz, width);
+    let voice = points(app.scope.voice(), trigger, app.loop_sample_rate, hz, width);
+    let synth = points(app.scope.synth(), trigger, app.loop_sample_rate, hz, width);
     let canvas = Canvas::default()
         .marker(Marker::Braille)
         .x_bounds([0.0, 1.0])
@@ -120,11 +126,9 @@ pub(super) fn strip(
     app: &crate::controls::App,
     display: &super::Display,
 ) {
-    let scope_width = if plots.width >= 80 {
-        (plots.width / 2).max(40)
-    } else {
-        plots.width
-    };
+    // Half each; the scope takes 40 cells when the trail can keep 20 beside it.
+    let scope_width =
+        (plots.width / 2).max(SCOPE_CELLS.min(plots.width.saturating_sub(TRAIL_CELLS)));
     let trail_width = plots.width.saturating_sub(scope_width);
     if trail_width > 0 {
         super::trail::draw(
@@ -180,7 +184,7 @@ pub struct View {
 impl View {
     pub const fn key(&mut self, key: crossterm::event::KeyCode) -> bool {
         match key {
-            crossterm::event::KeyCode::Char('o') => self.mode = self.mode.next(),
+            crossterm::event::KeyCode::Char('O') => self.mode = self.mode.next(),
             crossterm::event::KeyCode::Char('k') => self.spectrum_visible = !self.spectrum_visible,
             crossterm::event::KeyCode::Char('L') => self.latency_open = !self.latency_open,
             _ => return false,

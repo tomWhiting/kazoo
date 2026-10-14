@@ -109,6 +109,18 @@ pub struct Stats {
     pub output_rms: AtomicU32,
 }
 
+impl Stats {
+    /// Stats whose scope capture is sized for an engine running at `rate`.
+    /// `Stats::default()` captures at 48 kHz.
+    #[must_use]
+    pub fn new(rate: u32) -> Self {
+        Self {
+            capture: capture::Capture::new(rate),
+            ..Self::default()
+        }
+    }
+}
+
 pub struct EngineSetup<D> {
     pub rate: u32,
     pub block: usize,
@@ -187,6 +199,13 @@ impl<D: DeskOut> MouthEngine<D> {
             return Err(kazoo_core::Error::Config(
                 "mouth rate and block must be positive".into(),
             ));
+        }
+        if setup.stats.capture.rate() != setup.rate {
+            return Err(kazoo_core::Error::Config(format!(
+                "mouth stats capture at {} Hz, the engine runs at {} Hz",
+                setup.stats.capture.rate(),
+                setup.rate
+            )));
         }
         let block = setup.block.min(4096);
         let mut synth = VoiceSynth::new(setup.rate, block)?;

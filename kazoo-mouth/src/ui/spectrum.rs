@@ -1,13 +1,11 @@
-use std::f64::consts::TAU;
-
-use kazoo_core::sanitize_sample;
+use kazoo_core::analysis::SpectrumAnalyzer;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::engine::capture::SAMPLES;
+use crate::engine::capture::spectrum_frames;
 
 pub(super) const BANDS: usize = 32;
 
@@ -18,53 +16,47 @@ pub(super) fn band(hz: f64) -> Option<usize> {
     Some(((hz / 50.0).log(200.0) * BANDS as f64) as usize).map(|index| index.min(BANDS - 1))
 }
 
-#[derive(Debug)]
+/// The mic's 32-band spectrum, from kazoo-core's analyser over the newest
+/// `spectrum_frames(rate)` captured samples. Runs on the UI thread only.
+#[derive(Debug, Default)]
 pub struct Spectrum {
-    real: Box<[f64]>,
-    imaginary: Box<[f64]>,
+    analyzer: Option<(u32, SpectrumAnalyzer)>,
     pub(super) levels: [f64; BANDS],
 }
 
-impl Default for Spectrum {
-    fn default() -> Self {
-        Self {
-            real: vec![0.0; SAMPLES].into_boxed_slice(),
-            imaginary: vec![0.0; SAMPLES].into_boxed_slice(),
-            levels: [0.0; BANDS],
-        }
-    }
-}
-
 impl Spectrum {
-    pub(crate) fn update(&mut self, samples: &[f32; SAMPLES], rate: u32) {
-        for (index, sample) in samples.iter().enumerate() {
-            let reversed = index.reverse_bits() >> (usize::BITS - SAMPLES.ilog2());
-            let window = 0.5_f64.mul_add(-(TAU * index as f64 / (SAMPLES - 1) as f64).cos(), 0.5);
-            self.real[reversed] = f64::from(sanitize_sample(*sample)) * window;
-            self.imaginary[reversed] = 0.0;
-        }
-        let mut size = 2;
-        while size <= SAMPLES {
-            for start in (0..SAMPLES).step_by(size) {
-                for offset in 0..size / 2 {
-                    let angle = -TAU * offset as f64 / size as f64;
-                    let (sin, cos) = angle.sin_cos();
-                    let a = start + offset;
-                    let b = a + size / 2;
-                    let real = cos.mul_add(self.real[b], -sin * self.imaginary[b]);
-                    let imaginary = sin.mul_add(self.real[b], cos * self.imaginary[b]);
-                    self.real[b] = self.real[a] - real;
-                    self.imaginary[b] = self.imaginary[a] - imaginary;
-                    self.real[a] += real;
-                    self.imaginary[a] += imaginary;
-                }
-            }
-            size *= 2;
-        }
+    pub(crate) fn update(&mut self, samples: &[f32], rate: u32) {
         self.levels.fill(0.0);
-        for bin in 1..SAMPLES / 2 {
-            if let Some(index) = band(bin as f64 * f64::from(rate) / SAMPLES as f64) {
-                let amplitude = self.real[bin].hypot(self.imaginary[bin]) * 4.0 / SAMPLES as f64;
+        if rate == 0 {
+            return;
+        }
+        let analyzer = match &mut self.analyzer {
+            Some((built, analyzer)) if *built == rate => analyzer,
+            slot => {
+                let built = slot.insert((
+                    rate,
+                    SpectrumAnalyzer::new(spectrum_frames(rate), rate as f32, 0.0),
+                ));
+                &mut built.1
+            }
+        };
+        let size = analyzer.fft_size();
+        let Some(newest) = samples
+            .len()
+            .checked_sub(size)
+            .map(|start| &samples[start..])
+        else {
+            return;
+        };
+        analyzer.reset();
+        let Some(data) = analyzer.push_samples(newest) else {
+            return;
+        };
+        for (hz, db) in data.bin_frequencies.iter().zip(&data.magnitudes_db).skip(1) {
+            if let Some(index) = band(f64::from(*hz)) {
+                // The analyser divides by the frame; a Hann-windowed sine's peak
+                // is a quarter of its amplitude, so four times it reads the sine.
+                let amplitude = 10.0_f64.powf(f64::from(*db) / 20.0) * 4.0;
                 self.levels[index] = self.levels[index].max(amplitude);
             }
         }

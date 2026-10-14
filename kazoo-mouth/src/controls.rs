@@ -303,8 +303,7 @@ pub enum Focus {
 pub struct App {
     pub(crate) plots: crate::ui::scope::View,
     pub(crate) latency: crate::ui::latency::Latency,
-    pub(crate) scope_voice: [f32; crate::engine::capture::SAMPLES],
-    pub(crate) scope_synth: [f32; crate::engine::capture::SAMPLES],
+    pub(crate) scope: crate::engine::capture::Frames,
     pub(crate) spectrum: crate::ui::spectrum::Spectrum,
     pub accepted: Settings,
     pub selected: Control,
@@ -371,8 +370,7 @@ impl App {
                 ..crate::ui::scope::View::default()
             },
             latency: crate::ui::latency::Latency::default(),
-            scope_voice: [0.0; crate::engine::capture::SAMPLES],
-            scope_synth: [0.0; crate::engine::capture::SAMPLES],
+            scope: crate::engine::capture::Frames::default(),
             spectrum: crate::ui::spectrum::Spectrum::default(),
             accepted: loaded.settings,
             selected: Control::Quantise,
@@ -481,7 +479,7 @@ impl App {
             'r' => Command::LoopRecord,
             'u' => Command::LoopUndo,
             'C' => Command::LoopClear,
-            'p' => Command::LoopPlay(state == State::Stopped as u8),
+            'o' => Command::LoopPlay(state == State::Stopped as u8),
             '-' | '=' | '_' | '+' => {
                 let step = if matches!(key, '_' | '+') { 0.25 } else { 0.05 };
                 let direction = if matches!(key, '-' | '_') { -1.0 } else { 1.0 };
@@ -705,8 +703,7 @@ impl App {
         if matches!(key.code, KeyCode::Char('W' | 'w')) {
             return self.loop_key('w', sender, now);
         }
-
-        if let KeyCode::Char(key @ ('r' | 'u' | 'C' | 'l' | 'p' | '-' | '=' | '_' | '+')) = key.code
+        if let KeyCode::Char(key @ ('r' | 'u' | 'C' | 'l' | 'o' | '-' | '=' | '_' | '+')) = key.code
         {
             return self.loop_key(key, sender, now);
         }
