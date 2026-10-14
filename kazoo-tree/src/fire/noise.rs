@@ -79,3 +79,54 @@ pub fn noise(x: f32, y: f32, z: f32) -> f32 {
     };
     lerp(plane(0), plane(1), fz)
 }
+
+/// Smooth value noise that repeats along `y`, in `-1.0..=1.0`.
+///
+/// It repeats every `period` lattice steps, so a texture made of it can
+/// scroll forever with no seam. A `period` below one is taken as one.
+/// Always finite.
+#[must_use]
+pub fn noise_wrapped(x: f32, y: f32, z: f32, period: i32) -> f32 {
+    let period = period.max(1);
+    let (xi, fx) = lattice(x);
+    let (yi, fy) = lattice(y);
+    let (zi, fz) = lattice(z);
+    let (y0, y1) = (yi.rem_euclid(period), yi.wrapping_add(1).rem_euclid(period));
+    let plane = |dz: i32| {
+        let z = zi.wrapping_add(dz);
+        let x1 = xi.wrapping_add(1);
+        lerp(
+            lerp(hash(xi, y0, z), hash(x1, y0, z), fx),
+            lerp(hash(xi, y1, z), hash(x1, y1, z), fx),
+            fy,
+        )
+    };
+    lerp(plane(0), plane(1), fz)
+}
+
+/// Value noise summed over `octaves` (at least one, at most eight), each
+/// twice as fine and half as strong as the one before, in `-1.0..=1.0`.
+#[must_use]
+pub fn fractal(x: f32, y: f32, z: f32, octaves: u8) -> f32 {
+    let (mut sum, mut weight, mut total, mut fine) = (0.0, 1.0, 0.0, 1.0);
+    for octave in 0..octaves.clamp(1, 8) {
+        let o = f32::from(octave);
+        sum += noise(x * fine, y * fine, o.mul_add(17.0, z)) * weight;
+        total += weight;
+        weight *= 0.5;
+        fine *= 2.0;
+    }
+    sum / total
+}
+
+/// Smooth step from `0.0` at `a` to `1.0` at `b`, held outside them; a
+/// value that is not a number reads as `0.0`.
+#[must_use]
+pub fn smooth(a: f32, b: f32, v: f32) -> f32 {
+    let span = b - a;
+    if !v.is_finite() || !span.is_finite() || span.abs() < f32::MIN_POSITIVE {
+        return if v.is_finite() && v >= b { 1.0 } else { 0.0 };
+    }
+    let t = ((v - a) / span).clamp(0.0, 1.0);
+    t * t * 2.0f32.mul_add(-t, 3.0)
+}

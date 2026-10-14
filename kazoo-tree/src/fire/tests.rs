@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::field::{MAX_H, MAX_SPARKS, MAX_W, Shape};
+use super::field::{MAX_H, MAX_W, Shape};
+use super::flicks::MAX_FLICKS;
 use super::place::shape_of;
 use super::*;
 use crate::app::{App, Grown, PANEL, Shown};
@@ -22,7 +23,7 @@ fn assert_sound(field: &Field) {
             "a dot's heat is out of bounds: {v}"
         );
     }
-    assert!(field.spark_count() <= MAX_SPARKS);
+    assert!(field.spark_count() <= MAX_FLICKS);
     for (x, y) in field.spark_places() {
         assert!(x.is_finite() && y.is_finite());
         assert!(
@@ -71,9 +72,13 @@ fn a_reshaped_field_stays_bounded_at_every_level_and_beyond() {
         Shape {
             w: usize::MAX,
             h: 0,
-            source: f32::NAN,
-            floor: usize::MAX,
+            base: usize::MAX,
+            reach: f32::NAN,
+            thick: f32::NEG_INFINITY,
+            tall: f32::INFINITY,
+            detail: u8::MAX,
             sparks: f32::INFINITY,
+            wisps: f32::NAN,
         },
     ];
     for _ in 0..60 {
@@ -105,13 +110,19 @@ fn the_fire_grows_with_the_zoom_and_far_out_is_a_small_ember() {
     let close = shape_of(Level::Close, 6.0, 120, 40);
     let every = shape_of(Level::Every, 10.0, 120, 40);
     // Far out: a few cells, never over the tree.
-    assert!(far.w <= 10 && far.h <= 24, "{far:?}");
+    assert!(far.w <= 20 && far.h <= 32, "{far:?}");
     assert!(far.w <= near.w && near.w <= close.w && close.w <= every.w);
     assert!(far.h <= near.h && near.h <= close.h && close.h <= every.h);
     // Never taller than most of the picture.
     assert!(every.h <= 40 * 4 * 9 / 10);
     // Close in, the flames follow the limb's width.
-    assert!(shape_of(Level::Close, 9.0, 120, 40).w > shape_of(Level::Close, 1.0, 120, 40).w);
+    let (thin, thick) = (
+        shape_of(Level::Close, 1.0, 120, 40),
+        shape_of(Level::Close, 9.0, 120, 40),
+    );
+    assert!(thick.reach > thin.reach && thick.thick > thin.thick);
+    // The finer detail comes as the view comes in.
+    assert!(far.detail < near.detail && near.detail < close.detail && close.detail < every.detail);
 }
 
 fn tree() -> (History, Growth) {
@@ -156,7 +167,7 @@ fn stands_on_here(history: &History, growth: &Growth, trunk: bool) {
                 centre: (at.0 + off.0 / scale, at.1 + off.1 / scale),
                 scale,
             };
-            let place = Placement::of(&scene, &view, cols, rows).expect("placed");
+            let place = Placement::of(&scene, &view, cols, rows, here).expect("placed");
             let (x, y) = view.to_dots(at, cols, rows);
             let cell = ((x / 2.0).floor() as i32, (y / 4.0).floor() as i32);
             assert_eq!(
@@ -164,12 +175,17 @@ fn stands_on_here(history: &History, growth: &Growth, trunk: bool) {
                 (cell.0 * 2 + 1, cell.1 * 4 + 2),
                 "at scale {scale}"
             );
-            // The field stands on the anchor: centred over it, its floor
-            // just under it, rising up the screen.
+            // The field stands on the anchor: centred over it, its base
+            // row on it, room under it for the branch.
             let w = i32::try_from(place.shape.w).expect("a small field");
-            let h = i32::try_from(place.shape.h).expect("a small field");
+            let base = i32::try_from(place.shape.base).expect("a small field");
             assert_eq!(place.origin.0 + w / 2, place.anchor.0);
-            assert_eq!(place.origin.1 + h, place.anchor.1 + 2);
+            assert_eq!(place.origin.1 + base, place.anchor.1);
+            assert!(place.shape.base + 3 <= place.shape.h);
+            // It burns along the branch through the moment, from its dot.
+            let middle = ((place.shape.w / 2) as f32, place.shape.base as f32);
+            assert_eq!(place.fuel.moment(), middle);
+            assert!(place.fuel.points().len() > 1, "only the moment burns");
             // As wide as the limb is drawn under it.
             let limb = crate::render::limb_dots(width, trunk, scale) as f32;
             assert_eq!(place.shape, shape_of(Level::of(scale), limb, cols, rows));
@@ -177,7 +193,7 @@ fn stands_on_here(history: &History, growth: &Growth, trunk: bool) {
         }
         let view = View { centre: at, scale };
         widths.push(
-            Placement::of(&scene, &view, cols, rows)
+            Placement::of(&scene, &view, cols, rows, here)
                 .expect("placed")
                 .shape
                 .w,
@@ -192,7 +208,7 @@ fn stands_on_here(history: &History, growth: &Growth, trunk: bool) {
         centre: (at.0 + 1.0e4, at.1),
         scale: 1.5,
     };
-    let place = Placement::of(&scene, &away, cols, rows).expect("placed");
+    let place = Placement::of(&scene, &away, cols, rows, here).expect("placed");
     assert!(!place.visible(cols, rows));
 }
 
@@ -368,7 +384,7 @@ fn far_out_the_ember_keeps_to_the_walls_place() {
                 changed += 1;
                 let (dx, dy) = (i32::from(x) - col, i32::from(y) - row);
                 assert!(
-                    dx.abs() <= 3 && (-6..=1).contains(&dy),
+                    dx.abs() <= 6 && (-9..=3).contains(&dy),
                     "the ember spread to {dx}, {dy}"
                 );
             }
