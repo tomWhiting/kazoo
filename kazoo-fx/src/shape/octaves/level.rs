@@ -1,4 +1,5 @@
-//! Slow gain matching leaves the dividers' continuous phase untouched.
+//! Power matching follows with an 80 ms time constant and slews at most
+//! 12 dB per 100 ms, leaving the dividers' continuous phase untouched.
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LevelMatch {
@@ -23,8 +24,8 @@ impl Default for LevelMatch {
 
 impl LevelMatch {
     pub(super) fn prepare(&mut self, rate: f32) {
-        self.coefficient = -(-1.0 / (0.150 * f64::from(rate))).exp_m1();
-        self.slew = 10.0_f64.powf(3.0 / f64::from(rate));
+        self.coefficient = -(-1.0 / (0.080 * f64::from(rate))).exp_m1();
+        self.slew = 10.0_f64.powf(6.0 / f64::from(rate));
         self.reset();
     }
 
@@ -32,6 +33,11 @@ impl LevelMatch {
         self.input_power = 0.0;
         self.output_power = 0.0;
         self.gain = 1.0;
+    }
+
+    #[cfg(test)]
+    pub(super) fn gain_db(&self) -> f64 {
+        20.0 * self.gain.log10()
     }
 
     pub(super) fn sample(&mut self, input: f64, output: f64) -> f64 {
@@ -69,7 +75,7 @@ mod tests {
     fn matching_is_bounded_slewed_and_held_in_silence() {
         let mut matcher = LevelMatch::default();
         matcher.prepare(48_000.0);
-        for _ in 0..4800 {
+        for _ in 0..2400 {
             matcher.sample(1.0, 0.001);
         }
         let gain_db = 20.0 * matcher.gain.log10();

@@ -163,7 +163,13 @@ fn the_down_paths_hold_their_level_whatever_came_before() {
     let mut levels = Vec::new();
     for (path, ratio) in [("down1", 0.5), ("down2", 0.25)] {
         for history in ["hard start", "fade", "300 Hz", "semitone"] {
-            let mut effect = isolated(path);
+            let mut effect = Octaves::new();
+            effect.set_param(3, 0.0);
+            effect.set_param(8, 16_000.0);
+            for (index, name) in PATHS.into_iter().enumerate() {
+                effect.set_param(4 + index, if name == path { 100.0 } else { 0.0 });
+            }
+            effect.prepare(RATE);
             let mut input = sine(frequency, 24_000);
             match history {
                 "fade" => {
@@ -177,13 +183,26 @@ fn the_down_paths_hold_their_level_whatever_came_before() {
                     } else {
                         frequency * 1.06
                     };
-                    let preceding = render(effect.as_mut(), &sine(before, 12_000));
+                    let preceding = render(&mut effect, &sine(before, 12_000));
                     assert!(preceding.iter().all(|sample| sample.is_finite()));
                 }
                 "hard start" => {}
                 _ => panic!("unknown history"),
             }
-            let output = render(effect.as_mut(), &input);
+            let follower = usize::from(path == "down2");
+            eprintln!(
+                "gain {path} {history} 0 ms: {:.6} dB",
+                effect.banks[effect.active].levels[follower].gain_db()
+            );
+            let mut output = Vec::with_capacity(input.len());
+            for (window, chunk) in input.chunks(480).enumerate() {
+                output.extend(render(&mut effect, chunk));
+                eprintln!(
+                    "gain {path} {history} {} ms: {:.6} dB",
+                    (window + 1) * 10,
+                    effect.banks[effect.active].levels[follower].gain_db()
+                );
+            }
             let level = 20.0
                 * (magnitude(&output[12_000..], RATE, frequency * ratio)
                     / magnitude(&input[12_000..], RATE, frequency))
@@ -345,7 +364,7 @@ fn follows(signal: &[f32], path: &str, ratio: f64, lowest: f64, maximum_error: f
     assert!(worst_excess <= 5.0, "step excess {worst_excess} cents");
     if path == "down1" {
         assert!(
-            largest <= 6.109_905,
+            largest <= 6.104_314,
             "glide step grew by more than one cent: {largest}"
         );
     }
