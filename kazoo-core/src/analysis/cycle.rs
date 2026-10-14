@@ -19,6 +19,9 @@ pub(crate) use early::fixtures;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod hold_tests;
+
 /// A one-pole high-pass at 30 Hz removes mic DC and handling rumble, 0.7
 /// octave under `VOICE_MIN_HZ`, costing under 1 dB at 50 Hz.
 const DC_HZ: f32 = 30.0;
@@ -49,6 +52,12 @@ const HALF_MARGIN: f32 = 0.05;
 /// With no accepted mark for 2 periods of the last pitch, the tracker
 /// unlocks: one lost cycle is bridged, two are not.
 const UNLOCK_PERIODS: f32 = 2.0;
+/// Three milliseconds bridges a lost 128-sample block at high pitches.
+const UNLOCK_MIN_MS: f32 = 3.0;
+/// A held period has prior evidence, so noisy cycles can retain it at 0.70.
+const HOLD_CLARITY: f32 = 0.70;
+/// Fifty cents separates a held period's jitter from a different note.
+const HOLD_CENTS: f32 = 50.0;
 /// Locked candidates are the last 1, 2, 3 and 4 mark-to-mark intervals: up to
 /// four marks per true period (a loud 2nd, 3rd or 4th harmonic) still leave
 /// one candidate equal to the period.
@@ -70,9 +79,10 @@ const INPUT_LIMIT: f32 = 1.0;
 /// The NSDF window is half the candidate period, so a new note is read once
 /// 1.5 of its periods exist (a reading lands within two periods at any
 /// phase, since a mark comes every half period); a window never shrinks
-/// under 0.5 ms (24 samples at 48 kHz, or the whole period when shorter) so
-/// white noise cannot pass for a high note.
-const MIN_WINDOW_MS: f32 = 0.5;
+/// under 1 ms while locked, bounded by two periods, so breath noise cannot
+/// choose an octave from a single short cycle. Acquisition keeps 0.5 ms to
+/// leave room for the voice frame's hop inside the onset budget.
+const MIN_WINDOW_MS: f32 = 1.0;
 /// A candidate interval is climbed along the NSDF to its peak for at most
 /// 1/16 of its length (about a semitone): mark jitter from a filter
 /// transient or a formant is reached, another key maximum is not.
@@ -368,7 +378,8 @@ impl CycleTracker {
         self.schmitt(filtered);
         self.carry_glide();
         if self.estimate.is_some_and(|e| {
-            self.time - self.last_accepted_mark > f64::from(UNLOCK_PERIODS * e.period)
+            self.time - self.last_accepted_mark
+                > f64::from((UNLOCK_PERIODS * e.period).max(UNLOCK_MIN_MS * self.rate / 1000.0))
         }) {
             self.unlock();
         }
@@ -502,8 +513,8 @@ impl CycleTracker {
         }
         let mut choice = Choice::new();
         if let Some(estimate) = self.estimate {
-            self.intervals(&marks, 1, INTERVALS, &mut choice);
             self.consider(estimate.period, &mut choice);
+            self.intervals(&marks, 1, INTERVALS, &mut choice);
         }
         let hinted = self.hint.and_then(|(period, _)| self.refine(period));
         if let Some(peak) = hinted {
@@ -519,7 +530,22 @@ impl CycleTracker {
         }
         let chosen = hinted
             .filter(|peak| peak.clarity >= CLARITY_ON)
-            .or_else(|| choice.chosen.map(|peak| self.half_check(peak)));
+            .or_else(|| {
+                choice
+                    .chosen
+                    .map(|peak| self.half_check(peak))
+                    .filter(|peak| {
+                        self.estimate.is_none_or(|estimate| {
+                            let hold = UNLOCK_MIN_MS * self.rate / 1000.0;
+                            // A splice can correlate at a different lag before the
+                            // held period recovers. Let the high-note hold bridge it.
+                            UNLOCK_PERIODS * estimate.period >= hold
+                                || (1200.0 * (peak.period / estimate.period).log2()).abs()
+                                    <= HOLD_CENTS
+                                || self.time - self.last_accepted_mark >= f64::from(hold)
+                        })
+                    })
+            });
         if let Some(peak) = chosen {
             self.accept(peak, at);
         } else {
@@ -560,9 +586,21 @@ impl CycleTracker {
         }
         if let Some(peak) = self.refine(period) {
             choice.best = choice.best.max(peak.clarity);
-            if peak.clarity >= CLARITY_ON
-                && choice.chosen.is_none_or(|old| peak.period < old.period)
-            {
+            let held = self.estimate.is_some_and(|estimate| {
+                (1200.0 * (peak.period / estimate.period).log2()).abs() <= HOLD_CENTS
+            });
+            let threshold = if held { HOLD_CLARITY } else { CLARITY_ON };
+            let replace = choice.chosen.is_none_or(|old| {
+                let old_held = self.estimate.is_some_and(|estimate| {
+                    (1200.0 * (old.period / estimate.period).log2()).abs() <= HOLD_CENTS
+                });
+                if held == old_held {
+                    peak.period < old.period
+                } else {
+                    held
+                }
+            });
+            if peak.clarity >= threshold && replace {
                 choice.chosen = Some(peak);
             }
         }
@@ -722,13 +760,19 @@ impl CycleTracker {
     }
 
     /// The window a candidate starting at `lag` is read over: half the lag,
-    /// never under `MIN_WINDOW_MS`, and while locked never longer than the
+    /// never under half `MIN_WINDOW_MS` at acquisition or `MIN_WINDOW_MS`
+    /// while locked, and while locked never longer than the
     /// held period's own window, so every candidate at a mark is compared
     /// over the same newest samples (a longer window, reaching back to
     /// louder cycles, would let a sub-harmonic outscore the period in a
     /// fade).
     fn window(&self, lag: usize) -> usize {
-        let own = |lag: usize| (lag / 2).max(lag.min(self.min_window));
+        let minimum = if self.estimate.is_some() {
+            self.min_window
+        } else {
+            self.min_window / 2
+        };
+        let own = |lag: usize| (lag / 2).max((2 * lag).min(minimum));
         let held = self
             .estimate
             .and_then(|estimate| lag_from(f64::from(estimate.period)));

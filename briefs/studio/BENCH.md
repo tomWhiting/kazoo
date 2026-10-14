@@ -938,3 +938,49 @@ targets, not measurements. The search is bounded to 18 NSDF lag evaluations
 per unlock. Its elapsed time and the 64-frame callback budget are not measured.
 The low-B listening comparison with the live follower remains for the integrated
 input path and an actual bass performance.
+
+
+## KZ-R02 measured verification
+
+14 October 2026. Branch `lane/kz-R02`, HEAD `65028079eb4b663a980d4eab111614c265458d6b`,
+merge-base `8ed511d`. Changes are uncommitted. START: 74 GiB available, load 36.89.
+
+V12 selects B1 because the base cycle `splice_800` gross error was 2.56%, above 1%.
+The literal first B1 implementation produced two settled octave-error steps on cycle
+`splice_2200` and four on voice. Receipt: `target/kz-logs/r02-b1.txt`.
+The retained implementation prefers the held period, gives high-note recovery
+three milliseconds before accepting an unrelated lag, and uses the 1 ms window
+while locked. Acquisition retains 0.5 ms: using 1 ms at acquisition delayed the
+1500 Hz voice onset to 2.667 ms against 2.333 ms. No acceptance threshold changed.
+
+`high_splices_hold` passes after these corrections. Every splice row has zero
+settled octave errors. Full before/after tables: `target/kz-logs/r02-high-splices-before.md`
+and `target/kz-logs/r02-high-splices-after.md`. Other high-note tables remain at the
+`target/kz-logs/kz-v12/` paths listed above. `r02-b1-final.txt` exits 0: all 14
+focused tests pass, including every high cycle/voice row and both original
+scoreboards. B2 is not needed under V12's rule after these B1 results.
+
+| tracker | take | median cents before / after | gross % before / after | octave % before / after |
+|---|---|---:|---:|---:|
+| cycle | splice_800 | 4.52 / 3.33 | 2.56 / 0.00 | 0.00 / 0.00 |
+| voice | splice_800 | 4.50 / 3.32 | 2.58 / 0.00 | 0.00 / 0.00 |
+| cycle | splice_1100 | 4.64 / 3.16 | 0.98 / 0.00 | 0.00 / 0.00 |
+| voice | splice_1100 | 4.64 / 3.20 | 1.02 / 0.00 | 0.00 / 0.00 |
+| cycle | splice_1500 | 4.20 / 2.78 | 0.00 / 0.16 | 0.00 / 0.00 |
+| voice | splice_1500 | 4.28 / 2.72 | 0.00 / 0.18 | 0.00 / 0.00 |
+| cycle | splice_2200 | 4.75 / 2.54 | 1.11 / 0.11 | 0.00 / 0.00 |
+| voice | splice_2200 | 4.78 / 2.54 | 0.93 / 0.13 | 0.00 / 0.00 |
+
+P06 `judge/hop/48k/bass`: Criterion 10 samples, 1 s warmup, 2 s measurement,
+7.2574 / 13.160 / 19.235 ms confidence interval; command exit 0.
+Load around the run rose from 99.98 to 296.08. This does not verify the 4.2 ms budget.
+Receipt: `target/kz-logs/r02-judge-bench.txt`. No controlled before/after timing exists.
+The full P06 instrument table was not run; the base open-string rows, early off
+and on, are in `target/kz-logs/red-early_meets_its_targets.txt`.
+
+P07 remains blocked: the refused first B0 lobe proposes 149.69 samples against a
+1555.02-sample true period, spends its one search, then the normal path locks at
+46.17 ms. The shaped E1 glide schedules 38.68 ms, but normal marks lock at 36.69 ms.
+Receipt: `target/kz-logs/r02-diagnostics.txt`. P07 line 60 demands early-off take
+at least two B0 periods (64.79 ms), while its normal-path preservation rule forbids
+changing the already faster path. Neither the waveform nor the assertion was weakened.
