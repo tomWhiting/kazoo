@@ -354,3 +354,136 @@ fn a_saved_shape_is_drawn_as_saved_whatever_the_rules_say_now() {
     }
     assert_eq!(again.roots, [saved[0].shape.expect("a shape").start]);
 }
+
+/// Every step of `history` grown afresh, as the ledger would save them,
+/// each moved off where the rules draw it, so a step drawn by the rules
+/// shows.
+fn saved_elsewhere(history: &crate::history::History) -> Vec<Saved> {
+    let mut saved = Growth::default().grow_on(history, &[]);
+    for (i, step) in saved.iter_mut().enumerate() {
+        let shape = step.shape.as_mut().expect("a shape");
+        shape.start.0 += 100.0 + i as f64;
+        shape.end.0 += 100.0 + i as f64;
+    }
+    saved
+}
+
+fn drawn_as(growth: &Growth, saved: &Saved) -> bool {
+    let shape = saved.shape.expect("a shape");
+    growth.steps.iter().zip(&growth.keys).any(|(step, key)| {
+        *key == saved.key
+            && (step.start, step.end, step.heading) == (shape.start, shape.end, shape.heading)
+    })
+}
+
+#[test]
+fn a_saved_step_whose_turn_had_not_come_is_still_drawn_where_it_was_saved() {
+    // The ledger lost the trunk's lines: the bud's come first, before
+    // anything they grow from, so their turn comes only after.
+    let history = grown(48, &[(0, 20, 20)]);
+    let saved = saved_elsewhere(&history);
+    let bud_key = limb_key(&history, 1).expect("a bud").to_owned();
+    let buds: Vec<Saved> = saved
+        .iter()
+        .filter(|step| step.key.limb == bud_key)
+        .cloned()
+        .collect();
+    assert_eq!(buds.len(), 2);
+    let mut again = Growth::default();
+    let fresh = again.grow_on(&history, &buds);
+    for step in &buds {
+        assert!(drawn_as(&again, step), "{step:?}");
+    }
+    assert!(
+        fresh.iter().all(|step| step.key.limb != bud_key),
+        "the ledger holds the bud's steps already: {fresh:?}"
+    );
+    assert!(again.refused.is_empty());
+}
+
+#[test]
+fn a_shape_saved_for_other_moments_is_refused_and_said() {
+    // Step 1 of the trunk was saved when it began at another commit (its
+    // branch renamed or deleted, so the limb's moments shifted).
+    let history = grown(48, &[(0, 20, 20)]);
+    let mut saved = saved_elsewhere(&history);
+    let trunk_key = limb_key(&history, 0).expect("a trunk").to_owned();
+    let k = saved
+        .iter()
+        .position(|step| step.key.limb == trunk_key && step.key.index == 1)
+        .expect("trunk step 1");
+    saved[k].first = Some("0123456789abcdef".to_owned());
+    let mut again = Growth::default();
+    let fresh = again.grow_on(&history, &saved);
+    assert!(
+        !drawn_as(&again, &saved[k]),
+        "not drawn for the wrong moments"
+    );
+    assert_eq!(again.refused.len(), 1, "{:?}", again.refused);
+    assert!(
+        again.refused[0].contains("0123456789"),
+        "{:?}",
+        again.refused
+    );
+    assert_eq!(
+        fresh.len(),
+        1,
+        "the step drawn again, for the ledger: {fresh:?}"
+    );
+    assert_eq!(fresh[0].key, saved[k].key);
+    // Launched again with what the ledger holds now: drawn where it was
+    // drawn again, and nothing refused.
+    let mut ledger = crate::ledger::Ledger::in_memory();
+    ledger.record(&[], &saved);
+    ledger.record(&[], &fresh);
+    let mut second = Growth::default();
+    assert!(second.grow_on(&history, &ledger.steps).is_empty());
+    assert!(second.refused.is_empty(), "{:?}", second.refused);
+    assert_eq!(second.at, again.at, "the second launch draws as the first");
+    for (i, step) in saved.iter().enumerate() {
+        if i != k {
+            assert!(drawn_as(&again, step), "{step:?}");
+        }
+    }
+}
+
+#[test]
+fn an_old_line_without_its_first_moment_or_shape_is_filled_in_once() {
+    let history = grown(48, &[(0, 20, 20)]);
+    let mut saved = Growth::default().grow_on(&history, &[]);
+    for step in &mut saved {
+        step.first = None;
+    }
+    saved[1].shape = None;
+    let mut again = Growth::default();
+    let fresh = again.grow_on(&history, &saved);
+    assert_eq!(fresh.len(), saved.len(), "every line lacks something");
+    assert!(
+        fresh
+            .iter()
+            .all(|step| step.first.is_some() && step.shape.is_some())
+    );
+    // Shaped lines keep their shapes.
+    for (step, old) in fresh
+        .iter()
+        .zip(&saved)
+        .filter(|(_, old)| old.shape.is_some())
+    {
+        assert_eq!(step.shape, old.shape);
+    }
+    // Filled in, nothing is lacking.
+    let mut third = Growth::default();
+    assert!(third.grow_on(&history, &fresh).is_empty());
+}
+
+#[test]
+fn a_limb_reset_back_within_a_step_does_not_line_up() {
+    let mut growth = Growth::grow(&grown(20, &[]));
+    // The trunk reset back two moments, and a bud grown since: as many
+    // moments as before, and every step still starts where it did.
+    let shrunk = grown(18, &[(0, 3, 4)]);
+    assert!(shrunk.moments.len() >= growth.at.len());
+    assert!(!growth.lines_up(&shrunk));
+    growth.grow_on(&shrunk, &[]);
+    assert_eq!(growth.at, Growth::grow(&shrunk).at);
+}

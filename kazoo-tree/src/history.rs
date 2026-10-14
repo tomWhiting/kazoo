@@ -304,17 +304,18 @@ impl Snapshot {
         ]))?;
         Ok(Self { refs, head })
     }
+}
 
-    /// Every commit a ref or HEAD names, once each.
-    fn tips(&self) -> Vec<String> {
-        let mut tips: Vec<String> = read_refs(&self.refs)
-            .map(|r| r.commit.to_owned())
-            .chain(self.head.clone())
-            .collect();
-        tips.sort_unstable();
-        tips.dedup();
-        tips
-    }
+/// Every commit `refs` or HEAD (`head`) names, once each.
+fn tips_of(refs: &[Ref<'_>], head: Option<&str>) -> Vec<String> {
+    let mut tips: Vec<String> = refs
+        .iter()
+        .map(|r| r.commit.to_owned())
+        .chain(head.map(str::to_owned))
+        .collect();
+    tips.sort_unstable();
+    tips.dedup();
+    tips
 }
 
 impl History {
@@ -346,7 +347,12 @@ impl History {
         snapshot: &Snapshot,
         known: &[String],
     ) -> Result<usize, HistoryError> {
-        let tips = snapshot.tips();
+        // The refs read once: the tips the log is read for, and the limbs
+        // and marks laid out, are the same refs, and a line that does not
+        // read is said once.
+        let mut problems = Vec::new();
+        let refs = refs_of(&snapshot.refs, &mut problems);
+        let tips = tips_of(&refs, snapshot.head.as_deref());
         let added = if tips.is_empty() {
             0
         } else {
@@ -375,7 +381,7 @@ impl History {
             self.learn(dir, &log)?;
             self.append(&log, true)?
         };
-        self.lay_out(&snapshot.refs, snapshot.head.as_deref(), known)?;
+        self.lay_out(&refs, problems, snapshot.head.as_deref(), known)?;
         self.tips = tips;
         Ok(added)
     }
@@ -390,7 +396,9 @@ impl History {
     pub fn from_git(log: &str, refs: &str, here: Option<&str>) -> Result<Self, HistoryError> {
         let mut history = Self::default();
         history.append(log.as_bytes(), false)?;
-        history.lay_out(refs, here, &[])?;
+        let mut problems = Vec::new();
+        let refs = refs_of(refs, &mut problems);
+        history.lay_out(&refs, problems, here, &[])?;
         Ok(history)
     }
 
@@ -407,7 +415,9 @@ impl History {
         here: Option<&str>,
         known: &[String],
     ) -> Result<(), HistoryError> {
-        self.lay_out(refs, here, known)
+        let mut problems = Vec::new();
+        let refs = refs_of(refs, &mut problems);
+        self.lay_out(&refs, problems, here, known)
     }
 
     /// Read the settings of every module file `log` names that are not
@@ -516,14 +526,14 @@ impl History {
     }
 
     /// Lay the limbs, marks, problems and the wall's place out again from
-    /// the refs and HEAD.
+    /// the refs and HEAD; `problems` are what reading the refs found.
     fn lay_out(
         &mut self,
-        refs: &str,
+        refs: &[Ref<'_>],
+        mut problems: Vec<String>,
         here: Option<&str>,
         known: &[String],
     ) -> Result<(), HistoryError> {
-        let mut problems = Vec::new();
         let (limbs, by_hand) = limbs(refs, &self.index, &self.moments, known, &mut problems)?;
         let mut place = vec![None; self.moments.len()];
         for (l, limb) in limbs.iter().enumerate() {
@@ -571,6 +581,43 @@ impl History {
         self.index.get(commit).copied()
     }
 
+    /// The way along the tree from moment `from` to moment `to`: how many
+    /// changes back from `from` to the last moment both grew from, then
+    /// how many on from there to `to`. None when either is on no limb, or
+    /// they share no moment. Walked a limb at a time, never a moment at a
+    /// time: as long as the limbs between them, however long they are.
+    #[must_use]
+    pub fn path_between(&self, from: usize, to: usize) -> Option<(usize, usize)> {
+        // Each limb on `from`'s path down to its root: the place on it the
+        // path holds, and how many changes back from `from` that is.
+        let mut down: HashMap<usize, (usize, usize)> = HashMap::new();
+        let mut at = self.place_of(from);
+        let mut back = 0;
+        while let Some((limb, place)) = at {
+            if down.insert(limb, (place, back)).is_some() {
+                break;
+            }
+            back += place + 1;
+            at = self.limbs[limb].from.and_then(|m| self.place_of(m));
+        }
+        let mut at = self.place_of(to);
+        let mut on = 0;
+        let mut seen: HashSet<usize> = HashSet::new();
+        while let Some((limb, place)) = at {
+            if let Some(&(there, back)) = down.get(&limb) {
+                // Both paths on this limb: they part at the lower place.
+                let part = there.min(place);
+                return Some((back + there - part, on + place - part));
+            }
+            if !seen.insert(limb) {
+                return None;
+            }
+            on += place + 1;
+            at = self.limbs[limb].from.and_then(|m| self.place_of(m));
+        }
+        None
+    }
+
     /// The limb a moment is on, and its place there.
     #[must_use]
     pub fn place_of(&self, moment: usize) -> Option<(usize, usize)> {
@@ -606,14 +653,78 @@ fn head(dir: &Path) -> Result<Option<String>, HistoryError> {
     )))
 }
 
-/// Text from a commit as it may be shown: a control character (an escape
-/// that would drive the terminal, a tab, a newline) becomes `�`.
+/// Text from a commit as it may be shown.
+///
+/// A control character (an escape that would drive the terminal, a tab, a
+/// newline) becomes `�`, and an invisible format character (a bidi
+/// override that would show the words in another order than they are, a
+/// zero-width space) is left out.
 #[must_use]
 pub fn clean(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
-        .collect()
+    let mut out = String::with_capacity(text.len());
+    // Within a flag: 🏴 and the tag characters after it, which spell
+    // which flag it is. A tag character anywhere else is left out.
+    let mut flag = false;
+    for c in text.chars() {
+        if ('\u{E0020}'..='\u{E007F}').contains(&c) {
+            if flag {
+                out.push(c);
+            }
+            continue;
+        }
+        flag = c == '\u{1F3F4}';
+        if is_format(c) {
+            continue;
+        }
+        out.push(if c.is_control() { '\u{fffd}' } else { c });
+    }
+    out
 }
+
+/// Whether `c` is an invisible format character (Unicode's general
+/// category Cf, as of Unicode 15.1) that is left out of what is shown: the
+/// bidi controls, the invisible spacers and the rest of Cf, but not the
+/// joiners (U+200C, U+200D), which make emoji (👩‍🎤, 🏳️‍🌈) and words in
+/// scripts that join, nor the tag characters (U+E0020 to U+E007F), which
+/// [`clean`] keeps only after 🏴, where they spell a flag.
+const fn is_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{AD}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61C}'
+            | '\u{6DD}'
+            | '\u{70F}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8E2}'
+            | '\u{180E}'
+            | '\u{200B}'
+            | '\u{200E}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+    )
+}
+
+/// The trailers the tree reads from a moment's commit; the wall writes
+/// others (`Kazoo-Gap`, `Kazoo-Clock` and the like) that it has no use for.
+const TRAILERS: [&str; 7] = [
+    "Kazoo-Kind",
+    "Kazoo-Seq",
+    "Kazoo-Beat",
+    "Kazoo-Tempo",
+    "Kazoo-Sound",
+    "Kazoo-Note",
+    "Kazoo-Step",
+];
 
 /// One log record as a moment. `index` finds a parent's place, `alive_at`
 /// the modules alive at a place (all of them, by family, and their shades
@@ -667,21 +778,36 @@ fn moment(
     let mut sound = None;
     let mut note = None;
     let mut steps = Vec::new();
+    // Each trailer the tree reads, by its key in any case (git's own
+    // trailers are), the first of each kept: a second is said, never put
+    // over the first. `Kazoo-Step` is the one that comes many times.
+    let mut given: HashSet<&'static str> = HashSet::new();
     for line in trailers.lines() {
-        if let Some(value) = line.strip_prefix("Kazoo-Kind: ") {
-            kind = clean(value.trim());
-        } else if let Some(value) = line.strip_prefix("Kazoo-Seq: ") {
-            seq = keep(&mut problems, number("Kazoo-Seq", value));
-        } else if let Some(value) = line.strip_prefix("Kazoo-Beat: ") {
-            beat = keep(&mut problems, number("Kazoo-Beat", value));
-        } else if let Some(value) = line.strip_prefix("Kazoo-Tempo: ") {
-            tempo = keep(&mut problems, number("Kazoo-Tempo", value));
-        } else if let Some(value) = line.strip_prefix("Kazoo-Sound: ") {
-            sound = keep(&mut problems, sound_of(value));
-        } else if let Some(value) = line.strip_prefix("Kazoo-Note: ") {
-            note = Some(clean(value.trim()));
-        } else if let Some(value) = line.strip_prefix("Kazoo-Step: ") {
-            steps.push(clean(value.trim()));
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let Some(&key) = TRAILERS
+            .iter()
+            .find(|known| known.eq_ignore_ascii_case(key.trim()))
+        else {
+            continue;
+        };
+        let value = value.trim();
+        if key != "Kazoo-Step" && !given.insert(key) {
+            problems.push(format!(
+                "its {key} is given more than once; the first is kept, and this one is not: {}",
+                clean(value)
+            ));
+            continue;
+        }
+        match key {
+            "Kazoo-Kind" => kind = clean(value),
+            "Kazoo-Seq" => seq = keep(&mut problems, number(key, value)),
+            "Kazoo-Beat" => beat = keep(&mut problems, number(key, value)),
+            "Kazoo-Tempo" => tempo = keep(&mut problems, number(key, value)),
+            "Kazoo-Sound" => sound = keep(&mut problems, sound_of(value)),
+            "Kazoo-Note" => note = Some(clean(value)),
+            _ => steps.push(clean(value)),
         }
     }
     let batch = batch_of(&kind, &summary, note, steps, &mut problems);
@@ -987,7 +1113,12 @@ fn sound_of(value: &str) -> Result<Sound, String> {
         let (key, number_text) = pair
             .split_once('=')
             .ok_or_else(|| format!("its Kazoo-Sound has {}, not key=value", clean(pair)))?;
-        found.insert(key, number("Kazoo-Sound", number_text)?);
+        if found
+            .insert(key, number("Kazoo-Sound", number_text)?)
+            .is_some()
+        {
+            return Err(format!("its Kazoo-Sound gives {} twice", clean(key)));
+        }
     }
     let get = |key: &str| {
         found
@@ -1011,18 +1142,43 @@ struct Ref<'a> {
     commit: &'a str,
 }
 
-fn read_refs(refs: &str) -> impl Iterator<Item = Ref<'_>> {
-    refs.lines().filter_map(|line| {
+/// Each line of `refs` (`name\0object\0peeled`) as a ref, or the line
+/// itself when it does not read as one.
+fn read_refs(refs: &str) -> impl Iterator<Item = Result<Ref<'_>, &str>> {
+    refs.lines().map(|line| {
         let mut parts = line.split('\0');
-        let name = parts.next()?;
-        let object = parts.next()?;
+        let name = parts.next().filter(|name| !name.is_empty()).ok_or(line)?;
+        let object = parts
+            .next()
+            .filter(|object| !object.is_empty())
+            .ok_or(line)?;
         // An annotated tag names the tag object; the commit is its peel.
         let peeled = parts.next().filter(|peel| !peel.is_empty());
-        Some(Ref {
+        if parts.next().is_some() {
+            return Err(line);
+        }
+        Ok(Ref {
             name,
             commit: peeled.unwrap_or(object),
         })
     })
+}
+
+/// Every ref `refs` names; each line that does not read as one is said in
+/// `problems`.
+fn refs_of<'a>(refs: &'a str, problems: &mut Vec<String>) -> Vec<Ref<'a>> {
+    read_refs(refs)
+        .filter_map(|r| match r {
+            Ok(r) => Some(r),
+            Err(line) => {
+                problems.push(format!(
+                    "a line of git's refs did not read, so what it names is not shown: {}",
+                    clean(line)
+                ));
+                None
+            }
+        })
+        .collect()
 }
 
 /// The limbs, each claiming its own moments, and the branches made by hand
@@ -1041,7 +1197,7 @@ fn read_refs(refs: &str) -> impl Iterator<Item = Ref<'_>> {
 /// it is on no branch) is its own limb, said among the problems: nothing
 /// read is ever left out.
 fn limbs(
-    refs: &str,
+    refs: &[Ref<'_>],
     index: &HashMap<Arc<str>, usize>,
     moments: &[Arc<Moment>],
     known: &[String],
@@ -1050,7 +1206,7 @@ fn limbs(
     let mut grown: Vec<(String, usize)> = Vec::new();
     let mut by_hand: Vec<(String, usize)> = Vec::new();
     let mut mark_commits: HashMap<&str, usize> = HashMap::new();
-    for r in read_refs(refs) {
+    for r in refs {
         if let Some(part) = r.name.strip_prefix("refs/tags/mark/")
             && let Some(&m) = index.get(r.commit)
         {
@@ -1165,11 +1321,19 @@ fn unbranched(
             has_child[parent] = true;
         }
     }
+    // Oldest tip first, then by commit: never by the order the log was
+    // read in, which a tree read whole and one read on differ in.
+    let mut tips: Vec<usize> = (0..moments.len())
+        .filter(|&tip| !claimed[tip] && !has_child[tip])
+        .collect();
+    tips.sort_by(|&a, &b| {
+        moments[a]
+            .time
+            .cmp(&moments[b].time)
+            .then_with(|| moments[a].id.cmp(&moments[b].id))
+    });
     let mut count = 0;
-    for tip in 0..moments.len() {
-        if claimed[tip] || has_child[tip] {
-            continue;
-        }
+    for tip in tips {
         let limb = claim(claimed, moments, NO_BRANCH, tip, None);
         count += limb.moments.len();
         limbs.push(limb);
@@ -1261,9 +1425,13 @@ fn bud_from(name: &str) -> Option<&str> {
 /// Every mark and save. A save's tag is `save/<name>/<time>` (the wall's
 /// own reading drops the time the same way); one the tree cannot place is
 /// said among its problems.
-fn marks(refs: &str, index: &HashMap<Arc<str>, usize>, problems: &mut Vec<String>) -> Vec<Mark> {
+fn marks(
+    refs: &[Ref<'_>],
+    index: &HashMap<Arc<str>, usize>,
+    problems: &mut Vec<String>,
+) -> Vec<Mark> {
     let mut marks = Vec::new();
-    for r in read_refs(refs) {
+    for r in refs {
         let (part, save) = if let Some(part) = r.name.strip_prefix("refs/tags/mark/") {
             (part, false)
         } else if let Some(part) = r.name.strip_prefix("refs/tags/save/") {
