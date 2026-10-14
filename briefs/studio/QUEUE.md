@@ -179,3 +179,4 @@ START KZ-L04 base=dd1bfc6 branch=lane/kz-L04 df=75GB at 11:15
 START KZ-V08b base=dd1bfc6 branch=lane/kz-V08b df=76GB at 11:30
 START KZ-P06 base=dd1bfc6 branch=lane/kz-P06 df=76GB at 11:30
 START KZ-V08c base=dd1bfc6 branch=lane/kz-V08c df=71GB at 11:48
+START KZ-L05 base=dd1bfc6 branch=lane/kz-L05 df=71GB at 11:55
