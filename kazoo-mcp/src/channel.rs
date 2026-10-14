@@ -7,8 +7,8 @@
 //! [`MAX_LINES`] of them and a count of the rest; a fault goes at once. This
 //! seat's own changes are never news to it.
 //! Tree walks say at once that the wall is stale, then gather each actor's
-//! goes until five seconds of rest, or until a load splits the walk.
-//! Their summary joins waiting news or goes alone when
+//! goes until five seconds of rest, or until the walker leaves or a load
+//! splits the walk. Their summary joins waiting news or goes alone when
 //! nothing else is waiting. Faults, the wall gone stale and walks are never
 //! the lines counted away when more than [`MAX_LINES`] wait.
 //!
@@ -160,6 +160,10 @@ impl News {
                     self.seats.retain(|here| *here != seat);
                 }
                 if seat != self.seat {
+                    if !joined {
+                        let walked = self.walks.left(&seat).into_iter().collect();
+                        self.walk_lines(walked, now);
+                    }
                     let what = if joined {
                         "came to the wall"
                     } else {

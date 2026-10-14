@@ -417,3 +417,29 @@ fn a_stale_line_and_a_walk_line_are_never_counted_away() {
     );
     assert!(told.contains("- and 3 more (see wall_log)\n"), "{told}");
 }
+
+#[test]
+fn the_walker_leaving_tells_its_walk_at_once() {
+    let t0 = Instant::now();
+    let mut news = News::new("Waffles".to_string());
+    go(&mut news, 41, "Tom", 6810, t0);
+    assert_eq!(tell(&mut news, t0), Some(stale("Tom")));
+    go(&mut news, 42, "Tom", 6825, t0 + Duration::from_secs(1));
+    let left = t0 + Duration::from_secs(2);
+    news.take(
+        Feed::Event(Event::Seat {
+            seat: "Tom".to_string(),
+            joined: false,
+            seq: Some(42),
+        }),
+        left,
+    );
+    assert_eq!(
+        tell(&mut news, left),
+        Some(format!(
+            "News from the wall:\n- Tom walked the tree: 2 moments, now at the moment after \
+             change 6825 (140 modules, 189 cables, 96 BPM)\n- Tom left the wall\n{HINT}"
+        ))
+    );
+    assert_eq!(news.due(WINDOW), None);
+}

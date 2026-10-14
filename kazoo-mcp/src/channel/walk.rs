@@ -109,6 +109,12 @@ impl Walks {
         }
     }
 
+    /// The walk of `seat`, who left the wall, told now: it has ended.
+    pub(super) fn left(&mut self, seat: &str) -> Option<String> {
+        let index = self.active.iter().position(|walk| walk.seat == seat)?;
+        Some(self.active.remove(index).line())
+    }
+
     pub(super) fn due(&self) -> Option<Instant> {
         self.active.iter().map(|walk| walk.last + WALK_REST).min()
     }
