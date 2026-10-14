@@ -60,6 +60,22 @@ pub enum Command {
     Mouth(MouthArgs),
     /// The voice tracker DAW (kazoo-tui).
     Tui,
+    /// The wall's tree: every moment it has been, grown as a tree you can walk.
+    Tree(TreeArgs),
+}
+
+/// How to show the tree.
+#[derive(Debug, Args, Default, PartialEq, Eq)]
+pub struct TreeArgs {
+    /// Print the whole tree as braille text and exit, instead of walking it.
+    #[arg(long)]
+    pub print: bool,
+    /// Columns for --print.
+    #[arg(long, requires = "print", default_value_t = 100, value_parser = clap::value_parser!(u16).range(10..=1000))]
+    pub cols: u16,
+    /// Rows for --print.
+    #[arg(long, requires = "print", default_value_t = 40, value_parser = clap::value_parser!(u16).range(5..=1000))]
+    pub rows: u16,
 }
 
 /// Microphone device selection and enumeration.

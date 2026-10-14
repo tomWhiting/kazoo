@@ -6,6 +6,8 @@ Read by Cassio, 13 Oct evening, line by line. Checked test 2's depths (bud from 
 
 Revised by Cassio, 13 Oct 21:19, on Waffles' reading against Tom's 8 Aug lantern definition (MEMORY-AND-LANTERNS.md §3, §3.1): a lantern dims by the changes since it was lit, and visits and added notes no longer brighten it; `ask` opens with the changes since as the past self's briefing; a watcher may visit, answered and not counted.
 
+**Amended by Cassio, 14 Oct 2026, about 21:55 (Tom: no branch is ever dropped):** T08a no longer has `limb_count` or `MAX_LIMBS`; every limb is drawn. The header loses the `limb_count` overflow sentence and counts `limbs.len()` as its branches.
+
 Second of PLAN.md's T08 split in two (T08a the shape, **T08b** the view).
 
 Time: about 40 minutes of a builder's work. One mechanism: a console view drawn from T08a's shape. Crates: kazoo-wall (`tui/` and one bench file). Depends on T08a, which must have landed; T07d, which must have landed ( lanterns open from here, and both edit `tui/app/mod.rs`, `tui/app/keys.rs`, `tui/draw/mod.rs`, `tui/draw/overlay.rs`); KZ-L12, which must have landed (or the small lane split from it, above) ( `Dots` in `tui/rack/dots.rs`, the plain-glyph switch `G` / `Prefs.plain_glyphs` / `KAZOO_PLAIN_GLYPHS`, the way a view is entered and left, and `benches/tape_view.rs`).

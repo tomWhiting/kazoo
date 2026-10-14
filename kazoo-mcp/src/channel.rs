@@ -180,6 +180,9 @@ impl News {
                     self.push(format!("{} {did} \"{}\"", who(seat), clean(&name)), now);
                 }
             }
+            Feed::Event(Event::Marked { seat, name, at, .. }) => {
+                self.marked(seat, &name, at.change, now);
+            }
             Feed::Event(Event::SaveDeleted { seat, name }) => {
                 if seat != self.seat {
                     self.push(
@@ -193,6 +196,20 @@ impl News {
             Feed::Event(
                 Event::Unknown | Event::Rack { .. } | Event::Groups { .. } | Event::Chains { .. },
             ) => {}
+        }
+    }
+
+    fn marked(&mut self, seat: String, name: &str, change: Option<u64>, now: Instant) {
+        if seat != self.seat {
+            let after = change.map_or_else(String::new, |n| format!(" (after change {n})"));
+            self.push(
+                format!(
+                    "{} marked the moment as \"{}\"{after}",
+                    who(seat),
+                    clean(name)
+                ),
+                now,
+            );
         }
     }
 
