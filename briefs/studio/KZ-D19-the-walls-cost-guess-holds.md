@@ -27,3 +27,8 @@ Also: every go saves the wall as it was (`before-go-…`), and walking the tree 
 - A seat's `wall_load` over the guard (corrected) is still refused with today's wording.
 - Two goes in a row from tree moments add no save to the store; a go after an unsaved change adds one; undoing a no-save go puts the wall back at the moment named in `backup`.
 - The existing cost tests still pass, or each change to one is explained in the END block with the number before and after.
+
+## Amended 15 Oct 2026, 02:3x (Cassio)
+
+4. **A wake is costed the same way.** Waking modules that are on the wall but silent (patching a sleeping seq into a heard path) goes through the same projection. Tonight it refused to wake 17 seqs at once, projecting 30% → 95%. Woken a few at a time, the measured load stayed at 29 to 33%. Each sleeping module is costed at its bench share times the corrected `busy`, never more. A test wakes 17 sleeping `seq`s on a wall measured at 30% with seq bench shares from the table, and the projection stays under the guard.
+5. **Reserved seat names hold in any case.** KZ-D17 made the wall refuse seats named `desk` and `kazoo-wall`, but the check is case-sensitive (`daemon/control.rs`, the seat name check), so `Desk` or `KAZOO-WALL` gets through and can pose as the desk in the log. Compare without case, test it with three casings, and keep the refusal's wording.
