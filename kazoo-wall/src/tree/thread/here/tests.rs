@@ -126,6 +126,27 @@ impl Rig {
         self.here()
     }
 
+    /// A batch of one cutoff turn, committed as the live tree commits one
+    /// (`Kazoo-Kind: batch`).
+    fn batch(&mut self, value: f64) -> TreePlace {
+        let mut file = self.wall.tree_test_file();
+        let module = file.modules.iter_mut().find(|m| m.id == "vcf1").unwrap();
+        let from = module.knobs.insert("cutoff".into(), value).unwrap();
+        let what = What::Batch {
+            note: "one idea".into(),
+            changes: vec![What::Turn {
+                module: "vcf1".into(),
+                knob: "cutoff".into(),
+                from,
+                to: value,
+                glide_beats: 0.0,
+            }],
+        };
+        let change = make_change(file.last_seq + 1, what);
+        self.wall.tree_test_apply(&file, change);
+        self.here()
+    }
+
     fn go(&mut self, to: TreePlace, undoes: Option<u64>) -> TreePlace {
         let from = self.here();
         let file = *super::wall(self.path(), &to.commit).unwrap();
@@ -895,4 +916,47 @@ fn seq_map_benchmark_fixture_is_imported_changes() {
     let elapsed = started.elapsed();
     assert_eq!(map.len(), 20_000);
     println!("BENCH seq map: {elapsed:?}, 20,000 imported change commits");
+}
+
+#[test]
+fn a_batch_moment_is_a_change_with_its_number() {
+    // A batch is one change (T10a): its commit says `Kazoo-Kind: batch`,
+    // and the tree reads its number as any change's, so a go to it, a
+    // `#N` and a restart all know it.
+    let mut rig = Rig::new();
+    rig.change(400.0);
+    let place = rig.batch(500.0);
+    assert_eq!(
+        command(
+            rig.path(),
+            &[
+                "log",
+                "-1",
+                "--format=%(trailers:key=Kazoo-Kind,valueonly)",
+                &place.commit
+            ]
+        ),
+        "batch"
+    );
+    assert_eq!(place.change, Some(2));
+    let resolved = match rig
+        .ask(|ticket| TreeItem::Resolve {
+            ticket,
+            moment: "#2".into(),
+        })
+        .unwrap()
+    {
+        Answered::Resolved { to, .. } => to,
+        other => panic!("unexpected answer: {other:?}"),
+    };
+    assert_eq!(resolved.commit, place.commit);
+    assert_eq!(resolved.change, Some(2));
+    let line = read_line(rig.path()).unwrap().0;
+    let listing = super::list(rig.path(), &line, 2, Some(4)).unwrap();
+    assert_eq!(listing.recent[0].change, Some(2));
+    assert_eq!(
+        crate::tree::git::missing_changes(rig.path(), &[1, 2], Some(0)).unwrap(),
+        Vec::<u64>::new(),
+        "a restart finds the batch's own commit"
+    );
 }

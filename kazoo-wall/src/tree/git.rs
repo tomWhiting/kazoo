@@ -372,6 +372,23 @@ impl Commit {
     }
 }
 
+/// A ref name the tree's streams may write.
+fn valid_ref(name: &str) -> bool {
+    name.starts_with("refs/")
+        && !name.contains("..")
+        && !name.ends_with('/')
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'+' | b'=')
+        })
+}
+
+/// A mark `:N` (N from 1) or a full commit id.
+fn valid_source(from: &str) -> bool {
+    from.strip_prefix(':').is_some_and(|mark| {
+        !mark.is_empty() && mark.bytes().all(|b| b.is_ascii_digit()) && mark != "0"
+    }) || (from.len() == 40 && from.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// One `git fast-import` writing commits on the wall's branch.
 #[derive(Debug)]
 pub struct Importer {
@@ -458,10 +475,10 @@ impl Importer {
         self.write(format!("commit {}\nmark :{}\nauthor {} <{slug}@kazoo.invalid> {} +0000\ncommitter kazoo-wall <kazoo-wall@kazoo.invalid> {} +0000\ndata {}\n", self.branch, self.mark, c.seat, c.unix, c.unix, c.message.len()).as_bytes())?;
         self.write(c.message.as_bytes())?;
         self.write(b"\n")?;
-        if self.mark == 1 {
-            if let Some(tip) = self.tip.clone() {
-                self.write(format!("from {tip}\n").as_bytes())?;
-            }
+        // The first commit on a branch names its parent: the planted tip,
+        // or where `switch` grew the branch from.
+        if let Some(tip) = self.tip.take() {
+            self.write(format!("from {tip}\n").as_bytes())?;
         }
         if c.whole {
             self.write(b"deleteall\n")?;
@@ -493,19 +510,10 @@ impl Importer {
     ///
     /// Refuses an existing name, an invalid stream value, or a git failure.
     pub fn tag(&mut self, name: &str, from: &str) -> Result<(), TreeError> {
-        if !name.starts_with("refs/")
-            || name.contains("..")
-            || name.ends_with('/')
-            || !name.bytes().all(|b| {
-                b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'+' | b'=')
-            })
-        {
+        if !valid_ref(name) {
             return Err(TreeError::Git("invalid tree ref name".into()));
         }
-        let valid_from = from.strip_prefix(':').is_some_and(|mark| {
-            !mark.is_empty() && mark.bytes().all(|b| b.is_ascii_digit()) && mark != "0"
-        }) || (from.len() == 40 && from.bytes().all(|b| b.is_ascii_hexdigit()));
-        if !valid_from {
+        if !valid_source(from) {
             return Err(TreeError::Git("invalid tree ref source".into()));
         }
         let result =
@@ -523,6 +531,56 @@ impl Importer {
             )));
         }
         self.write(format!("reset {name}\nfrom {from}\n\n").as_bytes())
+    }
+
+    /// Write the next commits on the new branch `branch` in this same
+    /// stream, the first of them a child of `from` (a mark `:N` or a commit
+    /// id). Like every commit, it is durable only at the next checkpoint
+    /// or the finish, so one stream may grow several branches and name
+    /// them all at once.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` for a branch name or a source the stream cannot
+    /// take.
+    pub fn switch(&mut self, branch: &str, from: &str) -> Result<(), TreeError> {
+        if !branch.starts_with("refs/heads/") || !valid_ref(branch) {
+            return Err(TreeError::Git(format!("invalid tree branch {branch}")));
+        }
+        if !valid_source(from) {
+            return Err(TreeError::Git("invalid tree branch source".into()));
+        }
+        branch.clone_into(&mut self.branch);
+        self.tip = Some(from.into());
+        Ok(())
+    }
+
+    /// The commit id of mark `mark`, as the stream wrote it. Nothing is
+    /// made durable.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` when git does not answer with a commit id.
+    pub fn id(&mut self, mark: u64) -> Result<String, TreeError> {
+        if mark == 0 || mark > self.mark {
+            return Err(TreeError::Git(format!(
+                "mark {mark} is not a commit this stream wrote"
+            )));
+        }
+        self.write(format!("get-mark :{mark}\n").as_bytes())?;
+        let mut line = String::new();
+        match self.output.read_line(&mut line) {
+            Ok(0) => Err(self.failed("get-mark", "stdout ended")),
+            Ok(_) => {
+                let id = line.trim();
+                if id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    Ok(id.to_string())
+                } else {
+                    Err(self.failed("get-mark", format!("answered {id:?}")))
+                }
+            }
+            Err(err) => Err(self.failed("get-mark read", err)),
+        }
     }
 
     /// Make everything written durable, and require the branch to be at

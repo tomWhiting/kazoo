@@ -205,7 +205,7 @@ pub(super) fn move_head(tree: &Path, line: &Line, summary: &str) -> Result<(), H
     Ok(())
 }
 
-pub(super) fn compact_time(at: &str) -> Result<String, HereError> {
+pub(in crate::tree) fn compact_time(at: &str) -> Result<String, HereError> {
     let date = chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M:%SZ").map_err(|err| {
         HereError::Broken(format!(
             "the tree cannot read the moment's UTC time {at:?}: {err}"
@@ -260,7 +260,7 @@ fn moments(text: &str) -> Result<Vec<MomentView>, HereError> {
                 seat: row[1].into(),
                 at: row[2].into(),
                 summary: row[3].into(),
-                change: if row[4].trim() == "change" {
+                change: if is_change(row[4]) {
                     number(row[5])?
                 } else {
                     None
@@ -268,6 +268,12 @@ fn moments(text: &str) -> Result<Vec<MomentView>, HereError> {
             })
         })
         .collect()
+}
+
+/// A commit of one logged change: a change's own, or a batch's (one seq,
+/// one commit, its kind `batch`, KZ-T10a).
+pub(in crate::tree) fn is_change(kind: &str) -> bool {
+    matches!(kind.trim(), "change" | "batch")
 }
 
 fn full_id(value: &str) -> bool {
@@ -404,7 +410,7 @@ fn changes(tree: &Path, branch: Option<(&str, u64)>) -> Result<BTreeMap<u64, Str
     }
     let mut map = BTreeMap::new();
     for row in fields.chunks_exact(3) {
-        if row[1].trim() == "change" {
+        if is_change(row[1]) {
             let seq = number(row[2])?
                 .ok_or_else(|| HereError::Broken("a change commit has no change number".into()))?;
             map.insert(seq, row[0].trim_start_matches('\n').into());

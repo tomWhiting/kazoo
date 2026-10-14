@@ -370,24 +370,111 @@ fn live_parity(later: u32, undo: bool) {
             );
         }
     }
+    same_trees(wall, state.path(), live.path());
+}
+
+/// A batch the seat sends: two turns of the filter's cutoff under a note.
+fn batch(wall: &mut Wall, note: &str, first: f64, second: f64) -> u64 {
+    ask(
+        wall,
+        &Request::Batch {
+            note: note.into(),
+            changes: vec![
+                super::fixtures::turn_request("vcf1", "cutoff", first, None),
+                super::fixtures::turn_request("vcf1", "cutoff", second, None),
+            ],
+        },
+    )
+    .change
+    .unwrap()
+    .seq
+}
+
+#[test]
+fn the_imported_tree_matches_the_live_tree_through_batches() {
+    // T10a's batches are one change each: the import follows a batch, its
+    // undo, a mark on a batch's moment, a go there and that go's undo
+    // exactly as the live tree wrote them, with the model known throughout.
+    let state = tempfile::tempdir().unwrap();
+    let live = tempfile::tempdir().unwrap();
+    git::plant(live.path()).unwrap();
+    let (_engine, mut wall) = real_wall(state.path());
+    wall.attach_tree(TreeHandle::attach(live.path()).unwrap());
+    for n in 1..=3 {
+        ask(
+            &mut wall,
+            &super::fixtures::turn_request("vcf1", "cutoff", f64::from(n) + 300.0, None),
+        );
+    }
+    let first = batch(&mut wall, "a darker filter", 250.0, 240.0);
+    ask(
+        &mut wall,
+        &Request::Mark {
+            name: "dawn".into(),
+        },
+    );
+    for n in 1..=2 {
+        ask(
+            &mut wall,
+            &super::fixtures::turn_request("vcf1", "cutoff", f64::from(n) + 600.0, None),
+        );
+    }
+    let went = ask(
+        &mut wall,
+        &Request::Go {
+            moment: "dawn".into(),
+        },
+    )
+    .change
+    .unwrap();
+    let What::Go { to, .. } = &went.what else {
+        panic!("not a go: {went:?}");
+    };
+    assert_eq!(
+        to.change,
+        Some(first),
+        "the batch's moment has its change number"
+    );
+    let undone = batch(&mut wall, "brighter again", 700.0, 710.0);
+    ask(&mut wall, &Request::Undo { change: undone });
+    ask(
+        &mut wall,
+        &super::fixtures::turn_request("vcf1", "cutoff", 720.0, None),
+    );
+    ask(&mut wall, &Request::Undo { change: went.seq });
+    batch(&mut wall, "back on the trunk", 730.0, 740.0);
+    same_trees(wall, state.path(), live.path());
+}
+
+/// Close `wall`, import its log into a new tree, and prove that tree is the
+/// live one at `live`: no gaps or settles, the same HEAD, and the same
+/// branches by shape with the same files at every commit.
+fn same_trees(mut wall: Wall, state: &Path, live: &Path) {
     ask(&mut wall, &Request::Tree { recent: None });
     wall.close(Instant::now());
     drop(wall);
     let imported = tempfile::tempdir().unwrap();
-    let report = grow(state.path(), imported.path(), false).unwrap();
+    let report = grow(state, imported.path(), false).unwrap();
     assert_eq!(report.gaps, 0, "{}", report.report);
     assert_eq!(report.settles, 0, "{}", report.report);
+    assert!(
+        !report.report.contains("are not in it"),
+        "{}",
+        report.report
+    );
+    assert_eq!(raw_files(imported.path(), "HEAD"), raw_files(live, "HEAD"));
     assert_eq!(
-        raw_files(imported.path(), "HEAD"),
-        raw_files(live.path(), "HEAD")
+        head_line(imported.path()).as_deref().map(branch_shape),
+        head_line(live).as_deref().map(branch_shape),
+        "HEAD is on the same line in both trees (or detached in both)"
     );
     assert!(
-        grow(state.path(), imported.path(), false)
+        grow(state, imported.path(), false)
             .unwrap()
             .report
             .contains("the first rings are in already")
     );
-    let live_buds = buds(live.path());
+    let live_buds = buds(live);
     let imported_buds = buds(imported.path());
     assert_eq!(imported_buds.len(), live_buds.len());
     for (actual, expected) in std::iter::once(("trunk", "trunk")).chain(
@@ -398,14 +485,26 @@ fn live_parity(later: u32, undo: bool) {
     ) {
         assert_eq!(branch_shape(actual), branch_shape(expected));
         let actual = command(imported.path(), &["rev-list", "--reverse", actual]);
-        let expected = command(live.path(), &["rev-list", "--reverse", expected]);
+        let expected = command(live, &["rev-list", "--reverse", expected]);
         let actual: Vec<_> = actual.lines().collect();
         let expected: Vec<_> = expected.lines().collect();
         assert_eq!(actual.len(), expected.len());
         for (a, b) in actual.iter().zip(expected) {
-            assert_eq!(raw_files(imported.path(), a), raw_files(live.path(), b));
+            assert_eq!(raw_files(imported.path(), a), raw_files(live, b));
         }
     }
+}
+
+/// The branch HEAD is on, or none when it is detached at a moment.
+fn head_line(tree: &Path) -> Option<String> {
+    let output = git::git_command("symbolic-ref", Some(tree))
+        .args(["-q", "HEAD"])
+        .output()
+        .unwrap();
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8(output.stdout).unwrap().trim().to_string())
 }
 
 fn raw_files(tree: &Path, commit: &str) -> String {
@@ -420,4 +519,100 @@ fn branch_shape(branch: &str) -> &str {
             branch
         }
     })
+}
+
+#[test]
+fn an_import_with_goes_is_one_durable_write() {
+    // Tom, 3 Oct: a batch is one durable operation with one full flush,
+    // never leaf by leaf. A log with goes is no different.
+    let state = going(true);
+    let tree = tempfile::tempdir().unwrap();
+    let report = grow(state.path(), tree.path(), false).unwrap();
+    assert_eq!(report.changes, 15, "{}", report.report);
+    let packs = fs::read_dir(tree.path().join("objects/pack"))
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "pack")
+        })
+        .count();
+    assert_eq!(packs, 1, "one flush writes one pack");
+}
+
+#[test]
+fn an_import_that_fails_after_a_go_names_no_line() {
+    // Nothing the import wrote is a line until it has written all of it:
+    // a failure part way leaves no trunk, so the import can run again.
+    let state = going(false);
+    rewrite(state.path(), |changes| {
+        changes[12].seat = "not\na seat".into()
+    });
+    let tree = tempfile::tempdir().unwrap();
+    assert!(grow(state.path(), tree.path(), false).is_err());
+    assert_eq!(
+        command(tree.path(), &["for-each-ref", "--format=%(refname)"]),
+        "",
+        "no ref is named by an import that failed"
+    );
+    rewrite(state.path(), |changes| changes[12].seat = "Tom".into());
+    let report = grow(state.path(), tree.path(), false).unwrap();
+    assert_eq!(report.changes, 13, "{}", report.report);
+}
+
+#[test]
+fn a_go_while_the_wall_is_not_known_keeps_the_gap_it_is_in() {
+    // Change 11 is one the model cannot follow; the go at 12 to change 4
+    // must not hide that 11 is not in the tree: the kept file after 14
+    // closes the gap from 11, as it would without the go.
+    let (state, _, mut changes) = fixture(10);
+    with_start(state.path());
+    let mut moment = seed_file();
+    *cutoff(&mut moment) = 304.0;
+    changes.push(change(11, What::Unknown));
+    changes.push(go(12, Some(4), &moment));
+    for seq in 13..=14 {
+        let to = f64::from(u32::try_from(seq).unwrap()) + 400.0;
+        changes.push(turn(seq, *cutoff(&mut moment), to));
+        *cutoff(&mut moment) = to;
+    }
+    moment.last_seq = 14;
+    moment.wall = 12;
+    fs::write(
+        state.path().join("patch.before-15.json"),
+        serde_json::to_vec(&moment).unwrap(),
+    )
+    .unwrap();
+    write_state(state.path(), &moment, &changes);
+    let tree = tempfile::tempdir().unwrap();
+    let report = grow(state.path(), tree.path(), false).unwrap();
+    assert!(
+        report.report.contains("changes 11 to 14"),
+        "{}",
+        report.report
+    );
+    assert_eq!(report.changes, 10, "{}", report.report);
+}
+
+#[test]
+fn a_tree_whose_wall_went_on_elsewhere_is_in_already() {
+    // After an import that ends on a bud, the live wall goes back to the
+    // trunk and grows another bud there: the import is still in.
+    let state = going(false);
+    let tree = tempfile::tempdir().unwrap();
+    grow(state.path(), tree.path(), false).unwrap();
+    command(tree.path(), &["branch", "bud/elsewhere", "trunk~5"]);
+    command(
+        tree.path(),
+        &["symbolic-ref", "HEAD", "refs/heads/bud/elsewhere"],
+    );
+    let again = grow(state.path(), tree.path(), false).unwrap();
+    assert!(
+        again.report.contains("the first rings are in already"),
+        "{}",
+        again.report
+    );
 }

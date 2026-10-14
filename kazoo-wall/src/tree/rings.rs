@@ -43,7 +43,7 @@ pub enum RingsError {
     NotTrunk(String),
     /// The tree has a trunk the import did not grow.
     HasTrunk(String),
-    /// The trunk does not grow from the import's last ring.
+    /// No line in the tree grows from the import's last ring.
     Diverged(String),
     /// The log and the wall's files give no wall to grow from.
     NoWall(String),
@@ -229,11 +229,13 @@ fn existing(tree: &Path, dry_run: bool) -> Result<Option<Rings>, RingsError> {
     }
 }
 
-fn in_already(tree: &Path, end: &str, trunk: String) -> Result<Rings, RingsError> {
+/// The import is in already on `line` (at `trunk`), which grows from the
+/// import's last ring `end`.
+fn in_already(tree: &Path, end: &str, trunk: String, line: &str) -> Result<Rings, RingsError> {
     let ancestor = git_output(tree, "merge-base", &["--is-ancestor", end, &trunk])?;
     if ancestor.status.code() == Some(1) {
         return Err(RingsError::Diverged(format!(
-            "trunk does not grow from the import's last ring (rings/end at {}); nothing is changed",
+            "{line} does not grow from the import's last ring (rings/end at {}); nothing is changed",
             short(end)
         )));
     }
@@ -267,7 +269,7 @@ fn in_already(tree: &Path, end: &str, trunk: String) -> Result<Rings, RingsError
     let since = git_text(tree, "rev-list", &["--count", &format!("{end}..{trunk}")])?;
     Ok(Rings {
         report: format!(
-            "the first rings are in already: trunk holds changes {first} to {last} from the import (rings/end at {}), and {since} commits since\n",
+            "the first rings are in already: {line} holds changes {first} to {last} from the import (rings/end at {}), and {since} commits since\n",
             short(end)
         ),
         trunk,
@@ -387,7 +389,7 @@ impl Walk<'_> {
         self.mark = self
             .importer
             .commit(&own_commit(kind, seq, at, lines, &files, gap)?)?;
-        self.remember_evidence(seq)?;
+        self.remember(seq, &files, false);
         self.previous = files;
         self.tip = (seq, at.into());
         match kind {
@@ -624,7 +626,7 @@ impl Walk<'_> {
             }
         }
         self.mark = self.importer.commit(&commit)?;
-        self.remember(change)?;
+        self.remember(change.seq, &files, true);
         self.previous = files;
         self.tip = (change.seq, change.at.clone());
         self.report.changes += 1;
@@ -798,7 +800,6 @@ fn run(tree: &Path, log: Log<'_>) -> Result<(Rings, String), RingsError> {
     }
     walk.ending(last)?;
     walk.finish_line()?;
-    walk.importer.tag("refs/tags/rings/end", &walk.line.tip)?;
     let summary = walk.summary(last);
     walk.importer.finish()?;
     Ok((walk.report, summary))
