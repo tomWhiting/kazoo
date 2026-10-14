@@ -97,15 +97,16 @@ impl Engine {
     /// the song back); and, when the go has just arrived or the desk has
     /// just moved the song (`arrived`), one the wall going out can no
     /// longer fade out whole for. It goes to the first bar the wall can
-    /// fade out whole for. Between those, the song only moves on towards
-    /// the bar, and the fade begins on its own frame.
+    /// fade out whole for (a frame short is whole: the fade may begin on
+    /// the first frame of a sub-block). Between those, the song only moves
+    /// on towards the bar, and the fade begins on its own frame.
     fn aim_swap(&mut self, step: f64, arrived: bool) {
         let fade = step * f64::from(self.sample_rate * SWAP_FADE_SECONDS);
         let beat = self.beat;
         if let Some(swap) = self.pending_swap.as_mut() {
             let aim = bar_from(beat + fade);
             let passed = swap.beat < beat - step;
-            let short = arrived && !swap.fading && swap.beat - beat < step.mul_add(-1e-6, fade);
+            let short = arrived && !swap.fading && swap.beat - beat < fade - step;
             let back = swap.beat > aim + BEATS_PER_BAR;
             if passed || short || back {
                 swap.beat = aim;
