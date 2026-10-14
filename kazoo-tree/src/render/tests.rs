@@ -669,3 +669,52 @@ fn a_bud_grown_from_a_moment_on_no_limb_blends_from_its_own_start() {
         }
     }
 }
+
+#[test]
+fn day_marks_take_no_place_another_glyph_or_word_would_have() {
+    // A crown of buds, all grown the same day, so each says its day where
+    // it starts, with marks on the trunk beside the forks.
+    let buds: Vec<(usize, usize, usize)> = (8..30).step_by(2).map(|at| (0, at, 6)).collect();
+    let mut history = grown(40, &buds);
+    for moment in &mut history.moments {
+        std::sync::Arc::make_mut(moment).time = 1_760_486_400;
+    }
+    for at in (7..30).step_by(2) {
+        let m = history.limbs[0].moments[at];
+        mark(&mut history, m, &format!("mark {at}"), false);
+    }
+    let zone = chrono::FixedOffset::east_opt(0).expect("utc");
+    let days = days(&history, &zone);
+    assert_eq!(days.len(), 1 + buds.len(), "the trunk and every bud");
+    let (growth, gestures, line) = scene_parts(&history);
+    for scale in [0.5, 1.0, 1.5, 2.4] {
+        let view = View {
+            centre: growth.at[history.limbs[0].moments[18]].expect("placed"),
+            scale,
+        };
+        let scene = |days| Scene {
+            history: &history,
+            growth: &growth,
+            gestures: &gestures,
+            days,
+            line: &line,
+            selected: None,
+            now: 0,
+        };
+        let without = draw(&scene(&[]), &view, 100, 30);
+        let with = draw(&scene(&days), &view, 100, 30);
+        // Every letter and glyph drawn without days is drawn with them.
+        for (i, (a, b)) in without.cells.iter().zip(&with.cells).enumerate() {
+            if a.text.is_some() {
+                assert_eq!(a.text, b.text, "scale {scale} cell {i}");
+            }
+        }
+        let shown = with.text();
+        if Level::of(scale) >= Level::Near {
+            assert!(shown.contains("Wed 15 Oct 2025"), "scale {scale}: {shown}");
+        } else {
+            // Far out a day says nothing, so it draws nothing.
+            assert_eq!(shown, without.text(), "scale {scale}");
+        }
+    }
+}

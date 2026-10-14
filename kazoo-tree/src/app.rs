@@ -964,7 +964,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("◉", "where the wall is"),
             ("◆ ▪", "a mark, a save's mark"),
             ("•", "a gesture or a moment (zoomed in)"),
-            ("╴ Wed 14 Oct 2026", "a new day begins on the limb"),
+            ("╴ Wed 14 Oct 2026", "a branch's day, or a new day"),
             ("✧", "a tip that grew in the last hour"),
             ("bright limb", "the wall's own line"),
             ("thickness", "modules alive"),

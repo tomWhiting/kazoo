@@ -367,10 +367,7 @@ impl Picture {
         colour: (u8, u8, u8),
         selected: bool,
     ) -> Option<(i32, i32)> {
-        if !(p.0.is_finite() && p.1.is_finite()) || p.0 < 0.0 || p.1 < 0.0 {
-            return None;
-        }
-        let (col, row) = ((p.0 / 2.0).floor() as i32, (p.1 / 4.0).floor() as i32);
+        let (col, row) = cell_of(p)?;
         let i = self.index(col, row)?;
         if self.cells[i].tail {
             // A glyph over a wide letter's right half takes its left half.
@@ -670,8 +667,6 @@ enum Words {
     Mark(usize),
     /// A batch's note.
     Note,
-    /// A day mark's day.
-    Day(usize),
     /// The wall's place.
     Here,
     /// No words: the glyph says it.
@@ -747,7 +742,64 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
         None
     };
     hang_words(&mut picture, scene, level, placed, opened, &mut taken);
+    if level >= Level::Near {
+        hang_days(&mut picture, scene, &|m| on_screen(m).map(to), &mut taken);
+    }
     picture
+}
+
+/// Hang each day mark on screen, newest first, after every other glyph
+/// and word, so a day (and every branch has one) never takes a place
+/// another would have had: its glyph only on a free cell and only with its
+/// words beside it, right, above, below or left, wherever there is room;
+/// with no room for its words, neither.
+fn hang_days(
+    picture: &mut Picture,
+    scene: &Scene<'_>,
+    dots: &impl Fn(usize) -> Option<(f64, f64)>,
+    taken: &mut [bool],
+) {
+    let mut order: Vec<&Day> = scene.days.iter().collect();
+    order.sort_by_key(|day| std::cmp::Reverse(day.moment));
+    for day in order {
+        let Some(p) = dots(day.moment) else {
+            continue;
+        };
+        let Some((col, row)) = cell_of(p) else {
+            continue;
+        };
+        let Some(at) = picture.index(col, row) else {
+            continue;
+        };
+        if taken[at] {
+            continue;
+        }
+        let wide = i32::try_from(UnicodeWidthStr::width(day.words.as_str())).unwrap_or(i32::MAX);
+        let room = [
+            (col + 2, row),
+            (col + 2, row - 1),
+            (col + 2, row + 1),
+            (col.saturating_sub(wide.saturating_add(2)), row),
+        ]
+        .into_iter()
+        .find(|&(c, r)| c >= 0 && picture.span(c, r, &day.words, taken).is_some());
+        let Some((c, r)) = room else {
+            continue;
+        };
+        if picture
+            .glyph(p, Glyph::Day, DAY, scene.selected == Some(day.moment))
+            .is_some()
+        {
+            taken[at] = true;
+            picture.label(c, r, &day.words, taken);
+        }
+    }
+}
+
+/// The cell a dot at `p` falls in, if it is on the page's side of zero.
+fn cell_of(p: (f64, f64)) -> Option<(i32, i32)> {
+    (p.0.is_finite() && p.1.is_finite() && p.0 >= 0.0 && p.1 >= 0.0)
+        .then(|| ((p.0 / 2.0).floor() as i32, (p.1 / 4.0).floor() as i32))
 }
 
 /// Hang the words of each glyph `placed`, the wall's and marks' first,
@@ -767,8 +819,7 @@ fn hang_words(
             Glyph::Here => 0,
             Glyph::Mark | Glyph::Save => 1,
             Glyph::Batch | Glyph::Growing => 2,
-            Glyph::Moment => 3,
-            Glyph::Day => 4,
+            Glyph::Moment | Glyph::Day => 3,
         };
         (rank, std::cmp::Reverse(m))
     });
@@ -797,25 +848,10 @@ fn hang_words(
                 .batch
                 .as_deref()
                 .map_or_else(String::new, |batch| short(&batch.note)),
-            Words::Day(i) => scene.days[i].words.clone(),
             Words::Here => "the wall is here".to_owned(),
             Words::None => continue,
         };
-        let said = if matches!(words, Words::Day(_)) {
-            // A new day is the one word for when a limb grew, so it looks
-            // for room beside its mark rather than giving up its place.
-            let wide = i32::try_from(UnicodeWidthStr::width(text.as_str())).unwrap_or(i32::MAX);
-            [
-                (col + 2, row),
-                (col + 2, row - 1),
-                (col + 2, row + 1),
-                (col.saturating_sub(wide.saturating_add(2)), row),
-            ]
-            .into_iter()
-            .any(|(c, r)| c >= 0 && picture.label(c, r, &text, taken))
-        } else {
-            picture.label(col + 2, row, &text, taken)
-        };
+        let said = picture.label(col + 2, row, &text, taken);
         // Zoomed right in, a batch opens into its changes under its note.
         if said
             && level == Level::Every
@@ -910,8 +946,7 @@ type Placed = (i32, i32, usize, Glyph, Words);
 /// A batch whose note is hung at a cell, its changes still to hang.
 type Opened<'s> = (&'s Batch, (i32, i32));
 
-/// Everything that hangs a glyph at this level and is on screen: days
-/// first, so any other glyph on the same cell is drawn over one.
+/// Everything but days that hangs a glyph at this level and is on screen.
 fn hangings(
     scene: &Scene<'_>,
     level: Level,
@@ -919,11 +954,6 @@ fn hangings(
     on_screen: &impl Fn(usize) -> Option<(f64, f64)>,
 ) -> Vec<(usize, Glyph, Words)> {
     let mut hang: Vec<(usize, Glyph, Words)> = Vec::new();
-    for (i, day) in scene.days.iter().enumerate() {
-        if on_screen(day.moment).is_some() {
-            hang.push((day.moment, Glyph::Day, Words::Day(i)));
-        }
-    }
     match level {
         Level::Every => {
             for step in &scene.growth.steps {
