@@ -41,3 +41,41 @@ fn standalone_help_wins_and_bad_controls_name_the_choices() {
     assert!(error.contains("C#"));
     assert!(parse_quantise("pentatonic-minor:C#").is_ok());
 }
+
+#[test]
+fn a_saved_loop_is_a_float_wav_that_loops() -> color_eyre::Result<()> {
+    let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/kz-logs/mouth-loop-wav-test");
+    std::fs::create_dir_all(&directory)?;
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let samples: Vec<_> = (0..48_000)
+        .map(|cell| (std::f32::consts::TAU * 220.0 * cell as f32 / 48_000.0).sin() * 0.25)
+        .collect();
+    let first = super::save_loop(&directory, &samples, 48_000, seconds)?;
+    let second = super::save_loop(&directory, &samples, 48_000, seconds)?;
+    assert_eq!(
+        first.file_name().unwrap().to_string_lossy(),
+        format!("mouth-loop-{seconds}.wav")
+    );
+    assert_eq!(
+        second.file_name().unwrap().to_string_lossy(),
+        format!("mouth-loop-{seconds}-2.wav")
+    );
+    let loaded = kazoo_core::io::read_wav(&first)?;
+    assert_eq!(loaded.channels, 1);
+    assert_eq!(loaded.sample_rate, 48_000);
+    assert_eq!(loaded.samples, samples);
+    let spec = hound::WavReader::open(&first)?.spec();
+    assert_eq!(spec.bits_per_sample, 32);
+    assert_eq!(spec.sample_format, hound::SampleFormat::Float);
+    for entry in std::fs::read_dir(&directory)? {
+        let name = entry?.file_name();
+        let name = name.to_string_lossy();
+        assert!(!name.contains(".tmp-") && !name.ends_with(".reserve"));
+    }
+    std::fs::remove_file(first)?;
+    std::fs::remove_file(second)?;
+    Ok(())
+}

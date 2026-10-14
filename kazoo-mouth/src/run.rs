@@ -1,8 +1,9 @@
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::io::{self, BufWriter, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, eyre};
@@ -20,6 +21,7 @@ use ringbuf::traits::{Consumer, Split};
 use ringbuf::{HeapCons, HeapRb};
 
 use crate::controls::{Action, App, settings};
+use crate::engine::looper::{LoopFeed, LoopOut};
 use crate::engine::{Command, EngineSetup, MouthEngine, Stats};
 use crate::ui::{self, Display};
 
@@ -55,6 +57,8 @@ Up/Down choose a control. Left/Right change it; Shift makes a big step.
 Space toggles quantise. v toggles vibrato. s toggles silent. ? shows help.
 Tab switches synth/fx. [/] choose slot; b bypasses; {/} move; d resets a knob.
 ,/. change own tempo by 1 BPM; </> by 10. The desk owns synced tempo.
+r records or punches; u undoes; C clears; l chooses length; o stops/starts.
+-/= change loop volume; _/+ make a big step; w saves ~/.kazoo/mouth/loops/.
 Esc closes help or quits. Ctrl-C quits.
 ";
 
@@ -185,11 +189,13 @@ pub fn run(args: Args) -> Result<()> {
     let mut session = Session::start(args, &loaded.settings)?;
     let mut terminal = kazoo_host::terminal::enter()?;
     let mut app = App::loaded(loaded, path, Instant::now());
+    app.loop_sample_rate = session.rate;
+    app.loop_feed = session.loop_feed.take();
     let result = event_loop(&mut session, &mut terminal, &mut app);
     app.sync_stats(&session.stats, Instant::now());
     app.save_if_due(Instant::now(), true);
-    let restored = terminal.leave().wrap_err("restoring the mouth terminal");
     let stopped = session.stop();
+    let restored = terminal.leave().wrap_err("restoring the mouth terminal");
     combine(combine(result, restored), stopped)
 }
 
@@ -202,6 +208,11 @@ struct Session {
     commands: Sender<Command>,
     display: HeapCons<VoiceFrame>,
     stats: Arc<Stats>,
+    loop_feed: Option<LoopFeed>,
+    loop_directory: PathBuf,
+    writers: Vec<std::thread::JoinHandle<()>>,
+    saved: crossbeam_channel::Receiver<String>,
+    saved_tx: Sender<String>,
 }
 
 impl Session {
@@ -227,6 +238,11 @@ impl Session {
             OnsetConfig::default(),
         )?;
         let stats = Arc::new(Stats::default());
+        let loop_directory = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| eyre!("HOME is missing: cannot locate saved loops"))?
+            .join(".kazoo/mouth/loops");
+        let (saved_tx, saved) = crossbeam_channel::bounded(8);
         let mut session = Self {
             rate: info.rate,
             output: None,
@@ -236,6 +252,11 @@ impl Session {
             commands,
             display,
             stats: Arc::clone(&stats),
+            loop_feed: None,
+            loop_directory,
+            writers: Vec::new(),
+            saved,
+            saved_tx,
         };
         let mut engine = MouthEngine::with_settings(
             EngineSetup {
@@ -250,6 +271,7 @@ impl Session {
             },
             settings,
         )?;
+        session.loop_feed = engine.take_loop_feed();
         session.output = Some(prepared.open(move |out, info| {
             engine.render(out, usize::from(info.channels));
         })?);
@@ -273,9 +295,10 @@ impl Session {
     }
 
     fn stop(&mut self) -> Result<()> {
+        let writers = self.join_writers();
         if self.output.is_none() && self.mic.is_none() && self.hub.is_none() && self.judge.is_none()
         {
-            return Ok(());
+            return writers;
         }
         drop(self.output.take());
         drop(self.mic.take());
@@ -286,11 +309,185 @@ impl Session {
             })
         });
         drop(self.hub.take());
-        let reported = kazoo_core::host::link::exit_report().map_or_else(
-            || Ok(()),
-            |report| writeln!(io::stderr().lock(), "{report}").map_err(Into::into),
-        );
-        combine(joined, reported)
+        let reported = match kazoo_core::host::link::exit_report() {
+            Some(report) => writeln!(io::stderr().lock(), "{report}").map_err(Into::into),
+            None => Ok(()),
+        };
+        combine(writers, combine(joined, reported))
+    }
+
+    fn join_writers(&mut self) -> Result<()> {
+        let mut result = Ok(());
+        for handle in self.writers.drain(..) {
+            // Draining reports before joining leaves room for every worker to finish.
+            for message in self.saved.try_iter() {
+                eprintln!("kazoo-mouth: {message}");
+            }
+            if let Err(panic) = handle.join() {
+                drop(panic);
+                result = combine(result, Err(eyre!("mouth loop WAV writer panicked")));
+            }
+        }
+        for message in self.saved.try_iter() {
+            eprintln!("kazoo-mouth: {message}");
+        }
+        result
+    }
+
+    fn loop_returns(&mut self, app: &mut App, now: Instant) {
+        for message in self.saved.try_iter() {
+            app.message(message, now);
+        }
+        let mut index = 0;
+        while index < self.writers.len() {
+            if self.writers[index].is_finished() {
+                let handle = self.writers.swap_remove(index);
+                if let Err(panic) = handle.join() {
+                    drop(panic);
+                    app.message("loop not saved: WAV writer panicked".into(), now);
+                }
+            } else {
+                index += 1;
+            }
+        }
+        // Each live writer can report once without filling the report ring at shutdown.
+        while self.writers.len() < 8 {
+            let Some(item) = app.loop_feed.as_mut().and_then(|feed| feed.out.try_pop()) else {
+                break;
+            };
+            app.save_returned();
+            match item {
+                LoopOut::Refused(samples) => {
+                    drop(samples);
+                    app.message("save cancelled: the loop changed".into(), now);
+                }
+                LoopOut::Bounced {
+                    samples,
+                    rate,
+                    layers,
+                } => {
+                    let directory = self.loop_directory.clone();
+                    let report = self.saved_tx.clone();
+                    let worker = std::thread::Builder::new()
+                        .name("mouth-loop-wav".into())
+                        .spawn(move || {
+                            let seconds = samples.len() as f64 / f64::from(rate);
+                            let result = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map_err(io::Error::other)
+                                .and_then(|time| {
+                                    save_loop(&directory, &samples, rate, time.as_secs())
+                                });
+                            let message = match result {
+                                Ok(path) => match path.file_name() {
+                                    Some(name) => format!(
+                                        "saved ~/.kazoo/mouth/loops/{} ({seconds:.2} s)",
+                                        name.to_string_lossy()
+                                    ),
+                                    None => format!(
+                                        "loop not saved: saved path has no filename: {}",
+                                        path.display()
+                                    ),
+                                },
+                                Err(error) => format!("loop not saved: {error} ({layers} layers)"),
+                            };
+                            if let Err(error) = report.send(message) {
+                                eprintln!("kazoo-mouth: {}", error.0);
+                            }
+                        });
+                    match worker {
+                        Ok(handle) => self.writers.push(handle),
+                        Err(error) => app.message(format!("loop not saved: {error}"), now),
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn reserve_loop(directory: &Path, seconds: u64) -> io::Result<(PathBuf, PathBuf)> {
+    let mut suffix = 1_u64;
+    loop {
+        let name = if suffix == 1 {
+            format!("mouth-loop-{seconds}.wav")
+        } else {
+            format!("mouth-loop-{seconds}-{suffix}.wav")
+        };
+        let path = directory.join(name);
+        let reservation = directory.join(format!(".mouth-loop-{seconds}-{suffix}.reserve"));
+        if !path.try_exists()? {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&reservation)
+            {
+                Ok(file) => {
+                    drop(file);
+                    // A completed writer may have released the name since the first lookup.
+                    match path.try_exists() {
+                        Ok(false) => return Ok((path, reservation)),
+                        Ok(true) => std::fs::remove_file(&reservation)?,
+                        Err(error) => {
+                            std::fs::remove_file(&reservation).map_err(|cleanup| {
+                                io::Error::other(format!(
+                                    "{error}; reservation cleanup failed: {cleanup}"
+                                ))
+                            })?;
+                            return Err(error);
+                        }
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    suffix = suffix
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::other("loop filename suffix exhausted"))?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        suffix = suffix
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("loop filename suffix exhausted"))?;
+    }
+}
+
+fn save_loop(directory: &Path, samples: &[f32], rate: u32, seconds: u64) -> io::Result<PathBuf> {
+    if rate == 0 || samples.is_empty() || samples.iter().any(|sample| !sample.is_finite()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "loop needs finite samples and a positive rate",
+        ));
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700)
+        .recursive(true)
+        .create(directory)?;
+    // A hidden reservation keeps concurrent saves separate without exposing an empty WAV.
+    let (path, reservation) = reserve_loop(directory, seconds)?;
+    let result = settings::atomic_write(&path, |file| {
+        let mut writer = hound::WavWriter::new(
+            BufWriter::new(file),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: rate,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .map_err(io::Error::other)?;
+        for sample in samples {
+            writer.write_sample(*sample).map_err(io::Error::other)?;
+        }
+        writer.finalize().map_err(io::Error::other)
+    });
+    match (result, std::fs::remove_file(&reservation)) {
+        (Ok(()), Ok(())) => Ok(path),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(io::Error::other(format!(
+            "{error}; reservation cleanup failed: {cleanup}"
+        ))),
     }
 }
 
@@ -322,11 +519,15 @@ fn event_loop(
     let mut display = Display::new(session.rate);
     let period = Duration::from_secs_f64(1.0 / 30.0);
     let mut draw_at = Instant::now();
+    let mut quitting = false;
     loop {
         if let Some(output) = &session.output {
             output.check_error()?;
         }
         if session.stats.shutdown.load(Ordering::Acquire) {
+            quitting = true;
+        }
+        if quitting && !app.loop_save_pending() {
             return Ok(());
         }
         if session.stats.synth_fault.load(Ordering::Relaxed) {
@@ -342,12 +543,15 @@ fn event_loop(
             let link = link_state(session);
             let now = Instant::now();
             app.sync_stats(&session.stats, now);
+            app.sync_loop(session.rate, now);
+            session.loop_returns(app, now);
             app.save_if_due(now, false);
             terminal.draw(|frame| ui::draw(frame, app, &display, &link, now))?;
             draw_at = Instant::now() + period;
         }
         if event::poll(draw_at.saturating_duration_since(Instant::now()))?
             && let Event::Key(key) = event::read()?
+            && !quitting
             && app
                 .handle_key(key, &session.commands, Instant::now())
                 .wrap_err("mouth command channel disconnected")?
@@ -357,7 +561,10 @@ fn event_loop(
                 .commands
                 .try_send(Command::Shutdown)
                 .wrap_err("mouth shutdown command not sent; closing output")?;
-            return Ok(());
+            quitting = true;
+            if app.loop_save_pending() {
+                app.message("finishing loop save".into(), Instant::now());
+            }
         }
     }
 }

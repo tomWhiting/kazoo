@@ -147,6 +147,7 @@ fn the_footer_and_help_name_every_key() {
     let now = Instant::now();
     let screen = text(&render(&app, &display, 80, 24, now));
     let footer = screen.lines().last().unwrap();
+    assert!(footer.contains("loop r u C l o w - = _ +"), "{footer}");
     for name in [
         "↑↓",
         "←→",
@@ -181,6 +182,15 @@ fn the_footer_and_help_name_every_key() {
         ", / .",
         "< / >",
         "Settings:",
+        "r:",
+        "u:",
+        "C:",
+        "l:",
+        "o:",
+        "- / =",
+        "_ / +",
+        "w:",
+        "Loops:",
     ] {
         assert!(help.contains(name), "{name}: {help}");
     }
@@ -202,6 +212,7 @@ fn the_footer_and_help_name_every_key() {
     app.focus = crate::controls::Focus::Fx;
     let screen = text(&render(&app, &display, 80, 24, now));
     let footer = screen.lines().last().unwrap();
+    assert!(footer.contains("loop r u C l o w - = _ +"), "{footer}");
     for name in [
         "[ ]",
         "↑↓",
@@ -384,4 +395,46 @@ fn help_scroll_stops_at_the_last_description_and_can_move_back() {
         .unwrap();
     assert_eq!(app.help_scroll.get(), end - 1);
     assert!(receiver.is_empty());
+}
+
+#[test]
+fn the_loop_strip_shows_state_length_layers_and_volume() {
+    use crate::engine::looper::{Looper, State};
+    use std::sync::atomic::Ordering;
+
+    let mut app = App::new(QuantiseSettings::default(), false);
+    let (looper, feed) = Looper::with_capacity(RATE, 192_000);
+    let gauges = &feed.gauges;
+    gauges.state.store(State::Playing as u8, Ordering::Relaxed);
+    gauges.n.store(192_000, Ordering::Relaxed);
+    gauges.head.store(100_800, Ordering::Relaxed);
+    gauges.layers.store(3, Ordering::Relaxed);
+    gauges.bars.store(4, Ordering::Relaxed);
+    gauges
+        .loop_bpm
+        .store(120.0_f64.to_bits(), Ordering::Relaxed);
+    for arc in gauges.arcs.iter().take(3) {
+        arc[1].store(192_000, Ordering::Relaxed);
+    }
+    app.loop_feed = Some(feed);
+    let now = Instant::now();
+    let buffer = render(&app, &Display::new(RATE), 80, 24, now);
+    let screen = text(&buffer);
+    for expected in [
+        "▶ 2.10 / 4.00 s",
+        "4 bars ♩120.0",
+        "layers 3",
+        "vol 80%",
+        "▓",
+    ] {
+        assert!(screen.contains(expected), "{expected}: {screen}");
+    }
+    assert!(buffer[(42, 14)].modifier.contains(Modifier::REVERSED));
+    app.desk_bpm = Some(128.0);
+    app.loop_gauges()
+        .unwrap()
+        .off_tempo
+        .store(true, Ordering::Relaxed);
+    assert!(text(&render(&app, &Display::new(RATE), 80, 24, now)).contains("· desk 128.0"));
+    drop(looper);
 }

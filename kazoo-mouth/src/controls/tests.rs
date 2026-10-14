@@ -8,6 +8,7 @@ use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
 
 use super::{Action, App, CommandSender, Control};
 use crate::engine::Command;
+use ringbuf::traits::Consumer;
 
 #[derive(Debug, Default)]
 struct FakeSender {
@@ -72,7 +73,69 @@ fn assert_whole_command(app: &App, sender: &FakeSender, control: Control) {
         | Command::FxKind { .. }
         | Command::FxParam { .. }
         | Command::FxOrder(_)
-        | Command::OwnTempo(_) => panic!("a synth control sent a different command"),
+        | Command::OwnTempo(_)
+        | Command::LoopRecord
+        | Command::LoopUndo
+        | Command::LoopClear
+        | Command::LoopLength(_)
+        | Command::LoopPlay(_)
+        | Command::LoopVolume(_) => panic!("a synth control sent a different command"),
+    }
+}
+
+#[test]
+fn loop_keys_send_their_commands() {
+    use crate::engine::looper::{LoopLength, Looper, State};
+    use std::sync::atomic::Ordering;
+
+    let now = Instant::now();
+    for focus in [super::Focus::Synth, super::Focus::Fx] {
+        let mut app = App::new(QuantiseSettings::default(), false);
+        app.focus = focus;
+        let (mut looper, feed) = Looper::with_capacity(48_000, 96_000);
+        let sender = FakeSender::default();
+        app.loop_feed = Some(feed);
+        for character in ['r', 'u', 'C', 'l', 'o', '-', '=', '_', '+'] {
+            key(&mut app, &sender, KeyCode::Char(character), false, now);
+            let commands = sender.commands.borrow();
+            assert_eq!(commands.len(), 1);
+            match (character, commands[0]) {
+                ('r', Command::LoopRecord)
+                | ('u', Command::LoopUndo)
+                | ('C', Command::LoopClear)
+                | ('l', Command::LoopLength(LoopLength::Bars(1)))
+                | ('o', Command::LoopPlay(false)) => {}
+                ('-' | '=' | '_' | '+', Command::LoopVolume(volume)) => {
+                    assert!((volume - app.accepted.loop_volume).abs() < f32::EPSILON)
+                }
+                unexpected => panic!("wrong loop command: {unexpected:?}"),
+            }
+            drop(commands);
+            sender.commands.borrow_mut().clear();
+        }
+        let gauges = app.loop_gauges().unwrap();
+        gauges.n.store(48_000, Ordering::Relaxed);
+        gauges.state.store(State::Playing as u8, Ordering::Relaxed);
+        key(&mut app, &sender, KeyCode::Char('w'), false, now);
+        assert!(sender.commands.borrow().is_empty());
+        looper.process(&[0.0; 128], &[f64::NAN; 128], 120.0, &mut [0.0; 128]);
+        let crate::engine::looper::LoopOut::Refused(samples) =
+            app.loop_feed.as_mut().unwrap().out.try_pop().unwrap()
+        else {
+            panic!("blank fake tape accepted a bounce");
+        };
+        assert_eq!(samples.len(), 48_000);
+        key(&mut app, &sender, KeyCode::Char('w'), false, now);
+        assert_eq!(app.notice(now), Some("already saving"));
+        app.loop_gauges()
+            .unwrap()
+            .state
+            .store(State::Stopped as u8, Ordering::Relaxed);
+        key(&mut app, &sender, KeyCode::Char('o'), false, now);
+        assert!(matches!(
+            sender.commands.borrow_mut().remove(0),
+            Command::LoopPlay(true)
+        ));
     }
 }
 

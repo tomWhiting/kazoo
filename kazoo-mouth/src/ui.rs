@@ -12,6 +12,7 @@ use crate::controls::{App, Control, Focus};
 use crate::engine::fx::Slot;
 
 mod fx;
+mod looper;
 mod pitch;
 mod trail;
 
@@ -23,9 +24,9 @@ mod tests;
 const DIM: Color = Color::DarkGray;
 const BRIGHT: Color = Color::Cyan;
 const SCALE_LINE: Color = Color::Rgb(45, 45, 50);
-const FOOTER: &str = "↑↓ choose  ←→ change  space quantise  v vibrato  s silent  tab fx  ? help";
+const FOOTER: &str = "↑↓ ←→ space v vibrato s silent tab fx ? help · loop r u C l o w - = _ +";
 const FX_FOOTER: &str =
-    "[ ] slot  ↑↓ knob  ←→ turn  b on/off  { } move  d default  tab synth  ? help";
+    "[ ] ↑↓ ←→ b on/off { } d default tab synth ? help · loop r u C l o w - = _ +";
 
 // Three columns and five rows keep every note the same visual size.
 const FONT: [(char, [u8; 5]); 19] = [
@@ -65,7 +66,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
         .constraints([
             Constraint::Length(1),
             Constraint::Length(5),
-            Constraint::Min(9),
+            Constraint::Min(7),
+            Constraint::Length(2),
             Constraint::Length(2),
             Constraint::Length(6),
             Constraint::Length(if both { 6 } else { 0 }),
@@ -75,14 +77,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     header(frame, areas[0], app, display, link);
     pitch::draw(frame, areas[1], display);
     trail::draw(frame, areas[2], display, app.accepted.quantise);
-    meters(frame, areas[3], display);
+    looper::draw(frame, areas[3], app);
+    meters(frame, areas[4], display);
     if both || app.focus == Focus::Synth {
-        controls(frame, areas[4], app);
+        controls(frame, areas[5], app);
     } else {
-        fx::draw(frame, areas[4], app);
+        fx::draw(frame, areas[5], app);
     }
     if both {
-        fx::draw(frame, areas[5], app);
+        fx::draw(frame, areas[6], app);
     }
     let footer = if app.busy(now) {
         "busy: change not sent"
@@ -101,7 +104,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
                 DIM
             },
         )),
-        areas[6],
+        areas[7],
     );
     if app.help {
         help(frame, area, app);
@@ -238,6 +241,16 @@ fn help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Line::from("The desk owns tempo while connected; change it on the desk."),
         Line::from("Help: Up/Down or PageUp/PageDown scroll all descriptions."),
         Line::from(format!("Settings: {}", app.settings_path.display())),
+        Line::from("loop"),
+        Line::from("r: record, close a take, or punch an overdub in or out."),
+        Line::from("u: undo the newest layer, fading it out."),
+        Line::from("C: clear the whole loop, fading it out."),
+        Line::from("l: choose free, 1, 2, 4, 8 or 16 bars before recording."),
+        Line::from("o: stop or start the loop with a fade."),
+        Line::from("- / =: lower or raise loop volume by 5%."),
+        Line::from("_ / +: lower or raise loop volume by 25%."),
+        Line::from("w: save the dry loop as a mono float WAV."),
+        Line::from("Loops: ~/.kazoo/mouth/loops/"),
         Line::from(""),
     ];
     lines.extend(
