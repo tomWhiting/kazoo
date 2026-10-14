@@ -1764,6 +1764,7 @@ dependencies = [
  "libm",
  "ratatui",
  "rustix",
+ "serde_json",
  "signal-hook",
  "tempfile",
  "unicode-width",

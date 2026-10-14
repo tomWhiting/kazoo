@@ -6,6 +6,7 @@
 //! playing, the tree is for seeing where it has been and finding a moment.
 
 pub mod app;
+pub mod go;
 pub mod growth;
 pub mod history;
 pub mod lanes;
@@ -35,7 +36,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::app::{App, Grower, Grown, HELP, PANEL, Shown};
+use crate::app::{App, Go, Grower, Grown, HELP, PANEL, Shown};
+use crate::go::Goes;
 use crate::history::{HistoryError, Snapshot};
 use crate::ledger::Ledger;
 use crate::render::{Level, Picture, Scene};
@@ -349,7 +351,20 @@ fn walk(
 ) -> io::Result<()> {
     let mut dirty = true;
     let mut reader_gone = false;
+    let goes = Goes::to(kazoo_wall::paths::socket_path());
     while !app.quit && stop.load(Ordering::Relaxed) == 0 {
+        if let Go::Send(moment) = &app.go {
+            goes.send(moment);
+            app.go = Go::Sent;
+        }
+        if let Some(words) = goes.heard() {
+            // The wall has moved, or said why not: either way the tree is
+            // read again at once, to show where it is now.
+            app.go = Go::Idle;
+            app.said = words;
+            app.wants_reading = true;
+            dirty = true;
+        }
         if let Some(text) = app.yank.take() {
             // OSC 52: the terminal puts it on the clipboard.
             let backend = terminal.backend_mut();

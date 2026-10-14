@@ -24,6 +24,7 @@ fn app(history: History) -> App {
         drag: None,
         quit: false,
         wants_reading: false,
+        go: Go::Idle,
     };
     app.take(history);
     app.selected = app.history.here;
@@ -253,4 +254,59 @@ fn y_copies_the_whole_commit() {
         .to_string();
     assert_eq!(app.yank.as_deref(), Some(id.as_str()));
     assert_eq!(id.len(), 40);
+}
+
+#[test]
+fn g_asks_before_putting_the_wall_at_the_selected_moment() {
+    let mut app = app(grown(10, &[]));
+    // Where the wall is already: nothing to ask.
+    press(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.go, Go::Idle);
+    assert_eq!(app.said, "the wall is at this moment already");
+    // Another moment: asked, and any key but y stays.
+    press(&mut app, KeyCode::Char('['));
+    let there = app.history.moments[app.selected.expect("selected")]
+        .id
+        .clone();
+    press(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.go, Go::Asking(there.clone()));
+    assert!(
+        app.said
+            .starts_with(&format!("put the wall at {}", short(&there))),
+        "{}",
+        app.said
+    );
+    let view = app.view;
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.go, Go::Idle);
+    assert_eq!(app.said, "the wall stays where it is");
+    // The answering key does nothing else: j did not pan.
+    assert_eq!(app.view, view);
+    // Asked again, y goes; a tree read meanwhile cannot change the moment.
+    press(&mut app, KeyCode::Char('g'));
+    let history = app.history.clone();
+    app.take(history);
+    press(&mut app, KeyCode::Char('y'));
+    assert_eq!(app.go, Go::Send(there));
+    assert_eq!(app.yank, None, "y answered; it did not copy");
+    // While a go is on its way, another is not asked for.
+    app.go = Go::Sent;
+    press(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.go, Go::Sent);
+    assert_eq!(app.said, "the wall is still being moved: wait for it");
+}
+
+#[test]
+fn g_with_nothing_selected_says_so() {
+    let mut app = app(grown(3, &[]));
+    app.selected = None;
+    press(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.go, Go::Idle);
+    assert_eq!(app.said, "select a moment to put the wall at first");
+}
+
+#[test]
+fn a_short_id_is_twelve_characters_or_all_of_a_shorter_one() {
+    assert_eq!(short("0123456789abcdef"), "0123456789ab");
+    assert_eq!(short("abc"), "abc");
 }
