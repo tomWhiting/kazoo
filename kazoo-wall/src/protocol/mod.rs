@@ -722,6 +722,20 @@ pub struct Change {
     pub clock: Option<ClockStamp>,
 }
 
+/// Why the wall preserved a loop's tape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TakeWhy {
+    /// A completed recording.
+    Punch,
+    /// A seam during a long recording.
+    Checkpoint,
+    /// A named save requested the current tape.
+    Save,
+    /// Tape preserved before an audio restart.
+    Rebuild,
+}
+
 /// What a change did.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -844,6 +858,26 @@ pub enum What {
         to: f64,
         /// Asked of the desk rather than set on the wall's own clock.
         desk: bool,
+    },
+    /// A frame-exact recording preserved in the reel store. Replay installs
+    /// this reel at `frame`, reproducing the loop from that frame onward,
+    /// including desk returns the log cannot hold. Between punch-in and its
+    /// take, replay records only the wall's own signals.
+    Take {
+        /// The loop module.
+        module: String,
+        /// Tape after the change; absent when undo restores blank tape.
+        tape: Option<crate::patch::TapeRecord>,
+        /// Tape before the change.
+        was: Option<crate::patch::TapeRecord>,
+        /// Engine frame at the beginning of the snapshot.
+        frame: u64,
+        /// Wall beat at that frame.
+        beat: f64,
+        /// Tape bars written since the preceding take.
+        written: Vec<u16>,
+        /// Why this tape was kept.
+        why: TakeWhy,
     },
     /// A recording started or stopped. Started by a seat, or by the seat
     /// `kazoo-wall` when it carries a recording on into a new file (the

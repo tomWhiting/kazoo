@@ -1,4 +1,4 @@
-//! Disk reads and resident replacement buffers belong to the tape thread.
+//! Disk reads, reel writes and whole-tape allocations belong to the tape thread.
 //!
 //! The thread runs whether or not the reel store opens: a blank tape (an
 //! erase) needs no store, so only a fetch fails when there is none.
@@ -6,19 +6,41 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread;
 
+use super::pins::{ReelRefs, Retention};
+use crate::dsp::looper::LoopSnapshot;
 use crate::dsp::looper::{
     LOOP_BINS, MAX_LOOP_BARS, Splice, bin_thresholds, level_bin, splice_fits,
 };
 use crate::patch::TapeRecord;
+use crate::protocol::TakeWhy;
 use kazoo_core::reels::{ReelError, ReelId, ReelStore};
+use std::time::SystemTime;
 
 /// Jobs waiting for the tape thread at most; a full queue is retried on
 /// the next tick, never waited on.
 pub const TAPE_QUEUE: usize = 64;
 
-/// Work for the tape thread. Both jobs allocate a whole tape there.
+/// Work for the tape thread, including allocation, storage and retention.
 #[derive(Debug)]
 pub enum TapeJob {
+    Spare {
+        module: String,
+        len: usize,
+    },
+    Store {
+        module: String,
+        snapshot: Box<LoopSnapshot>,
+        why: TakeWhy,
+    },
+    Pin {
+        refs: Box<ReelRefs>,
+    },
+    Sweep,
+    Budget,
+    Uncertain {
+        reason: String,
+    },
+
     /// Read a saved reel into a tape of the loop's length.
     Fetch {
         module: String,
@@ -41,6 +63,22 @@ pub type FetchedTape = (Box<[f32]>, Splice, [i64; MAX_LOOP_BARS], [u8; LOOP_BINS
 /// begins "loop1's reel 9f3c01ab" (a fetch) or "loop1" (a blank).
 #[derive(Debug)]
 pub enum TapeDone {
+    Spare {
+        module: String,
+        result: Result<Box<[f32]>, String>,
+    },
+    Stored {
+        module: String,
+        snapshot: Box<LoopSnapshot>,
+        why: TakeWhy,
+        result: Result<TapeRecord, String>,
+    },
+    Maintained {
+        result: Result<(), String>,
+        paused: bool,
+        pruned: std::collections::BTreeMap<ReelId, String>,
+    },
+
     Fetched {
         module: String,
         result: Result<Box<FetchedTape>, String>,
@@ -67,7 +105,7 @@ impl TapeWorker {
     /// # Errors
     /// The thread could not be started, or stopped before it said whether
     /// the store opened.
-    pub fn start(dir: Result<PathBuf, String>) -> Result<Self, String> {
+    pub fn start(dir: Result<PathBuf, String>, budget: u64) -> Result<Self, String> {
         let (jobs, incoming) = mpsc::sync_channel::<(u64, Box<TapeJob>)>(TAPE_QUEUE);
         let (answers, done) = mpsc::channel();
         let (ready, opened) = mpsc::sync_channel(1);
@@ -86,7 +124,7 @@ impl TapeWorker {
                     eprintln!("kazoo-wall: tape startup reply lost: {error}");
                     return;
                 }
-                serve(&store, &incoming, &answers);
+                serve(&store, budget, &incoming, &answers);
             })
             .map_err(|error| format!("the tape thread could not start ({error})"))?;
         let store_error = opened
@@ -116,12 +154,35 @@ impl TapeWorker {
 
 fn serve(
     store: &Result<(ReelStore, PathBuf), String>,
+    budget: u64,
     incoming: &Receiver<(u64, Box<TapeJob>)>,
     answers: &mpsc::Sender<(u64, TapeDone)>,
 ) {
     let thresholds = bin_thresholds();
+    let mut retention = store
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|(_, dir)| Retention::new(dir, budget));
     while let Ok((ticket, job)) = incoming.recv() {
         let answer = match *job {
+            TapeJob::Spare { module, len } => TapeDone::Spare {
+                module,
+                result: spare(len),
+            },
+            TapeJob::Store {
+                module,
+                snapshot,
+                why,
+            } => {
+                let result = store_recording(store, &mut retention, &module, &snapshot, why);
+                TapeDone::Stored {
+                    module,
+                    snapshot,
+                    why,
+                    result,
+                }
+            }
+            job @ (TapeJob::Pin { .. } | TapeJob::Uncertain { .. } | TapeJob::Budget | TapeJob::Sweep) => maintenance(job, store, &mut retention),
             TapeJob::Fetch {
                 module,
                 record,
@@ -133,6 +194,10 @@ fn serve(
                     .as_ref()
                     .map_err(|error| format!("cannot be fetched: {error}"))
                     .and_then(|(store, dir)| {
+                        let id = record.reel.parse().map_err(|error| format!("invalid reel: {error}"))?;
+                        if let Some(at) = retention.as_ref().map_err(Clone::clone)?.pruned.get(&id) {
+                            return Err(format!("cannot be put back: that checkpoint's reel was pruned for space at {at}"));
+                        }
                         fetch(store, dir, &record, capacity_frames, tail_cap, &thresholds)
                     })
                     .map(Box::new),
@@ -146,11 +211,142 @@ fn serve(
                 result: resident(capacity_frames, tail_cap),
             },
         };
+        let stored = matches!(answer, TapeDone::Stored { .. });
         if let Err(error) = answers.send((ticket, answer)) {
             eprintln!("kazoo-wall: tape reply lost: {error}");
             return;
         }
+        if stored {
+            let result = store
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|(store, dir)| {
+                    retention.as_mut().map_err(|error| error.clone())?.budget(
+                        store,
+                        dir,
+                        SystemTime::now(),
+                    )
+                });
+            if let Err(error) = answers.send((0, maintained(result, &retention))) {
+                eprintln!("kazoo-wall: reel retention reply lost: {error}");
+                return;
+            }
+        }
     }
+}
+
+fn store_recording(
+    store: &Result<(ReelStore, PathBuf), String>,
+    retention: &mut Result<Retention, String>,
+    module: &str,
+    snapshot: &LoopSnapshot,
+    why: TakeWhy,
+) -> Result<TapeRecord, String> {
+    let (store, dir) = store.as_ref().map_err(Clone::clone)?;
+    let retained = retention.as_mut().map_err(|error| error.clone())?;
+    if why == TakeWhy::Checkpoint && retained.paused {
+        return Err("the reel store is full; checkpoints are paused".into());
+    }
+    let record = store_snapshot(store, snapshot)?;
+    let id = record
+        .reel
+        .parse()
+        .map_err(|error| format!("stored reel id is invalid: {error}"))?;
+    retained.stored(store, dir, module, id, why)?;
+    Ok(record)
+}
+
+fn maintenance(
+    job: TapeJob,
+    store: &Result<(ReelStore, PathBuf), String>,
+    retention: &mut Result<Retention, String>,
+) -> TapeDone {
+    let result = (|| {
+        let (store, dir) = store.as_ref().map_err(Clone::clone)?;
+        let retained = retention.as_mut().map_err(|error| error.clone())?;
+        match job {
+            TapeJob::Pin { refs } => {
+                retained.pin(store, *refs)?;
+                retained.budget(store, dir, SystemTime::now())
+            }
+            TapeJob::Uncertain { reason } => {
+                retained.uncertain();
+                Err(reason)
+            }
+            TapeJob::Budget => retained.budget(store, dir, SystemTime::now()),
+            TapeJob::Sweep => retained.sweep(store, dir, SystemTime::now()),
+            TapeJob::Spare { .. }
+            | TapeJob::Store { .. }
+            | TapeJob::Fetch { .. }
+            | TapeJob::Blank { .. } => {
+                Err("a recording job was sent as reel maintenance; no reels were reclaimed".into())
+            }
+        }
+    })();
+    maintained(result, retention)
+}
+
+fn maintained(result: Result<(), String>, retention: &Result<Retention, String>) -> TapeDone {
+    TapeDone::Maintained {
+        result,
+        paused: retention.as_ref().is_ok_and(|retained| retained.paused),
+        pruned: retention.as_ref().map_or_else(
+            |_| std::collections::BTreeMap::new(),
+            |retained| retained.pruned.clone(),
+        ),
+    }
+}
+
+fn spare(len: usize) -> Result<Box<[f32]>, String> {
+    let mut samples = Vec::new();
+    samples
+        .try_reserve_exact(len)
+        .map_err(|error| format!("snapshot allocation failed: {error}"))?;
+    samples.resize(len, 0.0);
+    Ok(samples.into_boxed_slice())
+}
+
+fn store_snapshot(store: &ReelStore, snapshot: &LoopSnapshot) -> Result<TapeRecord, String> {
+    let splice = snapshot.splice.ok_or("the snapshot has blank tape")?;
+    if !snapshot.at.beat.is_finite()
+        || !splice_fits(splice, snapshot.tape.len())
+        || splice.rate > 384_000.0
+        || splice.tail > 4096
+    {
+        return Err("loop DSP bug: its snapshot has non-finite or invalid tape geometry".into());
+    }
+    let len = splice
+        .frames
+        .checked_add(splice.tail)
+        .and_then(|len| len.checked_mul(2))
+        .ok_or("the snapshot is too long")?;
+    let samples = snapshot
+        .tape
+        .get(..len)
+        .ok_or("the snapshot is shorter than its splice")?;
+    let reel = store
+        .put(splice.rate as u32, samples)
+        .map_err(|error| match error {
+            ReelError::NotFinite { .. } => {
+                format!("loop DSP bug: its snapshot contains a non-finite sample ({error})")
+            }
+            other => other.to_string(),
+        })?;
+    let bars = snapshot.bar_pass[..(splice.beats / 4.0).ceil() as usize]
+        .iter()
+        .map(|pass| (*pass != i64::MIN).then_some(*pass))
+        .collect();
+    let record = TapeRecord {
+        reel: reel.to_string(),
+        rate: splice.rate as u32,
+        frames: splice.frames as u64,
+        tail: splice.tail as u64,
+        beats: splice.beats,
+        anchor: splice.anchor,
+        bars,
+    };
+    record.check()?;
+    Ok(record)
 }
 
 /// A zeroed tape of `2 × (capacity + tail + 1)` samples, every page

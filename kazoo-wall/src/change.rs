@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::catalogue::Kind;
 use crate::format;
 use crate::patch::kind_of_id;
-use crate::protocol::{CableRecord, ModuleRecord, What};
+use crate::protocol::{CableRecord, ModuleRecord, TakeWhy, What};
 
 /// The sentence for `what`, done by `seat`; `undoes` names the change it
 /// undid, if it was an undo.
@@ -47,6 +47,9 @@ pub fn describe(what: &What) -> String {
 /// load that brought a wall back from one that cleared it).
 fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind>) -> String {
     match what {
+        What::Take {
+            module, tape, why, ..
+        } => taken(module, tape.as_ref(), *why, undo),
         What::Erase { module, was, tape } => erased(module, was.as_ref(), tape.as_ref()),
         What::LoopFrom { module, from, .. } => loop_from(module, from.as_deref()),
         What::Chain { name, changes } => format!(
@@ -386,6 +389,34 @@ const fn civil_from_days(days: u64) -> (u64, u64, u64) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + if month <= 2 { 1 } else { 0 };
     (year, month, day)
+}
+
+fn taken(
+    module: &str,
+    tape: Option<&crate::patch::TapeRecord>,
+    why: TakeWhy,
+    undo: bool,
+) -> String {
+    let Some(tape) = tape else {
+        return format!("{module} is back to blank tape");
+    };
+    let reel = tape.reel.chars().take(8).collect::<String>();
+    if undo {
+        return format!("{module} is back to reel {reel}");
+    }
+    let pass = tape.bars.iter().flatten().max().copied().unwrap_or(0);
+    match why {
+        TakeWhy::Punch => {
+            let count = tape.bars.len();
+            let bars = if count == 1 { "bar" } else { "bars" };
+            format!("{module} took {count} {bars} (pass {pass}, reel {reel})")
+        }
+        TakeWhy::Checkpoint => {
+            format!("{module} was checkpointed while recording (pass {pass}, reel {reel})")
+        }
+        TakeWhy::Save => format!("{module} was taken for the save"),
+        TakeWhy::Rebuild => format!("{module} was kept before the audio restarted"),
+    }
 }
 
 fn erased(

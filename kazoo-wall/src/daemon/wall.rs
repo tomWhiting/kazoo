@@ -574,6 +574,7 @@ pub struct Wall {
     fingerprints: Fingerprints,
     speech: Speech,
     loops: Loops,
+    loop_work: loops::Work,
     recorder: Recorder,
     /// Changes the daemon made on its own (to a recording), for the next
     /// [`Self::tick`] to tell everyone.
@@ -1313,6 +1314,7 @@ impl Wall {
             chain_batch: None,
             speech: Speech::new(speech_cache),
             loops: Loops::new(),
+            loop_work: loops::Work::default(),
             recorder,
             told: Vec::new(),
             timing: Timing::default(),
@@ -1377,6 +1379,7 @@ impl Wall {
     /// new file on the new one (whose rate may differ); both are logged,
     /// and told at the next [`Self::tick`].
     pub fn attach(&mut self, mut engine: EngineControl, desk: Option<HubLink>) {
+        self.note_loop_restart();
         let before = self.recorder.sample_rate();
         let stopped = self.recorder.attach(&mut engine);
         self.probe_ring = engine.take_probes().map(ProbeRing);
@@ -2025,7 +2028,7 @@ impl Wall {
             }
             // The loop takes what the patch now says it holds, over what
             // it recorded.
-            What::Erase { module, .. } => {
+            What::Take { module, .. } | What::Erase { module, .. } => {
                 let tape = self
                     .patch
                     .loop_record(module)
@@ -2251,8 +2254,15 @@ impl Wall {
             seq: self.next_seq,
             at: utc_now(),
             seat: seat.to_string(),
-            summary: summarise_with(seat, &what, undoes, |id| {
-                self.patch.module(id).map(|m| m.kind)
+            summary: if undoes.is_none() {
+                self.named_take_summary(&what)
+            } else {
+                None
+            }
+            .unwrap_or_else(|| {
+                summarise_with(seat, &what, undoes, |id| {
+                    self.patch.module(id).map(|m| m.kind)
+                })
             }),
             what,
             undoes,
@@ -2264,7 +2274,10 @@ impl Wall {
     /// into the engine, move the fingerprints, and remember it. Returns
     /// the change and, if the fingerprints moved, the event saying how.
     fn apply(&mut self, change: Change) -> (Change, Option<Event>) {
-        self.mirror(&change.what);
+        self.accept_take(&change);
+        if change.undoes.is_some() || !matches!(change.what, What::Take { .. }) {
+            self.mirror(&change.what);
+        }
         let mut dye = std::mem::take(&mut self.patch.dye);
         dye.touch(&change.seat, &change.what, &self.patch);
         self.patch.dye = dye;
@@ -2631,6 +2644,7 @@ impl Wall {
                             | What::Remove { .. }
                             | What::Restore { .. }
                             | What::Chain { .. }
+                            | What::Take { .. }
                             | What::Erase { .. }
                             | What::LoopFrom { .. },
                         ..
@@ -3254,6 +3268,7 @@ impl Wall {
             _ => Growth::NONE,
         };
         self.room_to_grow(growth)?;
+        self.check_take_undo(&what)?;
         let inverse = self.patch.undo(&what)?;
         self.changed(seat, inverse, Some(seq), None, None)
     }
@@ -3474,6 +3489,21 @@ impl Wall {
         if !console {
             self.allow_save(seat, name, now)?;
         }
+        if self.store.is_none() {
+            return Err(no_saves());
+        }
+        if let Some(pending) = self.begin_loop_save(seat, name, overwrite, now) {
+            return Ok(pending);
+        }
+        self.write_loop_save(seat, name, overwrite)
+    }
+
+    fn write_loop_save(
+        &mut self,
+        seat: &str,
+        name: &str,
+        overwrite: bool,
+    ) -> Result<Outcome, WallError> {
         let Some(store) = self.store.as_mut() else {
             return Err(no_saves());
         };
@@ -3511,6 +3541,7 @@ impl Wall {
             "kazoo-wall: {seat} saved the wall as {stored}{}",
             if replaced { ", replacing it" } else { "" }
         );
+        self.refresh_loop_refs(true);
         let result = encode(&SaveResult {
             save,
             replaced,
@@ -3737,6 +3768,7 @@ impl Wall {
             }
             Err(err) => eprintln!("kazoo-wall: the automatic saves could not be pruned: {err}"),
         }
+        self.refresh_loop_refs(true);
     }
 
     /// The tempo that will play once `incoming` is up: its own, or the
@@ -3789,6 +3821,11 @@ impl Wall {
         // their numbers before this one), or nothing is replaced.
         self.pay_owed()?;
         let (backup, backup_bytes) = self.keeping(how).map_err(|err| not_kept(seat, how, &err))?;
+        notes.extend(self.loops.lost_notes(
+            self.engine.shared().frames(),
+            self.engine.sample_rate(),
+            &backup.name,
+        ));
         let playing = self.playing_after(&incoming, &mut notes);
         let incoming_print = Print::of(&incoming);
         let what = What::Load {
@@ -3913,6 +3950,7 @@ impl Wall {
         {
             self.kept_in = None;
         }
+        self.refresh_loop_refs(true);
         eprintln!("kazoo-wall: {seat} deleted the save {stored}");
         let result = encode(&DeleteSaveResult {
             name: stored.clone(),
@@ -4310,7 +4348,13 @@ impl Wall {
             listen: self.listen.clone(),
             faults: Faults {
                 count: self.faults.count,
-                recent: self.faults.recent.iter().cloned().collect(),
+                recent: self
+                    .faults
+                    .recent
+                    .iter()
+                    .cloned()
+                    .chain(self.loops.notes().map(str::to_owned))
+                    .collect(),
             },
             fingerprints: self.fingerprints.clone(),
             timing: self.timings(),
@@ -4762,7 +4806,7 @@ impl Wall {
         let shared = self.engine.shared();
         self.clock_line
             .check(shared.beat(), shared.following_desk());
-        self.loops.poll();
+        self.tick_loops(now);
         self.settle(now);
         // The saves not read yet since the start, one a tick, so the first
         // listing finds them read (see `Store::list_saves`).

@@ -41,7 +41,7 @@ fn render(engine: &mut Engine, frames: usize) {
 /// to the loop, and the engine renders the sub-block that takes it.
 fn tape_arrives(wall: &mut Wall, engine: &mut Engine) {
     let asked = Instant::now();
-    wall.loops.wait_for_test();
+    wall.loops.wait_install_for_test();
     assert!(asked.elapsed() < Duration::from_secs(2));
     wall.tick(Instant::now());
     render(engine, 4_096);
@@ -386,4 +386,307 @@ fn the_tree_keeps_active_and_retired_loop_records() {
     let mut stray = file;
     stray.loops.insert("loop9".into(), LoopRecord::default());
     assert!(crate::tree::to_files(&stray).is_err());
+}
+
+use crate::protocol::TakeWhy;
+use kazoo_core::reels::ReelStore;
+
+fn taking_wall(dir: &std::path::Path) -> (Wall, Engine, tempfile::TempDir) {
+    let state_dir = reels_dir();
+    let (mut wall, engine) = saved_wall(None, dir);
+    wall.store = Some(Store::open(state_dir.path()).unwrap());
+    wall.patch.add("vco", None, None).unwrap();
+    wall.patch
+        .plug("vco1.out", "loop1.left", None, None)
+        .unwrap();
+    wall.patch.turn("loop1", "bars", 1.0, Some(0.0)).unwrap();
+    wall.swap_engine();
+    (wall, engine, state_dir)
+}
+
+fn rolling(wall: &mut Wall, engine: &mut Engine) {
+    ask(wall, &turn("loop1", "record", 1.0)).unwrap();
+    render(engine, BAR + BAR / 2);
+    assert_eq!(state(wall), LoopState::Rolling as u8);
+    wall.tick(Instant::now());
+}
+
+fn punch(wall: &mut Wall, engine: &mut Engine) -> u64 {
+    ask(wall, &turn("loop1", "record", 0.0)).unwrap();
+    render(engine, BAR);
+    assert_eq!(state(wall), LoopState::Holding as u8);
+    wall.tick(Instant::now());
+    let ticket = wall.loops.pending_for_test("loop1")[0];
+    wall.loops.wait_snapshot_for_test(ticket);
+    render(engine, 4_096);
+    wall.loops.wait_take_for_test(ticket);
+    wall.tick(Instant::now());
+    wall.log.back().unwrap().seq
+}
+
+#[test]
+fn a_finished_recording_becomes_a_logged_take_with_its_exact_samples() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, state_dir) = taking_wall(dir.path());
+    rolling(&mut wall, &mut engine);
+    ask(&mut wall, &turn("loop1", "record", 0.0)).unwrap();
+    render(&mut engine, BAR);
+    wall.tick(Instant::now());
+    let ticket = wall.loops.pending_for_test("loop1")[0];
+    wall.loops.wait_snapshot_for_test(ticket);
+    render(&mut engine, 4_096);
+    let snapshot = wall.loops.capture_snapshot_for_test("loop1");
+    let at = snapshot.at;
+    let splice = snapshot.splice.unwrap();
+    let expected: Vec<_> = snapshot.tape[..2 * (splice.frames + splice.tail)]
+        .iter()
+        .map(|sample| sample.to_bits())
+        .collect();
+    wall.loops.store_snapshot_for_test("loop1", snapshot);
+    wall.loops.wait_take_for_test(ticket);
+    wall.tick(Instant::now());
+    let change = wall.log.back().unwrap();
+    assert_eq!(change.seat, LOADER_SEAT);
+    let What::Take {
+        tape: Some(tape),
+        frame,
+        beat,
+        why,
+        ..
+    } = &change.what
+    else {
+        panic!("the last change is not a take")
+    };
+    assert_eq!(*frame, at.frame);
+    assert_eq!(beat.to_bits(), at.beat.to_bits());
+    assert_eq!(*why, TakeWhy::Punch);
+    let id = tape.reel.parse().unwrap();
+    let store = ReelStore::open(dir.path()).unwrap();
+    assert!(store.contains(&id));
+    assert_eq!(
+        store
+            .get(&id)
+            .unwrap()
+            .samples
+            .iter()
+            .map(|sample| sample.to_bits())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
+        wall.patch.loop_record("loop1").unwrap().tape.as_ref(),
+        Some(tape)
+    );
+    let reel = tape.reel.clone();
+    wall.save(Instant::now());
+    let file: PatchFile =
+        serde_json::from_slice(&std::fs::read(state_dir.path().join("patch.json")).unwrap())
+            .unwrap();
+    assert_eq!(file.loops["loop1"].tape.as_ref().unwrap().reel, reel);
+    assert!(
+        std::fs::read_to_string(dir.path().join("pins/wall.txt"))
+            .unwrap()
+            .contains(&reel)
+    );
+    assert!(
+        std::fs::read_to_string(dir.path().join("pins/wall-history.txt"))
+            .unwrap()
+            .contains(&reel)
+    );
+}
+
+#[test]
+fn undoing_a_take_puts_back_what_was_there() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, state_dir) = taking_wall(dir.path());
+    assert!(state_dir.path().is_dir());
+    rolling(&mut wall, &mut engine);
+    let a = punch(&mut wall, &mut engine);
+    let tape_a = wall
+        .patch
+        .loop_record("loop1")
+        .unwrap()
+        .tape
+        .clone()
+        .unwrap();
+    let samples_a = ReelStore::open(dir.path())
+        .unwrap()
+        .get(&tape_a.reel.parse().unwrap())
+        .unwrap()
+        .samples;
+    rolling(&mut wall, &mut engine);
+    let b = punch(&mut wall, &mut engine);
+    assert_ne!(
+        wall.patch
+            .loop_record("loop1")
+            .unwrap()
+            .tape
+            .as_ref()
+            .unwrap()
+            .reel,
+        tape_a.reel
+    );
+    let prior = wall.patch.to_file();
+    let pruned = tape_a.reel.parse().unwrap();
+    wall.loops
+        .recordings
+        .pruned
+        .insert(pruned, "2026-10-14T00:00:00Z".into());
+    let refusal = ask(&mut wall, &Request::Undo { change: b }).unwrap_err();
+    assert_eq!(
+        refusal.message,
+        "that checkpoint's reel was pruned for space at 2026-10-14T00:00:00Z"
+    );
+    assert_eq!(wall.patch.to_file(), prior);
+    wall.loops.recordings.pruned.remove(&pruned);
+    ask(&mut wall, &Request::Undo { change: b }).unwrap();
+    tape_arrives(&mut wall, &mut engine);
+    assert_eq!(
+        wall.patch.loop_record("loop1").unwrap().tape.as_ref(),
+        Some(&tape_a)
+    );
+    let (capacity, tail) = crate::dsp::looper::geometry(48_000.0);
+    wall.loops.snapshot_for_test(
+        "loop1",
+        vec![0.0; 2 * (capacity + tail + 1)].into_boxed_slice(),
+    );
+    render(&mut engine, 4_096);
+    let snapshot = wall.loops.capture_snapshot_for_test("loop1");
+    assert_eq!(
+        snapshot.tape[..samples_a.len()]
+            .iter()
+            .map(|sample| sample.to_bits())
+            .collect::<Vec<_>>(),
+        samples_a
+            .iter()
+            .map(|sample| sample.to_bits())
+            .collect::<Vec<_>>()
+    );
+    ask(&mut wall, &Request::Undo { change: a }).unwrap();
+    tape_arrives(&mut wall, &mut engine);
+    assert!(wall.patch.loop_record("loop1").is_none());
+    assert_eq!(state(&wall), LoopState::Blank as u8);
+    peak(&wall);
+    render(&mut engine, BAR);
+    assert_eq!(peak(&wall).to_bits(), 0);
+}
+
+#[test]
+fn a_save_waits_for_a_recording_loop_and_holds_its_newest_tape() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, state_dir) = taking_wall(dir.path());
+    rolling(&mut wall, &mut engine);
+    let requested_frame = wall.engine.shared().frames();
+    let request = Request::Save {
+        name: "rain brass 2".into(),
+        overwrite: false,
+    };
+    let outcome = wall.request("Tom", &request, Instant::now()).unwrap();
+    assert!(outcome.pending.is_some());
+    let pending = outcome.pending.unwrap();
+    assert!(wall.saved().is_empty());
+    render(&mut engine, crate::SUB_BLOCK);
+    let ticket = wall.loops.pending_for_test("loop1")[0];
+    wall.loops.wait_snapshot_for_test(ticket);
+    render(&mut engine, 4_096);
+    wall.loops.wait_take_for_test(ticket);
+    wall.tick(Instant::now());
+    let answers = wall.saved();
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0].0, pending);
+    assert!(answers[0].1.is_ok());
+    let What::Take {
+        frame,
+        tape: Some(tape),
+        why,
+        ..
+    } = &wall.log.back().unwrap().what
+    else {
+        panic!("save has no take")
+    };
+    assert!(*frame > requested_frame);
+    assert_eq!(*why, TakeWhy::Save);
+    let file: PatchFile = serde_json::from_slice(
+        &std::fs::read(state_dir.path().join("saves/rain brass 2.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(file.loops["loop1"].tape.as_ref().unwrap().reel, tape.reel);
+    assert!(
+        wall.log
+            .back()
+            .unwrap()
+            .summary
+            .contains("save `rain brass 2`")
+    );
+}
+
+#[test]
+fn a_save_that_cannot_wait_says_so() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, state_dir) = taking_wall(dir.path());
+    rolling(&mut wall, &mut engine);
+    punch(&mut wall, &mut engine);
+    let old = wall.patch.loop_record("loop1").unwrap().tape.clone();
+    rolling(&mut wall, &mut engine);
+    let now = Instant::now();
+    let request = Request::Save {
+        name: "stopped engine".into(),
+        overwrite: false,
+    };
+    let outcome = wall.request("Tom", &request, now).unwrap();
+    assert!(outcome.pending.is_some());
+    let ticket = outcome.pending.unwrap();
+    wall.tick(now + Duration::from_secs(4));
+    assert!(wall.saved().is_empty());
+    wall.tick(now + Duration::from_secs(5));
+    let answers = wall.saved();
+    assert_eq!(answers[0].0, ticket);
+    let outcome = answers.into_iter().next().unwrap().1.unwrap();
+    assert!(
+        outcome.result["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains(
+                "loop1's newest recording was not ready in 5 s; the save holds its take from"
+            ))
+    );
+    let file: PatchFile = serde_json::from_slice(
+        &std::fs::read(state_dir.path().join("saves/stopped engine.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(file.loops["loop1"].tape, old);
+}
+
+#[test]
+fn a_load_names_the_loops_that_were_recording() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, state_dir) = taking_wall(dir.path());
+    assert!(state_dir.path().is_dir());
+    let request = Request::Save {
+        name: "before singing".into(),
+        overwrite: false,
+    };
+    assert!(
+        wall.request("Tom", &request, Instant::now())
+            .unwrap()
+            .pending
+            .is_none()
+    );
+    rolling(&mut wall, &mut engine);
+    let result: LoadResult = serde_json::from_value(
+        ask(
+            &mut wall,
+            &Request::Load {
+                name: "before singing".into(),
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        result.notes.iter().any(
+            |note| note.contains("loop1 was recording: up to") && note.contains(&result.backup)
+        )
+    );
 }

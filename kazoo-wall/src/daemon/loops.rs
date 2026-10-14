@@ -1,5 +1,5 @@
 //! The wall's loops on the control side: each loop's feed, and the tape
-//! thread that moves reels from the store onto the loops.
+//! thread that moves reels between the store and the loops.
 //!
 //! Every disk read and every whole-tape allocation happens on the tape
 //! thread (`worker`), never on the control thread or the render thread.
@@ -7,9 +7,11 @@
 //! control side), and freed here in [`Loops::collect`] (what an install
 //! hands back) or in the engine's retire drain (a module taken out).
 //!
-//! Until recording checkpoints land (KZ-L04), a loop's live recording is
-//! kept only while the daemon runs, and a save names the last reel
-//! fetched for it.
+//! Finished recordings and long overdubs are preserved as durable takes.
+pub mod pins;
+pub mod takes;
+pub use pins::SAVE_WAIT;
+pub use takes::CHECKPOINT_SECONDS;
 #[cfg(test)]
 pub(crate) mod tests;
 mod worker;
@@ -63,6 +65,10 @@ pub struct Loops {
     /// Each attached loop's `(capacity, tail)` in frames.
     geometry: HashMap<String, (usize, usize)>,
     takes: u64,
+    pub recordings: takes::Takes,
+    pub checkpoints_paused: bool,
+    #[cfg(test)]
+    test_directory: Option<tempfile::TempDir>,
 }
 
 impl Default for Loops {
@@ -73,10 +79,20 @@ impl Default for Loops {
 
 impl Loops {
     /// The wall's loops, with the reel store at `$KAZOO_REELS_DIR` or
-    /// `~/.kazoo/reels`; nothing is opened until a loop needs tape.
+    /// `~/.kazoo/reels`; the tape thread opens it for the first pin or tape job.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_directory(kazoo_core::reels::reels_dir().map_err(|error| error.to_string()))
+        #[cfg(test)]
+        {
+            let dir = tests::reels_dir();
+            let mut loops = Self::with_reels_dir(dir.path().to_path_buf());
+            loops.test_directory = Some(dir);
+            loops
+        }
+        #[cfg(not(test))]
+        {
+            Self::with_directory(kazoo_core::reels::reels_dir().map_err(|error| error.to_string()))
+        }
     }
 
     /// The wall's loops with the reel store at `dir`: for tests, which
@@ -97,7 +113,16 @@ impl Loops {
             tickets: 0,
             geometry: HashMap::new(),
             takes: 0,
+            recordings: takes::Takes::default(),
+            checkpoints_paused: false,
+            #[cfg(test)]
+            test_directory: None,
         }
+    }
+
+    /// Keep a control-side failure visible to the console and look.
+    pub fn report(&mut self, text: String) {
+        self.note(text);
     }
 
     fn note(&mut self, text: String) {
@@ -113,8 +138,7 @@ impl Loops {
         self.notes.iter().map(String::as_str)
     }
 
-    /// Punches finished since the wall started (KZ-L04 turns them into
-    /// takes).
+    /// Punches finished since the wall started.
     #[must_use]
     pub const fn takes(&self) -> u64 {
         self.takes
@@ -136,10 +160,17 @@ impl Loops {
     }
 
     fn start(&mut self) {
+        #[cfg(test)]
+        if let Some(directory) = &self.test_directory {
+            assert!(
+                directory.path().is_dir(),
+                "the wall's test reel directory was removed while it was in use"
+            );
+        }
         if !matches!(self.worker, Thread::NotStarted) {
             return;
         }
-        match TapeWorker::start(self.dir.clone()) {
+        match TapeWorker::start(self.dir.clone(), self.recordings.budget) {
             Ok(worker) => {
                 if let Some(error) = &worker.store_error {
                     let text = format!(
@@ -216,9 +247,13 @@ impl Loops {
     /// A loop taken out: its feed goes, and tape on its way to it is
     /// dropped when it arrives.
     pub fn forget(&mut self, module: &str) {
+        if self.recordings.has_pending(module) {
+            self.note(format!("{module}'s newest recording was not kept before its loop was removed; its last take remains in the log"));
+        }
         self.feeds.remove(module);
         self.waiting.remove(module);
         self.geometry.remove(module);
+        self.recordings.forget(module);
     }
 
     /// The engine's loops are all replaced: every feed goes, and tape on
@@ -227,10 +262,17 @@ impl Loops {
         self.feeds.clear();
         self.waiting.clear();
         self.geometry.clear();
+        self.recordings.clear_pending();
     }
 
     fn finish(&mut self, ticket: u64, answer: TapeDone) {
         let (module, result) = match answer {
+            answer @ (TapeDone::Spare { .. }
+            | TapeDone::Stored { .. }
+            | TapeDone::Maintained { .. }) => {
+                self.take_answer(ticket, answer);
+                return;
+            }
             TapeDone::Fetched { module, result } => (
                 module,
                 result.map(|fetched| {
@@ -283,7 +325,10 @@ impl Loops {
 
     fn worker_gone(&mut self) {
         self.worker = Thread::Gone;
-        let modules: Vec<String> = self.waiting.drain().map(|(module, _)| module).collect();
+        let mut modules: Vec<String> = self.waiting.drain().map(|(module, _)| module).collect();
+        modules.extend(self.recordings.stopped());
+        modules.sort();
+        modules.dedup();
         self.note(format!(
             "the tape thread stopped; tape on its way to {} is lost, and loops keep only what they record live",
             if modules.is_empty() {
@@ -318,6 +363,7 @@ impl Loops {
             }
         }
         self.collect();
+        self.poll_takes();
     }
 
     /// Queue `module`'s job if it has one waiting. False when the thread
@@ -383,16 +429,21 @@ impl Loops {
     }
 
     /// Drain every loop's feed on the control side: tape a loop hands back
-    /// is freed here, refusals become notes, and finished punches are
-    /// counted (KZ-L04 makes them takes; until then a snapshot is freed).
+    /// is freed here, refusals become notes, and finished punches request
+    /// snapshots whose allocations come from the tape thread.
     pub fn collect(&mut self) {
         let mut refused = Vec::new();
+        let mut recorded = Vec::new();
+        let mut snapped = Vec::new();
         for (module, feed) in &mut self.feeds {
             for answer in feed.collect() {
                 match answer {
                     LoopOut::Retired(tape) => drop(tape),
-                    LoopOut::Snapped(snapshot) => drop(snapshot),
-                    LoopOut::Took(_) => self.takes = self.takes.saturating_add(1),
+                    LoopOut::Snapped(snapshot) => snapped.push((module.clone(), snapshot)),
+                    LoopOut::Took(mark) => {
+                        self.takes = self.takes.saturating_add(1);
+                        recorded.push((module.clone(), mark));
+                    }
                     LoopOut::Refused(request) => {
                         // The tape thread checked the splice and length
                         // against the loop's own checks: a put-back is
@@ -414,6 +465,12 @@ impl Loops {
                     }
                 }
             }
+        }
+        for (module, mark) in recorded {
+            self.request_take(&module, crate::protocol::TakeWhy::Punch, Some(mark));
+        }
+        for (module, snapshot) in snapped {
+            self.snapped(&module, snapshot);
         }
         for note in refused {
             self.note(note);
