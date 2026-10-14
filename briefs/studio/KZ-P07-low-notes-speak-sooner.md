@@ -104,3 +104,11 @@ NOT CONFIRMED: what was not proven
 BLOCKED ON: step, what you tried, time spent
 If this code were used in a hospital, the worst credible failure is ___, and it could harm about ___ people.
 ```
+
+## Amendment (Cassio, 14 Oct 2026, 14:5x, after KZ-R02 measured it)
+
+The control clauses assumed V03's path takes about two periods on a plucked low B. Measured on main after the build round, V03's path already gives B0 at 46.2 ms (under the 64.8 ms "no sooner than 2 periods" floor) and locks E1's glide at 36.7 ms, before the early path's 38.7 ms deadline. So:
+
+- Test 1's control becomes: with `early` off, B0 and E1 arrive no sooner than with `early` on, and with `early` on the first frame within 50 cents is marked provisional whenever the early path fired first. The absolute targets (50.6 ms and 38.4 ms) stand.
+- Test 5 asserts the provisional frame only when the early path fires before V03's lock; whichever frame comes first must be within 30 cents of the truth at its time, and the no-step rule after it stands.
+- Every other target in this brief stands unchanged.
