@@ -79,7 +79,10 @@ async fn a_listed_save_tag_looks_up_that_moment() {
         .unwrap();
     let home = tempfile::tempdir().unwrap();
     let state = home.path().join("wall");
-    kazoo_wall::tree::git::plant(&home.path().join("tree")).unwrap();
+    // A test daemon keeps its tree inside its own state (KZ-T04g), never
+    // beside it where a person's tree would be.
+    std::fs::create_dir_all(&state).unwrap();
+    kazoo_wall::tree::git::plant(&state.join("tree")).unwrap();
     let daemon = kazoo_wall::daemon::Daemon::start(kazoo_wall::daemon::DaemonConfig {
         load_guard: false,
         ..kazoo_wall::daemon::DaemonConfig::headless(runtime.path(), &state)
