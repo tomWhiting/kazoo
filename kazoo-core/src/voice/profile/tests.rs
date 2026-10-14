@@ -455,3 +455,21 @@ fn jumps_need_voiced_history_and_obey_the_refractory_time() {
     assert!(!gate.frame_with_pitch(50 * 64, true, -12.0, -12.0, 110.0).1);
     assert!(!gate.frame_with_pitch(51 * 64, true, -12.0, -12.0, 196.0).1);
 }
+
+#[test]
+fn dc_does_not_open_a_quiet_instrument() {
+    let signal: Vec<_> = (0..48_000)
+        .map(|sample| {
+            10.0_f32.powf(-55.0 / 20.0).mul_add(
+                (std::f32::consts::TAU * 110.0 * sample as f32 / 48_000.0).sin(),
+                0.2,
+            )
+        })
+        .collect();
+    for profile in [InputProfile::Guitar, InputProfile::Bass] {
+        let mut tracker = VoiceTracker::with_settings(RATE, profile.tracking());
+        let mut high = 0;
+        tracker.process(&signal, |frame| high += usize::from(frame.gate));
+        assert_eq!(high, 0, "{profile:?}: DC must not supply the opening level");
+    }
+}

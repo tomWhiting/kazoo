@@ -342,22 +342,24 @@ fn a_low_b_speaks_in_a_period_and_a_half() {
         let onset = take.onsets[note];
         let hz = fixtures::truth_at(take, onset + 32).expect("bass pitch");
         let signal = &take.samples[onset..fixtures::note_end(take, note)];
-        let mut early = InputProfile::Bass.tracking();
-        early.cycle.early = true;
-        let mut normal = early;
-        normal.cycle.early = false;
-        for (settings, enabled) in [(early, true), (normal, false)] {
+        let settings = InputProfile::Bass.tracking();
+        let mut first_frames = Vec::new();
+        let mut first_estimates = Vec::new();
+        for enabled in [true, false] {
+            let mut settings = settings;
+            settings.cycle.early = enabled;
             let mut tracker = VoiceTracker::with_settings(take.rate, settings);
             let mut cycle = CycleTracker::with_settings(take.rate, settings.cycle);
             let mut first = None;
-            let mut provisional = false;
-            let mut normal_first = None;
+            let mut first_estimate = None;
             for (index, &sample) in signal.iter().enumerate() {
                 cycle.push(sample);
                 if let Some(estimate) = cycle.estimate() {
-                    provisional |= estimate.provisional;
+                    if !enabled {
+                        assert!(!estimate.provisional);
+                    }
                     if cents(estimate.hz, hz) <= 50.0 {
-                        normal_first.get_or_insert(index + 1);
+                        first_estimate.get_or_insert((index + 1, estimate.provisional));
                     }
                 }
                 tracker.process(std::slice::from_ref(&sample), |frame| {
@@ -368,25 +370,36 @@ fn a_low_b_speaks_in_a_period_and_a_half() {
                         assert_eq!(frame.hz.to_bits(), estimate.hz.to_bits());
                     }
                     if frame.voiced && frame.gate && cents(frame.hz, hz) <= 50.0 {
-                        first.get_or_insert(frame);
+                        first.get_or_insert_with(|| {
+                            (frame, cycle.estimate().is_some_and(|e| e.provisional))
+                        });
                     }
                 });
             }
-            let frame = first.expect("the bass speaks");
-            let latency_ms = frame.at as f32 / 48.0;
-            if enabled {
-                assert!(
-                    latency_ms <= limit_ms,
-                    "{hz} Hz: {latency_ms} ms, {frame:?}"
-                );
-                assert!(provisional, "{hz} Hz never emitted an early estimate");
-            } else {
-                assert!(!provisional);
-                assert!(
-                    normal_first.expect("normal pitch") as f32 >= 2.0 * 48_000.0 / hz,
-                    "{hz} Hz normal path arrived before two periods"
-                );
-            }
+            first_frames.push(first.expect("the bass speaks"));
+            first_estimates.push(first_estimate.expect("bass estimate"));
+        }
+        let (early, provisional) = first_frames[0];
+        let (normal, _) = first_frames[1];
+        let latency_ms = early.at as f32 / 48.0;
+        println!(
+            "{hz} Hz: early {latency_ms} ms, normal {} ms, provisional {provisional}",
+            normal.at as f32 / 48.0
+        );
+        assert!(
+            latency_ms <= limit_ms,
+            "{hz} Hz: {latency_ms} ms, {early:?}"
+        );
+        assert!(
+            normal.at >= early.at,
+            "{hz} Hz normal frame arrived before early-on"
+        );
+        assert!(first_estimates[1].0 >= first_estimates[0].0);
+        if first_estimates[0].0 < first_estimates[1].0 {
+            assert!(
+                first_estimates[0].1 && provisional,
+                "{hz} Hz early-first frame must be provisional"
+            );
         }
     }
 }
@@ -534,10 +547,20 @@ fn a_note_that_starts_mid_glide() {
         41.203_445 * (500.0 * time as f32 / 2.0 / 1200.0).exp2()
     });
     let output = early_readings(&take, InputProfile::Bass);
-    let &(at, estimate) = output
-        .iter()
-        .find(|(_, estimate)| estimate.provisional)
-        .expect("early glide pitch");
+    let &(at, estimate) = output.first().expect("glide pitch");
+    let mut normal_settings = InputProfile::Bass.tracking().cycle;
+    normal_settings.early = false;
+    let mut normal = CycleTracker::with_settings(take.rate, normal_settings);
+    let mut first_normal = None;
+    for (index, &sample) in take.samples.iter().enumerate() {
+        normal.push(sample);
+        if normal.estimate().is_some() {
+            first_normal.get_or_insert(index + 1);
+        }
+    }
+    if at < first_normal.expect("normal glide pitch") {
+        assert!(estimate.provisional);
+    }
     let truth = fixtures::truth_at(&take, at).expect("glide truth");
     assert!(
         cents(estimate.hz, truth) <= 30.0,

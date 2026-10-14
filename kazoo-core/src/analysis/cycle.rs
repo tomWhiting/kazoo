@@ -13,6 +13,7 @@ use crate::sanitize_sample;
 
 mod early;
 mod level;
+mod motion;
 
 #[cfg(test)]
 pub(crate) use early::fixtures;
@@ -357,7 +358,7 @@ impl CycleTracker {
         let dc = sanitize_sample(self.dc_coefficient * (self.dc_output + x - self.dc_previous));
         self.dc_previous = x;
         self.dc_output = dc;
-        self.history[self.position & self.mask] = dc;
+        self.history[self.position & self.mask] = if self.centred_windows() { x } else { dc };
         self.position = self.position.wrapping_add(1);
         let feed = 1.0 - self.lp_coefficient;
         self.lp_first = sanitize_sample(feed.mul_add(dc, self.lp_coefficient * self.lp_first));
@@ -485,6 +486,16 @@ impl CycleTracker {
     }
 
     fn carry_glide(&mut self) {
+        if self.centred_windows() {
+            if let Some(estimate) = self.estimate {
+                let period = self.instrument_period(estimate.period);
+                if let Some(estimate) = self.estimate.as_mut() {
+                    estimate.period = period;
+                    estimate.hz = self.rate / period;
+                }
+            }
+            return;
+        }
         let Some((factor, until)) = self.glide else {
             return;
         };
@@ -637,7 +648,9 @@ impl CycleTracker {
                 slope.mul_add(ahead, reading.log_period)
             })
             .exp2() as f32;
-        let period = if (self.min_period..=self.max_period).contains(&period) {
+        let period = if self.centred_windows() {
+            self.instrument_period(peak.period)
+        } else if (self.min_period..=self.max_period).contains(&period) {
             period
         } else {
             peak.period
@@ -789,6 +802,8 @@ impl CycleTracker {
     fn nsdf(&self, lag: usize, window: usize) -> f32 {
         let mut product = 0.0_f64;
         let mut energy = 0.0_f64;
+        let mut current_sum = 0.0_f64;
+        let mut previous_sum = 0.0_f64;
         let newest = self.position.wrapping_sub(1);
         for offset in 0..window {
             let index = newest.wrapping_sub(offset);
@@ -796,6 +811,17 @@ impl CycleTracker {
             let y = f64::from(self.history[index.wrapping_sub(lag) & self.mask]);
             product = x.mul_add(y, product);
             energy = x.mul_add(x, y.mul_add(y, energy));
+            if self.centred_windows() {
+                current_sum += x;
+                previous_sum += y;
+            }
+        }
+        if self.centred_windows() && window > 0 {
+            // Reject each window's DC without the onset transient of a
+            // recursive blocker biasing a partial-cycle period reading.
+            let count = window as f64;
+            product -= current_sum * previous_sum / count;
+            energy -= current_sum.mul_add(current_sum, previous_sum * previous_sum) / count;
         }
         if energy < 1e-12 || !energy.is_finite() || !product.is_finite() {
             0.0

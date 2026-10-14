@@ -986,3 +986,8 @@ at least two B0 periods (64.79 ms), while its normal-path preservation rule forb
 changing the already faster path. Neither the waveform nor the assertion was weakened.
 
 Fix-run measurements and remaining conflicts: `target/kz-logs/r02-fix-bench.md`.
+
+## KZ-R02 fix run 3
+
+The amendment, motion/DC mechanism, red receipts and unchanged numerical limits
+are recorded in [KZ-R02-run3-measurements.md](KZ-R02-run3-measurements.md).

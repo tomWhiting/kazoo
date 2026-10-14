@@ -66,9 +66,13 @@ struct Probe {
 impl Probe {
     /// The same three-point parabola as a normal reading, without climbing.
     fn local(self) -> f32 {
+        self.vertex(0.5)
+    }
+
+    fn vertex(self, reach: f32) -> f32 {
         let curvature = 2.0_f32.mul_add(-self.centre, self.left) + self.right;
         let offset = if curvature < -f32::EPSILON {
-            (0.5 * (self.left - self.right) / curvature).clamp(-0.5, 0.5)
+            (0.5 * (self.left - self.right) / curvature).clamp(-reach, reach)
         } else {
             0.0
         };
@@ -167,11 +171,15 @@ impl CycleTracker {
         if !refined.is_finite() || !(self.min_period..=self.max_period).contains(&refined) {
             return None;
         }
-        // The wide parabola brackets a peak; the local parabola measures it.
-        // Five coarse lags and two local triplets stay inside the search's
-        // eighteen-evaluation bound.
-        let local = self.early_probe(refined, window)?;
-        if local.centre < EARLY_CLARITY {
+        // The coarse parabola only brackets the peak. Refit locally before
+        // publishing: its asymmetric spacing can leave several samples of
+        // bias. Five coarse lags, three local triplets and the half check
+        // use seventeen lag evaluations, within the eighteen-lag bound.
+        let mut local = self.early_probe(refined, window)?;
+        for _ in 0..2 {
+            local = self.early_probe(local.vertex(local.lag as f32 / 16.0), window)?;
+        }
+        if local.centre < EARLY_CLARITY || local.centre < local.left || local.centre < local.right {
             return None;
         }
         let mut peak = Peak {
