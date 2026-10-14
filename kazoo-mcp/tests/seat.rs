@@ -28,16 +28,19 @@ use tokio::sync::mpsc;
 const NOT_RUNNING: &str = "the wall is not running (start it with `kazoo wall`)";
 
 /// Every tool.
-const TOOLS: [&str; 20] = [
+const TOOLS: [&str; 24] = [
     "wall_add",
+    "wall_batch",
     "wall_catalogue",
     "wall_chain",
+    "wall_go",
     "wall_group",
     "wall_listen",
     "wall_load",
     "wall_log",
     "wall_look",
     "wall_loop",
+    "wall_mark",
     "wall_patch",
     "wall_probe",
     "wall_record",
@@ -46,6 +49,7 @@ const TOOLS: [&str; 20] = [
     "wall_saves",
     "wall_speak",
     "wall_tempo",
+    "wall_tree",
     "wall_turn",
     "wall_undo",
     "wall_unpatch",
@@ -1058,3 +1062,6 @@ fn a_missing_or_bad_seat_stops_with_a_message() {
     let (code, said) = run(&["--help"], None);
     assert_eq!(code, Some(0), "{said}");
 }
+
+#[path = "seat/batch.rs"]
+mod batch;

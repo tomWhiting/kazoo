@@ -110,3 +110,36 @@ fn mouse_is_released_on_exit() {
         assert!(restored.contains("?1003l"));
     }
 }
+
+#[test]
+fn desk_refusal_stays_in_the_mouth_status() {
+    let mut state = kazoo_core::ipc::link::LinkStatus {
+        voice: kazoo_core::ipc::link::VoiceLink::default(),
+        normal_priority: false,
+        connected: false,
+        strip: None,
+        blocks_sent: 0,
+        blocks_dropped: 0,
+        messages_dropped: 0,
+        connections: 1,
+        last_refusal: Some(
+            "the desk refused mouth: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)"
+                .into(),
+        ),
+    };
+    assert_eq!(
+        super::desk_status(&state),
+        "not on the desk: it runs at 48000 Hz, the desk at 24000 Hz (use the same device)"
+    );
+    state.last_refusal = Some("the desk closed the connection".into());
+    assert_eq!(
+        super::desk_status(&state),
+        "not on the desk: the desk closed the connection"
+    );
+    state.last_refusal = None;
+    assert_eq!(super::desk_status(&state), "playing direct: no desk");
+    state.connected = true;
+    state.voice.desk_carries = true;
+    state.strip = Some(0);
+    assert_eq!(super::desk_status(&state), "on the desk, strip 1");
+}

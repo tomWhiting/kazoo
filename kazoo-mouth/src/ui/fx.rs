@@ -7,10 +7,10 @@ use ratatui::widgets::Paragraph;
 
 use super::{BRIGHT, DIM};
 use crate::controls::{App, Focus};
-use crate::engine::fx::{MAX_PARAMS, Slot};
+use crate::engine::fx::{MAX_PARAMS, Slot, harmony};
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let mut chips = Vec::with_capacity(6);
+    let mut chips = Vec::with_capacity(Slot::ALL.len() + 1);
     for (index, slot) in app.accepted.fx.order.into_iter().enumerate() {
         let saved = app.accepted.fx.slots[slot as usize];
         let symbol = if app.moving & (1 << slot as usize) != 0 {
@@ -45,7 +45,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, app: &App) {
     ));
     let width: usize = chips.iter().map(Span::width).sum();
     if width > usize::from(area.width) {
-        for chip in chips.iter_mut().take(5) {
+        for chip in chips.iter_mut().take(Slot::ALL.len()) {
             chip.content = chip
                 .content
                 .replace(" ●", "●")
@@ -108,6 +108,7 @@ fn chip_name(slot: Slot, kind: usize, values: &[f32; MAX_PARAMS]) -> &'static st
         };
     }
     match slot {
+        Slot::Harmony => harmony::PRESETS[values[0] as usize],
         Slot::Delay => "delay",
         Slot::Echo => "echo",
         Slot::Distortion | Slot::Reverb | Slot::Megaphone => {

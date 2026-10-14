@@ -66,6 +66,13 @@ impl App {
             Mode::Value { module, knob, text } => self.value_key(key, module, knob, text, now),
             Mode::Jump { text } => self.jump_key(key, text, now),
             Mode::Save { text } => self.save_key(key, text, now),
+            Mode::Mark { text } => self.mark_key(key, text, now),
+            Mode::Tree { index } => self.tree_key(key, index, now),
+            Mode::Go {
+                moment,
+                label,
+                index,
+            } => self.go_key(key, moment, label, index, now),
             Mode::Overwrite { name } => self.confirm_overwrite(key, name, now),
             Mode::Saves { index } => self.saves_key(key, index, now),
             Mode::LoadSave { name, index } => self.confirm_load(key, (name, index), now),
@@ -127,6 +134,8 @@ impl App {
             KeyCode::Char('r') => self.toggle_recording(now),
             KeyCode::Char('w') => self.open_save(now),
             KeyCode::Char('o') => self.open_saves(now),
+            KeyCode::Char('b') => self.open_mark(now),
+            KeyCode::Char('B') => self.open_tree(now),
             KeyCode::Enter => self.open_value(now),
             KeyCode::Left | KeyCode::Char('h') => self.move_across(false),
             KeyCode::Right | KeyCode::Char('l') => self.move_across(true),
@@ -816,8 +825,12 @@ impl App {
             .as_ref()
             .map_or_else(String::new, |place| format!(" {}", self.place_words(place)));
         self.say(Tone::Info, format!("adding {kind}{words}…"), now);
-        self.jobs
-            .push(Job::Call(Request::Add { kind, name, place }));
+        self.jobs.push(Job::Call(Request::Add {
+            alias: None,
+            kind,
+            name,
+            place,
+        }));
     }
 
     /// Where `place` is, in words: `to row 2 after vcf1`, `at the start of

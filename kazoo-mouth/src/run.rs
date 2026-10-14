@@ -188,11 +188,10 @@ pub fn run(args: Args) -> Result<()> {
         loaded.settings.last_blend = loaded.settings.quantise.blend;
     }
     loaded.settings.silent = args.silent;
-    let input_label = args.input.clone().unwrap_or_else(|| "default input".into());
     let mut session = Session::start(args, &loaded.settings)?;
     let mut terminal = kazoo_host::terminal::enter_with(terminal_options())?;
     let mut app = App::loaded(loaded, path, Instant::now());
-    app.input_label = input_label;
+    app.input_label.clone_from(&session.input_label);
     app.loop_sample_rate = session.rate;
     app.loop_feed = session.loop_feed.take();
     if let Some(reason) = terminal.mouse_refused() {
@@ -206,6 +205,7 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 struct Session {
+    input_label: String,
     rate: u32,
     output: Option<OpenedOutput>,
     mic: Option<Mic>,
@@ -228,6 +228,11 @@ impl Session {
             ..OutputRequest::default()
         }
         .prepare_output()?;
+        let input = prepared.input_pick(args.input.as_deref())?;
+        let input_label = input.why.as_ref().map_or_else(
+            || input.name.clone(),
+            |why| format!("{} ({why})", input.name),
+        );
         let info = prepared.info();
         let (mic_tx, mic_rx) = HeapRb::new((info.rate / 10).max(1) as usize).split();
         let (display_tx, display) = HeapRb::new(1024).split();
@@ -250,6 +255,7 @@ impl Session {
             .join(".kazoo/mouth/loops");
         let (saved_tx, saved) = crossbeam_channel::bounded(8);
         let mut session = Self {
+            input_label,
             rate: info.rate,
             output: None,
             mic: None,
@@ -283,7 +289,7 @@ impl Session {
         })?);
         session.mic = Some(kazoo_core::io::mic::open_mic(
             MicRequest {
-                device: device(args.input),
+                device: DeviceChoice::Named(input.name),
                 channel: args.input_channel,
             },
             MicTarget {
@@ -587,9 +593,18 @@ fn link_state(session: &Session) -> String {
     let Some(hub) = &session.hub else {
         return "playing direct: no desk".into();
     };
-    let state = hub.status();
+    desk_status(&hub.status())
+}
+
+fn desk_status(state: &kazoo_core::ipc::link::LinkStatus) -> String {
     if !state.connected {
-        "playing direct: no desk".into()
+        state
+            .desk_refusal()
+            .or(state.last_refusal.as_deref())
+            .map_or_else(
+                || "playing direct: no desk".into(),
+                |why| format!("not on the desk: {why}"),
+            )
     } else if state.voice.desk_carries {
         state.strip.map_or_else(
             || "on the desk, awaiting strip".into(),

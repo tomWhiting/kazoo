@@ -14,6 +14,8 @@ use ringbuf::{HeapProd, HeapRb};
 use super::{Context, FxChain, FxSettings, MAX_PARAMS, Slot, ceiling, mouth_default};
 use crate::engine::{Command, DeskOut, EngineSetup, MouthEngine, Stats};
 
+mod harmony;
+
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
 const AMP: f32 = 0.251_188_64;
@@ -111,7 +113,7 @@ fn each_slot_is_its_kazoo_fx_kind() {
     let input = saw(RATE as usize);
     for slot in Slot::ALL {
         for kind in 0..slot.ids().len() {
-            let description = kazoo_fx::find(slot.ids()[kind]).unwrap();
+            let description = slot.kind(kind).unwrap();
             let mut effect = (description.build)();
             effect.prepare(RATE as f32);
             effect.set_seed(slot.seed(kind));
@@ -208,7 +210,7 @@ fn the_megaphone_is_the_radios_horn() {
             .position(|spec| spec.name == name)
             .unwrap();
         assert_eq!(
-            settings.slots[0].values[0][index].to_bits(),
+            settings.slots[Slot::Megaphone as usize].values[0][index].to_bits(),
             expected.to_bits()
         );
     }
@@ -258,9 +260,13 @@ fn switching_on_and_off_never_clicks() {
         }
         assert!(
             output.iter().all(|side| max_step(side) <= limit),
-            "{}: {} > {limit}",
+            "{}: {} > {limit}, peak {:?}",
             slot.name(),
-            max_step(&output[0])
+            max_step(&output[0]),
+            output[0]
+                .windows(2)
+                .enumerate()
+                .max_by(|a, b| (a.1[1] - a.1[0]).abs().total_cmp(&(b.1[1] - b.1[0]).abs()))
         );
     }
 }
@@ -538,7 +544,7 @@ fn a_reorder_swaps_without_a_click() {
         assert!((output[side][0] - warm[side][23_999]).abs() <= limit);
         assert!(max_step(&output[side]) <= limit);
     }
-    chain.reorder([Slot::Delay; 5], &stats);
+    chain.reorder([Slot::Delay; Slot::ALL.len()], &stats);
     assert_eq!(chain.order, order);
     assert_eq!(stats.fx_refused.load(Ordering::Relaxed), 1);
 }
@@ -705,7 +711,7 @@ fn parameters_are_kept_for_each_kind_and_invalid_commands_are_counted() {
     chain.kind(Slot::Distortion, 0, &stats);
     render(&mut chain, &sine(1024), 120.0, &stats);
     assert_eq!(
-        chain.pedals[1].kinds[0].values[index].to_bits(),
+        chain.pedals[Slot::Distortion as usize].kinds[0].values[index].to_bits(),
         value.to_bits()
     );
     chain.kind(Slot::Distortion, u8::MAX, &stats);

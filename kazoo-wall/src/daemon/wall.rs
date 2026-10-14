@@ -4,6 +4,7 @@
 //! Sockets live elsewhere ([`super::control`]); this is plain state with
 //! methods, so it can be tested without any.
 
+mod batch;
 mod chains;
 mod cost;
 mod delay_lines;
@@ -552,6 +553,7 @@ pub struct Wall {
     engine: EngineControl,
     clock_line: ClockLine,
     desk: Option<HubLink>,
+    desk_tempo: tempo_sync::DeskTempo,
     log: VecDeque<Change>,
     next_seq: u64,
     /// The latest change made (and logged): what `revision` says. Behind
@@ -1370,6 +1372,7 @@ impl Wall {
             rack: Rack::default(),
             engine,
             clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
+            desk_tempo: tempo_sync::DeskTempo::default(),
             desk,
             log: history.into_iter().skip(skip).collect(),
             next_seq,
@@ -1581,8 +1584,10 @@ impl Wall {
     /// recording under way carry on through it; the wall's own tempo
     /// becomes the patch's, unless the desk keeps the tempo.
     fn swap_engine(&mut self) {
+        self.engine.begin_swap();
         self.engine.send(Command::Hush);
-        for slot in self.rack.empty() {
+        self.rack.empty();
+        for slot in 0..self.engine.slots() {
             self.engine.send(Command::Remove { slot });
         }
         self.speech.replace_wall();
@@ -1613,6 +1618,7 @@ impl Wall {
             self.engine.send(Command::Tempo(self.patch.tempo));
         }
         self.engine.send(Command::Unhush);
+        self.engine.end_swap();
         self.swaps_sent += 1;
     }
 
@@ -1989,6 +1995,7 @@ impl Wall {
     /// Mirror a change into the engine.
     fn mirror(&mut self, what: &What) {
         match what {
+            What::Batch { changes, .. } => self.mirror_batch(changes),
             What::Chain { changes, .. } => self.mirror_chain(changes),
             What::Turn {
                 module,
@@ -2074,6 +2081,7 @@ impl Wall {
             | What::SetAside { .. }
             | What::Unknown => {}
             What::Tempo { to, desk, .. } => {
+                self.patch.tempo = *to;
                 if !desk {
                     self.engine.send(Command::Tempo(*to));
                 }
@@ -2106,9 +2114,11 @@ impl Wall {
             for (id, birth) in
                 crate::tree::stamp_births(&mut change.what, change.seq, &change.at, print, salt)
             {
-                if !self.patch.mark_birth(&id, birth) {
+                let removed = batch::stamp_removed_birth(&mut change.what, &id, &birth);
+                if !self.patch.mark_birth(&id, birth) && !removed {
                     self.unmade = true;
                     return Err(WallError {
+                        step: None,
                         code: ErrorCode::Internal,
                         message: format!("newborn module '{id}' is missing"),
                     });
@@ -2116,6 +2126,10 @@ impl Wall {
             }
         }
         self.record(&change)?;
+        if let Err(err) = self.ask_batch_tempo(&change.what) {
+            self.not_made(change.seq);
+            return Err(err);
+        }
         Ok(self.apply(change))
     }
 
@@ -2367,6 +2381,40 @@ impl Wall {
     }
 
     fn whole_tree(&mut self, kind: crate::tree::thread::WholeKind) {
+        // The changes the commit may name come after what the tree holds:
+        // the changes kept in memory (the last `MEMORY_CHANGES`) have them
+        // all unless the tree is further behind than that, and only then
+        // is the log read from disk (every go asks for this commit).
+        let first_owed = self
+            .tree
+            .as_ref()
+            .and_then(|tree| tree.through)
+            .map_or(1, |through| through.saturating_add(1));
+        let in_memory = self
+            .log
+            .front()
+            .is_none_or(|change| change.seq <= first_owed);
+        let from_disk = self.store.as_ref().filter(|_| !in_memory);
+        let history = match from_disk.map(Store::load_log).transpose() {
+            Ok(Some(log)) => log.changes,
+            Ok(None) => self.log.iter().cloned().collect(),
+            Err(err) => {
+                self.tree_failed(&crate::tree::TreeError::Git(format!(
+                    "read change log for tree gap: {err}"
+                )));
+                return;
+            }
+        };
+        let abandoned = abandoned_changes(history.iter());
+        let changes = history
+            .iter()
+            .filter(|change| {
+                change.seq <= self.made
+                    && !matches!(change.what, What::Go { .. })
+                    && !abandoned.contains(&change.seq)
+            })
+            .map(|change| change.seq)
+            .collect();
         let files = match crate::tree::to_files(&self.patch.to_file()) {
             Ok(files) => files,
             Err(err) => {
@@ -2388,6 +2436,7 @@ impl Wall {
             self.tree_mirror = files.clone();
             let accepted = tree.offer(crate::tree::thread::TreeItem::Whole {
                 kind,
+                changes,
                 seq: self.made,
                 clock,
                 files,
@@ -2710,6 +2759,7 @@ impl Wall {
             | Request::Unpatch { .. }
             | Request::Add { .. }
             | Request::Remove { .. }
+            | Request::Batch { .. }
             | Request::ChainAdd { .. }
             | Request::Loop { .. } => Before::Whole(Box::new(self.patch.clone())),
             Request::Undo { change } => {
@@ -2725,6 +2775,7 @@ impl Wall {
                             | What::Add { .. }
                             | What::Remove { .. }
                             | What::Restore { .. }
+                            | What::Batch { .. }
                             | What::Chain { .. }
                             | What::Take { .. }
                             | What::Erase { .. }
@@ -2766,6 +2817,7 @@ impl Wall {
             | Request::Patch { .. }
             | Request::Speak { .. }
             | Request::ChainAdd { .. } => true,
+            Request::Batch { changes, .. } => changes.iter().any(|change| self.grows(change)),
             Request::Group { join, .. } => *join,
             Request::Undo { change } => self.log.iter().any(|logged| {
                 logged.seq == *change
@@ -2834,9 +2886,7 @@ impl Wall {
                 };
                 self.changed(seat, what, None, None, None)
             }
-            Request::Add { kind, name, place } => {
-                self.add(seat, kind, name.as_deref(), place.as_ref())
-            }
+            Request::Add { .. } => self.batch_add(seat, request),
             Request::Remove { module } => {
                 let what = self.patch.remove(module, &[])?;
                 self.changed(seat, what, None, None, None)
@@ -2864,6 +2914,7 @@ impl Wall {
                 modules,
                 overwrite,
             } => self.chain_save(name, modules, console && *overwrite),
+            Request::Batch { note, changes } => self.batch(seat, note, changes, now),
             Request::ChainAdd { name } => self.chain_add(seat, name, now),
             Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change),
@@ -3335,6 +3386,9 @@ impl Wall {
         if let What::Tempo { from, .. } = what {
             return self.tempo(seat, from, Some(seq));
         }
+        if matches!(what, What::Batch { .. }) {
+            return self.undo_batch_change(seat, seq, &what);
+        }
         // Undoing a removal brings a module, its cables and its words back,
         // and undoing an unplugging brings a cable back: more work, like
         // any other addition. Every other undo adds nothing.
@@ -3371,6 +3425,27 @@ impl Wall {
         } else {
             self.patch.tempo
         };
+        if self.chain_batch.is_some() {
+            let from = self.batch_tempo_from(desk);
+            self.patch.tempo = bpm;
+            return self.changed(
+                seat,
+                What::Tempo {
+                    from,
+                    to: bpm,
+                    desk,
+                },
+                undoes,
+                None,
+                None,
+            );
+        }
+        if desk {
+            // A desk move not yet heard by a tick is logged before the ask,
+            // so the tick after the ask hears nothing new until the desk
+            // answers it.
+            self.sync_desk_tempo(from);
+        }
         // The log first: the desk is asked only once the change is in it,
         // so a tempo the log cannot take never moves the desk (whose tempo
         // the wall then follows and saves).
@@ -3415,6 +3490,7 @@ impl Wall {
                     ),
                 });
             }
+            self.desk_tempo.asked(bpm);
         } else {
             self.patch.tempo = bpm;
         }
@@ -3967,6 +4043,10 @@ impl Wall {
         });
         self.kept_in = source.kept().map(|kept| (kept.clone(), incoming_print));
         self.prune();
+        notes.push(format!(
+            "lands on bar {:.0}",
+            self.engine.landing_beat() / 4.0 + 1.0
+        ));
         let result = encode(&LoadResult {
             change: change.clone(),
             backup: backup.name.clone(),
@@ -4838,7 +4918,9 @@ impl Wall {
             })
             .collect();
         ModuleView {
-            tape: self.loops.view(&module.id, &self.patch),
+            tape: self
+                .loops
+                .view(&module.id, &self.patch, self.engine.shared().origin()),
             id: module.id.clone(),
             kind: module.kind.name().to_string(),
             name: module.name.clone(),
@@ -4891,11 +4973,12 @@ impl Wall {
         // it; off the desk only `tempo` changes it, which saves it itself
         // (the engine may not have heard that change yet).
         if self.desk.as_ref().is_some_and(HubLink::is_connected) {
-            let bpm = clamp_bpm(self.engine.shared().bpm());
-            if (bpm - self.patch.tempo).abs() > 1e-9 {
-                self.patch.tempo = bpm;
-                self.dirty = true;
+            let bpm = self.engine.shared().bpm();
+            if bpm.is_finite() {
+                self.sync_desk_tempo(clamp_bpm(bpm));
             }
+        } else {
+            self.desk_tempo.disconnected();
         }
         self.take_readings(now);
         let (left, right) = self.engine.shared().take_peaks();
@@ -5186,3 +5269,5 @@ mod tests;
 
 #[cfg(test)]
 mod clock_tests;
+
+mod tempo_sync;

@@ -637,6 +637,7 @@ mod tests {
     fn requests_too_long_for_the_protocol_are_not_sent() {
         let mut next = 7;
         let huge = Request::Add {
+            alias: None,
             kind: "x".repeat(kazoo_wall::protocol::MAX_LINE),
             name: None,
             place: None,
