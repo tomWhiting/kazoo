@@ -12,6 +12,7 @@ use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
 use crate::sanitize_sample;
 
 mod early;
+mod level;
 
 #[cfg(test)]
 pub(crate) use early::fixtures;
@@ -279,6 +280,7 @@ pub struct CycleTracker {
     marks: u64,
     estimate: Option<CycleEstimate>,
     last_clarity: f32,
+    periodic_level: f32,
     last_accepted_mark: f64,
     hint: Option<(f32, u8)>,
     trend: [Reading; TREND_READINGS],
@@ -335,6 +337,7 @@ impl CycleTracker {
             marks: 0,
             estimate: None,
             last_clarity: 0.0,
+            periodic_level: 0.0,
             last_accepted_mark: 0.0,
             hint: None,
             trend: [Reading {
@@ -420,6 +423,7 @@ impl CycleTracker {
     /// Drop the lock now, with any hint and glide, and reopen the filter.
     pub fn unlock(&mut self) {
         self.estimate = None;
+        self.periodic_level = 0.0;
         self.lp_coefficient = (-TAU * self.settings.max_hz / self.rate).exp();
         self.hint = None;
         self.trend_count = 0;
@@ -617,6 +621,7 @@ impl CycleTracker {
     }
 
     fn accept(&mut self, peak: Peak, at: f64) {
+        self.periodic_level = self.periodic_level_at(peak);
         let reading = Reading {
             log_period: f64::from(peak.period).log2(),
             centre: (-0.5_f64).mul_add(

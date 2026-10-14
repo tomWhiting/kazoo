@@ -462,12 +462,23 @@ fn a_refused_candidate_costs_nothing() {
         let mut first_early = None;
         let mut first_normal = None;
         let mut probes_checked = false;
+        let mut first_lobe = false;
+        let mut range_checked = false;
         for (index, &sample) in signal.iter().enumerate() {
             // Check the lobe's NSDF at its deadline even when a normal mark
             // has already locked and prevents the early search from running.
             let candidate = early.early.pending;
+            let previous = early.previous;
             early.push(sample);
             normal.push(sample);
+            if !first_lobe && previous < 0.0 && early.previous >= 0.0 {
+                first_lobe = true;
+                let period = (2.0 * (early.last_rise - early.last_fall)) as f32;
+                if !(early.min_period..=early.max_period).contains(&period) {
+                    assert!(early.early.pending.is_none());
+                    range_checked = true;
+                }
+            }
             if !probes_checked
                 && candidate.is_some_and(|candidate| early.time - 1.0 >= candidate.deadline)
             {
@@ -501,7 +512,16 @@ fn a_refused_candidate_costs_nothing() {
                 first_normal.get_or_insert(index);
             }
         }
-        assert!(probes_checked, "the refusal was exercised");
+        if polarity < 0.0 {
+            assert!(
+                probes_checked,
+                "the in-range lobe's NSDF refusal was exercised"
+            );
+            assert!(!range_checked);
+        } else {
+            assert!(range_checked, "the out-of-range lobe was rejected");
+            assert!(!probes_checked);
+        }
         assert!(first_normal.is_some(), "normal marks eventually lock");
         assert_eq!(first_early, first_normal);
     }

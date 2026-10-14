@@ -313,9 +313,7 @@ impl VoiceTracker {
         }
         let voiced = fc.is_some();
         let fast_db = db(self.fast);
-        let (gate, onset) =
-            self.gate
-                .frame_with_pitch(self.samples, voiced, fast_db, db(self.valley), self.hz);
+        let (gate, onset) = self.gate_frame(voiced, fast_db);
         if onset {
             self.valley = self.fast;
         }
@@ -354,6 +352,17 @@ impl VoiceTracker {
             breath: sanitize_sample(self.breath).clamp(0.0, 1.0),
             confidence: sanitize_sample(confidence).clamp(0.0, 1.0),
         }
+    }
+
+    fn gate_frame(&mut self, voiced: bool, fast_db: f32) -> (bool, bool) {
+        self.gate.frame_with_level(
+            self.samples,
+            voiced,
+            fast_db,
+            db(self.valley),
+            self.hz,
+            db(self.cycle.periodic_level()),
+        )
     }
 
     /// Clear history, verdicts and frame clock without allocating.
