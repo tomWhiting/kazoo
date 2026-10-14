@@ -2,6 +2,7 @@
 
 mod fused;
 pub mod gate;
+pub mod instrument;
 mod metrics;
 
 pub use fused::FusedUnderTest;

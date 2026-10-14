@@ -1,7 +1,7 @@
 use super::{TrackerUnderTest, gate::GateUnderTest};
 use crate::analysis::{OnsetDetector, PitchDetector, PitchDetectorConfig};
 use crate::voice::{
-    VoiceFrame, VoiceTracker,
+    TrackSettings, VoiceFrame, VoiceTracker,
     judge::{JudgeResult, OnsetConfig},
 };
 use std::collections::VecDeque;
@@ -21,12 +21,17 @@ pub struct FusedUnderTest {
 impl FusedUnderTest {
     /// Construct an offline adapter for this stream's sample rate.
     pub fn new(rate: u32) -> crate::Result<Self> {
-        let config = PitchDetectorConfig::for_rate(rate);
-        let scale = config.frame_length / 2048;
+        Self::with_settings(rate, TrackSettings::VOICE)
+    }
+
+    /// Use the same profile for cycle tracking, gate and worker verdicts.
+    pub fn with_settings(rate: u32, settings: TrackSettings) -> crate::Result<Self> {
+        let config = settings.judge_config(rate);
+        let scale = PitchDetectorConfig::for_rate(rate).frame_length / 2048;
         let lag = config.hop_length as u64;
         let onsets = OnsetConfig::default();
         Ok(Self {
-            tracker: VoiceTracker::new(rate),
+            tracker: VoiceTracker::with_settings(rate, settings),
             pitch: PitchDetector::new(config)?,
             // The judge thread's own onset settings, scaled as `judge::spawn` scales them.
             onset: OnsetDetector::new(

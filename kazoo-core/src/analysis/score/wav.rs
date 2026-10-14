@@ -6,7 +6,7 @@ use hound::{SampleFormat, WavReader};
 use pyin::{Framing, PYINExecutor, PadMode};
 
 use super::{SCORE_STEP, Take};
-use crate::analysis::{PitchDetectorConfig, VOICE_MAX_HZ, VOICE_MIN_HZ};
+use crate::voice::TrackSettings;
 
 fn config_error(path: &Path, reason: impl std::fmt::Display) -> crate::Error {
     crate::Error::Config(format!("{}: {reason}", path.display()))
@@ -39,23 +39,30 @@ fn at_step(frames: &[Option<f64>], step: usize, hop: usize) -> Option<f32> {
 
 /// Read channel zero and judge the entire take without streaming latency.
 pub fn read_take(path: &Path) -> crate::Result<Take> {
+    read_take_with_settings(path, TrackSettings::VOICE)
+}
+
+/// Reference a recorded take across the selected profile's full range.
+pub fn read_take_with_settings(path: &Path, settings: TrackSettings) -> crate::Result<Take> {
     let mut reader = WavReader::open(path).map_err(|error| config_error(path, error))?;
     let spec = reader.spec();
     if spec.channels == 0 {
         return Err(config_error(path, "WAV has no channels"));
     }
-    let config = PitchDetectorConfig::for_rate(spec.sample_rate);
+    let config = settings.judge_config(spec.sample_rate);
     let frame = config.frame_length;
     let rate = f64::from(spec.sample_rate);
-    let max_period = (rate / f64::from(VOICE_MIN_HZ)).ceil().min(f64::from(
-        u32::try_from(frame / 2 - 1).map_err(|error| config_error(path, error))?,
-    ));
-    if rate < 2.0 * f64::from(VOICE_MAX_HZ)
-        || max_period < (rate / f64::from(VOICE_MAX_HZ)).floor().max(1.0) + 2.0
+    let max_period = (rate / f64::from(config.min_frequency))
+        .ceil()
+        .min(f64::from(
+            u32::try_from(frame / 2 - 1).map_err(|error| config_error(path, error))?,
+        ));
+    if rate < 2.0 * f64::from(config.max_frequency)
+        || max_period < (rate / f64::from(config.max_frequency)).floor().max(1.0) + 2.0
     {
         return Err(config_error(
             path,
-            "sample rate cannot support the voice reference range",
+            "sample rate cannot support the reference range",
         ));
     }
     let channels = usize::from(spec.channels);
@@ -104,8 +111,8 @@ pub fn read_take(path: &Path) -> crate::Result<Take> {
     // step dropped out), and its cost (frames x states squared) was 16 times
     // this. Each step is then read between the two frames around its centre.
     let mut executor = PYINExecutor::new(
-        f64::from(VOICE_MIN_HZ),
-        f64::from(VOICE_MAX_HZ),
+        f64::from(config.min_frequency),
+        f64::from(config.max_frequency),
         spec.sample_rate,
         config.frame_length,
         None,
@@ -145,6 +152,14 @@ pub fn read_take(path: &Path) -> crate::Result<Take> {
 
 /// Read WAVs directly in a directory, sorted by filename.
 pub fn fixture_takes(dir: &Path) -> crate::Result<Vec<Take>> {
+    fixture_takes_with_settings(dir, TrackSettings::VOICE)
+}
+
+/// Read instrument recordings with a reference window that includes low strings.
+pub fn fixture_takes_with_settings(
+    dir: &Path,
+    settings: TrackSettings,
+) -> crate::Result<Vec<Take>> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -166,5 +181,8 @@ pub fn fixture_takes(dir: &Path) -> crate::Result<Vec<Take>> {
         }
     }
     paths.sort();
-    paths.iter().map(|path| read_take(path)).collect()
+    paths
+        .iter()
+        .map(|path| read_take_with_settings(path, settings))
+        .collect()
 }

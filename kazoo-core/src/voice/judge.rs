@@ -1,5 +1,6 @@
 //! Worker-side pitch and spectral-flux analysis with callback-safe rings.
 
+use super::TrackSettings;
 use crate::analysis::{OnsetDetector, PitchDetector, PitchDetectorConfig, PitchEstimate};
 use ringbuf::{
     HeapCons, HeapProd, HeapRb,
@@ -11,6 +12,20 @@ use std::sync::{
 };
 use std::thread::{JoinHandle, Thread};
 use std::time::Duration;
+
+impl TrackSettings {
+    /// Keep the original judge hop and rate scaling, with this profile's range and frame.
+    #[must_use]
+    pub const fn judge_config(self, rate: u32) -> PitchDetectorConfig {
+        self.validate();
+        let mut config = PitchDetectorConfig::for_rate(rate);
+        let scale = config.frame_length / 2048;
+        config.min_frequency = self.cycle.min_hz;
+        config.max_frequency = self.cycle.max_hz;
+        config.frame_length = self.judge_frame_48k * scale;
+        config
+    }
+}
 
 /// A verdict owns no memory, so consuming or dropping one never frees on the callback.
 #[derive(Debug, Clone, Copy)]

@@ -804,3 +804,83 @@ fn voice_gate_meets_its_targets() -> crate::Result<()> {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     Ok(())
 }
+
+#[test]
+fn the_instrument_suite_has_exact_repeatable_truth() {
+    use super::instrument::instrument_suite;
+    let first = instrument_suite(48_000);
+    let second = instrument_suite(48_000);
+    assert_eq!(first.len(), 8);
+    let names = [
+        "bass_open",
+        "guitar_open",
+        "sweep",
+        "slide",
+        "bend",
+        "vibrato",
+        "glide",
+        "noise_hum",
+    ];
+    for ((take, repeated), name) in first.iter().zip(&second).zip(names) {
+        assert_eq!(take.name, name);
+        assert!(take.exact);
+        assert_eq!(take.truth.len(), take.samples.len().div_ceil(SCORE_STEP));
+        assert_eq!(take.samples, repeated.samples);
+        assert_eq!(take.truth, repeated.truth);
+        assert_eq!(take.onsets, repeated.onsets);
+        assert!(take.samples.iter().all(|sample| sample.is_finite()));
+        assert!(
+            take.truth
+                .iter()
+                .all(|hz| hz.is_none_or(|hz| hz.is_finite() && hz > 0.0))
+        );
+        assert!(take.onsets.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(take.onsets.iter().all(|&at| at < take.samples.len()));
+    }
+    let bass = &first[0];
+    let b0 = bass.truth[bass.onsets[0] / SCORE_STEP].expect("B0 truth");
+    assert!((b0 - 30.867_706).abs() < 0.001);
+    assert_eq!(bass.onsets.len(), 5);
+    assert_eq!(first[1].onsets.len(), 6);
+    let sweep = &first[2];
+    assert_eq!(sweep.onsets.len(), 6);
+    assert!(
+        sweep
+            .onsets
+            .windows(2)
+            .all(|pair| pair[1] - pair[0] == 3360)
+    );
+    for (&pluck, note) in sweep
+        .onsets
+        .iter()
+        .zip([45.0_f32, 48.0, 52.0, 57.0, 60.0, 64.0])
+    {
+        let truth = sweep.truth[pluck / SCORE_STEP].expect("sweep note truth");
+        let expected = 440.0 * ((note - 69.0) / 12.0_f32).exp2();
+        assert!((1200.0 * (truth / expected).log2()).abs() < 0.01);
+    }
+    for take in &first[3..7] {
+        assert_eq!(take.onsets.len(), 1);
+    }
+    assert!(first[7].truth.iter().all(Option::is_none));
+    assert!(first[7].onsets.is_empty());
+}
+
+#[test]
+fn the_instrument_truth_scales_with_the_sample_clock() {
+    use super::instrument::instrument_suite;
+    for rate in [44_100, 48_001, 96_000] {
+        let takes = instrument_suite(rate);
+        let sweep = &takes[2];
+        assert_eq!(sweep.rate, rate);
+        for (note, &at) in sweep.onsets.iter().enumerate() {
+            let expected = (u64::from(rate) * (200 + note as u64 * 70) / 1000) as usize;
+            assert_eq!(at, expected);
+        }
+        let glide = &takes[6];
+        let start = glide.onsets[0];
+        let low = glide.truth[start / SCORE_STEP + 1].expect("glide start");
+        let high = glide.truth[(start + rate as usize * 2) / SCORE_STEP - 1].expect("glide end");
+        assert!((1200.0 * (high / low).log2() - 500.0).abs() < 1.0);
+    }
+}

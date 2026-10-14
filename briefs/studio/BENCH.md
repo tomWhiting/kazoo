@@ -737,3 +737,37 @@ The unvoiced veto uses the same post-leap window condition as octave folding: si
 otherwise delay a new note until the slower judge becomes voiced (57.33 ms maximum on the ladder).
 A four-dB recovery is timestamped on its threshold crossing, rather than on every frame it remains
 above threshold; refreshing it repeatedly counted nine onsets for five syllables.
+
+## KZ-P06 profiles
+
+Date: 2026-10-14 11:37 AEDT. Base and HEAD: `dd1bfc606ebfd152164c8b3092ed6f9b52657472`,
+branch `lane/kz-P06`, changes uncommitted. Load at source writing: 60.12, 32.12, 32.71.
+This is a write-only round with the CPU reserved. No build, test, scoreboard or benchmark ran.
+All measurements below are **not verified**; no previous voice result is reused as instrument proof.
+
+`judge/hop/48k/bass`: not run. The implemented row uses the bass range (29–500 Hz),
+a 4096-sample frame, the unchanged 512-sample hop and a complete judge history before measurement.
+The acceptance ceiling is 4.2 ms per run; neither a before value nor an after value was measured.
+
+The `voice_score` example writes pitch and gate tables for both profiles and all eight exact takes.
+The instrument fixture directory contains no takes in this checkout. If recordings are added, the
+example loads them with the line profile's 4096-sample reference window so B0 is inside its range.
+
+| tracker | take | pitch measurements | gate and onset measurements |
+|---|---|---|---|
+| voice:guitar | bass_open | not run | not run |
+| voice:guitar | guitar_open | not run | not run |
+| voice:guitar | sweep | not run | not run |
+| voice:guitar | slide | not run | not run |
+| voice:guitar | bend | not run | not run |
+| voice:guitar | vibrato | not run | not run |
+| voice:guitar | glide | not run | not run |
+| voice:guitar | noise_hum | not run | not run |
+| voice:bass | bass_open | not run | not run |
+| voice:bass | guitar_open | not run | not run |
+| voice:bass | sweep | not run | not run |
+| voice:bass | slide | not run | not run |
+| voice:bass | bend | not run | not run |
+| voice:bass | vibrato | not run | not run |
+| voice:bass | glide | not run | not run |
+| voice:bass | noise_hum | not run | not run |
