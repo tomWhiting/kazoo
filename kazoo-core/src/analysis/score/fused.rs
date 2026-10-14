@@ -34,7 +34,11 @@ impl FusedUnderTest {
         Self::assemble(rate, TrackSettings::VOICE, config)
     }
 
-    fn assemble(rate: u32, settings: TrackSettings, config: PitchDetectorConfig) -> crate::Result<Self> {
+    fn assemble(
+        rate: u32,
+        settings: TrackSettings,
+        config: PitchDetectorConfig,
+    ) -> crate::Result<Self> {
         let scale = PitchDetectorConfig::for_rate(rate).frame_length / 2048;
         let lag = config.hop_length as u64;
         let onsets = OnsetConfig::default();
