@@ -254,7 +254,9 @@ fn every_error_code_has_its_wire_name() {
             "wall_replaced",
             "slow_down",
             "not_allowed",
-            "internal"
+            "internal",
+            "unknown_moment",
+            "mark_exists"
         ]
     );
 }

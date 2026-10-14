@@ -107,6 +107,8 @@ pub const fn code_name(code: kazoo_wall::protocol::ErrorCode) -> &'static str {
         ErrorCode::SlowDown => "slow_down",
         ErrorCode::NotAllowed => "not_allowed",
         ErrorCode::Internal => "internal",
+        ErrorCode::UnknownMoment => "unknown_moment",
+        ErrorCode::MarkExists => "mark_exists",
     }
 }
 

@@ -1083,6 +1083,7 @@ fn a_move_is_told_to_every_console_the_mover_too_and_logs_nothing() {
                 | Event::Fingerprints { .. }
                 | Event::Fault { .. }
                 | Event::Log { .. }
+                | Event::Marked { .. }
                 | Event::Unknown => {}
             }
         }

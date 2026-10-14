@@ -400,6 +400,22 @@ pub enum Request {
         /// The save's name (any case).
         name: String,
     },
+    /// Name the moment the wall is at: a [`MarkResult`]. Every subscriber
+    /// is told ([`Event::Marked`]); nothing is logged. Any seat but a watcher.
+    /// Marks never move.
+    Mark {
+        name: String,
+    },
+    /// Put the wall at a moment while it plays: a [`LoadResult`]. The wall
+    /// as it was is kept first; one [`What::Go`] is logged. Any seat but a watcher.
+    Go {
+        moment: String,
+    },
+    /// List the tree: a [`TreeResult`]. Anyone may ask, watchers too.
+    Tree {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recent: Option<u32>,
+    },
     /// Stop the daemon. Console only.
     Shutdown,
 }
@@ -437,6 +453,9 @@ impl Request {
             Self::Load { .. } => "load",
             Self::New => "new",
             Self::DeleteSave { .. } => "delete_save",
+            Self::Mark { .. } => "mark",
+            Self::Go { .. } => "go",
+            Self::Tree { .. } => "tree",
             Self::Shutdown => "shutdown",
         }
     }
@@ -485,6 +504,8 @@ impl Request {
                 | Self::Record { .. }
                 | Self::Save { .. }
                 | Self::Load { .. }
+                | Self::Mark { .. }
+                | Self::Go { .. }
                 | Self::New
                 | Self::DeleteSave { .. }
         )
@@ -620,11 +641,15 @@ pub enum ErrorCode {
     NotAllowed,
     /// Something went wrong inside the daemon.
     Internal,
+    /// No moment with that name in the tree.
+    UnknownMoment,
+    /// A permanent mark with that name already exists.
+    MarkExists,
 }
 
 impl ErrorCode {
     /// Every code.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::BadRequest,
         Self::NotHello,
         Self::BadName,
@@ -642,6 +667,8 @@ impl ErrorCode {
         Self::SlowDown,
         Self::NotAllowed,
         Self::Internal,
+        Self::UnknownMoment,
+        Self::MarkExists,
     ];
 }
 
@@ -1121,6 +1148,14 @@ pub enum Event {
         seat: String,
         /// The save, as it was named.
         name: String,
+    },
+    /// A seat marked a moment: told to every subscriber, the marker included.
+    /// Marking changes no sound and logs nothing.
+    Marked {
+        seat: String,
+        name: String,
+        tag: String,
+        at: TreePlace,
     },
     /// The change log stopped taking changes, or took them again, or what
     /// it owes moved: sent to every subscriber.

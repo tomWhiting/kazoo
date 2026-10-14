@@ -4085,7 +4085,8 @@ fn a_save_or_deletion_whose_directory_cannot_be_flushed_still_happens() {
     let outcome = save(&mut wall, "jam", true).unwrap();
     let result: SaveResult = serde_json::from_value(outcome.result).unwrap();
     assert!(result.replaced);
-    assert_eq!(result.notes.len(), 1, "{:?}", result.notes);
+    assert_eq!(result.notes.len(), 2, "{:?}", result.notes);
+    assert!(result.notes[1].contains("it is not marked in the tree"));
     assert!(
         result.notes[0].contains("take it back"),
         "{:?}",
@@ -4114,7 +4115,8 @@ fn a_save_a_crash_could_take_back_is_no_backup() {
     fail_once(&mut wall, FailAt::SyncDir);
     let outcome = save(&mut wall, "jam", false).unwrap();
     let result: SaveResult = serde_json::from_value(outcome.result).unwrap();
-    assert_eq!(result.notes.len(), 1);
+    assert_eq!(result.notes.len(), 2);
+    assert!(result.notes[1].contains("it is not marked in the tree"));
     // The wall is that save, but a new wall keeps it afresh.
     let cleared: LoadResult =
         serde_json::from_value(ask(&mut wall, &Request::New).unwrap()).unwrap();
