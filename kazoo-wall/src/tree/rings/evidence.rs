@@ -122,6 +122,7 @@ pub(super) struct Proofs {
     pub unreadable: Vec<String>,
     pub bad_backups: Vec<String>,
     pub backups: usize,
+    pub tree_backups: usize,
     pub disagreements: Vec<String>,
     pub count: usize,
 }
@@ -180,6 +181,7 @@ impl Proofs {
             unreadable: Vec::new(),
             bad_backups: Vec::new(),
             backups: 0,
+            tree_backups: 0,
             disagreements: Vec::new(),
             count: 0,
         };
@@ -207,6 +209,10 @@ impl Proofs {
             }
         }
         for change in changes {
+            if matches!(&change.what, What::Go { backup, .. } if backup.starts_with("tree:")) {
+                proofs.tree_backups += 1;
+                continue;
+            }
             let (What::Load {
                 backup,
                 fingerprint,
@@ -287,7 +293,7 @@ impl Proofs {
                 ..
             } => {
                 if let Some(undone) = change.undoes {
-                    return self.backup(undone);
+                    return self.backup(state, undone, changes);
                 }
                 (None, modules, cables, tempo)
             }
@@ -356,7 +362,7 @@ impl Proofs {
             return Ok((file, None));
         }
         if let Some(undone) = change.undoes {
-            return self.backup(undone);
+            return self.backup(state, undone, changes);
         }
         if matches!(change.what, What::Go { .. }) {
             return Err("no kept file proves the wall after the go".into());
@@ -365,7 +371,34 @@ impl Proofs {
         saved_before(state, name, change, *modules, *cables, *tempo).map(|file| (file, None))
     }
 
-    fn backup(&self, undone: u64) -> Result<(PatchFile, Option<String>), String> {
+    fn backup(
+        &self,
+        state: &Path,
+        undone: u64,
+        changes: &[Change],
+    ) -> Result<(PatchFile, Option<String>), String> {
+        if let Some(What::Go { from, backup, .. }) = changes
+            .iter()
+            .find(|change| change.seq == undone)
+            .map(|change| &change.what)
+            && let Some(commit) = backup.strip_prefix("tree:")
+        {
+            if from.commit.len() != 40
+                || !from.commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || commit != &from.commit[..12]
+            {
+                return Err(format!(
+                    "the tree backup of go {undone} does not name its source moment"
+                ));
+            }
+            let tree = crate::tree::git::tree_dir(state).ok_or_else(|| {
+                format!("the tree holding go {undone}'s source moment has no directory")
+            })?;
+            let file = crate::tree::thread::here::wall(&tree, &from.commit).map_err(|error| {
+                format!("the tree backup of go {undone} could not be read: {error}")
+            })?;
+            return Ok((*file, None));
+        }
         self.files.iter()
                 .find(|e| e.rank == 0 && e.after == undone.saturating_sub(1))
                 .map_or_else(

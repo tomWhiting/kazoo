@@ -310,6 +310,38 @@ mod tests {
     }
 
     #[test]
+    fn a_go_names_its_tree_backup_as_a_moment() {
+        let result = LoadResult {
+            change: Change {
+                seq: 80,
+                at: "2026-10-15T00:00:00Z".into(),
+                seat: "Waffles".into(),
+                what: What::Go {
+                    to: place(),
+                    from: place(),
+                    backup: "tree:abc123def456".into(),
+                    fingerprint: String::new(),
+                    modules: 12,
+                    cables: 30,
+                    tempo: 96.0,
+                    by_console: false,
+                },
+                summary: "went to trunk".into(),
+                undoes: None,
+                clock: None,
+            },
+            backup: "tree:abc123def456".into(),
+            notes: Vec::new(),
+        };
+        let text = went(&result);
+        assert!(
+            text.contains("(it is also moment abc123def456 in the tree)"),
+            "{text}"
+        );
+        assert!(!text.contains("kept as the save"), "{text}");
+    }
+
+    #[test]
     fn the_tree_reads_line_by_line_within_its_bounds() {
         let mut result = listing();
         assert_eq!(

@@ -247,6 +247,19 @@ fn busy_clause(busy: f32) -> String {
 }
 
 impl Wall {
+    /// The engine's measured render load, fixed load, heard-module bench
+    /// sum and busy factor, in that order. Read on the control thread.
+    #[must_use]
+    pub fn render_costs(&self) -> (f32, f32, f32, f32) {
+        let shared = self.engine.shared();
+        (
+            shared.render_load(),
+            shared.fixed_load(),
+            self.bench_beside(&[]),
+            self.busy(),
+        )
+    }
+
     /// How many times its bench cost the wall up now takes to render: its
     /// render load less fixed work over the sum of the bench shares of the modules the
     /// engine renders now, held to 1 to [`BUSY_MAX`]; 1 for a wall too small
@@ -265,6 +278,16 @@ impl Wall {
     /// lower the factor, and the wake would be costed the less the busier
     /// the machine. With nothing staged the two are the same modules.
     fn busy_beside(&self, taken: &[&ModuleRecord]) -> f32 {
+        let bench = self.bench_beside(taken);
+        let load = self.engine.shared().render_load() - self.engine.shared().fixed_load();
+        if bench < BUSY_MIN_BENCH || !load.is_finite() || load <= 0.0 {
+            return 1.0;
+        }
+        // Bench rows err high, so quiet module work keeps its bench cost.
+        (load / bench).clamp(1.0, BUSY_MAX)
+    }
+
+    fn bench_beside(&self, taken: &[&ModuleRecord]) -> f32 {
         let rate = self.engine.sample_rate();
         let unheard: HashSet<&str> = self.unheard.iter().map(String::as_str).collect();
         let on_wall = self
@@ -277,18 +300,12 @@ impl Wall {
             .iter()
             .filter(|module| self.patch.module(&module.id).is_none())
             .map(|module| (module.id.as_str(), Kind::from_name(&module.kind)));
-        let bench: f32 = on_wall
+        on_wall
             .chain(going)
             .filter(|(id, _)| self.rack.slot_of(id).is_some() && !unheard.contains(id))
             .filter_map(|(_, kind)| kind)
             .map(|kind| kind_share(kind, rate))
-            .sum();
-        let load = self.engine.shared().render_load() - self.engine.shared().fixed_load();
-        if bench < BUSY_MIN_BENCH || !load.is_finite() || load <= 0.0 {
-            return 1.0;
-        }
-        // Bench rows err high, so quiet module work keeps its bench cost.
-        (load / bench).clamp(1.0, BUSY_MAX)
+            .sum()
     }
 
     pub(super) fn kind_share_now(&self, kind: Kind, busy: f32) -> f32 {

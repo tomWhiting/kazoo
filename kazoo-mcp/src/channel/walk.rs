@@ -1,4 +1,4 @@
-use kazoo_wall::change::describe;
+use kazoo_wall::change::{backup_suffix, describe};
 use kazoo_wall::protocol::{Change, What};
 
 use super::{Duration, Instant, clean, who};
@@ -45,7 +45,7 @@ fn place(what: &What) -> String {
     let What::Go { backup, .. } = what else {
         return clean(&words);
     };
-    let saved = format!("; the wall as it was is saved as \"{backup}\"");
+    let saved = backup_suffix(backup);
     words
         .strip_prefix("went to ")
         .and_then(|rest| rest.strip_suffix(&saved))
@@ -148,5 +148,36 @@ impl Walks {
 
     pub(super) fn end(&mut self) -> Vec<String> {
         self.active.drain(..).map(Walk::line).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kazoo_wall::protocol::TreePlace;
+
+    use super::*;
+
+    #[test]
+    fn a_tree_backup_keeps_the_walk_place_short() {
+        let destination = TreePlace {
+            commit: "abc123def456789012345678901234567890123456".into(),
+            branch: None,
+            mark: None,
+            change: Some(6825),
+        };
+        let what = What::Go {
+            from: destination.clone(),
+            to: destination,
+            backup: "tree:abc123def456".into(),
+            fingerprint: String::new(),
+            modules: 140,
+            cables: 189,
+            tempo: 96.0,
+            by_console: true,
+        };
+        assert_eq!(
+            place(&what),
+            "the moment after change 6825 (140 modules, 189 cables, 96 BPM)"
+        );
     }
 }

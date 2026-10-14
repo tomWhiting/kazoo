@@ -272,7 +272,16 @@ fn loaded(
         (None, false) => "cleared the wall".to_string(),
         (None, true) => format!("brought back the wall it replaced ({now})"),
     };
-    format!("{what}; the wall as it was is saved as \"{backup}\"")
+    format!("{what}{}", backup_suffix(backup))
+}
+
+/// The suffix naming where a replacement keeps the previous wall.
+#[must_use]
+pub fn backup_suffix(backup: &str) -> String {
+    backup.strip_prefix("tree:").map_or_else(
+        || format!("; the wall as it was is saved as \"{backup}\""),
+        |commit| format!("; the wall as it was is moment {commit} in the tree"),
+    )
 }
 
 pub(crate) fn moment_words(to: &crate::protocol::TreePlace) -> String {
@@ -305,13 +314,10 @@ fn went(
     (modules, cables, bpm): (u32, u32, f64),
 ) -> String {
     let place = moment_words(to);
-    let kept = backup.strip_prefix("tree:").map_or_else(
-        || format!("the wall as it was is saved as \"{backup}\""),
-        |commit| format!("the wall as it was is moment {commit} in the tree"),
-    );
+    let kept = backup_suffix(backup);
     let direction = if undo { "back to" } else { "to" };
     format!(
-        "went {direction} {place}: {}, {}, {}; {kept}",
+        "went {direction} {place}: {}, {}, {}{kept}",
         count(usize::try_from(modules).unwrap_or(usize::MAX), "module"),
         count(usize::try_from(cables).unwrap_or(usize::MAX), "cable"),
         format::bpm(bpm)

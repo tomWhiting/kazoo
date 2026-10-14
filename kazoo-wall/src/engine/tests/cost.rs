@@ -1,16 +1,36 @@
 use super::*;
 
 #[test]
+fn module_cpu_is_read_twice_per_sub_block() {
+    for frames in [1, SUB_BLOCK, SUB_BLOCK * 3, SUB_BLOCK * 20 + 1] {
+        let (mut engine, mut control) = fresh();
+        let mut model = Model::default();
+        model.add(&mut control, 0, Kind::VCO);
+        model.send_tables(&mut control);
+        let mut buffer = vec![0.0; frames * 2];
+        on_audio_thread(|| engine.render(&mut buffer, 2));
+        assert_eq!(
+            engine.module_span.reads,
+            2 * frames.div_ceil(SUB_BLOCK),
+            "frames={frames}"
+        );
+        assert!(engine.module_cpu > Duration::ZERO);
+    }
+}
+
+#[test]
 fn module_cpu_is_read_twice_per_callback_span() {
     let (mut engine, mut control) = fresh();
     let mut model = Model::default();
     model.add(&mut control, 0, Kind::VCO);
     model.send_tables(&mut control);
     for frames in [SUB_BLOCK * 20, 1, SUB_BLOCK * 3, SUB_BLOCK * 40] {
+        let unspent = engine.carry_len - engine.carry_used;
+        let sub_blocks = frames.saturating_sub(unspent).div_ceil(SUB_BLOCK);
         let mut buffer = vec![0.0; frames * 2];
         on_audio_thread(|| engine.render(&mut buffer, 2));
         let reads = engine.module_span.reads;
-        assert_eq!(reads, 2, "frames={frames}");
+        assert_eq!(reads, 2 * sub_blocks, "frames={frames}");
         assert!(engine.module_cpu > Duration::ZERO);
         assert!(control.shared().fixed_load().is_finite());
         assert!(control.shared().fixed_load() <= control.shared().render_load());

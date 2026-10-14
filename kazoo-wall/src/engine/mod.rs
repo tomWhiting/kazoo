@@ -885,12 +885,10 @@ impl Engine {
 
     /// Render `data` (see [`Self::render`]) once the commands are in.
     fn render_frames(&mut self, data: &mut [f32], channels: usize) {
-        let mut frames_left = data.len() / channels;
         for chunk in data.chunks_mut(MAX_CHUNK_FRAMES * channels) {
             let frames = chunk.len() / channels;
             for frame in 0..frames {
                 if self.carry_used == self.carry_len {
-                    self.module_span.left = frames_left - frame;
                     self.render_sub_block();
                     self.carry_used = 0;
                 }
@@ -898,7 +896,6 @@ impl Engine {
                 self.stereo[frame * 2 + 1] = self.carry[1][self.carry_used];
                 self.carry_used += 1;
             }
-            frames_left -= frames;
             self.apply_monitor(frames);
             // At most MAX_CHUNK_FRAMES: the cast is lossless.
             let to_desk = self
@@ -926,7 +923,6 @@ impl Engine {
                 }
             }
         }
-        self.module_span.left = 0;
     }
 
     /// Frames owed to a desk that paces the wall at `now` (see

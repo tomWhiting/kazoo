@@ -4,6 +4,8 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use kazoo_wall::catalogue::Kind;
 use kazoo_wall::engine::Command;
 
+#[path = "support/cost.rs"]
+mod cost;
 pub mod support;
 use support::{Fixture, cables, chains, culled, module_kind, unplugged};
 
@@ -61,6 +63,10 @@ fn loop_fixture(record: bool) -> Fixture {
 }
 
 fn wall_render(c: &mut Criterion) {
+    if std::env::var_os("KZ_COST_MEASUREMENT").is_some() {
+        cost::report_real_walls();
+        return;
+    }
     let mut group = c.benchmark_group("wall");
     group
         .sample_size(50)

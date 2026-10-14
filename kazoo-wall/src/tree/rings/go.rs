@@ -50,10 +50,16 @@ impl Lineage {
     pub(super) fn new(tree: &Path, changes: &[Change]) -> Self {
         let wanted: HashSet<u64> = changes
             .iter()
-            .filter_map(|c| match &c.what {
-                What::Go { to, .. } => to.change,
-                _ => None,
+            .flat_map(|c| match &c.what {
+                What::Go {
+                    to, from, backup, ..
+                } => [
+                    to.change,
+                    from.change.filter(|_| backup.starts_with("tree:")),
+                ],
+                _ => [None, None],
             })
+            .flatten()
             .collect();
         Self {
             tree: tree.into(),
@@ -253,9 +259,21 @@ impl Walk<'_> {
         change: &Change,
         held: Option<u64>,
     ) -> Result<(PatchFile, Option<String>), TreeError> {
-        if change.undoes.is_none()
-            && let Some(seq) = held
-        {
+        let moment = change.undoes.map_or(held, |undone| {
+            self.log
+                .changes
+                .iter()
+                .find(|c| c.seq == undone)
+                .and_then(|original| {
+                    let What::Go { from, backup, .. } = &original.what else {
+                        return None;
+                    };
+                    from.change.filter(|seq| {
+                        backup.starts_with("tree:") && self.line.walls.contains_key(seq)
+                    })
+                })
+        });
+        if let Some(seq) = moment {
             let files = self.line.walls.get(&seq).ok_or_else(|| {
                 TreeError::Git(format!(
                     "the import did not keep the wall of change {seq}, which a go went to"
