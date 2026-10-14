@@ -1,7 +1,7 @@
 //! Made-up trees for the tests: a trunk and buds of plain moments, grown
 //! one second apart in the order they are added, as a wall grows them.
 
-use crate::colour::Kinds;
+use crate::colour::{Kinds, Tint};
 use crate::history::{Batch, History, Limb, Mark, Moment};
 
 /// A moment `n`, made at second `time`, by `seat`, with `modules` alive.
@@ -26,7 +26,7 @@ pub fn moment(
         sound: None,
         modules,
         alive: Kinds::default(),
-        touched: Kinds::default(),
+        tint: Tint::default(),
         batch: None,
         problems: Vec::new(),
     }

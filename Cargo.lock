@@ -1769,6 +1769,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "tempfile",
+ "toml",
  "unicode-width",
 ]
 

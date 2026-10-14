@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::f64::consts::FRAC_PI_2;
 
-use crate::colour::{self, Kinds};
+use crate::colour::{self, Tint};
 use crate::history::{History, Sound};
 use crate::ledger::{Saved, Shape, StepKey};
 
@@ -91,11 +91,57 @@ pub struct Step {
 pub struct Look {
     /// Width, from the modules alive at the moment.
     pub width: f64,
-    /// Its colour: the families alive at it, leaning toward what was
-    /// played with along its step so far, lighter for the mean sound of the
-    /// step's moments so far. Only ever the past: a stretch drawn once is
-    /// drawn the same way however the step fills after it.
+    /// Its colour: every module alive at it, each its own shade from its
+    /// settings, together, lighter the louder it was when it kept its
+    /// sound. Its own alone: a stretch drawn once is drawn the same way
+    /// however the step fills after it.
     pub colour: (u8, u8, u8),
+    /// Everything from its tree's first moment up to and including it,
+    /// along the limbs it grew from, added up: so far out the colour of any
+    /// run of moments is one subtraction.
+    pub running: Running,
+}
+
+/// Sums along a path of moments, from a tree's first moment.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Running {
+    /// The moments' tints.
+    pub tint: Tint,
+    /// How many moments.
+    pub moments: u64,
+    /// Their loudness, dBFS, for those that kept their sound.
+    pub rms_db: f64,
+    /// How many kept their sound.
+    pub heard: u64,
+}
+
+impl Running {
+    /// These sums with `moment` added.
+    fn and(&self, tint: &Tint, sound: Option<&Sound>) -> Self {
+        let rms = sound.map(|sound| {
+            if sound.rms_db.is_finite() {
+                f64::from(sound.rms_db)
+            } else {
+                colour::SILENT_DB
+            }
+        });
+        Self {
+            tint: self.tint.plus(tint),
+            moments: self.moments + 1,
+            rms_db: self.rms_db + rms.unwrap_or(0.0),
+            heard: self.heard + u64::from(rms.is_some()),
+        }
+    }
+
+    /// The moments in these sums that are not in `before`'s, as a colour:
+    /// their tints' mean, lightened by their mean loudness.
+    #[must_use]
+    pub fn colour_since(&self, before: &Self) -> (u8, u8, u8) {
+        let moments = self.moments.saturating_sub(before.moments);
+        let heard = self.heard.saturating_sub(before.heard);
+        let rms = (heard > 0).then(|| (self.rms_db - before.rms_db) / heard as f64);
+        colour::blend(&self.tint.minus(&before.tint), moments as f64, rms)
+    }
 }
 
 /// The grown tree.
@@ -221,24 +267,6 @@ pub fn width_for(modules: u32) -> f64 {
 
 /// The widest a moment is ever drawn, world units.
 pub const WIDEST: f64 = 8.0;
-
-/// The mean of `sounds`.
-fn mean_of(sounds: &[Sound]) -> Option<Sound> {
-    if sounds.is_empty() {
-        return None;
-    }
-    let n = sounds.len() as f32;
-    let mean = |pick: fn(&Sound) -> f32| sounds.iter().map(pick).sum::<f32>() / n;
-    Some(Sound {
-        rms_db: mean(|s| s.rms_db),
-        peak_db: mean(|s| s.peak_db),
-        centroid_hz: mean(|s| s.centroid_hz),
-        low: mean(|s| s.low),
-        mid: mean(|s| s.mid),
-        high: mean(|s| s.high),
-        onsets: mean(|s| s.onsets),
-    })
-}
 
 /// A step waiting to grow, with the key it grows in order of.
 struct Pending {
@@ -589,10 +617,8 @@ impl Growth {
         let step = &self.steps[id];
         let moments = &history.limbs[step.limb].moments;
         let last = (step.first + GROWTH_STEP).min(moments.len()) - 1;
-        let (start, end, first) = (step.start, step.end, step.first);
+        let (start, end, first, step_limb) = (step.start, step.end, step.first, step.limb);
         let own = &moments[first..=last];
-        let mut sounds = Vec::new();
-        let mut played = Kinds::default();
         let mut widest: f64 = 1.0;
         for (i, &m) in own.iter().enumerate() {
             let t = (i + 1) as f64 / GROWTH_STEP as f64;
@@ -602,15 +628,20 @@ impl Growth {
             ));
             self.step_of[m] = Some(id);
             let moment = &history.moments[m];
-            if let Some(sound) = moment.sound {
-                sounds.push(sound);
-            }
-            played = played.plus(&moment.touched);
             let width = width_for(moment.modules);
             widest = widest.max(width);
+            // The moment before it on its path: on its limb, or for a
+            // bud's first, the moment it grew from.
+            let before = (first + i)
+                .checked_sub(1)
+                .map(|p| moments[p])
+                .or(history.limbs[step_limb].from)
+                .and_then(|b| self.look[b])
+                .map_or_else(Running::default, |look| look.running);
             self.look[m] = Some(Look {
                 width,
-                colour: colour::colour(&moment.alive, &played, mean_of(&sounds).as_ref()),
+                colour: colour::colour(&moment.tint, moment.sound.as_ref()),
+                running: before.and(&moment.tint, moment.sound.as_ref()),
             });
         }
         let step = &mut self.steps[id];

@@ -5,7 +5,7 @@
 //! has at most one parent, and every limb is a run of moments grown from a
 //! moment on an older limb.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, Write as _};
 use std::path::Path;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use kazoo_wall::tree::git::git_command;
 
-use crate::colour::{self, Kinds};
+use crate::colour::{self, Kinds, Settings, Tint};
 use kazoo_wall::tree::thread::here::name_of;
 
 /// What went wrong reading the tree.
@@ -80,11 +80,12 @@ pub struct Moment {
     pub sound: Option<Sound>,
     /// Modules alive at this moment.
     pub modules: u32,
-    /// Modules alive at this moment, by family (its colour).
+    /// Modules alive at this moment, by family: what lets a module taken
+    /// away whose family was never alive be said.
     pub alive: Kinds,
-    /// Modules this moment turned, repatched, added or took away, by
-    /// family: what was being played with.
-    pub touched: Kinds,
+    /// Every coloured module alive at this moment, each its own shade
+    /// from its settings, together (its colour).
+    pub tint: Tint,
     /// Several changes sent at once with a note, when the moment is one.
     pub batch: Option<Box<Batch>>,
     /// What did not read in its commit: said in the details, never a
@@ -150,7 +151,13 @@ pub struct History {
     index: HashMap<Arc<str>, usize>,
     /// The tips read so far: everything behind them is held.
     tips: Vec<String>,
+    /// Each module file's settings by git's id of it, read once, or why
+    /// they could not be.
+    prints: HashMap<Box<str>, Result<Settings, &'static str>>,
 }
+
+/// How many module files `learn` asks git for at once.
+const LEARN_AT_ONCE: usize = 2_048;
 
 const RECORD: u8 = 0x1e;
 const BODY_END: char = '\u{1f}';
@@ -355,16 +362,18 @@ impl History {
                     "--topo-order",
                     "--reverse",
                     "--root",
-                    "--no-renames",
                     "--no-show-signature",
                     "--no-color",
                     "--encoding=UTF-8",
-                    "--name-status",
+                    "--raw",
+                    "--no-abbrev",
+                    "--no-renames",
                     LOG_FORMAT,
                 ]),
                 &input,
             )?;
-            self.append(&log)?
+            self.learn(dir, &log)?;
+            self.append(&log, true)?
         };
         self.lay_out(&snapshot.refs, snapshot.head.as_deref(), known)?;
         self.tips = tips;
@@ -380,7 +389,7 @@ impl History {
     /// or a branch names a commit the log did not hold.
     pub fn from_git(log: &str, refs: &str, here: Option<&str>) -> Result<Self, HistoryError> {
         let mut history = Self::default();
-        history.append(log.as_bytes())?;
+        history.append(log.as_bytes(), false)?;
         history.lay_out(refs, here, &[])?;
         Ok(history)
     }
@@ -401,9 +410,63 @@ impl History {
         self.lay_out(refs, here, known)
     }
 
+    /// Read the settings of every module file `log` names that are not
+    /// read yet, all at once (`git cat-file --batch`).
+    fn learn(&mut self, dir: &Path, log: &[u8]) -> Result<(), HistoryError> {
+        let mut wanted: Vec<&str> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for bytes in records(log) {
+            let Some(at) = bytes.iter().rposition(|&b| b == BODY_END as u8) else {
+                continue;
+            };
+            let Ok(files) = std::str::from_utf8(&bytes[at + 1..]) else {
+                // Said as that commit's problem when it is read.
+                continue;
+            };
+            for line in files.lines() {
+                let Ok(file) = file_line(line) else {
+                    continue;
+                };
+                if !file.path.starts_with("modules/") {
+                    continue;
+                }
+                for id in [file.old, file.new] {
+                    if !is_zero(id) && !self.prints.contains_key(id) && seen.insert(id) {
+                        wanted.push(id);
+                    }
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        // A few thousand at a time, so a first read of a long history
+        // holds one batch of files at once, never every one.
+        for ids in wanted.chunks(LEARN_AT_ONCE) {
+            let mut input = ids.join("\n");
+            input.push('\n');
+            let answer = run_with(git(dir, "cat-file").arg("--batch"), &input)?;
+            let read = read_batch(&answer)?;
+            for &id in ids {
+                let settings = match read.get(id) {
+                    Some(Some(text)) => std::str::from_utf8(text)
+                        .map_err(|_| "not UTF-8")
+                        .and_then(colour::settings_of),
+                    Some(None) | None => Err("not in the tree"),
+                };
+                self.prints.insert(Box::from(id), settings);
+            }
+        }
+        Ok(())
+    }
+
     /// Add the moments in `log`, all or none. A moment already held is
-    /// skipped, so reading a commit twice never doubles it.
-    fn append(&mut self, log: &[u8]) -> Result<usize, HistoryError> {
+    /// skipped, so reading a commit twice never doubles it. With
+    /// `settings`, each module is shaded by its settings as `learn` read
+    /// them, and one whose settings could not be read is said; without (a
+    /// log made by hand), by its place alone.
+    fn append(&mut self, log: &[u8], settings: bool) -> Result<usize, HistoryError> {
+        let prints = settings.then_some(&self.prints);
         let mut fresh: Vec<Moment> = Vec::new();
         let mut fresh_index: HashMap<Arc<str>, usize> = HashMap::new();
         for bytes in records(log) {
@@ -427,8 +490,9 @@ impl History {
                     } else {
                         &fresh[m - self.moments.len()]
                     };
-                    (at.modules, at.alive)
+                    (at.modules, at.alive, at.tint)
                 },
+                prints,
             )?;
             if self.index.contains_key(&moment.id) || fresh_index.contains_key(&moment.id) {
                 continue;
@@ -552,11 +616,13 @@ pub fn clean(text: &str) -> String {
 }
 
 /// One log record as a moment. `index` finds a parent's place, `alive_at`
-/// the modules alive at a place, all of them and by family.
+/// the modules alive at a place (all of them, by family, and their shades
+/// together), `prints` the modules' settings by git's id of their files.
 fn moment(
     record: &str,
     index: impl Fn(&str) -> Option<usize>,
-    alive_at: impl Fn(usize) -> (u32, Kinds),
+    alive_at: impl Fn(usize) -> (u32, Kinds, Tint),
+    prints: Option<&HashMap<Box<str>, Result<Settings, &'static str>>>,
 ) -> Result<Moment, HistoryError> {
     // The last end mark: the files after it are the wall's own paths,
     // while a subject or a note before it may hold the mark's byte.
@@ -619,8 +685,8 @@ fn moment(
         }
     }
     let batch = batch_of(&kind, &summary, note, steps, &mut problems);
-    let (before, alive) = parent.map_or_else(|| (0, Kinds::default()), &alive_at);
-    let (modules, alive, touched) = files_of(files, before, alive, &mut problems);
+    let before = parent.map_or_else(|| (0, Kinds::default(), Tint::default()), &alive_at);
+    let (modules, alive, tint) = files_of(files, before, prints, &mut problems);
     Ok(Moment {
         id,
         parent,
@@ -634,7 +700,7 @@ fn moment(
         sound,
         modules,
         alive,
-        touched,
+        tint,
         batch,
         problems,
     })
@@ -721,39 +787,159 @@ pub(crate) fn knots(limbs: &[Limb], moments: &[Arc<Moment>]) -> Vec<Vec<usize>> 
         .collect()
 }
 
-/// What a record's files did to the modules: how many are alive after it
-/// (from `before`), by family too (from `alive`), and which families it
-/// touched. Anything that does not add up is said in `problems`.
+/// One file line as git's `--raw` writes it: `:old-mode new-mode old-id
+/// new-id status<TAB>path`.
+struct FileLine<'a> {
+    old: &'a str,
+    new: &'a str,
+    status: &'a str,
+    path: &'a str,
+}
+
+/// Read one `--raw` file line, or say why it is not one.
+fn file_line(line: &str) -> Result<FileLine<'_>, String> {
+    let bad = || format!("a file line git did not write as expected: {line:.80}");
+    let (head, path) = line.split_once('\t').ok_or_else(bad)?;
+    let mut fields = head.strip_prefix(':').ok_or_else(bad)?.split(' ');
+    let (Some(_), Some(_), Some(old), Some(new), Some(status), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return Err(bad());
+    };
+    let id = |id: &str| matches!(id.len(), 40 | 64) && id.bytes().all(|b| b.is_ascii_hexdigit());
+    if !id(old) || !id(new) || path.is_empty() {
+        return Err(bad());
+    }
+    Ok(FileLine {
+        old,
+        new,
+        status,
+        path,
+    })
+}
+
+/// Whether `id` is git's id of nothing (the old side of an added file, the
+/// new side of a removed one).
+fn is_zero(id: &str) -> bool {
+    id.bytes().all(|b| b == b'0')
+}
+
+/// `git cat-file --batch`'s answer: each id asked for, with its contents
+/// (`None` when git does not have it).
+fn read_batch(answer: &[u8]) -> Result<HashMap<&str, Option<&[u8]>>, HistoryError> {
+    let broken = || HistoryError::Git("git cat-file answered in a way it never does".to_owned());
+    let mut read = HashMap::new();
+    let mut rest = answer;
+    while !rest.is_empty() {
+        let end = rest.iter().position(|&b| b == b'\n').ok_or_else(broken)?;
+        let header = std::str::from_utf8(&rest[..end]).map_err(|_| broken())?;
+        rest = &rest[end + 1..];
+        let mut words = header.split(' ');
+        let (Some(id), Some(what)) = (words.next(), words.next()) else {
+            return Err(broken());
+        };
+        if what == "missing" {
+            read.insert(id, None);
+            continue;
+        }
+        let Some(Ok(size)) = words.next().map(str::parse::<usize>) else {
+            return Err(broken());
+        };
+        if rest.len() < size + 1 || rest[size] != b'\n' {
+            return Err(broken());
+        }
+        read.insert(id, Some(&rest[..size]));
+        rest = &rest[size + 1..];
+    }
+    Ok(read)
+}
+
+/// What a record's files did to the modules: how many are alive after it,
+/// by family, and their shades together, from what was alive `before` it.
+/// A module's shade is taken away with the settings it had and given back
+/// with the ones it has, read from `prints` by the ids git gives each side
+/// (or, with no `prints`, by its place alone). Anything that does not add
+/// up is said in `problems`.
 fn files_of(
     files: &str,
-    before: u32,
-    mut alive: Kinds,
+    (before, mut alive, mut tint): (u32, Kinds, Tint),
+    prints: Option<&HashMap<Box<str>, Result<Settings, &'static str>>>,
     problems: &mut Vec<String>,
-) -> (u32, Kinds, Kinds) {
+) -> (u32, Kinds, Tint) {
     let mut modules = i64::from(before);
-    let mut touched = Kinds::default();
     let mut missing = false;
-    for line in files.lines() {
-        let mut parts = line.splitn(2, '\t');
-        let (Some(status), Some(path)) = (parts.next(), parts.next()) else {
+    let read = |id: &str| prints.and_then(|prints| prints.get(id).copied());
+    let settings = |id: &str| match read(id) {
+        Some(Ok(settings)) => Some(settings),
+        Some(Err(_)) | None => None,
+    };
+    for line in files.lines().filter(|line| !line.is_empty()) {
+        let file = match file_line(line) {
+            Ok(file) => file,
+            Err(problem) => {
+                problems.push(problem);
+                continue;
+            }
+        };
+        if file.path.starts_with('"') {
+            problems.push(format!(
+                "a file git had to quote ({:.80}) is no module's; left out",
+                file.path
+            ));
+            continue;
+        }
+        let Some(name) = file.path.strip_prefix("modules/") else {
             continue;
         };
-        let Some(file) = path.strip_prefix("modules/") else {
+        let Some(id) = name
+            .strip_suffix(".toml")
+            .filter(|id| !id.is_empty() && !id.contains('/'))
+        else {
+            problems.push(format!(
+                "{:.80} is in modules/ but is no module's file; left out",
+                file.path
+            ));
             continue;
         };
-        let kind = colour::kind_of(file.trim_end().trim_end_matches(".toml"));
-        match status.trim() {
+        let kind = colour::kind_of(id);
+        if prints.is_some() && !is_zero(file.new) {
+            let why = match read(file.new) {
+                Some(Ok(_)) => None,
+                Some(Err(why)) => Some(why),
+                None => Some("never read"),
+            };
+            if let Some(why) = why {
+                problems.push(format!(
+                    "the settings in {:.80} could not be read ({why}); its colour is from its place alone",
+                    file.path
+                ));
+            }
+        }
+        match file.status {
             "A" => {
                 modules += 1;
                 alive.add(kind);
+                tint.add(kind, file.path, settings(file.new));
             }
             "D" => {
                 modules -= 1;
                 missing |= !alive.remove(kind);
+                tint.remove(kind, file.path, settings(file.old));
             }
-            _ => {}
+            "M" | "T" => {
+                tint.remove(kind, file.path, settings(file.old));
+                tint.add(kind, file.path, settings(file.new));
+            }
+            other => problems.push(format!(
+                "{:.80} changed in a way the tree does not know ({other:.8}); left as it was",
+                file.path
+            )),
         }
-        touched.add(kind);
     }
     if missing {
         problems.push(
@@ -769,7 +955,7 @@ fn files_of(
     (
         u32::try_from(modules.max(0)).unwrap_or(u32::MAX),
         alive,
-        touched,
+        tint,
     )
 }
 

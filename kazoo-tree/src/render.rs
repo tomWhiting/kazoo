@@ -1,12 +1,15 @@
 //! The tree drawn in braille.
 //!
 //! Each terminal cell is 2 dots wide and 4 tall; limbs are thick lines of
-//! dots coloured by how they sounded, and the marks hang off them as glyphs
-//! with labels. What is drawn depends on how far in you are ([`Level`]).
+//! dots coloured by the modules alive and their settings, lighter where
+//! louder, and the marks hang off them as glyphs with labels. What is
+//! drawn depends on how far in you are ([`Level`]).
 
-use unicode_width::UnicodeWidthChar;
+use std::collections::HashMap;
 
-use crate::growth::{Growth, ROOT_DEPTH, ROOT_REACH, Step};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::growth::{GROWTH_STEP, Growth, ROOT_DEPTH, ROOT_REACH, Running, STEP_LENGTH, Step};
 use crate::history::{Batch, History, Moment};
 
 /// How far in the view is: each level shows more.
@@ -153,6 +156,15 @@ const FAR_THICKNESS: f64 = 0.6;
 /// How much wider a tree's own trunk is drawn than its modules alone make
 /// it: a trunk reads as a trunk.
 const TRUNK_THICKER: f64 = 1.4;
+/// How many dots of limb a colour is blended along when the view is far
+/// out, so a limb mellows into one long gradient instead of a patchwork.
+const MELLOW_DOTS: f64 = 3.0;
+/// The scale at and past which (further out) the blend is whole: where the
+/// view stops showing names.
+const BLEND_FULL: f64 = 0.75;
+/// The scale from which (closer in) nothing is blended: where gestures
+/// show.
+const BLEND_UNTIL: f64 = 2.5;
 /// The widest a limb is ever drawn, in dots, so close in a thick limb does
 /// not bury its own marks.
 const MAX_DOTS_WIDE: f64 = 10.0;
@@ -358,10 +370,7 @@ impl Picture {
         colour: (u8, u8, u8),
         selected: bool,
     ) -> Option<(i32, i32)> {
-        if !(p.0.is_finite() && p.1.is_finite()) || p.0 < 0.0 || p.1 < 0.0 {
-            return None;
-        }
-        let (col, row) = ((p.0 / 2.0).floor() as i32, (p.1 / 4.0).floor() as i32);
+        let (col, row) = cell_of(p)?;
         let i = self.index(col, row)?;
         if self.cells[i].tail {
             // A glyph over a wide letter's right half takes its left half.
@@ -573,8 +582,8 @@ impl Gesture {
     }
 }
 
-/// A day mark: the first moment on a limb made on a new day, where the
-/// day is read in `zone` (the viewer's own, in the app).
+/// A day mark: a limb's first moment, or a moment on a limb made on a new
+/// day, where the day is read in `zone` (the viewer's own, in the app).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Day {
     /// The moment.
@@ -585,9 +594,9 @@ pub struct Day {
 
 /// Every day mark in the tree, limb by limb.
 ///
-/// A day mark is each moment whose day is not
-/// the day of the moment before it on its limb (for a limb's first moment,
-/// the moment it grew from). The trunk's first moment is always one.
+/// A day mark is each limb's first moment, so every branch says the day it
+/// grew, and each later moment whose day is not the day of the moment
+/// before it on its limb.
 #[must_use]
 pub fn days<Z: chrono::TimeZone>(history: &History, zone: &Z) -> Vec<Day>
 where
@@ -599,7 +608,7 @@ where
     };
     let mut out = Vec::new();
     for limb in &history.limbs {
-        let mut before = limb.from.and_then(day_of);
+        let mut before = None;
         for &m in &limb.moments {
             let day = day_of(m);
             if day.is_some() && day != before {
@@ -661,8 +670,6 @@ enum Words {
     Mark(usize),
     /// A batch's note.
     Note,
-    /// A day mark's day.
-    Day(usize),
     /// The wall's place.
     Here,
     /// No words: the glyph says it.
@@ -729,6 +736,12 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
             placed.push((col, row, m, glyph, words));
         }
     }
+    // Which moment's glyph holds each cell, so a day can hang its words
+    // beside its own moment's glyph.
+    let owners: HashMap<usize, usize> = placed
+        .iter()
+        .filter_map(|&(col, row, m, _, _)| picture.index(col, row).map(|i| (i, m)))
+        .collect();
     // The selected batch's changes hang after the wall's and marks' words.
     let opened = if let Some(sel) = scene.selected
         && let Some(p) = on_screen(sel)
@@ -738,7 +751,82 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
         None
     };
     hang_words(&mut picture, scene, level, placed, opened, &mut taken);
+    if level >= Level::Near {
+        hang_days(
+            &mut picture,
+            scene,
+            &|m| on_screen(m).map(to),
+            &owners,
+            &mut taken,
+        );
+    }
     picture
+}
+
+/// Hang each day mark on screen, newest first, after every other glyph
+/// and word, so a day (and every branch has one) never takes a place
+/// another would have had: its words beside it, right, above, below or
+/// left, wherever there is room, with its glyph on a free cell or, where its
+/// own moment's glyph (in `owners`, cell to moment) already stands, beside
+/// that; with no room for its words, or its cell another's, nothing.
+fn hang_days(
+    picture: &mut Picture,
+    scene: &Scene<'_>,
+    dots: &impl Fn(usize) -> Option<(f64, f64)>,
+    owners: &HashMap<usize, usize>,
+    taken: &mut [bool],
+) {
+    let mut order: Vec<&Day> = scene.days.iter().collect();
+    order.sort_by_key(|day| std::cmp::Reverse(day.moment));
+    for day in order {
+        let Some(p) = dots(day.moment) else {
+            continue;
+        };
+        let Some((col, row)) = cell_of(p) else {
+            continue;
+        };
+        let Some(at) = picture.index(col, row) else {
+            continue;
+        };
+        if taken[at] && !day_holds(owners.get(&at).copied(), day.moment, scene.selected) {
+            continue;
+        }
+        let wide = i32::try_from(UnicodeWidthStr::width(day.words.as_str())).unwrap_or(i32::MAX);
+        let room = [
+            (col + 2, row),
+            (col + 2, row - 1),
+            (col + 2, row + 1),
+            (col.saturating_sub(wide.saturating_add(2)), row),
+        ]
+        .into_iter()
+        .find(|&(c, r)| c >= 0 && picture.span(c, r, &day.words, taken).is_some());
+        let Some((c, r)) = room else {
+            continue;
+        };
+        if taken[at] {
+            // Its moment's own glyph stands there: the words go beside it.
+            picture.label(c, r, &day.words, taken);
+        } else if picture
+            .glyph(p, Glyph::Day, DAY, scene.selected == Some(day.moment))
+            .is_some()
+        {
+            taken[at] = true;
+            picture.label(c, r, &day.words, taken);
+        }
+    }
+}
+
+/// Whether a taken cell whose glyph is `owner`'s (none: the selected
+/// moment's mark, which is not in the glyphs placed) is `day`'s own, so its
+/// words may hang beside it.
+fn day_holds(owner: Option<usize>, day: usize, selected: Option<usize>) -> bool {
+    owner.map_or_else(|| selected == Some(day), |owner| owner == day)
+}
+
+/// The cell a dot at `p` falls in, if it is on the page's side of zero.
+fn cell_of(p: (f64, f64)) -> Option<(i32, i32)> {
+    (p.0.is_finite() && p.1.is_finite() && p.0 >= 0.0 && p.1 >= 0.0)
+        .then(|| ((p.0 / 2.0).floor() as i32, (p.1 / 4.0).floor() as i32))
 }
 
 /// Hang the words of each glyph `placed`, the wall's and marks' first,
@@ -758,8 +846,7 @@ fn hang_words(
             Glyph::Here => 0,
             Glyph::Mark | Glyph::Save => 1,
             Glyph::Batch | Glyph::Growing => 2,
-            Glyph::Moment => 3,
-            Glyph::Day => 4,
+            Glyph::Moment | Glyph::Day => 3,
         };
         (rank, std::cmp::Reverse(m))
     });
@@ -788,7 +875,6 @@ fn hang_words(
                 .batch
                 .as_deref()
                 .map_or_else(String::new, |batch| short(&batch.note)),
-            Words::Day(i) => scene.days[i].words.clone(),
             Words::Here => "the wall is here".to_owned(),
             Words::None => continue,
         };
@@ -887,8 +973,7 @@ type Placed = (i32, i32, usize, Glyph, Words);
 /// A batch whose note is hung at a cell, its changes still to hang.
 type Opened<'s> = (&'s Batch, (i32, i32));
 
-/// Everything that hangs a glyph at this level and is on screen: days
-/// first, so any other glyph on the same cell is drawn over one.
+/// Everything but days that hangs a glyph at this level and is on screen.
 fn hangings(
     scene: &Scene<'_>,
     level: Level,
@@ -896,11 +981,6 @@ fn hangings(
     on_screen: &impl Fn(usize) -> Option<(f64, f64)>,
 ) -> Vec<(usize, Glyph, Words)> {
     let mut hang: Vec<(usize, Glyph, Words)> = Vec::new();
-    for (i, day) in scene.days.iter().enumerate() {
-        if on_screen(day.moment).is_some() {
-            hang.push((day.moment, Glyph::Day, Words::Day(i)));
-        }
-    }
     match level {
         Level::Every => {
             for step in &scene.growth.steps {
@@ -961,10 +1041,70 @@ fn hangings(
     hang
 }
 
+/// How many moments a colour is blended over at `scale`: those along
+/// [`MELLOW_DOTS`] of limb when the whole tree is in view, fewer and fewer
+/// through the names' zoom, and one from there in, where each moment is
+/// drawn in its own colour as the lanes and the details show it. Zooming
+/// eases the blend in and out, never switching it at once.
+fn mellow_window(scale: f64) -> usize {
+    let taper = ((BLEND_UNTIL - scale) / (BLEND_UNTIL - BLEND_FULL)).clamp(0.0, 1.0);
+    let spacing = STEP_LENGTH / GROWTH_STEP as f64;
+    let moments = (MELLOW_DOTS * taper / (scale * spacing)).ceil();
+    if moments.is_finite() && moments > 1.0 {
+        // Finite and above one: the cast saturates at `usize::MAX`, past
+        // any path's length, which blends from the tree's first moment.
+        moments as usize
+    } else {
+        1
+    }
+}
+
+/// The colour of moment `m` blended with the `window - 1` moments before
+/// it on its path, back down the limbs it grew from: their tints' mean and
+/// their mean loudness. `None` when there is nothing to blend (a window of
+/// one) or the moments are not grown yet, and the moment's own colour is
+/// drawn.
+fn mellowed(scene: &Scene<'_>, m: usize, window: usize) -> Option<(u8, u8, u8)> {
+    if window <= 1 {
+        return None;
+    }
+    let look = scene.growth.look[m]?;
+    let history = scene.history;
+    // The moment `window` back along the path, or none when the path is
+    // shorter: then the blend reaches its tree's first moment.
+    let (mut limb, mut p) = history.place[m]?;
+    let mut back = window;
+    let before = loop {
+        if back <= p {
+            break Some(history.limbs[limb].moments[p - back]);
+        }
+        back -= p + 1;
+        let Some(from) = history.limbs[limb].from else {
+            break None;
+        };
+        // Grown from a moment on no limb: the path starts at this limb, as
+        // growth's sums do.
+        let Some(place) = history.place[from] else {
+            break None;
+        };
+        if back == 0 {
+            break Some(from);
+        }
+        (limb, p) = place;
+    };
+    let before = match before {
+        Some(b) => scene.growth.look[b]?.running,
+        None => Running::default(),
+    };
+    Some(look.running.colour_since(&before))
+}
+
 /// Draw one step: each moment's stretch, from the moment before it (or
-/// the step's start) to it, in that moment's own width and colour, bright
-/// where it is on the wall's own line. Stretches drawn alike in a row are
-/// one line: a step is straight.
+/// the step's start) to it, in that moment's own width and colour (far
+/// out, its colour blended with the moments before it), bright where it is
+/// on the wall's own line. Stretches drawn alike in a row are one line (a
+/// step is straight), and so is a stretch too short to leave its run's
+/// last dot.
 fn draw_step(
     picture: &mut Picture,
     scene: &Scene<'_>,
@@ -978,6 +1118,8 @@ fn draw_step(
     let trunk = limb.from.is_none();
     let mut from = step.start;
     let mut run: Option<Run> = None;
+    let window = mellow_window(view.scale);
+    let mut end_dot = None;
     for &m in &limb.moments[step.first..=step.last] {
         let (Some(at), Some(look)) = (scene.growth.at[m], scene.growth.look[m]) else {
             continue;
@@ -993,15 +1135,21 @@ fn draw_step(
         let wide = (width * view.scale)
             .max(width * FAR_THICKNESS)
             .clamp(1.0, MAX_DOTS_WIDE);
-        let colour = look.colour;
+        let colour = mellowed(scene, m, window).unwrap_or(look.colour);
         let bright = scene.line.get(m).copied().unwrap_or(false);
         let style = Style {
             wide,
             colour,
             bright,
         };
+        // A stretch that ends on the dot the run already ends on adds
+        // nothing to draw: the run takes it in its own look.
+        let dot = view.to_dots(at, cols, rows);
+        let dot = (dot.0.round(), dot.1.round());
+        let same_dot = end_dot == Some(dot);
+        end_dot = Some(dot);
         match &mut run {
-            Some((_, end, same)) if *same == style => *end = at,
+            Some((_, end, same)) if *same == style || same_dot => *end = at,
             _ => {
                 if let Some((a, b, done)) = run.take() {
                     picture.line(
