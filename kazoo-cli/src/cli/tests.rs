@@ -422,4 +422,14 @@ fn tree_prints_at_a_size_or_walks() {
         })
     );
     assert!(Cli::try_parse_from(["kazoo", "tree", "--cols", "5"]).is_err());
+    let err = Cli::try_parse_from(["kazoo", "tree", "--cols", "80"]).expect_err("needs --print");
+    assert!(err.to_string().contains("--print"), "{err}");
+    assert_eq!(
+        Cli::try_parse_from(["kazoo", "tree"]).unwrap().command,
+        Command::Tree(super::TreeArgs {
+            print: false,
+            cols: 100,
+            rows: 40
+        })
+    );
 }

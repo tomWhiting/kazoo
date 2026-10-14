@@ -11,6 +11,9 @@ fn app(history: History) -> App {
         gestures: Vec::new(),
         days: Vec::new(),
         line: Vec::new(),
+        rows: Vec::new(),
+        shown: Shown::Tree,
+        lane_top: 0,
         view: None,
         selected: None,
         help: false,
@@ -201,4 +204,22 @@ fn taking_a_grown_tree_keeps_the_selection_by_commit() {
         app.selected.map(|m| app.history.moments[m].id.clone()),
         Some(id)
     );
+}
+
+#[test]
+fn v_turns_to_the_lanes_where_up_and_down_walk_the_rows() {
+    let mut app = app(grown(10, &[(0, 3, 4)]));
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(app.shown, Shown::Lanes);
+    // Newest first: the wall's place (the bud's tip, 13) is the top row.
+    assert_eq!(app.selected_row(), Some(0));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.selected, Some(app.rows[1].moment));
+    press(&mut app, KeyCode::End);
+    assert_eq!(app.selected, Some(0), "the oldest moment is the last row");
+    assert_eq!(app.lanes_from(5), app.rows.len() - 5, "scrolled to it");
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.lanes_from(5), 0);
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(app.shown, Shown::Tree);
 }

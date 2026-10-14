@@ -8,6 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 use crate::growth::Growth;
 use crate::history::{History, HistoryError};
+use crate::lanes::{self, Row};
 use crate::render::{self, Day, Gesture, Level, MAX_SCALE, View};
 
 /// Zoom per key press or wheel notch.
@@ -34,6 +35,12 @@ pub struct App {
     pub days: Vec<Day>,
     /// The wall's own line, root to where it is.
     pub line: Vec<bool>,
+    /// The lanes view's rows, newest first.
+    pub rows: Vec<Row>,
+    /// Which view is shown (`v` turns between them).
+    pub shown: Shown,
+    /// The lanes view's first row on screen.
+    pub lane_top: usize,
     /// What is in view; `None` until the first frame fits the tree.
     pub view: Option<View>,
     /// The selected moment.
@@ -52,6 +59,15 @@ pub struct App {
     pub wants_reading: bool,
 }
 
+/// Which view is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shown {
+    /// The tree, grown.
+    Tree,
+    /// The lanes: one row a moment, newest first.
+    Lanes,
+}
+
 /// A tree read and grown, ready to show: made off the screen's thread, so
 /// reading and growing a large tree never stops the screen.
 #[derive(Debug, Default)]
@@ -66,6 +82,8 @@ pub struct Grown {
     pub days: Vec<Day>,
     /// The wall's own line.
     pub line: Vec<bool>,
+    /// The lanes view's rows, newest first.
+    pub rows: Vec<Row>,
 }
 
 impl Grown {
@@ -77,6 +95,7 @@ impl Grown {
             gestures: render::gestures(&history),
             days: render::days(&history, &chrono::Local),
             line: render::line_to(&history, history.here),
+            rows: lanes::layout(&history),
             history,
         }
     }
@@ -103,6 +122,9 @@ impl App {
             gestures: Vec::new(),
             days: Vec::new(),
             line: Vec::new(),
+            rows: Vec::new(),
+            shown: Shown::Tree,
+            lane_top: 0,
             view: None,
             selected: None,
             help: false,
@@ -138,6 +160,7 @@ impl App {
         self.gestures = grown.gestures;
         self.days = grown.days;
         self.line = grown.line;
+        self.rows = grown.rows;
         if before > 0 {
             self.said = match new {
                 0 => "read again: nothing new".to_owned(),
@@ -340,6 +363,9 @@ impl App {
             }
             return;
         }
+        if self.shown == Shown::Lanes && self.lane_key(key.code) {
+            return;
+        }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let step = if shift { FAR } else { 0.125 };
         match key.code {
@@ -373,12 +399,80 @@ impl App {
             },
             KeyCode::Enter | KeyCode::Char('c') => self.centre_on_selected(),
             KeyCode::Char('r') => self.reload(),
+            KeyCode::Char('v') => {
+                self.shown = match self.shown {
+                    Shown::Tree => Shown::Lanes,
+                    Shown::Lanes => Shown::Tree,
+                };
+            }
             _ => {}
         }
     }
 
+    /// The selected moment's row in the lanes view.
+    #[must_use]
+    pub fn selected_row(&self) -> Option<usize> {
+        let m = self.selected?;
+        self.rows.iter().position(|row| row.moment == m)
+    }
+
+    /// A key the lanes view takes for itself: up and down move a row,
+    /// a page moves a screen. Answers whether it was taken.
+    fn lane_key(&mut self, code: KeyCode) -> bool {
+        let page = usize::from(self.area.1.max(1));
+        let at = self.selected_row().unwrap_or(0);
+        let to = match code {
+            KeyCode::Up | KeyCode::Char('k') => at.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => at + 1,
+            KeyCode::PageUp => at.saturating_sub(page),
+            KeyCode::PageDown => at + page,
+            KeyCode::Home => 0,
+            KeyCode::End => usize::MAX,
+            _ => return false,
+        };
+        self.select_row(to);
+        true
+    }
+
+    /// Select row `to` of the lanes view, or the last when past it.
+    fn select_row(&mut self, to: usize) {
+        if let Some(last) = self.rows.len().checked_sub(1) {
+            self.selected = Some(self.rows[to.min(last)].moment);
+        }
+    }
+
+    /// Keep the selected row in view in a lanes view `height` rows tall;
+    /// answers the first row to show.
+    pub fn lanes_from(&mut self, height: u16) -> usize {
+        let height = usize::from(height.max(1));
+        if let Some(at) = self.selected_row() {
+            if at < self.lane_top {
+                self.lane_top = at;
+            } else if at >= self.lane_top + height {
+                self.lane_top = at + 1 - height;
+            }
+        }
+        self.lane_top = self.lane_top.min(self.rows.len().saturating_sub(1));
+        self.lane_top
+    }
+
     /// A mouse event over the picture (`col`, `row` inside it).
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.shown == Shown::Lanes {
+            let at = self.selected_row().unwrap_or(0);
+            match event.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let row = self.lane_top + usize::from(event.row);
+                    if row < self.rows.len() {
+                        self.select_row(row);
+                    }
+                }
+                MouseEventKind::ScrollUp => self.select_row(at.saturating_sub(3)),
+                MouseEventKind::ScrollDown => self.select_row(at + 3),
+                _ => {}
+            }
+            return;
+        }
         let (cols, rows) = self.area;
         let (col, row) = (event.column, event.row);
         let inside = col < cols && row < rows;
@@ -506,6 +600,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "the tree",
         &[
+            ("v", "the tree, or lanes: one row a moment"),
             ("r", "read the tree again"),
             ("?", "this card"),
             ("q, Esc", "quit"),

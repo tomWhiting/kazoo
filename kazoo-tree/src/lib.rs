@@ -34,7 +34,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::app::{App, Grown, HELP, PANEL};
+use crate::app::{App, Grown, HELP, PANEL, Shown};
 use crate::history::{History, HistoryError, Snapshot};
 use crate::render::{Level, Picture, Scene};
 
@@ -361,8 +361,12 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
         selected: app.selected,
         newest: render::newest(&app.history),
     };
-    let picture = render::draw(&scene, &view, tree.width, tree.height);
-    paint(&picture, tree, buf);
+    if app.shown == Shown::Lanes {
+        lanes(app, tree, buf);
+    } else {
+        let picture = render::draw(&scene, &view, tree.width, tree.height);
+        paint(&picture, tree, buf);
+    }
     if wide {
         details(app, panel, buf);
     }
@@ -377,7 +381,11 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
         " {} moments, {} branches │ {} │ ? help, q quit",
         app.history.moments.len(),
         branches,
-        level.name()
+        if app.shown == Shown::Lanes {
+            "lanes: one row a moment"
+        } else {
+            level.name()
+        }
     );
     let problems = app.history.problem_count();
     if problems > 0 {
@@ -437,6 +445,61 @@ fn paint(picture: &Picture, area: Rect, buf: &mut Buffer) {
             }
         }
     }
+}
+
+/// The lanes view: one row a moment, newest at the top, each limb a lane;
+/// then a swatch of how it sounded, its words, who and when.
+fn lanes(app: &mut App, area: Rect, buf: &mut Buffer) {
+    let top = app.lanes_from(area.height);
+    let graph_width = app
+        .rows
+        .iter()
+        .skip(top)
+        .take(usize::from(area.height))
+        .map(|row| row.graph.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(usize::from(area.width / 2));
+    let lines: Vec<Line<'_>> = app
+        .rows
+        .iter()
+        .skip(top)
+        .take(usize::from(area.height))
+        .map(|row| {
+            let moment = &app.history.moments[row.moment];
+            let (r, g, b) = render::colour_of(moment.sound);
+            let graph: String = row.graph.chars().take(graph_width).collect();
+            let pad = graph_width.saturating_sub(graph.chars().count());
+            let on_line = app.line.get(row.moment).copied().unwrap_or(false);
+            let mut graph_style = Style::new().fg(Color::Rgb(r, g, b));
+            if on_line {
+                graph_style = graph_style.add_modifier(Modifier::BOLD);
+            }
+            let when = chrono::DateTime::from_timestamp(moment.time, 0).map_or_else(
+                || "--:--".to_owned(),
+                |utc| {
+                    utc.with_timezone(&chrono::Local)
+                        .format("%H:%M")
+                        .to_string()
+                },
+            );
+            let mut style = Style::new();
+            if app.selected == Some(row.moment) {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            Line::from(vec![
+                Span::styled(format!("{graph}{} ", " ".repeat(pad)), graph_style),
+                Span::styled("■ ", Style::new().fg(Color::Rgb(r, g, b))),
+                Span::raw(moment.summary.clone()),
+                Span::styled(
+                    format!("  {} {when}", moment.seat),
+                    Style::new().fg(Color::DarkGray),
+                ),
+            ])
+            .style(style)
+        })
+        .collect();
+    Paragraph::new(lines).render_into(area, buf);
 }
 
 fn details(app: &App, area: Rect, buf: &mut Buffer) {

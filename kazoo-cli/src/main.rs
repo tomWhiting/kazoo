@@ -60,7 +60,15 @@ fn finish(result: color_eyre::Result<()>) -> ExitCode {
 fn tree(args: &kazoo::cli::TreeArgs) -> color_eyre::Result<()> {
     let dir = kazoo_tree::tree_dir()?;
     if args.print {
-        print!("{}", kazoo_tree::print(dir, args.cols, args.rows)?);
+        let text = kazoo_tree::print(dir, args.cols, args.rows)?;
+        let mut out = std::io::stdout().lock();
+        match std::io::Write::write_all(&mut out, text.as_bytes())
+            .and_then(|()| std::io::Write::flush(&mut out))
+        {
+            // A reader that stops early (`| head`) is not a failure.
+            Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {}
+            written => written?,
+        }
     } else {
         kazoo_tree::run(dir)?;
     }

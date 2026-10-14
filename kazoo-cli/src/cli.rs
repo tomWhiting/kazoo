@@ -71,10 +71,10 @@ pub struct TreeArgs {
     #[arg(long)]
     pub print: bool,
     /// Columns for --print.
-    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u16).range(10..=1000))]
+    #[arg(long, requires = "print", default_value_t = 100, value_parser = clap::value_parser!(u16).range(10..=1000))]
     pub cols: u16,
     /// Rows for --print.
-    #[arg(long, default_value_t = 40, value_parser = clap::value_parser!(u16).range(5..=1000))]
+    #[arg(long, requires = "print", default_value_t = 40, value_parser = clap::value_parser!(u16).range(5..=1000))]
     pub rows: u16,
 }
 
