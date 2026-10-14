@@ -497,6 +497,18 @@ pub struct FxChain {
 }
 
 impl FxChain {
+    pub fn latency(&self) -> usize {
+        self.pedals
+            .iter()
+            .filter(|pedal| pedal.on || pedal.gain.moving())
+            .map(|pedal| {
+                let current = pedal.kinds[pedal.active].effect.latency();
+                pedal.fading_from.map_or(current, |old| {
+                    current.max(pedal.kinds[old].effect.latency())
+                })
+            })
+            .sum()
+    }
     pub fn new(rate: u32, block: usize, settings: &FxSettings) -> kazoo_core::Result<Self> {
         if rate == 0 || block == 0 {
             return Err(kazoo_core::Error::Config(

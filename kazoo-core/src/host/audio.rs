@@ -206,14 +206,47 @@ impl std::fmt::Debug for PreparedInput {
     }
 }
 
+/// What the latency a stream reports covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatencyCovers {
+    /// The device buffer only. cpal 0.17 times `CoreAudio` callbacks from
+    /// `kAudioDevicePropertyBufferFrameSize` and WASAPI callbacks from the
+    /// frames available, so the device's own latency, its safety offset, a
+    /// converter and any Bluetooth transport are missing: the truth is larger.
+    BufferOnly,
+    /// The delay the host reports for the stream (ALSA's `snd_pcm_delay`),
+    /// which is all the figure claims.
+    Host,
+}
+
+/// What `StreamHealth::latency_ms` covers on this platform.
+pub const LATENCY_COVERS: LatencyCovers = if cfg!(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "windows"
+)) {
+    LatencyCovers::BufferOnly
+} else {
+    LatencyCovers::Host
+};
+
 #[derive(Debug, Clone)]
 pub struct StreamHealth {
+    pub(super) latency: Arc<super::audio_latency::LatencyReport>,
     pub(super) fault: Arc<AtomicUsize>,
     pub(super) receiver: Receiver<cpal::StreamError>,
     pub(super) context: String,
 }
 
 impl StreamHealth {
+    /// The stream's latency as the host reports it on the last callback:
+    /// capture to callback for an input, callback to playback for an output.
+    /// `LATENCY_COVERS` says what that includes. `None` until a callback has
+    /// reported one.
+    #[must_use]
+    pub fn latency_ms(&self) -> Option<f64> {
+        self.latency.milliseconds()
+    }
     pub fn check(&self) -> Result<()> {
         self.check_with_handler(drop)
     }

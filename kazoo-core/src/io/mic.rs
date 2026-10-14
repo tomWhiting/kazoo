@@ -122,6 +122,8 @@ pub struct MicStatus {
 #[derive(Debug, Default)]
 pub struct MicShared {
     status: Mutex<MicStatus>,
+    input_health: Mutex<Option<crate::host::audio::StreamHealth>>,
+    resampler_delay: AtomicU64,
     glitches: AtomicU32,
     resample_errors: AtomicU32,
     /// Device frames the callback has been handed, for the supervisor to
@@ -170,6 +172,25 @@ impl std::fmt::Debug for Mic {
 }
 
 impl Mic {
+    #[must_use]
+    pub fn input_latency_ms(&self) -> Option<f64> {
+        if self.status().state != MicState::Live {
+            return None;
+        }
+        self.shared
+            .input_health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(crate::host::audio::StreamHealth::latency_ms)
+    }
+
+    #[must_use]
+    pub fn resampler_delay_frames(&self) -> Option<usize> {
+        (self.status().state == MicState::Live)
+            .then(|| self.shared.resampler_delay.load(Ordering::Relaxed) as usize)
+    }
+
     #[must_use]
     pub const fn input_notices(&self) -> &InputNotices {
         &self.notices
@@ -386,7 +407,13 @@ impl MicBackend for CpalMic {
                 facts.name, info.rate, info.channels
             )));
         }
-        prepared.open(move |data, info| capture.process(data, info.channels))
+        let shared = Arc::clone(&capture.shared);
+        let stream = prepared.open(move |data, info| capture.process(data, info.channels))?;
+        *shared
+            .input_health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stream.health());
+        Ok(stream)
     }
 
     fn fault(&mut self, stream: &Self::Stream) -> Option<MicFault> {
@@ -728,6 +755,10 @@ impl<B: MicBackend> Supervisor<B> {
                 Arc::clone(&self.shared),
             )?)
         };
+        self.shared.resampler_delay.store(
+            resampler.as_ref().map_or(0, MicResampler::delay_frames) as u64,
+            Ordering::Relaxed,
+        );
         let sink = self
             .sink
             .take()
