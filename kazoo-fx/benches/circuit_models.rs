@@ -1,6 +1,8 @@
-use std::{process::Command, time::Duration};
+use std::{hint::black_box, process::Command, time::Duration};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{
+    BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
+};
 use kazoo_fx::Context;
 
 fn circuit_models(c: &mut Criterion) {
@@ -19,6 +21,10 @@ fn circuit_models(c: &mut Criterion) {
         .collect();
     let context = Context { bpm: 120.0 };
     for kind in kazoo_fx::catalogue() {
+        if kind.id == "octaves" {
+            octaves(&mut group, kind);
+            continue;
+        }
         let mut effect = (kind.build)();
         effect.prepare(48_000.0);
         for (index, param) in kind.params.iter().enumerate() {
@@ -43,6 +49,67 @@ fn circuit_models(c: &mut Criterion) {
         });
     }
     group.finish();
+}
+
+fn octaves(group: &mut BenchmarkGroup<'_, WallTime>, kind: &kazoo_fx::EffectKind) {
+    let context = Context { bpm: 120.0 };
+    let chord = [110.0, 146.83, 196.0, 246.94, 329.63, 440.0];
+    for (name, notes) in [
+        ("octaves", chord.as_slice()),
+        ("octaves/single_note", &[110.0][..]),
+    ] {
+        let mut effect = (kind.build)();
+        for (index, param) in kind.params.iter().enumerate() {
+            let value = match param.name {
+                "up1" | "up2" | "down1" | "down2" => 100.0,
+                "dry" => 0.0,
+                _ => param.default,
+            };
+            effect.set_param(index, value);
+        }
+        effect.prepare(48_000.0);
+        // Continuous phase across blocks keeps six separate notes in the bank.
+        let input: Vec<f32> = (0..512 * 256)
+            .map(|frame| {
+                notes
+                    .iter()
+                    .map(|frequency| {
+                        (1..=6)
+                            .map(|harmonic| {
+                                let phase = std::f64::consts::TAU
+                                    * frequency
+                                    * f64::from(harmonic)
+                                    * f64::from(frame)
+                                    / 48_000.0;
+                                phase.sin() / f64::from(harmonic)
+                            })
+                            .sum::<f64>()
+                    })
+                    .sum::<f64>() as f32
+                    * 0.2
+                    / notes.len() as f32
+            })
+            .collect();
+        let mut left = [0.0; 512];
+        let mut right = [0.0; 512];
+        for block in input.chunks_exact(512) {
+            effect.process(&context, [block, block], [&mut left, &mut right]);
+        }
+        let mut cursor = 0;
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let block = &input[cursor..cursor + 512];
+                effect.process(
+                    &context,
+                    [black_box(block), black_box(block)],
+                    [&mut left, &mut right],
+                );
+                black_box(&left);
+                black_box(&right);
+                cursor = (cursor + 512) % input.len();
+            });
+        });
+    }
 }
 
 criterion_group!(benches, circuit_models);

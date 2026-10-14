@@ -10,6 +10,7 @@
 //! method is not public. These effects do not claim to reproduce it.
 
 mod blep;
+mod octaves;
 mod sidestep;
 mod svf;
 #[cfg(test)]
@@ -19,4 +20,4 @@ pub(crate) mod testkit;
 mod tests;
 
 /// Every effect in this family.
-pub static KINDS: &[crate::EffectKind] = &[sidestep::KIND];
+pub static KINDS: &[crate::EffectKind] = &[sidestep::KIND, octaves::KIND];

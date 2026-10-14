@@ -695,3 +695,25 @@ effect catalogue. No benchmark ran in the write-only round. The wall's
 sidestep cost provisionally uses ringmod's 379,420 ns per 512-frame block
 until `fx/sidestep` is measured on a quiet machine; this is a scheduling
 estimate, not a sidestep measurement.
+
+## KZ-P11 octaves
+
+2026-10-14, source head `96d5ba6c297c425e2c1b1ea4bf96afdf16e81606`,
+base `da446f9`, with uncommitted `lane/kz-P11` write-only changes.
+Both fixtures process 512 frames at 48 kHz, with up1, up2, down1 and down2
+at 100%, dry at zero, and the other controls at their defaults. The chord
+has six notes (110, 146.83, 196, 246.94, 329.63 and 440 Hz), each with six
+harmonics. The single-note fixture uses the same harmonics at 110 Hz.
+Input and output buffers are prepared outside the timed region.
+
+| bench | frames | time per block | load average (1/5/15 minutes) | result |
+|---|---:|---|---|---|
+| fx/octaves | 512 | not measured | not sampled | not run: write-only round |
+| fx/octaves/single_note | 512 | not measured | not sampled | not run: write-only round |
+
+The 800 microsecond chord budget is not verified. There is no before
+number because this effect did not exist at the base. The existing
+`circuit_models` target prints `uptime` before measuring; its `octaves`
+filter selects both rows in the later build round. Keeping the spare
+bank's filter and divider state live also contributes to the measured
+cost. No timing or load figure is inferred from the design's estimates.
