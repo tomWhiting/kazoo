@@ -190,7 +190,9 @@ impl VoiceTracker {
             JudgeResult::Provisional(estimate) => {
                 if self.cycle.provisional(estimate) {
                     self.provisional_frame = Some(estimate);
-                    self.gate.pick_reading();
+                    if estimate.provisional {
+                        self.gate.pick_reading();
+                    }
                     self.gate.reading();
                 }
             }
@@ -280,6 +282,7 @@ impl VoiceTracker {
                 self.gate.attack(at);
                 self.cycle.pick_attack(self.pick.behind());
                 self.fast_until = at + (0.020 * self.rate) as u64;
+                self.provisional_frame = None;
                 self.hop = (self.samples - at) as usize % (VOICE_HOP / 2);
             }
             let frame_hop = if self.samples < self.fast_until {
@@ -300,8 +303,7 @@ impl VoiceTracker {
             self.vetoed = false;
         }
         let fc = self
-            .provisional_frame
-            .take()
+            .worker_frame()
             .or_else(|| self.cycle.estimate())
             .filter(|_| !self.vetoed && !self.invalid_frame);
         let current = fc.map(|e| e.hz);
@@ -395,6 +397,16 @@ impl VoiceTracker {
             .clamp(0.0, 1.0),
             breath: sanitize_sample(self.breath).clamp(0.0, 1.0),
             confidence: sanitize_sample(confidence).clamp(0.0, 1.0),
+        }
+    }
+
+    fn worker_frame(&mut self) -> Option<CycleEstimate> {
+        // During cancellation only the worker can confirm the newest string.
+        if self.settings.cycle.early && self.samples < self.fast_until + (0.020 * self.rate) as u64
+        {
+            self.provisional_frame
+        } else {
+            self.provisional_frame.take()
         }
     }
 

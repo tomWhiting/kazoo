@@ -11,6 +11,7 @@ use std::f32::consts::TAU;
 use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
 use crate::{sanitize_sample, voice::VOICE_HOP};
 
+mod cancellation;
 #[cfg(test)]
 pub(crate) mod diagnostics;
 mod early;
@@ -406,7 +407,7 @@ impl CycleTracker {
             self.last_fall = crossing();
         }
         self.previous = filtered;
-        if self.settings.early && self.estimate.is_none() {
+        if self.settings.early && (self.estimate.is_none() || self.early.pending.is_some()) {
             self.early_push(previous, filtered);
         }
         self.schmitt(filtered);
@@ -659,7 +660,7 @@ impl CycleTracker {
     }
 
     pub(crate) fn pick_attack(&mut self, behind: usize) {
-        self.attack_until = self.time + f64::from(0.030 * self.rate) - count_f64(behind);
+        self.attack_until = self.time + f64::from(0.040 * self.rate) - count_f64(behind);
     }
 
     fn consider(&self, period: f32, choice: &mut Choice) {

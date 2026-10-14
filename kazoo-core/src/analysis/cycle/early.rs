@@ -113,6 +113,9 @@ impl CycleTracker {
         // Spending the search before evaluating bounds refused notes too.
         self.early.tried = true;
         self.early.pending = None;
+        if self.estimate.is_some() {
+            return;
+        }
         if let Some(peak) = self.early_peak(candidate.period) {
             self.accept(peak, self.time);
             if let Some(estimate) = self.estimate.as_mut() {

@@ -27,3 +27,48 @@ fn a_repluck_discards_the_previous_search_history() {
         "at={at} estimate={estimate:?} truth={truth} error={error}"
     );
 }
+
+#[test]
+fn ringing_cancellation_sweep_measurements() {
+    let takes = instrument_suite(48_000);
+    let take = takes
+        .iter()
+        .find(|take| take.name == "sweep")
+        .expect("sweep");
+    let mut judge = ProvisionalJudge::new(take.rate, InputProfile::Guitar.tracking().cycle);
+    let mut last_attack = None;
+    for (at, &sample) in take.samples.iter().enumerate() {
+        if let Some(estimate) = judge.push(sample) {
+            if last_attack != Some(judge.attack_at) {
+                let mut maxima = judge.maxima.clone();
+                maxima.sort_unstable_by(|a, b| b.clarity.total_cmp(&a.clarity));
+                maxima.truncate(3);
+                println!(
+                    "RESIDUAL attack={} delivery={} reading={estimate:?} ringing={:?} combs={:?} top_three={maxima:?}",
+                    judge.attack_at,
+                    at + 1,
+                    judge.ringing,
+                    judge.cancellation.combs
+                );
+                last_attack = Some(judge.attack_at);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_residual_search_never_allocates() {
+    let takes = instrument_suite(48_000);
+    let take = takes
+        .iter()
+        .find(|take| take.name == "sweep")
+        .expect("sweep");
+    let mut judge = ProvisionalJudge::new(take.rate, InputProfile::Guitar.tracking().cycle);
+    let before = assert_no_alloc::violation_count();
+    assert_no_alloc::assert_no_alloc(|| {
+        for &sample in &take.samples {
+            std::hint::black_box(judge.push(sample));
+        }
+    });
+    assert_eq!(assert_no_alloc::violation_count(), before);
+}
