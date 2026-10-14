@@ -114,11 +114,15 @@ impl Rig {
 
     fn crossing(&mut self, incoming: Patch) -> Outcome {
         let swaps = self.wall.swaps_sent;
+        let serial = self.wall.engine.next_landing_serial();
         let result = self.go(incoming, 4.0);
         assert_eq!(
             self.wall.swaps_sent, swaps,
             "a crossing must not hush and replace the engine"
         );
+        while self.wall.engine.shared().unhushed() < serial {
+            self.render(512);
+        }
         result
     }
 }
@@ -146,6 +150,7 @@ fn shared_modules_stay_and_glide_every_knob() {
     let slot = rig.wall.rack.slot_of("vco1").unwrap();
     let lfo = rig.wall.rack.slot_of("lfo1").unwrap();
     let tag = rig.wall.rack.slots[slot].as_ref().unwrap().1;
+    let retired = rig.wall.engine.retired_modules();
     let mut incoming = rig.incoming();
     incoming.turn("vco1", "level", 0.8, Some(0.0)).unwrap();
     incoming.turn("lfo1", "rate", 2.0, Some(0.0)).unwrap();
@@ -176,6 +181,11 @@ fn shared_modules_stay_and_glide_every_knob() {
     assert_eq!(
         rig.wall.engine.knob(slot, knob).unwrap().to_bits(),
         0.8_f32.to_bits()
+    );
+    assert_eq!(
+        rig.wall.engine.retired_modules(),
+        retired,
+        "shared processors were replaced"
     );
     let rate = rig
         .wall
@@ -216,6 +226,7 @@ fn a_module_only_the_moment_has_fades_in_from_silence() {
 #[test]
 fn a_module_the_moment_lacks_fades_out_then_goes() {
     let mut rig = Rig::new(patch());
+    let retired = rig.wall.engine.retired_modules();
     let slot = rig.wall.rack.slot_of("vco1").unwrap();
     let mut incoming = rig.incoming();
     incoming.remove("vco1", &[]).unwrap();
@@ -224,6 +235,12 @@ fn a_module_the_moment_lacks_fades_out_then_goes() {
     assert!(peak(&samples[..2_048]) > 0.05);
     assert!(peak(&samples[96_000..]) < 0.001);
     assert!(rig.wall.rack.free.contains(&slot));
+    assert_eq!(
+        rig.wall.engine.retired_modules() - retired,
+        1,
+        "exactly the leaving processor must retire"
+    );
+    assert_eq!(rig.wall.engine.shared().lines(), 0);
 }
 
 #[test]
@@ -398,6 +415,25 @@ fn the_tempo_glides_unless_the_desk_keeps_it() {
     assert!((rig.wall.engine.shared().bpm() - 105.0).abs() < 0.2);
     rig.render(48_128);
     assert_eq!(rig.wall.engine.shared().bpm().to_bits(), 90.0_f64.to_bits());
+    let mut desk_rig = Rig::new(patch());
+    let (desk, keepalive) = a_desk(desk_rig.state.path(), 120.0);
+    desk_rig.wall.desk = Some(desk);
+    let mut incoming = desk_rig.incoming();
+    incoming.tempo = 90.0;
+    assert!(
+        desk_rig
+            .wall
+            .plan_crossing(&incoming, super::CrossTiming::go(96_000))
+            .tempo
+            .is_none()
+    );
+    desk_rig.crossing(incoming);
+    desk_rig.render(110_080);
+    assert_eq!(
+        desk_rig.wall.engine.shared().bpm().to_bits(),
+        120.0_f64.to_bits()
+    );
+    drop(keepalive);
 }
 
 #[test]
@@ -522,5 +558,283 @@ fn a_change_during_the_crossing_is_the_buds_first_commit() {
         String::from_utf8(branch.stdout)
             .unwrap()
             .starts_with("refs/heads/bud/")
+    );
+}
+
+#[test]
+fn crossing_is_held_until_the_bar_and_sets_its_origin_without_hushing() {
+    let mut rig = Rig::new(patch());
+    let mut incoming = rig.incoming();
+    incoming.turn("vco1", "level", 0.8, Some(0.0)).unwrap();
+    rig.go(incoming, 4.0);
+    let before = rig.render(48_000);
+    assert_eq!(
+        rig.wall.engine.shared().origin().to_bits(),
+        0.0_f64.to_bits()
+    );
+    let slot = rig.wall.rack.slot_of("vco1").unwrap();
+    let knob = rig
+        .wall
+        .patch
+        .module("vco1")
+        .unwrap()
+        .kind
+        .spec()
+        .knob_index("level")
+        .unwrap();
+    assert_eq!(
+        rig.wall.engine.knob(slot, knob).unwrap().to_bits(),
+        0.2_f32.to_bits(),
+        "crossing began before the bar"
+    );
+    let landing = rig.render(48_000);
+    assert_eq!(
+        rig.wall.engine.shared().origin().to_bits(),
+        4.0_f64.to_bits()
+    );
+    assert!(peak(&before) > 0.05);
+    for window in landing.chunks_exact(2048) {
+        assert!(peak(window) > 0.05, "crossing hushed the master");
+    }
+}
+
+#[test]
+fn seat_plugs_and_slot_reuse_remove_every_stale_crossing_route() {
+    let mut old = patch();
+    old.add("vco", None, None).unwrap();
+    old.add("vcf", None, None).unwrap();
+    old.plug("vco1.out", "vcf1.in", None, None).unwrap();
+    let mut rig = Rig::new(old);
+    let mut incoming = rig.incoming();
+    incoming.plug("vco2.out", "out1.left", None, None).unwrap();
+    incoming.unplug_jack("vcf1.in").unwrap();
+    rig.crossing(incoming);
+    rig.render(24_064);
+    rig.ask(serde_json::json!({"op":"unpatch", "to":"out1.left"}));
+    rig.ask(serde_json::json!({"op":"patch", "from":"vco2.out", "to":"out1.left"}));
+    let removed = rig.wall.rack.slot_of("vcf1").unwrap();
+    rig.ask(serde_json::json!({"op":"remove", "module":"vcf1"}));
+    rig.ask(serde_json::json!({"op":"add", "kind":"vcf"}));
+    let new = rig.wall.patch.modules().last().unwrap().id.clone();
+    assert_eq!(rig.wall.rack.slot_of(&new), Some(removed));
+    assert!(
+        !rig.wall
+            .fades
+            .edges()
+            .any(|(from, to)| from == removed || to == removed)
+    );
+    rig.render(128_000);
+    assert!(rig.wall.fades.is_empty());
+    assert_eq!(rig.wall.rack.index.len(), rig.wall.patch.modules().len());
+    assert_eq!(
+        Store::peek(rig.state.path())
+            .unwrap()
+            .load_log()
+            .unwrap()
+            .changes
+            .len(),
+        5
+    );
+}
+
+#[test]
+fn overlapping_crossings_keep_leaving_modules_until_their_own_deadlines() {
+    let mut rig = Rig::new(patch());
+    let leaving = rig.wall.rack.slot_of("vco1").unwrap();
+    let mut b = rig.incoming();
+    b.remove("vco1", &[]).unwrap();
+    rig.crossing(b);
+    let deadline = rig
+        .wall
+        .fades
+        .modules
+        .iter()
+        .find(|(slot, _, _)| *slot == leaving)
+        .unwrap()
+        .2
+        .frame();
+    rig.render(24_064);
+    let mut c = rig.incoming();
+    c.add("vco", None, None).unwrap();
+    let born = c.modules().last().unwrap().id.clone();
+    c.plug(&format!("{born}.out"), "out1.left", None, None)
+        .unwrap();
+    rig.crossing(c);
+    assert!(
+        !rig.wall.rack.leaving.contains_key(&leaving)
+            || rig.wall.engine.shared().frames() < deadline
+    );
+    rig.render(160_000);
+    assert!(rig.wall.fades.is_empty());
+    assert!(rig.wall.rack.leaving.is_empty());
+    assert_eq!(rig.wall.rack.index.len(), rig.wall.patch.modules().len());
+    assert!(rig.wall.rack.slot_of(&born).is_some());
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn evening_crossing_cost() {
+    let file = crate::migrate::read(include_bytes!("../../../tree/fixtures/evening.json"))
+        .unwrap()
+        .0;
+    let old = Patch::load(&file).unwrap().0;
+    assert_eq!(old.modules().len(), 85);
+    let mut incoming = Patch::load(&old.to_file()).unwrap().0;
+    let changes: Vec<_> = incoming
+        .modules()
+        .iter()
+        .filter_map(|module| {
+            module.kind.spec().knobs.first().map(|spec| {
+                let target = if module.knobs[0].to_bits() == spec.min.to_bits() {
+                    spec.max
+                } else {
+                    spec.min
+                };
+                (module.id.clone(), spec.name, f64::from(target))
+            })
+        })
+        .take(10)
+        .collect();
+    assert_eq!(changes.len(), 10);
+    for (id, knob, value) in changes {
+        incoming.turn(&id, knob, value, Some(0.0)).unwrap();
+    }
+    let removed: Vec<_> = incoming
+        .modules()
+        .iter()
+        .rev()
+        .filter(|module| module.kind == Kind::VCO)
+        .take(3)
+        .map(|module| module.id.clone())
+        .collect();
+    assert_eq!(removed.len(), 3);
+    for id in removed {
+        incoming.remove(&id, &[]).unwrap();
+    }
+    for _ in 0..3 {
+        incoming.add("vco", None, None).unwrap();
+    }
+    let mut plan_time = Duration::ZERO;
+    let mut cross_time = Duration::ZERO;
+    let mut measured = None;
+    for _ in 0..100 {
+        let mut rig = Rig::new(old.clone());
+        let target = incoming.clone();
+        let start = Instant::now();
+        let plan = rig
+            .wall
+            .plan_crossing(&target, super::CrossTiming::go(384_000));
+        plan_time += start.elapsed();
+        assert_eq!(plan.born.len(), 3);
+        assert_eq!(plan.leaving.len(), 3);
+        rig.wall.patch = target;
+        let start = Instant::now();
+        rig.wall.cross(plan);
+        cross_time += start.elapsed();
+        measured = Some(rig);
+    }
+    let mut rig = measured.unwrap();
+    while rig.wall.engine.shared().unhushed() == 0 {
+        rig.render(512);
+    }
+    rig.render(192_000);
+    let during = rig.wall.engine.shared().render_load();
+    rig.render(256_000);
+    assert!(rig.wall.fades.is_empty());
+    rig.render(192_000);
+    let after = rig.wall.engine.shared().render_load();
+    eprintln!(
+        "BENCH release={} modules=85 samples=100 plan_mean_us={:.3} cross_mean_us={:.3} combined_mean_us={:.3} render_load_during={:.6} render_load_after={:.6}",
+        !cfg!(debug_assertions),
+        plan_time.as_secs_f64() * 10_000.0,
+        cross_time.as_secs_f64() * 10_000.0,
+        (plan_time + cross_time).as_secs_f64() * 10_000.0,
+        during,
+        after
+    );
+}
+
+fn a_desk(
+    dir: &std::path::Path,
+    bpm: f32,
+) -> (
+    HubLink,
+    (
+        kazoo_core::ipc::link::HubLinkAudio,
+        std::os::unix::net::UnixStream,
+    ),
+) {
+    use kazoo_core::host::link::connect_config_or_direct;
+    use kazoo_core::ipc::link::{HubAddress, LinkConfig};
+    use kazoo_core::ipc::protocol::FrameBuffer;
+    use kazoo_core::ipc::types::{MSG_REGISTER, MSG_REGISTERED, RegisteredMsg};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let current = std::env::current_dir().unwrap().canonicalize().unwrap();
+    let directory = dir.canonicalize().unwrap();
+    let depth = current
+        .ancestors()
+        .position(|parent| parent == root)
+        .unwrap();
+    let mut path = std::path::PathBuf::new();
+    for _ in 0..depth {
+        path.push("..");
+    }
+    path.push(directory.strip_prefix(root).unwrap());
+    path.push("desk.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let linking = std::thread::spawn(move || {
+        connect_config_or_direct(LinkConfig {
+            address: HubAddress::Socket(path),
+            ..LinkConfig::new("kazoo-wall", 2, 48_000, 256)
+        })
+    });
+    let (mut stream, _) = listener.accept().unwrap();
+    let mut buf = FrameBuffer::new();
+    let header = buf.read_frame(&mut stream).unwrap();
+    assert_eq!(header.msg_type, MSG_REGISTER);
+    let reply = RegisteredMsg {
+        strips: Vec::new(),
+        strip_index: 1,
+        hub_sample_rate: 48_000,
+        hub_buffer_size: 256,
+        transport_state: 0,
+        bpm,
+        position: 0,
+    };
+    reply.encode(buf.payload_mut());
+    buf.write_frame(MSG_REGISTERED, 0, RegisteredMsg::WIRE_SIZE, &mut stream)
+        .unwrap();
+    let (link, audio) = linking.join().unwrap().unwrap();
+    while !link.is_connected() {
+        std::thread::yield_now();
+    }
+    (link, (audio, stream))
+}
+
+#[test]
+fn a_new_cross_waits_for_its_bar_when_an_older_leaving_route_expires() {
+    let mut rig = Rig::new(patch());
+    let mut b = rig.incoming();
+    b.remove("vco1", &[]).unwrap();
+    let serial = rig.wall.engine.next_landing_serial();
+    rig.go(b, 0.5);
+    while rig.wall.engine.shared().unhushed() < serial {
+        rig.render(512);
+    }
+    rig.render(3_072);
+    let mut c = rig.incoming();
+    c.add("vco", None, None).unwrap();
+    let born = c.modules().last().unwrap().id.clone();
+    c.plug(&format!("{born}.out"), "out1.left", None, None)
+        .unwrap();
+    let cable = c.cables().last().unwrap().id;
+    rig.go(c, 4.0);
+    rig.render(30_208);
+    assert!(rig.wall.engine.landing_pending());
+    assert!(
+        rig.wall.fades.waits(cable),
+        "the new cable entered before its own landing"
     );
 }

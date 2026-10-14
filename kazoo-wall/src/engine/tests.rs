@@ -5,6 +5,7 @@ use super::*;
 use crate::dsp::{Rng, build};
 
 mod cost;
+mod crossings;
 mod delays;
 mod glide;
 mod moments;

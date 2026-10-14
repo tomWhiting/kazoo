@@ -250,6 +250,7 @@ pub struct Shared {
     ignored: AtomicU64,
     unhushed: AtomicU64,
     origin: AtomicU64,
+    landing_frame: AtomicU64,
 }
 
 impl Shared {
@@ -277,6 +278,7 @@ impl Shared {
             ignored: AtomicU64::new(0),
             unhushed: AtomicU64::new(0),
             origin: AtomicU64::new(0.0_f64.to_bits()),
+            landing_frame: AtomicU64::new(0),
         }
     }
 
@@ -445,6 +447,11 @@ impl Shared {
     #[must_use]
     pub fn unhushed(&self) -> u64 {
         self.unhushed.load(Ordering::Acquire)
+    }
+
+    /// Frame at which the most recently acknowledged bar landing began.
+    pub(crate) fn landing_frame(&self) -> u64 {
+        self.landing_frame.load(Ordering::Relaxed)
     }
 }
 
@@ -647,6 +654,8 @@ pub struct EngineControl {
     swap_beat: f64,
     batch: Option<batch::CommandBatch>,
     retired: HeapCons<Retired>,
+    #[cfg(test)]
+    retired_modules: usize,
     faults: HeapCons<Fault>,
     listen: Option<HeapCons<f32>>,
     record: Option<HeapCons<f32>>,
@@ -775,6 +784,8 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         swap_beat: 0.0,
         batch: None,
         retired: retired_rx,
+        #[cfg(test)]
+        retired_modules: 0,
         faults: fault_rx,
         listen: Some(listen_rx),
         record: Some(record_rx),
@@ -1702,6 +1713,10 @@ impl EngineControl {
     fn flush(&mut self) {
         loop {
             while let Some(item) = self.retired.try_pop() {
+                #[cfg(test)]
+                if matches!(item, Retired::Module(_)) {
+                    self.retired_modules += 1;
+                }
                 drop(item);
             }
             let Some(command) = self.backlog.pop_front() else {

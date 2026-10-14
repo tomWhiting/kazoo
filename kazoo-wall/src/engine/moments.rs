@@ -1,5 +1,14 @@
-use super::{Command, Engine, EngineControl, Ordering, Retired, SUB_BLOCK, SWAP_FADE_SECONDS};
+use super::{
+    COMMAND_BACKLOG, Command, Engine, EngineControl, Ordering, Retired, SUB_BLOCK,
+    SWAP_FADE_SECONDS,
+};
 use std::collections::VecDeque;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LandingKind {
+    Cut,
+    Cross,
+}
 
 /// Beats in a bar, as the console counts them.
 const BEATS_PER_BAR: f64 = 4.0;
@@ -13,6 +22,9 @@ const LANDING_LEAD_SECONDS: f64 = SWAP_FADE_SECONDS as f64 + 0.1;
 /// One complete wall, prepared before it enters the render command ring.
 #[derive(Debug)]
 pub struct TimedSwap {
+    kind: LandingKind,
+    prior: Option<Box<Self>>,
+    edits: VecDeque<Command>,
     beat: f64,
     serial: u64,
     /// Whether the wall going out has begun to fade towards `beat`.
@@ -21,6 +33,11 @@ pub struct TimedSwap {
 }
 
 impl EngineControl {
+    #[cfg(test)]
+    pub(crate) const fn retired_modules(&self) -> usize {
+        self.retired_modules
+    }
+
     pub(crate) const fn landing_beat(&self) -> f64 {
         self.swap_beat
     }
@@ -34,6 +51,25 @@ impl EngineControl {
     /// first bar at least [`LANDING_LEAD_SECONDS`] ahead, or the bar a go
     /// not yet landed waits for (it replaces that one).
     pub fn end_swap(&mut self) -> f64 {
+        self.end_landing(LandingKind::Cut)
+    }
+
+    /// Hold a prepared crossing for the same bar mechanism as a cut.
+    pub(crate) fn end_cross(&mut self) -> f64 {
+        self.end_landing(LandingKind::Cross)
+    }
+
+    pub(crate) fn next_landing_serial(&self) -> u64 {
+        self.swap_serial
+            .max(self.shared.unhushed())
+            .saturating_add(1)
+    }
+
+    pub(crate) fn landing_pending(&self) -> bool {
+        self.shared.unhushed() < self.swap_serial
+    }
+
+    fn end_landing(&mut self, kind: LandingKind) -> f64 {
         let beat = if self.shared.unhushed() < self.swap_serial {
             self.swap_beat
         } else {
@@ -48,6 +84,9 @@ impl EngineControl {
                 .max(self.shared.unhushed())
                 .saturating_add(1);
             self.push(Command::Swap(Box::new(TimedSwap {
+                kind,
+                prior: None,
+                edits: VecDeque::with_capacity(COMMAND_BACKLOG),
                 beat,
                 serial: self.swap_serial,
                 fading: false,
@@ -65,18 +104,25 @@ fn bar_from(beat: f64) -> f64 {
 
 impl Engine {
     pub(super) fn queue_swap(&mut self, mut swap: Box<TimedSwap>) {
-        if let Some(old) = self.pending_swap.take() {
+        if let Some(mut old) = self.pending_swap.take() {
             // A go replacing one that is fading out towards the same bar
             // carries the fade on, rather than starting it again.
             swap.fading = old.fading && old.beat.to_bits() == swap.beat.to_bits();
             // Probe freshness counts sent tables, including superseded ones.
-            self.tables = self.tables.wrapping_add(
-                old.commands
-                    .iter()
-                    .filter(|command| matches!(command, Command::Cables(_)))
-                    .count() as u64,
-            );
-            self.retire(Retired::Swap(old));
+            if swap.kind == LandingKind::Cross {
+                // The control rack already includes these placements. Keep
+                // their prepared commands, and intervening edits, in order.
+                std::mem::swap(&mut old.edits, &mut self.after_swap);
+                swap.prior = Some(old);
+            } else {
+                self.tables = self.tables.wrapping_add(
+                    old.commands
+                        .iter()
+                        .filter(|command| matches!(command, Command::Cables(_)))
+                        .count() as u64,
+                );
+                self.retire(Retired::Swap(old));
+            }
         }
         self.pending_swap = Some(swap);
         while let Some(command) = self.after_swap.pop_front() {
@@ -135,13 +181,41 @@ impl Engine {
                 .origin
                 .store(self.origin.to_bits(), Ordering::Relaxed);
             self.wall_beat = Some(0.0);
-            self.master.reset();
-            self.hush_gain = 0.0;
-            while let Some(command) = swap.commands.pop_front() {
-                self.apply_command(command);
+            let serial = swap.serial;
+            let cross = swap.kind == LandingKind::Cross;
+            if !cross {
+                self.master.reset();
+                self.hush_gain = 0.0;
             }
-            self.shared.unhushed.store(swap.serial, Ordering::Release);
-            self.retire(Retired::Swap(swap));
+            // Reverse the held chain without allocating, then take each
+            // prepared wall and its edits in their original order.
+            let mut ordered = None;
+            loop {
+                let prior = swap.prior.take();
+                swap.prior = ordered;
+                ordered = Some(swap);
+                if let Some(previous) = prior {
+                    swap = previous;
+                } else {
+                    break;
+                }
+            }
+            while let Some(mut held) = ordered.take() {
+                ordered = held.prior.take();
+                while let Some(command) = held.commands.pop_front() {
+                    if !cross || !matches!(command, Command::Hush | Command::Unhush) {
+                        self.apply_command(command);
+                    }
+                }
+                while let Some(command) = held.edits.pop_front() {
+                    self.apply_command(command);
+                }
+                self.retire(Retired::Swap(held));
+            }
+            self.shared
+                .landing_frame
+                .store(self.rendered, Ordering::Relaxed);
+            self.shared.unhushed.store(serial, Ordering::Release);
             while let Some(command) = self.after_swap.pop_front() {
                 self.apply_command(command);
             }
@@ -165,6 +239,9 @@ impl Engine {
         let beat = self.beat;
         let fade = f64::from(self.sample_rate * SWAP_FADE_SECONDS);
         if let Some(swap) = self.pending_swap.as_mut() {
+            if swap.kind == LandingKind::Cross {
+                return;
+            }
             let remaining = (swap.beat - beat) / beat_step;
             for (frame, (left, right)) in left.iter_mut().zip(right).enumerate() {
                 let gain = ((remaining - frame as f64) / fade).clamp(0.0, 1.0);

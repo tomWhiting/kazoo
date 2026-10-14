@@ -4961,7 +4961,7 @@ impl Wall {
         let slot = self
             .rack
             .slot_of(&module.id)
-            .filter(|_| self.engine.shared().unhushed() >= self.swaps_sent);
+            .filter(|_| !self.engine.landing_pending());
         let knobs = spec
             .knobs
             .iter()

@@ -1,7 +1,11 @@
 //! Control-side plans keep processors and cable histories alive until silent.
 
+mod fades;
 #[cfg(test)]
 mod tests;
+
+pub(super) use fades::Fades;
+use fades::{Deadline, Leaving};
 
 use super::{
     Adapter, Builder, Cable, Command, HashMap, HashSet, Jack, Kind, MAX_INPUTS, Module, Patch,
@@ -28,81 +32,6 @@ impl CrossTiming {
             fades: frames,
             tempo: frames,
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Leaving {
-    to_slot: usize,
-    jack: usize,
-    from_slot: usize,
-    route: Route,
-    gone_at: u64,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct Fades {
-    cables: Vec<Leaving>,
-    modules: Vec<(usize, Kind, u64)>,
-    waiting: Vec<(u32, u64, u32)>,
-    glides: HashMap<u32, (u32, u64)>,
-    end: u64,
-}
-
-impl Fades {
-    pub(super) fn glide_of(&self, cable: u32) -> u32 {
-        self.glides.get(&cable).map_or(0, |&(frames, _)| frames)
-    }
-    pub(super) fn waits(&self, cable: u32) -> bool {
-        self.waiting.iter().any(|&(id, _, _)| id == cable)
-    }
-    pub(super) fn lines(&self) -> impl Iterator<Item = u32> + '_ {
-        self.cables.iter().map(|cable| cable.route.tag)
-    }
-    pub(super) fn slots(&self) -> impl Iterator<Item = usize> + '_ {
-        self.modules.iter().map(|&(slot, _, _)| slot)
-    }
-    pub(super) fn sinks(&self) -> impl Iterator<Item = usize> + '_ {
-        self.modules
-            .iter()
-            .filter(|(_, kind, _)| super::unheard::is_sink(*kind))
-            .map(|&(slot, _, _)| slot)
-    }
-    pub(super) fn outs(&self) -> impl Iterator<Item = usize> + '_ {
-        self.modules
-            .iter()
-            .filter(|(_, kind, _)| *kind == Kind::OUT)
-            .map(|&(slot, _, _)| slot)
-    }
-    pub(super) fn edges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        self.cables
-            .iter()
-            .map(|cable| (cable.from_slot, cable.to_slot))
-    }
-    pub(super) fn forget_slot(&mut self, slot: usize) {
-        self.cables
-            .retain(|cable| cable.from_slot != slot && cable.to_slot != slot);
-    }
-    pub(super) fn is_empty(&self) -> bool {
-        self.cables.is_empty()
-            && self.modules.is_empty()
-            && self.waiting.is_empty()
-            && self.glides.is_empty()
-    }
-    fn refresh_end(&mut self) {
-        self.end = self
-            .cables
-            .iter()
-            .map(|cable| cable.gone_at)
-            .chain(self.modules.iter().map(|&(_, _, at)| at))
-            .chain(
-                self.waiting
-                    .iter()
-                    .map(|&(_, at, frames)| at.saturating_add(u64::from(frames))),
-            )
-            .chain(self.glides.values().map(|&(_, at)| at))
-            .max()
-            .unwrap_or(0);
     }
 }
 
@@ -335,12 +264,12 @@ impl Wall {
                         .unwrap_or(0),
                 )
             },
-            gone_at: u64::from(frames) + margin,
+            gone_at: Deadline::at(u64::from(frames) + margin),
         })
     }
 
     pub(super) fn cross_arrival_note(&self, beats: f64, notes: &mut Vec<String>) {
-        if beats <= 0.0 {
+        if beats.is_finite() {
             notes.push(format!(
                 "lands on bar {:.0}",
                 self.engine.landing_beat() / 4.0 + 1.0
@@ -398,8 +327,20 @@ impl Wall {
     }
 
     pub(super) fn cross(&mut self, mut plan: CrossPlan) {
-        let start = self.engine.shared().frames();
-        if plan.timing.fades > 0 {
+        self.fades.resolve(self.engine.shared());
+        let held = plan.timing.fades > 0;
+        let start = if held {
+            0
+        } else {
+            self.engine.shared().frames()
+        };
+        let serial = if held {
+            self.engine.next_landing_serial()
+        } else {
+            0
+        };
+        if held {
+            self.engine.begin_swap();
             self.restart_load_watch();
             self.crossings_sent += 1;
         }
@@ -421,8 +362,8 @@ impl Wall {
                 }
             }
         }
-        self.keep_crossing(&plan, start);
-        self.begin_fades(&mut plan, start);
+        self.keep_crossing(&plan, start, serial);
+        self.begin_fades(&mut plan, start, serial);
         self.fades.refresh_end();
         self.send_tables();
         for knob in plan.knobs {
@@ -447,6 +388,9 @@ impl Wall {
         if let Some((bpm, frames)) = plan.tempo {
             self.engine.send(Command::TempoGlide { bpm, frames });
         }
+        if held {
+            self.engine.end_cross();
+        }
         if plan.timing.fades == 0 {
             for (_, slot, _) in plan.leaving {
                 self.engine.send(Command::Remove { slot });
@@ -455,10 +399,10 @@ impl Wall {
         }
     }
 
-    fn begin_fades(&mut self, plan: &mut CrossPlan, start: u64) {
+    fn begin_fades(&mut self, plan: &mut CrossPlan, start: u64, serial: u64) {
         if plan.timing.fades > 0 {
             for mut cable in std::mem::take(&mut plan.cables) {
-                cable.gone_at += start;
+                cable.gone_at = Deadline::held(start + cable.gone_at.frame(), serial);
                 self.fades.cables.push(cable);
             }
             for &(id, after, glide) in &plan.waiting {
@@ -479,12 +423,14 @@ impl Wall {
                             .iter()
                             .filter(|cable| cable.to_slot == slot && cable.jack == jack)
                             .map(|cable| cable.gone_at)
-                            .max()
+                            .reduce(Deadline::later)
                     })
-                    .unwrap_or(start + after);
-                self.fades
-                    .waiting
-                    .push((id, held.max(start + after), glide));
+                    .unwrap_or_else(|| Deadline::held(start + after, serial));
+                self.fades.waiting.push((
+                    id,
+                    held.later(Deadline::held(start + after, serial)),
+                    glide,
+                ));
             }
             for &(id, glide) in &plan.entering {
                 let destination = self
@@ -503,14 +449,20 @@ impl Wall {
                         .iter()
                         .filter(|cable| cable.to_slot == slot && cable.jack == jack)
                         .map(|cable| cable.gone_at)
-                        .max()
+                        .reduce(Deadline::later)
                 });
                 if let Some(at) = held {
-                    self.fades.waiting.push((id, at, glide));
-                } else {
                     self.fades
-                        .glides
-                        .insert(id, (glide, start + u64::from(glide) + plan.margin));
+                        .waiting
+                        .push((id, at.later(Deadline::held(start, serial)), glide));
+                } else {
+                    self.fades.glides.insert(
+                        id,
+                        (
+                            glide,
+                            Deadline::held(start + u64::from(glide) + plan.margin, serial),
+                        ),
+                    );
                 }
             }
             for &(_, slot, kind) in &plan.leaving {
@@ -520,8 +472,8 @@ impl Wall {
                     .iter()
                     .filter(|cable| cable.from_slot == slot || cable.to_slot == slot)
                     .map(|cable| cable.gone_at)
-                    .max()
-                    .unwrap_or(start + plan.margin);
+                    .reduce(Deadline::later)
+                    .unwrap_or_else(|| Deadline::held(start + plan.margin, serial));
                 self.fades.modules.push((slot, kind, at));
             }
         } else {
@@ -529,7 +481,7 @@ impl Wall {
         }
     }
 
-    fn keep_crossing(&mut self, plan: &CrossPlan, start: u64) {
+    fn keep_crossing(&mut self, plan: &CrossPlan, start: u64, serial: u64) {
         let same: HashSet<&str> = plan
             .matched
             .iter()
@@ -569,9 +521,13 @@ impl Wall {
             if let Some(&(_, at, frames)) = old_waiting.iter().find(|&&(id, _, _)| id == old) {
                 self.fades.waiting.push((new, at, frames));
             } else if glide > 0 {
-                self.fades
-                    .glides
-                    .insert(new, (glide, start + u64::from(glide) + plan.margin));
+                self.fades.glides.insert(
+                    new,
+                    (
+                        glide,
+                        Deadline::held(start + u64::from(glide) + plan.margin, serial),
+                    ),
+                );
             }
         }
     }
@@ -627,6 +583,7 @@ impl Wall {
         if self.fades.is_empty() {
             return;
         }
+        self.fades.resolve(self.engine.shared());
         let now = self.engine.shared().frames();
         let before = (
             self.fades.cables.len(),
@@ -638,24 +595,26 @@ impl Wall {
             .fades
             .cables
             .iter()
-            .filter(|cable| cable.gone_at <= now)
+            .filter(|cable| cable.gone_at.due(now))
             .map(|cable| (cable.to_slot, cable.jack))
             .collect();
-        self.fades.cables.retain(|cable| cable.gone_at > now);
+        self.fades.cables.retain(|cable| !cable.gone_at.due(now));
         let ids: HashSet<u32> = self.patch.cables().iter().map(|cable| cable.id).collect();
         let waiting = std::mem::take(&mut self.fades.waiting);
         for (id, at, frames) in waiting {
             if !ids.contains(&id) {
                 continue;
             }
-            if at <= now {
+            if at.due(now) {
                 self.fades.glides.insert(
                     id,
                     (
                         frames,
-                        now + u64::from(frames)
-                            + (CROSS_MARGIN_SECONDS * f64::from(self.engine.sample_rate())).ceil()
-                                as u64,
+                        Deadline::at(
+                            now + u64::from(frames)
+                                + (CROSS_MARGIN_SECONDS * f64::from(self.engine.sample_rate()))
+                                    .ceil() as u64,
+                        ),
                     ),
                 );
             } else {
@@ -664,10 +623,10 @@ impl Wall {
         }
         self.fades
             .glides
-            .retain(|id, (_, at)| ids.contains(id) && *at > now);
+            .retain(|id, (_, at)| ids.contains(id) && !at.due(now));
         let mut due = Vec::new();
         self.fades.modules.retain(|&(slot, _, at)| {
-            if at <= now
+            if at.due(now)
                 && !self
                     .fades
                     .cables

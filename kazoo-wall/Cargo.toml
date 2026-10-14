@@ -33,7 +33,7 @@ toml = "0.9"
 
 [dev-dependencies]
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
-assert_no_alloc = { version = "1.1.2", features = ["warn_debug"] }
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
 tempfile = "3"
 
 [[bench]]
