@@ -56,10 +56,14 @@ async fn wall_undo_renders_replacements_and_notes_its_own_change() {
             .join(" ");
         assert!(text.contains("kept-wall"), "{text}");
         assert!(text.contains("kept tempo"), "{text}");
-        assert!(
-            text.contains("The wall is back on the line it left."),
-            "{text}"
-        );
+        if what == "go" {
+            assert!(
+                text.contains("The wall is back on trunk: the next change carries it on."),
+                "{text}"
+            );
+        } else {
+            assert!(!text.contains("The wall is"), "{text}");
+        }
         assert!(matches!(heard.recv().await, Some(Feed::Own(3))));
         server.await.unwrap();
         drop(receiver);

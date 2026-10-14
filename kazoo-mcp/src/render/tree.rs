@@ -23,11 +23,15 @@ pub fn marked(result: &MarkResult) -> String {
 #[must_use]
 pub fn went(result: &LoadResult) -> String {
     let mut out = super::loaded(result);
-    if result.change.undoes.is_some() {
-        out.push_str(" The wall is back on the line it left.");
-    } else if let What::Go { to, .. } = &result.change.what {
+    // An undone go is itself a go, back to where the wall was: on a line or
+    // off one. An undone load stays on the line it was on, and says no more.
+    if let What::Go { to, .. } = &result.change.what {
         if let Some(branch) = &to.branch {
-            out.push_str(" The wall is on ");
+            out.push_str(if result.change.undoes.is_some() {
+                " The wall is back on "
+            } else {
+                " The wall is on "
+            });
             out.push_str(branch);
             out.push_str(": the next change carries it on.");
         } else {
@@ -298,7 +302,7 @@ mod tests {
         assert_eq!(
             went(&result),
             format!(
-                "{} The wall is back on the line it left.",
+                "{} The next change anyone makes grows a bud: a new branch from this moment.",
                 crate::render::loaded(&result)
             )
         );
@@ -424,5 +428,55 @@ mod tests {
         result.here = Some(place());
         result.revision = 58;
         assert!(tree(&result).contains("The tree is 1 change behind the wall."));
+    }
+    #[test]
+    fn an_undone_replacement_says_where_the_wall_now_is() {
+        let go = |branch: Option<&str>| What::Go {
+            to: TreePlace {
+                branch: branch.map(str::to_string),
+                ..place()
+            },
+            from: place(),
+            backup: "before-undo".into(),
+            fingerprint: "abc".into(),
+            modules: 1,
+            cables: 0,
+            tempo: 120.0,
+            by_console: false,
+        };
+        let undone = |what: What| LoadResult {
+            change: Change {
+                seq: 81,
+                at: moment().at,
+                seat: "Waffles".into(),
+                what,
+                summary: "undid change 80".into(),
+                undoes: Some(80),
+                clock: None,
+            },
+            backup: "before-undo".into(),
+            notes: Vec::new(),
+        };
+        let load = undone(What::Load {
+            save: None,
+            backup: "before-undo".into(),
+            fingerprint: "abc".into(),
+            modules: 1,
+            cables: 0,
+            tempo: 120.0,
+            by_console: false,
+        });
+        assert_eq!(went(&load), crate::render::loaded(&load));
+        let back_on_trunk = went(&undone(go(Some("trunk"))));
+        assert!(
+            back_on_trunk.contains("The wall is back on trunk: the next change carries it on."),
+            "{back_on_trunk}"
+        );
+        let back_off_line = went(&undone(go(None)));
+        assert!(
+            back_off_line.contains("The next change anyone makes grows a bud"),
+            "{back_off_line}"
+        );
+        assert!(!back_off_line.contains("line it left"), "{back_off_line}");
     }
 }
