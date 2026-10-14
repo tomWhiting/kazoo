@@ -2,7 +2,7 @@
 
 Line numbers are from `main` at the head this lane starts from; find each item by what it does, and never rename anything. Checks, code quality and the END block are as PLAN.md's STACK RULES, with `-p kazoo-wall -p kazoo-mcp`.
 
-Place: Track T. Written by Cassio, 14 Oct 2026, 23:1x, from the Opus review of KZ-T04b (merged at 8f397db). Decided by Cassio; every choice below has its reason beside it.
+Place: Track T. Written by Cassio, 14 Oct 2026, 22:1x, from the Opus review of KZ-T04b (merged at 8f397db). Decided by Cassio; every choice below has its reason beside it.
 
 Time: about 45 minutes. Crates: kazoo-wall (`daemon/wall/moments.rs`, `daemon/wall/loops.rs`, `daemon/wall.rs`, `daemon/control.rs`, `protocol/mod.rs`, `tui/app/saves.rs`, the tests named below).
 

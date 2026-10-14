@@ -2,7 +2,7 @@
 
 Line numbers are from `main` at the head this lane starts from; find each item by what it does, and never rename anything. Checks, code quality and the END block are as PLAN.md's STACK RULES, with `-p kazoo-wall`.
 
-Place: Track T. Written by Cassio, 14 Oct 2026, 23:2x, from the Opus review of KZ-T04b (finding 7). Decided by Cassio.
+Place: Track T. Written by Cassio, 14 Oct 2026, 22:1x, from the Opus review of KZ-T04b (finding 7). Decided by Cassio.
 
 Time: about 40 minutes. Crates: kazoo-wall (`tree/rings.rs`, `tree/rings/evidence.rs`, `tree/rings/model.rs`, their tests).
 

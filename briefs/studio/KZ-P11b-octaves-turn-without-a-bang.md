@@ -2,7 +2,7 @@
 
 Line numbers are from `lane/kz-P11` at 02e89b6; find each item by what it does, and never rename anything. Checks, code quality and the END block are as PLAN.md's STACK RULES, with `-p kazoo-fx -p kazoo-wall`.
 
-Place: Track P, lane 11b. Written by Cassio, 14 Oct 2026, 23:2x, from the Opus review of KZ-P11. This lane **builds on `lane/kz-P11`** (open with `BASE=lane/kz-P11`), then merges main into itself. Decided by Cassio; each decision's reason is beside it.
+Place: Track P, lane 11b. Written by Cassio, 14 Oct 2026, 22:1x, from the Opus review of KZ-P11. This lane **builds on `lane/kz-P11`** (open with `BASE=lane/kz-P11`), then merges main into itself. Decided by Cassio; each decision's reason is beside it.
 
 Time: about 50 minutes. Crates: kazoo-fx (`shape/octaves.rs`, `shape/octaves/band.rs`, `shape/octaves/tests.rs`), kazoo-wall (`daemon/wall/cost.rs`), `briefs/studio/BENCH.md`.
 
