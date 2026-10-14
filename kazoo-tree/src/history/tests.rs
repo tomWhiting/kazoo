@@ -861,7 +861,7 @@ fn a_record_mark_then_an_id_at_the_end_of_an_author_or_subject_never_splits_a_co
 /// its birth as given.
 fn filter(cutoff: f64, dye: f64, birth: &str) -> String {
     format!(
-        "kind = \"vcf\"\nname = \"low\"\nbirth = \"{birth}\"\n\n[knobs]\ncutoff = {cutoff:?}\nresonance = 0.2\n\n[inputs]\ncutoff = {{ cable = 150, from = \"lfo1.out\", amount = -0.4 }}\n\n[dye]\nCassio = {dye:?}\n"
+        "kind = \"vcf\"\nname = \"low\"\nbirth = \"{birth}\"\n\n[knobs]\ncutoff = {cutoff:?}\nres = 0.2\n\n[inputs]\ncutoff = {{ cable = 150, from = \"lfo1.out\", amount = -0.4 }}\n\n[dye]\nCassio = {dye:?}\n"
     )
 }
 
@@ -977,4 +977,63 @@ fn a_file_line_that_is_not_raw_or_not_a_modules_is_said() {
     ] {
         assert!(said.contains(words), "{words}: {said}");
     }
+}
+
+#[test]
+fn a_tree_read_in_two_goes_has_the_tints_of_one_read_whole() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    kazoo_wall::tree::git::plant(dir.path()).expect("planted");
+    let born = "born 7308.0 2026-10-14T14:06:06Z 1165dea1b321acbe aa83f0f62b7bc3c3";
+    let mut stream = Stream::default();
+    let one = stream.commit("trunk", None, 1, &[("wall.toml", Some("t"))], None);
+    let two = stream.commit(
+        "trunk",
+        Some(one),
+        2,
+        &[("modules/vcf1.toml", Some(&filter(800.0, 1.0, born)))],
+        None,
+    );
+    stream.import(dir.path());
+    let mut history = History::default();
+    let first = Snapshot::read(dir.path()).expect("read");
+    history.grow(dir.path(), &first, &[]).expect("grows");
+    // Later: the filter turned (its old file was read in the first go),
+    // then taken away.
+    let mut later = Stream {
+        text: String::new(),
+        marks: two,
+    };
+    let three = later.write(
+        "trunk",
+        Some(two),
+        1_003,
+        "Tom turned vcf1 cutoff\n\nKazoo-Kind: change\nKazoo-Seq: 3\n",
+        &[("modules/vcf1.toml", Some(&filter(4000.0, 2.0, born)))],
+    );
+    later.write(
+        "trunk",
+        Some(three),
+        1_004,
+        "Tom removed vcf1\n\nKazoo-Kind: change\nKazoo-Seq: 4\n",
+        &[("modules/vcf1.toml", None)],
+    );
+    later.text = later.text.replace(
+        &format!("from :{two}\n"),
+        &format!("from {}\n", history.moments[history.limbs[0].moments[1]].id),
+    );
+    later.import(dir.path());
+    let second = Snapshot::read(dir.path()).expect("read again");
+    history.grow(dir.path(), &second, &[]).expect("grows on");
+    let whole = History::read(dir.path()).expect("read whole");
+    let tints = |history: &History| -> Vec<Tint> {
+        history.limbs[0]
+            .moments
+            .iter()
+            .map(|&m| history.moments[m].tint)
+            .collect()
+    };
+    assert_eq!(tints(&history).len(), 4);
+    assert_eq!(tints(&history), tints(&whole));
+    assert_ne!(tints(&history)[2], tints(&history)[1]);
+    assert_eq!(tints(&history)[3], Tint::default());
 }

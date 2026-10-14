@@ -485,7 +485,15 @@ fn striped() -> History {
 fn far_out_a_limb_blends_its_colours_and_close_in_each_is_its_own() {
     assert_eq!(mellow_window(MAX_SCALE), 1);
     assert_eq!(mellow_window(3.0), 1, "close in, each moment is its own");
-    assert_eq!(mellow_window(1.0), 12);
+    assert_eq!(mellow_window(0.5), 24, "the whole tree: three dots' worth");
+    assert_eq!(mellow_window(1.0), 11, "names: easing off");
+    assert_eq!(mellow_window(2.49), 1, "nothing left to blend by gestures");
+    let mut last = usize::MAX;
+    for step in 0..200 {
+        let window = mellow_window(f64::from(step).mul_add(0.01, 0.75));
+        assert!(window <= last, "zooming in never blends more");
+        last = window;
+    }
     assert_eq!(mellow_window(0.005), 2_400);
     assert_eq!(mellow_window(f64::NAN), 1);
     let history = striped();

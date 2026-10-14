@@ -42,6 +42,8 @@ const SHADE_LIGHT: f64 = 0.14;
 /// How many agreeing shades make a moment's colour full: fewer are drawn
 /// quieter.
 const FULL_SHADES: f64 = 4.0;
+/// How loud a sound that does not read is taken to be, dBFS.
+pub const SILENT_DB: f64 = -60.0;
 /// Lightness with no sound kept.
 const LIGHT: f64 = 0.6;
 
@@ -162,15 +164,17 @@ pub struct Settings {
 /// or the seats' dye, which change without the sound changing. Every knob
 /// and input leans the shade its own way, by how far it is from the middle
 /// (or how much is plugged in), so a small turn is a small move and a knob
-/// turned back is the shade it was. `None` when the file is not a module's
-/// TOML.
-#[must_use]
-pub fn settings_of(text: &str) -> Option<Settings> {
-    let table: toml::Table = match text.parse() {
-        Ok(table) => table,
-        Err(_) => return None,
-    };
-    let kind = table.get("kind")?.as_str()?;
+/// turned back is the shade it was.
+///
+/// # Errors
+///
+/// Says why, when the file is not TOML or names no kind.
+pub fn settings_of(text: &str) -> Result<Settings, &'static str> {
+    let table: toml::Table = text.parse().map_err(|_| "not TOML")?;
+    let kind = table
+        .get("kind")
+        .and_then(toml::Value::as_str)
+        .ok_or("no kind")?;
     let spec = kazoo_wall::catalogue::registry()
         .kinds()
         .iter()
@@ -218,7 +222,7 @@ pub fn settings_of(text: &str) -> Option<Settings> {
         lean.turn = (lean.turn * scale).clamp(-1.0, 1.0);
         lean.light = (lean.light * scale).clamp(-1.0, 1.0);
     }
-    Some(lean)
+    Ok(lean)
 }
 
 /// A TOML number, whole or not.
@@ -353,7 +357,7 @@ pub fn blend(sum: &Tint, moments: f64, rms_db: Option<f64>) -> (u8, u8, u8) {
     let each = count / moments;
     let shades = (sum.light as f64 / moments / (each.sqrt() * UNIT)).clamp(-1.0, 1.0);
     let light = rms_db.map_or(LIGHT, |rms| {
-        let rms = if rms.is_finite() { rms } else { -60.0 };
+        let rms = if rms.is_finite() { rms } else { SILENT_DB };
         ((rms + 50.0) / 40.0).clamp(0.0, 1.0).mul_add(0.3, 0.45)
     });
     hsl(hue, saturation, shades.mul_add(SHADE_LIGHT, light))

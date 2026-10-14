@@ -4,7 +4,7 @@
 //! dots coloured by how they sounded, and the marks hang off them as glyphs
 //! with labels. What is drawn depends on how far in you are ([`Level`]).
 
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::growth::{GROWTH_STEP, Growth, ROOT_DEPTH, ROOT_REACH, Running, STEP_LENGTH, Step};
 use crate::history::{Batch, History, Moment};
@@ -156,6 +156,12 @@ const TRUNK_THICKER: f64 = 1.4;
 /// How many dots of limb a colour is blended along when the view is far
 /// out, so a limb mellows into one long gradient instead of a patchwork.
 const MELLOW_DOTS: f64 = 3.0;
+/// The scale at and past which (further out) the blend is whole: where the
+/// view stops showing names.
+const BLEND_FULL: f64 = 0.75;
+/// The scale from which (closer in) nothing is blended: where gestures
+/// show.
+const BLEND_UNTIL: f64 = 2.5;
 /// The widest a limb is ever drawn, in dots, so close in a thick limb does
 /// not bury its own marks.
 const MAX_DOTS_WIDE: f64 = 10.0;
@@ -798,7 +804,7 @@ fn hang_words(
         let said = if matches!(words, Words::Day(_)) {
             // A new day is the one word for when a limb grew, so it looks
             // for room beside its mark rather than giving up its place.
-            let wide = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+            let wide = i32::try_from(UnicodeWidthStr::width(text.as_str())).unwrap_or(i32::MAX);
             [
                 (col + 2, row),
                 (col + 2, row - 1),
@@ -979,15 +985,14 @@ fn hangings(
 }
 
 /// How many moments a colour is blended over at `scale`: those along
-/// [`MELLOW_DOTS`] of limb when the view is far out (whole tree or names),
-/// one closer in, where each moment is drawn in its own colour as the
-/// lanes and the details show it.
+/// [`MELLOW_DOTS`] of limb when the whole tree is in view, fewer and fewer
+/// through the names' zoom, and one from there in, where each moment is
+/// drawn in its own colour as the lanes and the details show it. Zooming
+/// eases the blend in and out, never switching it at once.
 fn mellow_window(scale: f64) -> usize {
-    if !matches!(Level::of(scale), Level::Far | Level::Near) {
-        return 1;
-    }
+    let taper = ((BLEND_UNTIL - scale) / (BLEND_UNTIL - BLEND_FULL)).clamp(0.0, 1.0);
     let spacing = STEP_LENGTH / GROWTH_STEP as f64;
-    let moments = (MELLOW_DOTS / (scale * spacing)).ceil();
+    let moments = (MELLOW_DOTS * taper / (scale * spacing)).ceil();
     if moments.is_finite() && moments > 1.0 {
         // Finite and above one: the cast saturates at `usize::MAX`, past
         // any path's length, which blends from the tree's first moment.
@@ -1023,7 +1028,11 @@ fn mellowed(scene: &Scene<'_>, m: usize, window: usize) -> Option<(u8, u8, u8)> 
         if back == 0 {
             break Some(from);
         }
-        (limb, p) = history.place[from]?;
+        // A moment on no limb: the path starts there, as growth's sums do.
+        let Some(place) = history.place[from] else {
+            break None;
+        };
+        (limb, p) = place;
     };
     let before = match before {
         Some(b) => scene.growth.look[b]?.running,

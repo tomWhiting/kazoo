@@ -151,10 +151,13 @@ pub struct History {
     index: HashMap<Arc<str>, usize>,
     /// The tips read so far: everything behind them is held.
     tips: Vec<String>,
-    /// Each module file's settings by git's id of it, read once: `None`
-    /// for one that could not be read.
-    prints: HashMap<Box<str>, Option<Settings>>,
+    /// Each module file's settings by git's id of it, read once, or why
+    /// they could not be.
+    prints: HashMap<Box<str>, Result<Settings, &'static str>>,
 }
+
+/// How many module files `learn` asks git for at once.
+const LEARN_AT_ONCE: usize = 2_048;
 
 const RECORD: u8 = 0x1e;
 const BODY_END: char = '\u{1f}';
@@ -437,17 +440,22 @@ impl History {
         if wanted.is_empty() {
             return Ok(());
         }
-        let mut input = wanted.join("\n");
-        input.push('\n');
-        let answer = run_with(git(dir, "cat-file").arg("--batch"), &input)?;
-        let read = read_batch(&answer)?;
-        for id in wanted {
-            let settings = read
-                .get(id)
-                .copied()
-                .flatten()
-                .and_then(|text| std::str::from_utf8(text).map_or(None, colour::settings_of));
-            self.prints.insert(Box::from(id), settings);
+        // A few thousand at a time, so a first read of a long history
+        // holds one batch of files at once, never every one.
+        for ids in wanted.chunks(LEARN_AT_ONCE) {
+            let mut input = ids.join("\n");
+            input.push('\n');
+            let answer = run_with(git(dir, "cat-file").arg("--batch"), &input)?;
+            let read = read_batch(&answer)?;
+            for &id in ids {
+                let settings = match read.get(id) {
+                    Some(Some(text)) => std::str::from_utf8(text)
+                        .map_err(|_| "not UTF-8")
+                        .and_then(colour::settings_of),
+                    Some(None) | None => Err("not in the tree"),
+                };
+                self.prints.insert(Box::from(id), settings);
+            }
         }
         Ok(())
     }
@@ -614,7 +622,7 @@ fn moment(
     record: &str,
     index: impl Fn(&str) -> Option<usize>,
     alive_at: impl Fn(usize) -> (u32, Kinds, Tint),
-    prints: Option<&HashMap<Box<str>, Option<Settings>>>,
+    prints: Option<&HashMap<Box<str>, Result<Settings, &'static str>>>,
 ) -> Result<Moment, HistoryError> {
     // The last end mark: the files after it are the wall's own paths,
     // while a subject or a note before it may hold the mark's byte.
@@ -860,12 +868,16 @@ fn read_batch(answer: &[u8]) -> Result<HashMap<&str, Option<&[u8]>>, HistoryErro
 fn files_of(
     files: &str,
     (before, mut alive, mut tint): (u32, Kinds, Tint),
-    prints: Option<&HashMap<Box<str>, Option<Settings>>>,
+    prints: Option<&HashMap<Box<str>, Result<Settings, &'static str>>>,
     problems: &mut Vec<String>,
 ) -> (u32, Kinds, Tint) {
     let mut modules = i64::from(before);
     let mut missing = false;
-    let settings = |id: &str| prints.and_then(|prints| prints.get(id).copied().flatten());
+    let read = |id: &str| prints.and_then(|prints| prints.get(id).copied());
+    let settings = |id: &str| match read(id) {
+        Some(Ok(settings)) => Some(settings),
+        Some(Err(_)) | None => None,
+    };
     for line in files.lines().filter(|line| !line.is_empty()) {
         let file = match file_line(line) {
             Ok(file) => file,
@@ -895,11 +907,18 @@ fn files_of(
             continue;
         };
         let kind = colour::kind_of(id);
-        if prints.is_some() && !is_zero(file.new) && settings(file.new).is_none() {
-            problems.push(format!(
-                "the settings in {:.80} could not be read; its colour is from its place alone",
-                file.path
-            ));
+        if prints.is_some() && !is_zero(file.new) {
+            let why = match read(file.new) {
+                Some(Ok(_)) => None,
+                Some(Err(why)) => Some(why),
+                None => Some("never read"),
+            };
+            if let Some(why) = why {
+                problems.push(format!(
+                    "the settings in {:.80} could not be read ({why}); its colour is from its place alone",
+                    file.path
+                ));
+            }
         }
         match file.status {
             "A" => {

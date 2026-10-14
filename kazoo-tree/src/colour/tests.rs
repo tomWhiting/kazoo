@@ -143,7 +143,7 @@ fn a_small_turn_is_a_small_move_and_turning_back_is_exact() {
 fn settings_are_the_knobs_and_cables_and_nothing_else() {
     let file = |cutoff: &str, name: &str, birth: &str, cable: u32, amount: &str, dye: &str| {
         format!(
-            "kind = \"vcf\"\nname = \"{name}\"\nbirth = \"{birth}\"\n\n[knobs]\ncutoff = {cutoff}\nresonance = 0.2\nmode = 0\n\n[inputs]\ncutoff = {{ cable = {cable}, from = \"lfo1.out\", amount = {amount} }}\n\n[dye]\nCassio = {dye}\n"
+            "kind = \"vcf\"\nname = \"{name}\"\nbirth = \"{birth}\"\n\n[knobs]\ncutoff = {cutoff}\nres = 0.2\nmode = 0\n\n[inputs]\ncutoff = {{ cable = {cable}, from = \"lfo1.out\", amount = {amount} }}\n\n[dye]\nCassio = {dye}\n"
         )
     };
     let read = |text: &str| settings_of(text).expect("a module's file");
@@ -162,9 +162,9 @@ fn settings_are_the_knobs_and_cables_and_nothing_else() {
     // A cable's amount leans it too.
     assert_ne!(read(&file("1000.0", "low", "b1", 150, "0.4", "3.21")), base);
     // A kind this tree does not know still has settings; nonsense has none.
-    assert!(settings_of("kind = \"later\"\n\n[knobs]\nwarp = 3.0\n").is_some());
-    assert_eq!(settings_of("not a module ["), None);
-    assert_eq!(settings_of("name = \"no kind\"\n"), None);
+    assert!(settings_of("kind = \"later\"\n\n[knobs]\nwarp = 3.0\n").is_ok());
+    assert_eq!(settings_of("not a module ["), Err("not TOML"));
+    assert_eq!(settings_of("name = \"no kind\"\n"), Err("no kind"));
     for lean in [base, small, big] {
         assert!(
             lean.turn.abs() <= 1.0 && lean.light.abs() <= 1.0,

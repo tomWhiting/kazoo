@@ -131,6 +131,13 @@ pub fn run(dir: PathBuf) -> io::Result<()> {
             number,
         )?);
     }
+    // The catalogue says on stderr any kind it leaves out as it is built:
+    // built here, before the screen is taken, so it never writes over it.
+    if kazoo_wall::catalogue::registry().kinds().is_empty() {
+        return Err(io::Error::other(
+            "the wall's catalogue holds no kinds of module",
+        ));
+    }
     let walked = Screen::enter().and_then(|mut screen| {
         let walked = walk(&mut app, &mut screen.terminal, &reader, &caught);
         let left = screen.leave();

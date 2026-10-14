@@ -92,9 +92,9 @@ pub struct Look {
     /// Width, from the modules alive at the moment.
     pub width: f64,
     /// Its colour: every module alive at it, each its own shade from its
-    /// settings, together, lighter for the mean sound of the step's moments
-    /// so far. Only ever the past: a stretch drawn once is drawn the same
-    /// way however the step fills after it.
+    /// settings, together, lighter the louder it was when it kept its
+    /// sound. Its own alone: a stretch drawn once is drawn the same way
+    /// however the step fills after it.
     pub colour: (u8, u8, u8),
     /// Everything from its tree's first moment up to and including it,
     /// along the limbs it grew from, added up: so far out the colour of any
@@ -122,7 +122,7 @@ impl Running {
             if sound.rms_db.is_finite() {
                 f64::from(sound.rms_db)
             } else {
-                SILENT_DB
+                colour::SILENT_DB
             }
         });
         Self {
@@ -143,9 +143,6 @@ impl Running {
         colour::blend(&self.tint.minus(&before.tint), moments as f64, rms)
     }
 }
-
-/// How loud a sound that does not read is taken to be, dBFS.
-const SILENT_DB: f64 = -60.0;
 
 /// The grown tree.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -270,24 +267,6 @@ pub fn width_for(modules: u32) -> f64 {
 
 /// The widest a moment is ever drawn, world units.
 pub const WIDEST: f64 = 8.0;
-
-/// The mean of `sounds`.
-fn mean_of(sounds: &[Sound]) -> Option<Sound> {
-    if sounds.is_empty() {
-        return None;
-    }
-    let n = sounds.len() as f32;
-    let mean = |pick: fn(&Sound) -> f32| sounds.iter().map(pick).sum::<f32>() / n;
-    Some(Sound {
-        rms_db: mean(|s| s.rms_db),
-        peak_db: mean(|s| s.peak_db),
-        centroid_hz: mean(|s| s.centroid_hz),
-        low: mean(|s| s.low),
-        mid: mean(|s| s.mid),
-        high: mean(|s| s.high),
-        onsets: mean(|s| s.onsets),
-    })
-}
 
 /// A step waiting to grow, with the key it grows in order of.
 struct Pending {
@@ -640,7 +619,6 @@ impl Growth {
         let last = (step.first + GROWTH_STEP).min(moments.len()) - 1;
         let (start, end, first, step_limb) = (step.start, step.end, step.first, step.limb);
         let own = &moments[first..=last];
-        let mut sounds = Vec::new();
         let mut widest: f64 = 1.0;
         for (i, &m) in own.iter().enumerate() {
             let t = (i + 1) as f64 / GROWTH_STEP as f64;
@@ -650,9 +628,6 @@ impl Growth {
             ));
             self.step_of[m] = Some(id);
             let moment = &history.moments[m];
-            if let Some(sound) = moment.sound {
-                sounds.push(sound);
-            }
             let width = width_for(moment.modules);
             widest = widest.max(width);
             // The moment before it on its path: on its limb, or for a
@@ -663,10 +638,9 @@ impl Growth {
                 .or(history.limbs[step_limb].from)
                 .and_then(|b| self.look[b])
                 .map_or_else(Running::default, |look| look.running);
-            let sound = mean_of(&sounds);
             self.look[m] = Some(Look {
                 width,
-                colour: colour::colour(&moment.tint, sound.as_ref()),
+                colour: colour::colour(&moment.tint, moment.sound.as_ref()),
                 running: before.and(&moment.tint, moment.sound.as_ref()),
             });
         }
