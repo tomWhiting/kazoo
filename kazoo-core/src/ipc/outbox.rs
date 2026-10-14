@@ -45,9 +45,22 @@ pub struct Outbox {
     pending: Vec<u8>,
     written: usize,
     seq: u32,
+    completed: u64,
 }
 
 impl Outbox {
+    /// Reserve the entire bounded queue while connecting, before serving.
+    pub(crate) fn prepared() -> Self {
+        Self {
+            pending: Vec::with_capacity(OUTBOX_LIMIT),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) const fn written_bytes(&self) -> u64 {
+        self.completed
+    }
+
     /// Queue one frame. Nothing is written until [`Self::flush`].
     ///
     /// # Errors
@@ -61,6 +74,13 @@ impl Outbox {
         }
         if self.waiting() + HEADER_SIZE + payload.len() > OUTBOX_LIMIT {
             return Err(OutboxError::Stuck);
+        }
+        if self.pending.len() + HEADER_SIZE + payload.len() > OUTBOX_LIMIT {
+            // Reuse the written prefix without growing the reserved queue.
+            let remaining = self.waiting();
+            self.pending.copy_within(self.written.., 0);
+            self.pending.truncate(remaining);
+            self.written = 0;
         }
         let header = FrameHeader {
             msg_type,
@@ -89,7 +109,12 @@ impl Outbox {
                         "socket accepted nothing",
                     )));
                 }
-                Ok(n) => self.written += n,
+                Ok(n) => {
+                    self.written += n;
+                    self.completed = self
+                        .completed
+                        .wrapping_add(u64::try_from(n).map_err(|_| OutboxError::TooLarge)?);
+                }
                 Err(err) => match err.kind() {
                     io::ErrorKind::WouldBlock => break,
                     // Interrupted by a signal before writing anything: the
@@ -187,5 +212,35 @@ mod tests {
             outbox.queue(0x30, &vec![0; MAX_PAYLOAD_SIZE + 1]),
             Err(OutboxError::TooLarge)
         ));
+    }
+
+    #[test]
+    fn a_prepared_outbox_reuses_written_space_without_allocating() {
+        let mut outbox = Outbox::prepared();
+        let half = OUTBOX_LIMIT / 2;
+        let payloads = [0x11, 0x22, 0x33].map(|byte| vec![byte; half - HEADER_SIZE]);
+        outbox.queue(0x30, &payloads[0]).unwrap();
+        outbox.queue(0x30, &payloads[1]).unwrap();
+        let mut sink = Trickle {
+            out: Vec::with_capacity(3 * half),
+            chunk: half,
+            refuse_next: false,
+        };
+        outbox.flush(&mut sink).unwrap();
+        assert_eq!(outbox.waiting(), half);
+        let before = assert_no_alloc::violation_count();
+        assert_no_alloc::assert_no_alloc(|| {
+            outbox.queue(0x30, &payloads[2]).unwrap();
+            while outbox.waiting() > 0 {
+                outbox.flush(&mut sink).unwrap();
+            }
+        });
+        assert_eq!(assert_no_alloc::violation_count(), before);
+        assert_eq!(outbox.written_bytes(), u64::try_from(3 * half).unwrap());
+        for (index, bytes) in sink.out.chunks_exact(half).enumerate() {
+            let header = decode_header(bytes);
+            assert_eq!(header.seq, u32::try_from(index).unwrap());
+            assert_eq!(&bytes[HEADER_SIZE..], payloads[index]);
+        }
     }
 }

@@ -15,6 +15,7 @@ use crate::ipc::link::{HubAddress, HubLink, HubLinkAudio, LinkConfig, start_link
 use ringbuf::traits::Consumer;
 
 pub use crate::ipc::client::HubMessage as HubEvent;
+pub use crate::ipc::link::VoiceRx;
 pub type AudioTx = HubLinkAudio;
 
 const RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -250,6 +251,16 @@ pub fn take_events(rx: &mut EventRx) -> impl Iterator<Item = HubEvent> + use<> {
         count += 1;
     });
     events.into_iter().flatten()
+}
+
+/// Visit at most one ring's worth of voice frames in order, without allocating.
+pub fn drain_voice(rx: &mut VoiceRx, mut on: impl FnMut(crate::voice::VoiceFrame)) {
+    for _ in 0..crate::ipc::link::VOICE_RING {
+        match rx.try_recv() {
+            Some(frame) => on(frame),
+            None => break,
+        }
+    }
 }
 
 #[cfg(test)]

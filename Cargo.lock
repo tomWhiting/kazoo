@@ -1472,6 +1472,7 @@ dependencies = [
  "kazoo-mcp",
  "kazoo-mini",
  "kazoo-mix",
+ "kazoo-mouth",
  "kazoo-play",
  "kazoo-prophet",
  "kazoo-string",
@@ -1666,6 +1667,24 @@ dependencies = [
  "ratatui",
  "ringbuf",
  "rustix",
+]
+
+[[package]]
+name = "kazoo-mouth"
+version = "0.1.0"
+dependencies = [
+ "assert_no_alloc",
+ "color-eyre",
+ "crossbeam-channel",
+ "crossterm",
+ "hound",
+ "kazoo-core",
+ "kazoo-fx",
+ "kazoo-host",
+ "ratatui",
+ "ringbuf",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -36,6 +36,10 @@ pub const MSG_DESK_PACE: u8 = 0x22;
 /// (see [`DeskHealthMsg`]), sent when it changes. An instrument that does
 /// not know it passes it over.
 pub const MSG_DESK_HEALTH: u8 = 0x23;
+pub use super::voice::{
+    FEATURE_VOICE, MSG_DESK_FEATURES, MSG_VOICE, MSG_VOICE_FOLLOW, VOICE_BATCH_MAX,
+    VOICE_BATCH_WIRE, VOICE_FRAME_WIRE,
+};
 /// Routed through Hub. MIDI-style note events between instruments.
 pub const MSG_NOTE_EVENT: u8 = 0x30;
 /// Either direction. Mixer parameter update.
@@ -51,7 +55,57 @@ pub const MSG_SHUTDOWN: u8 = 0xFF;
 /// the frame layout is version 2's. Named stream tails are optional; an old
 /// reader is never sent a new message unless it asked by listing streams.
 /// Stream 0 keeps the original audio frame layout.
+/// Instruments send voice only after the desk announces FEATURES. Old
+/// instruments skip FEATURES and are never sent VOICE.
 pub const PROTOCOL_VERSION: u16 = 3;
+
+/// Capabilities the desk announces immediately after registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeaturesMsg {
+    /// Supported feature bits; unknown bits are preserved.
+    pub features: u32,
+}
+
+impl FeaturesMsg {
+    /// Four little-endian feature bytes.
+    pub const WIRE_SIZE: usize = 4;
+
+    /// Encode into a buffer of at least [`Self::WIRE_SIZE`] bytes.
+    pub fn encode(&self, buf: &mut [u8]) {
+        buf[..Self::WIRE_SIZE].copy_from_slice(&self.features.to_le_bytes());
+    }
+
+    /// Decode an already validated payload.
+    #[must_use]
+    pub const fn decode(buf: &[u8]) -> Self {
+        Self {
+            features: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
+        }
+    }
+}
+
+/// The instrument's wish to follow or stop following the voice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceFollowMsg {
+    /// True to follow, false to stop.
+    pub on: bool,
+}
+
+impl VoiceFollowMsg {
+    /// One boolean byte.
+    pub const WIRE_SIZE: usize = 1;
+
+    /// Encode into a buffer of at least [`Self::WIRE_SIZE`] bytes.
+    pub fn encode(&self, buf: &mut [u8]) {
+        buf[0] = u8::from(self.on);
+    }
+
+    /// Decode an already validated payload; only byte 1 means follow.
+    #[must_use]
+    pub const fn decode(buf: &[u8]) -> Self {
+        Self { on: buf[0] == 1 }
+    }
+}
 
 /// Fixed-size instrument name field in the Register message.
 pub const REGISTER_NAME_LEN: usize = 32;

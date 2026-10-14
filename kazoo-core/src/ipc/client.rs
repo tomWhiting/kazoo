@@ -21,6 +21,7 @@ use super::types::{
     MSG_TRANSPORT_REQUEST, MSG_TRANSPORT_SYNC, NoteEventMsg, ParameterChangeMsg, RegisterMsg,
     RegisteredMsg, TransportRequestMsg, TransportSyncMsg,
 };
+use super::types::{FeaturesMsg, MSG_DESK_FEATURES, MSG_VOICE, MSG_VOICE_FOLLOW, VoiceFollowMsg};
 
 /// Registration timeout: how long the client waits for the hub to respond
 /// to a Register message before giving up.
@@ -46,6 +47,17 @@ pub enum HubMessage {
     },
     /// Hub requested shutdown.
     Shutdown,
+}
+
+/// A socket read; voice bytes stay borrowed until the next read.
+#[derive(Debug)]
+pub enum HubRead<'a> {
+    /// A note, transport or other ordinary instrument message.
+    Message(HubMessage),
+    /// A voice batch for decoding directly into its dedicated ring.
+    Voice(&'a [u8]),
+    /// New capabilities are available through `take_desk_features`.
+    DeskFeatures,
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +89,8 @@ pub struct HubIpcClient {
     /// a desk older than named streams answers without, and must never be
     /// sent 0x11, 0x12 or 0x13.
     desk_takes_streams: bool,
+    desk_features: u32,
+    new_desk_features: bool,
 }
 
 // UnixStream is !Debug on some platforms.
@@ -203,7 +217,7 @@ impl HubIpcClient {
             stream,
             write_buf,
             read_buf,
-            outbox: Outbox::default(),
+            outbox: Outbox::prepared(),
             instrument_id,
             strip_index: resp.strip_index,
             channel_count,
@@ -214,6 +228,8 @@ impl HubIpcClient {
             desk_health: None,
             last_stream_refusal: None,
             desk_takes_streams: len != RegisteredMsg::WIRE_SIZE,
+            desk_features: 0,
+            new_desk_features: false,
         })
     }
 
@@ -317,6 +333,10 @@ impl HubIpcClient {
         self.outbox.waiting()
     }
 
+    pub(crate) const fn written_bytes(&self) -> u64 {
+        self.outbox.written_bytes()
+    }
+
     // -----------------------------------------------------------------------
     // Message receive (non-blocking)
     // -----------------------------------------------------------------------
@@ -331,6 +351,8 @@ impl HubIpcClient {
     /// kept for [`Self::take_desk_pace`] or [`Self::take_desk_health`].
     /// They, and any message of a type this instrument does not know, are
     /// passed over and reading goes on to the next message.
+    /// Voice batches are validated and skipped here; voice readers use
+    /// [`Self::try_read`]. Features are kept by [`Self::take_desk_features`].
     ///
     /// # Errors
     ///
@@ -338,20 +360,51 @@ impl HubIpcClient {
     /// shorter than that type is ([`io::ErrorKind::InvalidData`]).
     pub fn try_recv(&mut self) -> io::Result<Option<HubMessage>> {
         loop {
+            match self.try_read()? {
+                Some(HubRead::Message(message)) => return Ok(Some(message)),
+                Some(HubRead::Voice(payload)) => {
+                    // Callers interested in voice use try_read; ordinary message
+                    // readers still reject malformed batches instead of hiding them.
+                    super::voice::decode_batch(payload, |_| {})
+                        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+                }
+                Some(HubRead::DeskFeatures) => {}
+                None => return Ok(None),
+            }
+        }
+    }
+
+    /// Read ordinary messages or borrow a voice payload, without putting voice
+    /// frames into [`HubMessage`]. Capability announcements are kept separately.
+    pub fn try_read(&mut self) -> io::Result<Option<HubRead<'_>>> {
+        loop {
             let header = match self.read_buf.try_read_frame(&mut &self.stream) {
                 Ok(Some(h)) => h,
                 Ok(None) => return Ok(None),
                 Err(e) => return Err(e),
             };
             let len = header.payload_len as usize;
-            if header.msg_type == MSG_DESK_PACE {
+            if header.msg_type == MSG_DESK_FEATURES {
+                let payload = self.whole(header.msg_type, len, FeaturesMsg::WIRE_SIZE)?;
+                if len != FeaturesMsg::WIRE_SIZE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "desk features need exactly four bytes",
+                    ));
+                }
+                self.desk_features = FeaturesMsg::decode(payload).features;
+                self.new_desk_features = true;
+                return Ok(Some(HubRead::DeskFeatures));
+            } else if header.msg_type == MSG_VOICE {
+                return Ok(Some(HubRead::Voice(&self.read_buf.payload()[..len])));
+            } else if header.msg_type == MSG_DESK_PACE {
                 let payload = self.whole(header.msg_type, len, DeskPaceMsg::WIRE_SIZE)?;
                 self.desk_pace = Some(DeskPaceMsg::decode(payload));
             } else if header.msg_type == MSG_DESK_HEALTH {
                 let payload = self.whole(header.msg_type, len, DeskHealthMsg::WIRE_SIZE)?;
                 self.desk_health = Some(DeskHealthMsg::decode(payload));
             } else if let Some(message) = self.decode(header.msg_type, len)? {
-                return Ok(Some(message));
+                return Ok(Some(HubRead::Message(message)));
             }
         }
     }
@@ -379,6 +432,16 @@ impl HubIpcClient {
     /// arrived.
     pub const fn take_desk_health(&mut self) -> Option<DeskHealthMsg> {
         self.desk_health.take()
+    }
+
+    /// The latest capability announcement since the last call.
+    pub const fn take_desk_features(&mut self) -> Option<u32> {
+        if self.new_desk_features {
+            self.new_desk_features = false;
+            Some(self.desk_features)
+        } else {
+            None
+        }
     }
 
     /// The instrument's message in the read buffer, of type `msg_type`
@@ -463,6 +526,20 @@ impl HubIpcClient {
         let mut payload = [0_u8; NoteEventMsg::WIRE_SIZE];
         event.encode(&mut payload);
         self.outbox.queue(MSG_NOTE_EVENT, &payload)?;
+        self.flush()
+    }
+
+    /// Queue an encoded voice batch through the control outbox.
+    pub fn send_voice_batch(&mut self, payload: &[u8]) -> Result<(), OutboxError> {
+        self.outbox.queue(MSG_VOICE, payload)?;
+        self.flush()
+    }
+
+    /// Tell a desk carrying voice whether this instrument follows it.
+    pub fn send_voice_follow(&mut self, on: bool) -> Result<(), OutboxError> {
+        let mut payload = [0; VoiceFollowMsg::WIRE_SIZE];
+        VoiceFollowMsg { on }.encode(&mut payload);
+        self.outbox.queue(MSG_VOICE_FOLLOW, &payload)?;
         self.flush()
     }
 
@@ -610,3 +687,5 @@ mod tests {
 
 #[cfg(test)]
 mod streams_tests;
+#[cfg(test)]
+mod voice_tests;

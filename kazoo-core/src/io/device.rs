@@ -2,7 +2,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use super::channel_adapt::{InputAdapter, OutputAdapter};
+use super::channel_adapt::OutputAdapter;
 use crate::{DEFAULT_BUFFER_SIZE, Error, Result};
 
 /// Get the human-readable name of a device via `description()`.
@@ -27,8 +27,8 @@ pub struct StreamConfig {
     pub input_device: Option<String>,
     /// Output device name.  `None` selects the system default.
     pub output_device: Option<String>,
-    /// Number of input channels (default 1 -- mono microphone).
-    pub input_channels: u16,
+    /// `None`: the mean of every input channel. `Some(n)`: channel n, 1-based.
+    pub input_channel: Option<u16>,
     /// Requested device output channels (default 2). The engine renders
     /// stereo, which is adapted to the opened device's channel count.
     pub output_channels: u16,
@@ -41,38 +41,9 @@ impl Default for StreamConfig {
             buffer_size: Some(DEFAULT_BUFFER_SIZE),
             input_device: None,
             output_device: None,
-            input_channels: 1,
+            input_channel: None,
             output_channels: 2,
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// AudioStreams
-// ---------------------------------------------------------------------------
-
-/// A pair of running audio I/O streams returned by [`build_streams`].
-///
-/// Both streams are already in the *playing* state.  Dropping this struct
-/// stops both streams automatically (cpal `Stream` implements `Drop`).
-pub struct AudioStreams {
-    /// The input (capture) stream.
-    pub input: crate::host::audio::OpenedInput,
-    /// The output (playback) stream.
-    pub output: crate::host::audio::OpenedOutput,
-    /// Actual sample rate negotiated with the devices.
-    pub sample_rate: u32,
-    /// Actual buffer size negotiated with the devices.
-    pub buffer_size: usize,
-}
-
-// cpal::Stream is !Debug, so implement manually.
-impl std::fmt::Debug for AudioStreams {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AudioStreams")
-            .field("sample_rate", &self.sample_rate)
-            .field("buffer_size", &self.buffer_size)
-            .finish_non_exhaustive()
     }
 }
 
@@ -100,7 +71,9 @@ pub struct DeviceInfo {
 // ---------------------------------------------------------------------------
 
 /// Standard sample rates checked during enumeration.
-const STANDARD_RATES: &[u32] = &[8000, 11_025, 16_000, 22_050, 44_100, 48_000, 88_200, 96_000];
+const STANDARD_RATES: &[u32] = &[
+    8_000, 11_025, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000,
+];
 
 /// Enumerate all available audio input (capture) devices.
 pub fn enumerate_input_devices() -> Result<Vec<DeviceInfo>> {
@@ -241,62 +214,14 @@ pub(crate) fn native_output_rate(device: &cpal::Device) -> Result<u32> {
         .map_err(|error| Error::Device(format!("cannot read native output rate: {error}")))
 }
 
-/// Build an input + output stream pair from the given configuration.
-///
-/// Both streams are started (playing) before being returned.  The caller
-/// supplies two callbacks:
-///
-/// - `input_callback` receives captured audio data as `&[f32]`.
-/// - `output_callback` fills an interleaved stereo buffer via `&mut [f32]`.
-///
-/// # Errors
-///
-/// Returns [`Error::Device`] if the requested (or default) device
-/// cannot be found, the configuration is unsupported, or stream creation
-/// fails.
-pub fn build_streams(
-    config: &StreamConfig,
-    input_callback: impl FnMut(&[f32]) + Send + 'static,
-    output_callback: impl FnMut(&mut [f32]) + Send + 'static,
-) -> Result<AudioStreams> {
-    let prepared = prepare_output(config)?;
-    build_streams_with_output(config, prepared, input_callback, output_callback)
-}
-
-pub(crate) fn build_streams_with_output(
-    config: &StreamConfig,
+/// Open the prepared output, preserving the engine's stereo render width.
+pub(crate) fn open_engine_output(
     prepared: crate::host::audio::PreparedOutput,
-    mut input_callback: impl FnMut(&[f32]) + Send + 'static,
     mut output_callback: impl FnMut(&mut [f32]) + Send + 'static,
-) -> Result<AudioStreams> {
-    use crate::host::audio::{DeviceChoice, OutputRequest, RateChoice, open_input_with_frames};
-    let info = prepared.info();
-    let sample_rate = info.rate;
-    let frames = info.frames;
-    let input_request = OutputRequest {
-        device: config
-            .input_device
-            .clone()
-            .map_or(DeviceChoice::Default, DeviceChoice::Named),
-        channels: config.input_channels,
-        rate: RateChoice::Hz(sample_rate),
-    };
-    // Input follows the configured width; the engine always renders stereo.
-    // Both are adapted to the actual device widths chosen by the host.
-    let mut input_adapter = InputAdapter::new(config.input_channels, frames);
-    let mut output_adapter = output_adapter(frames);
-    let input = open_input_with_frames(&input_request, frames, move |data, info| {
-        input_adapter.process(data, info.channels, &mut input_callback);
-    })?;
-    let output = prepared.open(move |data, info| {
-        output_adapter.process(data, info.channels, &mut output_callback);
-    })?;
-    let buffer_size = output.buffer_frames();
-    Ok(AudioStreams {
-        input,
-        output,
-        sample_rate,
-        buffer_size,
+) -> Result<crate::host::audio::OpenedOutput> {
+    let mut adapter = output_adapter(prepared.info().frames);
+    prepared.open(move |data, info| {
+        adapter.process(data, info.channels, &mut output_callback);
     })
 }
 
@@ -383,7 +308,7 @@ mod tests {
         assert_eq!(cfg.buffer_size, Some(crate::DEFAULT_BUFFER_SIZE));
         assert!(cfg.input_device.is_none());
         assert!(cfg.output_device.is_none());
-        assert_eq!(cfg.input_channels, 1);
+        assert_eq!(cfg.input_channel, None);
         assert_eq!(cfg.output_channels, 2);
     }
 

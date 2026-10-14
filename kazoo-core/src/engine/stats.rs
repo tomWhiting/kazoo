@@ -7,17 +7,19 @@
 //! [`super::EngineHandle::stats`] and can surface non-zero values to the user.
 
 use crate::host::audio::StreamHealth;
-use std::sync::OnceLock;
+use crate::io::mic::{MicShared, MicStatus};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
-/// Shared, lock-free engine health counters.
+/// Shared engine health counters and supervisor status.
 ///
 /// One instance is created per engine and shared (via `Arc`) between the
 /// audio callbacks, the analysis and disk threads, the MIDI callback and the
 /// [`super::EngineHandle`].
 #[derive(Debug, Default)]
 pub struct EngineStats {
-    audio_health: OnceLock<[StreamHealth; 2]>,
+    audio_health: OnceLock<StreamHealth>,
+    mic: OnceLock<Arc<MicShared>>,
     mic_samples_dropped: AtomicU64,
     analysis_samples_dropped: AtomicU64,
     analysis_results_dropped: AtomicU64,
@@ -43,6 +45,8 @@ pub struct EngineStats {
 /// engine. A non-zero value means data was lost or a request was refused.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EngineStatsSnapshot {
+    /// Native input configuration and recovery state.
+    pub mic: MicStatus,
     /// Mic samples lost because the input → output ring buffer was full.
     pub mic_samples_dropped: u64,
     /// Samples lost because the analysis thread fell behind.
@@ -129,17 +133,21 @@ fn count(samples: usize) -> u64 {
 }
 
 impl EngineStats {
-    pub(super) fn set_audio_health(&self, health: [StreamHealth; 2]) -> crate::Result<()> {
+    pub(super) fn set_audio_health(&self, health: StreamHealth) -> crate::Result<()> {
         self.audio_health
             .set(health)
             .map_err(|_| crate::Error::Config("audio health already initialized".into()))
     }
 
+    pub(super) fn set_mic(&self, shared: Arc<MicShared>) -> crate::Result<()> {
+        self.mic
+            .set(shared)
+            .map_err(|_| crate::Error::Config("mic status already initialized".into()))
+    }
+
     pub(super) fn check_audio(&self) -> crate::Result<()> {
         if let Some(health) = self.audio_health.get() {
-            for stream in health {
-                stream.check()?;
-            }
+            health.check()?;
         }
         Ok(())
     }
@@ -244,11 +252,16 @@ impl EngineStats {
         bump(&self.callback_frees, 1);
     }
 
-    /// Take a copy of every counter.
+    /// Take a copy of every counter and the supervisor's mic status.
+    /// This reads the mic's status mutex and belongs on the UI thread.
     #[must_use]
     pub fn snapshot(&self) -> EngineStatsSnapshot {
         let load = |c: &AtomicU64| c.load(Ordering::Relaxed);
         EngineStatsSnapshot {
+            mic: self
+                .mic
+                .get()
+                .map_or_else(MicStatus::default, |shared| shared.status()),
             mic_samples_dropped: load(&self.mic_samples_dropped),
             analysis_samples_dropped: load(&self.analysis_samples_dropped),
             analysis_results_dropped: load(&self.analysis_results_dropped),
@@ -279,6 +292,23 @@ mod tests {
         let stats = EngineStats::new();
         assert!(stats.snapshot().is_clean());
         assert_eq!(stats.snapshot(), EngineStatsSnapshot::default());
+    }
+
+    #[test]
+    fn mic_status_is_separate_from_loss_counters() {
+        let shared = Arc::new(MicShared::default());
+        let stats = EngineStats::new();
+        stats.set_mic(Arc::clone(&shared)).unwrap();
+        assert_eq!(stats.snapshot().mic, shared.status());
+        assert!(stats.set_mic(shared).is_err());
+        let snapshot = EngineStatsSnapshot {
+            mic: MicStatus {
+                state: crate::io::mic::MicState::Lost,
+                ..MicStatus::default()
+            },
+            ..EngineStatsSnapshot::default()
+        };
+        assert!(snapshot.is_clean());
     }
 
     #[test]
