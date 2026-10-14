@@ -602,3 +602,10 @@ fn harmony_rows_read_off_and_whole_semitones() {
         assert!(row.trim_end().ends_with(value), "{row}");
     }
 }
+
+#[test]
+fn harmony_help_says_the_copies_arrive_late_and_nothing_else() {
+    use crate::engine::fx::harmony;
+    assert!(harmony::KIND.description.contains("13 to 25 ms"));
+    assert!(!harmony::KIND.description.contains("Enter"));
+}

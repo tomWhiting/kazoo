@@ -78,7 +78,7 @@ static PARAMS: [ParamSpec; 9] = [
 pub static KIND: EffectKind = EffectKind {
     id: "pitch",
     name: "Harmony",
-    description: "Three shifted copies beside the dry voice. Copies arrive 13 to 25 ms late within an octave; up to 50 ms two octaves up. Dry has no added latency. Enter shows this help.",
+    description: "Three shifted copies beside the dry voice. Copies arrive 13 to 25 ms late within an octave; up to 50 ms two octaves up. Dry has no added latency.",
     params: &PARAMS,
     build,
 };
