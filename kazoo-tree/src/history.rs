@@ -571,6 +571,37 @@ impl History {
         self.index.get(commit).copied()
     }
 
+    /// The way along the tree from moment `from` to moment `to`: how many
+    /// changes back from `from` to the last moment both grew from, then
+    /// how many on from there to `to`. None when they share no moment.
+    #[must_use]
+    pub fn path_between(&self, from: usize, to: usize) -> Option<(usize, usize)> {
+        let mut back_to: HashMap<usize, usize> = HashMap::new();
+        let mut at = Some(from);
+        let mut back = 0;
+        while let Some(m) = at {
+            if back_to.insert(m, back).is_some() {
+                break;
+            }
+            back += 1;
+            at = self.moments.get(m)?.parent;
+        }
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut at = Some(to);
+        let mut on = 0;
+        while let Some(m) = at {
+            if let Some(&back) = back_to.get(&m) {
+                return Some((back, on));
+            }
+            if !seen.insert(m) {
+                return None;
+            }
+            on += 1;
+            at = self.moments.get(m)?.parent;
+        }
+        None
+    }
+
     /// The limb a moment is on, and its place there.
     #[must_use]
     pub fn place_of(&self, moment: usize) -> Option<(usize, usize)> {
