@@ -28,7 +28,7 @@ fn chain_error(err: &SaveError) -> WallError {
 pub(super) fn undo_growth(changes: &[What]) -> Growth {
     changes.iter().fold(Growth::NONE, |mut growth, change| {
         let more = match change {
-            What::Chain { changes, .. } => undo_growth(changes),
+            What::Batch { changes, .. } | What::Chain { changes, .. } => undo_growth(changes),
             What::Remove { cables, .. } => Growth {
                 modules: 1,
                 cables: cables.len(),

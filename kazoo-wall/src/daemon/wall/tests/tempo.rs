@@ -318,3 +318,139 @@ fn a_tick_before_the_desk_hears_an_ask_logs_nothing() {
     assert_eq!(wall.log.len(), 1, "{:?}", wall.log);
     assert_eq!(wall.patch.tempo.to_bits(), 100.0_f64.to_bits());
 }
+
+/// What the wall's modules last read as the song position.
+#[derive(Debug)]
+struct BeatSeen(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl DspModule for BeatSeen {
+    fn process(&mut self, tick: &Tick, _io: Io<'_>) {
+        self.0.store(tick.beat.to_bits(), Ordering::Relaxed);
+    }
+
+    fn reset(&mut self) {}
+}
+
+fn desk_plays_from(stream: &mut std::os::unix::net::UnixStream, beat: f64) {
+    use kazoo_core::ipc::protocol::FrameBuffer;
+    use kazoo_core::ipc::types::{
+        MSG_TRANSPORT_SYNC, SYNC_NOW, TRANSPORT_PLAYING, TransportSyncMsg,
+    };
+    let mut frame = FrameBuffer::new();
+    let message = TransportSyncMsg {
+        state: TRANSPORT_PLAYING,
+        bpm: 120.0,
+        at_frame: SYNC_NOW,
+        beat,
+    };
+    let bytes = message.encode(frame.payload_mut());
+    frame
+        .write_frame(MSG_TRANSPORT_SYNC, 0, bytes, stream)
+        .unwrap();
+}
+
+/// Render until the engine's song position is past `beat`.
+fn until_past(engine: &mut Engine, shared: &crate::engine::Shared, beat: f64) {
+    loop {
+        if shared.beat() >= beat {
+            break;
+        }
+        engine.render(&mut [0.0; 64], 2);
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn a_desk_jump_moves_a_held_go_to_the_bar_after_it_and_keeps_the_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let (link, (audio, mut stream)) = a_desk(dir.path(), 120.0);
+    // The desk hears the wall's audio, so the link never backs up.
+    let mut heard = stream.try_clone().unwrap();
+    let hearing = std::thread::spawn(move || {
+        let mut sink = vec![0_u8; 1 << 16];
+        while matches!(std::io::Read::read(&mut heard, &mut sink), Ok(read) if read > 0) {}
+    });
+    let (mut engine, mut control) = engine(EngineConfig::new(48_000, 120.0, 0.0), Some(audio));
+    let shared = std::sync::Arc::clone(control.shared());
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(f64::NAN.to_bits()));
+    control.begin_swap();
+    control.send(Command::Hush);
+    control.send(Command::Insert {
+        slot: 0,
+        tag: 1,
+        kind: Kind::CLOCK,
+        module: Box::new(BeatSeen(std::sync::Arc::clone(&seen))),
+        knobs: [0.0; MAX_KNOBS],
+    });
+    control.send(Command::Order(Box::new(crate::engine::Order::new(
+        &[0],
+        &[],
+    ))));
+    control.send(Command::Unhush);
+    control.end_swap();
+    assert_eq!(control.landing_beat().to_bits(), 4.0_f64.to_bits());
+    // The desk starts playing from beat 30.5, past the bar the go waited
+    // for: it lands on the next bar of the desk's song, beat 32.
+    desk_plays_from(&mut stream, 30.5);
+    until_past(&mut engine, &shared, 30.0);
+    assert_eq!(
+        shared.unhushed(),
+        0,
+        "landed off the bar, as the desk jumped"
+    );
+    until_past(&mut engine, &shared, 32.0);
+    // The sub-block that starts on beat 32 takes the go in.
+    engine.render(&mut [0.0; 2 * 2 * SUB_BLOCK], 2);
+    assert_eq!(shared.unhushed(), 1);
+    assert_eq!(shared.origin().to_bits(), 32.0_f64.to_bits());
+    // The desk moves on to beat 40: the modules read it from the origin.
+    desk_plays_from(&mut stream, 40.0);
+    until_past(&mut engine, &shared, 39.0);
+    engine.render(&mut [0.0; 64], 2);
+    let read = f64::from_bits(seen.load(Ordering::Relaxed));
+    assert!((8.0..8.01).contains(&read), "the modules read beat {read}");
+    assert_eq!(shared.origin().to_bits(), 32.0_f64.to_bits());
+    // The wall leaving closes the link: the desk hears the end.
+    drop((engine, control, link));
+    hearing.join().unwrap();
+}
+
+#[test]
+fn a_batch_tempo_on_the_desk_starts_from_what_plays_as_a_single_tempo_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let (link, (audio, mut stream)) = a_desk(dir.path(), 120.0);
+    let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), Some(audio));
+    let mut patch = seed().unwrap();
+    patch.tempo = 120.0;
+    let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
+    wall.tick(Instant::now());
+    // The desk moves; the wall's tick has not heard it yet.
+    sync(&mut stream, 105.0);
+    hear(&wall, &mut engine, 105.0);
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "op": "batch",
+        "note": "faster",
+        "changes": [{"op": "tempo", "bpm": 100.0}]
+    }))
+    .unwrap();
+    wall.request("Tom", &request, Instant::now()).unwrap();
+    let logged: Vec<What> = wall.log.iter().map(|change| change.what.clone()).collect();
+    assert_eq!(
+        logged,
+        vec![
+            What::Tempo {
+                from: 120.0,
+                to: 105.0,
+                desk: true
+            },
+            What::Batch {
+                note: "faster".to_string(),
+                changes: vec![What::Tempo {
+                    from: 105.0,
+                    to: 100.0,
+                    desk: true
+                }],
+            },
+        ]
+    );
+}

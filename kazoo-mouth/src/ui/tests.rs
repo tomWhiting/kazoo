@@ -13,7 +13,7 @@ use crate::controls::{App, Control};
 
 const RATE: u32 = 48_000;
 
-fn voice(at: u64, semitones: f32, snapped: f32) -> VoiceFrame {
+pub(super) fn voice(at: u64, semitones: f32, snapped: f32) -> VoiceFrame {
     VoiceFrame {
         at,
         hz: hz_from_volts(semitones / 12.0),
@@ -29,7 +29,13 @@ fn voice(at: u64, semitones: f32, snapped: f32) -> VoiceFrame {
     }
 }
 
-fn render(app: &App, display: &Display, width: u16, height: u16, now: Instant) -> Buffer {
+pub(super) fn render(
+    app: &App,
+    display: &Display,
+    width: u16,
+    height: u16,
+    now: Instant,
+) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal
         .draw(|frame| draw(frame, app, display, "playing direct: no desk", now))
@@ -37,7 +43,7 @@ fn render(app: &App, display: &Display, width: u16, height: u16, now: Instant) -
     terminal.backend().buffer().clone()
 }
 
-fn text(buffer: &Buffer) -> String {
+pub(super) fn text(buffer: &Buffer) -> String {
     buffer
         .content
         .chunks(usize::from(buffer.area.width))
@@ -108,8 +114,8 @@ fn the_trail_draws_four_seconds() {
     display.recentre();
     assert_eq!(display.frames.len(), 3000);
     let buffer = render(&app, &display, 120, 40, Instant::now());
-    let rows: Vec<_> = buffer.content.chunks(120).skip(6).take(6).collect();
-    for column in 0..82 {
+    let rows: Vec<_> = buffer.content.chunks(120).skip(8).take(6).collect();
+    for column in 0..41 {
         assert!(
             rows.iter().any(|row| {
                 row[column].fg == BRIGHT
@@ -247,7 +253,7 @@ fn the_controls_meters_and_link_are_visible() {
         "mic",
         "output",
         "-20 dBFS",
-        "latency --",
+        "latency ≥ 0.0 ms",
     ] {
         assert!(screen.contains(name), "{screen}");
     }

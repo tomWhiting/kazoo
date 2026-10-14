@@ -272,7 +272,9 @@ pub fn never_undone(what: &What) -> Option<WallError> {
         What::Unknown => refused(
             "that change was made by a newer wall and cannot be undone by this one".to_string(),
         ),
-        What::Chain { changes, .. } => changes.iter().find_map(never_undone),
+        What::Batch { changes, .. } | What::Chain { changes, .. } => {
+            changes.iter().find_map(never_undone)
+        }
         What::Take { .. }
         | What::Erase { .. }
         | What::LoopFrom { .. }
@@ -1213,6 +1215,7 @@ impl Patch {
             What::LoopFrom { module, was, .. } => {
                 self.loop_op(module, &crate::protocol::LoopOp::From { from: was.clone() })
             }
+            What::Batch { note, changes } => self.undo_batch(note, changes),
             What::Chain { name, changes } => self.undo_chain(name, changes),
             What::Turn {
                 module,

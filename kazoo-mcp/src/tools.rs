@@ -5,6 +5,9 @@
 //! through [`Wall`], and renders the answer (see [`crate::render`]). Adding
 //! a tool is adding one method.
 
+mod batch;
+use batch::BatchArgs;
+
 use std::future::Future;
 use std::sync::Arc;
 
@@ -509,6 +512,7 @@ impl Seat {
     )]
     async fn wall_add(&self, Parameters(args): Parameters<AddArgs>) -> CallToolResult {
         self.change(Request::Add {
+            alias: None,
             kind: args.kind,
             name: args.name,
             place: None,
@@ -525,6 +529,46 @@ impl Seat {
             module: args.module,
         })
         .await
+    }
+
+    #[tool(
+        name = "wall_batch",
+        description = "Make several changes toward one idea in one call, so the tree shows that idea with its note. note is 1 to 200 characters on one line. changes is an ordered array of add, remove, turn, patch, unpatch or tempo objects with the same fields as their single tools. An add may have as: a unique label without spaces or dots; later modules and ports can use @label or @label.out. Every step succeeds or the entire batch is refused, naming the refused step by its index from 0. Answers with every step, numbered from 0, and each add's id beside its label."
+    )]
+    async fn wall_batch(&self, Parameters(args): Parameters<BatchArgs>) -> CallToolResult {
+        let request = match args.request() {
+            Ok(request) => request,
+            Err(err) => return bad(format!("invalid batch: {err}")),
+        };
+        match self
+            .wall
+            .ask::<kazoo_wall::protocol::BatchResult>(request)
+            .await
+        {
+            Ok(Answer::Read(result)) => {
+                self.own(result.change.seq);
+                let mut lines = vec![format!(
+                    "Change #{}: {}",
+                    result.change.seq, result.change.summary
+                )];
+                if let kazoo_wall::protocol::What::Batch { changes, .. } = &result.change.what {
+                    for (index, (change, step)) in changes.iter().zip(&result.steps).enumerate() {
+                        // Numbered from 0, as a refusal names its step.
+                        let mut line =
+                            format!("Step {index}: {}", kazoo_wall::change::describe(change));
+                        if let (Some(label), Some(id)) =
+                            (step["as"].as_str(), step["module"].as_str())
+                        {
+                            line = format!("{line} (@{label} = {id})");
+                        }
+                        lines.push(line);
+                    }
+                }
+                ok(lines.join("\n"))
+            }
+            Ok(Answer::Unread(why, value)) => ok(render::unread(&why, &value)),
+            Err(err) => bad(err.to_string()),
+        }
     }
 
     #[tool(

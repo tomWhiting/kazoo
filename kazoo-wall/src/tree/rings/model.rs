@@ -462,7 +462,7 @@ impl Model {
             What::Add { .. } | What::Remove { .. } | What::Restore { .. } => {
                 self.forward_module(what, change, result);
             }
-            What::Chain { changes, .. } => {
+            What::Batch { changes, .. } | What::Chain { changes, .. } => {
                 for inner in changes {
                     self.forward(inner, change, result);
                     if result.unknown.is_some() {
@@ -650,7 +650,9 @@ impl Model {
                 true
             }
             What::Add { .. } | What::Remove { .. } | What::Restore { .. } => self.undo_module(what),
-            What::Chain { changes, .. } => changes.iter().rev().all(|c| self.undo(c)),
+            What::Batch { changes, .. } | What::Chain { changes, .. } => {
+                changes.iter().rev().all(|c| self.undo(c))
+            }
             What::Record { .. } | What::Speak { .. } | What::Abandoned { .. } => true,
             _ => false,
         }

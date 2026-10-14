@@ -27,6 +27,7 @@ fn change(wall: &mut Wall, request: &Request, changes: &mut usize, now: Instant)
 
 fn add(kind: &str) -> Request {
     Request::Add {
+        alias: None,
         kind: kind.to_owned(),
         name: None,
         place: None,

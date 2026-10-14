@@ -57,7 +57,7 @@ pub struct Tick {
     pub sample_rate: f32,
     /// Tempo, in beats per minute.
     pub bpm: f64,
-    /// Song position at the sub-block's first frame, in beats.
+    /// Beats since this wall's origin at the sub-block's first frame.
     pub beat: f64,
     /// Beats per frame.
     pub beat_step: f64,
@@ -85,7 +85,7 @@ impl Tick {
         self
     }
 
-    /// Song position at frame `frame` of the sub-block.
+    /// Beats since the wall origin at frame `frame` of the sub-block.
     #[must_use]
     pub fn beat_at(&self, frame: usize) -> f64 {
         // Frame is below SUB_BLOCK: exact as f64.

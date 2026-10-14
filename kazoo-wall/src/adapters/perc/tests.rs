@@ -241,6 +241,7 @@ fn voices_and_rhythms_are_patchable_by_their_ports() {
     let now = Instant::now();
     for kind in ["kick", "euclid"] {
         let add = Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: None,
             place: None,
