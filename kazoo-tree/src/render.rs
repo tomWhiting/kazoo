@@ -2,7 +2,8 @@
 //!
 //! Each terminal cell is 2 dots wide and 4 tall; limbs are thick lines of
 //! dots coloured by the modules alive and their settings, lighter where
-//! louder, and the marks hang off them as glyphs with labels. What is drawn depends on how far in you are ([`Level`]).
+//! louder, and the marks hang off them as glyphs with labels. What is
+//! drawn depends on how far in you are ([`Level`]).
 
 use std::collections::HashMap;
 
@@ -787,8 +788,7 @@ fn hang_days(
         let Some(at) = picture.index(col, row) else {
             continue;
         };
-        let own = owners.get(&at) == Some(&day.moment) || scene.selected == Some(day.moment);
-        if taken[at] && !own {
+        if taken[at] && !day_holds(owners.get(&at).copied(), day.moment, scene.selected) {
             continue;
         }
         let wide = i32::try_from(UnicodeWidthStr::width(day.words.as_str())).unwrap_or(i32::MAX);
@@ -814,6 +814,13 @@ fn hang_days(
             picture.label(c, r, &day.words, taken);
         }
     }
+}
+
+/// Whether a taken cell whose glyph is `owner`'s (none: the selected
+/// moment's mark, which is not in the glyphs placed) is `day`'s own, so its
+/// words may hang beside it.
+fn day_holds(owner: Option<usize>, day: usize, selected: Option<usize>) -> bool {
+    owner.map_or_else(|| selected == Some(day), |owner| owner == day)
 }
 
 /// The cell a dot at `p` falls in, if it is on the page's side of zero.

@@ -718,3 +718,17 @@ fn day_marks_take_no_place_another_glyph_or_word_would_have() {
         }
     }
 }
+
+#[test]
+fn a_day_hangs_its_words_only_beside_its_own_moments_glyph() {
+    // Its own glyph, or the selected mark of itself.
+    assert!(day_holds(Some(4), 4, None));
+    assert!(day_holds(None, 4, Some(4)));
+    // Another moment's glyph, even with the day's moment selected: its
+    // words there would read as that moment's day.
+    assert!(!day_holds(Some(9), 4, Some(4)));
+    assert!(!day_holds(Some(9), 4, None));
+    // A cell taken by a label, not a glyph, and the day not selected.
+    assert!(!day_holds(None, 4, None));
+    assert!(!day_holds(None, 4, Some(9)));
+}
