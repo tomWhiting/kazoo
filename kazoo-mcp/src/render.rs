@@ -6,6 +6,9 @@
 //! come from the protocol already rounded to what was meant (see
 //! [`kazoo_wall::protocol::widen`]), so they print as sent.
 
+mod cables;
+mod loops;
+
 use kazoo_wall::catalogue::{Curve, JackLaw, Signal};
 use kazoo_wall::fingerprints::Shares;
 use kazoo_wall::protocol::{
@@ -96,24 +99,11 @@ pub fn look(snapshot: &Snapshot) -> String {
             &mut out,
             module,
             snapshot.fingerprints.modules.get(&module.id),
+            &loops::module(module, snapshot.tempo, snapshot.beat),
         );
     }
-    line(
-        &mut out,
-        format_args!("\nCables ({}):", snapshot.cables.len()),
-    );
-    if snapshot.cables.is_empty() {
-        line(&mut out, format_args!("  none"));
-    }
-    for cable in &snapshot.cables {
-        line(
-            &mut out,
-            format_args!(
-                "  #{} {} → {} amount {}",
-                cable.id, cable.from, cable.to, cable.amount
-            ),
-        );
-    }
+    loops::footer(&mut out, snapshot);
+    cables::block(&mut out, snapshot);
     unheard::line(&mut out, &snapshot.timing.unheard);
     timing(&mut out, &snapshot.timing);
     out.push_str(
@@ -282,7 +272,7 @@ fn timing(out: &mut String, timing: &Timings) {
     }
 }
 
-fn module_block(out: &mut String, module: &ModuleView, shares: Option<&Shares>) {
+fn module_block(out: &mut String, module: &ModuleView, shares: Option<&Shares>, tape: &str) {
     let name = module
         .name
         .as_deref()
@@ -290,7 +280,7 @@ fn module_block(out: &mut String, module: &ModuleView, shares: Option<&Shares>) 
     let hands = shares.map_or_else(String::new, hands);
     line(
         out,
-        format_args!("{} ({}){name}{hands}", module.id, module.kind),
+        format_args!("{} ({}){name}{hands}{tape}", module.id, module.kind),
     );
     let knobs = module.knobs.iter().map(knob).collect::<Vec<_>>();
     line(out, format_args!("  knobs: {}", list_or(&knobs, "none")));
@@ -1133,6 +1123,8 @@ mod tests {
 
     pub(super) fn snapshot() -> Snapshot {
         Snapshot {
+            loops_meet: None,
+            checkpoints_paused: false,
             revision: 58,
             wall: 0,
             seed: 0,
@@ -1143,6 +1135,7 @@ mod tests {
             heard: true,
             seats: vec!["Tom".to_string(), "Waffles".to_string()],
             modules: vec![ModuleView {
+                tape: None,
                 id: "vcf1".to_string(),
                 kind: "vcf".to_string(),
                 name: Some("filter".to_string()),
@@ -1198,6 +1191,7 @@ mod tests {
             log: kazoo_wall::protocol::LogHealth::default(),
             probes: Vec::new(),
             engine: None,
+            tree: None,
         }
     }
 
@@ -1935,4 +1929,6 @@ mod tests {
     }
 }
 
+mod tree;
 mod unheard;
+pub use tree::{marked, tree, went};

@@ -668,6 +668,76 @@ present. Receipt: `target/kz-logs/review/voice-score-final.md`.
 | pYIN | rearticulate | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |
 | cycle | rearticulate | 7.33 | 7.33 | 0 | - | - | 0 | 0 | 0.00 | 2.88 | 0.00 | 0.00 | 11.11 | 0.00 | - |
 
+
+## KZ-V04 voice trackers
+
+Date: 2026-10-13T17:35:22Z (14 Oct 04:35 AEDT), after review. HEAD: `3154dcd` on `lane/kz-V04`.
+Load at completion: load averages 178.66 165.03 161.13.
+
+`nice lockf -k ~/.kazoo-cargo.lock cargo run --release -j 4 -p kazoo-core --example voice_score` exited 0.
+Complete analytic takes at 48,000 Hz; no recorded fixtures were present. The review's fixes (a hot
+input is clipped rather than reset; a recovery's remaining climb is not a second rise) leave every
+row below identical to the builder's run at the uncommitted tree.
+Receipt: `target/kz-logs/review-voice-score.txt`; tables: `target/kz-logs/voice-score.md`.
+Latency measures sample counts, independently of the shared machine load.
+
+| tracker | take | onset median ms | onset max ms | onsets missed | step median ms | step max ms | steps | steps missed | cents median | cents p95 | octave % | gross % | missed % | false % | aligned lag ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pYIN | sine_ladder | 38.00 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 11.73 | 0.00 | 0.00 | 6.69 | 7.78 | - |
+| cycle | sine_ladder | 3.00 | 14.00 | 0 | - | - | 0 | 0 | 0.01 | 0.37 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | sine_ladder | 3.33 | 14.67 | 0 | - | - | 0 | 0 | 0.01 | 0.37 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | hum_low | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.67 | 1.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| cycle | hum_low | 30.67 | 30.67 | 0 | - | - | 0 | 0 | 0.00 | 0.01 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | hum_low | 30.67 | 30.67 | 0 | - | - | 0 | 0 | 0.00 | 0.01 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | steps | 45.33 | 45.33 | 0 | 45.00 | 49.33 | 6 | 0 | 1.66 | 1.66 | 0.00 | 4.72 | 4.52 | 0.00 | - |
+| cycle | steps | 12.00 | 12.00 | 0 | 7.33 | 12.67 | 6 | 0 | 0.00 | 0.05 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | steps | 12.00 | 12.00 | 0 | 7.67 | 13.33 | 6 | 0 | 0.00 | 0.07 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | vibrato | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 38.04 | 69.68 | 0.00 | 0.00 | 2.91 | 0.00 | - |
+| cycle | vibrato | 7.33 | 7.33 | 0 | - | - | 0 | 0 | 1.27 | 2.49 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | vibrato | 8.00 | 8.00 | 0 | - | - | 0 | 0 | 1.17 | 2.62 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | glide | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 65.00 | 0.00 | 55.67 | 1.76 | 2.88 | - |
+| cycle | glide | 14.00 | 14.00 | 0 | - | - | 0 | 0 | 2.42 | 3.30 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | glide | 14.67 | 14.67 | 0 | - | - | 0 | 0 | 0.20 | 3.25 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | octave_bait | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.96 | 1.96 | 0.00 | 0.00 | 3.92 | 0.00 | - |
+| cycle | octave_bait | 14.00 | 14.00 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | octave_bait | 14.67 | 14.67 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | vowel_ah | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.70 | 1.70 | 0.00 | 0.00 | 2.50 | 0.00 | - |
+| cycle | vowel_ah | 12.00 | 12.00 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | vowel_ah | 12.00 | 12.00 | 0 | - | - | 0 | 0 | 0.02 | 0.02 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | noise_bursts | 45.33 | 46.67 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 10.50 | 1.31 | - |
+| cycle | noise_bursts | 4.67 | 7.33 | 0 | - | - | 0 | 0 | 0.00 | 0.17 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | noise_bursts | 5.33 | 8.00 | 0 | - | - | 0 | 0 | 0.00 | 0.18 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | whistle | 34.67 | 34.67 | 0 | - | - | 0 | 0 | 8.27 | 31.60 | 0.00 | 0.00 | 3.77 | 3.96 | - |
+| cycle | whistle | 1.33 | 1.33 | 0 | - | - | 0 | 0 | 0.94 | 2.67 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| voice | whistle | 1.33 | 1.33 | 0 | - | - | 0 | 0 | 1.00 | 2.82 | 0.00 | 0.00 | 0.00 | 0.00 | - |
+| pYIN | rearticulate | 45.33 | 45.33 | 0 | - | - | 0 | 0 | 1.66 | 1.66 | 0.00 | 0.00 | 13.75 | 0.00 | - |
+| cycle | rearticulate | 7.33 | 7.33 | 0 | - | - | 0 | 0 | 0.00 | 2.88 | 0.00 | 0.00 | 11.11 | 0.00 | - |
+| voice | rearticulate | 8.00 | 8.00 | 0 | - | - | 0 | 0 | 0.00 | 2.88 | 0.00 | 0.00 | 10.84 | 0.00 | - |
+
+| tracker | take | rise max ms | fall max ms | noise high % | onsets counted | onsets expected | rises missed | falls missed |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| voice | sine_ladder | 14.67 | 30.67 | 0.00 | 6 | 6 | 0 | 0 |
+| voice | hum_low | 30.67 | 38.67 | 2.16 | 1 | 1 | 0 | 0 |
+| voice | steps | 12.00 | 26.00 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | vibrato | 8.00 | 18.67 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | glide | 14.67 | 14.67 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | octave_bait | 14.67 | 20.00 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | vowel_ah | 12.00 | 25.33 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | noise_bursts | 8.00 | 18.67 | 0.00 | 3 | 3 | 0 | 0 |
+| voice | whistle | 1.33 | 12.00 | 0.00 | 1 | 1 | 0 | 0 |
+| voice | rearticulate | 8.00 | 18.67 | 0.00 | 5 | 5 | 0 | 0 |
+
+The fused tracker adds at most one 64-sample frame boundary to the cycle readings.
+Both octave traps have zero octave errors. Noise has zero false pitch and zero gate-high percentage.
+Rearticulation counts five onsets, the ladder six and noise bursts three.
+The low-hum gate remains high for 38.67 ms on release, within its two-period plus 15 ms limit;
+the gate table reports 2.16% against its separate fixed 30 ms noise allowance.
+
+The unvoiced veto uses the same post-leap window condition as octave folding: silence verdicts
+otherwise delay a new note until the slower judge becomes voiced (57.33 ms maximum on the ladder).
+A four-dB recovery is timestamped on its threshold crossing, rather than on every frame it remains
+above threshold; refreshing it repeatedly counted nine onsets for five syllables.
+
 ## KZ-P10 sidestep
 
 2026-10-14, source head `1233bcf`, base `da446f9`, with uncommitted
@@ -748,3 +818,236 @@ The wall stores 4,143,200 ns per 512 frames, four times the measured
 512-frame wall benchmark. It replaces the provisional 800,000 ns row.
 The earlier 800 µs per 512-frame chord budget is not verified.
 The crossfade's complete block cost has not been measured separately.
+
+## KZ-D04 page-owned delay lines
+
+Measured at base `1c2dbfb` and the uncommitted `lane/kz-D04` tree. Both
+commands were `nice -n 10 env CARGO_BUILD_JOBS=4 NEXTEST_STATE_DIR=target/kz-logs/nextest cargo bench -p kazoo-wall --bench wall_render -- 'wall/cables'`
+(the actual state-directory argument was the absolute path in this lane).
+Both exited 0. Values are Criterion interval midpoints, in nanoseconds per
+512-frame block at 48 kHz.
+
+| row | before ns | after ns | before interval ns | after interval ns |
+|---|---:|---:|---|---|
+| wall/cables/10 | 290,630 | 557,680 | 268,580 to 316,260 | 466,530 to 672,640 |
+| wall/cables/100 | 607,520 | 492,910 | 496,510 to 737,230 | 460,990 to 531,800 |
+| wall/cables/1000 | 14,402,000 | 5,212,000 | 6,537,400 to 25,925,000 | 4,805,200 to 5,732,000 |
+| wall/cables/10000 | 46,997,000 | 70,849,000 | 43,061,000 to 51,402,000 | 62,546,000 to 79,898,000 |
+
+The after fixture printed `wall/cables/10000 lines=0`. The before fixture
+did not print its count. Receipts: `target/kz-logs/bench-before.txt` and
+`target/kz-logs/bench-after.txt`.
+
+The 10,000-cable midpoint regressed by 50.8%; the requested 3x improvement
+is not verified. These runs were under heavy shared-machine load. An uptime
+reading during the before run was 167.74 / 128.90 / 130.88; during the after
+run it was 94.41 / 116.17 / 122.25, and crate checks also ran concurrently.
+These observations do not isolate the mechanism's performance. The older
+D01 row of 141,610,000 ns is explicitly marked as not a baseline in this
+file; its ratio of 2.00x to this after row also does not meet 3x.
+
+A repeat on the frozen final source also exited 0
+(`target/kz-logs/bench-final.txt`). It again printed `lines=0` at 10,000.
+The one-minute / five-minute / fifteen-minute load during this repeat was
+77.70 / 93.24 / 109.02; the final crate suite was still running.
+
+| row | final repeat ns | interval ns |
+|---|---:|---|
+| wall/cables/10 | 626,170 | 541,580 to 715,840 |
+| wall/cables/100 | 1,495,400 | 1,239,700 to 1,767,100 |
+| wall/cables/1000 | 10,845,000 | 9,202,400 to 12,587,000 |
+| wall/cables/10000 | 100,870,000 | 89,220,000 to 112,930,000 |
+
+The final repeat is 2.15x slower than the measured base midpoint at 10,000,
+and 1.40x faster than the non-baseline D01 row. Neither meets the 3x target.
+Performance acceptance remains open; the observed regressions are retained.
+
+### KZ-D04 review: base and head interleaved (not a verdict)
+
+The reviewer built `wall_render` at base `1c2dbfb` and head `1c1dba2` (the
+same bench file at both, so both print the line count) and ran
+`wall_render-<side> --bench 'wall/cables' --noplot` three rounds, base then
+head each round, under `lockf ~/.kazoo-cargo.lock` so no kazoo cargo job ran
+beside them, 08:11 to 08:19 on 14 October. Load averages (1/5/15 min) at
+each start are in the table. Every run exited 0. Criterion midpoints, ns per
+512-frame block at 48 kHz:
+
+| round | side | load | cables/10 | cables/100 | cables/1000 | cables/10000 | lines at 10000 |
+|---|---|---|---:|---:|---:|---:|---:|
+| 1 | base | 102.38 / 78.18 / 73.00 | 718,970 | 1,585,900 | 12,596,000 | 122,970,000 | 10,048 |
+| 1 | head | 112.42 / 86.28 / 76.47 | 417,000 | 1,186,700 | 12,196,000 | 143,050,000 | 0 |
+| 2 | base | 145.13 / 102.58 / 83.55 | 887,870 | 1,366,600 | 15,114,000 | 252,110,000 | 10,048 |
+| 2 | head | 124.90 / 107.86 / 87.64 | 704,020 | 2,591,800 | 11,866,000 | 156,180,000 | 0 |
+| 3 | base | 118.48 / 108.40 / 89.48 | 669,680 | 1,523,300 | 14,772,000 | 162,120,000 | 10,048 |
+| 3 | head | 163.77 / 126.35 / 98.09 | 217,950 | 880,200 | 5,103,800 | 44,240,000 | 0 |
+
+The same binary moved 2x between rounds (base 10000: 123 to 252 ms), so at
+loads of 100 to 160 these rows cannot show 3x or rule it out. Head is
+faster than the base run beside it in 10 of 12 pairs; at 10000 it was
+slower in round 1 (1.16x) and faster in rounds 2 (1.61x) and 3 (3.66x).
+The line count is confirmed: 10,048 lines at base (157 pages of 64) and 0 at
+head. The 3x target is NOT CONFIRMED. A load-independent count (instructions and
+cycles per block for a fixed number of renders, `/usr/bin/time -l`) was
+being built when the review was stopped at 08:40 for Tom's 09:00 deadline,
+and no numbers came from it. Log: `target/kz-review/ab1.log`.
+
+## KZ-V12 high notes
+
+14 October 2026, write-only round. Base and unchanged HEAD:
+`dd1bfc606ebfd152164c8b3092ed6f9b52657472`, branch `lane/kz-V12`.
+The code changes are uncommitted. `uptime` at 10:55 AEDT reported load averages
+31.76, 39.13 and 43.79. `sysctl -n vm.loadavg` was refused with
+`Operation not permitted`. Disk available at the start: 53 GiB (`df -g /`).
+
+Before and after score tables were not measured: Tom reserved the CPU and
+prohibited all build, test and benchmark commands in this round. No numerical
+result or red/green result is claimed. The tests write the scoreboard tables
+and counts of octave error steps after 100 ms before asserting their targets.
+Their files are relative to the worktree:
+
+| test | rows | table written when run |
+|---|---|---|
+| `high_whistles_hold` | 800, 1100, 1500, 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_whistles_hold.md` |
+| `high_sung_seconds_hold` | 800, 1100, 1500, 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_sung_seconds_hold.md` |
+| `high_sung_thirds_hold` | 800, 1100, 1500, 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_sung_thirds_hold.md` |
+| `high_splices_hold` | 800, 1100, 1500, 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_splices_hold.md` |
+| `high_notes_hold_at_96k` | whistle and sung second at 2200 Hz; cycle and voice | `target/kz-logs/kz-v12/high_notes_hold_at_96k.md` |
+| `high_notes_hold_through_the_engine_judge` | whistle and sung second at all four pitches; engine-configured voice | `target/kz-logs/kz-v12/high_notes_hold_through_the_engine_judge.md` |
+
+B1 and B2 were not built. Their selection requires these measurements; the
+write-only rule prevents deciding that neither is needed. The build round
+must apply the stated cycle-then-voice decision rule without changing targets.
+Fix A uses the full voice range and its rate-scaled hop and bins. Fix A2
+exempts a matching hint landing within 10 ms from the sung-leap clock.
+
+At this base the engine still constructs its detector for `analysis_thread`;
+`ProcessingState` has no voice tracker and `start` has no `judge::spawn` call.
+The range check is therefore before detector construction and audio-device
+preparation. V06's engine wiring must be present in the integrated tree to
+prove the live mouth outcome. The offline engine-judge tests exercise its
+configuration through `FusedUnderTest::with_judge`.
+
+The cached pYIN 1.2.0 source accepts a maximum equal to Nyquist, and the local
+validator permits the 50–4000 Hz, 512-sample-hop configuration at 8000 Hz.
+The conditional 0.45 × rate cap was not applied; construction at every listed
+device rate remains unverified until the build round.
+
+## KZ-P06 profiles
+
+Date: 2026-10-14 11:37 AEDT. Base and HEAD: `dd1bfc606ebfd152164c8b3092ed6f9b52657472`,
+branch `lane/kz-P06`, changes uncommitted. Load at source writing: 60.12, 32.12, 32.71.
+This is a write-only round with the CPU reserved. No build, test, scoreboard or benchmark ran.
+All measurements below are **not verified**; no previous voice result is reused as instrument proof.
+
+`judge/hop/48k/bass`: not run. The implemented row uses the bass range (29–500 Hz),
+a 4096-sample frame, the unchanged 512-sample hop and a complete judge history before measurement.
+The acceptance ceiling is 4.2 ms per run; neither a before value nor an after value was measured.
+
+The `voice_score` example writes pitch and gate tables for both profiles and all eight exact takes.
+The instrument fixture directory contains no takes in this checkout. If recordings are added, the
+example loads them with the line profile's 4096-sample reference window so B0 is inside its range.
+
+| tracker | take | pitch measurements | gate and onset measurements |
+|---|---|---|---|
+| voice:guitar | bass_open | not run | not run |
+| voice:guitar | guitar_open | not run | not run |
+| voice:guitar | sweep | not run | not run |
+| voice:guitar | slide | not run | not run |
+| voice:guitar | bend | not run | not run |
+| voice:guitar | vibrato | not run | not run |
+| voice:guitar | glide | not run | not run |
+| voice:guitar | noise_hum | not run | not run |
+| voice:bass | bass_open | not run | not run |
+| voice:bass | guitar_open | not run | not run |
+| voice:bass | sweep | not run | not run |
+| voice:bass | slide | not run | not run |
+| voice:bass | bend | not run | not run |
+| voice:bass | vibrato | not run | not run |
+| voice:bass | glide | not run | not run |
+| voice:bass | noise_hum | not run | not run |
+
+## KZ-P07 low notes
+
+Date: 2026-10-14 12:04 AEDT. Base: `dd1bfc6`. HEAD:
+`a7adc01d2a9743bd2fca02bfc670fe259191b1b2`, branch `lane/kz-P07`.
+Load average at source writing: 59.62, 52.49, 46.27.
+This write-only round reserves the CPU. No build, test, scoreboard or benchmark ran.
+Neither latency, accuracy, octave rate, handover smoothness nor callback cost is verified.
+
+The `early_meets_its_targets` scoreboard test prints the instrument table with
+early disabled and enabled, with delayed real judge verdicts. It also prints each
+note's first voiced gated frame, its individual period-based latency budget and
+its settled cents error after 100 ms. These are measured only when the test runs.
+
+| tracker | take | onset latency max | cents median after 100 ms | octave rate |
+|---|---|---|---|---|
+| early off | bass_open | not run | not run | not run |
+| early on | bass_open | not run | not run | not run |
+| early off | guitar_open | not run | not run | not run |
+| early on | guitar_open | not run | not run | not run |
+
+The B0 deadline is 50.6 ms and the E1 deadline is 38.4 ms. These are acceptance
+targets, not measurements. The search is bounded to 18 NSDF lag evaluations
+per unlock. Its elapsed time and the 64-frame callback budget are not measured.
+The low-B listening comparison with the live follower remains for the integrated
+input path and an actual bass performance.
+
+
+## KZ-R02 measured verification
+
+14 October 2026. Branch `lane/kz-R02`, HEAD `65028079eb4b663a980d4eab111614c265458d6b`,
+merge-base `8ed511d`. Changes are uncommitted. START: 74 GiB available, load 36.89.
+
+V12 selects B1 because the base cycle `splice_800` gross error was 2.56%, above 1%.
+The literal first B1 implementation produced two settled octave-error steps on cycle
+`splice_2200` and four on voice. Receipt: `target/kz-logs/r02-b1.txt`.
+The retained implementation prefers the held period, gives high-note recovery
+three milliseconds before accepting an unrelated lag, and uses the 1 ms window
+while locked. Acquisition retains 0.5 ms: using 1 ms at acquisition delayed the
+1500 Hz voice onset to 2.667 ms against 2.333 ms. No acceptance threshold changed.
+
+`high_splices_hold` passes after these corrections. Every splice row has zero
+settled octave errors. Full before/after tables: `target/kz-logs/r02-high-splices-before.md`
+and `target/kz-logs/r02-high-splices-after.md`. Other high-note tables remain at the
+`target/kz-logs/kz-v12/` paths listed above. `r02-b1-final.txt` exits 0: all 14
+focused tests pass, including every high cycle/voice row and both original
+scoreboards. B2 is not needed under V12's rule after these B1 results.
+
+| tracker | take | median cents before / after | gross % before / after | octave % before / after |
+|---|---|---:|---:|---:|
+| cycle | splice_800 | 4.52 / 3.33 | 2.56 / 0.00 | 0.00 / 0.00 |
+| voice | splice_800 | 4.50 / 3.32 | 2.58 / 0.00 | 0.00 / 0.00 |
+| cycle | splice_1100 | 4.64 / 3.16 | 0.98 / 0.00 | 0.00 / 0.00 |
+| voice | splice_1100 | 4.64 / 3.20 | 1.02 / 0.00 | 0.00 / 0.00 |
+| cycle | splice_1500 | 4.20 / 2.78 | 0.00 / 0.16 | 0.00 / 0.00 |
+| voice | splice_1500 | 4.28 / 2.72 | 0.00 / 0.18 | 0.00 / 0.00 |
+| cycle | splice_2200 | 4.75 / 2.54 | 1.11 / 0.11 | 0.00 / 0.00 |
+| voice | splice_2200 | 4.78 / 2.54 | 0.93 / 0.13 | 0.00 / 0.00 |
+
+P06 `judge/hop/48k/bass`: Criterion 10 samples, 1 s warmup, 2 s measurement,
+7.2574 / 13.160 / 19.235 ms confidence interval; command exit 0.
+Load around the run rose from 99.98 to 296.08. This does not verify the 4.2 ms budget.
+Receipt: `target/kz-logs/r02-judge-bench.txt`. No controlled before/after timing exists.
+The full P06 instrument table was not run; the base open-string rows, early off
+and on, are in `target/kz-logs/red-early_meets_its_targets.txt`.
+
+P07 remains blocked: the refused first B0 lobe proposes 149.69 samples against a
+1555.02-sample true period, spends its one search, then the normal path locks at
+46.17 ms. The shaped E1 glide schedules 38.68 ms, but normal marks lock at 36.69 ms.
+Receipt: `target/kz-logs/r02-diagnostics.txt`. P07 line 60 demands early-off take
+at least two B0 periods (64.79 ms), while its normal-path preservation rule forbids
+changing the already faster path. Neither the waveform nor the assertion was weakened.
+
+Fix-run measurements and remaining conflicts: `target/kz-logs/r02-fix-bench.md`.
+
+## KZ-R02 fix run 3
+
+The amendment, motion/DC mechanism, red receipts and unchanged numerical limits
+are recorded in [KZ-R02-run3-measurements.md](KZ-R02-run3-measurements.md).
+
+## KZ-R02 fix run 4
+
+The final bass-only reacquisition, regression receipts and remaining limits are
+recorded in [KZ-R02-run4-measurements.md](KZ-R02-run4-measurements.md).
+
+Run 6: [bass acquisition repair and complete measurements](KZ-R02-run6-measurements.md).

@@ -13,8 +13,9 @@ Two-crate Rust workspace:
 ### Thread Architecture (kazoo-core)
 1. **cpal input callback** (OS-managed) — writes mic samples to ring buffer. ZERO processing.
 2. **cpal output callback** (OS-managed) — the main audio workhorse. Reads mic from ring buffer, drains commands, runs mixer (synth + effects), applies soft limiter, writes directly to output buffer, pushes display state. All processing state is owned by this callback's closure.
-3. **Analysis thread** — pitch detection, FFT spectrum, formant extraction, onset detection. Allowed to allocate.
-4. **Disk I/O thread** — writes recorded audio to WAV files.
+3. **Analysis thread** — FFT spectrum and formant extraction for the display. Allowed to allocate.
+4. **Judge thread** — pYIN and onset verdicts for the voice tracker, which runs on the output callback and sets armed synths' pitch every 64 samples. Allowed to allocate.
+5. **Disk I/O thread** — writes recorded audio to WAV files.
 
 ### Communication
 - UI → Engine: `crossbeam-channel` (bounded MPSC) for commands

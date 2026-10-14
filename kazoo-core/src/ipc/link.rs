@@ -36,7 +36,7 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
@@ -61,6 +61,8 @@ use crate::realtime::{NotRealTime, RealTime};
 use crate::sanitize_sample;
 
 mod audio;
+mod voice;
+pub use voice::{VOICE_RING, VoiceLinkStats, VoiceRx};
 mod streams;
 pub use streams::StreamConfig;
 use streams::{OLD_DESK_REFUSAL, set_stream_refusal, stream_update};
@@ -86,6 +88,12 @@ const STUCK_LIMIT: Duration = Duration::from_millis(500);
 /// Five milliseconds matches the desk's pace interval, so pace, health and shutdown
 /// are read at least as often as pace is sent. Also the real-time period.
 pub const LINK_TICK: Duration = Duration::from_millis(5);
+
+/// Margin separating an unpark from a connected timeout.
+///
+/// `park_timeout` never returns more than a scheduling delay early on a timeout;
+/// half a millisecond is far past any measured early return.
+const WAKE_SLACK: Duration = Duration::from_micros(500);
 
 /// Link thread poll interval while looking for a hub.
 const IDLE_INTERVAL: Duration = Duration::from_millis(20);
@@ -144,6 +152,8 @@ pub struct LinkConfig {
     /// by default: the link thread carries audio to the desk. A refusal is
     /// reported through [`HubLink::real_time()`], never printed by the link.
     pub real_time: bool,
+    #[cfg(test)]
+    pub(crate) wake_audio: bool,
 }
 
 impl LinkConfig {
@@ -159,6 +169,22 @@ impl LinkConfig {
             address: HubAddress::Discover,
             pace_lead_frames: 0,
             real_time: true,
+            #[cfg(test)]
+            wake_audio: true,
+        }
+    }
+
+    /// Disable audio wakes so the wake test can detect service by the tick.
+    #[cfg(test)]
+    pub(crate) fn for_test_without_wake(
+        name: &str,
+        channels: u8,
+        sample_rate: u32,
+        max_block_frames: u32,
+    ) -> Self {
+        Self {
+            wake_audio: false,
+            ..Self::new(name, channels, sample_rate, max_block_frames)
         }
     }
 }
@@ -173,6 +199,8 @@ pub enum RequestError {
     /// The request is not valid: an unknown transport state or note event,
     /// a value out of MIDI range, or a tempo that is not a positive number.
     Invalid,
+    /// The connected desk has not announced voice support.
+    Unsupported,
 }
 
 impl fmt::Display for RequestError {
@@ -181,6 +209,7 @@ impl fmt::Display for RequestError {
             Self::NotConnected => "not plugged into the desk",
             Self::Full => "too many requests waiting for the hub",
             Self::Invalid => "invalid request",
+            Self::Unsupported => "this desk is too old to carry the voice",
         })
     }
 }
@@ -194,6 +223,7 @@ enum Request {
     Note(NoteEventMsg),
     StreamAdd { stream: StreamId, spec: StreamSpec },
     StreamRemove { stream: StreamId },
+    VoiceFollow(bool),
 }
 
 impl Request {
@@ -227,6 +257,12 @@ impl Request {
 #[derive(Debug)]
 struct LinkState {
     connected: Arc<AtomicBool>,
+    desk_features: AtomicU32,
+    follow_voice: AtomicBool,
+    voice_sent: AtomicU64,
+    voice_dropped: AtomicU64,
+    voice_received: AtomicU64,
+    voice_overflow: AtomicU64,
     strips: [AtomicU8; MAX_STREAMS],
     streams: std::sync::Mutex<[Option<StreamConfig>; MAX_STREAMS]>,
     stream_live: AtomicU64,
@@ -235,6 +271,8 @@ struct LinkState {
     blocks_dropped: AtomicU64,
     messages_dropped: AtomicU64,
     connections: AtomicU64,
+    woken: AtomicU64,
+    ticked: AtomicU64,
     last_refusal: std::sync::Mutex<Option<String>>,
     pace: PaceSlot,
     /// Scheduling is published before serving audio on each connection.
@@ -359,9 +397,20 @@ impl PaceSlot {
     }
 }
 
+/// The voice's way to an instrument through the desk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VoiceLink {
+    /// The instrument's persistent follow wish.
+    pub follows: bool,
+    /// The connected desk announced voice support.
+    pub desk_carries: bool,
+}
+
 /// Counters for the instrument's UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkStatus {
+    /// Whether the voice reaches this instrument through the desk.
+    pub voice: VoiceLink,
     /// The link was refused real-time scheduling.
     pub normal_priority: bool,
     /// Plugged into the desk.
@@ -383,6 +432,24 @@ pub struct LinkStatus {
     pub last_refusal: Option<String>,
 }
 
+/// How `last_refusal` begins when the desk itself refused the instrument:
+/// this, the instrument's name, `": "`, then the desk's reason.
+pub(crate) const DESK_REFUSED: &str = "the desk refused ";
+
+impl LinkStatus {
+    /// The desk's own reason, when the desk refused this instrument; `None`
+    /// when it did not (connected, never tried, or the link failed or came
+    /// down for another reason, which `last_refusal` still holds).
+    #[must_use]
+    pub fn desk_refusal(&self) -> Option<&str> {
+        self.last_refusal
+            .as_deref()?
+            .strip_prefix(DESK_REFUSED)?
+            .split_once(": ")
+            .map(|(_, reason)| reason)
+    }
+}
+
 /// The UI half of the link. Dropping it says goodbye to the hub.
 #[derive(Debug)]
 pub struct HubLink {
@@ -395,11 +462,15 @@ pub struct HubLink {
 
 /// The audio-callback half of the link.
 pub struct HubLinkAudio {
+    voice_out: ringbuf::HeapProd<crate::voice::VoiceFrame>,
+    pub voice: VoiceRx,
     wire: ringbuf::HeapProd<u8>,
     seq: u32,
     pub events: crate::host::link::EventRx,
     requests: ringbuf::HeapProd<Request>,
     waker: Thread,
+    #[cfg(test)]
+    wake_audio: bool,
     state: Arc<LinkState>,
     channels: u16,
     block_frames: u32,
@@ -437,6 +508,37 @@ pub(crate) fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)
     start_link(config, None, true)
 }
 
+impl LinkState {
+    /// A link not yet plugged in, carrying the resolved streams.
+    fn fresh(slots: [Option<StreamConfig>; MAX_STREAMS]) -> Self {
+        Self {
+            connected: Arc::new(AtomicBool::new(false)),
+            desk_features: AtomicU32::new(0),
+            follow_voice: AtomicBool::new(false),
+            voice_sent: AtomicU64::new(0),
+            voice_dropped: AtomicU64::new(0),
+            voice_received: AtomicU64::new(0),
+            voice_overflow: AtomicU64::new(0),
+            strips: std::array::from_fn(|_| AtomicU8::new(NO_STRIP)),
+            stream_live: AtomicU64::new((1 << slots.iter().flatten().count()) - 1),
+            streams: streams::table(slots),
+            last_stream_refusal: std::sync::Mutex::new(None),
+            blocks_sent: AtomicU64::new(0),
+            blocks_dropped: AtomicU64::new(0),
+            messages_dropped: AtomicU64::new(0),
+            connections: AtomicU64::new(0),
+            woken: AtomicU64::new(0),
+            ticked: AtomicU64::new(0),
+            last_refusal: std::sync::Mutex::new(None),
+            pace: PaceSlot::new(),
+            real_time: AtomicU8::new(priority::NOT_ASKED),
+            real_time_refusal: std::sync::OnceLock::new(),
+            placed_afresh: AtomicU64::new(0),
+            desk_dropped: AtomicU64::new(0),
+        }
+    }
+}
+
 pub(crate) fn start_link(
     config: LinkConfig,
     client: Option<HubIpcClient>,
@@ -455,27 +557,15 @@ pub(crate) fn start_link(
     let (wire_tx, wire_rx) = HeapRb::<u8>::new(wire_bytes).split();
     let (message_tx, message_rx) = HeapRb::<ToAudio>::new(MESSAGE_BACKLOG).split();
     let (callback_tx, callback_rx) = HeapRb::<Request>::new(REQUEST_BACKLOG).split();
+    let (voice_out, voice, worker_voice) = voice::rings();
     let (ui_tx, ui_rx) = mpsc::sync_channel(REQUEST_BACKLOG);
-    let state = Arc::new(LinkState {
-        connected: Arc::new(AtomicBool::new(false)),
-        strips: std::array::from_fn(|_| AtomicU8::new(NO_STRIP)),
-        stream_live: AtomicU64::new((1 << slots.iter().flatten().count()) - 1),
-        streams: streams::table(slots),
-        last_stream_refusal: std::sync::Mutex::new(None),
-        blocks_sent: AtomicU64::new(0),
-        blocks_dropped: AtomicU64::new(0),
-        messages_dropped: AtomicU64::new(0),
-        connections: AtomicU64::new(0),
-        last_refusal: std::sync::Mutex::new(None),
-        pace: PaceSlot::new(),
-        real_time: AtomicU8::new(priority::NOT_ASKED),
-        real_time_refusal: std::sync::OnceLock::new(),
-        placed_afresh: AtomicU64::new(0),
-        desk_dropped: AtomicU64::new(0),
-    });
+    let state = Arc::new(LinkState::fresh(slots));
     let sample_rate = config.sample_rate;
-    let running = Arc::new(AtomicBool::new(true));
+    #[cfg(test)]
+    let wake_audio = config.wake_audio;
+    let running = Arc::new(AtomicBool::new(start));
     let mut worker = LinkWorker {
+        voice: worker_voice,
         config,
         state: Arc::clone(&state),
         wire: wire_rx,
@@ -494,19 +584,15 @@ pub(crate) fn start_link(
     }
     let (finished_tx, finished) = mpsc::sync_channel(1);
     let thread_running = Arc::clone(&running);
-    let join = if start {
-        Some(
-            thread::Builder::new()
-                .name("kazoo-hub-link".to_string())
-                .spawn(move || {
-                    worker.run(&thread_running);
-                    shutdown::report_finished(&finished_tx);
-                })?,
-        )
-    } else {
-        running.store(false, Ordering::Release);
-        None
+    let spawn = || {
+        thread::Builder::new()
+            .name("kazoo-hub-link".to_string())
+            .spawn(move || {
+                worker.run(&thread_running);
+                shutdown::report_finished(&finished_tx);
+            })
     };
+    let join = start.then(spawn).transpose()?;
     let waker = join
         .as_ref()
         .map_or_else(thread::current, |join| join.thread().clone());
@@ -524,11 +610,15 @@ pub(crate) fn start_link(
             finished,
         },
         HubLinkAudio {
+            voice_out,
+            voice,
             wire: wire_tx,
             seq: 0,
             events,
             requests: callback_tx,
             waker,
+            #[cfg(test)]
+            wake_audio,
             state,
             channels,
             block_frames,
@@ -543,6 +633,18 @@ pub(crate) fn start_link(
 }
 
 impl HubLink {
+    /// Connected parks ending early and at the tick, over the link's lifetime.
+    ///
+    /// Returns `(woken, ticked)` for tests and diagnostics, separate from
+    /// the UI counters in [`LinkStatus`]. Idle parks are not counted.
+    #[must_use]
+    pub fn wake_counts(&self) -> (u64, u64) {
+        (
+            self.state.woken.load(Ordering::Relaxed),
+            self.state.ticked.load(Ordering::Relaxed),
+        )
+    }
+
     /// Whether the instrument is plugged into the desk.
     #[must_use]
     pub fn is_connected(&self) -> bool {
@@ -582,6 +684,10 @@ impl HubLink {
             Err(poisoned) => poisoned.into_inner().clone(),
         };
         LinkStatus {
+            voice: VoiceLink {
+                follows: self.state.follow_voice.load(Ordering::Acquire),
+                desk_carries: self.desk_carries_voice(),
+            },
             normal_priority: self.real_time().is_some_and(Result::is_err),
             connected: self.is_connected(),
             strip: (strip != NO_STRIP).then_some(strip),
@@ -769,6 +875,7 @@ impl HubLinkAudio {
 
 /// The link thread's state.
 struct LinkWorker {
+    voice: voice::VoiceWorker,
     config: LinkConfig,
     state: Arc<LinkState>,
     wire: ringbuf::HeapCons<u8>,
@@ -824,7 +931,13 @@ impl LinkWorker {
                 self.disconnect(why);
                 next_attempt = Instant::now() + RETRY_INTERVAL;
             }
+            let parked_at = Instant::now();
             thread::park_timeout(LINK_TICK);
+            if parked_at.elapsed().saturating_add(WAKE_SLACK) < LINK_TICK {
+                self.state.woken.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.state.ticked.fetch_add(1, Ordering::Relaxed);
+            }
         }
         if let Err(why) = Self::demote(priority.take()) {
             self.set_refusal(Some(format!(
@@ -892,6 +1005,8 @@ impl LinkWorker {
                     &mut self.stuck_since,
                 )?;
             }
+            self.voice
+                .send(client, &self.state, &mut self.stuck_since)?;
             let before = client.pending_bytes();
             client
                 .flush()
@@ -912,46 +1027,15 @@ impl LinkWorker {
                 )?;
             }
         }
-        loop {
-            match client.try_recv() {
-                Ok(Some(HubMessage::Shutdown)) => return Err("the desk closed".to_string()),
-                Ok(Some(message)) => {
-                    if let HubMessage::StreamReady { stream, strip } = &message {
-                        let id = usize::from(*stream);
-                        if self.state.stream_live.load(Ordering::Acquire) & (1 << id) != 0 {
-                            self.state.strips[id]
-                                .store(strip.unwrap_or(NO_STRIP), Ordering::Release);
-                        }
-                        if let Some(reason) = client.take_stream_refusal() {
-                            match self.state.last_stream_refusal.lock() {
-                                Ok(mut slot) => *slot = Some(reason),
-                                Err(poisoned) => *poisoned.into_inner() = Some(reason),
-                            }
-                        }
-                    }
-                    if self.messages.try_push(ToAudio::Hub(message)).is_err() {
-                        self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-                Ok(None) => {
-                    if let Some(pace) = client.take_desk_pace() {
-                        self.state.pace.store(Some((pace, Instant::now())));
-                    }
-                    if let Some(health) = client.take_desk_health() {
-                        self.health_now = health;
-                        self.publish_health();
-                    }
-                    return Ok(());
-                }
-                Err(err) => return Err(format!("the desk connection failed: {err}")),
-            }
-        }
+        self.read_hub()
     }
 
     fn disconnect(&mut self, why: String) {
         // The reason goes first: anyone who sees the link down can read why.
         self.set_refusal(Some(why));
         self.state.connected.store(false, Ordering::Release);
+        self.state.desk_features.store(0, Ordering::Release);
+        self.voice.discard(self.client.as_ref(), &self.state);
         for strip in &self.state.strips {
             strip.store(NO_STRIP, Ordering::Release);
         }
@@ -994,6 +1078,7 @@ impl LinkWorker {
     /// Drop audio and requests the halves queued before they saw the link
     /// go down.
     fn discard_backlog(&mut self) {
+        self.voice.discard(self.client.as_ref(), &self.state);
         // Count what `clear` removed: a frame may land after any earlier look.
         if self.wire.clear() > 0 {
             self.state.blocks_dropped.fetch_add(1, Ordering::Relaxed);
@@ -1006,7 +1091,7 @@ impl LinkWorker {
             // is built from: nothing is lost.
             if !matches!(
                 request,
-                Request::StreamAdd { .. } | Request::StreamRemove { .. }
+                Request::StreamAdd { .. } | Request::StreamRemove { .. } | Request::VoiceFollow(_)
             ) {
                 self.state.messages_dropped.fetch_add(1, Ordering::Relaxed);
             }
@@ -1016,6 +1101,8 @@ impl LinkWorker {
     /// Tell the hub the instrument is leaving, and give it a moment to go.
     fn say_goodbye(&mut self) {
         self.state.connected.store(false, Ordering::Release);
+        self.state.desk_features.store(0, Ordering::Release);
+        self.voice.discard(self.client.as_ref(), &self.state);
         let Some(client) = self.client.as_mut() else {
             return;
         };
@@ -1082,6 +1169,7 @@ fn send_request(
         Request::Note(_) => NoteEventMsg::WIRE_SIZE,
         Request::StreamAdd { .. } => StreamAddMsg::WIRE_SIZE,
         Request::StreamRemove { .. } => StreamRemoveMsg::WIRE_SIZE,
+        Request::VoiceFollow(_) => 1,
     };
     let sent = match request {
         Request::Transport { state, bpm } => client.send_transport_request(state, bpm),
@@ -1090,6 +1178,7 @@ fn send_request(
             client.send_stream_add(&StreamAddMsg { stream, spec })
         }
         Request::StreamRemove { stream } => client.send_stream_remove(stream),
+        Request::VoiceFollow(on) => voice::send_follow(client, state, on),
     };
     match sent {
         Ok(()) => {
@@ -1107,10 +1196,10 @@ fn send_request(
         Err(OutboxError::Stuck)
             if matches!(
                 request,
-                Request::StreamAdd { .. } | Request::StreamRemove { .. }
+                Request::StreamAdd { .. } | Request::StreamRemove { .. } | Request::VoiceFollow(_)
             ) =>
         {
-            Err("stream request outbox is full".to_string())
+            Err("stream or voice follow request outbox is full".to_string())
         }
         Err(OutboxError::Stuck) => {
             state.messages_dropped.fetch_add(1, Ordering::Relaxed);

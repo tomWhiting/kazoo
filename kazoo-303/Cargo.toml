@@ -3,6 +3,8 @@ name = "kazoo-303"
 version = "0.1.0"
 edition = "2024"
 description = "TB-303 inspired acid bassline synth — all procedural synthesis, no samples"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true

@@ -33,6 +33,8 @@ pub(super) const BUSY_SAID: f32 = 1.25;
 /// needs a phrase feed): it takes the `vca` row. Rows taken with the machine
 /// near a load of 100 came out three to six times these, and costed walls
 /// that render at 57% of real time at 251%.
+/// `gate` provisionally takes the `comp` row until `wall/kind/gate` is
+/// measured on a quiet machine beside `comp` and `vca`.
 /// Sidestep provisionally takes the ringmod row until `fx/sidestep` is
 /// measured on a quiet machine.
 pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
@@ -68,8 +70,11 @@ pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
     ("ringmod", 379_420),
     ("sidestep", 379_420),
     ("comp", 592_430),
-    // fx/octaves measured 2026-10-14; four 128-frame blocks at the steady midpoint.
-    ("octaves", 4_143_200),
+    // fx/octaves: provisional until `wall/kind/octaves` is measured at load
+    // 40 or less (the 4,143,200 ns first taken was at load 176 and not by
+    // that method).
+    ("octaves", 800_000),
+    ("gate", 592_430),
     ("tape", 491_630),
     ("bbd", 162_010),
     ("digital", 133_860),
@@ -143,7 +148,11 @@ pub(super) fn kind_share(kind: Kind, rate: u32) -> f32 {
 /// takes work away, and is never costed.
 pub(super) fn can_wake(what: &What) -> bool {
     match what {
-        What::Patch { .. } | What::Add { .. } | What::Restore { .. } | What::Chain { .. } => true,
+        What::Patch { .. }
+        | What::Add { .. }
+        | What::Restore { .. }
+        | What::Batch { .. }
+        | What::Chain { .. } => true,
         What::Unpatch { replugged, .. } => replugged.is_some(),
         What::Remove { replugged, .. } => !replugged.is_empty(),
         _ => false,
@@ -182,7 +191,9 @@ fn heard_modules(patch: &Patch) -> Vec<usize> {
 fn taken_away(what: &What) -> Vec<&ModuleRecord> {
     match what {
         What::Remove { module, .. } => vec![module],
-        What::Chain { changes, .. } => changes.iter().flat_map(taken_away).collect(),
+        What::Batch { changes, .. } | What::Chain { changes, .. } => {
+            changes.iter().flat_map(taken_away).collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -295,6 +306,7 @@ impl Wall {
             what,
             What::Add { .. }
                 | What::Restore { .. }
+                | What::Batch { .. }
                 | What::Chain { .. }
                 | What::Patch { replaced: None, .. }
         ) {
@@ -375,7 +387,7 @@ impl Wall {
                 .patch
                 .cables()
                 .iter()
-                .filter(|cable| !self.lines.contains_key(&cable.id))
+                .filter(|cable| !self.sent_cables.contains_key(&cable.id))
                 .count();
         if let Err(err) = self.render_room(units, Some(&waking)) {
             self.unmade = true;

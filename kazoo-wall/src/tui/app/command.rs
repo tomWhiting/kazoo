@@ -24,7 +24,7 @@ use super::{App, MAX_ENTRY, Mode, Tone, TurnKind, View, jack_names};
 const MAX_LINE: usize = 4 * MAX_ENTRY;
 
 /// Every command: its name, what it takes and what it does.
-pub const COMMANDS: [(&str, &str, &str); 17] = [
+pub const COMMANDS: [(&str, &str, &str); 20] = [
     (
         "add",
         "[kind] [name]",
@@ -47,6 +47,17 @@ pub const COMMANDS: [(&str, &str, &str); 17] = [
         "turn a knob to a value or named position",
     ),
     ("save", "<name>", "save the wall as it is (it plays on)"),
+    (
+        "mark",
+        "<name>",
+        "name the moment the wall is at (marks never move)",
+    ),
+    (
+        "go",
+        "<moment>",
+        "put the wall at a moment: a mark, a branch, #<change> or a commit (z undoes it)",
+    ),
+    ("tree", "", "the tree: branches, marks, the latest moments"),
     (
         "load",
         "<name>",
@@ -181,12 +192,16 @@ enum Jacks {
 }
 
 impl App {
-    /// `:`: open the command line, asking for the saves to complete their
-    /// names when they have not come.
+    /// `:`: open the command line, asking for saves and tree moments to
+    /// complete their names.
     pub(super) fn open_command(&mut self, now: Instant) {
         self.mode = Mode::Command(CommandLine::default());
         if self.link.is_up() && self.saves.result.is_none() && !self.saves.fetching {
             self.fetch_saves(now);
+        }
+        if self.link.is_up() {
+            self.refresh_tree();
+            self.tick_tree(now);
         }
     }
 
@@ -281,6 +296,7 @@ impl App {
                     open: false,
                 })
                 .collect(),
+            ("go", 1) => self.tree_completions(&lower),
             _ => Vec::new(),
         }
     }
@@ -528,6 +544,7 @@ impl App {
                 }
                 self.save_as(rest, now);
             }
+            "mark" | "go" | "tree" => self.run_tree_command(name, rest, now)?,
             "load" => {
                 wants(1)?;
                 self.say(

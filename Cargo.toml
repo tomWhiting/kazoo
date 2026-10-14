@@ -3,6 +3,7 @@ members = [
     "kazoo-cli",
     "kazoo-core",
     "kazoo-tui",
+    "kazoo-mouth",
     "kazoo-mix",
     "kazoo-808",
     "kazoo-cs80",
@@ -22,6 +23,7 @@ members = [
     "kazoo-speech",
     "kazoo-mcp",
     "kazoo-host",
+    "kazoo-tree",
 ]
 resolver = "2"
 

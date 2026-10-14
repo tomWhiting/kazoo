@@ -7,6 +7,8 @@
 //! meter scale. Every control drawn registers a hit region so the mouse can
 //! click, drag and scroll it.
 
+mod refusals;
+
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -127,12 +129,30 @@ pub struct StatusInfo {
 
 /// Draw the whole desk and rebuild the hit map.
 pub fn draw(frame: &mut Frame<'_>, desk: &mut Desk, shared: &SharedState, status: &StatusInfo) {
-    draw_desk(frame, desk, shared, status);
+    draw_with_refusals(frame, desk, shared, status, &[]);
+}
+
+/// Draw the whole desk with the instruments it refused listed under the
+/// strips, newest first, and rebuild the hit map.
+pub fn draw_with_refusals(
+    frame: &mut Frame<'_>,
+    desk: &mut Desk,
+    shared: &SharedState,
+    status: &StatusInfo,
+    refused: &[String],
+) {
+    draw_desk(frame, desk, shared, status, refused);
     // The layout may have changed under a held fader (resize, bank change).
     desk.release_drag_if_moved();
 }
 
-fn draw_desk(frame: &mut Frame<'_>, desk: &mut Desk, shared: &SharedState, status: &StatusInfo) {
+fn draw_desk(
+    frame: &mut Frame<'_>,
+    desk: &mut Desk,
+    shared: &SharedState,
+    status: &StatusInfo,
+    refused: &[String],
+) {
     desk.hits.clear();
     let area = frame.area();
     frame
@@ -146,7 +166,13 @@ fn draw_desk(frame: &mut Frame<'_>, desk: &mut Desk, shared: &SharedState, statu
 
     let header = Rect::new(area.x, area.y, area.width, 1);
     let footer = Rect::new(area.x, area.bottom() - 1, area.width, 1);
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
+    let refused_area = refusals::area(area, refused.len());
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height - 2 - refused_area.height,
+    );
 
     let master_area = Rect::new(
         body.right() - MASTER_WIDTH,
@@ -168,6 +194,7 @@ fn draw_desk(frame: &mut Frame<'_>, desk: &mut Desk, shared: &SharedState, statu
     draw_master(frame, master_area, desk, shared);
     draw_header(frame.buffer_mut(), header, status, shared, &mut desk.hits);
     draw_footer(frame.buffer_mut(), footer, desk, shared, visible);
+    refusals::draw(frame, refused_area, refused);
 
     if desk.help_open {
         draw_help(frame.buffer_mut(), area);

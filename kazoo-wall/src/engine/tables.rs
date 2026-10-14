@@ -2,7 +2,8 @@
 //! modules render in. Both are built on the control side and swapped in
 //! whole.
 //!
-//! Only modules with a cable path to an out, scope or readout are heard.
+//! Only modules with a cable path to an out, scope, readout or loop are
+//! heard.
 //! Unheard modules are omitted from the order. Their knob glides stop:
 //! when heard again they continue from the frozen value toward the target
 //! that look reports. Their state, including tails, envelope stages and
@@ -15,14 +16,14 @@
 //! the control side, so each starts empty, as a new cable does, and never
 //! replays what it held when its reader went unheard.
 //!
-//! Plugging a scope or readout into a module makes it heard. An unheard
+//! Plugging a scope, readout or loop into a module makes it heard. An unheard
 //! speaker does not consume its phrase feed: words wait there until it is
 //! heard. Speech requests are answered when synthesis finishes and the
 //! phrase is handed over, independently of playback. At most eight
 //! phrases wait for an unheard speaker; past them its words are refused
-//! with `not_allowed`, saying it reaches no out, scope or readout.
+//! with `not_allowed`, saying it reaches no out, scope, readout or loop.
 //!
-//! Slots and delay lines are numbered in `u32`: the wall holds as many as
+//! Slots are numbered in `u32`: the wall holds as many as
 //! the machine can render, and the tables are as long as the wall is.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -43,9 +44,6 @@ pub struct Route {
     pub port: u8,
     /// The cable's attenuverter, -1 to 1.
     pub amount: f32,
-    /// The cable's delay line: one per cable, kept for the cable's life so
-    /// its history survives every table swap.
-    pub line: u32,
     /// Who owns the line: a line that changes hands starts empty, as the
     /// new cable had nothing through it before it was plugged in.
     pub tag: u32,
@@ -55,21 +53,25 @@ pub struct Route {
     /// Whether the cable carries a gate: a change of delay then switches
     /// where the old and new signals agree instead of crossfading.
     pub gate: bool,
+    /// Frames over which the cable moves to `amount` when the engine first
+    /// sees this amount on it: 0 takes it at once. A cable new to its line
+    /// (see `tag`) with a glide above 0 starts silent and comes in over it.
+    pub glide: u32,
 }
 
 impl Route {
-    /// A cable from `slot`'s output `port` at `amount`, on delay line
-    /// `line` owned by `tag`, with no delay.
+    /// A cable from `slot`'s output `port` at `amount`, owned by `tag`,
+    /// with no delay.
     #[must_use]
-    pub const fn new(slot: u32, port: u8, amount: f32, line: u32, tag: u32) -> Self {
+    pub const fn new(slot: u32, port: u8, amount: f32, tag: u32) -> Self {
         Self {
             slot,
             port,
             amount,
-            line,
             tag,
             delay: 0,
             gate: false,
+            glide: 0,
         }
     }
 }
@@ -85,8 +87,6 @@ pub struct CableTable {
     /// By slot, then output: the cables reading it. Kept by [`Self::set`];
     /// as long as the highest slot a cable came from.
     feeds: Vec<[u32; MAX_OUTPUTS]>,
-    /// One past the highest delay line a cable plugged in has used.
-    lines: usize,
 }
 
 /// Make room in `table` for it to be `len` long, growing it by doubling;
@@ -105,7 +105,6 @@ impl CableTable {
             routes: Vec::new(),
             plugged: Vec::new(),
             feeds: Vec::new(),
-            lines: 0,
         }
     }
 
@@ -196,7 +195,6 @@ impl CableTable {
             {
                 *count = count.saturating_add(1);
             }
-            self.lines = self.lines.max(new.line as usize + 1);
         }
         true
     }
@@ -230,13 +228,6 @@ impl CableTable {
             .and_then(|jacks| jacks.get(jack))
             .copied()
             .flatten()
-    }
-
-    /// Delay lines the engine needs to carry this table: one past the
-    /// highest line a cable plugged in has used.
-    #[must_use]
-    pub const fn lines(&self) -> usize {
-        self.lines
     }
 }
 
@@ -486,11 +477,9 @@ mod tests {
     #[test]
     fn cable_tables_hold_only_sensible_routes() {
         let mut table = CableTable::new();
-        assert_eq!(table.lines(), 0);
-        let route = Route::new(2, 1, 3.0, 5, 9);
+        let route = Route::new(2, 1, 3.0, 9);
         assert!(table.set(4, 1, Some(route)));
         assert_eq!(table.route(4, 1).map(|r| r.amount), Some(1.0));
-        assert_eq!(table.lines(), 6);
         // Delays are held to the most a line holds.
         assert!(table.set(
             4,
@@ -527,10 +516,9 @@ mod tests {
     #[test]
     fn cable_tables_reach_any_slot_and_line() {
         let mut table = CableTable::new();
-        let far = Route::new(70_000, 0, 0.5, 100_000, 1);
+        let far = Route::new(70_000, 0, 0.5, 1);
         assert!(table.set(5_000, 0, Some(far)));
         assert_eq!(table.route(5_000, 0), Some(far));
-        assert_eq!(table.lines(), 100_001);
         assert_eq!(table.route(5_001, 0), None);
         // The source far past the table's slots is counted as feeding it.
         assert!(table.feeds(70_000, 0));
@@ -544,7 +532,7 @@ mod tests {
         let mut table = CableTable::with_slots(300).unwrap();
         assert_eq!(table.slots(), 300);
         for slot in 0..300 {
-            assert!(table.set(slot, 0, Some(Route::new(0, 0, 1.0, 0, 1))));
+            assert!(table.set(slot, 0, Some(Route::new(0, 0, 1.0, 1))));
         }
         assert_eq!(table.slots(), 300);
         assert!(CableTable::with_slots(usize::MAX).is_none());

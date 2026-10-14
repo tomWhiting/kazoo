@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cpal::traits::{DeviceTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, TryRecvError};
 
 #[cfg(test)]
@@ -11,8 +11,13 @@ use crate::io::device::{
 };
 use crate::{Error, Result};
 
-pub(crate) use super::audio_open::open_input_with_frames;
 pub use super::audio_open::{open_input, open_output};
+
+mod input_pick;
+pub(crate) use input_pick::resolve_named_input;
+pub use input_pick::{
+    InputNotices, InputPick, choose_input, explicit_input, input_for, input_for_names,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DeviceChoice {
@@ -53,7 +58,7 @@ impl OutputRequest {
         self.prepare_output_with_frames(crate::DEFAULT_BUFFER_SIZE)
     }
 
-    pub(crate) fn prepare_output_with_frames(&self, frames: usize) -> Result<PreparedOutput> {
+    pub fn prepare_output_with_frames(&self, frames: usize) -> Result<PreparedOutput> {
         self.prepare_output_using(|request| prepare(request, false, frames))
     }
 
@@ -73,7 +78,7 @@ impl OutputRequest {
         self.prepare_input_with_frames(crate::DEFAULT_BUFFER_SIZE)
     }
 
-    pub(crate) fn prepare_input_with_frames(&self, frames: usize) -> Result<PreparedInput> {
+    pub fn prepare_input_with_frames(&self, frames: usize) -> Result<PreparedInput> {
         let (device, chosen, context) = prepare(self, true, frames)?;
         Ok(PreparedInput {
             device,
@@ -127,6 +132,47 @@ impl<D> PreparedOutput<D> {
     }
 }
 
+impl PreparedOutput {
+    /// The input to open beside this output. An input device whose name
+    /// cannot be read is left out, and `notices` says so for the status line.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Device`] when the output or the input list cannot be read, or
+    /// when nothing was asked for and no nameable input device is left.
+    pub fn input_pick(&self, explicit: Option<&str>, notices: &InputNotices) -> Result<InputPick> {
+        let output = self
+            .device
+            .description()
+            .map_err(|error| Error::Device(format!("cannot name output device: {error}")))?;
+        if let Some(name) = explicit {
+            return input_for(Some(name), None, output.name(), &[]);
+        }
+        let host = cpal::default_host();
+        let default = host
+            .default_input_device()
+            .map(|device| {
+                device
+                    .description()
+                    .map(|description| description.name().to_owned())
+            })
+            .map(|result| result.map_err(|error| Error::Device(error.to_string())));
+        let inputs = host
+            .input_devices()
+            .map_err(|error| Error::Device(format!("cannot list inputs: {error}")))?
+            .map(|device| {
+                device
+                    .description()
+                    .map(|description| description.name().to_owned())
+                    .map_err(|error| Error::Device(error.to_string()))
+            })
+            .collect::<Vec<_>>();
+        input_for_names(None, default, output.name(), inputs, |message| {
+            notices.report(message);
+        })
+    }
+}
+
 impl<D> std::fmt::Debug for PreparedOutput<D> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -160,14 +206,47 @@ impl std::fmt::Debug for PreparedInput {
     }
 }
 
+/// What the latency a stream reports covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatencyCovers {
+    /// The device buffer only. cpal 0.17 times `CoreAudio` callbacks from
+    /// `kAudioDevicePropertyBufferFrameSize` and WASAPI callbacks from the
+    /// frames available, so the device's own latency, its safety offset, a
+    /// converter and any Bluetooth transport are missing: the truth is larger.
+    BufferOnly,
+    /// The delay the host reports for the stream (ALSA's `snd_pcm_delay`),
+    /// which is all the figure claims.
+    Host,
+}
+
+/// What `StreamHealth::latency_ms` covers on this platform.
+pub const LATENCY_COVERS: LatencyCovers = if cfg!(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "windows"
+)) {
+    LatencyCovers::BufferOnly
+} else {
+    LatencyCovers::Host
+};
+
 #[derive(Debug, Clone)]
 pub struct StreamHealth {
+    pub(super) latency: Arc<super::audio_latency::LatencyReport>,
     pub(super) fault: Arc<AtomicUsize>,
     pub(super) receiver: Receiver<cpal::StreamError>,
     pub(super) context: String,
 }
 
 impl StreamHealth {
+    /// The stream's latency as the host reports it on the last callback:
+    /// capture to callback for an input, callback to playback for an output.
+    /// `LATENCY_COVERS` says what that includes. `None` until a callback has
+    /// reported one.
+    #[must_use]
+    pub fn latency_ms(&self) -> Option<f64> {
+        self.latency.milliseconds()
+    }
     pub fn check(&self) -> Result<()> {
         self.check_with_handler(drop)
     }
@@ -203,6 +282,7 @@ pub struct OpenedOutput {
     pub(super) stream: cpal::Stream,
     pub(super) info: OutputInfo,
     pub(super) health: StreamHealth,
+    pub(super) fixed: bool,
 }
 
 impl std::fmt::Debug for OpenedOutput {
@@ -215,6 +295,12 @@ impl std::fmt::Debug for OpenedOutput {
 }
 
 impl OpenedOutput {
+    /// Whether the fixed buffer configuration was accepted by the device.
+    #[must_use]
+    pub const fn fixed_buffer(&self) -> bool {
+        self.fixed
+    }
+
     #[must_use]
     pub const fn rate(&self) -> u32 {
         self.info.rate

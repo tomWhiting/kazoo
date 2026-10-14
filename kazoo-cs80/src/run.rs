@@ -155,10 +155,13 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Cleanup: always restore the terminal, even if the loop failed.
     // -----------------------------------------------------------------------
 
+    let restored = tui.leave();
     drop(stream);
     drop(channels);
     drop(hub);
-    let restored = tui.leave();
+    if let Some(report) = kazoo_core::host::link::exit_report() {
+        eprintln!("{report}");
+    }
     match (result, restored) {
         (Ok(()), restored) => restored.map_err(Into::into),
         (Err(error), Ok(())) => Err(error),

@@ -591,6 +591,7 @@ mod tests {
             messages_dropped: 0,
             connections: 0,
             last_refusal: None,
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
         }
     }
 
@@ -639,6 +640,7 @@ mod tests {
     fn refusal_is_shown_while_standalone() {
         let link = LinkStatus {
             last_refusal: Some("desk is full".to_owned()),
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
             ..status()
         };
         assert!(text(&link_spans(&link)).contains("standalone: desk is full"));

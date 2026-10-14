@@ -1,6 +1,7 @@
 mod shutdown;
 mod streams;
 mod transport;
+mod voice;
 mod wake;
 
 use super::*;
@@ -199,6 +200,8 @@ fn hub_messages_reach_the_callback_and_a_closing_hub_is_noticed() {
             .last_refusal
             .is_some_and(|why| why.contains("closed"))
     );
+    // Coming down is not the desk refusing the instrument.
+    assert_eq!(link.status().desk_refusal(), None);
     drop(link);
     std::fs::remove_file(&path).unwrap();
 }
@@ -479,6 +482,8 @@ fn a_refusal_is_reported_and_retries_back_off() {
             .is_some_and(|why| why.contains("every strip is taken"))
     });
     assert!(!link.is_connected());
+    // The desk's own words, without the link's framing around them.
+    assert_eq!(link.status().desk_refusal(), Some("every strip is taken"));
 
     // The next try waits two seconds, not the usual one.
     listener.set_nonblocking(true).unwrap();

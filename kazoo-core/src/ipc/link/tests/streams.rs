@@ -29,6 +29,7 @@ impl Rig {
         let (callback, callback_requests) = HeapRb::new(REQUEST_BACKLOG).split();
         audio.requests = callback;
         let worker = LinkWorker {
+            voice: super::super::voice::rings().2,
             config,
             state: Arc::clone(&link.state),
             wire: wire_rx,

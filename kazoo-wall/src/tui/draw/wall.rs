@@ -2,6 +2,7 @@
 //! black dials and its jacks in the colours of their cables.
 
 use std::collections::{BTreeMap, HashSet};
+use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -17,6 +18,7 @@ use super::super::theme::{
     AMBER, BRASS, CREAM, CREAM_FOCUS, INK, INK_DIM, JACK_EMPTY, KNOB, POINTER, RACK, RED, TEXT,
     TEXT_DIM, bold, cable_colour, jack_glyph, knob_pointer, plain,
 };
+use super::loops::loop_line_at;
 use super::{fill, put, put_centred, put_right, text_width, truncate};
 
 /// The colour a jack takes from its cables: the lowest-numbered cable in
@@ -42,7 +44,7 @@ fn jack_cables(cables: &[CableRecord]) -> (JackCables, JackCables) {
 /// The wall on its rack, scrolled to keep the selection in view. The
 /// rack's top and bottom lines are rails, where the scroll hints go; the
 /// panels hang between them.
-pub fn wall(buf: &mut Buffer, rack: Rect, app: &mut App) {
+pub fn wall(buf: &mut Buffer, rack: Rect, app: &mut App, now: Instant) {
     if rack.height < 3 || rack.width == 0 {
         return;
     }
@@ -68,6 +70,10 @@ pub fn wall(buf: &mut Buffer, rack: Rect, app: &mut App) {
         return;
     }
     let grid = layout::grid(area.width, &snapshot.modules);
+    let tape_line = app
+        .selected_index()
+        .and_then(|index| snapshot.modules.get(index))
+        .is_some_and(|module| module.tape.is_some());
     app.columns = grid.columns;
     app.scroll = match app.selected_index() {
         Some(index) => {
@@ -77,7 +83,7 @@ pub fn wall(buf: &mut Buffer, rack: Rect, app: &mut App) {
                 area.height,
                 grid.height,
                 &placed,
-                placed.knob_line(app.knob_index()),
+                placed.knob_line(app.knob_index()) + u32::from(tape_line),
             )
         }
         None => app
@@ -121,6 +127,7 @@ pub fn wall(buf: &mut Buffer, rack: Rect, app: &mut App) {
             .any(|fault| fault.starts_with(&format!("{} ", module.id)));
         let context = Context {
             app,
+            beat: app.beat_at(now),
             view: &view,
             marks: &marks,
         };
@@ -158,6 +165,7 @@ impl Sheet {
 /// What every panel is drawn with.
 struct Context<'a> {
     app: &'a App,
+    beat: f64,
     view: &'a Sheet,
     marks: &'a Marks<'a>,
 }
@@ -271,6 +279,23 @@ fn panel(
         top_edge(buf, &panel, y);
     }
     line += 1;
+
+    if let Some(tape) = &module.tape {
+        if let Some(y) = view.row(line) {
+            fill(buf, panel.limit, y, plain(INK, CREAM));
+            sides(buf, &panel, y);
+            let tempo = context
+                .app
+                .snapshot()
+                .map_or(0.0, |snapshot| snapshot.tempo);
+            let mut x = x0 + 1;
+            let row = Rect::new(x, y, panel.inner(), 1);
+            for span in loop_line_at(tape, tempo, panel.inner(), context.beat) {
+                x = put(buf, row, x, y, &span.content, span.style);
+            }
+        }
+        line += 1;
+    }
 
     let label_width = usize::from(panel.inner().saturating_sub(18).clamp(4, 10));
     for (index, knob) in module.knobs.iter().enumerate() {

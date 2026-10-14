@@ -1472,9 +1472,11 @@ dependencies = [
  "kazoo-mcp",
  "kazoo-mini",
  "kazoo-mix",
+ "kazoo-mouth",
  "kazoo-play",
  "kazoo-prophet",
  "kazoo-string",
+ "kazoo-tree",
  "kazoo-tui",
  "kazoo-wall",
  "serde",
@@ -1629,6 +1631,7 @@ name = "kazoo-mcp"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
+ "kazoo-core",
  "kazoo-host",
  "kazoo-wall",
  "rmcp",
@@ -1656,6 +1659,7 @@ dependencies = [
 name = "kazoo-mix"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "color-eyre",
  "cpal",
  "criterion",
@@ -1666,6 +1670,25 @@ dependencies = [
  "ratatui",
  "ringbuf",
  "rustix",
+ "tempfile",
+]
+
+[[package]]
+name = "kazoo-mouth"
+version = "0.1.0"
+dependencies = [
+ "assert_no_alloc",
+ "color-eyre",
+ "crossbeam-channel",
+ "crossterm",
+ "hound",
+ "kazoo-core",
+ "kazoo-fx",
+ "kazoo-host",
+ "ratatui",
+ "ringbuf",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1731,6 +1754,23 @@ dependencies = [
  "kazoo-core",
  "kazoo-host",
  "ratatui",
+]
+
+[[package]]
+name = "kazoo-tree"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossterm",
+ "kazoo-wall",
+ "libm",
+ "ratatui",
+ "rustix",
+ "serde_json",
+ "signal-hook",
+ "tempfile",
+ "toml",
+ "unicode-width",
 ]
 
 [[package]]

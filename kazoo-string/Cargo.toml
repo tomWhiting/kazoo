@@ -3,6 +3,8 @@ name = "kazoo-string"
 version = "0.1.0"
 edition = "2024"
 description = "Plucked-string physical-model synth: Karplus-Strong waveguides with stiffness, pick position and a wooden body"
+license = "AGPL-3.0-or-later"
+publish = false
 
 [lints]
 workspace = true

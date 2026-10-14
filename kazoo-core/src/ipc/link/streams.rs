@@ -254,7 +254,8 @@ impl LinkWorker {
             }
             Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
                 self.set_refusal(Some(format!(
-                    "the desk refused {}: {err}",
+                    "{}{}: {err}",
+                    super::DESK_REFUSED,
                     self.config.name
                 )));
                 self.refusal_delay = (self.refusal_delay * 2).min(MAX_RETRY_INTERVAL);
@@ -321,7 +322,7 @@ pub(super) fn stream_update(request: &Request) -> Option<ToAudio> {
             stream,
             channels: None,
         }),
-        Request::Transport { .. } | Request::Note(_) => None,
+        Request::Transport { .. } | Request::Note(_) | Request::VoiceFollow(_) => None,
     }
 }
 

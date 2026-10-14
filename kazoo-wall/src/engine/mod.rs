@@ -2,7 +2,7 @@
 //!
 //! [`engine`] returns two halves. The [`Engine`] moves into the audio
 //! callback (or the headless render loop): it owns the module slots and
-//! their port buffers (its [`Room`]), a delay line per cable, the cable and
+//! their port buffers and delayed jacks (its [`Room`]), the cable and
 //! order tables, the master chain and the wall's clock, and renders in
 //! sub-blocks of [`SUB_BLOCK`] frames. It never allocates, frees, locks or
 //! does I/O.
@@ -14,15 +14,9 @@
 //! through atomics ([`Shared`], and the room's knob cells), and what the
 //! scopes and readouts measured as [`ProbeFrame`]s over a ring of its own.
 //!
-//! There is no fixed number of slots or lines. The engine starts with room
-//! for [`INITIAL_SLOTS`] modules and [`INITIAL_LINES`] cables; when a
-//! command needs more, [`EngineControl::send`] first builds a larger room
-//! or line table on the control side (twice the size, or what is needed if
-//! more) and sends it ahead of the command. Slots and lines live in pages
-//! ([`room::SLOTS_PER_PAGE`], [`lines::LINES_PER_PAGE`]); the engine moves
-//! its pages into the new table, one pointer each, and retires the old
-//! table, so growing costs the audio thread a few hundred pointer moves at
-//! most, and never a copy of anything a slot or line holds.
+//! The engine starts with room for [`INITIAL_SLOTS`] modules. The control
+//! side builds larger rooms ahead of commands needing more slots. Delay
+//! lines live at destination jacks in those pages and move with them.
 //!
 //! The engine tolerates any order of commands: a cable or order entry naming
 //! an empty slot reads silence or is skipped, so the control side never needs
@@ -30,6 +24,10 @@
 //! brackets the swap with [`Command::Hush`] and [`Command::Unhush`]: the
 //! master fades out, the swap is applied in silence, and it fades back in.
 
+mod batch;
+mod line_commands;
+mod moments;
+pub use moments::TimedSwap;
 pub mod lines;
 pub mod master;
 pub mod room;
@@ -49,17 +47,14 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 use crate::catalogue::{Kind, KnobSpec};
 use crate::dsp::measure::Capture;
 use crate::dsp::{Block, Io, Module, Sweep, Tick};
-use crate::{MAX_INPUTS, MAX_KNOBS, MAX_OUTPUTS, SUB_BLOCK};
-pub use lines::MoreLines;
+use crate::{MAX_INPUTS, MAX_JACKS, MAX_KNOBS, MAX_OUTPUTS, SUB_BLOCK};
+pub use lines::Line;
 pub use master::CEILING;
 pub use room::{CostCells, KnobCells, Room};
 pub use tables::{CableTable, MAX_CABLE_DELAY, Order, Route, processing_order};
 
 /// Module slots a new engine has room for before it first grows.
 pub const INITIAL_SLOTS: usize = 64;
-
-/// Delay lines (one per cable) a new engine has before it first grows.
-pub const INITIAL_LINES: usize = 256;
 
 /// Seconds over which the render load is averaged (see
 /// [`Shared::render_load`]): long enough that one slow block (a room
@@ -77,9 +72,9 @@ pub const COST_CLAMP: f32 = 4.0;
 /// Commands waiting for the engine.
 const COMMAND_BACKLOG: usize = 512;
 
-/// Items waiting to be freed: every command retires at most one (see
+/// Items waiting to be freed: removal retires a module and its jack lines (see
 /// [`EngineControl::flush`]).
-const RETIRE_BACKLOG: usize = COMMAND_BACKLOG * 2;
+const RETIRE_BACKLOG: usize = COMMAND_BACKLOG * (MAX_JACKS + 1) * 2;
 
 /// Fault reports waiting for the control side.
 const FAULT_BACKLOG: usize = 64;
@@ -127,17 +122,28 @@ pub enum Command {
         slot: usize,
     },
     /// Swap in a new cable table; the old one is retired.
-    /// [`EngineControl::send`] makes sure there is a line for every cable
-    /// in it first.
     Cables(Box<CableTable>),
     /// Swap in a new render order; the old one is retired.
     Order(Box<Order>),
     /// Move every slot into a larger room; the old room is retired, empty.
     /// Sent by [`EngineControl`] as it needs more slots.
     Room(Box<Room>),
-    /// Move every delay line into a larger table; the old table is
-    /// retired, empty. Sent by [`EngineControl`] as it needs more lines.
-    Lines(Box<MoreLines>),
+    /// Place a delay line at a destination jack, retiring any prior line.
+    Line {
+        /// Destination slot; room is reserved before sending.
+        slot: usize,
+        /// Destination jack.
+        jack: usize,
+        /// History allocated on the control side.
+        line: Box<Line>,
+    },
+    /// Take a jack's delay line away and retire it.
+    Unline {
+        /// Destination slot.
+        slot: usize,
+        /// Destination jack.
+        jack: usize,
+    },
     /// Glide a knob to `target` over `glide_frames` frames.
     Knob {
         /// Slot.
@@ -152,6 +158,15 @@ pub enum Command {
     /// Set the wall's own tempo. While following a playing desk, the desk's
     /// next change overrides it.
     Tempo(f64),
+    /// Move the wall's own tempo in a straight line to `bpm` over `frames`
+    /// frames, a sub-block at a time; 0 frames is `Tempo(bpm)`. A `Tempo`
+    /// stops it where it is, and so does the desk setting the tempo.
+    TempoGlide {
+        /// Where it ends up, in beats per minute (held to the wall's range).
+        bpm: f64,
+        /// How long it takes.
+        frames: u32,
+    },
     /// Fade the master out over [`SWAP_FADE_SECONDS`], and hold every
     /// command after this one until it is silent: the commands between a
     /// `Hush` and its [`Command::Unhush`] (a whole wall taken out and
@@ -159,6 +174,8 @@ pub enum Command {
     Hush,
     /// Fade the master back in over [`SWAP_FADE_SECONDS`].
     Unhush,
+    /// A complete replacement wall held for its absolute bar boundary.
+    Swap(Box<TimedSwap>),
 }
 
 /// Something the engine hands back to be freed off the audio thread.
@@ -172,9 +189,12 @@ pub enum Retired {
     Order(Box<Order>),
     /// A room outgrown (its modules moved on), or one too small to use.
     Room(Box<Room>),
-    /// A line table outgrown (its lines moved on), or one too small to
-    /// use.
-    Lines(Box<MoreLines>),
+    /// A delay line taken away or replaced.
+    Line(Box<Line>),
+    /// A landed or superseded replacement, freed on the control thread.
+    Swap(Box<TimedSwap>),
+    /// An edit superseded with its pending replacement.
+    Command(Command),
 }
 
 /// What a scope or readout measured, from engine slot `slot`.
@@ -229,6 +249,7 @@ pub struct Shared {
     syncs_lost: AtomicU64,
     ignored: AtomicU64,
     unhushed: AtomicU64,
+    origin: AtomicU64,
 }
 
 impl Shared {
@@ -255,6 +276,7 @@ impl Shared {
             syncs_lost: AtomicU64::new(0),
             ignored: AtomicU64::new(0),
             unhushed: AtomicU64::new(0),
+            origin: AtomicU64::new(0.0_f64.to_bits()),
         }
     }
 
@@ -268,6 +290,14 @@ impl Shared {
     #[must_use]
     pub fn beat(&self) -> f64 {
         f64::from_bits(self.beat.load(Ordering::Relaxed))
+    }
+
+    /// The song position, in beats, at which the wall now playing started
+    /// (see [`crate::dsp::Tick::beat`]): 0 until a wall replaces the first,
+    /// then the bar its go landed on.
+    #[must_use]
+    pub fn origin(&self) -> f64 {
+        f64::from_bits(self.origin.load(Ordering::Relaxed))
     }
 
     /// Whether the wall is following a playing desk's beat.
@@ -311,7 +341,7 @@ impl Shared {
         self.slots.load(Ordering::Acquire)
     }
 
-    /// Delay lines (one per cable) the engine holds now.
+    /// Delay lines currently placed at destination jacks.
     #[must_use]
     pub fn lines(&self) -> usize {
         self.lines.load(Ordering::Acquire)
@@ -427,6 +457,10 @@ pub struct EngineConfig {
     pub bpm: f64,
     /// Starting song position, so a rebuilt engine carries on the beat.
     pub beat: f64,
+    /// The song position the wall playing started at (see
+    /// [`Shared::origin`]), so a rebuilt engine's modules carry on from it:
+    /// 0 for an engine that starts the wall.
+    pub origin: f64,
     /// Mono samples the listen ring holds.
     pub listen_frames: usize,
     /// Stereo frames the record ring holds.
@@ -446,6 +480,7 @@ impl EngineConfig {
             sample_rate,
             bpm,
             beat,
+            origin: 0.0,
             listen_frames: sample_rate.max(1) as usize,
             record_frames: sample_rate.max(1) as usize * RECORD_SECONDS,
             audible: true,
@@ -538,6 +573,8 @@ pub struct Engine {
     order: Box<Order>,
     timed: usize,
     commands: HeapCons<Command>,
+    pending_swap: Option<Box<TimedSwap>>,
+    after_swap: VecDeque<Command>,
     /// Cable tables taken in (see [`ProbeFrame::cables`]).
     tables: u64,
     retired: HeapProd<Retired>,
@@ -551,13 +588,21 @@ pub struct Engine {
     hub: Option<HubLinkAudio>,
     follower: TransportFollower,
     bpm: f64,
+    /// The wall tempo the glide is moving to.
+    tempo_aim: f64,
+    /// BPM moved per frame while the wall tempo glides.
+    tempo_step: f64,
+    /// Frames left until the wall tempo reaches its aim.
+    tempo_left: u32,
     beat: f64,
+    origin: f64,
+    wall_beat: Option<f64>,
     following_desk: bool,
     rendered: u64,
     master: master::Master,
-    lines: lines::Lines,
     carry: [Block; 2],
     carry_used: usize,
+    carry_len: usize,
     stereo: Box<[f32]>,
     /// Gain on what leaves the wall, fading towards 1 while it is heard and
     /// 0 while it is not; `None` until the first render, which starts it
@@ -583,10 +628,11 @@ impl std::fmt::Debug for Engine {
             .field("sample_rate", &self.sample_rate)
             .field("bpm", &self.bpm)
             .field("beat", &self.beat)
+            .field("origin", &self.origin)
             .field("following_desk", &self.following_desk)
             .field("rendered", &self.rendered)
             .field("slots", &self.room.len())
-            .field("lines", &self.lines.len())
+            .field("lines", &self.shared.lines())
             .finish_non_exhaustive()
     }
 }
@@ -596,6 +642,10 @@ pub struct EngineControl {
     sample_rate: u32,
     commands: HeapProd<Command>,
     backlog: VecDeque<Command>,
+    swap_commands: Option<VecDeque<Command>>,
+    swap_serial: u64,
+    swap_beat: f64,
+    batch: Option<batch::CommandBatch>,
     retired: HeapCons<Retired>,
     faults: HeapCons<Fault>,
     listen: Option<HeapCons<f32>>,
@@ -604,8 +654,6 @@ pub struct EngineControl {
     shared: Arc<Shared>,
     /// Slots in the largest room sent to the engine (or its first).
     slots: usize,
-    /// Lines in the largest line table sent to the engine (or its first).
-    lines: usize,
     /// The knob cells of every page sent to the engine, by page number.
     /// A page's cells never move, so they read the same before and after
     /// the engine puts the page in place (NaN until it publishes to them).
@@ -618,7 +666,7 @@ impl std::fmt::Debug for EngineControl {
         f.debug_struct("EngineControl")
             .field("sample_rate", &self.sample_rate)
             .field("slots", &self.slots)
-            .field("lines", &self.lines)
+            .field("lines", &self.shared.lines())
             .field("backlog", &self.backlog.len())
             .field("listen_taken", &self.listen.is_none())
             .field("record_taken", &self.record.is_none())
@@ -631,12 +679,25 @@ impl std::fmt::Debug for EngineControl {
 /// half, when the wall is joining the desk.
 #[must_use]
 pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, EngineControl) {
+    // Catalogue construction allocates; finish it before any callback can use a kind.
+    for skipped in crate::catalogue::registry().skipped() {
+        eprintln!("kazoo-wall: catalogue left out {skipped}");
+    }
     let bpm = clamp_bpm(config.bpm);
     let beat = if config.beat.is_finite() {
         config.beat
     } else {
         0.0
     };
+    // The wall carries on from its origin only when it has one: an engine
+    // that starts the wall reads the song position itself, as before
+    // origins were kept.
+    let origin = if config.origin.is_finite() {
+        config.origin
+    } else {
+        0.0
+    };
+    let wall_beat = (origin.abs() > 0.0).then_some(beat - origin);
     let sample_rate = config.sample_rate.max(8_000);
     let (command_tx, command_rx) = HeapRb::<Command>::new(COMMAND_BACKLOG).split();
     let (retired_tx, retired_rx) = HeapRb::<Retired>::new(RETIRE_BACKLOG).split();
@@ -658,14 +719,8 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
     let costs = room.costs().into_iter().map(|(_, cells)| cells).collect();
     // 8 kHz to a few hundred kHz: exact in f32.
     let rate = sample_rate as f32;
-    let lines = lines::Lines::new(rate, INITIAL_LINES);
-    let shared = Arc::new(Shared::new(
-        bpm,
-        beat,
-        config.audible,
-        room.len(),
-        lines.len(),
-    ));
+    let shared = Arc::new(Shared::new(bpm, beat, config.audible, room.len(), 0));
+    shared.origin.store(origin.to_bits(), Ordering::Relaxed);
     let engine = Engine {
         sample_rate: rate,
         sweeps: [Sweep::REST; MAX_KNOBS],
@@ -678,6 +733,8 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         order: Box::new(Order::default()),
         timed: 0,
         commands: command_rx,
+        pending_swap: None,
+        after_swap: VecDeque::with_capacity(COMMAND_BACKLOG),
         tables: 0,
         retired: retired_tx,
         faults: fault_tx,
@@ -688,12 +745,18 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         hub,
         follower: TransportFollower::new(sample_rate),
         bpm,
+        tempo_aim: bpm,
+        tempo_step: 0.0,
+        tempo_left: 0,
         beat,
+        origin,
+        wall_beat,
         following_desk: false,
         rendered: 0,
         master: master::Master::new(rate),
         carry: [[0.0; SUB_BLOCK]; 2],
         carry_used: SUB_BLOCK,
+        carry_len: SUB_BLOCK,
         stereo: vec![0.0; MAX_CHUNK_FRAMES * 2].into_boxed_slice(),
         monitor_gain: None,
         monitor_step: 1.0 / (rate * MONITOR_FADE_SECONDS),
@@ -702,19 +765,21 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         hush_step: 1.0 / (rate * SWAP_FADE_SECONDS),
         load: 0.0,
         room,
-        lines,
     };
     let control = EngineControl {
         sample_rate,
         commands: command_tx,
         backlog: VecDeque::new(),
+        swap_commands: None,
+        swap_serial: 0,
+        swap_beat: 0.0,
+        batch: None,
         retired: retired_rx,
         faults: fault_rx,
         listen: Some(listen_rx),
         record: Some(record_rx),
         probes: Some(probe_rx),
         slots: shared.slots(),
-        lines: shared.lines(),
         shared,
         knobs,
         costs,
@@ -806,7 +871,7 @@ impl Engine {
         for chunk in data.chunks_mut(MAX_CHUNK_FRAMES * channels) {
             let frames = chunk.len() / channels;
             for frame in 0..frames {
-                if self.carry_used == SUB_BLOCK {
+                if self.carry_used == self.carry_len {
                     self.render_sub_block();
                     self.carry_used = 0;
                 }
@@ -875,53 +940,73 @@ impl Engine {
     }
 
     fn drain_commands(&mut self) {
-        while !self.holding() {
+        while !self.holding() && self.after_swap.len() < COMMAND_BACKLOG {
             let Some(command) = self.commands.try_pop() else {
                 return;
             };
-            match command {
-                Command::Insert {
-                    slot,
-                    tag,
-                    kind,
-                    module,
-                    knobs,
-                } => self.insert(slot, tag, kind, module, knobs),
-                Command::Remove { slot } => self.remove(slot),
-                Command::Cables(table) => {
-                    let old = std::mem::replace(&mut self.cables, table);
-                    self.rewire(&old);
-                    self.tables = self.tables.wrapping_add(1);
-                    self.retire(Retired::Cables(old));
-                }
-                Command::Order(order) => {
-                    let old = std::mem::replace(&mut self.order, order);
-                    self.retire(Retired::Order(old));
-                }
-                Command::Room(room) => self.grow_room(room),
-                Command::Lines(mut more) => {
-                    if self.lines.grow(&mut more) {
-                        self.shared.lines.store(self.lines.len(), Ordering::Release);
-                    } else {
-                        self.shared.ignored.fetch_add(1, Ordering::Relaxed);
-                    }
-                    self.retire(Retired::Lines(more));
-                }
-                Command::Knob {
-                    slot,
-                    knob,
-                    target,
-                    glide_frames,
-                } => self.knob(slot, knob, target, glide_frames),
-                Command::Tempo(bpm) => {
+            if self.pending_swap.is_some()
+                && !matches!(command, Command::Swap(_) | Command::Room(_))
+            {
+                self.after_swap.push_back(command);
+            } else {
+                self.apply_command(command);
+            }
+        }
+    }
+
+    fn apply_command(&mut self, command: Command) {
+        match command {
+            Command::Insert {
+                slot,
+                tag,
+                kind,
+                module,
+                knobs,
+            } => self.insert(slot, tag, kind, module, knobs),
+            Command::Remove { slot } => self.remove(slot),
+            Command::Cables(table) => {
+                let old = std::mem::replace(&mut self.cables, table);
+                self.rewire(&old);
+                self.tables = self.tables.wrapping_add(1);
+                self.retire(Retired::Cables(old));
+            }
+            Command::Order(order) => {
+                let old = std::mem::replace(&mut self.order, order);
+                self.retire(Retired::Order(old));
+            }
+            Command::Room(room) => self.grow_room(room),
+            Command::Line { slot, jack, line } => self.place_line(slot, jack, line),
+            Command::Unline { slot, jack } => self.unline(slot, jack),
+            Command::Knob {
+                slot,
+                knob,
+                target,
+                glide_frames,
+            } => self.knob(slot, knob, target, glide_frames),
+            Command::Tempo(bpm) => {
+                self.bpm = clamp_bpm(bpm);
+                self.tempo_left = 0;
+                self.shared.bpm.store(self.bpm.to_bits(), Ordering::Relaxed);
+            }
+            Command::TempoGlide { bpm, .. } if !bpm.is_finite() => {
+                self.shared.ignored.fetch_add(1, Ordering::Relaxed);
+            }
+            Command::TempoGlide { bpm, frames } => {
+                if frames == 0 {
                     self.bpm = clamp_bpm(bpm);
+                    self.tempo_left = 0;
                     self.shared.bpm.store(self.bpm.to_bits(), Ordering::Relaxed);
+                } else {
+                    self.tempo_aim = clamp_bpm(bpm);
+                    self.tempo_step = (self.tempo_aim - self.bpm) / f64::from(frames);
+                    self.tempo_left = frames;
                 }
-                Command::Hush => self.hushed = true,
-                Command::Unhush => {
-                    self.hushed = false;
-                    self.shared.unhushed.fetch_add(1, Ordering::Release);
-                }
+            }
+            Command::Swap(swap) => self.queue_swap(swap),
+            Command::Hush => self.hushed = true,
+            Command::Unhush => {
+                self.hushed = false;
+                self.shared.unhushed.fetch_add(1, Ordering::Release);
             }
         }
     }
@@ -1015,6 +1100,9 @@ impl Engine {
         if let Some(old) = old {
             self.retire(Retired::Module(old));
         }
+        for jack in 0..MAX_JACKS {
+            self.unline(slot, jack);
+        }
     }
 
     /// Move into a larger `room`, and retire the one outgrown (or `room`,
@@ -1094,7 +1182,7 @@ impl Engine {
 
     /// Follow the desk: a playing desk sets the tempo and the beat; a
     /// stopped or missing desk leaves the wall on its own beat.
-    fn follow_desk(&mut self) {
+    fn follow_desk(&mut self) -> bool {
         let connected = self.hub.as_ref().is_some_and(HubLinkAudio::is_connected);
         let change = if self.hub.is_some() {
             self.follower.due(self.rendered)
@@ -1104,18 +1192,37 @@ impl Engine {
         let (bpm, beat, following) =
             follow(self.bpm, self.beat, self.following_desk, change, connected);
         self.bpm = bpm;
+        if let Some(wall_beat) = self.wall_beat.as_mut() {
+            *wall_beat += beat - self.beat;
+        }
         self.beat = beat;
         self.following_desk = following;
+        change.is_some()
     }
 
     fn render_sub_block(&mut self) {
-        if self.hushed {
+        if self.hushed || self.pending_swap.is_some() {
             // The commands a hush held go as soon as it is silent, not at
             // the next callback.
             self.drain_commands();
         }
-        self.follow_desk();
-        let tick = Tick::new(self.sample_rate, self.bpm, self.beat).at_frame(self.rendered);
+        let desk_changed = self.follow_desk();
+        (self.bpm, self.tempo_left) = glide_tempo(
+            self.bpm,
+            self.tempo_aim,
+            self.tempo_step,
+            self.tempo_left,
+            self.following_desk || desk_changed,
+        );
+        self.land_swap(desk_changed);
+        let song = Tick::new(self.sample_rate, self.bpm, self.beat);
+        self.carry_len = self.frames_to_swap(song.beat_step);
+        let tick = Tick::new(
+            self.sample_rate,
+            self.bpm,
+            self.wall_beat.unwrap_or(self.beat),
+        )
+        .at_frame(self.rendered);
         let len = self.order.slots().len();
         self.timed = self.timed.checked_rem(len).unwrap_or(0);
         for index in 0..len {
@@ -1152,11 +1259,14 @@ impl Engine {
         // After the master, so the fade is what the meters, the listening
         // and a recording hear too.
         self.apply_hush(&mut left, &mut right);
-        self.publish(&left, &right);
+        self.fade_to_swap(&mut left, &mut right, song.beat_step);
+        self.publish(&left, &right, self.carry_len);
         self.carry = [left, right];
-        self.beat = tick.beat_at(SUB_BLOCK);
-        // SUB_BLOCK is 32: lossless.
-        self.rendered = self.rendered.wrapping_add(SUB_BLOCK as u64);
+        self.beat = song.beat_at(self.carry_len);
+        if let Some(wall_beat) = self.wall_beat.as_mut() {
+            *wall_beat = tick.beat_at(self.carry_len);
+        }
+        self.rendered = self.rendered.wrapping_add(self.carry_len as u64);
         self.shared
             .beat
             .store(self.beat.to_bits(), Ordering::Relaxed);
@@ -1189,14 +1299,29 @@ impl Engine {
             } else {
                 &mut self.knob_cv[jack - MAX_INPUTS]
             };
+            let mut line = self
+                .room
+                .page_mut(slot)
+                .and_then(|(page, at)| page.lines[at * MAX_JACKS + jack].take());
+            let mut tap = self
+                .room
+                .page(slot)
+                .map_or(lines::Tap::EMPTY, |(page, at)| {
+                    page.taps[at * MAX_JACKS + jack]
+                });
             gather(
                 &self.cables,
                 &self.room,
-                &mut self.lines,
+                line.as_deref_mut(),
+                &mut tap,
                 slot,
                 jack,
                 buffer,
             );
+            if let Some((page, at)) = self.room.page_mut(slot) {
+                page.lines[at * MAX_JACKS + jack] = line;
+                page.taps[at * MAX_JACKS + jack] = tap;
+            }
             pending &= pending - 1;
         }
         let connected = std::array::from_fn(|input| mask & (1 << input) != 0);
@@ -1258,11 +1383,11 @@ impl Engine {
         }
     }
 
-    fn publish(&mut self, left: &Block, right: &Block) {
+    fn publish(&mut self, left: &Block, right: &Block, frames: usize) {
         let mut peak_left = 0.0_f32;
         let mut peak_right = 0.0_f32;
         let mut mono = [0.0; SUB_BLOCK];
-        for frame in 0..SUB_BLOCK {
+        for frame in 0..frames {
             peak_left = peak_left.max(left[frame].abs());
             peak_right = peak_right.max(right[frame].abs());
             mono[frame] = 0.5 * (left[frame] + right[frame]);
@@ -1274,27 +1399,28 @@ impl Engine {
         self.shared
             .peak_right
             .fetch_max(peak_right.to_bits(), Ordering::Relaxed);
-        let pushed = self.listen.push_slice(&mono);
-        if pushed < SUB_BLOCK {
+        let pushed = self.listen.push_slice(&mono[..frames]);
+        if pushed < frames {
             // SUB_BLOCK is 32: lossless.
             self.shared
                 .listen_dropped
-                .fetch_add((SUB_BLOCK - pushed) as u64, Ordering::Relaxed);
+                .fetch_add((frames - pushed) as u64, Ordering::Relaxed);
         }
         if self.shared.recording() {
-            self.push_record(left, right);
+            self.push_record(left, right, frames);
         }
     }
 
     /// Push the sub-block's master to the record ring, stereo interleaved.
     /// It goes whole or not at all, so the ring never holds half a frame
     /// and the channels never swap.
-    fn push_record(&mut self, left: &Block, right: &Block) {
+    fn push_record(&mut self, left: &Block, right: &Block, len: usize) {
         let mut frames = [0.0; SUB_BLOCK * 2];
         for (frame, pair) in frames.chunks_exact_mut(2).enumerate() {
             pair[0] = left[frame];
             pair[1] = right[frame];
         }
+        let frames = &frames[..len * 2];
         if self.record.vacant_len() < frames.len() {
             // SUB_BLOCK * 2 is 64: lossless.
             self.shared
@@ -1302,8 +1428,26 @@ impl Engine {
                 .fetch_add(frames.len() as u64, Ordering::Relaxed);
             return;
         }
-        self.record.push_slice(&frames);
+        self.record.push_slice(frames);
     }
+}
+
+/// The tempo after one sub-block of a glide: `(bpm, frames left)`. A desk
+/// setting the tempo (`desk`) ends the glide where the tempo is.
+#[must_use]
+pub fn glide_tempo(bpm: f64, aim: f64, step: f64, left: u32, desk: bool) -> (f64, u32) {
+    if desk || left == 0 {
+        return (bpm, 0);
+    }
+    // SUB_BLOCK is 32: lossless.
+    let frames = left.min(SUB_BLOCK as u32);
+    let left = left - frames;
+    let bpm = if left == 0 {
+        aim
+    } else {
+        clamp_bpm(step.mul_add(f64::from(frames), bpm))
+    };
+    (bpm, left)
 }
 
 /// The wall's clock after a desk transport `change` (if one fell due), given
@@ -1332,12 +1476,13 @@ pub const fn follow(
 }
 
 /// Fill `buffer` with what arrives at `slot`'s `jack`: the cable's source,
-/// through its delay line, scaled by its amount; silence when unplugged.
+/// through its line when present, scaled by its amount; silence when unplugged.
 /// Returns whether a cable is in.
 fn gather(
     cables: &CableTable,
     room: &Room,
-    lines: &mut lines::Lines,
+    line: Option<&mut Line>,
+    tap: &mut lines::Tap,
     slot: usize,
     jack: usize,
     buffer: &mut Block,
@@ -1348,7 +1493,11 @@ fn gather(
             .map(|source| (source, route))
     });
     if let Some((source, route)) = source {
-        lines.carry(&route, source, buffer);
+        if let Some(line) = line {
+            line.carry_from(&route, source, buffer, Some(tap));
+        } else {
+            tap.carry_direct(&route, source, buffer);
+        }
         true
     } else {
         *buffer = [0.0; SUB_BLOCK];
@@ -1376,11 +1525,10 @@ impl EngineControl {
         self.slots
     }
 
-    /// Delay lines the engine holds, or will once the tables sent so far
-    /// are in place.
+    /// Delay lines currently placed in the engine.
     #[must_use]
-    pub const fn lines(&self) -> usize {
-        self.lines
+    pub fn lines(&self) -> usize {
+        self.shared.lines()
     }
 
     /// Make sure the engine will have room for `slots` module slots, by
@@ -1409,26 +1557,6 @@ impl EngineControl {
         }
         self.slots = room.len();
         self.push(Command::Room(Box::new(room)));
-        true
-    }
-
-    /// Make sure the engine will have `lines` delay lines, by sending it a
-    /// larger table when it needs one: twice its size, or `lines` if that
-    /// is more (or just `lines`, when there is no memory for twice).
-    /// Returns whether it will have them; `false` when there is no memory
-    /// for them.
-    pub fn reserve_lines(&mut self, lines: usize) -> bool {
-        if lines <= self.lines {
-            return true;
-        }
-        let have = self.lines;
-        let Some(more) =
-            MoreLines::new(have, doubled(have, lines)).or_else(|| MoreLines::new(have, lines))
-        else {
-            return false;
-        };
-        self.lines = more.len();
-        self.push(Command::Lines(Box::new(more)));
         true
     }
 
@@ -1477,15 +1605,15 @@ impl EngineControl {
         }
     }
 
-    /// Send a command, making room for it first: a module's slot, or a
-    /// line for every cable in a table. With no memory for the room, the
-    /// command goes anyway and the engine refuses it (counting it in
-    /// [`Shared::ignored`]). If the ring is full it waits in order on this
-    /// side and goes with the next [`Self::pump`].
+    /// Send a command, making room for its destination slot first. With no
+    /// memory for the room, the command goes anyway and the engine refuses
+    /// it (counting it in [`Shared::ignored`]). If the ring is full it waits
+    /// in order on this side and goes with the next [`Self::pump`].
     pub fn send(&mut self, command: Command) {
         let room = match &command {
-            Command::Insert { slot, .. } => self.reserve_slots(slot.saturating_add(1)),
-            Command::Cables(table) => self.reserve_lines(table.lines()),
+            Command::Insert { slot, .. } | Command::Line { slot, .. } => {
+                self.reserve_slots(slot.saturating_add(1))
+            }
             _ => true,
         };
         if !room {
@@ -1497,6 +1625,19 @@ impl EngineControl {
     /// Send a command as it is. If the ring is full it waits in order on
     /// this side and goes with the next [`Self::pump`].
     fn push(&mut self, command: Command) {
+        // A wall being put up holds everything but room for itself; what
+        // passes it (that room, or the whole go) waits with a batch being
+        // made, in order.
+        if !matches!(command, Command::Room(_)) {
+            if let Some(commands) = self.swap_commands.as_mut() {
+                commands.push_back(command);
+                return;
+            }
+        }
+        if let Some(batch) = &mut self.batch {
+            batch.commands.push(command);
+            return;
+        }
         self.flush();
         if !self.backlog.is_empty() {
             self.backlog.push_back(command);

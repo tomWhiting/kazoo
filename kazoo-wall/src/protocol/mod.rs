@@ -18,10 +18,16 @@
 
 pub mod client;
 pub mod codec;
+pub mod tree;
 
+pub(crate) mod batch;
 mod chains;
+mod loops;
 
+pub use batch::BatchResult;
 pub use chains::{ChainSaveResult, ChainsResult};
+pub use loops::{LoopState, LoopView, LoopsMeet};
+pub use tree::{BranchView, MarkKind, MarkResult, MarkView, MomentView, TreePlace, TreeResult};
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -76,6 +82,24 @@ pub fn valid_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'_' | b'.' | b'-'))
+}
+
+/// Whether a desk strip label fits the loop source contract.
+#[must_use]
+pub fn valid_from(name: &str) -> bool {
+    (1..=MAX_NAME).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/_.-".contains(&byte))
+}
+/// An undoable choice for a loop's tape or recording source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum LoopOp {
+    /// Clear the tape.
+    Erase,
+    /// Choose a desk strip, or return to the patched inputs.
+    From { from: Option<String> },
 }
 
 /// Longest save name: long enough for a label and a date, as in
@@ -217,6 +241,11 @@ pub enum Request {
     },
     /// Add a module.
     Add {
+        /// In a batch, a label later steps name this module by, as
+        /// `@label` or `@label.port` (no spaces, dots or `@`; unique in the
+        /// batch). Refused outside a batch.
+        #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+        alias: Option<String>,
         /// Kind, e.g. `lfo`.
         kind: String,
         /// Display name (see [`valid_name`]).
@@ -227,6 +256,16 @@ pub enum Request {
         /// row. (A wall older than the rack's rows ignores it.)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         place: Option<Place>,
+    },
+    /// Several changes toward one idea, with a note like a commit message:
+    /// applied in the order given as one change, all or none (a
+    /// [`BatchResult`]). One seq, one log line, one commit and one undo.
+    Batch {
+        /// The sender's words: 1 to 200 characters after trimming, one line
+        /// with no control characters.
+        note: String,
+        /// One or more adds, removes, turns, patches, unpatches or tempos.
+        changes: Vec<Self>,
     },
     /// Take a module away, with its cables.
     Remove {
@@ -277,6 +316,12 @@ pub enum Request {
     Undo {
         /// The change's sequence number.
         change: u64,
+    },
+    /// Erase a loop or choose its recording source.
+    Loop {
+        module: String,
+        #[serde(rename = "loop_op")]
+        op: LoopOp,
     },
     /// Give a `speak` module words to say, rendered off the audio thread
     /// (macOS `say`). Answered once the words are ready to play (the
@@ -372,6 +417,22 @@ pub enum Request {
         /// The save's name (any case).
         name: String,
     },
+    /// Name the moment the wall is at: a [`MarkResult`]. Every subscriber
+    /// is told ([`Event::Marked`]); nothing is logged. Any seat but a watcher.
+    /// Marks never move.
+    Mark {
+        name: String,
+    },
+    /// Put the wall at a moment while it plays: a [`LoadResult`]. The wall
+    /// as it was is kept first; one [`What::Go`] is logged. Any seat but a watcher.
+    Go {
+        moment: String,
+    },
+    /// List the tree: a [`TreeResult`]. Anyone may ask, watchers too.
+    Tree {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recent: Option<u32>,
+    },
     /// Stop the daemon. Console only.
     Shutdown,
 }
@@ -381,6 +442,7 @@ impl Request {
     #[must_use]
     pub const fn op(&self) -> &'static str {
         match self {
+            Self::Batch { .. } => "batch",
             Self::Hello { .. } => "hello",
             Self::Look => "look",
             Self::Catalogue => "catalogue",
@@ -396,6 +458,7 @@ impl Request {
             Self::Chains => "chains",
             Self::Undo { .. } => "undo",
             Self::Speak { .. } => "speak",
+            Self::Loop { .. } => "loop",
             Self::Log { .. } => "log",
             Self::Listen => "listen",
             Self::Probe { .. } => "probe",
@@ -408,6 +471,9 @@ impl Request {
             Self::Load { .. } => "load",
             Self::New => "new",
             Self::DeleteSave { .. } => "delete_save",
+            Self::Mark { .. } => "mark",
+            Self::Go { .. } => "go",
+            Self::Tree { .. } => "tree",
             Self::Shutdown => "shutdown",
         }
     }
@@ -420,7 +486,8 @@ impl Request {
     pub const fn acts_on_modules(&self) -> bool {
         matches!(
             self,
-            Self::Turn { .. }
+            Self::Batch { .. }
+                | Self::Turn { .. }
                 | Self::Patch { .. }
                 | Self::Unpatch { .. }
                 | Self::Add { .. }
@@ -430,6 +497,7 @@ impl Request {
                 | Self::ChainSave { .. }
                 | Self::ChainAdd { .. }
                 | Self::Speak { .. }
+                | Self::Loop { .. }
         )
     }
 
@@ -439,7 +507,8 @@ impl Request {
     pub const fn is_change(&self) -> bool {
         matches!(
             self,
-            Self::Turn { .. }
+            Self::Batch { .. }
+                | Self::Turn { .. }
                 | Self::Patch { .. }
                 | Self::Unpatch { .. }
                 | Self::Add { .. }
@@ -451,9 +520,12 @@ impl Request {
                 | Self::Undo { .. }
                 | Self::Tempo { .. }
                 | Self::Speak { .. }
+                | Self::Loop { .. }
                 | Self::Record { .. }
                 | Self::Save { .. }
                 | Self::Load { .. }
+                | Self::Mark { .. }
+                | Self::Go { .. }
                 | Self::New
                 | Self::DeleteSave { .. }
         )
@@ -589,11 +661,15 @@ pub enum ErrorCode {
     NotAllowed,
     /// Something went wrong inside the daemon.
     Internal,
+    /// No moment with that name in the tree.
+    UnknownMoment,
+    /// A permanent mark with that name already exists.
+    MarkExists,
 }
 
 impl ErrorCode {
     /// Every code.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::BadRequest,
         Self::NotHello,
         Self::BadName,
@@ -611,6 +687,8 @@ impl ErrorCode {
         Self::SlowDown,
         Self::NotAllowed,
         Self::Internal,
+        Self::UnknownMoment,
+        Self::MarkExists,
     ];
 }
 
@@ -621,6 +699,9 @@ pub struct WallError {
     pub code: ErrorCode,
     /// A sentence for people.
     pub message: String,
+    /// For a refused batch, the index of the step that refused it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<usize>,
 }
 
 impl WallError {
@@ -630,6 +711,7 @@ impl WallError {
         Self {
             code,
             message: message.into(),
+            step: None,
         }
     }
 }
@@ -695,10 +777,47 @@ pub struct Change {
     pub clock: Option<ClockStamp>,
 }
 
+/// Why the wall preserved a loop's tape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TakeWhy {
+    /// A completed recording.
+    Punch,
+    /// A seam during a long recording.
+    Checkpoint,
+    /// A named save requested the current tape.
+    Save,
+    /// Tape preserved before an audio restart.
+    Rebuild,
+}
+
 /// What a change did.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum What {
+    /// A seat's batch: its note, and each change it made, in order.
+    Batch {
+        /// The sender's note.
+        note: String,
+        /// Each step's change, in the order applied.
+        changes: Vec<Self>,
+    },
+    /// A loop's tape erased (`tape` none), or put back by the erase's
+    /// undo (`tape` the reel put back). Undone, the loop holds `was` again.
+    Erase {
+        module: String,
+        was: Option<crate::patch::TapeRecord>,
+        /// What the loop holds after: none for an erase.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tape: Option<crate::patch::TapeRecord>,
+    },
+    /// The desk strip a loop records from (`from`; none: what is patched
+    /// into it), which was `was`.
+    LoopFrom {
+        module: String,
+        from: Option<String>,
+        was: Option<String>,
+    },
     Chain {
         name: String,
         changes: Vec<Self>,
@@ -802,6 +921,26 @@ pub enum What {
         /// Asked of the desk rather than set on the wall's own clock.
         desk: bool,
     },
+    /// A frame-exact recording preserved in the reel store. Replay installs
+    /// this reel at `frame`, reproducing the loop from that frame onward,
+    /// including desk returns the log cannot hold. Between punch-in and its
+    /// take, replay records only the wall's own signals.
+    Take {
+        /// The loop module.
+        module: String,
+        /// Tape after the change; absent when undo restores blank tape.
+        tape: Option<crate::patch::TapeRecord>,
+        /// Tape before the change.
+        was: Option<crate::patch::TapeRecord>,
+        /// Engine frame at the beginning of the snapshot.
+        frame: u64,
+        /// Wall beat at that frame.
+        beat: f64,
+        /// Tape bars written since the preceding take.
+        written: Vec<u16>,
+        /// Why this tape was kept.
+        why: TakeWhy,
+    },
     /// A recording started or stopped. Started by a seat, or by the seat
     /// `kazoo-wall` when it carries a recording on into a new file (the
     /// audio restarted, or the file was full); stopped by a seat, or by
@@ -852,6 +991,21 @@ pub enum What {
         tempo: f64,
         /// Made by a console: its backup is the last of the wall's own
         /// saves to be let go.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_console: bool,
+    },
+    /// The wall put at a moment in the tree while it played (a go), or,
+    /// when the change undoes a go, put back where that go left. As a
+    /// load, the wall as it was is kept in `backup` first, and undoing
+    /// this brings it back exactly from that save.
+    Go {
+        to: TreePlace,
+        from: TreePlace,
+        backup: String,
+        fingerprint: String,
+        modules: u32,
+        cables: u32,
+        tempo: f64,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         by_console: bool,
     },
@@ -1026,6 +1180,14 @@ pub enum Event {
         /// The save, as it was named.
         name: String,
     },
+    /// A seat marked a moment: told to every subscriber, the marker included.
+    /// Marking changes no sound and logs nothing.
+    Marked {
+        seat: String,
+        name: String,
+        tag: String,
+        at: TreePlace,
+    },
     /// The change log stopped taking changes, or took them again, or what
     /// it owes moved: sent to every subscriber.
     Log {
@@ -1103,6 +1265,10 @@ const fn heard_by_default() -> bool {
 /// The result of `look`: the whole wall.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loops_meet: Option<LoopsMeet>,
+    #[serde(default)]
+    pub checkpoints_paused: bool,
     /// The latest change's sequence number.
     pub revision: u64,
     /// Which wall is up: the number of the change that put it up (a load,
@@ -1165,6 +1331,9 @@ pub struct Snapshot {
     /// Whether the change log is taking changes: left out while it is.
     #[serde(default, skip_serializing_if = "LogHealth::is_ok")]
     pub log: LogHealth,
+    /// The tree writer, absent from older walls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<TreeHealth>,
     /// What the scopes and readouts on the wall measured, at most
     /// [`MAX_PROBES`] of them (the first in the wall's order; `probe` reads
     /// the rest). Left out when there are none, and from a wall older than
@@ -1304,7 +1473,9 @@ pub struct Timings {
     #[serde(default)]
     pub cables: BTreeMap<String, u32>,
     /// Cables that needed more delay than a cable holds (about 21 ms at
-    /// 48 kHz): their paths are not fully in step.
+    /// 48 kHz), or whose line could not be allocated: their paths are not
+    /// fully in step. A cable without a line plays with no delay and is
+    /// absent from `cables`.
     #[serde(default)]
     pub uncompensated: Vec<u32>,
     /// Modules whose latency follows a knob with a cable in it: the cable
@@ -1312,8 +1483,8 @@ pub struct Timings {
     /// for the knob as set.
     #[serde(default)]
     pub unsteady: Vec<String>,
-    /// Modules from which no cable path reaches an out, scope or readout;
-    /// they are not rendered.
+    /// Modules from which no cable path reaches an out, scope, readout or
+    /// loop; they are not rendered.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unheard: Vec<String>,
 }
@@ -1332,6 +1503,8 @@ pub struct ModuleTiming {
 /// One module in a snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModuleView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tape: Option<LoopView>,
     /// Id.
     pub id: String,
     /// Kind, e.g. `vco` or `plate`.
@@ -1893,3 +2066,29 @@ pub struct ShutdownResult {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether the planted tree durably holds the wall's changes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TreeHealth {
+    /// Whether a planted tree is attached (`~/.kazoo/tree`, planted by
+    /// KZ-T03 or `tree::git::plant`; the daemon never plants one).
+    pub planted: bool,
+    /// The last change the tree durably holds.
+    pub through: Option<u64>,
+    /// Items queued for the tree thread.
+    pub waiting: u32,
+    /// The first change not committed one by one (the queue was full); a
+    /// gap commit will hold it.
+    pub behind_from: Option<u64>,
+    /// Why the tree is stopped, while it is.
+    pub error: Option<String>,
+}
+
+impl TreeHealth {
+    /// Planted, not stopped and not behind.
+    #[must_use]
+    pub const fn is_ok(&self) -> bool {
+        self.planted && self.error.is_none() && self.behind_from.is_none()
+    }
+}

@@ -116,6 +116,9 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     // Stop audio, then leave the desk.
     drop(stream);
     drop(hub);
+    if let Some(report) = kazoo_core::host::link::exit_report() {
+        eprintln!("{report}");
+    }
 
     match (result, restored) {
         (Ok(()), restored) => restored.map_err(Into::into),
@@ -493,6 +496,7 @@ mod tests {
             messages_dropped: 0,
             connections: 1,
             last_refusal: None,
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
         };
         app.hub = Some(status.clone());
         assert_eq!(app.link_label(), "\u{2192} kazoo-mix strip 3");
@@ -559,6 +563,7 @@ mod tests {
             messages_dropped: 0,
             connections: 1,
             last_refusal: None,
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
         });
         assert_eq!(
             app.link_label(),

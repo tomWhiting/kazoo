@@ -179,7 +179,7 @@ impl Dye {
     /// changed).
     pub fn touch(&mut self, seat: &str, what: &What, patch: &Patch) {
         match what {
-            What::Chain { changes, .. } => {
+            What::Batch { changes, .. } | What::Chain { changes, .. } => {
                 for change in changes {
                     self.touch(seat, change, patch);
                 }
@@ -211,7 +211,10 @@ impl Dye {
                 self.deposit(&module.id, seat, 1.0);
             }
             // New words are a whole touch on the speaker.
-            What::Speak { module, .. } => self.deposit(module, seat, 1.0),
+            What::Take { module, .. }
+            | What::Erase { module, .. }
+            | What::LoopFrom { module, .. }
+            | What::Speak { module, .. } => self.deposit(module, seat, 1.0),
             What::Remove { module, .. } => self.forget(&module.id),
             // Unplugging re-routes the dye but leaves none; the tempo and
             // a recording are no module's.
@@ -222,6 +225,7 @@ impl Dye {
             | What::Record { .. }
             | What::Migrate { .. }
             | What::Load { .. }
+            | What::Go { .. }
             | What::Abandoned { .. }
             | What::Resumed { .. }
             | What::SetAside { .. }

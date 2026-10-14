@@ -374,9 +374,18 @@ fn a_busy_session_never_allocates_or_frees_on_the_audio_thread() {
     // handle, off the audio thread.
     let handle = EngineHandle::detached(rig.commands.clone(), RATE, BLOCK);
     let mut out = [0.0_f32; BLOCK * 2];
+    let mut phase = 0.0_f32;
+    let mut voice_blocks = 0;
     let mut run = |rig: &mut Rig, blocks: usize| {
         for _ in 0..blocks {
-            assert_eq!(rig.mic.push_slice(&[0.1; BLOCK]), BLOCK);
+            let hz = [220.0, 330.0, 440.0][(voice_blocks / 32) % 3];
+            voice_blocks += 1;
+            let mut mic = [0.0; BLOCK];
+            for sample in &mut mic {
+                phase = (phase + std::f32::consts::TAU * hz / RATE as f32) % std::f32::consts::TAU;
+                *sample = 0.5 * phase.sin();
+            }
+            assert_eq!(rig.mic.push_slice(&mic), BLOCK);
             render(rig, &mut out);
             rig.reclaim();
             while let Some(frame) = rig.display.try_pop() {
@@ -404,6 +413,10 @@ fn a_busy_session_never_allocates_or_frees_on_the_audio_thread() {
         .unwrap();
     handle
         .add_synth_layer(ids[1], SynthesisMode::Wavetable, "Pad".into())
+        .unwrap();
+    // A voice-following synth, so the sung pitch reaches a synth that uses it.
+    handle
+        .set_track_synthesis_mode(ids[5], SynthesisMode::PitchTracked)
         .unwrap();
 
     // Three takes on every track, long enough to cross chunks.
@@ -467,4 +480,287 @@ fn a_desk_request_that_could_not_be_queued_is_made_locally_once_the_desk_is_gone
     render(&mut rig, &mut out);
     assert!(rig.state.desk.pending.is_none());
     assert_eq!(rig.state.transport.state(), TransportState::Playing);
+}
+
+fn pitch(rig: &Rig, id: TrackId) -> f32 {
+    rig.state
+        .mixer
+        .track(id)
+        .unwrap()
+        .layer(0)
+        .unwrap()
+        .synth()
+        .target_frequency()
+        .unwrap()
+}
+
+fn close_pitch(actual: f32, expected: f32) -> bool {
+    actual > 0.0 && (1200.0 * (actual / expected).log2()).abs() <= 5.0
+}
+
+fn sing(rig: &mut Rig, hz_curve: &[f32]) -> Vec<f32> {
+    let mut phase = 0.0_f32;
+    let mut targets = Vec::new();
+    let mut out = [0.0; 256];
+    for &hz in hz_curve {
+        let mut mic = [0.0; 128];
+        for sample in &mut mic {
+            phase = (phase + std::f32::consts::TAU * hz / RATE as f32) % std::f32::consts::TAU;
+            *sample = 0.5 * phase.sin();
+        }
+        assert_eq!(rig.mic.push_slice(&mic), mic.len());
+        render(rig, &mut out);
+        targets.push(pitch(rig, TrackId(0)));
+        while let Some(frame) = rig.display.try_pop() {
+            assert!(rig.recycle.try_push(frame).is_ok());
+        }
+    }
+    targets
+}
+
+#[test]
+fn an_armed_track_follows_a_note_change_within_two_periods() {
+    let mut rig = Rig::build(RATE, 128, OUTBOUND_CAPACITY, None);
+    let id = rig.add_track("Voice", SynthesisMode::PitchTracked);
+    rig.apply(EngineCommand::SetTrackArm(id, true));
+    let mut curve = vec![220.0; 113];
+    curve.extend_from_slice(&[330.0; 4]);
+    let targets = sing(&mut rig, &curve);
+    assert!(
+        close_pitch(targets[112], 220.0),
+        "initial target: {}",
+        targets[112]
+    );
+    let blocks = targets[113..].iter().position(|&hz| close_pitch(hz, 330.0));
+    assert!(
+        blocks.is_some(),
+        "targets after change: {:?}",
+        &targets[113..]
+    );
+    let elapsed = (blocks.unwrap() + 1) as f32 * 128.0 / RATE as f32;
+    assert!(elapsed <= 2.0 / 330.0 + 0.001 + 128.0 / RATE as f32);
+}
+
+#[test]
+fn the_display_shows_the_trackers_pitch() {
+    let mut rig = Rig::build(RATE, 128, OUTBOUND_CAPACITY, None);
+    let mut reference = crate::voice::VoiceTracker::new(RATE);
+    let mut last = None;
+    let mut locked_at = None;
+    let mut display_at = None;
+    let mut phase = 0.0_f32;
+    let mut out = [0.0; 256];
+    // Request a snapshot every block to isolate pitch publication from UI pacing.
+    rig.state.display_interval = 128;
+    for block in 0..75 {
+        let mut mic = [0.0; 128];
+        for sample in &mut mic {
+            phase = (phase + std::f32::consts::TAU * 440.0 / RATE as f32) % std::f32::consts::TAU;
+            *sample = phase.sin() * 0.5;
+        }
+        reference.process(&mic, |frame| last = Some(frame));
+        if last.is_some_and(|frame| frame.voiced && close_pitch(frame.hz, 440.0)) {
+            locked_at.get_or_insert(block);
+        }
+        assert_eq!(rig.mic.push_slice(&mic), mic.len());
+        render(&mut rig, &mut out);
+        while let Some(frame) = rig.display.try_pop() {
+            if frame
+                .pitch
+                .frequency
+                .is_some_and(|hz| close_pitch(hz, 440.0))
+                && frame.pitch.voiced_probability >= 0.9
+            {
+                display_at.get_or_insert(block);
+            }
+            if block == 74 {
+                assert!(
+                    frame
+                        .pitch
+                        .frequency
+                        .is_some_and(|hz| close_pitch(hz, 440.0)),
+                    "display pitch: {:?}",
+                    frame.pitch
+                );
+                assert!(frame.pitch.voiced_probability >= 0.9);
+            }
+            assert!(rig.recycle.try_push(frame).is_ok());
+        }
+    }
+    assert!(
+        display_at.is_some(),
+        "tracker locked at {locked_at:?}, display never locked"
+    );
+    assert!(display_at.unwrap() <= locked_at.unwrap() + 2);
+}
+
+#[test]
+fn playback_still_drives_synths_from_the_clip() {
+    let mut rig = Rig::build(RATE, 128, OUTBOUND_CAPACITY, None);
+    let id = rig.add_track("Clip", SynthesisMode::PitchTracked);
+    let audio = (0..4_800)
+        .map(|i| (i as f32 * 330.0 * std::f32::consts::TAU / RATE as f32).sin() * 0.5)
+        .collect();
+    rig.apply(EngineCommand::AddClip {
+        track_id: id,
+        clip_data: ClipData::new(audio, "Sine".into(), None, RATE),
+        position: 0,
+    });
+    rig.apply(EngineCommand::Transport(TransportCommand::Play));
+    let mut out = [0.0; 256];
+    for _ in 0..18 {
+        render(&mut rig, &mut out);
+        if close_pitch(pitch(&rig, id), 330.0) {
+            return;
+        }
+    }
+    panic!("clip target after 48 ms: {}", pitch(&rig, id));
+}
+
+/// A synth that logs, for every render, how many samples it made and the
+/// pitch it held. The log is preallocated and written with atomics, so
+/// rendering never allocates.
+struct PitchLog {
+    pitch: f32,
+    renders: Arc<std::sync::atomic::AtomicUsize>,
+    log: Arc<[std::sync::atomic::AtomicU64]>,
+}
+
+impl PitchLog {
+    fn boxed(capacity: usize) -> (Box<dyn Processor>, Self) {
+        let log: Arc<[std::sync::atomic::AtomicU64]> = (0..capacity)
+            .map(|_| std::sync::atomic::AtomicU64::new(0))
+            .collect();
+        let renders = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = Self {
+            pitch: 0.0,
+            renders: Arc::clone(&renders),
+            log: Arc::clone(&log),
+        };
+        let synth = Self {
+            pitch: 0.0,
+            renders,
+            log,
+        };
+        (Box::new(synth), reader)
+    }
+
+    /// Each render's length and the pitch it held, in order.
+    fn renders(&self) -> Vec<(usize, f32)> {
+        let count = self.renders.load(std::sync::atomic::Ordering::Acquire);
+        self.log[..count.min(self.log.len())]
+            .iter()
+            .map(|entry| {
+                let packed = entry.load(std::sync::atomic::Ordering::Acquire);
+                ((packed >> 32) as usize, f32::from_bits(packed as u32))
+            })
+            .collect()
+    }
+}
+
+impl Processor for PitchLog {
+    fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        let index = self
+            .renders
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let entry = &self.log[index];
+        entry.store(
+            ((input.len() as u64) << 32) | u64::from(self.pitch.to_bits()),
+            std::sync::atomic::Ordering::Release,
+        );
+        output.fill(0.0);
+    }
+
+    fn reset(&mut self) {}
+
+    fn name(&self) -> &'static str {
+        "Pitch log"
+    }
+
+    fn set_sample_rate(&mut self, _sample_rate: f32) {}
+
+    fn set_pitch(&mut self, frequency: f32) {
+        self.pitch = frequency;
+    }
+}
+
+/// The brief's cadence: a new pitch every 64 samples, whatever the
+/// callback size. A 512-frame callback holds eight tracker frames; the
+/// synth must render each 64 samples with the frame made from them, not
+/// all 512 with the last.
+#[test]
+fn a_long_callback_gives_the_synth_a_new_pitch_every_hop() {
+    use crate::voice::{VOICE_HOP, VoiceTracker};
+    const LONG: usize = 512;
+    const CALLBACKS: usize = 30;
+    let mut rig = Rig::build(RATE, LONG, OUTBOUND_CAPACITY, None);
+    let (synth, log) = PitchLog::boxed(4 * CALLBACKS * LONG / VOICE_HOP);
+    let id = rig.add_track_with("Voice", synth, SynthesisMode::PitchTracked);
+    rig.apply(EngineCommand::SetTrackArm(id, true));
+
+    // An octave glide across the whole run: about five cents a hop, so a
+    // pitch one hop stale is plainly wrong.
+    let length = (CALLBACKS * LONG) as f32 / RATE as f32;
+    let mut reference = VoiceTracker::new(RATE);
+    let mut expected = Vec::new();
+    let mut held = 0.0_f32;
+    let mut phase = 0.0_f32;
+    let mut out = [0.0_f32; LONG * 2];
+    for callback in 0..CALLBACKS {
+        let mut mic = [0.0_f32; LONG];
+        for (i, sample) in mic.iter_mut().enumerate() {
+            let t = (callback * LONG + i) as f32 / RATE as f32;
+            let hz = 220.0 * (t / length).exp2();
+            phase = (phase + std::f32::consts::TAU * hz / RATE as f32) % std::f32::consts::TAU;
+            *sample = 0.5 * phase.sin();
+        }
+        reference.process(&mic, |frame| {
+            if frame.voiced {
+                held = frame.hz;
+            }
+            expected.push(held);
+        });
+        assert_eq!(rig.mic.push_slice(&mic), LONG);
+        render(&mut rig, &mut out);
+        while let Some(frame) = rig.display.try_pop() {
+            assert!(rig.recycle.try_push(frame).is_ok());
+        }
+    }
+
+    let renders = log.renders();
+    let lengths: Vec<usize> = renders.iter().map(|&(len, _)| len).collect();
+    assert!(
+        lengths.iter().all(|&len| len == VOICE_HOP),
+        "render lengths: {lengths:?}"
+    );
+    assert_eq!(renders.len(), expected.len());
+    assert!(expected.iter().filter(|&&hz| hz > 0.0).count() > expected.len() / 2);
+    for (hop, (&(_, pitch), &want)) in renders.iter().zip(&expected).enumerate() {
+        let off = if want > 0.0 {
+            (1200.0 * (pitch / want).log2()).abs()
+        } else {
+            pitch.abs()
+        };
+        assert!(
+            off <= 0.5,
+            "hop {hop}: the synth held {pitch} Hz, the tracker's frame was {want} Hz"
+        );
+    }
+}
+
+/// A callback rendered in several pieces still hears its whole mic block:
+/// the stale-sample skip is made once per block, never per piece.
+#[test]
+fn a_long_callback_hears_its_whole_mic_block() {
+    const LONG: usize = 512;
+    let mut rig = Rig::build(RATE, LONG, OUTBOUND_CAPACITY, None);
+    let id = rig.add_track("Mic", SynthesisMode::Passthrough);
+    rig.apply(EngineCommand::SetTrackArm(id, true));
+    let mut out = [0.0_f32; LONG * 2];
+    for _ in 0..2 {
+        assert_eq!(rig.mic.push_slice(&[0.25; LONG]), LONG);
+        render(&mut rig, &mut out);
+    }
+    let silent = out.iter().filter(|s| s.abs() < 0.01).count();
+    assert_eq!(silent, 0, "{silent} of {} samples silent", out.len());
 }

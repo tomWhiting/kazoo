@@ -1,6 +1,15 @@
 use crate::analysis::{cycle::CycleTracker, score::signals};
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
+use super::{
+    CycleEstimate, CycleSettings,
+    early::{EARLY_CLARITY, EARLY_LAGS},
+    fixtures,
+};
+use crate::{
+    analysis::score::instrument::instrument_suite, host::live::InputProfile, voice::VoiceTracker,
+};
+
 fn sine(hz: f32, rate: u32, length: u32, phase: f32) -> Vec<f32> {
     (0..length)
         .map(|i| (TAU * hz * i as f32 / rate as f32 + phase).sin() * 0.5)
@@ -305,4 +314,392 @@ fn a_semitone_step_is_never_carried_past_its_note() {
             }
         }
     }
+}
+
+fn early_readings(
+    take: &crate::analysis::score::Take,
+    profile: InputProfile,
+) -> Vec<(usize, CycleEstimate)> {
+    let mut tracker = CycleTracker::with_settings(take.rate, profile.tracking().cycle);
+    let mut output = Vec::new();
+    for (index, &sample) in take.samples.iter().enumerate() {
+        tracker.push(sample);
+        if (index + 1) % crate::voice::VOICE_HOP == 0 {
+            if let Some(estimate) = tracker.estimate() {
+                output.push((index + 1, estimate));
+            }
+        }
+    }
+    output
+}
+
+#[test]
+fn a_low_b_speaks_in_a_period_and_a_half() {
+    assert!(InputProfile::Bass.tracking().cycle.early);
+    let takes = instrument_suite(fixtures::RATE);
+    let take = fixtures::named(&takes, "bass_open");
+    for (note, limit_ms) in [(0, 50.6), (1, 38.4)] {
+        let onset = take.onsets[note];
+        let hz = fixtures::truth_at(take, onset + 32).expect("bass pitch");
+        let signal = &take.samples[onset..fixtures::note_end(take, note)];
+        let settings = InputProfile::Bass.tracking();
+        let mut first_frames = Vec::new();
+        let mut first_estimates = Vec::new();
+        for enabled in [true, false] {
+            let mut settings = settings;
+            settings.cycle.early = enabled;
+            let mut tracker = VoiceTracker::with_settings(take.rate, settings);
+            let mut cycle = CycleTracker::with_settings(take.rate, settings.cycle);
+            let mut first = None;
+            let mut first_estimate = None;
+            for (index, &sample) in signal.iter().enumerate() {
+                cycle.push(sample);
+                if let Some(estimate) = cycle.estimate() {
+                    if !enabled {
+                        assert!(!estimate.provisional);
+                    }
+                    if cents(estimate.hz, hz) <= 50.0 {
+                        first_estimate.get_or_insert((index + 1, estimate.provisional));
+                    }
+                }
+                tracker.process(std::slice::from_ref(&sample), |frame| {
+                    if let Some(estimate) = cycle.estimate().filter(|estimate| estimate.provisional)
+                    {
+                        assert!(frame.voiced);
+                        assert_eq!(frame.confidence.to_bits(), estimate.clarity.to_bits());
+                        assert_eq!(frame.hz.to_bits(), estimate.hz.to_bits());
+                    }
+                    if frame.voiced && frame.gate && cents(frame.hz, hz) <= 50.0 {
+                        first.get_or_insert_with(|| {
+                            (frame, cycle.estimate().is_some_and(|e| e.provisional))
+                        });
+                    }
+                });
+            }
+            first_frames.push(first.expect("the bass speaks"));
+            first_estimates.push(first_estimate.expect("bass estimate"));
+        }
+        let (early, provisional) = first_frames[0];
+        let (normal, _) = first_frames[1];
+        let latency_ms = early.at as f32 / 48.0;
+        println!(
+            "{hz} Hz: early {latency_ms} ms, normal {} ms, provisional {provisional}",
+            normal.at as f32 / 48.0
+        );
+        assert!(
+            latency_ms <= limit_ms,
+            "{hz} Hz: {latency_ms} ms, {early:?}"
+        );
+        assert!(
+            normal.at >= early.at,
+            "{hz} Hz normal frame arrived before early-on"
+        );
+        assert!(first_estimates[1].0 >= first_estimates[0].0);
+        if first_estimates[0].0 < first_estimates[1].0 {
+            assert!(
+                first_estimates[0].1 && provisional,
+                "{hz} Hz early-first frame must be provisional"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_early_estimate_is_rarely_wrong() {
+    let takes = instrument_suite(fixtures::RATE);
+    let mut notes = 0;
+    let mut early_notes = 0;
+    let mut octaves = 0;
+    let mut jumps = 0;
+    for (name, profile) in [
+        ("bass_open", InputProfile::Bass),
+        ("guitar_open", InputProfile::Guitar),
+    ] {
+        let original = fixtures::named(&takes, name);
+        for position in [0.25, 0.35, 0.5] {
+            let take = fixtures::at_position(original, position);
+            for (note, &onset) in take.onsets.iter().enumerate() {
+                notes += 1;
+                let mut tracker = CycleTracker::with_settings(take.rate, profile.tracking().cycle);
+                let mut provisional = None;
+                let mut handover = None;
+                let mut octave = false;
+                let truth = fixtures::truth_at(&take, onset + 32).expect("note pitch");
+                for &sample in &take.samples[onset..fixtures::note_end(&take, note)] {
+                    tracker.push(sample);
+                    if let Some(estimate) = tracker.estimate() {
+                        if estimate.provisional {
+                            provisional.get_or_insert(estimate);
+                            octave |= fixtures::octave_error(estimate.hz, truth);
+                        } else if provisional.is_some() {
+                            handover.get_or_insert(estimate);
+                        }
+                    }
+                }
+                if let Some(early) = provisional {
+                    early_notes += 1;
+                    let confirmed = handover.expect("normal marks confirm the early pitch");
+                    jumps += usize::from(cents(confirmed.hz, early.hz) > 30.0);
+                }
+                octaves += usize::from(octave);
+            }
+        }
+    }
+    assert_eq!(notes, 33);
+    assert!(early_notes > 0, "early coverage {early_notes}/{notes}");
+    assert!(
+        octaves * 100 <= notes * 2,
+        "octave errors {octaves}/{notes}"
+    );
+    assert!(jumps * 100 <= notes * 5, "handover jumps {jumps}/{notes}");
+}
+
+#[test]
+fn a_refused_candidate_costs_nothing() {
+    for polarity in [-1.0, 1.0] {
+        let signal: Vec<_> = (0..24_000)
+            .map(|index| {
+                let phase = (31.0 * f64::from(index) / 48_000.0).fract();
+                polarity * if phase < 0.3 { 0.5 } else { -0.5 }
+            })
+            .collect();
+        let settings = InputProfile::Bass.tracking().cycle;
+        let mut early = CycleTracker::with_settings(fixtures::RATE, settings);
+        let mut normal = CycleTracker::with_settings(
+            fixtures::RATE,
+            CycleSettings {
+                early: false,
+                ..settings
+            },
+        );
+        let mut first_early = None;
+        let mut first_normal = None;
+        let mut probes_checked = false;
+        let mut first_lobe = false;
+        let mut range_checked = false;
+        for (index, &sample) in signal.iter().enumerate() {
+            // Check the lobe's NSDF at its deadline even when a normal mark
+            // has already locked and prevents the early search from running.
+            let candidate = early.early.pending;
+            let previous = early.previous;
+            early.push(sample);
+            normal.push(sample);
+            if !first_lobe && previous < 0.0 && early.previous >= 0.0 {
+                first_lobe = true;
+                let period = (2.0 * (early.last_rise - early.last_fall)) as f32;
+                if !(early.min_period..=early.max_period).contains(&period) {
+                    assert!(early.early.pending.is_none());
+                    range_checked = true;
+                }
+            }
+            if !probes_checked
+                && candidate.is_some_and(|candidate| early.time - 1.0 >= candidate.deadline)
+            {
+                let candidate = candidate.expect("an armed lobe schedules a candidate");
+                let window = super::lag_from(f64::from(candidate.period / 2.0)).expect("window");
+                for factor in EARLY_LAGS {
+                    let lag = super::lag_from(f64::from(candidate.period * factor)).expect("lag");
+                    for nearby in [lag - 1, lag, lag + 1] {
+                        assert!(
+                            early.nsdf(nearby, window) < EARLY_CLARITY,
+                            "square construction: polarity {polarity}, lag {nearby}"
+                        );
+                    }
+                }
+                probes_checked = true;
+            }
+            assert!(
+                early
+                    .estimate()
+                    .is_none_or(|estimate| !estimate.provisional)
+            );
+            assert_eq!(
+                early.estimate(),
+                normal.estimate(),
+                "sample {index}, polarity {polarity}"
+            );
+            if early.estimate().is_some() {
+                first_early.get_or_insert(index);
+            }
+            if normal.estimate().is_some() {
+                first_normal.get_or_insert(index);
+            }
+        }
+        if polarity < 0.0 {
+            assert!(
+                probes_checked,
+                "the in-range lobe's NSDF refusal was exercised"
+            );
+            assert!(!range_checked);
+        } else {
+            assert!(range_checked, "the out-of-range lobe was rejected");
+            assert!(!probes_checked);
+        }
+        assert!(first_normal.is_some(), "normal marks eventually lock");
+        assert_eq!(first_early, first_normal);
+    }
+}
+
+#[test]
+fn a_note_that_starts_mid_glide() {
+    let takes = instrument_suite(fixtures::RATE);
+    let take = fixtures::moving(fixtures::named(&takes, "bass_open"), |time| {
+        41.203_445 * (500.0 * time as f32 / 2.0 / 1200.0).exp2()
+    });
+    let output = early_readings(&take, InputProfile::Bass);
+    let &(at, estimate) = output.first().expect("glide pitch");
+    let mut normal_settings = InputProfile::Bass.tracking().cycle;
+    normal_settings.early = false;
+    let mut normal = CycleTracker::with_settings(take.rate, normal_settings);
+    let mut first_normal = None;
+    for (index, &sample) in take.samples.iter().enumerate() {
+        normal.push(sample);
+        if normal.estimate().is_some() {
+            first_normal.get_or_insert(index + 1);
+        }
+    }
+    if at < first_normal.expect("normal glide pitch") {
+        assert!(estimate.provisional);
+    }
+    let truth = fixtures::truth_at(&take, at).expect("glide truth");
+    assert!(
+        cents(estimate.hz, truth) <= 30.0,
+        "{at}: {estimate:?}, truth {truth}"
+    );
+    let mut steps = 0;
+    for pair in output.windows(2) {
+        let [(before, low), (after, high)] = pair else {
+            panic!("two readings")
+        };
+        if *before >= at && *after < take.samples.len() - fixtures::RATE as usize / 5 {
+            let low_truth = fixtures::truth_at(&take, *before).expect("previous truth");
+            let high_truth = fixtures::truth_at(&take, *after).expect("next truth");
+            let allowed = cents(high_truth, low_truth) + 2.0;
+            assert!(
+                cents(high.hz, low.hz) <= allowed,
+                "{before}->{after}: {low:?} -> {high:?}, limit {allowed}"
+            );
+            steps += 1;
+        }
+    }
+    assert!(steps > 1000, "the later glide remains voiced");
+}
+
+#[test]
+fn a_vibrato_note_stays_smooth_through_the_handover() {
+    let takes = instrument_suite(fixtures::RATE);
+    let take = fixtures::moving(fixtures::named(&takes, "bass_open"), |time| {
+        41.203_445 * (30.0 * (std::f64::consts::TAU * 6.0 * time).sin() as f32 / 1200.0).exp2()
+    });
+    let output = early_readings(&take, InputProfile::Bass);
+    let mut settings = InputProfile::Bass.tracking().cycle;
+    settings.early = false;
+    let mut normal = CycleTracker::with_settings(take.rate, settings);
+    let mut early = CycleTracker::with_settings(take.rate, InputProfile::Bass.tracking().cycle);
+    let mut first_normal = None;
+    let mut first_early = None;
+    for (index, &sample) in take.samples.iter().enumerate() {
+        normal.push(sample);
+        early.push(sample);
+        if normal.estimate().is_some() {
+            first_normal.get_or_insert(index + 1);
+        }
+        if let Some(estimate) = early.estimate() {
+            first_early.get_or_insert((index + 1, estimate.provisional));
+        }
+    }
+    let (early_at, provisional) = first_early.expect("early-enabled vibrato pitch");
+    let early_won = early_at < first_normal.expect("normal vibrato pitch");
+    assert_eq!(
+        provisional, early_won,
+        "only an early-first lock is provisional"
+    );
+    let &(first_at, first) = output.first().expect("vibrato pitch");
+    let mut handovers = 0;
+    for pair in output.windows(2) {
+        let [(_, low), (at, high)] = pair else {
+            panic!("two readings")
+        };
+        if !early_won && *at <= first_at + (2.0 * first.period).ceil() as usize {
+            assert!(cents(high.hz, low.hz) <= 10.0, "{low:?} -> {high:?}");
+        }
+        if low.provisional && !high.provisional {
+            assert!(cents(high.hz, low.hz) <= 10.0, "{low:?} -> {high:?}");
+            handovers += 1;
+        }
+    }
+    assert_eq!(
+        handovers,
+        usize::from(early_won),
+        "handover only after an early lock"
+    );
+}
+
+#[test]
+fn the_early_path_never_allocates() {
+    let takes = instrument_suite(fixtures::RATE);
+    let take = fixtures::named(&takes, "bass_open");
+    let signal: Vec<_> = take.samples.iter().copied().cycle().take(480_000).collect();
+    let mut tracker =
+        CycleTracker::with_settings(fixtures::RATE, InputProfile::Bass.tracking().cycle);
+    let mut voice = VoiceTracker::with_settings(fixtures::RATE, InputProfile::Bass.tracking());
+    let before = assert_no_alloc::violation_count();
+    let mut tried = false;
+    assert_no_alloc::assert_no_alloc(|| {
+        for block in signal.chunks(64) {
+            tracker.process(block);
+            tried |= tracker.early.tried;
+            voice.process(block, |frame| {
+                std::hint::black_box(frame);
+            });
+        }
+        tracker.reset();
+        voice.reset();
+    });
+    assert!(
+        tried,
+        "the early deadline was evaluated inside the allocation guard"
+    );
+    assert_eq!(assert_no_alloc::violation_count(), before);
+}
+
+#[test]
+fn a_new_instrument_pluck_reopens_the_search() {
+    let takes = instrument_suite(fixtures::RATE);
+    let take = fixtures::named(&takes, "bass_open");
+    let onset = take.onsets[2];
+    let mut tracker = CycleTracker::with_settings(take.rate, InputProfile::Bass.tracking().cycle);
+    tracker.process(&take.samples[..onset]);
+    assert!(tracker.estimate().is_some());
+    let mut unlocked = false;
+    for &sample in &take.samples[onset..onset + 64] {
+        tracker.push(sample);
+        unlocked |= tracker.estimate().is_none();
+    }
+    assert!(
+        unlocked,
+        "a fresh pluck must not retain the previous note's filter"
+    );
+}
+
+#[test]
+fn a_guitar_repluck_keeps_the_normal_path_latency() {
+    let takes = instrument_suite(fixtures::RATE);
+    let take = fixtures::named(&takes, "guitar_open");
+    let onset = take.onsets[2];
+    let truth = fixtures::truth_at(take, onset + 32).expect("guitar pitch");
+    let mut tracker =
+        crate::voice::VoiceTracker::with_settings(take.rate, InputProfile::Guitar.tracking());
+    let mut first = None;
+    tracker.process(&take.samples[..fixtures::note_end(take, 2)], |frame| {
+        if frame.at >= onset as u64 && frame.voiced && cents(frame.hz, truth) <= 50.0 {
+            first.get_or_insert(frame.at);
+        }
+    });
+    let latency = (first.expect("guitar frame") - onset as u64) as f32 / 48.0;
+    let limit = 1500.0 / truth + 2.0;
+    assert!(
+        latency <= limit,
+        "guitar D3: {latency} ms, limit {limit} ms"
+    );
 }

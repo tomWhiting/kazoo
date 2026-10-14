@@ -9,10 +9,20 @@
 use std::f32::consts::TAU;
 
 use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
-use crate::sanitize_sample;
+use crate::{sanitize_sample, voice::VOICE_HOP};
+
+mod early;
+mod level;
+mod motion;
+
+#[cfg(test)]
+pub(crate) use early::fixtures;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod hold_tests;
 
 /// A one-pole high-pass at 30 Hz removes mic DC and handling rumble, 0.7
 /// octave under `VOICE_MIN_HZ`, costing under 1 dB at 50 Hz.
@@ -25,9 +35,6 @@ const LP_FACTOR: f32 = 3.0;
 /// The filter never closes below 100 Hz, so a 50 Hz hum's fundamental passes
 /// at full strength.
 const LP_MIN_HZ: f32 = 100.0;
-/// Unlocked, the filter sits at `VOICE_MAX_HZ`: nothing is filtered away that
-/// could be the note, and the first lock costs no filter delay.
-const UNLOCKED_CUTOFF: f32 = VOICE_MAX_HZ;
 /// A cycle mark needs the filtered signal to go below −0.2 × peak and then
 /// above +0.2 × peak (or the mirror for a falling mark): well above harmonic
 /// ripple on a hummed note, well below the fundamental's swing.
@@ -47,6 +54,12 @@ const HALF_MARGIN: f32 = 0.05;
 /// With no accepted mark for 2 periods of the last pitch, the tracker
 /// unlocks: one lost cycle is bridged, two are not.
 const UNLOCK_PERIODS: f32 = 2.0;
+/// Three milliseconds bridges a lost 128-sample block at high pitches.
+const UNLOCK_MIN_MS: f32 = 3.0;
+/// A held period has prior evidence, so noisy cycles can retain it at 0.70.
+const HOLD_CLARITY: f32 = 0.70;
+/// Fifty cents separates a held period's jitter from a different note.
+const HOLD_CENTS: f32 = 50.0;
 /// Locked candidates are the last 1, 2, 3 and 4 mark-to-mark intervals: up to
 /// four marks per true period (a loud 2nd, 3rd or 4th harmonic) still leave
 /// one candidate equal to the period.
@@ -65,12 +78,16 @@ const HINT_MATCH: f32 = 0.01;
 /// wild finite value (1e30) would otherwise hold the DC blocker and the peak
 /// follower far from the next note for seconds.
 const INPUT_LIMIT: f32 = 1.0;
+/// A six-dB pick attack reopens the long-release bass filter. Short-release
+/// instruments retain their marks, which already acquire their faster cycles.
+const PLUCK_RISE: f32 = 2.0;
 /// The NSDF window is half the candidate period, so a new note is read once
 /// 1.5 of its periods exist (a reading lands within two periods at any
 /// phase, since a mark comes every half period); a window never shrinks
-/// under 0.5 ms (24 samples at 48 kHz, or the whole period when shorter) so
-/// white noise cannot pass for a high note.
-const MIN_WINDOW_MS: f32 = 0.5;
+/// under 1 ms while locked, bounded by two periods, so breath noise cannot
+/// choose an octave from a single short cycle. Acquisition keeps 0.5 ms to
+/// leave room for the voice frame's hop inside the onset budget.
+const MIN_WINDOW_MS: f32 = 1.0;
 /// A candidate interval is climbed along the NSDF to its peak for at most
 /// 1/16 of its length (about a semitone): mark jitter from a filter
 /// transient or a formant is reached, another key maximum is not.
@@ -86,6 +103,51 @@ const STEP_CENTS: f64 = 50.0;
 const TREND_AGREEMENT: f64 = 2.0;
 const CENTS_PER_OCTAVE: f64 = 1200.0;
 
+/// Instrument-dependent range and filter times; the cycle method stays fixed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CycleSettings {
+    /// Lowest fundamental; sizes the history for two periods and a margin.
+    pub min_hz: f32,
+    /// Highest fundamental and the unlocked tracking-filter cutoff.
+    pub max_hz: f32,
+    /// DC rejection below the lowest note to reduce DC and handling rumble.
+    pub dc_hz: f32,
+    /// Peak decay must be long compared with the lowest note's period.
+    pub peak_release_ms: f32,
+    /// Confirm a negative half-cycle before the normal marks can lock.
+    pub early: bool,
+}
+
+impl CycleSettings {
+    /// The original voice range, DC blocker and peak follower, exactly.
+    pub const VOICE: Self = Self {
+        min_hz: VOICE_MIN_HZ,
+        max_hz: VOICE_MAX_HZ,
+        dc_hz: DC_HZ,
+        peak_release_ms: PEAK_RELEASE_MS,
+        early: false,
+    };
+
+    pub(crate) const fn validate(self) {
+        assert!(
+            self.min_hz.is_finite() && self.min_hz >= 1.0,
+            "invalid minimum pitch"
+        );
+        assert!(
+            self.max_hz.is_finite() && self.max_hz > self.min_hz,
+            "invalid maximum pitch"
+        );
+        assert!(
+            self.dc_hz.is_finite() && self.dc_hz > 0.0 && self.dc_hz < self.min_hz,
+            "invalid DC cutoff"
+        );
+        assert!(
+            self.peak_release_ms.is_finite() && self.peak_release_ms > 0.0,
+            "invalid peak release"
+        );
+    }
+}
+
 /// The newest accepted cycle's pitch and periodicity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CycleEstimate {
@@ -97,6 +159,8 @@ pub struct CycleEstimate {
     /// Normalised autocorrelation at `period` over the reading's window, 0..=1
     /// (1 = perfectly periodic; `McLeod`'s NSDF, clamped at 0).
     pub clarity: f32,
+    /// A half-cycle reading, retained until a normal mark accepts a period.
+    pub provisional: bool,
 }
 
 /// The last `MARK_RING` mark times of one crossing direction.
@@ -161,6 +225,7 @@ struct Peak {
 struct Choice {
     chosen: Option<Peak>,
     best: f32,
+    best_peak: Option<Peak>,
     tried: [usize; SEARCH_MARKS + 2],
     tried_count: usize,
 }
@@ -170,6 +235,7 @@ impl Choice {
         Self {
             chosen: None,
             best: 0.0,
+            best_peak: None,
             tried: [0; SEARCH_MARKS + 2],
             tried_count: 0,
         }
@@ -191,6 +257,7 @@ impl Choice {
 /// A preallocated, sample-by-sample voice pitch converter.
 #[derive(Debug)]
 pub struct CycleTracker {
+    settings: CycleSettings,
     rate: f32,
     min_period: f32,
     max_period: f32,
@@ -209,6 +276,7 @@ pub struct CycleTracker {
     lp_second: f32,
     release: f32,
     peak: f32,
+    attack_peak: f32,
     previous: f32,
     armed_rising: bool,
     armed_falling: bool,
@@ -219,6 +287,7 @@ pub struct CycleTracker {
     marks: u64,
     estimate: Option<CycleEstimate>,
     last_clarity: f32,
+    periodic_level: f32,
     last_accepted_mark: f64,
     hint: Option<(f32, u8)>,
     trend: [Reading; TREND_READINGS],
@@ -226,20 +295,31 @@ pub struct CycleTracker {
     /// Along a steady glide: the per-sample factor on the published period,
     /// and the sample time after which it is no longer carried forward.
     glide: Option<(f32, f64)>,
+    early: early::Early,
+    acquisition: Option<f32>,
 }
 
 impl CycleTracker {
     /// Allocates the history once; nothing after this allocates.
     #[must_use]
     pub fn new(rate: u32) -> Self {
+        Self::with_settings(rate, CycleSettings::VOICE)
+    }
+
+    /// Allocate history for the selected range once, before processing audio.
+    /// Invalid settings are rejected at construction.
+    #[must_use]
+    pub fn with_settings(rate: u32, settings: CycleSettings) -> Self {
+        settings.validate();
         let rate = rate.max(1);
-        let longest = lag_from(f64::from(rate) / f64::from(VOICE_MIN_HZ)).unwrap_or(0);
+        let longest = lag_from(f64::from(rate) / f64::from(settings.min_hz)).unwrap_or(0);
         let length = (2 * longest + 8).next_power_of_two();
         let rate = rate as f32;
-        let max_period = rate / VOICE_MIN_HZ;
+        let max_period = rate / settings.min_hz;
         Self {
+            settings,
             rate,
-            min_period: rate / VOICE_MAX_HZ,
+            min_period: rate / settings.max_hz,
             max_period,
             max_lag: longest + 2,
             min_window: lag_from(f64::from(rate * MIN_WINDOW_MS / 1000.0)).unwrap_or(1),
@@ -247,14 +327,15 @@ impl CycleTracker {
             mask: length - 1,
             position: 0,
             time: 0.0,
-            dc_coefficient: (-TAU * DC_HZ / rate).exp(),
+            dc_coefficient: (-TAU * settings.dc_hz / rate).exp(),
             dc_previous: 0.0,
             dc_output: 0.0,
-            lp_coefficient: (-TAU * UNLOCKED_CUTOFF / rate).exp(),
+            lp_coefficient: (-TAU * settings.max_hz / rate).exp(),
             lp_first: 0.0,
             lp_second: 0.0,
-            release: (-1000.0 / (PEAK_RELEASE_MS * rate)).exp(),
+            release: (-1000.0 / (settings.peak_release_ms * rate)).exp(),
             peak: 0.0,
+            attack_peak: 0.0,
             previous: 0.0,
             armed_rising: false,
             armed_falling: false,
@@ -265,6 +346,7 @@ impl CycleTracker {
             marks: 0,
             estimate: None,
             last_clarity: 0.0,
+            periodic_level: 0.0,
             last_accepted_mark: 0.0,
             hint: None,
             trend: [Reading {
@@ -273,6 +355,8 @@ impl CycleTracker {
             }; TREND_READINGS],
             trend_count: 0,
             glide: None,
+            early: early::Early::new(),
+            acquisition: None,
         }
     }
 
@@ -280,10 +364,24 @@ impl CycleTracker {
     /// allocates, locks or panics.
     pub fn push(&mut self, sample: f32) {
         let x = sanitize_sample(sample).clamp(-INPUT_LIMIT, INPUT_LIMIT);
+        let attack = (x - self.dc_previous).abs();
+        if self.centred_windows()
+            && self.settings.peak_release_ms > PEAK_RELEASE_MS
+            && self.estimate.is_some()
+            && self.attack_peak >= SILENCE_PEAK
+            && attack > PLUCK_RISE * self.attack_peak
+        {
+            self.unlock();
+            self.rising.clear();
+            self.falling.clear();
+            self.armed_rising = false;
+            self.armed_falling = false;
+        }
+        self.attack_peak = attack.max(self.attack_peak * self.release);
         let dc = sanitize_sample(self.dc_coefficient * (self.dc_output + x - self.dc_previous));
         self.dc_previous = x;
         self.dc_output = dc;
-        self.history[self.position & self.mask] = dc;
+        self.history[self.position & self.mask] = if self.centred_windows() { x } else { dc };
         self.position = self.position.wrapping_add(1);
         let feed = 1.0 - self.lp_coefficient;
         self.lp_first = sanitize_sample(feed.mul_add(dc, self.lp_coefficient * self.lp_first));
@@ -301,10 +399,17 @@ impl CycleTracker {
             self.last_fall = crossing();
         }
         self.previous = filtered;
+        if self.settings.early && self.estimate.is_none() {
+            self.early_push(previous, filtered);
+        }
         self.schmitt(filtered);
+        if self.position % VOICE_HOP == 0 {
+            self.retry_acquisition();
+        }
         self.carry_glide();
         if self.estimate.is_some_and(|e| {
-            self.time - self.last_accepted_mark > f64::from(UNLOCK_PERIODS * e.period)
+            self.time - self.last_accepted_mark
+                > f64::from((UNLOCK_PERIODS * e.period).max(UNLOCK_MIN_MS * self.rate / 1000.0))
         }) {
             self.unlock();
         }
@@ -335,7 +440,7 @@ impl CycleTracker {
     /// A period (samples) to try as an extra candidate until 4 more cycles
     /// are marked;
     /// when its NSDF reaches `CLARITY_ON` it is taken over every other
-    /// candidate. A period outside the voice range is ignored.
+    /// candidate. A period outside the configured range is ignored.
     pub fn hint(&mut self, period: f32) {
         if period.is_finite() && (self.min_period..=self.max_period).contains(&period) {
             self.hint = Some((period, HINT_MARKS));
@@ -345,10 +450,36 @@ impl CycleTracker {
     /// Drop the lock now, with any hint and glide, and reopen the filter.
     pub fn unlock(&mut self) {
         self.estimate = None;
-        self.lp_coefficient = (-TAU * UNLOCKED_CUTOFF / self.rate).exp();
+        self.periodic_level = 0.0;
+        self.lp_coefficient = (-TAU * self.settings.max_hz / self.rate).exp();
         self.hint = None;
         self.trend_count = 0;
         self.glide = None;
+        self.early = early::Early::new();
+        self.acquisition = None;
+    }
+
+    fn retry_acquisition(&mut self) {
+        // Partial-cycle evidence changes between marks. Retry only the
+        // strongest refused peak and the two newest intervals, once per hop.
+        if self.instrument_acquisition() && self.estimate.is_none() {
+            let mut choice = Choice::new();
+            if let Some(period) = self.acquisition {
+                self.consider(period, &mut choice);
+            }
+            self.intervals(&self.rising, 1, 1, &mut choice);
+            self.intervals(&self.falling, 1, 1, &mut choice);
+            if let Some(peak) = choice.chosen {
+                self.accept(self.half_check(peak), self.time);
+            }
+        }
+    }
+
+    fn instrument_acquisition(&self) -> bool {
+        // The long-release bass profile's narrow search filter separates
+        // useful evidence from its next mark. Short-release instruments
+        // retain their original mark cadence and candidate refinement.
+        self.centred_windows() && self.settings.peak_release_ms > PEAK_RELEASE_MS
     }
 
     /// Cycle marks seen since `new` or `reset`: one per cycle, at its rising
@@ -369,6 +500,7 @@ impl CycleTracker {
         self.lp_first = 0.0;
         self.lp_second = 0.0;
         self.peak = 0.0;
+        self.attack_peak = 0.0;
         self.previous = 0.0;
         self.armed_rising = false;
         self.armed_falling = false;
@@ -405,6 +537,16 @@ impl CycleTracker {
     }
 
     fn carry_glide(&mut self) {
+        if self.centred_windows() {
+            if let Some(estimate) = self.estimate {
+                let period = self.instrument_period(estimate.period);
+                if let Some(estimate) = self.estimate.as_mut() {
+                    estimate.period = period;
+                    estimate.hz = self.rate / period;
+                }
+            }
+            return;
+        }
         let Some((factor, until)) = self.glide else {
             return;
         };
@@ -437,8 +579,8 @@ impl CycleTracker {
         }
         let mut choice = Choice::new();
         if let Some(estimate) = self.estimate {
-            self.intervals(&marks, 1, INTERVALS, &mut choice);
             self.consider(estimate.period, &mut choice);
+            self.intervals(&marks, 1, INTERVALS, &mut choice);
         }
         let hinted = self.hint.and_then(|(period, _)| self.refine(period));
         if let Some(peak) = hinted {
@@ -454,11 +596,29 @@ impl CycleTracker {
         }
         let chosen = hinted
             .filter(|peak| peak.clarity >= CLARITY_ON)
-            .or_else(|| choice.chosen.map(|peak| self.half_check(peak)));
+            .or_else(|| {
+                choice
+                    .chosen
+                    .map(|peak| self.half_check(peak))
+                    .filter(|peak| {
+                        self.estimate.is_none_or(|estimate| {
+                            let hold = UNLOCK_MIN_MS * self.rate / 1000.0;
+                            // A splice can correlate at a different lag before the
+                            // held period recovers. Let the high-note hold bridge it.
+                            UNLOCK_PERIODS * estimate.period >= hold
+                                || (1200.0 * (peak.period / estimate.period).log2()).abs()
+                                    <= HOLD_CENTS
+                                || self.time - self.last_accepted_mark >= f64::from(hold)
+                        })
+                    })
+            });
         if let Some(peak) = chosen {
             self.accept(peak, at);
         } else {
             self.last_clarity = choice.best;
+            if self.instrument_acquisition() && self.estimate.is_none() {
+                self.acquisition = choice.best_peak.map(|peak| peak.period);
+            }
         }
         if let Some((period, remaining)) = self.hint {
             let consumed =
@@ -495,9 +655,27 @@ impl CycleTracker {
         }
         if let Some(peak) = self.refine(period) {
             choice.best = choice.best.max(peak.clarity);
-            if peak.clarity >= CLARITY_ON
-                && choice.chosen.is_none_or(|old| peak.period < old.period)
+            if choice
+                .best_peak
+                .is_none_or(|best| peak.clarity > best.clarity)
             {
+                choice.best_peak = Some(peak);
+            }
+            let held = self.estimate.is_some_and(|estimate| {
+                (1200.0 * (peak.period / estimate.period).log2()).abs() <= HOLD_CENTS
+            });
+            let threshold = if held { HOLD_CLARITY } else { CLARITY_ON };
+            let replace = choice.chosen.is_none_or(|old| {
+                let old_held = self.estimate.is_some_and(|estimate| {
+                    (1200.0 * (old.period / estimate.period).log2()).abs() <= HOLD_CENTS
+                });
+                if held == old_held {
+                    peak.period < old.period
+                } else {
+                    held
+                }
+            });
+            if peak.clarity >= threshold && replace {
                 choice.chosen = Some(peak);
             }
         }
@@ -514,6 +692,7 @@ impl CycleTracker {
     }
 
     fn accept(&mut self, peak: Peak, at: f64) {
+        self.periodic_level = self.periodic_level_at(peak);
         let reading = Reading {
             log_period: f64::from(peak.period).log2(),
             centre: (-0.5_f64).mul_add(
@@ -529,7 +708,9 @@ impl CycleTracker {
                 slope.mul_add(ahead, reading.log_period)
             })
             .exp2() as f32;
-        let period = if (self.min_period..=self.max_period).contains(&period) {
+        let period = if self.centred_windows() {
+            self.instrument_period(peak.period)
+        } else if (self.min_period..=self.max_period).contains(&period) {
             period
         } else {
             peak.period
@@ -542,8 +723,10 @@ impl CycleTracker {
             period,
             hz: self.rate / period,
             clarity: peak.clarity,
+            provisional: false,
         });
-        let cutoff = (LP_FACTOR * self.rate / peak.period).clamp(LP_MIN_HZ, VOICE_MAX_HZ);
+        let cutoff = (LP_FACTOR * self.rate / peak.period)
+            .clamp(LP_MIN_HZ.min(self.settings.max_hz), self.settings.max_hz);
         self.lp_coefficient = (-TAU * cutoff / self.rate).exp();
     }
 
@@ -596,7 +779,7 @@ impl CycleTracker {
     /// The NSDF peak nearest `period`, climbed from its rounded lag for at
     /// most `CLIMB_FRACTION` of it and refined by a parabola through the
     /// peak and its neighbours. `None` when no peak is within reach or the
-    /// peak leaves the voice range.
+    /// peak leaves the configured range.
     fn refine(&self, period: f32) -> Option<Peak> {
         if !(self.min_period..=self.max_period).contains(&period) {
             return None;
@@ -609,7 +792,25 @@ impl CycleTracker {
         let mut left = self.nsdf(lag - 1, window);
         let mut centre = self.nsdf(lag, window);
         let mut right = self.nsdf(lag + 1, window);
-        for _ in 0..climb {
+        let acquisition = self.instrument_acquisition() && self.estimate.is_none();
+        if acquisition {
+            // A noisy first cycle has small local peaks between the mark's
+            // interval and the periodic peak. Search the same bounded reach
+            // before choosing one, rather than stopping at the first ripple.
+            let start = lag.saturating_sub(climb).max(2);
+            let end = (lag + climb).min(self.max_lag - 1);
+            for candidate in start..=end {
+                let clarity = self.nsdf(candidate, window);
+                if clarity > centre {
+                    lag = candidate;
+                    centre = clarity;
+                }
+            }
+            left = self.nsdf(lag - 1, window);
+            right = self.nsdf(lag + 1, window);
+        }
+        let steps = if acquisition { 0 } else { climb };
+        for _ in 0..steps {
             if right > centre && right >= left {
                 lag += 1;
                 if lag + 1 > self.max_lag {
@@ -655,13 +856,19 @@ impl CycleTracker {
     }
 
     /// The window a candidate starting at `lag` is read over: half the lag,
-    /// never under `MIN_WINDOW_MS`, and while locked never longer than the
+    /// never under half `MIN_WINDOW_MS` at acquisition or `MIN_WINDOW_MS`
+    /// while locked, and while locked never longer than the
     /// held period's own window, so every candidate at a mark is compared
     /// over the same newest samples (a longer window, reaching back to
     /// louder cycles, would let a sub-harmonic outscore the period in a
     /// fade).
     fn window(&self, lag: usize) -> usize {
-        let own = |lag: usize| (lag / 2).max(lag.min(self.min_window));
+        let minimum = if self.estimate.is_some() {
+            self.min_window
+        } else {
+            self.min_window / 2
+        };
+        let own = |lag: usize| (lag / 2).max((2 * lag).min(minimum));
         let held = self
             .estimate
             .and_then(|estimate| lag_from(f64::from(estimate.period)));
@@ -673,6 +880,8 @@ impl CycleTracker {
     fn nsdf(&self, lag: usize, window: usize) -> f32 {
         let mut product = 0.0_f64;
         let mut energy = 0.0_f64;
+        let mut current_sum = 0.0_f64;
+        let mut previous_sum = 0.0_f64;
         let newest = self.position.wrapping_sub(1);
         for offset in 0..window {
             let index = newest.wrapping_sub(offset);
@@ -680,6 +889,17 @@ impl CycleTracker {
             let y = f64::from(self.history[index.wrapping_sub(lag) & self.mask]);
             product = x.mul_add(y, product);
             energy = x.mul_add(x, y.mul_add(y, energy));
+            if self.centred_windows() {
+                current_sum += x;
+                previous_sum += y;
+            }
+        }
+        if self.centred_windows() && window > 0 {
+            // Reject each window's DC without the onset transient of a
+            // recursive blocker biasing a partial-cycle period reading.
+            let count = window as f64;
+            product -= current_sum * previous_sum / count;
+            energy -= current_sum.mul_add(current_sum, previous_sum * previous_sum) / count;
         }
         if energy < 1e-12 || !energy.is_finite() || !product.is_finite() {
             0.0

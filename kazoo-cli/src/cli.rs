@@ -56,8 +56,52 @@ pub enum Command {
     Arp(ArpArgs),
     /// Text notation to events or sound.
     Play(PlayArgs),
-    /// The mouth: the voice-driven synth (kazoo-tui).
-    Mouth,
+    /// The mouth: sing or whistle into a synth, and drive every other instrument with your voice.
+    Mouth(MouthArgs),
+    /// The voice tracker DAW (kazoo-tui).
+    Tui,
+    /// The wall's tree: every moment it has been, grown as a tree you can walk.
+    Tree(TreeArgs),
+}
+
+/// How to show the tree.
+#[derive(Debug, Args, Default, PartialEq, Eq)]
+pub struct TreeArgs {
+    /// Print the whole tree as braille text and exit, instead of walking it.
+    #[arg(long)]
+    pub print: bool,
+    /// Columns for --print.
+    #[arg(long, requires = "print", default_value_t = 100, value_parser = clap::value_parser!(u16).range(10..=1000))]
+    pub cols: u16,
+    /// Rows for --print.
+    #[arg(long, requires = "print", default_value_t = 40, value_parser = clap::value_parser!(u16).range(5..=1000))]
+    pub rows: u16,
+}
+
+/// Microphone device selection and enumeration.
+#[derive(Debug, Args, Default, PartialEq)]
+pub struct MouthArgs {
+    /// Input device name; omit to follow the system default.
+    #[arg(long)]
+    pub input: Option<String>,
+    /// Input channel, 1-based; omit to average all channels.
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=64))]
+    pub input_channel: Option<u16>,
+    /// List input devices without opening a stream.
+    #[arg(long)]
+    pub list_inputs: bool,
+    /// Output device name; omit to use the system default.
+    #[arg(long)]
+    pub output: Option<String>,
+    /// Snap pitch to scale:root, for example major:D or pentatonic-minor:C#.
+    #[arg(long, value_parser = kazoo_mouth::parse_quantise)]
+    pub quantise: Option<kazoo_core::voice::quantise::QuantiseSettings>,
+    /// Publish voice frames without making sound.
+    #[arg(long)]
+    pub silent: bool,
+    /// Score recorded WAV takes and exit without opening audio.
+    #[arg(long, num_args = 1.., conflicts_with = "list_inputs")]
+    pub score: Vec<PathBuf>,
 }
 
 /// Desk startup options.
@@ -86,12 +130,32 @@ pub enum StudioCommand {
 /// Operations on the shared wall.
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub enum WallCommand {
+    /// Plant the tree and grow its trunk from the wall's change log (once, with the wall stopped).
+    Tree {
+        #[command(subcommand)]
+        command: TreeCommand,
+    },
     /// Run the wall until stopped (Ctrl-C, SIGTERM, or a console).
     Serve(ServeArgs),
     /// Ask the running wall to stop.
     Stop,
     /// Open the console, starting the wall if it is not playing (the default).
     Console,
+}
+
+/// Operations on the wall's lasting history.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum TreeCommand {
+    /// Plant the tree and grow its trunk from the wall's change log (once, with the wall stopped).
+    Import(ImportArgs),
+}
+
+/// Options for growing the first rings.
+#[derive(Debug, Args, PartialEq, Eq)]
+pub struct ImportArgs {
+    /// Grow beside the tree, report the history, and remove the scratch tree.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Wall rendering and desk options.
@@ -225,6 +289,20 @@ fn seat_name(text: &str) -> Result<String, String> {
             "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
             text.escape_default()
         ))
+    }
+}
+
+impl From<MouthArgs> for kazoo_mouth::Args {
+    fn from(args: MouthArgs) -> Self {
+        Self {
+            input: args.input,
+            input_channel: args.input_channel,
+            list_inputs: args.list_inputs,
+            output: args.output,
+            quantise: args.quantise.unwrap_or_default(),
+            silent: args.silent,
+            score: args.score,
+        }
     }
 }
 

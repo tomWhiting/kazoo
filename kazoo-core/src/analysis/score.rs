@@ -1,11 +1,19 @@
 //! Offline pitch tracker measurements against analytic or centred pYIN truth.
 
+mod fused;
+pub mod gate;
+pub mod instrument;
 mod metrics;
+
+pub use fused::FusedUnderTest;
 pub mod signals;
 pub mod wav;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod high_notes;
 
 use super::{PitchDetector, PitchDetectorConfig, cycle::CycleTracker};
 

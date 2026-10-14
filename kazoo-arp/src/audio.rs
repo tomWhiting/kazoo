@@ -395,7 +395,9 @@ impl AudioEngine {
         match self.hub.request_transport(state, None) {
             Ok(()) => {}
             Err(RequestError::NotConnected) => self.set_playing(playing),
-            Err(RequestError::Full | RequestError::Invalid) => self.desk_lost(),
+            Err(RequestError::Full | RequestError::Invalid | RequestError::Unsupported) => {
+                self.desk_lost();
+            }
         }
     }
 
@@ -414,7 +416,9 @@ impl AudioEngine {
                 self.clock.set_bpm(bpm);
                 self.publish_transport();
             }
-            Err(RequestError::Full | RequestError::Invalid) => self.desk_lost(),
+            Err(RequestError::Full | RequestError::Invalid | RequestError::Unsupported) => {
+                self.desk_lost();
+            }
         }
     }
 

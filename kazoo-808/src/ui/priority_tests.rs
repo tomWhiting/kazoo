@@ -16,6 +16,7 @@ fn the_hub_badge_says_when_the_link_is_not_real_time() {
         messages_dropped: 0,
         connections: 1,
         last_refusal: None,
+        voice: kazoo_core::ipc::link::VoiceLink::default(),
     });
     let mut terminal = ratatui::Terminal::new(TestBackend::new(120, 1)).unwrap();
     terminal

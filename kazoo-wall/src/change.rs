@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::catalogue::Kind;
 use crate::format;
 use crate::patch::kind_of_id;
-use crate::protocol::{CableRecord, ModuleRecord, What};
+use crate::protocol::{CableRecord, ModuleRecord, TakeWhy, What};
 
 /// The sentence for `what`, done by `seat`; `undoes` names the change it
 /// undid, if it was an undo.
@@ -30,7 +30,24 @@ pub fn summarise_with(
     undoes: Option<u64>,
     kind_of: impl Fn(&str) -> Option<Kind>,
 ) -> String {
+    if let What::Tempo {
+        from,
+        to,
+        desk: true,
+    } = what
+    {
+        if seat == "desk" && undoes.is_none() {
+            return format!(
+                "the desk set the tempo {} → {}",
+                format::bpm(*from),
+                format::bpm(*to)
+            );
+        }
+    }
     let body = describe_with(what, undoes.is_some(), &kind_of);
+    if matches!(what, What::Batch { .. }) && undoes.is_none() {
+        return format!("{seat}: {body}");
+    }
     undoes.map_or_else(
         || format!("{seat} {body}"),
         |change| format!("{seat} undid change {change}: {body}"),
@@ -47,6 +64,12 @@ pub fn describe(what: &What) -> String {
 /// load that brought a wall back from one that cleared it).
 fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind>) -> String {
     match what {
+        What::Batch { note, changes } => described_batch(note, changes, undo, kind_of),
+        What::Take {
+            module, tape, why, ..
+        } => taken(module, tape.as_ref(), *why, undo),
+        What::Erase { module, was, tape } => erased(module, was.as_ref(), tape.as_ref()),
+        What::LoopFrom { module, from, .. } => loop_from(module, from.as_deref()),
         What::Chain { name, changes } => format!(
             "changed chain {name}: {}",
             changes
@@ -61,22 +84,8 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
             from,
             to,
             glide_beats,
-        } => {
-            let (from, to) = knob_values(kind_of(module), knob, *from, *to);
-            let glide = if *glide_beats > 0.0 {
-                format!("over {}", format::beats(*glide_beats))
-            } else {
-                "at once".to_string()
-            };
-            format!("turned {module} {knob} {from} → {to} {glide}")
-        }
-        What::Patch { cable, replaced } => {
-            let mut parts = vec![format!("patched {}", cable_words(cable))];
-            if let Some(old) = replaced {
-                parts.push(format!("; it replaced cable {} from {}", old.id, old.from));
-            }
-            parts.concat()
-        }
+        } => turned(module, knob, *from, *to, *glide_beats, kind_of(module)),
+        What::Patch { cable, replaced } => patched(cable, replaced.as_ref()),
         What::Unpatch { cable, replugged } => {
             let mut parts = vec![format!("unplugged {}", cable_words(cable))];
             if let Some(back) = replugged {
@@ -142,8 +151,41 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
             tempo,
             ..
         } => loaded(save.as_deref(), undo, backup, (*modules, *cables, *tempo)),
+        What::Go {
+            to,
+            backup,
+            modules,
+            cables,
+            tempo,
+            ..
+        } => went(to, undo, backup, (*modules, *cables, *tempo)),
         What::Abandoned { .. } | What::Resumed { .. } | What::SetAside { .. } => noted(what),
     }
+}
+
+fn turned(
+    module: &str,
+    knob: &str,
+    from: f64,
+    to: f64,
+    glide_beats: f64,
+    kind: Option<Kind>,
+) -> String {
+    let (from, to) = knob_values(kind, knob, from, to);
+    let glide = if glide_beats > 0.0 {
+        format!("over {}", format::beats(glide_beats))
+    } else {
+        "at once".to_string()
+    };
+    format!("turned {module} {knob} {from} → {to} {glide}")
+}
+
+fn patched(cable: &CableRecord, replaced: Option<&CableRecord>) -> String {
+    let mut parts = vec![format!("patched {}", cable_words(cable))];
+    if let Some(old) = replaced {
+        parts.push(format!("; it replaced cable {} from {}", old.id, old.from));
+    }
+    parts.concat()
 }
 
 /// What a note the daemon makes of its own accord says.
@@ -231,6 +273,40 @@ fn loaded(
         (None, true) => format!("brought back the wall it replaced ({now})"),
     };
     format!("{what}; the wall as it was is saved as \"{backup}\"")
+}
+
+fn went(
+    to: &crate::protocol::TreePlace,
+    undo: bool,
+    backup: &str,
+    (modules, cables, bpm): (u32, u32, f64),
+) -> String {
+    let mut place = to.mark.as_ref().map_or_else(
+        || {
+            to.branch.as_ref().map_or_else(
+                || {
+                    to.change.map_or_else(
+                        || format!("moment {}", to.commit.chars().take(12).collect::<String>()),
+                        |change| format!("the moment after change {change}"),
+                    )
+                },
+                Clone::clone,
+            )
+        },
+        |mark| format!("mark \"{mark}\""),
+    );
+    if to.mark.is_some() || to.branch.is_some() {
+        if let Some(change) = to.change {
+            place = format!("{place}, after change {change}");
+        }
+    }
+    let direction = if undo { "back to" } else { "to" };
+    format!(
+        "went {direction} {place}: {}, {}, {}; the wall as it was is saved as \"{backup}\"",
+        count(usize::try_from(modules).unwrap_or(usize::MAX), "module"),
+        count(usize::try_from(cables).unwrap_or(usize::MAX), "cable"),
+        format::bpm(bpm)
+    )
 }
 
 /// A tempo set on the wall's own clock, or asked of the desk.
@@ -384,6 +460,87 @@ const fn civil_from_days(days: u64) -> (u64, u64, u64) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + if month <= 2 { 1 } else { 0 };
     (year, month, day)
+}
+
+fn taken(
+    module: &str,
+    tape: Option<&crate::patch::TapeRecord>,
+    why: TakeWhy,
+    undo: bool,
+) -> String {
+    let Some(tape) = tape else {
+        return format!("{module} is back to blank tape");
+    };
+    let reel = tape.reel.chars().take(8).collect::<String>();
+    if undo {
+        return format!("{module} is back to reel {reel}");
+    }
+    let pass = tape.bars.iter().flatten().max().copied().unwrap_or(0);
+    match why {
+        TakeWhy::Punch => {
+            let count = tape.bars.len();
+            let bars = if count == 1 { "bar" } else { "bars" };
+            format!("{module} took {count} {bars} (pass {pass}, reel {reel})")
+        }
+        TakeWhy::Checkpoint => {
+            format!("{module} was checkpointed while recording (pass {pass}, reel {reel})")
+        }
+        TakeWhy::Save => format!("{module} was taken for the save"),
+        TakeWhy::Rebuild => format!("{module} was kept before the audio restarted"),
+    }
+}
+
+fn erased(
+    module: &str,
+    was: Option<&crate::patch::TapeRecord>,
+    tape: Option<&crate::patch::TapeRecord>,
+) -> String {
+    let held = |tape: &crate::patch::TapeRecord| {
+        format!(
+            "{} {}, reel {}",
+            tape.bars.len(),
+            if tape.bars.len() == 1 { "bar" } else { "bars" },
+            tape.reel.chars().take(8).collect::<String>()
+        )
+    };
+    match (tape, was) {
+        (Some(tape), _) => format!("put {module}'s tape back ({})", held(tape)),
+        (None, Some(was)) => format!("erased {module} (it held {})", held(was)),
+        (None, None) => format!("erased {module} (it was blank)"),
+    }
+}
+
+fn loop_from(module: &str, from: Option<&str>) -> String {
+    from.map_or_else(
+        || format!("set {module} to record what is patched into it"),
+        |from| format!("set {module} to record from {from}"),
+    )
+}
+
+/// A batch in words: its note in quotes, then how many changes it holds
+/// and each of them as [`describe`] says it, the list cut at 240
+/// characters with `…` (the whole list stays in the change).
+fn described_batch(
+    note: &str,
+    changes: &[What],
+    undo: bool,
+    kind_of: &impl Fn(&str) -> Option<Kind>,
+) -> String {
+    let list = changes
+        .iter()
+        .map(|change| describe_with(change, undo, kind_of))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let list = if list.chars().count() > 240 {
+        format!("{}…", list.chars().take(239).collect::<String>())
+    } else {
+        list
+    };
+    let count = match changes.len() {
+        1 => "1 change".to_string(),
+        n => format!("{n} changes"),
+    };
+    format!("\"{note}\" ({count}: {list})")
 }
 
 #[cfg(test)]
@@ -552,6 +709,53 @@ mod tests {
             "Waffles undid change 41: brought back the wall it replaced (12 modules, 1 cable, \
              96 BPM); the wall as it was is saved as \"before-load-20261009-143005\""
         );
+    }
+
+    #[test]
+    fn goes_say_where_the_wall_went_and_where_it_was_kept() {
+        use crate::protocol::TreePlace;
+        let commit = "a1b2c3d4e5f6012345678901234567890123456789";
+        let cases = [
+            (
+                Some("dawn"),
+                None,
+                Some(812),
+                "mark \"dawn\", after change 812",
+            ),
+            (None, Some("trunk"), Some(812), "trunk, after change 812"),
+            (None, None, Some(812), "the moment after change 812"),
+            (None, None, None, "moment a1b2c3d4e5f6"),
+        ];
+        for (mark, branch, change, place) in cases {
+            let to = TreePlace {
+                commit: commit.into(),
+                mark: mark.map(str::to_string),
+                branch: branch.map(str::to_string),
+                change,
+            };
+            let what = What::Go {
+                from: to.clone(),
+                to,
+                backup: "before-go-20261013-201500".into(),
+                fingerprint: "hash".into(),
+                modules: 41,
+                cables: 51,
+                tempo: 120.0,
+                by_console: true,
+            };
+            assert_eq!(
+                summarise("Tom", &what, None),
+                format!(
+                    "Tom went to {place}: 41 modules, 51 cables, 120 BPM; the wall as it was is saved as \"before-go-20261013-201500\""
+                )
+            );
+            assert_eq!(
+                summarise("Tom", &what, Some(813)),
+                format!(
+                    "Tom undid change 813: went back to {place}: 41 modules, 51 cables, 120 BPM; the wall as it was is saved as \"before-go-20261013-201500\""
+                )
+            );
+        }
     }
 
     #[test]

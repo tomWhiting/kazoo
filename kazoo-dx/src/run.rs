@@ -83,6 +83,9 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let restored = terminal.leave();
     drop(stream);
     drop(hub);
+    if let Some(report) = kazoo_core::host::link::exit_report() {
+        eprintln!("{report}");
+    }
 
     match (result, restored) {
         (Ok(()), restored) => restored.map_err(Into::into),
@@ -592,6 +595,7 @@ mod tests {
             messages_dropped: 0,
             connections: 0,
             last_refusal: None,
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
         }
     }
 

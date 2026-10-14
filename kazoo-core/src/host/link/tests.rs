@@ -176,3 +176,47 @@ fn connecting_builds_one_link_not_two() {
     hub.join().unwrap();
     assert_eq!(built, 1);
 }
+
+#[test]
+fn exit_report_is_silent_when_every_link_stopped() {
+    assert_eq!(exit_report_from(0, 0), None);
+    let directory = tempfile::tempdir().unwrap();
+    let stuck = crate::ipc::link::stuck_shutdowns();
+    let late = crate::ipc::link::undelivered_completions();
+    let (link, audio) =
+        start_link(config(&directory.path().join("missing.sock")), None, true).unwrap();
+    drop(link);
+    drop(audio);
+    assert_eq!(
+        exit_report_from(
+            crate::ipc::link::stuck_shutdowns() - stuck,
+            crate::ipc::link::undelivered_completions() - late,
+        ),
+        None,
+    );
+}
+
+#[test]
+fn exit_report_counts_stuck_and_late_links() {
+    for (stuck, late, expected) in [
+        (1, 0, "kazoo: 1 desk link did not stop within 500 ms"),
+        (2, 0, "kazoo: 2 desk links did not stop within 500 ms"),
+        (
+            1,
+            1,
+            "kazoo: 1 desk link did not stop within 500 ms; 1 finished later",
+        ),
+        (
+            2,
+            2,
+            "kazoo: 2 desk links did not stop within 500 ms; 2 finished later",
+        ),
+        (
+            0,
+            1,
+            "kazoo: 0 desk links did not stop within 500 ms; 1 finished later",
+        ),
+    ] {
+        assert_eq!(exit_report_from(stuck, late).as_deref(), Some(expected));
+    }
+}

@@ -78,7 +78,6 @@ impl Fixture {
                     u32::try_from(from).unwrap(),
                     u8::try_from(port).unwrap(),
                     amount,
-                    u32::try_from(line).unwrap(),
                     u32::try_from(line + 1).unwrap()
                 ))
             ));

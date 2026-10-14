@@ -48,6 +48,7 @@ impl AudioEngine {
                 RequestError::NotConnected => 1,
                 RequestError::Full => 2,
                 RequestError::Invalid => 3,
+                RequestError::Unsupported => 4,
             };
             self.shared.note_failure.store(failure, Ordering::Relaxed);
         }

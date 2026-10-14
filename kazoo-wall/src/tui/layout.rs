@@ -90,6 +90,7 @@ pub fn panel_height(module: &ModuleView, width: u16) -> u16 {
     let inputs = u16::try_from(jack_lines(&module.inputs, inner).len()).unwrap_or(0);
     let outputs = u16::try_from(jack_lines(&module.outputs, inner).len()).unwrap_or(0);
     2_u16
+        .saturating_add(u16::from(module.tape.is_some()))
         .saturating_add(knobs)
         .saturating_add(inputs)
         .saturating_add(outputs)
@@ -157,6 +158,7 @@ mod tests {
 
     fn module(knobs: usize, inputs: &[&str], outputs: &[&str]) -> ModuleView {
         ModuleView {
+            tape: None,
             id: "vcf1".to_string(),
             kind: "vcf".to_string(),
             name: None,

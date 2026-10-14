@@ -47,23 +47,52 @@ fn undelivered_worker_completion_is_counted() {
 #[test]
 fn a_wedged_worker_that_finishes_after_the_drop_is_counted_once() {
     let directory = tempfile::tempdir().unwrap();
-    let (mut link, audio) =
-        start_link(config(&directory.path().join("missing.sock")), None, false).unwrap();
-    let (release, blocked) = mpsc::channel();
-    let (done, completed) = mpsc::channel();
-    let (finished_tx, finished) = mpsc::sync_channel(1);
-    link.finished = finished;
-    link.join = Some(thread::spawn(move || {
-        blocked.recv().unwrap();
-        crate::ipc::link::shutdown::report_finished(&finished_tx);
-        done.send(()).unwrap();
-    }));
     let before = stuck_shutdowns();
     let late = undelivered_completions();
-    drop(link);
-    release.send(()).unwrap();
-    completed.recv().unwrap();
-    drop(audio);
-    assert_eq!(stuck_shutdowns(), before + 1);
-    assert_eq!(undelivered_completions(), late + 1);
+    for count in 1..=2 {
+        let (mut link, audio) =
+            start_link(config(&directory.path().join("missing.sock")), None, false).unwrap();
+        let (release, blocked) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        let (finished_tx, finished) = mpsc::sync_channel(1);
+        link.finished = finished;
+        link.join = Some(thread::spawn(move || {
+            blocked.recv().unwrap();
+            crate::ipc::link::shutdown::report_finished(&finished_tx);
+            done.send(()).unwrap();
+        }));
+        drop(link);
+        assert_eq!(stuck_shutdowns() - before, count);
+        assert_eq!(undelivered_completions() - late, count - 1);
+        let plural = if count == 1 { "" } else { "s" };
+        let expected = format!("kazoo: {count} desk link{plural} did not stop within 500 ms");
+        let pending = if count == 1 {
+            expected.clone()
+        } else {
+            format!("{expected}; {} finished later", count - 1)
+        };
+        assert_eq!(
+            crate::host::link::exit_report_from(
+                stuck_shutdowns() - before,
+                undelivered_completions() - late,
+            ),
+            Some(pending),
+        );
+        release.send(()).unwrap();
+        completed.recv().unwrap();
+        drop(audio);
+        assert_eq!(stuck_shutdowns() - before, count);
+        assert_eq!(undelivered_completions() - late, count);
+        assert_eq!(
+            crate::host::link::exit_report_from(
+                stuck_shutdowns() - before,
+                undelivered_completions() - late,
+            ),
+            Some(format!("{expected}; {count} finished later")),
+        );
+        assert_eq!(
+            crate::host::link::exit_report(),
+            crate::host::link::exit_report_from(stuck_shutdowns(), undelivered_completions()),
+        );
+    }
 }

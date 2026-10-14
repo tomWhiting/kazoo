@@ -19,6 +19,72 @@ use super::{cable, connected, module, press, snapshot};
 /// changes.
 const NOW: i64 = 1_790_424_001 + 120;
 
+#[test]
+fn a_loop_panel_has_one_line_with_its_lamp_bars_and_source() {
+    use super::super::layout::panel_height;
+    use super::super::theme::RED;
+    use crate::protocol::{LoopState, LoopView};
+
+    let mut wall = snapshot();
+    wall.tempo = 120.0;
+    wall.beat = 20.0;
+    let mut loop_module = module("loop1", "loop", None);
+    let without = panel_height(&loop_module, 40);
+    loop_module.tape = Some(LoopView {
+        state: LoopState::Rolling,
+        beats: 68.0,
+        frames: 1_632_000,
+        anchor: 0.0,
+        pass: 3,
+        written: vec![true; 17],
+        from: Some("mouth/dry".into()),
+        ..LoopView::default()
+    });
+    assert_eq!(panel_height(&loop_module, 40), without + 1);
+    wall.modules = vec![loop_module];
+    let mut app = connected();
+    let at = Instant::now();
+    app.on_reply(Reply::Snapshot(Box::new(wall)), at);
+    let buf = render(&mut app, 120, 40);
+    let (x, y) = find(&buf, "17b").unwrap();
+    let row: String = (0..buf.area.width)
+        .map(|column| buf[(column, y)].symbol())
+        .collect();
+    for expected in ["17b", "6/17", "p3", "▮", "← mouth/dry"] {
+        assert!(row.contains(expected), "missing {expected}: {row}");
+    }
+    assert_eq!(buf[(x - 2, y)].symbol(), "●");
+    assert_eq!(buf[(x - 2, y)].fg, RED);
+    assert!((app.beat_at(at + std::time::Duration::from_secs(2)) - 24.0).abs() < f64::EPSILON);
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal
+        .draw(|frame| {
+            draw::draw(
+                frame,
+                &mut app,
+                at + std::time::Duration::from_secs(2),
+                Some(NOW),
+            );
+        })
+        .unwrap();
+    assert!(text(terminal.backend().buffer()).contains("7/17"));
+}
+
+#[test]
+fn older_snapshots_do_not_need_loop_fields() {
+    let mut old = serde_json::to_value(snapshot()).unwrap();
+    let object = old.as_object_mut().unwrap();
+    object.remove("loops_meet");
+    object.remove("checkpoints_paused");
+    for module in old["modules"].as_array_mut().unwrap() {
+        module.as_object_mut().unwrap().remove("tape");
+    }
+    let decoded: crate::protocol::Snapshot = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.loops_meet, None);
+    assert!(!decoded.checkpoints_paused);
+    assert!(decoded.modules.iter().all(|module| module.tape.is_none()));
+}
+
 pub fn render(app: &mut App, width: u16, height: u16) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("a test terminal");
     terminal
@@ -409,6 +475,63 @@ fn the_header_says_when_the_change_log_takes_no_changes() {
     assert!(screen.contains(" LOG NOT SYNCED "), "{screen}");
     assert!(!screen.contains("LOG STOPPED"), "{screen}");
     assert!(screen.contains("changes still go to it"), "{screen}");
+}
+
+#[test]
+fn the_header_says_how_the_tree_is() {
+    let mut app = connected();
+    let now = Instant::now();
+    let shown = |app: &mut App, tree: Option<crate::protocol::TreeHealth>| {
+        let mut look = snapshot();
+        look.tree = tree;
+        app.on_reply(Reply::Snapshot(Box::new(look)), now);
+        text(&render(app, 160, 30))
+    };
+    // A wall older than the tree says nothing; a well tree says nothing.
+    for tree in [
+        None,
+        Some(crate::protocol::TreeHealth {
+            planted: true,
+            through: Some(12),
+            ..crate::protocol::TreeHealth::default()
+        }),
+    ] {
+        let screen = shown(&mut app, tree);
+        assert!(!screen.contains("TREE"), "{screen}");
+    }
+    let screen = shown(&mut app, Some(crate::protocol::TreeHealth::default()));
+    assert!(screen.contains(" NO TREE "), "{screen}");
+    let screen = shown(
+        &mut app,
+        Some(crate::protocol::TreeHealth {
+            planted: true,
+            through: Some(811),
+            waiting: 1_024,
+            behind_from: Some(812),
+            error: None,
+        }),
+    );
+    assert!(
+        screen.contains(" TREE BEHIND from 812 · 1024 waiting "),
+        "{screen}"
+    );
+    // A stopped tree says why, in its first 40 characters.
+    let screen = shown(
+        &mut app,
+        Some(crate::protocol::TreeHealth {
+            planted: true,
+            through: Some(811),
+            waiting: 0,
+            behind_from: Some(812),
+            error: Some("git: fast-import checkpoint: stdout ended; exit status: 128".into()),
+        }),
+    );
+    assert!(
+        screen.contains(" TREE STOPPED: git: fast-import checkpoint: stdout ende "),
+        "{screen}"
+    );
+    assert!(!screen.contains("TREE BEHIND"), "{screen}");
+    assert!(!screen.contains("ended;"), "{screen}");
 }
 
 /// Modules on a big wall: twice the 96 the wall once held at most.

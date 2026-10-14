@@ -95,10 +95,8 @@ pub fn read(bytes: &[u8]) -> Result<(PatchFile, Vec<String>), String> {
         None | Some(serde_json::Value::Null) => BTreeMap::new(),
         Some(other) => entries(other, "speaker's words", Said::Nothing, &mut notes),
     };
-    let retired_speech = match fields.remove("retired_speech") {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(other) => list(other, "removed speaker's words", Said::Nothing, &mut notes),
-    };
+    let retired_speech = removed_words(fields.remove("retired_speech"), &mut notes);
+    let (loops, retired_loops) = read_loops(&mut fields, &mut notes);
     // The rack's rows are where modules hang: unreadable ones are laid out
     // afresh as the patch loads.
     let rack = match fields.remove("rack") {
@@ -137,6 +135,8 @@ pub fn read(bytes: &[u8]) -> Result<(PatchFile, Vec<String>), String> {
             dye,
             speech,
             retired_speech,
+            loops,
+            retired_loops,
             rack,
             groups,
         },
@@ -511,3 +511,31 @@ fn is_out(kind: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+fn read_loops(
+    fields: &mut serde_json::Map<String, serde_json::Value>,
+    notes: &mut Vec<String>,
+) -> (
+    BTreeMap<String, crate::patch::LoopRecord>,
+    Vec<crate::patch::RetiredLoop>,
+) {
+    let loops = match fields.remove("loops") {
+        None | Some(serde_json::Value::Null) => BTreeMap::new(),
+        Some(other) => entries(other, "loop tape", Said::Why, notes),
+    };
+    let retired_loops = match fields.remove("retired_loops") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(other) => list(other, "removed loop tape", Said::Why, notes),
+    };
+    (loops, retired_loops)
+}
+
+fn removed_words(
+    value: Option<serde_json::Value>,
+    notes: &mut Vec<String>,
+) -> Vec<crate::patch::RetiredWords> {
+    match value {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(other) => list(other, "removed speaker's words", Said::Nothing, notes),
+    }
+}

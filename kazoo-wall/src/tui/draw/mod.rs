@@ -11,9 +11,11 @@
 //! into ratatui's test backend.
 
 mod folded;
+mod loops;
 mod overlay;
 mod panes;
 mod rack;
+mod tree;
 mod wall;
 
 use std::time::Instant;
@@ -69,7 +71,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, now: Instant, unix_now: Option
     panes::header(buf, header, app);
     match app.view() {
         View::List => {
-            wall::wall(buf, rack, app);
+            wall::wall(buf, rack, app, now);
             panes::cables(buf, side, app);
         }
         View::Rack => rack::rack(buf, body, app),
@@ -90,6 +92,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, now: Instant, unix_now: Option
         Mode::Remove { module, cables } => overlay::confirm_remove(buf, area, module, *cables),
         Mode::Stop => overlay::confirm_stop(buf, area),
         Mode::Saves { index } => overlay::saves(buf, area, app, *index, unix_now),
+        Mode::Tree { index } => tree::tree(buf, area, app, *index),
+        Mode::Go { label, .. } => tree::confirm_go(buf, area, label),
         Mode::LoadSave { name, .. } => overlay::confirm_load(buf, area, name),
         Mode::DeleteSave { name, .. } => overlay::confirm_delete(buf, area, name),
         Mode::Clear { .. } => overlay::confirm_clear(buf, area),
@@ -101,6 +105,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, now: Instant, unix_now: Option
         | Mode::Tempo { .. }
         | Mode::Value { .. }
         | Mode::Jump { .. }
+        | Mode::Mark { .. }
         | Mode::Save { .. } => {}
     }
 }

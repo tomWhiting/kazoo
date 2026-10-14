@@ -143,3 +143,71 @@ START KZ-V04 base=538cfbe branch=lane/kz-V04 df=64GB at 03:26
 START KZ-B01c base=538cfbe branch=lane/kz-B01c df=64GB at 03:26
 START KZ-A03c base=538cfbe branch=lane/kz-A03c df=63GB at 03:26
 - KZ-T02a merged (review READY 0607f1c: kazoo-mcp Change literals, a refused load no longer starts a clock line). Merge check on main 1617372: fmt 0, clippy 0, nextest 3977/3977, doc 0, ast-grep 0 (full-T02a-0326.log).
+START KZ-T02b base=da446f9 branch=lane/kz-T02b df=61GB at 04:20
+START KZ-P04 base=da446f9 branch=lane/kz-P04 df=61GB at 04:21
+START KZ-P10 base=da446f9 branch=lane/kz-P10 df=61GB at 04:22
+- Follow-up to brief (V04 review finding 4): the cycle tracker moving an octave from our own hint or slipping mid-note counts as a sung leap and turns folding off for ~43 ms; no suite take triggers it.
+- Follow-up (A03c review finding 7): a desk link dropped on an early return (stream open or terminal enter failing) is not reported on exit; report on those paths or from each main after run.
+- KZ-V04 merged (review READY d5083ee: hot input no longer resets the tracker; one re-sung syllable no longer two onsets; tests tightened). Merge check on main 382ee42: fmt 0, clippy 0, nextest 3992/3992, doc 0, ast-grep 0 (full-V04-0437.log).
+- Follow-ups from L03's review (to brief): L04 should store the guard frame in a reel so a restored tape is exact at the seam; L02 defect: recording fades linearly over the seam and playback crossfades equal-power on top, so a sustained sound dips about 3 dB for 8 ms at every seam; L02: the write position rounds to the nearest cell, so a pass's last frame can land on cell 0. Size: daemon/wall.rs 4804 lines, store.rs 3394.
+- KZ-B01c merged (review READY 455f153: woken bound kept, ticked reported only) and KZ-A03c merged (review READY f11af29). Merge check on main 430e0ed: fmt 0, clippy 0, nextest 3996/3996, doc 0, ast-grep 0 (full-B01c-A03c-0534.log).
+- KZ-P01 merged (review READY e4972ed: full 1 ms crossfade on every jump, reset_slack at once, tests strengthened, 22 mutants caught; holds the last sample at zero lag, accepted) and KZ-L03 merged (review READY 8ee6e7c; tick conflict kept both). Merge check on main 83eeda7: fmt 0, clippy 0, nextest 4041/4041, doc 0, ast-grep 0 (full-P01-L03-0556.log).
+- Follow-ups from T02b's review: (defect to brief) KAZOO_TREE_DIR is inherited by in-process test daemons, so if Tom sets it in his shell kazoo-wall's tests would commit into his real tree: the daemon's tree directory must come from explicit config in tests, never the environment. To re-measure on a quiet Mac: T02b's feed_tree 2.56 ms a turn at load 120-167 (target 0.5 ms). Older: a plain --release build of kazoo-wall's tests fails (assert_no_alloc disable_release removes AllocDisabler).
+START KZ-V05 base=cf3cac7 branch=lane/kz-V05 df=66GB at 06:33
+START KZ-V06 base=cf3cac7 branch=lane/kz-V06 df=65GB at 06:33
+- KZ-T02b merged (review READY 948b422: the tree's packs are repacked, not kept). Merge check on main e241b75: fmt 0, clippy 0, nextest 4057/4057, doc 0, ast-grep 0 (full-T02b-0632.log).
+START KZ-T03 base=1c2dbfb branch=lane/kz-T03 df=60GB at 07:18
+START KZ-D04 base=1c2dbfb branch=lane/kz-D04 df=60GB at 07:20
+- Follow-up from V05's review (decided by Cassio, to brief as V05b): on an onset frame the quantiser's hysteresis must not hold the previous note's target; a new note picks its nearest scale note (hold A, silence, sing A# -40 cents -> A#, not A). Hysteresis is for wobble within a held note, not across notes.
+- KZ-V05 merged (review READY 3a2a7b2: a scale change retargets a held note; off is Hz for Hz through silence; 11 mutants caught). Merge check on main c19a52a: fmt 0, clippy 0, nextest 4072/4072, doc 0, ast-grep 0 (full-V05-0727.log).
+- Defect (Tom hit it 14 Oct 09:0x, to brief first): `kazoo mouth` fails to start when the default input runs at a different rate from the output (AirPods mic at 24 kHz, output 48 kHz): engine opens input at the output's rate (host/audio.rs:331, kazoo-tui/src/run.rs:85). The input must open at its own native rate and be resampled into the engine, and the mouth needs an input device choice. Workaround: set input to MacBook Pro Microphone.
+- Tom, 14 Oct 09:0x, first hum of `kazoo mouth` (V06 build): "it's actually really, really quite good." Wanted next, in his order: (1) input at any rate and any device (his interface runs about 96 kHz; AirPods mic 24 kHz refused), resampled into the engine, with a device choice in the mouth; (2) the mouth as its own instrument, not the old tracking view: every control in front of him (V08a, V08b), plus effects on the mouth, reverb and delay first (new lane V08c, from kazoo-fx); (3) the high end flicks around a lot: measure the tracker on high sung notes from the Mac mic and fix (V02 scoreboard rows above 600 Hz).
+- Tom, 14 Oct 09:1x, more exact: (a) high notes: whistling or singing above the guitar's high E around its 15th fret (about 660-800 Hz; whistles to about 2 kHz) the tracker flaps fast between the note and its octave (or the octave below); first fix in Track V: scoreboard rows for whistles and sung notes at 600 Hz-2 kHz from real recordings, then fix the octave choice there; (b) effects on the mouth with knobs: megaphone, distortion, delay, echo, plus the synth's sound and tone; (c) the tracking (DAW) parts come out of the mouth's screen and stay in the desk; (d) the mouth also goes on the wall (V10), but is "its own monster".
+- Tom, 14 Oct 09:2x: the flapping reads 800-2200 Hz on screen, moving too fast to read anything steady. So the fix's scoreboard rows cover 800-2200 Hz, and the mouth's screen needs a held readout or trail (V08b's 4-second trail) so a value can be read.
+- Tom, 14 Oct 09:2x: a Teenage Engineering style little looper inside the mouth would be really cool (OP-1 tape / OP-Z feel: record a phrase, loop it, layer over it).
+START KZ-V07a base=dd1bfc6 branch=lane/kz-V07a df=125GB at 09:27
+START KZ-V05b base=dd1bfc6 branch=lane/kz-V05b df=125GB at 09:27
+- Tom, 14 Oct 10:0x: tempo changes should glide over time, not jump: wall_tempo (and the desk's tempo) take a glide in beats or bars like wall_turn's glide_beats, the transport ramping BPM smoothly so every clock, delay sync and loop follows. To brief (Track W/C: the wall's tempo command, the desk's transport ramp, kazoo-mcp's wall_tempo gains glide_beats).
+- Defect (Tom, 14 Oct 10:4x): turning the desk (kazoo mix) off and on reset the wall's tempo (to the desk's default), and Tom could not find how to set the tempo from the wall console. Fix: a returning desk takes the tempo the wall is playing (or keeps its own last tempo from its saved session), never its default; and the wall console gets a tempo control with its key shown in the footer/help.
+- Tom, 14 Oct 10:5x: the wall console's ? help is hard to navigate: each row is a key and a description with no name for the action. Rows need a short action name (and grouping/search), so he can find a control by what it is called.
+START KZ-V12 base=dd1bfc6 branch=lane/kz-V12 df=53GB at 10:48
+START KZ-V11 base=dd1bfc6 branch=lane/kz-V11 df=53GB at 10:49
+- Tom, 14 Oct 11:0x: the public name is `kzoo` on both crates.io and npm (both free at 11:0x; `kazoo` npm taken by an abandoned 0.0.0, `kaz` npm taken by an empty 1.0.0). Commands: `kzoo`, with `kaz` as an alias. npx through per-platform binary packages (esbuild/biome pattern), built by GitHub Actions (no CI yet). Licence: Tom, 14 Oct 11:1x, "AGPL-3.0-or-later sounds good to me": LICENSE (gnu.org text) at the root, `license = "AGPL-3.0-or-later"` in every crate, `publish = false` on every crate except kazoo-cli (done on main). Still open: Tom's go to publish; kazoo-cli depends on the other path crates, so the release lane decides how they ship (publish each, or one crate); a dependency licence check before any publish.
+START KZ-V08a base=dd1bfc6 branch=lane/kz-V08a df=51GB at 11:12
+START KZ-T05a base=dd1bfc6 branch=lane/kz-T05a df=51GB at 11:12
+START KZ-L04 base=dd1bfc6 branch=lane/kz-L04 df=75GB at 11:15
+START KZ-V08b base=dd1bfc6 branch=lane/kz-V08b df=76GB at 11:30
+START KZ-P06 base=dd1bfc6 branch=lane/kz-P06 df=76GB at 11:30
+START KZ-V08c base=dd1bfc6 branch=lane/kz-V08c df=71GB at 11:48
+START KZ-L05 base=dd1bfc6 branch=lane/kz-L05 df=71GB at 11:55
+START KZ-P07 base=dd1bfc6 branch=lane/kz-P07 df=71GB at 11:56
+START KZ-P11 base=da446f9 branch=lane/kz-P11 df=66GB at 12:28
+START KZ-V08d base=dd1bfc6 branch=lane/kz-V08d df=46GB at 12:48
+START KZ-R01 base=dd1bfc6 branch=lane/kz-R01 df=96GB at 12:59
+START KZ-T04a base=dd1bfc6 branch=lane/kz-T04a df=95GB at 12:59
+START KZ-R02 base=8ed511d branch=lane/kz-R02 df=74GB at 13:55
+START KZ-R03 base=8ed511d branch=lane/kz-R03 df=74GB at 13:56
+- Tom, 14 Oct 19:5x, on the mouth after the build round: sounds good, high end much better; the front end is hard. Waveform not reachable, effects not reachable or not visibly doing anything, help a wall of text, gate hard to find; wants mouse, a voice oscilloscope and more to see, a vocoder-ish voice-through blend; maybe extra latency (AirPods; check with wired IEMs; add a latency readout). Next mouth lanes: V09a-d (briefs by Cassio).
+START KZ-V09a base=8ed511d branch=lane/kz-V09a df=40GB at 20:27
+START KZ-T04b base=8ed511d branch=lane/kz-T04b df=25GB at 20:32
+START KZ-D10 base=8ed511d branch=lane/kz-D10 df=84GB at 20:49
+START KZ-R04 base=8ed511d branch=lane/kz-R04 df=86GB at 20:55
+START KZ-D17 base=8ed511d branch=lane/kz-D17 df=72GB at 21:49
+START KZ-T04c base=8ed511d branch=lane/kz-T04c df=77GB at 21:56
+START KZ-T04d base=8ed511d branch=lane/kz-T04d df=77GB at 21:56
+START KZ-T04c base=8f397db branch=lane/kz-T04c df=77GB at 21:56
+START KZ-T04d base=8f397db branch=lane/kz-T04d df=77GB at 21:56
+START KZ-P11b base=96d5ba6 branch=lane/kz-P11b df=67GB at 22:20
+START KZ-T04f base=2680242 branch=lane/kz-T04f df=67GB at 22:20
+START KZ-P11b base=lane/kz-P11 df=67GB at 22:1x; START KZ-T04f base=main at 22:1x; FIX KZ-R04 run 2 at 22:20
+START KZ-V13 base=aca8a25 branch=lane/kz-V13 df=49GB at 23:55
+START KZ-T05g base=5c5280e branch=lane/kz-T05g df=25GB at 01:39
+START KZ-D18 base=2a430f0 branch=lane/kz-D18 df=99GB at 02:07
+START KZ-T11a base=f44489e branch=lane/kz-T11a df=99GB at 02:25
+START KZ-T10a base=f44489e branch=lane/kz-T10a df=99GB at 02:25
+START KZ-T04g base=72b8d51 branch=lane/kz-T04g df=94GB at 02:34
+START KZ-D18b base=015c825 branch=lane/kz-D18b df=79GB at 03:23
+START KZ-V14 base=bc27e5b branch=lane/kz-V14 df=74GB at 03:47
+START KZ-V15 base=bc27e5b branch=lane/kz-V15 df=74GB at 03:47
+START KZ-D20 base=cd69e4d branch=lane/kz-D20 df=75GB at 05:04
+START KZ-T05b base=cd69e4d branch=lane/kz-T05b df=74GB at 05:04

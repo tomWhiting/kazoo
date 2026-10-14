@@ -117,6 +117,8 @@ pub struct LoopGauges {
     pub anchor: AtomicU64,
     /// Current tape pass.
     pub pass: AtomicI64,
+    /// Last write pass per bar; the minimum integer means never written.
+    pub bar_pass: [AtomicI64; MAX_LOOP_BARS],
     /// Splice sample rate as f32 bits.
     pub rate: AtomicU32,
     /// Bars written during the current punch.
@@ -144,6 +146,7 @@ impl Default for LoopGauges {
             beats: AtomicU64::new(0),
             anchor: AtomicU64::new(0),
             pass: AtomicI64::new(0),
+            bar_pass: std::array::from_fn(|_| AtomicI64::new(i64::MIN)),
             rate: AtomicU32::new(0),
             written: std::array::from_fn(|_| AtomicU64::new(0)),
             peak_left: AtomicU32::new(0),

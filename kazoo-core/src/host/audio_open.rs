@@ -8,6 +8,13 @@ use super::audio::{
     Chosen, OpenedOutput, OutputInfo, OutputRequest, PreparedInput, PreparedOutput, StreamHealth,
 };
 use super::audio_callback::{InputCallback, OutputCallback};
+use super::audio_latency::LatencyReport;
+
+struct Signals {
+    errors: Sender<cpal::StreamError>,
+    fault: Arc<AtomicUsize>,
+    latency: Arc<LatencyReport>,
+}
 use crate::{Error, Result};
 
 pub fn open_output<F>(request: &OutputRequest, callback: F) -> Result<OpenedOutput>
@@ -55,33 +62,43 @@ fn open_prepared_output<F>(
 where
     F: FnMut(&mut [f32], &OutputInfo) + Send + 'static,
 {
-    fall_back_when_fixed_is_refused(device, &mut chosen, false);
+    let fixed = !fall_back_when_fixed_is_refused(device, &mut chosen, false);
     let (errors, receiver) = crossbeam_channel::bounded(16);
     let fault = Arc::new(AtomicUsize::new(0));
+    let latency = Arc::new(LatencyReport::default());
     let stream = match chosen.format {
         cpal::SampleFormat::F32 => output_stream::<f32, _>(
             device,
             &chosen.config,
             chosen.info,
             callback,
-            errors,
-            Arc::clone(&fault),
+            Signals {
+                errors,
+                fault: Arc::clone(&fault),
+                latency: Arc::clone(&latency),
+            },
         ),
         cpal::SampleFormat::I16 => output_stream::<i16, _>(
             device,
             &chosen.config,
             chosen.info,
             callback,
-            errors,
-            Arc::clone(&fault),
+            Signals {
+                errors,
+                fault: Arc::clone(&fault),
+                latency: Arc::clone(&latency),
+            },
         ),
         cpal::SampleFormat::U16 => output_stream::<u16, _>(
             device,
             &chosen.config,
             chosen.info,
             callback,
-            errors,
-            Arc::clone(&fault),
+            Signals {
+                errors,
+                fault: Arc::clone(&fault),
+                latency: Arc::clone(&latency),
+            },
         ),
         other => {
             return Err(Error::Device(format!(
@@ -102,7 +119,9 @@ where
     Ok(OpenedOutput {
         stream,
         info: chosen.info,
+        fixed,
         health: StreamHealth {
+            latency,
             fault,
             receiver,
             context,
@@ -139,33 +158,43 @@ fn open_prepared_input<F>(
 where
     F: FnMut(&[f32], &OutputInfo) + Send + 'static,
 {
-    fall_back_when_fixed_is_refused(device, &mut chosen, true);
+    let fixed = !fall_back_when_fixed_is_refused(device, &mut chosen, true);
     let (errors, receiver) = crossbeam_channel::bounded(16);
     let fault = Arc::new(AtomicUsize::new(0));
+    let latency = Arc::new(LatencyReport::default());
     let stream = match chosen.format {
         cpal::SampleFormat::F32 => input_stream::<f32, _>(
             device,
             &chosen.config,
             chosen.info,
             callback,
-            errors,
-            Arc::clone(&fault),
+            Signals {
+                errors,
+                fault: Arc::clone(&fault),
+                latency: Arc::clone(&latency),
+            },
         ),
         cpal::SampleFormat::I16 => input_stream::<i16, _>(
             device,
             &chosen.config,
             chosen.info,
             callback,
-            errors,
-            Arc::clone(&fault),
+            Signals {
+                errors,
+                fault: Arc::clone(&fault),
+                latency: Arc::clone(&latency),
+            },
         ),
         cpal::SampleFormat::U16 => input_stream::<u16, _>(
             device,
             &chosen.config,
             chosen.info,
             callback,
-            errors,
-            Arc::clone(&fault),
+            Signals {
+                errors,
+                fault: Arc::clone(&fault),
+                latency: Arc::clone(&latency),
+            },
         ),
         other => {
             return Err(Error::Device(format!(
@@ -186,7 +215,9 @@ where
     Ok(OpenedOutput {
         stream,
         info: chosen.info,
+        fixed,
         health: StreamHealth {
+            latency,
             fault,
             receiver,
             context,
@@ -199,17 +230,25 @@ fn output_stream<T, F>(
     config: &cpal::StreamConfig,
     info: OutputInfo,
     callback: F,
-    errors: Sender<cpal::StreamError>,
-    fault: Arc<AtomicUsize>,
+    signals: Signals,
 ) -> std::result::Result<cpal::Stream, cpal::BuildStreamError>
 where
     T: cpal::SizedSample + cpal::FromSample<f32> + 'static,
     F: FnMut(&mut [f32], &OutputInfo) + Send + 'static,
 {
+    let Signals {
+        errors,
+        fault,
+        latency,
+    } = signals;
     let mut callback = OutputCallback::<T, _>::new(info, callback);
     device.build_output_stream(
         config,
-        move |data: &mut [T], _| callback.process(data),
+        move |data: &mut [T], info| {
+            let time = info.timestamp();
+            latency.record(time.playback.duration_since(&time.callback));
+            callback.process(data);
+        },
         move |error| record_error(&errors, &fault, error),
         None,
     )
@@ -220,18 +259,26 @@ fn input_stream<T, F>(
     config: &cpal::StreamConfig,
     info: OutputInfo,
     callback: F,
-    errors: Sender<cpal::StreamError>,
-    fault: Arc<AtomicUsize>,
+    signals: Signals,
 ) -> std::result::Result<cpal::Stream, cpal::BuildStreamError>
 where
     T: cpal::SizedSample,
     f32: cpal::FromSample<T>,
     F: FnMut(&[f32], &OutputInfo) + Send + 'static,
 {
+    let Signals {
+        errors,
+        fault,
+        latency,
+    } = signals;
     let mut callback = InputCallback::new(info, callback);
     device.build_input_stream(
         config,
-        move |data: &[T], _| callback.process(data),
+        move |data: &[T], info| {
+            let time = info.timestamp();
+            latency.record(time.callback.duration_since(&time.capture));
+            callback.process(data);
+        },
         move |error| record_error(&errors, &fault, error),
         None,
     )
@@ -248,16 +295,25 @@ fn record_error(errors: &Sender<cpal::StreamError>, fault: &AtomicUsize, error: 
 /// own buffer size when the fixed one is refused, as the engine did before
 /// the shared host. Any callback length is rendered, so this never changes
 /// what is heard.
-fn fall_back_when_fixed_is_refused(device: &cpal::Device, chosen: &mut Chosen, input: bool) {
+fn fall_back_when_fixed_is_refused(
+    device: &cpal::Device,
+    chosen: &mut Chosen,
+    input: bool,
+) -> bool {
     let refused = match chosen.format {
         cpal::SampleFormat::F32 => probe::<f32>(device, &chosen.config, input),
         cpal::SampleFormat::I16 => probe::<i16>(device, &chosen.config, input),
         cpal::SampleFormat::U16 => probe::<u16>(device, &chosen.config, input),
         _ => false,
     };
+    apply_fallback(chosen, refused)
+}
+
+pub(super) const fn apply_fallback(chosen: &mut Chosen, refused: bool) -> bool {
     if refused {
         chosen.config.buffer_size = cpal::BufferSize::Default;
     }
+    refused
 }
 
 fn probe<T: cpal::SizedSample + 'static>(
@@ -274,4 +330,95 @@ fn probe<T: cpal::SizedSample + 'static>(
             .build_output_stream(config, |_: &mut [T], _| {}, drop, None)
             .is_err()
     }
+}
+
+impl PreparedInput {
+    /// Preserve raw samples and the complete device callback length for live capture.
+    pub(super) fn open_live(self, capture: super::live::InputCapture) -> Result<OpenedOutput> {
+        let mut chosen = self.chosen;
+        let fixed = !fall_back_when_fixed_is_refused(&self.device, &mut chosen, true);
+        let (errors, receiver) = crossbeam_channel::bounded(16);
+        let fault = Arc::new(AtomicUsize::new(0));
+        let latency = Arc::new(LatencyReport::default());
+        let stream = match chosen.format {
+            cpal::SampleFormat::F32 => live_stream::<f32>(
+                &self.device,
+                &chosen.config,
+                capture,
+                Signals {
+                    errors,
+                    fault: Arc::clone(&fault),
+                    latency: Arc::clone(&latency),
+                },
+            ),
+            cpal::SampleFormat::I16 => live_stream::<i16>(
+                &self.device,
+                &chosen.config,
+                capture,
+                Signals {
+                    errors,
+                    fault: Arc::clone(&fault),
+                    latency: Arc::clone(&latency),
+                },
+            ),
+            cpal::SampleFormat::U16 => live_stream::<u16>(
+                &self.device,
+                &chosen.config,
+                capture,
+                Signals {
+                    errors,
+                    fault: Arc::clone(&fault),
+                    latency: Arc::clone(&latency),
+                },
+            ),
+            other => {
+                return Err(Error::Device(format!(
+                    "{}: unsupported sample format {other:?}",
+                    self.context
+                )));
+            }
+        }
+        .map_err(|error| Error::Device(format!("{}: {error}", self.context)))?;
+        stream
+            .play()
+            .map_err(|error| Error::Device(format!("{}: {error}", self.context)))?;
+        Ok(OpenedOutput {
+            stream,
+            info: chosen.info,
+            fixed,
+            health: StreamHealth {
+                latency,
+                fault,
+                receiver,
+                context: self.context,
+            },
+        })
+    }
+}
+
+fn live_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    mut capture: super::live::InputCapture,
+    signals: Signals,
+) -> std::result::Result<cpal::Stream, cpal::BuildStreamError>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let Signals {
+        errors,
+        fault,
+        latency,
+    } = signals;
+    device.build_input_stream(
+        config,
+        move |data: &[T], info| {
+            let time = info.timestamp();
+            latency.record(time.callback.duration_since(&time.capture));
+            capture.process(data);
+        },
+        move |error| record_error(&errors, &fault, error),
+        None,
+    )
 }

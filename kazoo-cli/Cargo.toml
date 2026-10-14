@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "The kazoo studio in one command: the desk, the wall, the seat and every instrument"
+license = "AGPL-3.0-or-later"
 
 [lints]
 workspace = true
@@ -34,3 +35,5 @@ kazoo-glass = { path = "../kazoo-glass" }
 kazoo-arp = { path = "../kazoo-arp" }
 kazoo-play = { path = "../kazoo-play" }
 kazoo-tui = { path = "../kazoo-tui" }
+kazoo-mouth = { path = "../kazoo-mouth" }
+kazoo-tree = { path = "../kazoo-tree" }

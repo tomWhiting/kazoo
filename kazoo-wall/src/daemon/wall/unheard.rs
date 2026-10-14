@@ -1,4 +1,5 @@
-//! Keeping only modules whose cables lead to an output or a measurement.
+//! Keeping only modules whose cables lead to an output, a measurement or
+//! a loop.
 
 use super::{Order, Wall, error};
 use crate::catalogue::Kind;
@@ -7,9 +8,11 @@ use crate::probe;
 use crate::protocol::{ErrorCode, WallError};
 use std::collections::HashSet;
 
-/// An output or measurement hears every module that feeds it.
-pub(super) fn is_sink(kind: Kind) -> bool {
-    kind == Kind::OUT || probe::measures(kind)
+/// An output, a measurement or a loop hears every module that feeds it.
+/// A loop records whether or not anything listens to it yet: arming a
+/// loop and patching its output later is the usual order.
+pub fn is_sink(kind: Kind) -> bool {
+    kind == Kind::OUT || probe::measures(kind) || kind == Kind::LOOP
 }
 
 impl Wall {
@@ -62,7 +65,7 @@ impl Wall {
             if !again.contains(cable.to_module.as_str()) {
                 continue;
             }
-            if let Some((_, tag)) = self.lines.get_mut(&cable.id) {
+            if let Some(tag) = self.lined.get_mut(&cable.id) {
                 self.line_tags = self.line_tags.wrapping_add(1).max(1);
                 *tag = self.line_tags;
             }
@@ -78,7 +81,7 @@ impl Wall {
             error(
                 ErrorCode::NotAllowed,
                 format!(
-                    "{module} reaches no out, scope or readout, so it is not rendered and has \
+                    "{module} reaches no out, scope, readout or loop, so it is not rendered and has \
                      taken none of the words given it since; patch it toward one and it takes \
                      words again"
                 ),

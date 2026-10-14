@@ -6,8 +6,10 @@ use std::{
 };
 
 use kazoo_core::analysis::score::{
-    CycleUnderTest, PyinUnderTest, TrackerUnderTest, score, signals, table, wav,
+    CycleUnderTest, FusedUnderTest, PyinUnderTest, TrackerUnderTest, gate,
+    instrument::instrument_suite, score, signals, table, wav,
 };
+use kazoo_core::host::live::InputProfile;
 
 const USAGE: &str = "Usage: voice_score [--rate <hz>] [<wav>...]";
 
@@ -15,6 +17,7 @@ fn trackers(rate: u32) -> kazoo_core::Result<Vec<Box<dyn TrackerUnderTest>>> {
     Ok(vec![
         Box::new(PyinUnderTest::new(rate)?),
         Box::new(CycleUnderTest::new(rate)),
+        Box::new(FusedUnderTest::new(rate)?),
     ])
 }
 
@@ -68,7 +71,51 @@ fn main() -> kazoo_core::Result<()> {
             ));
         }
     }
-    let output = table(&rows);
+    let mut gate_rows = Vec::new();
+    for take in &takes {
+        gate_rows.push((
+            "voice",
+            take.name.as_str(),
+            gate::score_gate(&mut FusedUnderTest::new(take.rate)?, take),
+        ));
+    }
+    let mut instrument_takes = instrument_suite(rate);
+    instrument_takes.extend(wav::fixture_takes_with_settings(
+        &manifest.join("tests/fixtures/instrument"),
+        InputProfile::Line.tracking(),
+    )?);
+    let mut instrument_rows = Vec::new();
+    let mut instrument_gates = Vec::new();
+    for (profile, name) in [
+        (InputProfile::Guitar, "voice:guitar"),
+        (InputProfile::Bass, "voice:bass"),
+    ] {
+        for take in &instrument_takes {
+            instrument_rows.push((
+                name,
+                take.name.as_str(),
+                score(
+                    &mut FusedUnderTest::with_settings(take.rate, profile.tracking())?,
+                    take,
+                ),
+            ));
+            instrument_gates.push((
+                name,
+                take.name.as_str(),
+                gate::score_gate(
+                    &mut FusedUnderTest::with_settings(take.rate, profile.tracking())?,
+                    take,
+                ),
+            ));
+        }
+    }
+    let output = format!(
+        "{}\n{}\n## Instruments\n\n{}\n{}",
+        table(&rows),
+        gate::table(&gate_rows),
+        table(&instrument_rows),
+        gate::table(&instrument_gates)
+    );
     std::io::stdout().lock().write_all(output.as_bytes())?;
     let logs = manifest.join("../target/kz-logs");
     std::fs::create_dir_all(&logs)?;

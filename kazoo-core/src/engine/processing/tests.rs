@@ -103,13 +103,22 @@ pub(super) struct Rig {
     pub(super) commands: Sender<EngineCommand>,
     pub(super) disk_commands: Receiver<DiskCommand>,
     pub(super) timelines: TimelineMailbox,
-    pub(super) pitch: HeapProd<PitchEstimate>,
     pub(super) spectrum: HeapProd<Vec<f32>>,
     pub(super) formants: HeapProd<Option<FormantData>>,
     /// The next track id to give out, as the engine handle would.
     next_track: usize,
     _analysis: HeapCons<f32>,
     _disk: HeapCons<f32>,
+    // The feed in io must drop before this guard joins the worker.
+    _judge: JoinedJudge,
+}
+
+struct JoinedJudge(Option<crate::voice::judge::Judge>);
+
+impl Drop for JoinedJudge {
+    fn drop(&mut self) {
+        self.0.take().unwrap().join().unwrap();
+    }
 }
 
 impl Rig {
@@ -153,7 +162,12 @@ impl Rig {
         }
         let (analysis_prod, analysis) = HeapRb::<f32>::new(block * 64).split();
         let (disk_prod, disk_samples) = HeapRb::<f32>::new(block * 64).split();
-        let (pitch, pitch_cons) = HeapRb::<PitchEstimate>::new(4).split();
+        let (judge, judge_results, judge_worker) = crate::voice::judge::spawn(
+            crate::engine::judge_config(&crate::engine::EngineConfig::default().pitch, rate),
+            block,
+            crate::voice::judge::OnsetConfig::default(),
+        )
+        .unwrap();
         let (spectrum, spectrum_cons) = HeapRb::<Vec<f32>>::new(4).split();
         let (formants, formant_cons) = HeapRb::<Option<FormantData>>::new(4).split();
         let (commands, command_rx) = crossbeam_channel::bounded(64);
@@ -168,7 +182,8 @@ impl Rig {
             display_recycle,
             analysis_prod,
             disk_prod,
-            pitch_cons,
+            judge,
+            judge_results,
             spectrum_cons,
             formant_cons,
             command_rx,
@@ -187,12 +202,12 @@ impl Rig {
             commands,
             disk_commands,
             timelines,
-            pitch,
             spectrum,
             formants,
             next_track: 0,
             _analysis: analysis,
             _disk: disk_samples,
+            _judge: JoinedJudge(Some(judge_worker)),
         }
     }
 
@@ -381,7 +396,7 @@ fn processing_state_initializes_correctly() {
     assert_eq!(state.sample_rate, 44_100);
     assert_eq!(state.mic_block.len(), 256);
     assert!(!state.is_recording);
-    assert!(state.latest_pitch.frequency.is_none());
+    assert!(!state.last_frame.voiced);
     assert!(state.spectrum.is_empty());
     assert_eq!(state.formants.num_formants, 0);
     assert_eq!(state.next_clip_id, 0);
@@ -1418,15 +1433,36 @@ fn detected_pitch_reaches_armed_tracks_only() {
     let armed = rig.add_track("Armed", SynthesisMode::PitchTracked);
     rig.add_track("Idle", SynthesisMode::PitchTracked);
     rig.apply(EngineCommand::SetTrackArm(armed, true));
-    let estimate = PitchEstimate {
-        frequency: Some(220.0),
-        voiced_probability: 0.9,
-        midi_note: Some(57),
-    };
-    assert!(rig.pitch.try_push(estimate).is_ok());
-    rig.drain_analysis();
-    assert_eq!(rig.state.latest_pitch.frequency, Some(220.0));
-    assert_eq!(rig.reclaim(), 0, "a pitch estimate holds nothing to free");
+    let mut phase = 0.0_f32;
+    let mut out = [0.0; BLOCK * 2];
+    for _ in 0..20 {
+        let mut mic = [0.0; BLOCK];
+        for sample in &mut mic {
+            phase = (phase + std::f32::consts::TAU * 220.0 / RATE as f32) % std::f32::consts::TAU;
+            *sample = 0.5 * phase.sin();
+        }
+        assert_eq!(rig.mic.push_slice(&mic), mic.len());
+        rig.render(&mut out);
+    }
+    let target = rig
+        .state
+        .mixer
+        .track(armed)
+        .unwrap()
+        .synth()
+        .target_frequency()
+        .unwrap();
+    assert!((1200.0 * (target / 220.0).log2()).abs() <= 5.0);
+    assert_eq!(
+        rig.state
+            .mixer
+            .track(TrackId(1))
+            .unwrap()
+            .synth()
+            .target_frequency(),
+        Some(0.0)
+    );
+    assert_eq!(rig.stats().callback_frees, 0);
 }
 
 // ---------------------------------------------------------------------------

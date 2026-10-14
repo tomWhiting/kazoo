@@ -2,7 +2,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use kazoo::cli::{Cli, Command, WallCommand, console_serve};
+use kazoo::cli::{Cli, Command, TreeCommand, WallCommand, console_serve};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -41,7 +41,9 @@ fn main() -> ExitCode {
                 ExitCode::from(err.exit_code())
             }
         },
-        Command::Mouth => finish(kazoo_tui::run(kazoo_tui::Args)),
+        Command::Mouth(args) => finish(kazoo_mouth::run(args.into())),
+        Command::Tui => finish(kazoo_tui::run(kazoo_tui::Args::default())),
+        Command::Tree(args) => finish(tree(&args)),
     }
 }
 
@@ -55,8 +57,41 @@ fn finish(result: color_eyre::Result<()>) -> ExitCode {
     }
 }
 
+fn tree(args: &kazoo::cli::TreeArgs) -> color_eyre::Result<()> {
+    let dir = kazoo_tree::tree_dir()?;
+    if args.print {
+        let text = kazoo_tree::print(dir, args.cols, args.rows)?;
+        let mut out = std::io::stdout().lock();
+        let written = std::io::Write::write_all(&mut out, text.as_bytes())
+            .and_then(|()| std::io::Write::flush(&mut out));
+        // A reader that stops early (`| head`) took all it wanted: done.
+        let stopped_early = written
+            .as_ref()
+            .is_err_and(|err| err.kind() == std::io::ErrorKind::BrokenPipe);
+        if !stopped_early {
+            written?;
+        }
+    } else {
+        kazoo_tree::run(dir)?;
+    }
+    Ok(())
+}
+
 fn wall(command: Option<WallCommand>) -> color_eyre::Result<()> {
     match command {
+        Some(WallCommand::Tree {
+            command: TreeCommand::Import(args),
+        }) => {
+            let state = kazoo_wall::paths::state_dir()?;
+            let tree = kazoo_wall::tree::git::tree_dir(&state).ok_or_else(|| {
+                kazoo_wall::tree::rings::RingsError::NotATree("the wall's state directory has no parent to keep the tree beside; set KAZOO_TREE_DIR".into())
+            })?;
+            println!(
+                "{}",
+                kazoo_wall::tree::rings::grow(&state, &tree, args.dry_run)?
+            );
+            Ok(())
+        }
         None | Some(WallCommand::Console) => {
             kazoo_wall::tui::run(console_serve(std::env::current_exe().map_err(|err| {
                 color_eyre::eyre::eyre!("cannot find this program to start the wall with: {err}")

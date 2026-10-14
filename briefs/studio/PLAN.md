@@ -127,16 +127,21 @@ Tom's words, 13 Oct 2026, about 15:10 to 15:20: "I would really love to be able 
 | V03 the cycle tracker | `analysis::cycle::CycleTracker`: a pitch per cycle on the callback, allocation-free, meeting the latency budget on the scoreboard | kazoo-core | V02 |
 | V04 the voice frame | `kazoo_core::voice`: `VoiceFrame` every 64 samples (Hz, 1 V/oct with 0 = C4, gate, onset, loudness, breath, confidence); the judge thread (pYIN plus the onset detector, which is no longer thrown away); the fusion that folds octaves and vetoes false voicing | kazoo-core | V03 |
 | V05 the quantiser | `voice::quantise`: scale and root, snap speed 0 to 400 ms, keep-vibrato, hysteresis, blend; the wall's scale tables as the one source | kazoo-core | V04 |
+| V05b a new note picks its own | on an onset the quantiser chooses the nearest note afresh; hysteresis only holds a sounding note | kazoo-core | V05 |
 | V06 kazoo-tui plays Hz for Hz | the tui engine's armed tracks follow the voice frame, not the 46 ms pYIN; the judge thread replaces pitch and onset on the analysis thread; portamento default 3 ms | kazoo-core | V04 |
 | V07a voice on the wire | `MSG_VOICE`, `MSG_VOICE_FOLLOW` and `MSG_DESK_FEATURES`; `HubLinkAudio::send_voice` and `drain_voice` on rings of their own; `HubLink::follow_voice` | kazoo-core | V04, B03a |
 | V07b the desk carries the voice | the hub announces the feature, forwards voice only to followers, keeps one voice at a time, and the strip heads say `voice` and `follows` | kazoo-mix | V07a, B03b |
 | V08a the mouth | new crate kazoo-mouth: mic in, the tracker, the quantiser, its own synth (tone plus breath "air"), the stream published on the desk; `kazoo mouth` runs it, kazoo-tui moves to `kazoo tui`; `kazoo mouth --score` | kazoo-mouth (new), kazoo-cli | V05, V07a |
 | V08b the mouth's screen | the pitch readout, a 4-second trail (direct and snapped), meters, and every quantiser and synth control on keys | kazoo-mouth | V08a |
+| V08c the mouth's effects | megaphone (radio model 3), distortion (fuzz/screamer/amp/crush), delay (digital/bbd), echo (tape), reverb (plate/hall/spring) after the synth; every knob on the screen; delays on the desk's tempo; settings kept in ~/.kazoo/mouth/settings.json (overrides V08a's no-settings-file) | kazoo-mouth | V08b |
+| V08d the mouth's looper | record before the effects, loop, overdub 3 undoable layers, 32 s cap pre-allocated, seam faded once, free or 1-16 bars on the desk, save to WAV | kazoo-mouth | V08c |
 | V09a following: the shared part and the mini | `voice::follow` (`Follower`, the `Follows` trait, `FollowStatus`), `FOLLOW_VOICE = 'i'` in `kazoo_host::keys`, `--follow`; the mini follows legato | kazoo-core, kazoo-host, kazoo-mini, kazoo-cli | V07b, V08a, A05 |
 | V09b following: 303, cs80, dx | the 303 follows legato, with its sequencer resting; one voice of the cs80 and of the dx follows, and keyboard notes keep the rest | those three, kazoo-cli | V09a |
 | V09c following: juno, prophet | one voice of each follows | those two, kazoo-cli | V09a |
 | V09d following: string and glass | the plucked and struck voices are retuned at frame rate while they ring | kazoo-string, kazoo-glass, kazoo-cli | V09a |
 | V10 the voice on the wall | `voice` (pitch, snap, gate, level) and `breath` (breath, onset, sure) modules fed from the desk's stream; the wall follows while one is on it; the wall's `quant` and the mouth share one scale table | kazoo-wall | V07b, V05 |
+| V11 any input, any rate | the mic opens at its own rate and channel (8-192 kHz), resampled on the input side by rubato; a supervisor for lost or changed devices; `kazoo mouth --input/--input-channel/--list-inputs`; header shows the mic and its rate | kazoo-core, kazoo-tui, kazoo-cli | V06 |
+| V12 high notes hold | the engine's judge was 60-1000 Hz, so 800-2200 Hz notes folded an octave down and flapped: the engine judges with `for_rate` (50-4000 Hz); 16 scoreboard rows 800-2200 Hz (whistles, sung, splices, 96 kHz); then B1 (tracker unlock) or B2 (fold needs two verdicts) by the measured rule | kazoo-core | V06 |
 
 **For Tom by hand (needed from V02 on, not blocking):** four takes into `kazoo-core/tests/fixtures/voice/`, each 10 to 30 s, mono or stereo, any rate, on the laptop mic at your normal distance: `hum-low.wav` (a slow low hum, the lowest you can), `vibrato-phrase.wav` (a sung phrase with vibrato), `slides.wav` (slides up and down between notes), `whistle.wav` (a whistled tune). `cargo run --release -p kazoo-core --example voice_score` scores them, and from V08a on so does `kazoo mouth --score kazoo-core/tests/fixtures/voice/*.wav`.
 
@@ -259,6 +264,9 @@ Tom's words, 13 Oct 2026, about 19:20 to 20:10:
 | T08a the tree's shape | a `shape` request: every limb grown from its parent, modules alive per commit, marks, lanterns and the wall placed | kazoo-wall | T07b |
 | T08b the little tree | `Y` draws the tree in braille (plain fallback), thicker where more modules lived; every mark a reading | kazoo-wall (tui) | T08a, T07d, L12 (or a small lane split from L12 for `Dots` and plain glyphs) |
 | T09 the Bevy tree | an explorable tree (native and wasm), after Meridian Life | new crate | T08 |
+| T10a a batch of changes with a note | `Request::Batch { note, changes }`, `as`/`@label` for added modules, all or none, one change, one undo; the tree's commit has the note as subject and a `Kazoo-Step` trailer per step; `wall_batch` for the seats (Tom, 14 Oct 22:50 and 15 Oct 00:25) | kazoo-wall, kazoo-mcp | T04d |
+| T10b the console sends a batch | `:batch <note>` holds the console's changes, shown held; Enter sends, Esc drops | kazoo-wall (tui) | T10a |
+| T11a a moment sounds the same every time | the wall keeps an origin; a go lands on the next bar and the wall starts from its beginning there (counters, phases, random streams from zero); the gap commit names only changes without commits (Tom, 15 Oct 00:40) | kazoo-wall | T04d; before T05b |
 
 ### Track P: audio inputs
 

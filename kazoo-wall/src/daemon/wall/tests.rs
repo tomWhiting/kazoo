@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::*;
+mod moments;
 use crate::SUB_BLOCK;
 use crate::dsp::{Io, Module as DspModule, Tick};
 use crate::engine::{Engine, EngineConfig, engine};
@@ -12,6 +13,11 @@ use crate::patch::PatchFile;
 use crate::protocol::{ChangeResult, ProbeResult, Snapshot};
 use crate::seed::seed;
 use crate::store::{FailAt, Loaded};
+use moments::land;
+
+mod batch;
+mod delay_lines;
+mod tempo;
 
 fn wall() -> (Wall, Engine) {
     let (engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
@@ -99,6 +105,7 @@ fn every_wall_error_code_is_reachable() {
         code(ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "lfo".to_string(),
                 name: Some("bad/name".to_string()),
                 place: None,
@@ -129,6 +136,7 @@ fn every_wall_error_code_is_reachable() {
         code(ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "theremin".to_string(),
                 name: None,
                 place: None,
@@ -159,6 +167,7 @@ fn undo_that_no_longer_applies_is_an_error() {
         ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "sh".to_string(),
                 name: None,
                 place: None,
@@ -216,6 +225,7 @@ fn undo_that_no_longer_applies_is_an_error() {
 
 fn add(kind: &str) -> Request {
     Request::Add {
+        alias: None,
         kind: kind.to_string(),
         name: None,
         place: None,
@@ -260,13 +270,8 @@ fn the_wall_has_no_fixed_size_and_grows_its_engine_as_it_goes() {
     }
     assert!(cables > 320, "{cables}");
     assert_eq!(wall.patch().cables().len(), cables);
-    assert_eq!(wall.lines.len(), cables);
-    // Every cable has a line of its own, and the engine has been sent
-    // room for every module and line, grown by doubling.
-    let lines: BTreeSet<u32> = wall.lines.values().map(|(line, _)| *line).collect();
-    assert_eq!(lines.len(), cables);
+    assert_eq!(wall.lined.len(), wall.timing.delays.len());
     assert!(wall.engine.slots() >= target && wall.engine.slots().is_power_of_two());
-    assert!(wall.engine.lines() >= cables);
 }
 
 #[test]
@@ -477,6 +482,7 @@ fn changes_are_numbered_summarised_and_undone() {
         ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "lfo".to_string(),
                 name: Some("slow wobble".to_string()),
                 place: None,
@@ -832,6 +838,7 @@ fn fingerprints_survive_a_restart() {
     wall.request(
         "Cassio",
         &Request::Add {
+            alias: None,
             kind: "noise".to_string(),
             name: None,
             place: None,
@@ -861,6 +868,7 @@ fn a_dry_path_is_held_back_to_meet_a_drive() {
     let now = Instant::now();
     for kind in ["vco", "klon", "mix"] {
         let add = Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: None,
             place: None,
@@ -943,6 +951,7 @@ fn built(kinds: &[&str], cables: &[(&str, &str)], now: Instant) -> (Wall, Vec<u3
     let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
     for kind in kinds {
         let add = Request::Add {
+            alias: None,
             kind: (*kind).to_string(),
             name: None,
             place: None,
@@ -1139,9 +1148,7 @@ fn a_cable_keeps_its_line_and_a_new_one_takes_the_lowest_free() {
         ],
         now,
     );
-    let before = wall.lines.clone();
-    let lines: Vec<u32> = cables.iter().map(|id| before[id].0).collect();
-    assert_eq!(lines, [0, 1, 2]);
+    assert!(wall.lined.is_empty());
     let unplug = Request::Unpatch {
         cable: Some(cables[1]),
         to: None,
@@ -1159,13 +1166,8 @@ fn a_cable_keeps_its_line_and_a_new_one_takes_the_lowest_free() {
         }) => cable.id,
         other => panic!("{other:?}"),
     };
-    // The others keep line and tag; the newcomer takes line 1 under a tag
-    // never used before.
-    assert_eq!(wall.lines[&cables[0]], before[&cables[0]]);
-    assert_eq!(wall.lines[&cables[2]], before[&cables[2]]);
-    let (line, tag) = wall.lines[&new];
-    assert_eq!(line, 1);
-    assert!(before.values().all(|(_, old)| *old != tag));
+    assert!(!wall.lined.contains_key(&new));
+    assert!(wall.lined.is_empty());
 }
 
 #[test]
@@ -1208,6 +1210,7 @@ fn a_speaker_brought_back_by_undo_says_its_words_again() {
     wall.speech = speech;
     let now = Instant::now();
     let add = Request::Add {
+        alias: None,
         kind: "speak".to_string(),
         name: None,
         place: None,
@@ -1300,6 +1303,7 @@ fn a_dry_path_and_its_held_back_twin_cancel() {
     let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
     for kind in ["vco", "flanger", "mix", "out"] {
         let add = Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: None,
             place: None,
@@ -1424,7 +1428,7 @@ fn a_wall_past_the_old_limits_grows_and_plays_without_allocating() {
     assert_eq!(cables, OLD_CABLES * 2);
     let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
     let mut wall = Wall::new(patch, control, None, Vec::new(), None);
-    assert_eq!(wall.lines.len(), cables);
+    assert_eq!(wall.lined.len(), wall.timing.delays.len());
     // The engine starts with room for a modest wall. The room and lines
     // this one needs were built on the control side and sent; the engine
     // moves into them as it renders, without allocating.
@@ -1432,7 +1436,11 @@ fn a_wall_past_the_old_limits_grows_and_plays_without_allocating() {
     let mut buffer = vec![0.0_f32; 512 * 2];
     render_without_allocating(&mut engine, &mut buffer);
     assert!(wall.engine.shared().slots() >= OLD_MODULES * 2);
-    assert!(wall.engine.shared().lines() >= cables);
+    while wall.engine.backlog() > 0 {
+        assert!(wall.engine.pump().is_empty());
+        render_without_allocating(&mut engine, &mut buffer);
+    }
+    assert_eq!(wall.engine.shared().lines(), wall.lined.len());
     for _ in 0..5 {
         render_without_allocating(&mut engine, &mut buffer);
         wall.tick(Instant::now());
@@ -1837,6 +1845,7 @@ fn adding_in_a_place_and_undoing_a_removal_keep_the_rows() {
         ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "noise".to_string(),
                 name: None,
                 place: Some(Place {
@@ -1858,6 +1867,7 @@ fn adding_in_a_place_and_undoing_a_removal_keep_the_rows() {
         ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "noise".to_string(),
                 name: None,
                 place: None,
@@ -1969,6 +1979,7 @@ fn playing(wall: &Wall) -> Vec<(String, Vec<f64>)> {
 /// wobble's id.
 fn save_a_wobble(wall: &mut Wall) -> String {
     let add = Request::Add {
+        alias: None,
         kind: "lfo".to_string(),
         name: Some("slow wobble".to_string()),
         place: None,
@@ -2093,6 +2104,7 @@ fn a_load_replaces_the_wall_as_it_plays_and_undo_brings_it_back_exactly() {
     ask(
         &mut wall,
         &Request::Add {
+            alias: None,
             kind: "noise".to_string(),
             name: None,
             place: None,
@@ -2372,6 +2384,7 @@ fn a_wall_of_decisions_and_routers_saves_and_loads_back_exactly() {
     ];
     for kind in kinds {
         let add = Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: None,
             place: None,
@@ -3019,6 +3032,7 @@ fn a_change_the_log_cannot_take_is_not_made() {
     let added = ask(
         &mut wall,
         &Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,
@@ -3059,6 +3073,7 @@ fn every_kind_of_change(wall: &mut Wall) -> Vec<Request> {
         ask(
             wall,
             &Request::Add {
+                alias: None,
                 kind: "lfo".to_string(),
                 name: None,
                 place: None,
@@ -3091,6 +3106,7 @@ fn every_kind_of_change(wall: &mut Wall) -> Vec<Request> {
     vec![
         turn("vco1", "tune", 3.0),
         Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,
@@ -3701,13 +3717,11 @@ fn a_tempo_the_log_cannot_take_never_reaches_the_desk() {
     let store = Store::peek(dir.path()).unwrap();
     let (link, (_audio, mut stream)) = a_desk(dir.path(), 120.0);
     let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
-    let mut wall = Wall::new(
-        seed().unwrap(),
-        control,
-        Some(link),
-        Vec::new(),
-        Some(store),
-    );
+    // The wall and the desk agree at the start, so the one failure falls on
+    // the ask and not on logging the desk's own tempo first.
+    let mut patch = seed().unwrap();
+    patch.tempo = 120.0;
+    let mut wall = Wall::new(patch, control, Some(link), Vec::new(), Some(store));
     let tempo = wall.patch().tempo;
     fail_once(&mut wall, FailAt::AppendLog);
     let refused = ask(&mut wall, &Request::Tempo { bpm: 140.0 }).unwrap_err();
@@ -3745,6 +3759,7 @@ fn words_the_log_cannot_take_never_reach_the_player() {
     wall.speech = speech;
     let now = Instant::now();
     let add = Request::Add {
+        alias: None,
         kind: "speak".to_string(),
         name: None,
         place: None,
@@ -4091,7 +4106,8 @@ fn a_save_or_deletion_whose_directory_cannot_be_flushed_still_happens() {
     let outcome = save(&mut wall, "jam", true).unwrap();
     let result: SaveResult = serde_json::from_value(outcome.result).unwrap();
     assert!(result.replaced);
-    assert_eq!(result.notes.len(), 1, "{:?}", result.notes);
+    assert_eq!(result.notes.len(), 2, "{:?}", result.notes);
+    assert!(result.notes[1].contains("it is not marked in the tree"));
     assert!(
         result.notes[0].contains("take it back"),
         "{:?}",
@@ -4120,7 +4136,8 @@ fn a_save_a_crash_could_take_back_is_no_backup() {
     fail_once(&mut wall, FailAt::SyncDir);
     let outcome = save(&mut wall, "jam", false).unwrap();
     let result: SaveResult = serde_json::from_value(outcome.result).unwrap();
-    assert_eq!(result.notes.len(), 1);
+    assert_eq!(result.notes.len(), 2);
+    assert!(result.notes[1].contains("it is not marked in the tree"));
     // The wall is that save, but a new wall keeps it afresh.
     let cleared: LoadResult =
         serde_json::from_value(ask(&mut wall, &Request::New).unwrap()).unwrap();
@@ -4200,6 +4217,7 @@ fn a_wall_too_large_to_keep_says_so_and_takes_nothing_that_grows_it() {
     let refused = ask(
         &mut wall,
         &Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,
@@ -4234,6 +4252,7 @@ fn a_wall_too_large_to_keep_says_so_and_takes_nothing_that_grows_it() {
     ask(
         &mut wall,
         &Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,
@@ -4584,6 +4603,7 @@ fn a_wall_of_scopes_and_readouts_saves_and_loads_back_and_measures_again() {
     let (mut wall, mut engine, dir) = saving_wall();
     for kind in ["scope", "readout"] {
         let add = Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: Some(format!("my {kind}")),
             place: None,
@@ -4631,6 +4651,7 @@ fn a_wall_of_scopes_and_readouts_saves_and_loads_back_and_measures_again() {
     play(&mut wall, &mut engine);
     assert!(wall.snapshot().probes.is_empty());
     load_save(&mut wall, "probes").unwrap();
+    land(&wall, &mut engine);
     play(&mut wall, &mut engine);
     plays_at_its_targets(&wall, &saved);
     assert_eq!(wall.snapshot().cables, cables);
@@ -4716,6 +4737,7 @@ fn a_removed_scope_s_capture_never_lands_on_what_takes_its_slot() {
     };
     ask(&mut wall, &remove).unwrap();
     let add = Request::Add {
+        alias: None,
         kind: "readout".to_string(),
         name: None,
         place: None,
@@ -4731,6 +4753,7 @@ fn a_removed_scope_s_capture_never_lands_on_what_takes_its_slot() {
 fn readings_follow_a_load_and_its_undo() {
     let (mut wall, mut engine, _dir) = saving_wall();
     let add = Request::Add {
+        alias: None,
         kind: "scope".to_string(),
         name: None,
         place: None,
@@ -4749,6 +4772,7 @@ fn readings_follow_a_load_and_its_undo() {
     let loaded = load_save(&mut wall, "measured").unwrap();
     // Nothing of the empty wall, nor of the scope before it went.
     assert!(wall.readings.is_empty());
+    land(&wall, &mut engine);
     run_for(&mut wall, &mut engine, 0.5);
     let scope = probed(&mut wall, Some("scope1")).probes[0]
         .scope
@@ -4757,6 +4781,7 @@ fn readings_follow_a_load_and_its_undo() {
     assert!(scope.input_a.connected, "{scope:?}");
     // Undone, the empty wall is back: no probes, no readings.
     undo_load(&mut wall, loaded.change.seq);
+    land(&wall, &mut engine);
     assert!(wall.readings.is_empty());
     run_for(&mut wall, &mut engine, 0.2);
     assert!(wall.snapshot().probes.is_empty());
@@ -5002,10 +5027,16 @@ fn a_wall_that_fits_its_file_fits_a_look() {
     // else to them. Checked on such a wall (every kind, no names, no dye)
     // and on one with names, dye from six seats on every module, and a
     // cable into each.
-    // Each kind on its own: a wall of a hundred of it, at its defaults.
+    // Each kind on its own: a wall of a hundred of it (of loops, the eight
+    // a wall holds), at its defaults.
     for kind in Kind::all() {
         let mut bare = Patch::empty(120.0);
-        for _ in 0..100 {
+        let count = if kind == Kind::LOOP {
+            crate::daemon::loops::MAX_LOOPS
+        } else {
+            100
+        };
+        for _ in 0..count {
             bare.add(kind.name(), None, None).unwrap();
         }
         let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
@@ -5029,6 +5060,7 @@ fn a_wall_that_fits_its_file_fits_a_look() {
         let added = worn.request(
             &format!("Adder{n}"),
             &Request::Add {
+                alias: None,
                 kind: kind.name().to_string(),
                 name: Some("x".repeat(24)),
                 place: None,
@@ -5082,3 +5114,5 @@ fn a_small_heavy_wall_takes_additions_apart_and_says_when_it_is_full() {
 
 mod cost;
 mod unheard;
+
+mod loops;

@@ -359,6 +359,7 @@ mod tests {
             messages_dropped: 0,
             connections: u64::from(connected),
             last_refusal: None,
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
         }
     }
 
@@ -375,6 +376,7 @@ mod tests {
 
         app.hub = Some(LinkStatus {
             last_refusal: Some("every strip is taken".to_owned()),
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
             ..status(false)
         });
         assert_eq!(
@@ -413,6 +415,7 @@ mod tests {
             messages_dropped: 0,
             connections: 0,
             last_refusal: Some("every strip is taken".to_owned()),
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
         });
         assert_eq!(
             app.hub_badge(),
@@ -430,6 +433,7 @@ mod tests {
             messages_dropped: 0,
             connections: 1,
             last_refusal: None,
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
         });
         assert_eq!(
             app.hub_badge(),

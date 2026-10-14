@@ -18,6 +18,7 @@ use crate::app::{App, DeskView};
 use crate::state::ActiveView;
 use crate::status::StatusLevel;
 use crate::theme;
+use kazoo_core::io::mic::{MicState, MicStatus};
 use kazoo_core::transport::TransportState;
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,7 @@ fn draw_row_branding(frame: &mut Frame, app: &App, area: Rect) {
 
     // Where this synth's audio is going: the desk strip, or standalone.
     left_spans.extend(desk_spans(&app.desk));
+    left_spans.extend(mic_spans(&app.engine.stats().mic));
 
     // Right side: recording indicator (blinking).
     let rec_indicator = if app.display.is_recording {
@@ -479,6 +481,54 @@ fn desk_spans(desk: &DeskView) -> Vec<Span<'static>> {
     spans
 }
 
+fn mic_spans(status: &MicStatus) -> Vec<Span<'static>> {
+    let mut spans = Vec::with_capacity(2);
+    match status.state {
+        MicState::Off => {}
+        MicState::Live => {
+            let mic_rate = mic_khz(status.device_rate);
+            let rates = if status.device_rate == status.engine_rate {
+                mic_rate
+            } else {
+                format!("{mic_rate} → {}", mic_khz(status.engine_rate))
+            };
+            let channel = status
+                .channel
+                .map_or_else(String::new, |n| format!(" ch {n}"));
+            spans.push(Span::styled(
+                format!("  mic: {} {rates} kHz{channel}", status.device.as_str()),
+                theme::style_text_dimmed(),
+            ));
+            if status.glitches > 0 {
+                spans.push(Span::styled(
+                    format!("  {} glitches", status.glitches),
+                    Style::new().fg(theme::ACCENT_PAUSE),
+                ));
+            }
+        }
+        MicState::Lost => spans.push(Span::styled(
+            format!("  mic lost: {}, waiting for it", status.device.as_str()),
+            Style::new().fg(theme::ACCENT_PAUSE),
+        )),
+        MicState::Stuck => spans.push(Span::styled(
+            "  mic stuck: restart kazoo mouth",
+            Style::new().fg(theme::METER_RED),
+        )),
+    }
+    spans
+}
+
+fn mic_khz(rate: u32) -> String {
+    let whole = rate / 1_000;
+    let fraction = rate % 1_000;
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        let text = format!("{whole}.{fraction:03}");
+        text.trim_end_matches('0').to_owned()
+    }
+}
+
 /// Every non-zero engine failure counter as one span (e.g.
 /// `"⚠ mic 28 · params 3"`), truncated to `max_width` columns: red while a
 /// counter has just risen, amber once it has been steady for a while.
@@ -735,6 +785,7 @@ mod tests {
             messages_dropped: 0,
             connections: 0,
             last_refusal: None,
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
         }
     }
 
@@ -770,6 +821,7 @@ mod tests {
 
         app.desk = DeskView::Link(kazoo_core::ipc::link::LinkStatus {
             last_refusal: Some("desk is full".to_owned()),
+            voice: kazoo_core::ipc::link::VoiceLink::default(),
             ..link(false)
         });
         let text = render_header(&app, 120);
@@ -823,5 +875,58 @@ mod tests {
         assert_eq!(truncate_to_width("abcdef", 4), "abc\u{2026}");
         assert_eq!(truncate_to_width("abc", 4), "abc");
         assert_eq!(truncate_to_width("abc", 0), "");
+    }
+
+    fn mic_text(status: &MicStatus) -> String {
+        mic_spans(status)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn header_shows_the_mic_and_its_rates() {
+        let mut status = MicStatus {
+            state: MicState::Live,
+            device: kazoo_core::io::mic::MicName::new("AirPods Pro"),
+            device_rate: 24_000,
+            engine_rate: 48_000,
+            ..MicStatus::default()
+        };
+        assert_eq!(mic_text(&status), "  mic: AirPods Pro 24 → 48 kHz");
+        status.device_rate = 44_100;
+        assert!(mic_text(&status).contains("44.1 → 48 kHz"));
+        status.device_rate = 48_000;
+        status.channel = Some(2);
+        status.glitches = 3;
+        assert_eq!(
+            mic_text(&status),
+            "  mic: AirPods Pro 48 kHz ch 2  3 glitches"
+        );
+        assert_eq!(mic_spans(&status)[1].style.fg, Some(theme::ACCENT_PAUSE));
+        assert_eq!(mic_khz(22_050), "22.05");
+        assert_eq!(mic_khz(11_025), "11.025");
+    }
+
+    #[test]
+    fn header_shows_a_lost_mic() {
+        let status = MicStatus {
+            state: MicState::Lost,
+            device: kazoo_core::io::mic::MicName::new("AirPods Pro"),
+            ..MicStatus::default()
+        };
+        assert_eq!(mic_text(&status), "  mic lost: AirPods Pro, waiting for it");
+        assert_eq!(mic_spans(&status)[0].style.fg, Some(theme::ACCENT_PAUSE));
+        let stuck = MicStatus {
+            state: MicState::Stuck,
+            ..status
+        };
+        assert_eq!(mic_text(&stuck), "  mic stuck: restart kazoo mouth");
+        assert_eq!(mic_spans(&stuck)[0].style.fg, Some(theme::METER_RED));
+    }
+
+    #[test]
+    fn header_without_a_mic_says_nothing_about_it() {
+        assert!(mic_spans(&MicStatus::default()).is_empty());
     }
 }

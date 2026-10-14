@@ -98,6 +98,10 @@ pub fn header(buf: &mut Buffer, area: Rect, app: &App) {
         x = separator(buf, top, x, y);
         x = put(buf, top, x, y, &log_badge(&snapshot.log), bold(INK, RED));
     }
+    if let Some((badge, style)) = snapshot.tree.as_ref().and_then(tree_badge) {
+        x = separator(buf, top, x, y);
+        x = put(buf, top, x, y, &badge, style);
+    }
     if let Some(mark) = &snapshot.save {
         x = separator(buf, top, x, y);
         x = put(buf, top, x, y, "save: ", plain(TEXT_DIM, PANEL));
@@ -131,6 +135,24 @@ pub fn header(buf: &mut Buffer, area: Rect, app: &App) {
     put(buf, top, x, y, &truncate(&seats, room), bold(AMBER, PANEL));
 
     meters_and_listen(buf, area, area.y + 1, snapshot);
+}
+
+fn tree_badge(tree: &crate::protocol::TreeHealth) -> Option<(String, ratatui::style::Style)> {
+    match (&tree.error, tree.behind_from, tree.planted) {
+        (Some(error), _, _) => Some((
+            format!(
+                " TREE STOPPED: {} ",
+                error.chars().take(40).collect::<String>()
+            ),
+            bold(INK, RED),
+        )),
+        (None, Some(first), _) => Some((
+            format!(" TREE BEHIND from {first} · {} waiting ", tree.waiting),
+            bold(INK, RED),
+        )),
+        (None, None, false) => Some((" NO TREE ".to_string(), plain(TEXT, PANEL))),
+        (None, None, true) => None,
+    }
 }
 
 /// ` LOG STOPPED · n owed ` while the wall owes the change log its own
@@ -555,7 +577,7 @@ pub fn status(buf: &mut Buffer, area: Rect, app: &App, now: Instant) {
     let base = plain(TEXT, PANEL);
     fill(buf, area, area.y, base);
     let width = usize::from(area.width.saturating_sub(2));
-    if let Some((prompt, detail)) = prompt(app) {
+    if let Some((prompt, detail)) = prompt(app, now) {
         let x = put(
             buf,
             area,
@@ -617,7 +639,7 @@ pub fn status(buf: &mut Buffer, area: Rect, app: &App, now: Instant) {
 }
 
 /// The prompt for a mode that takes typing or steps, and its help.
-fn prompt(app: &App) -> Option<(String, String)> {
+fn prompt(app: &App, now: Instant) -> Option<(String, String)> {
     match app.mode() {
         Mode::Tempo { text } => Some((
             format!("tempo: {text}█ BPM"),
@@ -703,6 +725,7 @@ fn prompt(app: &App) -> Option<(String, String)> {
                 crate::protocol::MAX_SAVE_NAME
             ),
         )),
+        Mode::Mark { text } => Some(super::tree::mark_prompt(app, text, now)),
         Mode::Normal
         | Mode::Help { .. }
         | Mode::Add { .. }
@@ -710,6 +733,8 @@ fn prompt(app: &App) -> Option<(String, String)> {
         | Mode::Stop
         | Mode::Overwrite { .. }
         | Mode::Saves { .. }
+        | Mode::Tree { .. }
+        | Mode::Go { .. }
         | Mode::LoadSave { .. }
         | Mode::DeleteSave { .. }
         | Mode::Clear { .. }

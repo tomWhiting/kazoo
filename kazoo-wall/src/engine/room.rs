@@ -20,10 +20,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use super::lines::{Line, Tap};
 use super::{Glide, slice_of};
 use crate::catalogue::Kind;
 use crate::dsp::{Block, Module, Sweep};
-use crate::{MAX_KNOBS, MAX_OUTPUTS, SUB_BLOCK};
+use crate::{MAX_JACKS, MAX_KNOBS, MAX_OUTPUTS, SUB_BLOCK};
 
 /// Slots in a page: the unit the room grows by.
 pub const SLOTS_PER_PAGE: usize = 64;
@@ -41,9 +42,10 @@ pub type KnobCells = Box<[[AtomicU32; MAX_KNOBS]]>;
 /// Per-slot render nanoseconds, NaN until the slot has been timed.
 pub type CostCells = Box<[AtomicU32]>;
 
-/// [`SLOTS_PER_PAGE`] slots' state. Every slice is [`SLOTS_PER_PAGE`]
-/// long.
+/// [`SLOTS_PER_PAGE`] slots' state, with one optional line per jack.
 pub struct Page {
+    pub(super) lines: Box<[Option<Box<Line>>]>,
+    pub(super) taps: Box<[Tap]>,
     pub(super) modules: Box<[Option<Box<dyn Module>>]>,
     pub(super) tags: Box<[u32]>,
     pub(super) kinds: Box<[Option<Kind>]>,
@@ -81,6 +83,8 @@ impl Page {
         })?;
         Some(Self {
             modules: slice_of(SLOTS_PER_PAGE, || None)?,
+            lines: slice_of(SLOTS_PER_PAGE * MAX_JACKS, || None)?,
+            taps: slice_of(SLOTS_PER_PAGE * MAX_JACKS, || Tap::EMPTY)?,
             tags: slice_of(SLOTS_PER_PAGE, || 0)?,
             kinds: slice_of(SLOTS_PER_PAGE, || None)?,
             glides: slice_of(SLOTS_PER_PAGE, || [Glide::at(0.0, 0.0); MAX_KNOBS])?,

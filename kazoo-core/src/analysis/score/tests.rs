@@ -3,6 +3,9 @@ use crate::analysis::score::{
 };
 use std::path::{Path, PathBuf};
 
+#[path = "early_tests.rs"]
+mod early;
+
 #[derive(Debug)]
 struct Oracle {
     truth: Vec<Option<f32>>,
@@ -671,4 +674,216 @@ fn cycle_meets_its_targets() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A tracker under test that keeps what it said at every scoring step, so
+/// one pass both scores a take and shows where any octave error fell.
+struct Recorded<T> {
+    tracker: T,
+    said: Vec<Option<f32>>,
+}
+
+impl<T: TrackerUnderTest> TrackerUnderTest for Recorded<T> {
+    fn name(&self) -> &'static str {
+        self.tracker.name()
+    }
+    fn push(&mut self, block: &[f32]) {
+        self.tracker.push(block);
+        self.said.push(self.tracker.hz());
+    }
+    fn hz(&self) -> Option<f32> {
+        self.tracker.hz()
+    }
+}
+
+/// The scoreboard's own octave error (`metrics.rs`): within 100 cents of a
+/// whole, nonzero number of octaves from the truth.
+fn is_octave_error(hz: f32, truth: f32) -> bool {
+    let cents = 1200.0 * (hz / truth).log2();
+    let octaves = (cents / 1200.0).round();
+    octaves != 0.0 && 1200.0_f32.mul_add(-octaves, cents).abs() <= 100.0
+}
+
+#[test]
+fn voice_meets_its_targets() -> crate::Result<()> {
+    use super::{EventKind, FusedUnderTest};
+    let mut failures = Vec::new();
+    for take in signals::suite(48_000) {
+        let mut recorded = Recorded {
+            tracker: FusedUnderTest::new(48_000)?,
+            said: Vec::with_capacity(take.truth.len()),
+        };
+        let result = score(&mut recorded, &take);
+        let accurate = match take.name.as_str() {
+            "sine_ladder" | "steps" | "hum_low" | "whistle" => {
+                result.onsets_missed == 0
+                    && result.cents_median <= 3.0
+                    && result.cents_p95 <= 10.0
+                    && result.octave_pct <= f32::EPSILON
+                    && result.missed_pct <= 2.0
+                    && (take.name != "steps" || result.steps_missed == 0)
+            }
+            "vibrato" => result.cents_median <= 8.0 && result.cents_p95 <= 20.0,
+            "glide" => result.cents_median <= 10.0 && result.cents_p95 <= 25.0,
+            "vowel_ah" | "octave_bait" => result.octave_pct <= 2.0,
+            "noise_bursts" => result.false_pct <= 1.0,
+            _ => true,
+        };
+        if !accurate {
+            failures.push(format!("{} accuracy: {result:?}", take.name));
+        }
+        let periods = match take.name.as_str() {
+            "sine_ladder" | "steps" | "hum_low" | "whistle" => Some(2.0),
+            "vowel_ah" | "octave_bait" => Some(3.0),
+            _ => None,
+        };
+        if let Some(periods) = periods {
+            for event in &result.events {
+                if event.kind == EventKind::Step && take.name != "steps" {
+                    continue;
+                }
+                let limit = periods * 1_000.0 / event.truth_hz + 1.0;
+                if !event.latency_ms.is_some_and(|ms| ms <= limit) {
+                    failures.push(format!("{}: {event:?}, limit {limit}", take.name));
+                }
+            }
+        }
+        if matches!(take.name.as_str(), "octave_bait" | "vowel_ah") {
+            // No octave error later than 100 ms after the note's onset.
+            let settled = usize::try_from(take.rate / 10).unwrap_or(usize::MAX);
+            for (step, (said, truth)) in recorded.said.iter().zip(&take.truth).enumerate() {
+                let start = step * SCORE_STEP;
+                let note = take.onsets.iter().rev().find(|&&onset| onset <= start);
+                if let (Some(&onset), Some(hz), Some(truth)) = (note, *said, *truth) {
+                    if start >= onset + settled && is_octave_error(hz, truth) {
+                        failures.push(format!(
+                            "{}: octave error {hz} Hz for {truth} Hz at sample {start}",
+                            take.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
+#[test]
+fn voice_gate_meets_its_targets() -> crate::Result<()> {
+    use super::{FusedUnderTest, gate::score_gate};
+    let mut failures = Vec::new();
+    for take in signals::suite(48_000) {
+        let onsets = match take.name.as_str() {
+            "noise_bursts" => Some((3, 3)),
+            "rearticulate" => Some((5, 5)),
+            "sine_ladder" => Some((6, 6)),
+            _ => None,
+        };
+        let edges = matches!(
+            take.name.as_str(),
+            "sine_ladder" | "steps" | "hum_low" | "whistle"
+        );
+        if onsets.is_none() && !edges {
+            continue;
+        }
+        let result = score_gate(&mut FusedUnderTest::new(48_000)?, &take);
+        if edges && !(result.rise_targets_met && result.fall_targets_met) {
+            failures.push(format!("{} edges: {result:?}", take.name));
+        }
+        if take.name == "noise_bursts" && result.noise_high_pct > 1.0 {
+            failures.push(format!("{} noise: {result:?}", take.name));
+        }
+        // The take's own count and the brief's must agree, and the gate
+        // must count exactly that many.
+        if let Some((counted, expected)) = onsets {
+            if result.onsets_counted != counted || result.onsets_expected != expected {
+                failures.push(format!(
+                    "{} onsets, expected {expected}: {result:?}",
+                    take.name
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
+
+#[test]
+fn the_instrument_suite_has_exact_repeatable_truth() {
+    use super::instrument::instrument_suite;
+    let first = instrument_suite(48_000);
+    let second = instrument_suite(48_000);
+    assert_eq!(first.len(), 8);
+    let names = [
+        "bass_open",
+        "guitar_open",
+        "sweep",
+        "slide",
+        "bend",
+        "vibrato",
+        "glide",
+        "noise_hum",
+    ];
+    for ((take, repeated), name) in first.iter().zip(&second).zip(names) {
+        assert_eq!(take.name, name);
+        assert!(take.exact);
+        assert_eq!(take.truth.len(), take.samples.len().div_ceil(SCORE_STEP));
+        assert_eq!(take.samples, repeated.samples);
+        assert_eq!(take.truth, repeated.truth);
+        assert_eq!(take.onsets, repeated.onsets);
+        assert!(take.samples.iter().all(|sample| sample.is_finite()));
+        assert!(
+            take.truth
+                .iter()
+                .all(|hz| hz.is_none_or(|hz| hz.is_finite() && hz > 0.0))
+        );
+        assert!(take.onsets.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(take.onsets.iter().all(|&at| at < take.samples.len()));
+    }
+    let bass = &first[0];
+    let b0 = bass.truth[bass.onsets[0] / SCORE_STEP].expect("B0 truth");
+    assert!((b0 - 30.867_706).abs() < 0.001);
+    assert_eq!(bass.onsets.len(), 5);
+    assert_eq!(first[1].onsets.len(), 6);
+    let sweep = &first[2];
+    assert_eq!(sweep.onsets.len(), 6);
+    assert!(
+        sweep
+            .onsets
+            .windows(2)
+            .all(|pair| pair[1] - pair[0] == 3360)
+    );
+    for (&pluck, note) in sweep
+        .onsets
+        .iter()
+        .zip([45.0_f32, 48.0, 52.0, 57.0, 60.0, 64.0])
+    {
+        let truth = sweep.truth[pluck / SCORE_STEP].expect("sweep note truth");
+        let expected = 440.0 * ((note - 69.0) / 12.0_f32).exp2();
+        assert!((1200.0 * (truth / expected).log2()).abs() < 0.01);
+    }
+    for take in &first[3..7] {
+        assert_eq!(take.onsets.len(), 1);
+    }
+    assert!(first[7].truth.iter().all(Option::is_none));
+    assert!(first[7].onsets.is_empty());
+}
+
+#[test]
+fn the_instrument_truth_scales_with_the_sample_clock() {
+    use super::instrument::instrument_suite;
+    for rate in [44_100, 48_001, 96_000] {
+        let takes = instrument_suite(rate);
+        let sweep = &takes[2];
+        assert_eq!(sweep.rate, rate);
+        for (note, &at) in sweep.onsets.iter().enumerate() {
+            let expected = (u64::from(rate) * (200 + note as u64 * 70) / 1000) as usize;
+            assert_eq!(at, expected);
+        }
+        let glide = &takes[6];
+        let start = glide.onsets[0];
+        let low = glide.truth[start / SCORE_STEP + 1].expect("glide start");
+        let high = glide.truth[(start + rate as usize * 2) / SCORE_STEP - 1].expect("glide end");
+        assert!(1200.0_f32.mul_add((high / low).log2(), -500.0).abs() < 1.0);
+    }
 }

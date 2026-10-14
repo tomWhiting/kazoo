@@ -28,8 +28,11 @@
 //! instrument as well as heard.
 
 mod instrument;
+mod refusals;
+pub(crate) mod tempo;
+use tempo::initial_song;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -58,7 +61,7 @@ use kazoo_core::realtime::{NotRealTime, RealTime};
 
 use crate::engine::{MAX_SOURCE_RING_SAMPLES, MixerEngineError, short_name};
 use crate::patchbay::{PatchCommand, PatchEvent, PatchbayHub};
-use crate::shared::{DEFAULT_BPM, DESK_CHANNELS, SharedState, Transport};
+use crate::shared::{DESK_CHANNELS, SharedState, Transport};
 use crate::song::SongAnchor;
 use crate::studio_clock::{DeskClock, DeskTimer, StudioStamp};
 use crate::worker::join_worker;
@@ -300,6 +303,7 @@ pub struct HubStopped;
 /// Running counters, for the desk.
 #[derive(Debug, Default)]
 struct HubStats {
+    refusals: refusals::Refusals,
     instruments: AtomicU64,
     blocks: AtomicU64,
     dropped_blocks: AtomicU64,
@@ -444,6 +448,11 @@ impl Hub {
         self.real_time.get()
     }
 
+    #[must_use]
+    pub fn refused_lines(&self, now: Instant) -> Vec<String> {
+        self.stats.refusals.lines(now)
+    }
+
     /// The hub's counters.
     #[must_use]
     pub fn snapshot(&self) -> HubSnapshot {
@@ -538,6 +547,7 @@ impl Server {
             }
         });
         let timer = DeskTimer::new(config.sample_rate);
+        let song = VecDeque::from([initial_song(&shared)]);
         Self {
             listener,
             config,
@@ -549,7 +559,7 @@ impl Server {
             instruments: Vec::with_capacity(DESK_CHANNELS),
             strips,
             patches: VecDeque::with_capacity(PATCH_CAPACITY),
-            song: VecDeque::from([SongAnchor::stopped(f64::from(DEFAULT_BPM))]),
+            song,
             timer,
             last_refusal: None,
             notes: Vec::with_capacity(DESK_CHANNELS * MESSAGES_PER_POLL),
@@ -616,6 +626,7 @@ impl Server {
     }
 
     fn notify(&mut self, notice: HubNotice) {
+        self.stats.refusals.record(&notice, Instant::now());
         if matches!(notice, HubNotice::Refused { .. }) {
             if self.last_refusal.as_ref() == Some(&notice) {
                 return;

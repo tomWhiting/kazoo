@@ -19,6 +19,8 @@ pub mod reels;
 pub mod synthesis;
 pub mod transport;
 
+pub mod voice;
+
 /// In tests, every allocation and free goes through an allocator that can be
 /// told a region must not allocate (`assert_no_alloc`): the engine's tests
 /// run the audio callback under it and fail on any allocation or free.
@@ -204,13 +206,19 @@ pub trait Processor: Send {
 
     /// Feed a detected pitch frequency (Hz) to this processor.
     ///
-    /// Called by the output callback when the analysis thread detects a
+    /// Called by the output callback when its voice tracker detects a
     /// voiced pitch. Synthesis processors that track vocal pitch should
     /// override this to update their oscillator frequency.
     ///
     /// The default implementation is a no-op — effects and synths that do not
     /// use pitch tracking ignore this.
     fn set_pitch(&mut self, _frequency: f32) {}
+
+    /// Inspect the requested pitch through a synth layer in callback tests.
+    #[cfg(test)]
+    fn target_frequency(&self) -> Option<f32> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

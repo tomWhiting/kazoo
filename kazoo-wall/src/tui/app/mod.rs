@@ -19,6 +19,7 @@
 //! the wall's flood guard ([`flood`]); turns wait for it.
 
 mod chains;
+mod clock;
 mod command;
 mod flood;
 mod folds;
@@ -28,6 +29,10 @@ mod moves;
 mod prefs;
 mod rack;
 mod saves;
+mod tree;
+mod tree_distance;
+
+pub(super) use tree::{RowKind, TreeList};
 
 pub use prefs::{load as load_prefs, path as prefs_path, save as save_prefs};
 
@@ -260,6 +265,13 @@ pub enum Mode {
         /// The name so far.
         text: String,
     },
+    /// Naming a mark for the moment the wall is at.
+    Mark { text: String },
+    /// The tree list.
+    Tree { index: usize },
+    /// Asking before the wall goes to a moment typed at the command line
+    /// (`:go`); the tree list goes on Enter without asking.
+    Go { moment: String, label: String },
     /// Asking before a save of that name is replaced.
     Overwrite {
         /// The save.
@@ -390,6 +402,7 @@ pub struct App {
     link: LinkState,
     feed: LinkState,
     snapshot: Option<Snapshot>,
+    look_at: Option<Instant>,
     catalogue: Vec<KindInfo>,
     log: Log,
     focus: Focus,
@@ -424,6 +437,7 @@ pub struct App {
     flood: flood::Flood,
     drag_sends: Vec<(String, String, Instant)>,
     saves: SavesList,
+    tree: TreeList,
     /// The rack view's layout, pan and drag, as last drawn.
     pub rack: RackState,
     /// Panels across, as last drawn: up and down move by this many.
@@ -443,6 +457,7 @@ impl App {
             link: LinkState::Connecting,
             feed: LinkState::Connecting,
             snapshot: None,
+            look_at: None,
             catalogue: Vec::new(),
             log: Log::default(),
             focus: Focus::Wall,
@@ -473,6 +488,7 @@ impl App {
             flood: flood::Flood::new(),
             drag_sends: Vec::new(),
             saves: SavesList::default(),
+            tree: TreeList::default(),
             rack: RackState::default(),
             columns: 1,
             scroll: 0,
@@ -974,6 +990,7 @@ impl App {
     fn on_event(&mut self, event: Event, now: Instant) {
         match event {
             Event::Change { change } => {
+                self.refresh_tree();
                 let mine = change.seat == self.seat;
                 self.log.add_change(&change, mine);
             }
@@ -1015,7 +1032,10 @@ impl App {
             }
             Event::Loaded {
                 seat, save, backup, ..
-            } => self.on_loaded(&seat, save.as_deref(), &backup, now),
+            } => {
+                self.on_loaded(&seat, save.as_deref(), &backup, now);
+                self.refresh_tree();
+            }
             Event::Saved {
                 seat,
                 name,
@@ -1027,6 +1047,17 @@ impl App {
                     "saved the wall as"
                 };
                 self.on_saves_changed(&seat, &name, did);
+            }
+            Event::Marked { seat, name, at, .. } => {
+                self.refresh_tree();
+                if seat != self.seat {
+                    let after = at
+                        .change
+                        .map_or_else(String::new, |n| format!(" (after change {n})"));
+                    let text = format!("{seat} marked the moment as \"{name}\"{after}");
+                    self.note(text.clone(), LogTone::Note);
+                    self.say(Tone::Done, text, now);
+                }
             }
             Event::SaveDeleted { seat, name } => {
                 self.on_saves_changed(&seat, &name, "deleted the save");
@@ -1051,6 +1082,7 @@ impl App {
     }
 
     fn on_snapshot(&mut self, snapshot: Snapshot, now: Instant) {
+        self.look_at = Some(now);
         // What the console sends from now on is for the wall it shows: a
         // change asked of an older wall is refused, never lands on this
         // one's modules.
@@ -1143,6 +1175,10 @@ impl App {
     }
 
     fn on_result(&mut self, request: &Request, value: serde_json::Value, now: Instant) {
+        if tree::is_tree_result(request, &value) {
+            self.tree_result(request, value, now);
+            return;
+        }
         match request {
             Request::ChainSave { .. } | Request::Chains => self.chain_result(request, value, now),
             Request::Probe { .. } => self.probed(request, value, now),
@@ -1305,6 +1341,11 @@ impl App {
 
     fn on_failure(&mut self, request: &Request, failure: &Failure, now: Instant) {
         match request {
+            Request::Mark { .. } | Request::Tree { .. } => {
+                if self.tree_failure(request, failure, now) {
+                    return;
+                }
+            }
             // Asked ten times a second for screens in view (one may have
             // just been taken away): the next asks again, and a screen
             // left without a reading says so itself.
@@ -1414,6 +1455,7 @@ impl App {
         }
         self.tick_moves(now);
         self.tick_saves(now);
+        self.tick_tree(now);
         let chosen = self.glide_beats();
         let mut index = 0;
         while index < self.pending.len() {

@@ -45,6 +45,7 @@ pub mod link;
 pub mod outbox;
 pub mod protocol;
 pub mod types;
+pub mod voice;
 
 // Re-export the primary public types for convenience.
 pub use client::HubIpcClient;
