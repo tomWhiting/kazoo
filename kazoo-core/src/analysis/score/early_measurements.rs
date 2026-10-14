@@ -45,6 +45,8 @@ fn provisional_arrival_measurements() {
     for (name, profile) in [
         ("bass_open", InputProfile::Bass),
         ("guitar_open", InputProfile::Guitar),
+        ("bass_open_noise", InputProfile::Bass),
+        ("guitar_open_noise", InputProfile::Guitar),
     ] {
         let take = fixtures::named(&takes, name);
         let frames = instrument_frames(take, profile, true);
@@ -61,7 +63,12 @@ fn provisional_arrival_measurements() {
             let latency = first.map(|frame| (frame.at - onset as u64) as f32 / 48.0);
             println!(
                 "{name} note={note} hz={truth:.5} after_ms={latency:?} limit_ms={:.5}",
-                1500.0 / truth + 2.0
+                if name.ends_with("_noise") {
+                    2500.0
+                } else {
+                    1500.0
+                } / truth
+                    + 2.0
             );
         }
         let provisional = frames.iter().filter(|frame| frame.provisional).count();

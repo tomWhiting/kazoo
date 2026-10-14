@@ -61,7 +61,7 @@ pub struct TrackSettings {
     pub gate_off_db: f32,
     /// Recovery from a recent valley that counts as another articulation.
     pub onset_rise_db: f32,
-    /// `Some(c)`: a voiced move of at least c cents within two frames is an onset.
+    /// `Some(c)`: instrument pitch jumps above c cents need a nearby pick attack.
     pub jump_onset_cents: Option<f32>,
 }
 
@@ -131,6 +131,7 @@ pub struct VoiceTracker {
     invalid_frame: bool,
     provisional: bool,
     previous_reading: Option<u64>,
+    pick: super::attack::Attack,
 }
 
 impl VoiceTracker {
@@ -175,6 +176,7 @@ impl VoiceTracker {
             invalid_frame: false,
             provisional: false,
             previous_reading: None,
+            pick: super::attack::Attack::new(rate),
         }
     }
 
@@ -232,9 +234,13 @@ impl VoiceTracker {
                 self.fast = 0.0;
                 self.valley = 0.0;
                 self.loudness.reset();
+                self.pick.reset();
                 0.0
             };
             self.cycle.push(x);
+            if self.settings.jump_onset_cents.is_some() {
+                self.pick.push(x);
+            }
             let rectified = x.abs();
             self.fast = if rectified > self.fast {
                 self.attack
@@ -253,6 +259,9 @@ impl VoiceTracker {
             self.hop += 1;
             if self.hop == VOICE_HOP {
                 self.hop = 0;
+                if self.settings.jump_onset_cents.is_some() && self.pick.frame(self.release) {
+                    self.gate.attack(self.samples);
+                }
                 emit(self.frame());
                 self.invalid_frame = false;
             }
@@ -393,7 +402,10 @@ impl VoiceTracker {
                 self.hz = hz;
             }
         }
-        (gate, onset && !correction)
+        (
+            gate,
+            onset && (!correction || self.settings.jump_onset_cents.is_some()),
+        )
     }
 
     pub fn set_gate(&mut self, settings: super::GateSettings) {
@@ -425,6 +437,7 @@ impl VoiceTracker {
         self.invalid_frame = false;
         self.provisional = false;
         self.previous_reading = None;
+        self.pick.reset();
         self.release = coefficient(FAST_RELEASE_MIN_MS, self.rate);
     }
 }

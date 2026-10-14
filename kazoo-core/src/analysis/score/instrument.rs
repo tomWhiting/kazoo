@@ -14,13 +14,39 @@ impl Noise {
 }
 
 /// Fractional delay lets a plucked string bend without rounding to sample lengths.
-struct StringTone {
+#[derive(Debug)]
+pub(crate) struct StringTone {
     delay: Vec<f64>,
     position: usize,
     rate: f64,
 }
 impl StringTone {
-    fn new(rate: u32, lowest: f64, seed: u32) -> Self {
+    pub(crate) fn new(rate: u32, hz: f64, lowest: f64, pluck: f64, seed: u32) -> Self {
+        let period = f64::from(rate) / hz;
+        let length = (f64::from(rate) / lowest).ceil() as usize + 4;
+        // Start at the rising zero, including the fractional read position,
+        // so the first negative lobe spans the string's displacement.
+        let phase_offset = pluck.mul_add(0.5, -(length as f64 - period + 0.5) / period);
+        let mut noise = Noise(seed);
+        let delay = (0..length)
+            .map(|index| {
+                let phase = (index as f64 / period + phase_offset).rem_euclid(1.0);
+                let displacement = if phase < pluck {
+                    phase / pluck
+                } else {
+                    (1.0 - phase) / (1.0 - pluck)
+                };
+                (displacement - 0.5).mul_add(0.9, noise.next() * 0.005)
+            })
+            .collect();
+        Self {
+            delay,
+            position: 0,
+            rate: f64::from(rate),
+        }
+    }
+
+    fn noise(rate: u32, lowest: f64, seed: u32) -> Self {
         let length = (f64::from(rate) / lowest).ceil() as usize + 4;
         let mut noise = Noise(seed);
         Self {
@@ -38,7 +64,7 @@ impl StringTone {
         self.delay[before].mul_add(1.0 - fraction, self.delay[after] * fraction)
     }
 
-    fn push(&mut self, hz: f64) -> f64 {
+    pub(crate) fn push(&mut self, hz: f64) -> f64 {
         // The two-point average contributes half a sample of loop delay;
         // subtract it so the loop's instantaneous period is rate / hz.
         let delay = self.rate / hz - 0.5;
@@ -52,6 +78,7 @@ impl StringTone {
 #[derive(Clone, Copy)]
 enum Sound {
     String,
+    NoiseString,
     Sweep,
     Sine,
     NoiseHum,
@@ -81,15 +108,22 @@ fn make(
         let time = index as f64 / f64::from(rate);
         let hz = pitch(index);
         if let Some(pluck) = plucks.iter().position(|&at| at == index) {
-            if matches!(sound, Sound::String) {
+            if matches!(sound, Sound::String | Sound::NoiseString) {
                 strings.clear();
             }
-            if matches!(sound, Sound::String | Sound::Sweep) {
-                strings.push((StringTone::new(rate, 29.0, 1 + pluck as u32), hz));
+            if matches!(sound, Sound::String | Sound::NoiseString | Sound::Sweep) {
+                let string = if matches!(sound, Sound::NoiseString) {
+                    StringTone::noise(rate, 29.0, 1 + pluck as u32)
+                } else {
+                    StringTone::new(rate, hz, 29.0, 0.25, 1 + pluck as u32)
+                };
+                strings.push((string, hz));
             }
         }
         let value = match sound {
-            Sound::String => strings.iter_mut().map(|(string, _)| string.push(hz)).sum(),
+            Sound::String | Sound::NoiseString => {
+                strings.iter_mut().map(|(string, _)| string.push(hz)).sum()
+            }
             Sound::Sweep => strings
                 .iter_mut()
                 .map(|(string, hz)| string.push(*hz))
@@ -112,7 +146,7 @@ fn make(
         };
         *sample = value as f32;
     }
-    if matches!(sound, Sound::String | Sound::Sweep) {
+    if matches!(sound, Sound::String | Sound::NoiseString | Sound::Sweep) {
         let peak = samples
             .iter()
             .copied()
@@ -159,10 +193,23 @@ fn note_at(sample: usize, rate: u32, pluck_ms: &[u32], notes: &[u32]) -> f64 {
     hz(notes[note])
 }
 
-/// Eight exact takes: open strings, overlapping sweep, moving strings and hum.
+fn open_string(
+    name: &str,
+    rate: u32,
+    duration_ms: u32,
+    sound: Sound,
+    plucks: &[u32],
+    notes: &[u32],
+) -> Take {
+    make(name, rate, duration_ms, sound, plucks, |sample| {
+        note_at(sample, rate, plucks, notes)
+    })
+}
+
+/// Ten exact takes: open strings, overlapping sweep, moving strings and hum.
 ///
-/// Strings use seeded-noise excitation, a two-point average and 0.996 loop
-/// loss. Fractional delays glide continuously; truth is their instantaneous
+/// Strings use triangular pick displacement with seeded scrape, a two-point
+/// average and 0.996 loop loss. Two worst-case takes retain white-noise excitation. Fractional delays glide continuously; truth is their instantaneous
 /// loop frequency. The sweep retains every earlier string under each pluck.
 #[must_use]
 pub fn instrument_suite(rate: u32) -> Vec<Take> {
@@ -171,35 +218,21 @@ pub fn instrument_suite(rate: u32) -> Vec<Take> {
         "instrument takes need at least an 8 kHz sample rate"
     );
     vec![
-        make(
+        open_string(
             "bass_open",
             rate,
             7500,
             Sound::String,
             &[0, 1500, 3000, 4500, 6000],
-            |sample| {
-                note_at(
-                    sample,
-                    rate,
-                    &[0, 1500, 3000, 4500, 6000],
-                    &[23, 28, 33, 38, 43],
-                )
-            },
+            &[23, 28, 33, 38, 43],
         ),
-        make(
+        open_string(
             "guitar_open",
             rate,
             6000,
             Sound::String,
             &[0, 1000, 2000, 3000, 4000, 5000],
-            |sample| {
-                note_at(
-                    sample,
-                    rate,
-                    &[0, 1000, 2000, 3000, 4000, 5000],
-                    &[40, 45, 50, 55, 59, 64],
-                )
-            },
+            &[40, 45, 50, 55, 59, 64],
         ),
         make(
             "sweep",
@@ -253,5 +286,21 @@ pub fn instrument_suite(rate: u32) -> Vec<Take> {
             hz(45) * (500.0 * t / 2.0 / 1200.0).exp2()
         }),
         make("noise_hum", rate, 1500, Sound::NoiseHum, &[], |_| 50.0),
+        open_string(
+            "bass_open_noise",
+            rate,
+            7500,
+            Sound::NoiseString,
+            &[0, 1500, 3000, 4500, 6000],
+            &[23, 28, 33, 38, 43],
+        ),
+        open_string(
+            "guitar_open_noise",
+            rate,
+            6000,
+            Sound::NoiseString,
+            &[0, 1000, 2000, 3000, 4000, 5000],
+            &[40, 45, 50, 55, 59, 64],
+        ),
     ]
 }

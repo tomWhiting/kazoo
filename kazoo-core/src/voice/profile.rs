@@ -31,16 +31,14 @@ impl InputProfile {
     /// closing at -54 catches a soft pluck but excludes hum at -55 to -70.
     /// Voice and line keep -50/-56 dBFS and six dB of hysteresis.
     ///
-    /// A pick over a ringing string rises less than a new sung syllable:
-    /// guitar and bass use 6 dB, voice and line 9 dB. The valley follower and
-    /// 60 ms refractory interval reject tremolo's 3 to 6 dB fluctuations.
+    /// Guitar and bass detect a pick from an eight-dB rise in hop power
+    /// above 6 kHz. The 60 ms refractory interval rejects duplicate attacks.
+    /// Voice and line keep their broadband valley and nine-dB recovery.
     ///
-    /// Guitar and bass retrigger at an 80-cent move within two frames
-    /// (2.7 ms at 48 kHz): a string crossing, hammer-on or pull-off. A
-    /// 12-semitone slide in 100 ms moves 16 cents per frame, a 200-cent bend
-    /// 2.7 cents, and 30-cent vibrato at 6 Hz at most 1.5 cents. The threshold
-    /// clears those continuous movements and catches fretted steps. Voice
-    /// and line leave pitch onsets off; sung legato stays one articulation.
+    /// A pick articulates a ringing string before its pitch has settled.
+    /// Guitar and bass publish unpicked pitch jumps as legato: hammer-ons
+    /// and pull-offs retrigger only if their fret transient is a pick attack.
+    /// Voice and line leave pitch onsets off; sung legato stays one articulation.
     ///
     /// Guitar and bass use early half-cycle readings: plucked strings start
     /// with their cleanest cycles, and low notes gain the most time. Voice

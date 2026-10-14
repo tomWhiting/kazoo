@@ -213,7 +213,7 @@ fn instrument_frames(
 #[test]
 fn a_provisional_low_e_is_right() {
     let takes = instrument_suite(fixtures::RATE);
-    let take = fixtures::named(&takes, "guitar_open");
+    let take = fixtures::named(&takes, "guitar_open_noise");
     let frames = instrument_frames(take, InputProfile::Guitar, true);
     let provisional: Vec<_> = frames.iter().filter(|frame| frame.provisional).collect();
     assert!(
@@ -256,7 +256,12 @@ fn check_instrument_frames(
                 && frame.gate
                 && fixtures::cents(frame.hz, truth) <= 50.0
         });
-        let budget = 1500.0 / truth + 2.0;
+        let budget = if take.name.ends_with("_noise") {
+            2500.0
+        } else {
+            1500.0
+        } / truth
+            + 2.0;
         let latency = first.map(|frame| (frame.at - onset as u64) as f32 / 48.0);
         if early && latency.is_none_or(|latency| latency > budget) {
             failures.push(format!(
@@ -322,6 +327,8 @@ fn early_meets_its_targets() -> crate::Result<()> {
     for (take_name, profile) in [
         ("bass_open", InputProfile::Bass),
         ("guitar_open", InputProfile::Guitar),
+        ("bass_open_noise", InputProfile::Bass),
+        ("guitar_open_noise", InputProfile::Guitar),
     ] {
         let take = fixtures::named(&takes, take_name);
         for early in [false, true] {
@@ -338,7 +345,12 @@ fn early_meets_its_targets() -> crate::Result<()> {
                     "one event per pluck"
                 );
                 for event in &result.events {
-                    let budget = 1500.0 / event.truth_hz + 2.0;
+                    let budget = if take_name.ends_with("_noise") {
+                        2500.0
+                    } else {
+                        1500.0
+                    } / event.truth_hz
+                        + 2.0;
                     if event.latency_ms.is_none_or(|latency| latency > budget) {
                         failures.push(format!(
                             "{take_name} fused event {}: {:?} ms, budget {budget} ms",

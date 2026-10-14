@@ -6,7 +6,7 @@ fn a_repluck_discards_the_previous_search_history() {
     let takes = instrument_suite(48_000);
     let take = takes
         .iter()
-        .find(|take| take.name == "bass_open")
+        .find(|take| take.name == "bass_open_noise")
         .expect("bass take");
     let onset = take.onsets[1];
     let truth = 41.203_45;

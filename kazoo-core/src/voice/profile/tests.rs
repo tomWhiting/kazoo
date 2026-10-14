@@ -269,6 +269,48 @@ fn a_sweep_is_one_onset_per_note() {
 }
 
 #[test]
+fn a_pick_attack_is_seen_under_ringing_strings() {
+    let takes = instrument_suite(RATE);
+    let take = named(&takes, "sweep");
+    let mut detector = crate::voice::attack::Attack::new(RATE);
+    let mut attacks = Vec::new();
+    let release = (-1000.0 / (10.0 * RATE as f32)).exp();
+    for (hop, samples) in take.samples.chunks(crate::voice::VOICE_HOP).enumerate() {
+        for &sample in samples {
+            detector.push(sample);
+        }
+        if detector.frame(release) {
+            attacks.push((hop + 1) * crate::voice::VOICE_HOP);
+        }
+    }
+    for &pluck in &take.onsets {
+        let attack = attacks.iter().copied().find(|&at| at > pluck);
+        println!("pick pluck={pluck} attack_at={attack:?}");
+        assert!(attack.is_some_and(|at| at - pluck <= 2 * crate::voice::VOICE_HOP));
+    }
+    let output = frames(take, InputProfile::Guitar);
+    for &pluck in take.onsets.iter().skip(1) {
+        assert!(
+            output.iter().any(|frame| frame.onset
+                && frame.at >= pluck as u64
+                && frame.at <= (pluck + 2 * crate::voice::VOICE_HOP) as u64),
+            "no pick attack within two hops of pluck {pluck}"
+        );
+    }
+}
+
+#[test]
+fn noise_hum_picks_never_open_the_gate_or_make_an_onset() {
+    let takes = instrument_suite(RATE);
+    let take = named(&takes, "noise_hum");
+    for profile in [InputProfile::Guitar, InputProfile::Bass] {
+        for frame in frames(take, profile) {
+            assert!(!frame.gate && !frame.onset, "{profile:?}: {frame:?}");
+        }
+    }
+}
+
+#[test]
 fn slides_bends_and_vibrato_are_not_onsets() {
     let takes = instrument_suite(RATE);
     for profile in [InputProfile::Guitar, InputProfile::Bass] {
@@ -452,6 +494,7 @@ fn jumps_need_voiced_history_and_obey_the_refractory_time() {
     assert!(!gate.frame_with_pitch(49 * 64, true, -12.0, -12.0, 130.81).1);
     assert!(!gate.frame_with_pitch(50 * 64, true, -12.0, -12.0, 146.83).1);
     assert!(!gate.frame_with_pitch(51 * 64, true, -12.0, -12.0, 146.83).1);
+    gate.attack(52 * 64);
     assert!(gate.frame_with_pitch(52 * 64, true, -12.0, -12.0, 146.83).1);
     for hop in 53_u64..=96 {
         assert!(
@@ -462,6 +505,7 @@ fn jumps_need_voiced_history_and_obey_the_refractory_time() {
     }
     assert!(!gate.frame_with_pitch(97 * 64, false, -12.0, -12.0, 0.0).1);
     assert!(!gate.frame_with_pitch(98 * 64, true, -12.0, -12.0, 196.0).1);
+    gate.attack(99 * 64);
     assert!(gate.frame_with_pitch(99 * 64, true, -12.0, -12.0, 196.0).1);
     gate.reset();
     assert!(gate.frame_with_pitch(64, true, -12.0, -12.0, 110.0).1);

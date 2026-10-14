@@ -46,6 +46,7 @@ pub(super) struct Gate {
     fresh_reading: bool,
     jump_window: u64,
     amplitude_at: Option<u64>,
+    attack_at: Option<u64>,
 }
 
 impl Gate {
@@ -74,6 +75,7 @@ impl Gate {
             fresh_reading: false,
             jump_window: 2 * settings.judge_config(rate as u32).hop_length as u64,
             amplitude_at: None,
+            attack_at: None,
         }
     }
     pub(super) fn set(&mut self, settings: super::GateSettings, rate: u32) {
@@ -90,6 +92,9 @@ impl Gate {
     }
     pub(super) const fn reading(&mut self) {
         self.fresh_reading = true;
+    }
+    pub(super) const fn attack(&mut self, at: u64) {
+        self.attack_at = Some(at);
     }
     #[cfg(test)]
     pub(super) fn frame(&mut self, at: u64, voiced: bool, db: f32, valley_db: f32) -> (bool, bool) {
@@ -135,25 +140,14 @@ impl Gate {
             self.high = true;
             self.off_frames = 0;
         }
-        let rise = db - valley_db;
-        let rise_active = rise >= ONSET_FLUX_RISE_DB;
-        // A crossing is one recovery; a sustained difference is not another syllable.
-        if rise_active && !self.rise_active {
-            self.rise = Some(at);
-        }
-        self.rise_active = rise_active;
-        let paired = match (self.flux, self.rise) {
-            (Some(flux), Some(rise)) => {
-                flux.abs_diff(rise) <= self.flux_window
-                    && at.saturating_sub(flux.max(rise)) <= self.flux_window
-            }
-            _ => false,
-        };
+        let amplitude = self.amplitude(at, db, valley_db, was_high);
         let ready = self
             .last_onset
             .is_none_or(|last| at.saturating_sub(last) >= self.refractory);
         let current = (voiced && hz.is_finite() && hz > 0.0).then_some(hz);
-        let amplitude = !was_high || rise >= self.settings.onset_rise_db || paired;
+        if self.settings.jump_onset_cents.is_some() {
+            return self.instrument_frame(at, was_high, ready, current);
+        }
         let jump = match (self.settings.jump_onset_cents, current, self.published) {
             (Some(cents), Some(now), Some(before)) => {
                 self.pitch[0].is_some() && (1200.0 * (now / before).log2()).abs() > cents
@@ -215,6 +209,54 @@ impl Gate {
         }
         (self.high, onset)
     }
+
+    fn amplitude(&mut self, at: u64, db: f32, valley_db: f32, was_high: bool) -> bool {
+        let rise = db - valley_db;
+        let rise_active = rise >= ONSET_FLUX_RISE_DB;
+        // A crossing is one recovery; a sustained difference is not another syllable.
+        if rise_active && !self.rise_active {
+            self.rise = Some(at);
+        }
+        self.rise_active = rise_active;
+        let paired = match (self.flux, self.rise) {
+            (Some(flux), Some(rise)) => {
+                flux.abs_diff(rise) <= self.flux_window
+                    && at.saturating_sub(flux.max(rise)) <= self.flux_window
+            }
+            _ => false,
+        };
+        !was_high || rise >= self.settings.onset_rise_db || paired
+    }
+
+    fn instrument_frame(
+        &mut self,
+        at: u64,
+        was_high: bool,
+        ready: bool,
+        current: Option<f32>,
+    ) -> (bool, bool) {
+        // Pitch stays continuous through an unpicked fretted change. A pick
+        // already articulates the string even when its pitch has not moved.
+        self.published = current.or(self.published);
+        let attack = self
+            .attack_at
+            .filter(|&stamp| stamp <= at && at - stamp <= self.amplitude_window);
+        let onset = self.high
+            && ready
+            && (attack.is_some_and(|stamp| stamp == at || !was_high)
+                || (!was_high && self.last_onset.is_none()));
+        if onset {
+            // Acquisition may take longer than the jump-pairing window. The
+            // first pick still starts the note and its refractory interval.
+            self.onset_at = if self.last_onset.is_none() {
+                self.attack_at.unwrap_or(at)
+            } else {
+                attack.unwrap_or(at)
+            };
+            self.last_onset = Some(self.onset_at);
+        }
+        (self.high, onset)
+    }
     pub(super) const fn published_pitch(&self) -> Option<f32> {
         self.published
     }
@@ -246,5 +288,6 @@ impl Gate {
         self.onset_at = 0;
         self.fresh_reading = false;
         self.amplitude_at = None;
+        self.attack_at = None;
     }
 }

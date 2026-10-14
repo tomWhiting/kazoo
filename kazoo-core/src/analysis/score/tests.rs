@@ -813,7 +813,7 @@ fn the_instrument_suite_has_exact_repeatable_truth() {
     use super::instrument::instrument_suite;
     let first = instrument_suite(48_000);
     let second = instrument_suite(48_000);
-    assert_eq!(first.len(), 8);
+    assert_eq!(first.len(), 10);
     let names = [
         "bass_open",
         "guitar_open",
@@ -823,6 +823,8 @@ fn the_instrument_suite_has_exact_repeatable_truth() {
         "vibrato",
         "glide",
         "noise_hum",
+        "bass_open_noise",
+        "guitar_open_noise",
     ];
     for ((take, repeated), name) in first.iter().zip(&second).zip(names) {
         assert_eq!(take.name, name);

@@ -38,7 +38,7 @@ fn a_held_wrong_reading_cannot_confirm_itself() {
                 .1,
             "a held reading confirmed at hop {hop}"
         );
-        assert_eq!(gate.published_pitch(), Some(110.0));
+        assert_eq!(gate.published_pitch(), Some(790.0));
     }
 }
 
@@ -48,7 +48,41 @@ fn a_recent_amplitude_onset_confirms_a_jump() {
     for hop in 1..=64 {
         gate.frame_with_pitch(hop * 64, true, -12.0, -12.0, 110.0);
     }
+    gate.attack(4160);
     assert!(gate.frame_with_pitch(4160, true, -6.0, -14.0, 110.0).1);
     assert!(!gate.frame_with_pitch(4480, true, -6.0, -6.0, 196.0).1);
     assert_eq!(gate.published_pitch(), Some(196.0));
+}
+
+#[test]
+fn a_stable_wrong_reading_is_no_onset() {
+    for profile in [InputProfile::Guitar, InputProfile::Bass] {
+        let mut gate = Gate::with_settings(48_000, profile.tracking());
+        for hop in 1..=64 {
+            gate.frame_with_pitch(hop * 64, true, -12.0, -12.0, 110.0);
+        }
+        for hop in 65..=100 {
+            assert!(
+                !gate.frame_with_pitch(hop * 64, true, -12.0, -12.0, 790.0).1,
+                "{profile:?}: stable mixture reading retriggered at hop {hop}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_jump_without_an_attack_is_legato() {
+    for profile in [InputProfile::Guitar, InputProfile::Bass] {
+        let mut gate = Gate::with_settings(48_000, profile.tracking());
+        for hop in 1..=64 {
+            gate.frame_with_pitch(hop * 64, true, -12.0, -12.0, 110.0);
+        }
+        assert!(!gate.frame_with_pitch(4160, true, -12.0, -12.0, 196.0).1);
+        assert_eq!(
+            gate.published_pitch(),
+            Some(196.0),
+            "{profile:?}: legato pitch"
+        );
+        assert!(!gate.frame_with_pitch(4224, true, -12.0, -12.0, 196.0).1);
+    }
 }
