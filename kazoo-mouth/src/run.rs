@@ -10,7 +10,7 @@ use color_eyre::eyre::{WrapErr, eyre};
 use crossbeam_channel::Sender;
 use crossterm::event::{self, Event};
 use kazoo_core::analysis::PitchDetectorConfig;
-use kazoo_core::host::audio::{DeviceChoice, OpenedOutput, OutputRequest};
+use kazoo_core::host::audio::{DeviceChoice, InputNotices, OpenedOutput, OutputRequest};
 use kazoo_core::host::link::{LinkSetup, connect_or_direct};
 use kazoo_core::io::mic::{Mic, MicRequest, MicTarget};
 use kazoo_core::ipc::link::HubLink;
@@ -228,7 +228,8 @@ impl Session {
             ..OutputRequest::default()
         }
         .prepare_output()?;
-        let input = prepared.input_pick(args.input.as_deref())?;
+        let notices = InputNotices::default();
+        let input = prepared.input_pick_with_notices(args.input.as_deref(), &notices)?;
         let input_label = input.why.as_ref().map_or_else(
             || input.name.clone(),
             |why| format!("{} ({why})", input.name),
@@ -287,7 +288,7 @@ impl Session {
         session.output = Some(prepared.open(move |out, info| {
             engine.render(out, usize::from(info.channels));
         })?);
-        session.mic = Some(kazoo_core::io::mic::open_mic(
+        session.mic = Some(kazoo_core::io::mic::open_mic_with_notices(
             MicRequest {
                 device: DeviceChoice::Named(input.name),
                 channel: args.input_channel,
@@ -302,6 +303,7 @@ impl Session {
                     .mic_dropped
                     .fetch_add((offered - accepted) as u64, Ordering::Relaxed);
             }),
+            notices,
         )?);
         Ok(session)
     }
@@ -562,6 +564,9 @@ fn event_loop(
             app.sync_loop(session.rate, now);
             session.loop_returns(app, now);
             app.save_if_due(now, false);
+            if let Some(mic) = &session.mic {
+                show_input_notice(app, mic.input_notices(), now);
+            }
             terminal.draw(|frame| ui::draw(frame, app, &display, &link, now))?;
             draw_at = Instant::now() + period;
         }
@@ -586,6 +591,12 @@ fn event_loop(
                 }
             }
         }
+    }
+}
+
+fn show_input_notice(app: &mut App, notices: &InputNotices, now: Instant) {
+    if let Some(message) = notices.take() {
+        app.message(message, now);
     }
 }
 

@@ -14,7 +14,10 @@ use crate::{Error, Result};
 pub use super::audio_open::{open_input, open_output};
 
 mod input_pick;
-pub use input_pick::{InputPick, choose_input, explicit_input, input_for};
+pub(crate) use input_pick::resolve_named_input;
+pub use input_pick::{
+    InputNotices, InputPick, choose_input, explicit_input, input_for, input_for_names,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DeviceChoice {
@@ -131,6 +134,19 @@ impl<D> PreparedOutput<D> {
 
 impl PreparedOutput {
     pub fn input_pick(&self, explicit: Option<&str>) -> Result<InputPick> {
+        let notices = InputNotices::default();
+        let result = self.input_pick_with_notices(explicit, &notices);
+        if let Some(message) = notices.take() {
+            eprintln!("{message}");
+        }
+        result
+    }
+
+    pub fn input_pick_with_notices(
+        &self,
+        explicit: Option<&str>,
+        notices: &InputNotices,
+    ) -> Result<InputPick> {
         let output = self
             .device
             .description()
@@ -146,8 +162,7 @@ impl PreparedOutput {
                     .description()
                     .map(|description| description.name().to_owned())
             })
-            .transpose()
-            .map_err(|error| Error::Device(format!("cannot name default input device: {error}")))?;
+            .map(|result| result.map_err(|error| Error::Device(error.to_string())));
         let inputs = host
             .input_devices()
             .map_err(|error| Error::Device(format!("cannot list inputs: {error}")))?
@@ -155,10 +170,12 @@ impl PreparedOutput {
                 device
                     .description()
                     .map(|description| description.name().to_owned())
+                    .map_err(|error| Error::Device(error.to_string()))
             })
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| Error::Device(format!("cannot name input device: {error}")))?;
-        input_for(None, default.as_deref(), output.name(), &inputs)
+            .collect::<Vec<_>>();
+        input_for_names(None, default, output.name(), inputs, |message| {
+            notices.report(message);
+        })
     }
 }
 
