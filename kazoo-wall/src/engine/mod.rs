@@ -24,6 +24,7 @@
 //! brackets the swap with [`Command::Hush`] and [`Command::Unhush`]: the
 //! master fades out, the swap is applied in silence, and it fades back in.
 
+mod batch;
 mod line_commands;
 pub mod lines;
 pub mod master;
@@ -612,6 +613,7 @@ pub struct EngineControl {
     sample_rate: u32,
     commands: HeapProd<Command>,
     backlog: VecDeque<Command>,
+    batch: Option<batch::CommandBatch>,
     retired: HeapCons<Retired>,
     faults: HeapCons<Fault>,
     listen: Option<HeapCons<f32>>,
@@ -721,6 +723,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         sample_rate,
         commands: command_tx,
         backlog: VecDeque::new(),
+        batch: None,
         retired: retired_rx,
         faults: fault_rx,
         listen: Some(listen_rx),
@@ -1546,6 +1549,10 @@ impl EngineControl {
     /// Send a command as it is. If the ring is full it waits in order on
     /// this side and goes with the next [`Self::pump`].
     fn push(&mut self, command: Command) {
+        if let Some(batch) = &mut self.batch {
+            batch.commands.push(command);
+            return;
+        }
         self.flush();
         if !self.backlog.is_empty() {
             self.backlog.push_back(command);

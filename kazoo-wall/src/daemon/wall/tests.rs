@@ -13,6 +13,7 @@ use crate::protocol::{ChangeResult, ProbeResult, Snapshot};
 use crate::seed::seed;
 use crate::store::{FailAt, Loaded};
 
+mod batch;
 mod delay_lines;
 mod tempo;
 
@@ -102,6 +103,7 @@ fn every_wall_error_code_is_reachable() {
         code(ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "lfo".to_string(),
                 name: Some("bad/name".to_string()),
                 place: None,
@@ -132,6 +134,7 @@ fn every_wall_error_code_is_reachable() {
         code(ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "theremin".to_string(),
                 name: None,
                 place: None,
@@ -162,6 +165,7 @@ fn undo_that_no_longer_applies_is_an_error() {
         ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "sh".to_string(),
                 name: None,
                 place: None,
@@ -219,6 +223,7 @@ fn undo_that_no_longer_applies_is_an_error() {
 
 fn add(kind: &str) -> Request {
     Request::Add {
+        alias: None,
         kind: kind.to_string(),
         name: None,
         place: None,
@@ -475,6 +480,7 @@ fn changes_are_numbered_summarised_and_undone() {
         ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "lfo".to_string(),
                 name: Some("slow wobble".to_string()),
                 place: None,
@@ -830,6 +836,7 @@ fn fingerprints_survive_a_restart() {
     wall.request(
         "Cassio",
         &Request::Add {
+            alias: None,
             kind: "noise".to_string(),
             name: None,
             place: None,
@@ -859,6 +866,7 @@ fn a_dry_path_is_held_back_to_meet_a_drive() {
     let now = Instant::now();
     for kind in ["vco", "klon", "mix"] {
         let add = Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: None,
             place: None,
@@ -941,6 +949,7 @@ fn built(kinds: &[&str], cables: &[(&str, &str)], now: Instant) -> (Wall, Vec<u3
     let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
     for kind in kinds {
         let add = Request::Add {
+            alias: None,
             kind: (*kind).to_string(),
             name: None,
             place: None,
@@ -1199,6 +1208,7 @@ fn a_speaker_brought_back_by_undo_says_its_words_again() {
     wall.speech = speech;
     let now = Instant::now();
     let add = Request::Add {
+        alias: None,
         kind: "speak".to_string(),
         name: None,
         place: None,
@@ -1291,6 +1301,7 @@ fn a_dry_path_and_its_held_back_twin_cancel() {
     let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
     for kind in ["vco", "flanger", "mix", "out"] {
         let add = Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: None,
             place: None,
@@ -1832,6 +1843,7 @@ fn adding_in_a_place_and_undoing_a_removal_keep_the_rows() {
         ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "noise".to_string(),
                 name: None,
                 place: Some(Place {
@@ -1853,6 +1865,7 @@ fn adding_in_a_place_and_undoing_a_removal_keep_the_rows() {
         ask(
             &mut wall,
             &Request::Add {
+                alias: None,
                 kind: "noise".to_string(),
                 name: None,
                 place: None,
@@ -1964,6 +1977,7 @@ fn playing(wall: &Wall) -> Vec<(String, Vec<f64>)> {
 /// wobble's id.
 fn save_a_wobble(wall: &mut Wall) -> String {
     let add = Request::Add {
+        alias: None,
         kind: "lfo".to_string(),
         name: Some("slow wobble".to_string()),
         place: None,
@@ -2088,6 +2102,7 @@ fn a_load_replaces_the_wall_as_it_plays_and_undo_brings_it_back_exactly() {
     ask(
         &mut wall,
         &Request::Add {
+            alias: None,
             kind: "noise".to_string(),
             name: None,
             place: None,
@@ -2367,6 +2382,7 @@ fn a_wall_of_decisions_and_routers_saves_and_loads_back_exactly() {
     ];
     for kind in kinds {
         let add = Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: None,
             place: None,
@@ -3014,6 +3030,7 @@ fn a_change_the_log_cannot_take_is_not_made() {
     let added = ask(
         &mut wall,
         &Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,
@@ -3054,6 +3071,7 @@ fn every_kind_of_change(wall: &mut Wall) -> Vec<Request> {
         ask(
             wall,
             &Request::Add {
+                alias: None,
                 kind: "lfo".to_string(),
                 name: None,
                 place: None,
@@ -3086,6 +3104,7 @@ fn every_kind_of_change(wall: &mut Wall) -> Vec<Request> {
     vec![
         turn("vco1", "tune", 3.0),
         Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,
@@ -3738,6 +3757,7 @@ fn words_the_log_cannot_take_never_reach_the_player() {
     wall.speech = speech;
     let now = Instant::now();
     let add = Request::Add {
+        alias: None,
         kind: "speak".to_string(),
         name: None,
         place: None,
@@ -4195,6 +4215,7 @@ fn a_wall_too_large_to_keep_says_so_and_takes_nothing_that_grows_it() {
     let refused = ask(
         &mut wall,
         &Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,
@@ -4229,6 +4250,7 @@ fn a_wall_too_large_to_keep_says_so_and_takes_nothing_that_grows_it() {
     ask(
         &mut wall,
         &Request::Add {
+            alias: None,
             kind: "lfo".to_string(),
             name: None,
             place: None,
@@ -4579,6 +4601,7 @@ fn a_wall_of_scopes_and_readouts_saves_and_loads_back_and_measures_again() {
     let (mut wall, mut engine, dir) = saving_wall();
     for kind in ["scope", "readout"] {
         let add = Request::Add {
+            alias: None,
             kind: kind.to_string(),
             name: Some(format!("my {kind}")),
             place: None,
@@ -4711,6 +4734,7 @@ fn a_removed_scope_s_capture_never_lands_on_what_takes_its_slot() {
     };
     ask(&mut wall, &remove).unwrap();
     let add = Request::Add {
+        alias: None,
         kind: "readout".to_string(),
         name: None,
         place: None,
@@ -4726,6 +4750,7 @@ fn a_removed_scope_s_capture_never_lands_on_what_takes_its_slot() {
 fn readings_follow_a_load_and_its_undo() {
     let (mut wall, mut engine, _dir) = saving_wall();
     let add = Request::Add {
+        alias: None,
         kind: "scope".to_string(),
         name: None,
         place: None,
@@ -5030,6 +5055,7 @@ fn a_wall_that_fits_its_file_fits_a_look() {
         let added = worn.request(
             &format!("Adder{n}"),
             &Request::Add {
+                alias: None,
                 kind: kind.name().to_string(),
                 name: Some("x".repeat(24)),
                 place: None,

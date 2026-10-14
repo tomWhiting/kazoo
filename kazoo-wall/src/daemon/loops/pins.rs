@@ -163,7 +163,7 @@ impl ReelRefs {
                     );
                 }
             }
-            What::Chain { changes, .. } => {
+            What::Batch { changes, .. } | What::Chain { changes, .. } => {
                 for change in changes {
                     self.index(seq, change)?;
                 }
