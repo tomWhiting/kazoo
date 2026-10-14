@@ -28,12 +28,13 @@
 //! Processing stays at the host rate: decimation and interpolation would spend
 //! about a millisecond of the input path's 2.7 ms budget on resampling filters.
 //! The dry mono signal is undelayed, so `latency()` is zero. Octave response is
-//! the analysis bands' sound, approximately `1 / (pi * bandwidth)`: with width
-//! one and the default 60–2000 Hz range, about 40 ms at 60 Hz, 10 ms at 1 kHz
-//! and 5 ms at 2 kHz (spacings about 7.5, 32 and 58 Hz). At the 30 Hz floor,
-//! a bass profile with high near 500 Hz gives about 100 ms: a low B blooms.
-//! Response depends on both range endpoints. Width two roughly halves these
-//! times, while adjacent notes leak between bands and sound rougher.
+//! the analysis bands' sound, approximately `2.4 / (pi * bandwidth)`: with
+//! width one, about 24 ms at 1 kHz, 100 ms at 60 Hz, and 230 ms at the
+//! 30 Hz floor with a bass range ending near 500 Hz. Response depends on
+//! both range endpoints. Width ranges from 0.8 to 1.25, default one;
+//! wider bands respond sooner but adjacent notes leak and sound rougher.
+//! A redesign clears and warms the spare bank for `3 / (pi * bandwidth_min)`
+//! before a 10 ms crossfade. Each bank carries its own unity calibration.
 //!
 //! Terrarium's permission notice is retained for the adapted band equations:
 //!
@@ -65,9 +66,9 @@ mod tests;
 
 use band::Band;
 
-use crate::drive::kit::{DEFAULT_RATE, Knobs, for_each_frame};
+use crate::drive::kit::{DEFAULT_RATE, Knobs, for_each_frame, for_each_frame_wet};
 use crate::dsp::{OnePole, db_to_gain, sane_rate};
-use crate::{Context, Curve, Effect, EffectKind, ParamSpec};
+use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
 const BANDS: usize = 80;
 const N: usize = 10;
@@ -94,7 +95,7 @@ const fn knob(
 static PARAMS: [ParamSpec; N] = [
     knob("low", 30.0, 500.0, 60.0, "Hz", Curve::Log),
     knob("high", 500.0, 5000.0, 2000.0, "Hz", Curve::Log),
-    knob("width", 0.5, 2.0, 1.0, "", Curve::Linear),
+    knob("width", 0.8, 1.25, 1.0, "", Curve::Linear),
     knob("dry", 0.0, 200.0, 100.0, "%", Curve::Linear),
     knob("up1", 0.0, 200.0, 0.0, "%", Curve::Linear),
     knob("up2", 0.0, 200.0, 0.0, "%", Curve::Linear),
@@ -124,6 +125,10 @@ fn centre(low: f64, high: f64, position: f64) -> f64 {
 #[derive(Debug, Default)]
 struct Bank {
     bands: Vec<Band>,
+    gains: [f32; 4],
+    settling: usize,
+    down1_sign: f32,
+    down2_turn: usize,
 }
 
 impl Bank {
@@ -140,30 +145,68 @@ impl Bank {
         let ratio = 10.0_f64.powf((erb(high) - erb(low)) / (21.4 * (BANDS - 1) as f64));
         let offset = 1.0 / 0.00437;
         let mut frequency = low;
+        let mut minimum = f64::INFINITY;
         for band in &mut self.bands {
             let below = (frequency + offset) * (1.0 - 1.0 / ratio);
             let above = (frequency + offset) * (ratio - 1.0);
             let bandwidth = 2.0 * below * above / (below + above) * f64::from(settings[2]);
             band.design(frequency, bandwidth, f64::from(rate));
+            minimum = minimum.min(bandwidth);
             frequency = (frequency + offset).mul_add(ratio, -offset);
         }
+        self.settling = (3.0 * f64::from(rate) / (std::f64::consts::PI * minimum)).ceil() as usize;
+        self.gains = self.calibrate(settings, rate);
     }
 
     fn reset(&mut self) {
+        self.down1_sign = 1.0;
+        self.down2_turn = 0;
         for band in &mut self.bands {
             band.reset();
         }
     }
 
-    fn sample(&mut self, input: f32, enabled: [bool; 4], audible: bool) -> [f32; 4] {
+    fn sample(&mut self, input: f32, enabled: [bool; 4], audible: bool) -> BankSample {
         let mut sum = [0.0; 4];
+        let mut down = [(0.0, 0.0); 2];
         for band in &mut self.bands {
-            let paths = band.sample(input, enabled, audible);
+            let (paths, divided) = band.sample(input, enabled, audible);
             for (sum, path) in sum.iter_mut().zip(paths) {
                 *sum += path;
             }
+            for (sum, path) in down.iter_mut().zip(divided) {
+                sum.0 += path.0;
+                sum.1 += path.1;
+            }
         }
-        sum
+        down[0] = (down[0].0 * self.down1_sign, down[0].1 * self.down1_sign);
+        down[1] = quarter_turn(down[1], self.down2_turn);
+        sum[2] = down[0].0;
+        sum[3] = down[1].0;
+        BankSample {
+            paths: std::array::from_fn(|path| sum[path] * self.gains[path]),
+            down,
+        }
+    }
+
+    fn align(&mut self, active: &BankSample, spare: &mut BankSample) {
+        if dot(active.down[0], spare.down[0]) < 0.0 {
+            self.down1_sign = -self.down1_sign;
+            spare.down[0] = (-spare.down[0].0, -spare.down[0].1);
+            spare.paths[2] = -spare.paths[2];
+        }
+        let mut best = 0;
+        let mut score = dot(active.down[1], spare.down[1]);
+        for turn in 1..4 {
+            let candidate = dot(active.down[1], quarter_turn(spare.down[1], turn));
+            if candidate > score {
+                score = candidate;
+                best = turn;
+            }
+        }
+        self.down2_turn = (self.down2_turn + best) % 4;
+        spare.down[1] = quarter_turn(spare.down[1], best);
+        spare.paths[3] = spare.down[1].0 * self.gains[3];
     }
 
     fn calibrate(&self, settings: [f32; 3], rate: f32) -> [f32; 4] {
@@ -193,12 +236,30 @@ impl Bank {
     }
 }
 
+#[derive(Debug, Default)]
+struct BankSample {
+    paths: [f32; 4],
+    down: [(f32, f32); 2],
+}
+
+fn dot(left: (f32, f32), right: (f32, f32)) -> f32 {
+    left.0.mul_add(right.0, left.1 * right.1)
+}
+
+const fn quarter_turn((real, imag): (f32, f32), turn: usize) -> (f32, f32) {
+    match turn {
+        1 => (-imag, real),
+        2 => (-real, -imag),
+        3 => (imag, -real),
+        _ => (real, imag),
+    }
+}
+
 #[derive(Debug)]
 struct Octaves {
     knobs: Knobs<N>,
     banks: [Bank; 2],
     rate: f32,
-    gains: [f32; 4],
     active: usize,
     requested: [f32; 3],
     designed: [f32; 3],
@@ -206,6 +267,7 @@ struct Octaves {
     hold: usize,
     fade: usize,
     fade_length: usize,
+    warming: usize,
     tone: OnePole,
     tone_hz: f32,
     level_db: f32,
@@ -218,7 +280,6 @@ impl Octaves {
             knobs: Knobs::new(&PARAMS),
             banks: [Bank::default(), Bank::default()],
             rate: DEFAULT_RATE,
-            gains: [0.0; 4],
             active: 0,
             requested: [60.0, 2000.0, 1.0],
             designed: [60.0, 2000.0, 1.0],
@@ -226,6 +287,7 @@ impl Octaves {
             hold: 2400,
             fade: 0,
             fade_length: 480,
+            warming: 0,
             tone: OnePole::default(),
             tone_hz: f32::NAN,
             level_db: f32::NAN,
@@ -236,10 +298,12 @@ impl Octaves {
     fn retune(&mut self) {
         self.quiet = self.quiet.saturating_add(1).min(self.hold);
         let changed = self.requested.map(f32::to_bits) != self.designed.map(f32::to_bits);
-        if changed && self.quiet >= self.hold && self.fade == 0 {
-            self.banks[1 - self.active].design(self.requested, self.rate);
+        if changed && self.quiet >= self.hold && self.fade == 0 && self.warming == 0 {
+            let spare = &mut self.banks[1 - self.active];
+            spare.design(self.requested, self.rate);
+            spare.reset();
             self.designed = self.requested;
-            self.fade = self.fade_length;
+            self.warming = spare.settling;
         }
     }
 
@@ -251,6 +315,10 @@ impl Octaves {
     }
 
     fn sample(&mut self, left: f32, right: f32) -> f32 {
+        self.frame(left, right)[0]
+    }
+
+    fn frame(&mut self, left: f32, right: f32) -> [f32; 2] {
         let params = self.knobs.step();
         self.retune();
         if params[8].to_bits() != self.tone_hz.to_bits() {
@@ -263,12 +331,19 @@ impl Octaves {
         }
         if !left.is_finite() || !right.is_finite() {
             self.clear_audio();
-            return 0.0;
+            return [0.0; 2];
         }
         let mono = 0.5 * (left.clamp(-16.0, 16.0) + right.clamp(-16.0, 16.0));
         let enabled = std::array::from_fn(|path| params[4 + path] > 0.0);
         let active = self.banks[self.active].sample(mono, enabled, true);
-        let spare = self.banks[1 - self.active].sample(mono, enabled, self.fade > 0);
+        let mut spare = if self.warming > 0 || self.fade > 0 {
+            self.banks[1 - self.active].sample(mono, enabled, self.fade > 0)
+        } else {
+            BankSample::default()
+        };
+        if self.fade == self.fade_length {
+            self.banks[1 - self.active].align(&active, &mut spare);
+        }
         let blend = if self.fade > 0 {
             1.0 - self.fade as f32 / self.fade_length as f32
         } else {
@@ -276,8 +351,8 @@ impl Octaves {
         };
         let mut octaves = 0.0;
         for path in 0..4 {
-            let sum = (spare[path] - active[path]).mul_add(blend, active[path]);
-            octaves = (self.gains[path] * params[4 + path] * 0.01).mul_add(sum, octaves);
+            let sum = (spare.paths[path] - active.paths[path]).mul_add(blend, active.paths[path]);
+            octaves = (params[4 + path] * 0.01).mul_add(sum, octaves);
         }
         if self.fade > 0 {
             self.fade -= 1;
@@ -285,13 +360,19 @@ impl Octaves {
                 self.active = 1 - self.active;
             }
         }
-        let wet = self.tone.lowpass(octaves);
-        let output = self.level * (params[3] * 0.01).mul_add(mono, wet);
-        if output.is_finite() {
-            output.clamp(-4.0, 4.0)
+        if self.warming > 0 {
+            self.warming -= 1;
+            if self.warming == 0 {
+                self.fade = self.fade_length;
+            }
+        }
+        let wet = self.level * self.tone.lowpass(octaves);
+        let output = (self.level * params[3] * 0.01).mul_add(mono, wet);
+        if output.is_finite() && wet.is_finite() {
+            [output.clamp(-4.0, 4.0), wet.clamp(-4.0, 4.0)]
         } else {
             self.clear_audio();
-            0.0
+            [0.0; 2]
         }
     }
 }
@@ -305,7 +386,6 @@ impl Effect for Octaves {
         for bank in &mut self.banks {
             bank.prepare(self.requested, self.rate);
         }
-        self.gains = self.banks[0].calibrate(self.requested, self.rate);
         self.hold = (self.rate * 0.05).ceil() as usize;
         self.fade_length = (self.rate * 0.01).ceil() as usize;
         self.reset();
@@ -321,6 +401,7 @@ impl Effect for Octaves {
         }
         self.active = 0;
         self.fade = 0;
+        self.warming = 0;
         self.quiet = self.hold;
         self.tone_hz = params[8];
         self.tone.set_cutoff(self.tone_hz, self.rate);
@@ -345,5 +426,18 @@ impl Effect for Octaves {
 
     fn process(&mut self, _context: &Context, input: [&[f32]; 2], output: [&mut [f32]; 2]) {
         for_each_frame(input, output, |left, right| [self.sample(left, right); 2]);
+    }
+
+    fn process_wet(
+        &mut self,
+        _context: &Context,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        wet: [&mut [f32]; 2],
+    ) {
+        for_each_frame_wet(input, output, WetOut::to(wet), |left, right| {
+            let [mixed, alone] = self.frame(left, right);
+            [[mixed; 2], [alone; 2]]
+        });
     }
 }

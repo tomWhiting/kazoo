@@ -1,7 +1,7 @@
 use std::{hint::black_box, process::Command, time::Duration};
 
 use criterion::{
-    BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
+    BatchSize, BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
 };
 use kazoo_fx::Context;
 
@@ -69,7 +69,7 @@ fn octaves(group: &mut BenchmarkGroup<'_, WallTime>, kind: &kazoo_fx::EffectKind
         }
         effect.prepare(48_000.0);
         // Continuous phase across blocks keeps six separate notes in the bank.
-        let input: Vec<f32> = (0..512 * 256)
+        let input: Vec<f32> = (0..128 * 1024)
             .map(|frame| {
                 notes
                     .iter()
@@ -90,15 +90,15 @@ fn octaves(group: &mut BenchmarkGroup<'_, WallTime>, kind: &kazoo_fx::EffectKind
                     / notes.len() as f32
             })
             .collect();
-        let mut left = [0.0; 512];
-        let mut right = [0.0; 512];
-        for block in input.chunks_exact(512) {
+        let mut left = [0.0; 128];
+        let mut right = [0.0; 128];
+        for block in input.chunks_exact(128) {
             effect.process(&context, [block, block], [&mut left, &mut right]);
         }
         let mut cursor = 0;
         group.bench_function(name, |b| {
             b.iter(|| {
-                let block = &input[cursor..cursor + 512];
+                let block = &input[cursor..cursor + 128];
                 effect.process(
                     &context,
                     [black_box(block), black_box(block)],
@@ -106,9 +106,43 @@ fn octaves(group: &mut BenchmarkGroup<'_, WallTime>, kind: &kazoo_fx::EffectKind
                 );
                 black_box(&left);
                 black_box(&right);
-                cursor = (cursor + 512) % input.len();
+                cursor = (cursor + 128) % input.len();
             });
         });
+        if name == "octaves" {
+            group.bench_function("octaves/redesign", |b| {
+                b.iter_batched_ref(
+                    || {
+                        let mut left = [0.0; 128];
+                        let mut right = [0.0; 128];
+                        let mut effect = (kind.build)();
+                        for (index, param) in kind.params.iter().enumerate() {
+                            let value = match param.name {
+                                "up1" | "up2" | "down1" | "down2" => 100.0,
+                                "dry" => 0.0,
+                                _ => param.default,
+                            };
+                            effect.set_param(index, value);
+                        }
+                        effect.prepare(48_000.0);
+                        for block in input[..8192].chunks_exact(128) {
+                            effect.process(&context, [block, block], [&mut left, &mut right]);
+                        }
+                        effect.set_param(2, 1.25);
+                        for block in input[..2304].chunks_exact(128) {
+                            effect.process(&context, [block, block], [&mut left, &mut right]);
+                        }
+                        effect
+                    },
+                    |effect| {
+                        effect.process(&context, [&input[2304..2432]; 2], [&mut left, &mut right]);
+                        black_box(&left);
+                        black_box(&right);
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+        }
     }
 }
 

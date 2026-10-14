@@ -717,3 +717,34 @@ number because this effect did not exist at the base. The existing
 filter selects both rows in the later build round. Keeping the spare
 bank's filter and divider state live also contributes to the measured
 cost. No timing or load figure is inferred from the design's estimates.
+
+
+## KZ-P11b octaves
+
+2026-10-14, branch `lane/kz-P11b`, base `96d5ba6`, head `02e89b6`, with
+uncommitted changes. `circuit_models` now measures 128 frames at 48 kHz.
+The chord and single-note signals and path settings are the P11 fixtures
+above. Setup, buffer allocation and initial settling stay outside the timer.
+`fx/octaves/redesign` sets width to 1.25 and times the block containing the
+first redesign after the 50 ms control hold. It includes filter design,
+calibration, state reset and the beginning of spare-bank warming.
+
+| bench | before midpoint | after midpoint | after interval |
+|---|---:|---:|---:|
+| fx/octaves | 1.9821 ms | 1.0358 ms | 813.93–1266.4 µs |
+| fx/octaves/redesign | 1.4128 ms | 451.55 µs | 346.94–625.64 µs |
+| fx/octaves/single_note | 818.21 µs | 929.94 µs | 664.97–1231.0 µs |
+
+Both commands exited 0:
+`nice -n 10 env CARGO_BUILD_JOBS=4 NEXTEST_STATE_DIR=target/kz-logs/nextest cargo bench -p kazoo-fx --bench circuit_models -- octaves`.
+Receipts: `target/kz-logs/bench-octaves-before.txt` and
+`target/kz-logs/bench-octaves-after.txt`.
+Before load: 89.81 / 45.16 / 39.59. After load: 175.89 / 112.78 / 73.55.
+These measurements are diagnostic under heavy, different loads; their ratio
+does not establish an attributable speedup or a quiet-machine budget pass.
+
+The wall stores 4,143,200 ns per 512 frames, four times the measured
+128-frame steady midpoint. This is a block-length conversion, not a separate
+512-frame wall benchmark. It replaces the provisional 800,000 ns row.
+The earlier 800 µs per 512-frame chord budget is not verified.
+The crossfade's complete block cost has not been measured separately.

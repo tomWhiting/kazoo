@@ -2,20 +2,19 @@
 
 use std::f64::consts::{PI, SQRT_2, TAU};
 
-use crate::dsp::flush;
-
 #[derive(Debug, Clone, Copy, Default)]
 struct Complex {
-    real: f32,
-    imag: f32,
+    // Narrow low bands need more precision than the host samples to separate poles.
+    real: f64,
+    imag: f64,
 }
 
 impl Complex {
     fn rotated(scale: f64, angle: f64) -> Self {
         let (sin, cos) = angle.sin_cos();
         Self {
-            real: (scale * cos) as f32,
-            imag: (scale * sin) as f32,
+            real: scale * cos,
+            imag: scale * sin,
         }
     }
 
@@ -26,7 +25,7 @@ impl Complex {
         }
     }
 
-    fn twice_phase(self, inverse_magnitude: f32) -> Self {
+    fn twice_phase(self, inverse_magnitude: f64) -> Self {
         Self {
             real: self.real.mul_add(self.real, -self.imag * self.imag) * inverse_magnitude,
             imag: 2.0 * self.real * self.imag * inverse_magnitude,
@@ -34,15 +33,19 @@ impl Complex {
     }
 
     fn flush(&mut self) {
-        flush(&mut self.real);
-        flush(&mut self.imag);
+        if self.real.abs() < 1e-30 {
+            self.real = 0.0;
+        }
+        if self.imag.abs() < 1e-30 {
+            self.imag = 0.0;
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Divider {
     negative: bool,
-    sign: f32,
+    sign: f64,
 }
 
 impl Divider {
@@ -61,7 +64,7 @@ impl Divider {
         self.negative = negative;
     }
 
-    fn half_phase(&self, input: Complex, inverse_magnitude: f32) -> Complex {
+    fn half_phase(&self, input: Complex, inverse_magnitude: f64) -> Complex {
         let fraction = (0.5 * input.real * inverse_magnitude).clamp(-0.5, 0.5);
         let cosine = (0.5 + fraction).sqrt();
         let sine = (0.5 - fraction).sqrt().copysign(input.imag);
@@ -74,7 +77,7 @@ impl Divider {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Band {
-    d0: f32,
+    d0: f64,
     d1: Complex,
     d2: Complex,
     c1: Complex,
@@ -112,7 +115,7 @@ impl Band {
         // Half-angle evaluation avoids losing the numerator at high host rates.
         let gain = (omega * 0.5).sin().powi(2) / a0;
         let rotation = TAU * centre / rate;
-        self.d0 = gain as f32;
+        self.d0 = gain;
         self.d1 = Complex::rotated(2.0 * gain, rotation);
         self.d2 = Complex::rotated(gain, 2.0 * rotation);
         self.c1 = Complex::rotated(-2.0 * cos / a0, rotation);
@@ -127,6 +130,7 @@ impl Band {
     }
 
     fn filter(&mut self, input: f32) -> Complex {
+        let input = f64::from(input);
         let y = Complex {
             real: self.d0.mul_add(input, self.s2.real),
             imag: self.s2.imag,
@@ -146,65 +150,70 @@ impl Band {
         y
     }
 
-    pub(super) fn sample(&mut self, input: f32, enabled: [bool; 4], audible: bool) -> [f32; 4] {
+    pub(super) fn sample(
+        &mut self,
+        input: f32,
+        enabled: [bool; 4],
+        audible: bool,
+    ) -> ([f32; 4], [(f32, f32); 2]) {
         let y = self.filter(input);
         let power = y.real.mul_add(y.real, y.imag * y.imag);
         if !power.is_finite() {
             self.reset();
-            return [0.0; 4];
+            return ([0.0; 4], [(0.0, 0.0); 2]);
         }
         let up = enabled[0] || enabled[1];
         let down = enabled[2] || enabled[3];
-        if power < 1e-9 || (!down && (!audible || !up)) {
-            return [0.0; 4];
+        // Quiet initial cycles determine the divider branch before it is audible.
+        if power < 1e-24 || (!down && (!audible || !up)) {
+            return ([0.0; 4], [(0.0, 0.0); 2]);
         }
         let inverse = 1.0 / power.sqrt();
         let mut paths = [0.0; 4];
+        let mut down = [(0.0, 0.0); 2];
         if audible && (enabled[0] || enabled[1]) {
             let up1 = y.twice_phase(inverse);
             if enabled[0] {
-                paths[0] = up1.real;
+                paths[0] = up1.real as f32;
             }
             if enabled[1] {
-                let up1_power = up1.real.mul_add(up1.real, up1.imag * up1.imag);
-                paths[1] = up1.twice_phase(1.0 / up1_power.max(1e-9).sqrt()).real;
+                paths[1] = up1.twice_phase(inverse).real as f32;
             }
         }
         if enabled[2] || enabled[3] {
             self.down1.track(y);
             let down1 = self.down1.half_phase(y, inverse);
             if audible && enabled[2] {
-                paths[2] = down1.real;
+                paths[2] = down1.real as f32;
+                down[0] = (down1.real as f32, down1.imag as f32);
             }
             if enabled[3] {
                 self.down2.track(down1);
                 if audible {
-                    let power = down1.real.mul_add(down1.real, down1.imag * down1.imag);
-                    paths[3] = self
-                        .down2
-                        .half_phase(down1, 1.0 / power.max(1e-9).sqrt())
-                        .real;
+                    let down2 = self.down2.half_phase(down1, inverse);
+                    paths[3] = down2.real as f32;
+                    down[1] = (down2.real as f32, down2.imag as f32);
                 }
             }
         }
-        paths
+        (paths, down)
     }
 
-    /// Evaluate the stored coefficients, including their f32 rounding, off thread.
+    /// Evaluate the stored coefficients, without narrowing their precision.
     pub(super) fn response(&self, frequency: f64, rate: f64) -> (f64, f64) {
         let angle = -TAU * frequency / rate;
         let rotate = |value: Complex, angle: f64| {
             let (sin, cos) = angle.sin_cos();
             (
-                f64::from(value.real).mul_add(cos, -f64::from(value.imag) * sin),
-                f64::from(value.real).mul_add(sin, f64::from(value.imag) * cos),
+                value.real.mul_add(cos, -value.imag * sin),
+                value.real.mul_add(sin, value.imag * cos),
             )
         };
         let d1 = rotate(self.d1, angle);
         let d2 = rotate(self.d2, 2.0 * angle);
         let c1 = rotate(self.c1, angle);
         let c2 = rotate(self.c2, 2.0 * angle);
-        let numerator = (f64::from(self.d0) + d1.0 + d2.0, d1.1 + d2.1);
+        let numerator = (self.d0 + d1.0 + d2.0, d1.1 + d2.1);
         let denominator = (1.0 + c1.0 + c2.0, c1.1 + c2.1);
         let power = denominator
             .0

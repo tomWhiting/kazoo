@@ -68,6 +68,8 @@ pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
     ("ringmod", 379_420),
     ("sidestep", 379_420),
     ("comp", 592_430),
+    // fx/octaves measured 2026-10-14; four 128-frame blocks at the steady midpoint.
+    ("octaves", 4_143_200),
     ("tape", 491_630),
     ("bbd", 162_010),
     ("digital", 133_860),
