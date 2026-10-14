@@ -925,3 +925,137 @@ fn harmony_cost_per_block() {
         assert!(left.iter().chain(&right).all(|x| x.is_finite()));
     }
 }
+
+/// A click is broadband: a step in level or waveform puts energy where a
+/// tone of a few hundred hertz has none. The third difference falls 18 dB
+/// per octave below its peak, so it hears a step at full size and the
+/// tones under test 60 dB down. A smooth fade shows only at its corners,
+/// where the gain's slope turns: at most the signal's peak over the ramp's
+/// length.
+fn clicks(samples: &[f32]) -> f32 {
+    samples
+        .windows(4)
+        .map(|w| 3.0f32.mul_add(w[1] - w[2], w[3] - w[0]).abs())
+        .fold(0.0, f32::max)
+}
+
+/// Level in decibels over every window of 800 frames, hopped by 1 ms. 800
+/// frames is one whole period of 60 Hz, the lowest partial a 240 Hz tone
+/// takes two octaves down, and so of every octave of it: a window that
+/// holds a whole number of periods reads a steady tone as steady, where a
+/// 2 ms window reads its own waveform's swing as a level change.
+fn levels(samples: &[f32]) -> Vec<f32> {
+    samples
+        .windows(800)
+        .step_by(48)
+        .map(|w| {
+            10.0 * (w.iter().map(|x| x * x).sum::<f32>() / 800.0)
+                .max(1e-20)
+                .log10()
+        })
+        .collect()
+}
+
+fn tone_240(count: usize) -> Vec<f32> {
+    (0..count)
+        .map(|i| (TAU * 240.0 * i as f32 / RATE as f32).sin() * AMP)
+        .collect()
+}
+
+fn harmony_at(preset: usize) -> FxSettings {
+    let slot = Slot::Harmony;
+    let mut settings = only(slot, 0);
+    let saved = &mut settings.slots[slot as usize];
+    super::harmony::adjust(&mut saved.values[0], &mut saved.custom, 0, preset as f32);
+    settings
+}
+
+/// Renders `settings` settled, makes `change`, and renders until settled
+/// again; answers (the worst click over what the steady sound and a fade
+/// of the whole sound over the ramp allow, the worst level over the louder
+/// steady level in dB).
+fn transition(settings: &FxSettings, change: impl FnOnce(&mut FxChain, &Stats)) -> (f32, f32) {
+    let stats = Stats::default();
+    let input = tone_240(RATE as usize);
+    let mut chain = chain(settings);
+    let before = render(&mut chain, &input[..14_400], 120.0, &stats);
+    change(&mut chain, &stats);
+    let during = render(&mut chain, &input[14_400..33_600], 120.0, &stats);
+    let after = render(&mut chain, &input[33_600..48_000], 120.0, &stats);
+    let steady = [&before[0][4_800..], &after[0][..]];
+    let peak = [&before[0][..], &during[0], &after[0]]
+        .iter()
+        .flat_map(|x| x.iter())
+        .fold(0.0_f32, |peak, x| peak.max(x.abs()));
+    let fade = peak / (RATE as f32 * super::RAMP_SECONDS);
+    let click = clicks(&during[0]) / (steady.iter().map(|x| clicks(x)).fold(0.0, f32::max) + fade);
+    let loudest = steady
+        .iter()
+        .flat_map(|x| levels(x))
+        .fold(f32::MIN, f32::max);
+    let mut joined = before[0][4_800..].to_vec();
+    joined.extend_from_slice(&during[0]);
+    joined.extend_from_slice(&after[0]);
+    let swell = levels(&joined).into_iter().fold(f32::MIN, f32::max) - loudest;
+    (click, swell)
+}
+
+#[test]
+fn harmony_changes_mid_tone_never_click_or_swell() {
+    let slot = Slot::Harmony;
+    // Each pair moves an audible voice's shift: through unison with the dry
+    // (octave up to down, octaves to two down) and across it (fifth to
+    // octave down, minor third to octaves, octave down to octave up).
+    for (from, to) in [(1, 0), (2, 3), (4, 0), (7, 2), (0, 1)] {
+        let (click, swell) = transition(&harmony_at(from), |chain, stats| {
+            chain.param(slot, 0, 0, to as f32, stats);
+        });
+        let name = |index: usize| super::harmony::PRESETS[index];
+        assert!(
+            click <= 1.0,
+            "{} to {}: click {click}",
+            name(from),
+            name(to)
+        );
+        assert!(
+            swell <= 1.0,
+            "{} to {}: swell {swell} dB",
+            name(from),
+            name(to)
+        );
+    }
+    for (index, value) in [(3, -60.0), (3, 6.0), (2, -11.0), (4, 7.0), (1, -60.0)] {
+        let (click, swell) = transition(&harmony_at(2), |chain, stats| {
+            chain.param(slot, 0, index, value, stats);
+        });
+        assert!(click <= 1.0, "knob {index} to {value}: click {click}");
+        assert!(swell <= 1.0, "knob {index} to {value}: swell {swell} dB");
+    }
+    let stats = Stats::default();
+    let mut chain = chain(&harmony_at(1));
+    let input = tone_240(BLOCK);
+    let mut left = [0.0; BLOCK];
+    let mut right = [0.0; BLOCK];
+    let before = assert_no_alloc::violation_count();
+    assert_no_alloc::assert_no_alloc(|| {
+        for block in 0..320 {
+            if block % 40 == 0 {
+                chain.param(slot, 0, 0, (block / 40) as f32, &stats);
+            }
+            chain.process(
+                Context { bpm: 120.0 },
+                &input,
+                [&mut left, &mut right],
+                &stats,
+            );
+        }
+    });
+    assert_eq!(before, assert_no_alloc::violation_count());
+    for on in [false, true] {
+        let mut settings = harmony_at(2);
+        settings.slots[slot as usize].on = !on;
+        let (click, swell) = transition(&settings, |chain, _| chain.on(slot, on));
+        assert!(click <= 1.0, "on {on}: click {click}");
+        assert!(swell <= 1.0, "on {on}: swell {swell} dB");
+    }
+}

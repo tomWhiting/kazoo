@@ -124,10 +124,48 @@ struct Voice {
     gain: Ramp,
     asleep: bool,
     ready: bool,
+    /// Fading out to take a new shift in silence.
+    ducking: bool,
+    /// The shift, semitones, the shifter takes once it is silent.
+    shift: f32,
     wanted: f32,
     warmup: usize,
     #[cfg(test)]
     calls: usize,
+}
+
+impl Voice {
+    const fn silent(&self) -> bool {
+        !self.gain.moving() && self.gain.value == 0.0
+    }
+
+    /// Clears the shifter and primes it again before it fades in, so it never
+    /// plays stale audio or the empty line's onset.
+    fn restart(&mut self) {
+        self.effect.set_param(0, self.shift);
+        self.effect.reset();
+        self.ducking = false;
+        self.ready = false;
+        self.warmup = self.gain.frames * 5;
+        self.gain.snap(0.0);
+    }
+
+    /// A new shift is taken in silence. Glided under an audible voice, the
+    /// shifter bends through every pitch between, and through unison its
+    /// late copy sums with the dry voice: a swell of 5 dB for an octave up
+    /// to an octave down. So an audible voice fades out, is reset at the new
+    /// shift, and fades in once primed; a silent one restarts at once. The
+    /// shifter keeps its old shift while it fades: a shift gliding under
+    /// the fade splices hard.
+    fn retune(&mut self) {
+        if self.silent() {
+            self.restart();
+        } else {
+            self.ducking = true;
+            self.ready = false;
+            self.gain.aim(0.0);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -146,6 +184,8 @@ impl Harmony {
                 gain: Ramp::new(0.0, 1),
                 asleep: true,
                 ready: false,
+                ducking: false,
+                shift: 0.0,
                 wanted: 0.0,
                 warmup: 0,
                 #[cfg(test)]
@@ -164,7 +204,8 @@ impl Effect for Harmony {
         self.dry = Ramp::new(gain(self.values[1]), frames);
         for (index, voice) in self.voices.iter_mut().enumerate() {
             voice.effect.prepare(rate);
-            voice.effect.set_param(0, self.values[2 + 2 * index]);
+            voice.shift = self.values[2 + 2 * index];
+            voice.effect.set_param(0, voice.shift);
             voice.effect.set_param(2, self.values[8]);
             voice.effect.set_param(3, 1.0);
             let target = gain(self.values[3 + 2 * index]);
@@ -178,11 +219,13 @@ impl Effect for Harmony {
     fn reset(&mut self) {
         self.dry.snap(gain(self.values[1]));
         for (index, voice) in self.voices.iter_mut().enumerate() {
+            voice.effect.set_param(0, voice.shift);
             voice.effect.reset();
             let target = gain(self.values[3 + 2 * index]);
             voice.gain.snap(0.0);
             voice.wanted = target;
             voice.ready = false;
+            voice.ducking = false;
             voice.warmup = voice.gain.frames * 5;
             voice.asleep = target == 0.0;
         }
@@ -206,7 +249,15 @@ impl Effect for Harmony {
         self.values[index] = value;
         match index {
             1 => self.dry.aim(gain(value)),
-            2 | 4 | 6 => self.voices[(index - 2) / 2].effect.set_param(0, value),
+            2 | 4 | 6 => {
+                let voice = &mut self.voices[(index - 2) / 2];
+                voice.shift = value;
+                if voice.asleep {
+                    voice.effect.set_param(0, value);
+                } else {
+                    voice.retune();
+                }
+            }
             3 | 5 | 7 => {
                 let voice = &mut self.voices[(index - 3) / 2];
                 let target = gain(value);
@@ -266,7 +317,7 @@ impl Effect for Harmony {
                 for i in 0..size {
                     // Prime the longest shifted delay before fading in its startup transient.
                     voice.warmup = voice.warmup.saturating_sub(1);
-                    if !voice.ready && voice.warmup == 0 {
+                    if !voice.ready && !voice.ducking && voice.warmup == 0 {
                         voice.ready = true;
                         voice.gain.aim(voice.wanted);
                     }
@@ -275,7 +326,10 @@ impl Effect for Harmony {
                     right[start + i] =
                         level.mul_add(sanitize_sample(scratch_r[i]), right[start + i]);
                 }
-                if !voice.gain.moving() && voice.wanted == 0.0 && voice.gain.value == 0.0 {
+                if voice.ducking && voice.silent() {
+                    voice.restart();
+                }
+                if voice.silent() && voice.wanted == 0.0 {
                     voice.asleep = true;
                 }
             }
