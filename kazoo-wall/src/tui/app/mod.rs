@@ -269,12 +269,9 @@ pub enum Mode {
     Mark { text: String },
     /// The tree list.
     Tree { index: usize },
-    /// Asking before the wall goes to a moment.
-    Go {
-        moment: String,
-        label: String,
-        index: usize,
-    },
+    /// Asking before the wall goes to a moment typed at the command line
+    /// (`:go`); the tree list goes on Enter without asking.
+    Go { moment: String, label: String },
     /// Asking before a save of that name is replaced.
     Overwrite {
         /// The save.

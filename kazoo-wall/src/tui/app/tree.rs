@@ -257,7 +257,6 @@ impl App {
                 self.mode = Mode::Go {
                     moment: rest.into(),
                     label: rest.into(),
-                    index: 0,
                 };
             }
             "tree" => self.open_tree(now),
@@ -432,7 +431,6 @@ impl App {
         key: KeyEvent,
         moment: String,
         label: String,
-        index: usize,
         now: Instant,
     ) -> Mode {
         match key.code {
@@ -441,11 +439,7 @@ impl App {
                 Mode::Normal
             }
             KeyCode::Esc | KeyCode::Char('n') => Mode::Normal,
-            _ => Mode::Go {
-                moment,
-                label,
-                index,
-            },
+            _ => Mode::Go { moment, label },
         }
     }
 
@@ -563,7 +557,7 @@ impl App {
 
     fn listed_tree(&mut self, result: TreeResult) {
         let old_index = match self.mode {
-            Mode::Tree { index } | Mode::Go { index, .. } => Some(index),
+            Mode::Tree { index } => Some(index),
             _ => None,
         };
         let chosen = old_index.and_then(|index| {
@@ -588,7 +582,7 @@ impl App {
                 })
                 .or_else(|| selectable.iter().position(|row| row.commit == old.commit))
         });
-        if let Mode::Tree { index } | Mode::Go { index, .. } = &mut self.mode {
+        if let Mode::Tree { index } = &mut self.mode {
             *index = found.unwrap_or_else(|| (*index).min(selectable.len().saturating_sub(1)));
         }
         if result.through < result.revision {

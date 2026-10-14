@@ -201,6 +201,33 @@ fn moving_the_tree_cursor_says_the_distance_from_the_wall() {
     app.on_reply(
         Reply::Answer {
             request: Request::Tree { recent: None },
+            outcome: Ok(value.clone()),
+        },
+        Instant::now(),
+    );
+    press(&mut app, KeyCode::Down);
+    assert_eq!(
+        status(&app),
+        "12 changes from the wall: 4 back to where they part, 8 on · Enter puts the wall here"
+    );
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(
+        status(&app),
+        "3 changes back from the wall · Enter puts the wall here"
+    );
+    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(status(&app), "the wall is here");
+    assert!(calls(&mut app).is_empty(), "moving only looks");
+    // The tree sends the newest parents only: a line that parts from the
+    // wall's further back than that is said to, never guessed.
+    for n in 0..=13 {
+        parents.remove(&moment(n).commit);
+    }
+    value["parents"] = serde_json::json!(parents);
+    app.on_reply(
+        Reply::Answer {
+            request: Request::Tree { recent: None },
             outcome: Ok(value),
         },
         Instant::now(),
@@ -208,14 +235,29 @@ fn moving_the_tree_cursor_says_the_distance_from_the_wall() {
     press(&mut app, KeyCode::Down);
     assert_eq!(
         status(&app),
-        "12 changes from the wall: 4 back to where they part, 8 on"
+        "further from the wall than the tree counted · Enter puts the wall here"
     );
-    press(&mut app, KeyCode::Char('j'));
-    assert_eq!(status(&app), "3 changes back from the wall");
-    press(&mut app, KeyCode::Char('k'));
-    press(&mut app, KeyCode::Up);
-    assert_eq!(status(&app), "the wall is here");
-    assert!(calls(&mut app).is_empty(), "moving only looks");
+}
+
+#[test]
+fn one_change_from_the_wall_is_said_in_the_singular() {
+    let mut app = open_list();
+    let mut result = listed();
+    result.here.as_mut().unwrap().commit = moment(16).commit;
+    result.branches[0].tip = moment(16);
+    result.branches[1].tip = moment(15);
+    result.marks.clear();
+    result.recent.clear();
+    result.parents = (1..=16)
+        .map(|n| (moment(n).commit, Some(moment(n - 1).commit)))
+        .chain(std::iter::once((moment(0).commit, None)))
+        .collect();
+    answer(&mut app, Request::Tree { recent: None }, &result);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(
+        status(&app),
+        "1 change back from the wall · Enter puts the wall here"
+    );
 }
 
 #[test]
@@ -345,8 +387,25 @@ fn help_lists_b_and_capital_b() {
         press(&mut app, KeyCode::PageDown);
     }
     assert!(screens.contains("mark the moment the wall is at under a name"));
-    assert!(screens.contains("the tree: where the wall is, branches, marks"));
+    assert!(screens.contains("the tree: j k say how far from the wall"));
     assert!(matches!(app.mode(), Mode::Help { .. }));
+}
+
+#[test]
+fn help_says_enter_in_the_tree_list_goes_at_once() {
+    let mut app = connected();
+    press(&mut app, KeyCode::Char('?'));
+    let mut screens = String::new();
+    for _ in 0..12 {
+        screens.push_str(&text(&render(&mut app, 120, 40)));
+        press(&mut app, KeyCode::PageDown);
+    }
+    // The whole line shows: the help cuts a longer one off.
+    assert!(
+        screens.contains("the tree: j k say how far from the wall, ⏎ goes there, z undoes"),
+        "{screens}"
+    );
+    assert!(!screens.contains("then y puts the wall"), "{screens}");
 }
 
 #[test]

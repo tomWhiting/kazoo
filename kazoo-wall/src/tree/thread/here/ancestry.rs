@@ -3,12 +3,29 @@ use std::path::Path;
 
 use super::{HereError, MomentView, TreePlace, checked, full_id, git};
 
-const MAX_PARENTS: usize = 200_000;
+/// The most moments whose first parents one listing sends: the newest,
+/// across every listed line. The tree grows by a commit a change and the
+/// list is asked for again as the wall changes, so the work and the line
+/// it takes stay this size however old the tree is; a moment whose line
+/// parts from the wall's further back is said to be further than the
+/// tree counted, never refused.
+const MAX_PARENTS: usize = 4096;
 
+/// The first parent of the listed moments, the wall's place and their
+/// ancestors, newest first, up to [`MAX_PARENTS`] moments.
 pub(super) fn read(
     tree: &Path,
     moments: &BTreeMap<String, MomentView>,
     here: Option<&TreePlace>,
+) -> Result<BTreeMap<String, Option<String>>, HereError> {
+    within(tree, moments, here, MAX_PARENTS)
+}
+
+pub(super) fn within(
+    tree: &Path,
+    moments: &BTreeMap<String, MomentView>,
+    here: Option<&TreePlace>,
+    most: usize,
 ) -> Result<BTreeMap<String, Option<String>>, HereError> {
     let heads: BTreeSet<_> = moments
         .keys()
@@ -21,7 +38,7 @@ pub(super) fn read(
     let text = checked(
         git::git_command("log", Some(tree))
             .args(["-z", "--first-parent", "--format=%H%x00%P"])
-            .arg(format!("-n{}", MAX_PARENTS + 1))
+            .arg(format!("-n{most}"))
             .args(heads)
             .arg("--"),
     )?;
@@ -33,11 +50,6 @@ pub(super) fn read(
         return Err(HereError::Broken(
             "the tree's parent metadata is incomplete".into(),
         ));
-    }
-    if fields.len() / 2 > MAX_PARENTS {
-        return Err(HereError::Full(format!(
-            "the listed moments have more than {MAX_PARENTS} parents; their distances cannot be listed"
-        )));
     }
     fields
         .chunks_exact(2)

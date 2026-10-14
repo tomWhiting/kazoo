@@ -29,6 +29,27 @@ fn listed_parents_cover_buds_beyond_the_recent_rows() {
     assert!(value["parents"][&root.commit].is_null());
 }
 
+#[test]
+fn a_tree_longer_than_the_bound_is_listed_with_its_newest_parents() {
+    // The listing never refuses a long tree: it sends the newest parents
+    // only, and the list says a moment further back is further than that.
+    let mut rig = Rig::new();
+    let root = rig.here();
+    let places: Vec<_> = (0..4).map(|n| rig.change(400.0 + f64::from(n))).collect();
+    let here = &places[3];
+    let parents = super::ancestry::within(rig.path(), &BTreeMap::new(), Some(here), 2).unwrap();
+    assert_eq!(parents.len(), 2, "{parents:?}");
+    assert_eq!(
+        parents[&here.commit].as_deref(),
+        Some(places[2].commit.as_str())
+    );
+    assert_eq!(
+        parents[&places[2].commit].as_deref(),
+        Some(places[1].commit.as_str())
+    );
+    assert!(!parents.contains_key(&root.commit));
+}
+
 fn command(tree: &Path, args: &[&str]) -> String {
     let result = git::git_command(args[0], Some(tree))
         .args(&args[1..])
