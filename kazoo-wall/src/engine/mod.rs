@@ -152,6 +152,15 @@ pub enum Command {
     /// Set the wall's own tempo. While following a playing desk, the desk's
     /// next change overrides it.
     Tempo(f64),
+    /// Move the wall's own tempo in a straight line to `bpm` over `frames`
+    /// frames, a sub-block at a time; 0 frames is `Tempo(bpm)`. A `Tempo`
+    /// stops it where it is, and so does the desk setting the tempo.
+    TempoGlide {
+        /// Where it ends up, in beats per minute (held to the wall's range).
+        bpm: f64,
+        /// How long it takes.
+        frames: u32,
+    },
     /// Fade the master out over [`SWAP_FADE_SECONDS`], and hold every
     /// command after this one until it is silent: the commands between a
     /// `Hush` and its [`Command::Unhush`] (a whole wall taken out and
@@ -551,6 +560,12 @@ pub struct Engine {
     hub: Option<HubLinkAudio>,
     follower: TransportFollower,
     bpm: f64,
+    /// The wall tempo the glide is moving to.
+    tempo_aim: f64,
+    /// BPM moved per frame while the wall tempo glides.
+    tempo_step: f64,
+    /// Frames left until the wall tempo reaches its aim.
+    tempo_left: u32,
     beat: f64,
     following_desk: bool,
     rendered: u64,
@@ -688,6 +703,9 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         hub,
         follower: TransportFollower::new(sample_rate),
         bpm,
+        tempo_aim: bpm,
+        tempo_step: 0.0,
+        tempo_left: 0,
         beat,
         following_desk: false,
         rendered: 0,
@@ -915,7 +933,22 @@ impl Engine {
                 } => self.knob(slot, knob, target, glide_frames),
                 Command::Tempo(bpm) => {
                     self.bpm = clamp_bpm(bpm);
+                    self.tempo_left = 0;
                     self.shared.bpm.store(self.bpm.to_bits(), Ordering::Relaxed);
+                }
+                Command::TempoGlide { bpm, .. } if !bpm.is_finite() => {
+                    self.shared.ignored.fetch_add(1, Ordering::Relaxed);
+                }
+                Command::TempoGlide { bpm, frames } => {
+                    if frames == 0 {
+                        self.bpm = clamp_bpm(bpm);
+                        self.tempo_left = 0;
+                        self.shared.bpm.store(self.bpm.to_bits(), Ordering::Relaxed);
+                    } else {
+                        self.tempo_aim = clamp_bpm(bpm);
+                        self.tempo_step = (self.tempo_aim - self.bpm) / f64::from(frames);
+                        self.tempo_left = frames;
+                    }
                 }
                 Command::Hush => self.hushed = true,
                 Command::Unhush => {
@@ -1094,7 +1127,7 @@ impl Engine {
 
     /// Follow the desk: a playing desk sets the tempo and the beat; a
     /// stopped or missing desk leaves the wall on its own beat.
-    fn follow_desk(&mut self) {
+    fn follow_desk(&mut self) -> bool {
         let connected = self.hub.as_ref().is_some_and(HubLinkAudio::is_connected);
         let change = if self.hub.is_some() {
             self.follower.due(self.rendered)
@@ -1106,6 +1139,7 @@ impl Engine {
         self.bpm = bpm;
         self.beat = beat;
         self.following_desk = following;
+        change.is_some()
     }
 
     fn render_sub_block(&mut self) {
@@ -1114,7 +1148,14 @@ impl Engine {
             // the next callback.
             self.drain_commands();
         }
-        self.follow_desk();
+        let desk_changed = self.follow_desk();
+        (self.bpm, self.tempo_left) = glide_tempo(
+            self.bpm,
+            self.tempo_aim,
+            self.tempo_step,
+            self.tempo_left,
+            self.following_desk || desk_changed,
+        );
         let tick = Tick::new(self.sample_rate, self.bpm, self.beat).at_frame(self.rendered);
         let len = self.order.slots().len();
         self.timed = self.timed.checked_rem(len).unwrap_or(0);
@@ -1304,6 +1345,24 @@ impl Engine {
         }
         self.record.push_slice(&frames);
     }
+}
+
+/// The tempo after one sub-block of a glide: `(bpm, frames left)`. A desk
+/// setting the tempo (`desk`) ends the glide where the tempo is.
+#[must_use]
+pub fn glide_tempo(bpm: f64, aim: f64, step: f64, left: u32, desk: bool) -> (f64, u32) {
+    if desk || left == 0 {
+        return (bpm, 0);
+    }
+    // SUB_BLOCK is 32: lossless.
+    let frames = left.min(SUB_BLOCK as u32);
+    let left = left - frames;
+    let bpm = if left == 0 {
+        aim
+    } else {
+        clamp_bpm(step.mul_add(f64::from(frames), bpm))
+    };
+    (bpm, left)
 }
 
 /// The wall's clock after a desk transport `change` (if one fell due), given

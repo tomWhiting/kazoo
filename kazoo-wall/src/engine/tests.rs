@@ -5,6 +5,7 @@ use super::*;
 use crate::dsp::{Rng, build};
 
 mod cost;
+mod glide;
 mod sparse;
 mod unheard;
 

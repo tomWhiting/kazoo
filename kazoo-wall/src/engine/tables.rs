@@ -56,6 +56,10 @@ pub struct Route {
     /// Whether the cable carries a gate: a change of delay then switches
     /// where the old and new signals agree instead of crossfading.
     pub gate: bool,
+    /// Frames over which the cable moves to `amount` when the engine first
+    /// sees this amount on it: 0 takes it at once. A cable new to its line
+    /// (see `tag`) with a glide above 0 starts silent and comes in over it.
+    pub glide: u32,
 }
 
 impl Route {
@@ -71,6 +75,7 @@ impl Route {
             tag,
             delay: 0,
             gate: false,
+            glide: 0,
         }
     }
 }
