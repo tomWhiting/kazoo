@@ -549,7 +549,7 @@ fn an_import_that_fails_after_a_go_names_no_line() {
     // a failure part way leaves no trunk, so the import can run again.
     let state = going(false);
     rewrite(state.path(), |changes| {
-        changes[12].seat = "not\na seat".into()
+        changes[12].seat = "not\na seat".into();
     });
     let tree = tempfile::tempdir().unwrap();
     assert!(grow(state.path(), tree.path(), false).is_err());
@@ -558,7 +558,9 @@ fn an_import_that_fails_after_a_go_names_no_line() {
         "",
         "no ref is named by an import that failed"
     );
-    rewrite(state.path(), |changes| changes[12].seat = "Tom".into());
+    rewrite(state.path(), |changes| {
+        changes[12].seat = "Tom".into();
+    });
     let report = grow(state.path(), tree.path(), false).unwrap();
     assert_eq!(report.changes, 13, "{}", report.report);
 }
