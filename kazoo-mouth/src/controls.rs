@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Sender, TrySendError};
@@ -5,7 +8,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kazoo_core::synthesis::OscillatorShape;
 use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
 
-use crate::engine::Command;
+use crate::engine::fx::{FxSettings, Slot, mouth_default};
+use crate::engine::{Command, Stats};
+use kazoo_fx::Curve;
+
+pub(crate) mod settings;
 use crate::synth::SynthSettings;
 
 #[cfg(test)]
@@ -110,7 +117,22 @@ pub(crate) struct Settings {
     pub(crate) quantise: QuantiseSettings,
     pub(crate) synth: SynthSettings,
     pub(crate) silent: bool,
-    last_blend: f32,
+    pub(crate) last_blend: f32,
+    pub(crate) fx: FxSettings,
+    pub(crate) own_bpm: f64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            quantise: QuantiseSettings::default(),
+            synth: SynthSettings::default(),
+            silent: false,
+            last_blend: 1.0,
+            fx: FxSettings::default(),
+            own_bpm: 120.0,
+        }
+    }
 }
 
 impl Settings {
@@ -203,7 +225,7 @@ impl Settings {
         }
     }
 
-    pub(crate) fn value(self, control: Control) -> String {
+    pub(crate) fn value(&self, control: Control) -> String {
         match control {
             Control::Quantise => on_off(self.quantise.blend > 0.0).into(),
             Control::Scale => SCALE_NAMES[self.quantise.scale].into(),
@@ -233,36 +255,166 @@ pub(crate) enum Action {
     Quit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Focus {
+    Synth,
+    Fx,
+}
+
 #[derive(Debug)]
 pub(crate) struct App {
     pub(crate) accepted: Settings,
     pub(crate) selected: Control,
     pub(crate) help: bool,
+    pub(crate) help_scroll: Cell<u16>,
+    pub(crate) focus: Focus,
+    pub(crate) selected_slot: Slot,
+    pub(crate) selected_cell: usize,
+    pub(crate) desk_bpm: Option<f64>,
+    pub(crate) moving: u64,
+    pub(crate) fx_faults: u64,
+    pub(crate) fx_refused: u64,
+    pub(crate) settings_path: PathBuf,
     busy_until: Option<Instant>,
+    dirty_at: Option<Instant>,
+    save_error: Option<String>,
+    writable: bool,
+    message: Option<(String, Instant)>,
+    notes: Vec<String>,
+    notes_at: Instant,
+    published_own: u64,
 }
 
 impl App {
+    #[cfg(test)]
     pub(crate) fn new(quantise: QuantiseSettings, silent: bool) -> Self {
         let quantise = quantise.held();
-        Self {
-            accepted: Settings {
-                quantise,
-                synth: SynthSettings::default(),
-                silent,
-                last_blend: if quantise.blend > 0.0 {
-                    quantise.blend
-                } else {
-                    1.0
-                },
+        let accepted = Settings {
+            quantise,
+            silent,
+            last_blend: if quantise.blend > 0.0 {
+                quantise.blend
+            } else {
+                1.0
             },
+            ..Settings::default()
+        };
+        Self::loaded(
+            settings::Loaded {
+                settings: accepted,
+                notes: Vec::new(),
+                writable: true,
+            },
+            PathBuf::new(),
+            Instant::now(),
+        )
+    }
+
+    pub(crate) fn loaded(loaded: settings::Loaded, path: PathBuf, now: Instant) -> Self {
+        Self {
+            accepted: loaded.settings,
             selected: Control::Quantise,
             help: false,
+            help_scroll: Cell::new(0),
+            focus: Focus::Synth,
+            selected_slot: Slot::Megaphone,
+            selected_cell: 0,
+            desk_bpm: None,
+            moving: 0,
+            fx_faults: 0,
+            fx_refused: 0,
+            settings_path: path,
             busy_until: None,
+            dirty_at: None,
+            save_error: None,
+            writable: loaded.writable,
+            message: None,
+            notes: loaded.notes,
+            notes_at: now,
+            published_own: loaded.settings.own_bpm.to_bits(),
         }
     }
 
     pub(crate) fn busy(&self, now: Instant) -> bool {
         self.busy_until.is_some_and(|until| now < until)
+    }
+
+    pub(crate) fn notice(&self, now: Instant) -> Option<&str> {
+        if let Some(error) = &self.save_error {
+            return Some(error);
+        }
+        if let Some((message, until)) = &self.message
+            && now < *until
+        {
+            return Some(message);
+        }
+        let elapsed = now.saturating_duration_since(self.notes_at).as_secs() / 5;
+        let index = elapsed.min(self.notes.len() as u64) as usize;
+        self.notes.get(index).map(String::as_str)
+    }
+
+    pub(crate) fn sync_stats(&mut self, stats: &Stats, now: Instant) {
+        let bits = stats.desk_bpm.load(Ordering::Relaxed);
+        self.desk_bpm = if bits == 0 {
+            None
+        } else {
+            Some(f64::from_bits(bits))
+        };
+        let own = f64::from_bits(stats.own_bpm.load(Ordering::Relaxed));
+        if own.is_finite() && own >= 30.0 && own.to_bits() != self.published_own {
+            let waiting = self.accepted.own_bpm.to_bits() != self.published_own;
+            self.published_own = own.to_bits();
+            if !waiting {
+                self.accepted.own_bpm = own;
+                self.dirty_at = Some(now);
+            }
+        }
+        self.moving = stats.fx_moving.load(Ordering::Relaxed);
+        self.fx_faults = stats.fx_faults.load(Ordering::Relaxed);
+        self.fx_refused = stats.fx_refused.load(Ordering::Relaxed);
+    }
+
+    pub(crate) fn save_if_due(&mut self, now: Instant, quitting: bool) {
+        if !self.writable || self.settings_path.as_os_str().is_empty() {
+            return;
+        }
+        if !quitting
+            && !self
+                .dirty_at
+                .is_some_and(|at| now.saturating_duration_since(at) >= Duration::from_secs(1))
+        {
+            return;
+        }
+        match settings::save(&self.settings_path, &self.accepted) {
+            Ok(()) => {
+                self.save_error = None;
+                self.dirty_at = None;
+            }
+            Err(error) => {
+                self.save_error = Some(format!("settings not saved: {error}"));
+                self.dirty_at = None;
+            }
+        }
+    }
+
+    fn send_change(
+        &mut self,
+        proposed: &Settings,
+        command: Command,
+        sender: &impl CommandSender,
+        now: Instant,
+    ) -> Result<Action, TrySendError<Command>> {
+        match sender.try_send(command) {
+            Ok(()) => {
+                self.accepted = *proposed;
+                if !matches!(command, Command::SetSilent(_)) {
+                    self.dirty_at = Some(now);
+                }
+            }
+            Err(TrySendError::Full(_)) => self.busy_until = Some(now + Duration::from_secs(1)),
+            Err(error @ TrySendError::Disconnected(_)) => return Err(error),
+        }
+        Ok(Action::Continue)
     }
 
     pub(crate) fn handle_key(
@@ -288,10 +440,41 @@ impl App {
         }
         if key.code == KeyCode::Char('?') {
             self.help = !self.help;
+            self.help_scroll.set(0);
             return Ok(Action::Continue);
         }
         if self.help {
+            match key.code {
+                KeyCode::Down => self
+                    .help_scroll
+                    .set(self.help_scroll.get().saturating_add(1)),
+                KeyCode::Up => self
+                    .help_scroll
+                    .set(self.help_scroll.get().saturating_sub(1)),
+                KeyCode::PageDown => self
+                    .help_scroll
+                    .set(self.help_scroll.get().saturating_add(10)),
+                KeyCode::PageUp => self
+                    .help_scroll
+                    .set(self.help_scroll.get().saturating_sub(10)),
+                _ => {}
+            }
             return Ok(Action::Continue);
+        }
+        if key.code == KeyCode::Tab {
+            self.focus = if self.focus == Focus::Synth {
+                Focus::Fx
+            } else {
+                Focus::Synth
+            };
+            return Ok(Action::Continue);
+        }
+        if matches!(key.code, KeyCode::Char(',' | '.' | '<' | '>')) {
+            return self.tempo_key(key.code, sender, now);
+        }
+        let global = matches!(key.code, KeyCode::Char(' ' | 'v' | 'V' | 's' | 'S'));
+        if self.focus == Focus::Fx && !global {
+            return self.fx_key(key, sender, now);
         }
         let control = match key.code {
             KeyCode::Up | KeyCode::Down => {
@@ -304,20 +487,143 @@ impl App {
             KeyCode::Char('s' | 'S') => Control::Silent,
             _ => return Ok(Action::Continue),
         };
-        // Queue acceptance is the only point at which displayed values change.
         let mut proposed = self.accepted;
         let command = proposed.adjust(
             control,
             key.code != KeyCode::Left,
             key.modifiers.contains(KeyModifiers::SHIFT),
         );
-        match sender.try_send(command) {
-            Ok(()) => self.accepted = proposed,
-            Err(TrySendError::Full(_)) => self.busy_until = Some(now + Duration::from_secs(1)),
-            Err(error @ TrySendError::Disconnected(_)) => return Err(error),
-        }
-        Ok(Action::Continue)
+        self.send_change(&proposed, command, sender, now)
     }
+
+    fn tempo_key(
+        &mut self,
+        code: KeyCode,
+        sender: &impl CommandSender,
+        now: Instant,
+    ) -> Result<Action, TrySendError<Command>> {
+        if let Some(bpm) = self.desk_bpm {
+            self.message = Some((
+                format!("the tempo is the desk's ({bpm:.1}): change it on the desk"),
+                now + Duration::from_secs(2),
+            ));
+            return Ok(Action::Continue);
+        }
+        let step = match code {
+            KeyCode::Char(',') => -1.0,
+            KeyCode::Char('.') => 1.0,
+            KeyCode::Char('<') => -10.0,
+            _ => 10.0,
+        };
+        let mut proposed = self.accepted;
+        proposed.own_bpm = (proposed.own_bpm + step).clamp(30.0, 300.0);
+        self.send_change(&proposed, Command::OwnTempo(proposed.own_bpm), sender, now)
+    }
+
+    fn fx_key(
+        &mut self,
+        key: KeyEvent,
+        sender: &impl CommandSender,
+        now: Instant,
+    ) -> Result<Action, TrySendError<Command>> {
+        let slot = self.selected_slot;
+        let mut proposed = self.accepted;
+        let Some(position) = proposed.fx.order.iter().position(|entry| *entry == slot) else {
+            return Ok(Action::Continue);
+        };
+        let saved = &mut proposed.fx.slots[slot as usize];
+        let Some(description) = slot.kind(saved.active) else {
+            return Ok(Action::Continue);
+        };
+        let cells = description.params.len() + 1;
+        match key.code {
+            KeyCode::Char('[' | ']') => {
+                let next = if key.code == KeyCode::Char(']') {
+                    (position + 1) % 5
+                } else {
+                    (position + 4) % 5
+                };
+                self.selected_slot = proposed.fx.order[next];
+                self.selected_cell = 0;
+                return Ok(Action::Continue);
+            }
+            KeyCode::Up | KeyCode::Down => {
+                self.selected_cell = if key.code == KeyCode::Down {
+                    (self.selected_cell + 1) % cells
+                } else {
+                    (self.selected_cell + cells - 1) % cells
+                };
+                return Ok(Action::Continue);
+            }
+            _ => {}
+        }
+        let command = match key.code {
+            KeyCode::Char('b') => {
+                saved.on = !saved.on;
+                Command::FxOn { slot, on: saved.on }
+            }
+            KeyCode::Char('{' | '}') => {
+                let next = if key.code == KeyCode::Char('}') {
+                    (position + 1).min(4)
+                } else {
+                    position.saturating_sub(1)
+                };
+                proposed.fx.order.swap(position, next);
+                Command::FxOrder(proposed.fx.order)
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char('d') => {
+                let right = key.code == KeyCode::Right;
+                if self.selected_cell == 0 {
+                    saved.active = if key.code == KeyCode::Char('d') {
+                        0
+                    } else if right {
+                        (saved.active + 1) % slot.ids().len()
+                    } else {
+                        (saved.active + slot.ids().len() - 1) % slot.ids().len()
+                    };
+                    Command::FxKind {
+                        slot,
+                        kind: saved.active as u8,
+                    }
+                } else {
+                    let index = self.selected_cell - 1;
+                    let Some(spec) = description.params.get(index) else {
+                        return Ok(Action::Continue);
+                    };
+                    let value = if key.code == KeyCode::Char('d') {
+                        mouth_default(slot, saved.active, spec)
+                    } else {
+                        turn(
+                            spec,
+                            saved.values[saved.active][index],
+                            right,
+                            key.modifiers.contains(KeyModifiers::SHIFT),
+                        )
+                    };
+                    saved.values[saved.active][index] = value;
+                    Command::FxParam {
+                        slot,
+                        kind: saved.active as u8,
+                        index: index as u8,
+                        value,
+                    }
+                }
+            }
+            _ => return Ok(Action::Continue),
+        };
+        self.send_change(&proposed, command, sender, now)
+    }
+}
+
+fn turn(spec: &kazoo_fx::ParamSpec, value: f32, right: bool, coarse: bool) -> f32 {
+    let direction: f32 = if right { 1.0 } else { -1.0 };
+    let divisions = if coarse { 10.0 } else { 100.0 };
+    let value = match spec.curve {
+        Curve::Linear => direction.mul_add((spec.max - spec.min) / divisions, value),
+        Curve::Log => value * (spec.max / spec.min).powf(direction / divisions),
+        Curve::Stepped { .. } => value + direction,
+    };
+    spec.clamp(value)
 }
 
 const fn index_step(value: usize, count: usize, right: bool) -> usize {

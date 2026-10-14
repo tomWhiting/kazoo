@@ -67,7 +67,12 @@ fn assert_whole_command(app: &App, sender: &FakeSender, control: Control) {
             assert_eq!(control, Control::Silent);
             assert_eq!(silent, app.accepted.silent);
         }
-        Command::Shutdown => panic!("a control sent shutdown"),
+        Command::Shutdown
+        | Command::FxOn { .. }
+        | Command::FxKind { .. }
+        | Command::FxParam { .. }
+        | Command::FxOrder(_)
+        | Command::OwnTempo(_) => panic!("a synth control sent a different command"),
     }
 }
 
@@ -310,4 +315,218 @@ fn a_disconnected_command_channel_is_reported() {
         Err(TrySendError::Disconnected(Command::SetSilent(true)))
     ));
     assert_eq!(app.accepted, before);
+}
+
+#[test]
+fn fx_keys_select_turn_bypass_and_move() {
+    use crate::controls::Focus;
+    use crate::engine::fx::{Slot, mouth_default};
+
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    key(&mut app, &sender, KeyCode::Tab, false, now);
+    assert_eq!(app.focus, Focus::Fx);
+    key(&mut app, &sender, KeyCode::Char(']'), false, now);
+    assert_eq!(app.selected_slot, Slot::Distortion);
+    key(&mut app, &sender, KeyCode::Char('b'), false, now);
+    assert!(matches!(
+        sender.commands.borrow_mut().remove(0),
+        Command::FxOn {
+            slot: Slot::Distortion,
+            on: true
+        }
+    ));
+    key(&mut app, &sender, KeyCode::Right, false, now);
+    assert!(matches!(
+        sender.commands.borrow_mut().remove(0),
+        Command::FxKind {
+            slot: Slot::Distortion,
+            kind: 1
+        }
+    ));
+    key(&mut app, &sender, KeyCode::Char(']'), false, now);
+    assert_eq!(app.selected_slot, Slot::Delay);
+    let description = Slot::Delay.kind(0).unwrap();
+    let index = description
+        .params
+        .iter()
+        .position(|spec| spec.name == "feedback")
+        .unwrap();
+    let spec = &description.params[index];
+    app.selected_cell = index + 1;
+    let value = app.accepted.fx.slots[2].values[0][index];
+    key(&mut app, &sender, KeyCode::Right, true, now);
+    let expected = spec.clamp(value + (spec.max - spec.min) / 10.0);
+    match sender.commands.borrow_mut().remove(0) {
+        Command::FxParam {
+            slot: Slot::Delay,
+            kind: 0,
+            index: sent,
+            value,
+        } => {
+            assert_eq!(usize::from(sent), index);
+            assert_close(value, expected);
+        }
+        command => panic!("unexpected {command:?}"),
+    }
+    app.accepted.fx.slots[2].values[0][index] = spec.max;
+    key(&mut app, &sender, KeyCode::Right, true, now);
+    assert_close(app.accepted.fx.slots[2].values[0][index], spec.max);
+    sender.commands.borrow_mut().clear();
+    key(&mut app, &sender, KeyCode::Char('}'), false, now);
+    let mut order = Slot::ALL;
+    order.swap(2, 3);
+    assert!(
+        matches!(sender.commands.borrow_mut().remove(0), Command::FxOrder(sent) if sent == order)
+    );
+    assert_eq!(app.selected_slot, Slot::Delay);
+    key(&mut app, &sender, KeyCode::Char('d'), false, now);
+    assert!(
+        matches!(sender.commands.borrow_mut().remove(0), Command::FxParam { slot: Slot::Delay, value, .. } if (value - mouth_default(Slot::Delay, 0, spec)).abs() < f32::EPSILON)
+    );
+}
+
+#[test]
+fn the_tempo_keys_belong_to_the_desk_when_it_has_one() {
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    key(&mut app, &sender, KeyCode::Char('.'), false, now);
+    assert!(
+        matches!(sender.commands.borrow_mut().remove(0), Command::OwnTempo(bpm) if (bpm - 121.0).abs() < f64::EPSILON)
+    );
+    app.desk_bpm = Some(128.0);
+    key(&mut app, &sender, KeyCode::Char('.'), false, now);
+    assert!(sender.commands.borrow().is_empty());
+    assert_eq!(
+        app.notice(now),
+        Some("the tempo is the desk's (128.0): change it on the desk")
+    );
+    assert!(app.notice(now + Duration::from_secs(2)).is_none());
+}
+
+#[test]
+fn a_full_fx_channel_keeps_every_displayed_value() {
+    use crate::controls::Focus;
+    use crate::engine::fx::Slot;
+
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    for _ in 0..64 {
+        key(&mut app, &sender, KeyCode::Char('v'), false, now);
+    }
+    app.focus = Focus::Fx;
+    app.selected_slot = Slot::Delay;
+    let before = app.accepted;
+    for code in [
+        KeyCode::Char('b'),
+        KeyCode::Right,
+        KeyCode::Char('}'),
+        KeyCode::Char('.'),
+    ] {
+        key(&mut app, &sender, code, false, now);
+        assert_eq!(app.accepted, before);
+        assert!(app.busy(now));
+    }
+    assert!(app.dirty_at.is_some());
+}
+
+#[test]
+fn saves_follow_the_last_accepted_change_and_failures_stay_visible() -> std::io::Result<()> {
+    use crate::controls::settings;
+    use std::fs;
+    use std::path::PathBuf;
+
+    let directory =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/kz-logs/mouth-settings-app-save");
+    if directory.exists() {
+        fs::remove_dir_all(&directory)?;
+    }
+    fs::create_dir_all(&directory)?;
+    let path = directory.join("settings.json");
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let mut app = App::loaded(settings::Loaded::default(), path.clone(), now);
+    key(&mut app, &sender, KeyCode::Char('v'), false, now);
+    key(
+        &mut app,
+        &sender,
+        KeyCode::Char('v'),
+        false,
+        now + Duration::from_millis(500),
+    );
+    app.save_if_due(now + Duration::from_secs(1), false);
+    assert!(!path.exists());
+    app.save_if_due(now + Duration::from_millis(1500), false);
+    assert_eq!(settings::load(&path).settings, app.accepted);
+    fs::remove_file(&path)?;
+    fs::remove_dir(&directory)?;
+    fs::write(&directory, b"not a directory")?;
+    app.save_if_due(now + Duration::from_secs(2), true);
+    assert!(
+        app.notice(now)
+            .is_some_and(|notice| notice.starts_with("settings not saved:"))
+    );
+    fs::remove_file(&directory)?;
+    app.save_if_due(now + Duration::from_secs(3), true);
+    assert!(app.notice(now).is_none());
+    assert_eq!(settings::load(&path).settings, app.accepted);
+    Ok(())
+}
+
+#[test]
+fn load_notes_take_five_seconds_each_and_full_commands_do_not_restart_saving() {
+    use crate::controls::settings;
+
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let loaded = settings::Loaded {
+        notes: vec!["first note".into(), "second note".into()],
+        ..settings::Loaded::default()
+    };
+    let mut app = App::loaded(loaded, std::path::PathBuf::new(), now);
+    assert_eq!(app.notice(now), Some("first note"));
+    assert_eq!(
+        app.notice(now + Duration::from_secs(5)),
+        Some("second note")
+    );
+    assert!(app.notice(now + Duration::from_secs(10)).is_none());
+    for _ in 0..64 {
+        key(&mut app, &sender, KeyCode::Char('v'), false, now);
+    }
+    let accepted_at = app.dirty_at;
+    key(
+        &mut app,
+        &sender,
+        KeyCode::Char('v'),
+        false,
+        now + Duration::from_millis(500),
+    );
+    assert_eq!(app.dirty_at, accepted_at);
+}
+
+#[test]
+fn a_queued_tempo_is_not_replaced_by_an_older_callback_snapshot() {
+    use crate::engine::Stats;
+    use std::sync::atomic::Ordering;
+
+    let sender = FakeSender::default();
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    let stats = Stats::default();
+    stats.own_bpm.store(120.0_f64.to_bits(), Ordering::Relaxed);
+    key(&mut app, &sender, KeyCode::Char('.'), false, now);
+    app.sync_stats(&stats, now);
+    assert_eq!(app.accepted.own_bpm.to_bits(), 121.0_f64.to_bits());
+    key(&mut app, &sender, KeyCode::Char('.'), false, now);
+    stats.own_bpm.store(121.0_f64.to_bits(), Ordering::Relaxed);
+    app.sync_stats(&stats, now);
+    assert_eq!(app.accepted.own_bpm.to_bits(), 122.0_f64.to_bits());
+    stats.own_bpm.store(122.0_f64.to_bits(), Ordering::Relaxed);
+    app.sync_stats(&stats, now);
+    stats.own_bpm.store(150.0_f64.to_bits(), Ordering::Relaxed);
+    app.sync_stats(&stats, now);
+    assert_eq!(app.accepted.own_bpm.to_bits(), 150.0_f64.to_bits());
 }

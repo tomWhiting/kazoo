@@ -8,8 +8,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::controls::{App, Control};
+use crate::controls::{App, Control, Focus};
+use crate::engine::fx::Slot;
 
+mod fx;
 mod pitch;
 mod trail;
 
@@ -21,10 +23,9 @@ mod tests;
 const DIM: Color = Color::DarkGray;
 const BRIGHT: Color = Color::Cyan;
 const SCALE_LINE: Color = Color::Rgb(45, 45, 50);
-const FOOTER: &str =
-    "↑↓ choose  ←→ change (shift: big)  space quantise  v vibrato  s silent  ? help  esc quit";
-const COMPACT_FOOTER: &str =
-    "↑↓ choose ←→ change (shift: big) space quantise v vibrato s silent ? help esc quit";
+const FOOTER: &str = "↑↓ choose  ←→ change  space quantise  v vibrato  s silent  tab fx  ? help";
+const FX_FOOTER: &str =
+    "[ ] slot  ↑↓ knob  ←→ turn  b on/off  { } move  d default  tab synth  ? help";
 
 // Three columns and five rows keep every note the same visual size.
 const FONT: [(char, [u8; 5]); 19] = [
@@ -58,6 +59,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &s
         );
         return;
     }
+    let both = area.height >= 30;
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -66,6 +68,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &s
             Constraint::Min(9),
             Constraint::Length(2),
             Constraint::Length(6),
+            Constraint::Length(if both { 6 } else { 0 }),
             Constraint::Length(1),
         ])
         .split(area);
@@ -73,21 +76,32 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &s
     pitch::draw(frame, areas[1], display);
     trail::draw(frame, areas[2], display, app.accepted.quantise);
     meters(frame, areas[3], display);
-    controls(frame, areas[4], app);
+    if both || app.focus == Focus::Synth {
+        controls(frame, areas[4], app);
+    } else {
+        fx::draw(frame, areas[4], app);
+    }
+    if both {
+        fx::draw(frame, areas[5], app);
+    }
     let footer = if app.busy(now) {
         "busy: change not sent"
-    } else if usize::from(area.width) >= FOOTER.chars().count() {
-        FOOTER
+    } else if let Some(notice) = app.notice(now) {
+        notice
+    } else if app.focus == Focus::Fx {
+        FX_FOOTER
     } else {
-        COMPACT_FOOTER
+        FOOTER
     };
     frame.render_widget(
-        Paragraph::new(footer).style(Style::default().fg(if app.busy(now) {
-            Color::Yellow
-        } else {
-            DIM
-        })),
-        areas[5],
+        Paragraph::new(footer).style(Style::default().fg(
+            if app.busy(now) || app.notice(now).is_some() {
+                Color::Yellow
+            } else {
+                DIM
+            },
+        )),
+        areas[6],
     );
     if app.help {
         help(frame, area);
@@ -116,16 +130,33 @@ fn header(frame: &mut Frame<'_>, area: Rect, app: &App, display: &Display, link:
             format!("{gate} kazoo mouth"),
             Style::default().fg(BRIGHT).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!(" · {link} · {quantise}")),
+        Span::raw(format!(
+            " · {link} · {} · {quantise}",
+            if app.focus == Focus::Fx {
+                "fx"
+            } else {
+                "synth"
+            }
+        )),
     ]);
-    let silent_width = if app.accepted.silent { 9 } else { 0 };
+    let mut badges = String::new();
+    if app.fx_faults > 0 {
+        badges.push_str(&format!(" fx_faults {}", app.fx_faults));
+    }
+    if app.fx_refused > 0 {
+        badges.push_str(&format!(" fx_refused {}", app.fx_refused));
+    }
+    if app.accepted.silent {
+        badges.push_str(" · silent");
+    }
+    let silent_width = (badges.chars().count() as u16).min(area.width);
     frame.render_widget(
         Paragraph::new(line),
         Rect::new(area.x, area.y, area.width - silent_width, 1),
     );
-    if app.accepted.silent {
+    if silent_width > 0 {
         frame.render_widget(
-            Paragraph::new(" · silent").style(Style::default().fg(Color::Yellow)),
+            Paragraph::new(badges).style(Style::default().fg(Color::Yellow)),
             Rect::new(area.right() - silent_width, area.y, silent_width, 1),
         );
     }
@@ -165,7 +196,7 @@ fn controls(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .split(area);
     for (index, control) in Control::ALL.into_iter().enumerate() {
         let column = columns[index / 6];
-        let selected = app.selected == control;
+        let selected = app.selected == control && app.focus == Focus::Synth;
         let style = if selected {
             Style::default()
                 .fg(Color::Black)
@@ -188,7 +219,7 @@ fn controls(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn help(frame: &mut Frame<'_>, area: Rect) {
-    let overlay = Rect::new(area.x + 1, area.y + 1, area.width - 2, 22);
+    let overlay = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
     frame.render_widget(Clear, overlay);
     let mut lines = vec![
         Line::from("Up / Down: choose a control, wrapping at either end."),
@@ -196,13 +227,37 @@ fn help(frame: &mut Frame<'_>, area: Rect) {
         Line::from("Space: quantise on/off; v: keep vibrato; s: silent."),
         Line::from("?: open/close help; Esc: close help, otherwise quit."),
         Line::from("Ctrl-C: quit, including while help is open."),
+        Line::from("Tab: switch between synth controls and effects."),
+        Line::from("[ / ]: choose the previous / next slot, wrapping."),
+        Line::from("b: switch the selected effect on or off, with trails."),
+        Line::from("{ / }: move the selected slot earlier / later."),
+        Line::from("d: restore the selected knob's mouth default."),
+        Line::from(", / .: own tempo down / up 1 BPM; < / >: 10 BPM."),
+        Line::from("The desk owns tempo while connected; change it on the desk."),
+        Line::from("Help: Up/Down or PageUp/PageDown scroll all descriptions."),
+        Line::from(format!("Settings: {}", app.settings_path.display())),
         Line::from(""),
     ];
     lines.extend(
         Control::ALL.map(|control| Line::from(format!("{}: {}", control.name(), control.help()))),
     );
+    for slot in Slot::ALL {
+        for index in 0..slot.ids().len() {
+            if let Some(kind) = slot.kind(index) {
+                lines.push(Line::from(format!("{}: {}", kind.id, kind.description)));
+            }
+        }
+    }
+    let lines = wrap_help(lines, overlay.width.saturating_sub(2));
+    let maximum = lines
+        .len()
+        .saturating_sub(usize::from(overlay.height.saturating_sub(2)))
+        .min(usize::from(u16::MAX)) as u16;
+    let scroll = app.help_scroll.get().min(maximum);
+    app.help_scroll.set(scroll);
     frame.render_widget(
         Paragraph::new(lines)
+            .scroll((scroll, 0))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -211,4 +266,41 @@ fn help(frame: &mut Frame<'_>, area: Rect) {
             .style(Style::default().fg(Color::White).bg(Color::Black)),
         overlay,
     );
+}
+
+fn wrap_help(lines: Vec<Line<'_>>, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width.max(1));
+    let mut wrapped = Vec::new();
+    for line in lines {
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let mut row = String::new();
+        let mut used = 0;
+        for word in text.split_whitespace() {
+            let word_width = Span::raw(word).width();
+            if used > 0 && used + 1 + word_width > width {
+                wrapped.push(Line::from(std::mem::take(&mut row)));
+                used = 0;
+            }
+            if used > 0 {
+                row.push(' ');
+                used += 1;
+            }
+            for character in word.chars() {
+                let mut encoded = [0; 4];
+                let char_width = Span::raw(&*character.encode_utf8(&mut encoded)).width();
+                if used + char_width > width {
+                    wrapped.push(Line::from(std::mem::take(&mut row)));
+                    used = 0;
+                }
+                row.push(character);
+                used += char_width;
+            }
+        }
+        wrapped.push(Line::from(row));
+    }
+    wrapped
 }

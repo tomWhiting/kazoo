@@ -150,17 +150,16 @@ fn the_footer_and_help_name_every_key() {
     for name in [
         "↑↓",
         "←→",
-        "shift",
         "space",
         "v vibrato",
         "s silent",
+        "tab fx",
         "? help",
-        "esc quit",
     ] {
         assert!(footer.contains(name), "{name}: {footer}");
     }
     app.help = true;
-    let help = text(&render(&app, &display, 80, 24, now));
+    let help = text(&render(&app, &display, 100, 100, now));
     for name in [
         "Up",
         "Down",
@@ -174,12 +173,46 @@ fn the_footer_and_help_name_every_key() {
         "?",
         "Esc",
         "Ctrl-C",
+        "Tab",
+        "[ / ]",
+        "b:",
+        "{ / }",
+        "d:",
+        ", / .",
+        "< / >",
+        "Settings:",
     ] {
         assert!(help.contains(name), "{name}: {help}");
     }
+    let unbordered = help.replace('│', " ");
+    let help_words = unbordered.split_whitespace().collect::<Vec<_>>().join(" ");
     for control in Control::ALL {
         assert!(help.contains(control.name()), "{help}");
-        assert!(help.contains(control.help()), "{help}");
+        assert!(help_words.contains(control.help()), "{help}");
+    }
+    for slot in crate::engine::fx::Slot::ALL {
+        for kind in 0..slot.ids().len() {
+            assert!(
+                help_words.contains(slot.kind(kind).unwrap().description),
+                "{help}"
+            );
+        }
+    }
+    app.help = false;
+    app.focus = crate::controls::Focus::Fx;
+    let screen = text(&render(&app, &display, 80, 24, now));
+    let footer = screen.lines().last().unwrap();
+    for name in [
+        "[ ]",
+        "↑↓",
+        "←→",
+        "b on/off",
+        "{ }",
+        "d default",
+        "tab synth",
+        "? help",
+    ] {
+        assert!(footer.contains(name), "{name}: {footer}");
     }
 }
 
@@ -289,4 +322,66 @@ fn trail_capacity_tracks_the_device_rate_and_unvoiced_frames_leave_gaps() {
         assert_eq!(display.points(false).len(), count - 1);
         assert_eq!(display.points(true).len(), count - 1);
     }
+}
+
+#[test]
+fn the_fx_panel_shows_the_chain_and_the_selected_slots_knobs() {
+    use crate::controls::Focus;
+    use crate::engine::fx::Slot;
+
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.focus = Focus::Fx;
+    app.selected_slot = Slot::Delay;
+    app.accepted.fx.slots[0].on = true;
+    let buffer = render(&app, &Display::new(RATE), 80, 24, Instant::now());
+    let screen = text(&buffer);
+    let mut previous = 0;
+    for name in ["megaphone ●", "fuzz ○", "delay ○", "echo ○", "plate ○"] {
+        let index = screen.find(name).unwrap();
+        assert!(index >= previous, "{screen}");
+        previous = index;
+    }
+    for name in ["1/8d·1/4", "ltime", "feedback", "mix", "♩120.0 own"] {
+        assert!(screen.contains(name), "{name}: {screen}");
+    }
+    app.moving = 1 << Slot::Delay as usize;
+    assert!(text(&render(&app, &Display::new(RATE), 80, 24, Instant::now())).contains("delay ◐"));
+}
+
+#[test]
+fn both_panels_show_at_thirty_rows() {
+    let display = Display::new(RATE);
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    let tall = text(&render(&app, &display, 80, 30, now));
+    assert!(tall.contains("cutoff"));
+    assert!(tall.contains("megaphone"));
+    let short = text(&render(&app, &display, 80, 24, now));
+    assert!(short.contains("cutoff"));
+    assert!(!short.contains("megaphone"));
+    app.focus = crate::controls::Focus::Fx;
+    let focused = text(&render(&app, &display, 80, 24, now));
+    assert!(focused.contains("megaphone"));
+    assert!(!focused.contains("cutoff"));
+    let tall = text(&render(&app, &display, 80, 30, now));
+    assert!(tall.contains("cutoff"));
+    assert!(tall.contains("megaphone"));
+}
+
+#[test]
+fn help_scroll_stops_at_the_last_description_and_can_move_back() {
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.help = true;
+    app.help_scroll.set(u16::MAX);
+    let display = Display::new(RATE);
+    let now = Instant::now();
+    let last = text(&render(&app, &display, 80, 24, now));
+    assert!(last.contains("spring"), "{last}");
+    let end = app.help_scroll.get();
+    assert!(end < u16::MAX);
+    let (sender, receiver) = crossbeam_channel::bounded(64);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &sender, now)
+        .unwrap();
+    assert_eq!(app.help_scroll.get(), end - 1);
+    assert!(receiver.is_empty());
 }

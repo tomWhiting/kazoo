@@ -19,7 +19,7 @@ use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
 use ringbuf::traits::{Consumer, Split};
 use ringbuf::{HeapCons, HeapRb};
 
-use crate::controls::{Action, App};
+use crate::controls::{Action, App, settings};
 use crate::engine::{Command, EngineSetup, MouthEngine, Stats};
 use crate::ui::{self, Display};
 
@@ -53,6 +53,8 @@ usage: kazoo mouth [options]
 
 Up/Down choose a control. Left/Right change it; Shift makes a big step.
 Space toggles quantise. v toggles vibrato. s toggles silent. ? shows help.
+Tab switches synth/fx. [/] choose slot; b bypasses; {/} move; d resets a knob.
+,/. change own tempo by 1 BPM; </> by 10. The desk owns synced tempo.
 Esc closes help or quits. Ctrl-C quits.
 ";
 
@@ -171,11 +173,22 @@ pub fn run(args: Args) -> Result<()> {
     {
         return Err(eyre!("--input-channel must be between 1 and 64"));
     }
-    let quantise = args.quantise.held();
-    let silent = args.silent;
-    let mut session = Session::start(args)?;
+    let path = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| eyre!("HOME is missing: cannot locate mouth settings"))?
+        .join(".kazoo/mouth/settings.json");
+    let mut loaded = settings::load(&path);
+    if args.quantise != QuantiseSettings::default() {
+        loaded.settings.quantise = args.quantise.held();
+        loaded.settings.last_blend = loaded.settings.quantise.blend;
+    }
+    loaded.settings.silent = args.silent;
+    let mut session = Session::start(args, &loaded.settings)?;
     let mut terminal = kazoo_host::terminal::enter()?;
-    let result = event_loop(&mut session, &mut terminal, quantise, silent);
+    let mut app = App::loaded(loaded, path, Instant::now());
+    let result = event_loop(&mut session, &mut terminal, &mut app);
+    app.sync_stats(&session.stats, Instant::now());
+    app.save_if_due(Instant::now(), true);
     let restored = terminal.leave().wrap_err("restoring the mouth terminal");
     let stopped = session.stop();
     combine(combine(result, restored), stopped)
@@ -193,7 +206,7 @@ struct Session {
 }
 
 impl Session {
-    fn start(args: Args) -> Result<Self> {
+    fn start(args: Args, settings: &settings::Settings) -> Result<Self> {
         let prepared = OutputRequest {
             device: device(args.output),
             ..OutputRequest::default()
@@ -225,20 +238,19 @@ impl Session {
             display,
             stats: Arc::clone(&stats),
         };
-        let mut engine = MouthEngine::new(EngineSetup {
-            rate: info.rate,
-            block: info.frames,
-            mic: mic_rx,
-            commands: command_rx,
-            display: display_tx,
-            desk,
-            judge: (feed, results),
-            stats: Arc::clone(&stats),
-        })?;
-        session
-            .commands
-            .try_send(Command::SetQuantise(args.quantise))?;
-        session.commands.try_send(Command::SetSilent(args.silent))?;
+        let mut engine = MouthEngine::with_settings(
+            EngineSetup {
+                rate: info.rate,
+                block: info.frames,
+                mic: mic_rx,
+                commands: command_rx,
+                display: display_tx,
+                desk,
+                judge: (feed, results),
+                stats: Arc::clone(&stats),
+            },
+            settings,
+        )?;
         session.output = Some(prepared.open(move |out, info| {
             engine.render(out, usize::from(info.channels));
         })?);
@@ -306,10 +318,8 @@ fn combine(first: Result<()>, second: Result<()>) -> Result<()> {
 fn event_loop(
     session: &mut Session,
     terminal: &mut kazoo_host::terminal::Terminal,
-    quantise: QuantiseSettings,
-    silent: bool,
+    app: &mut App,
 ) -> Result<()> {
-    let mut app = App::new(quantise, silent);
     let mut display = Display::new(session.rate);
     let period = Duration::from_secs_f64(1.0 / 30.0);
     let mut draw_at = Instant::now();
@@ -332,7 +342,9 @@ fn event_loop(
             display.recentre();
             let link = link_state(session);
             let now = Instant::now();
-            terminal.draw(|frame| ui::draw(frame, &app, &display, &link, now))?;
+            app.sync_stats(&session.stats, now);
+            app.save_if_due(now, false);
+            terminal.draw(|frame| ui::draw(frame, app, &display, &link, now))?;
             draw_at = Instant::now() + period;
         }
         if event::poll(draw_at.saturating_duration_since(Instant::now()))?
@@ -342,6 +354,10 @@ fn event_loop(
                 .wrap_err("mouth command channel disconnected")?
                 == Action::Quit
         {
+            session
+                .commands
+                .try_send(Command::Shutdown)
+                .wrap_err("mouth shutdown command not sent; closing output")?;
             return Ok(());
         }
     }

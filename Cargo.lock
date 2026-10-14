@@ -1679,9 +1679,12 @@ dependencies = [
  "crossterm",
  "hound",
  "kazoo-core",
+ "kazoo-fx",
  "kazoo-host",
  "ratatui",
  "ringbuf",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

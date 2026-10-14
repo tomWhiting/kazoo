@@ -22,6 +22,8 @@ struct FakeHub {
     connected: bool,
     voice: Vec<VoiceFrame>,
     audio: Vec<(u32, f32)>,
+    events: std::collections::VecDeque<kazoo_core::host::link::HubEvent>,
+    frames: u64,
 }
 
 impl FakeHub {
@@ -30,6 +32,8 @@ impl FakeHub {
             connected,
             voice: Vec::with_capacity(8000),
             audio: Vec::with_capacity(8000),
+            events: std::collections::VecDeque::with_capacity(16),
+            frames: 0,
         }
     }
 }
@@ -51,8 +55,19 @@ impl DeskOut for FakeHub {
         let peak = samples
             .iter()
             .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        self.frames += u64::from(frames);
         self.audio.push((frames, peak));
         self.connected
+    }
+
+    fn drain_events(&mut self, on: &mut dyn FnMut(kazoo_core::host::link::HubEvent)) {
+        while let Some(event) = self.events.pop_front() {
+            on(event);
+        }
+    }
+
+    fn stream_frame(&self) -> u64 {
+        self.frames
     }
 
     fn is_connected(&self) -> bool {

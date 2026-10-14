@@ -2,20 +2,28 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crossbeam_channel::Receiver;
+use kazoo_core::host::link::HubEvent;
+use kazoo_core::ipc::follow::{TransportFollower, beats_in};
 use kazoo_core::ipc::link::HubLinkAudio;
 use kazoo_core::sanitize_sample;
 use kazoo_core::voice::judge::{JudgeFeed, JudgeResults};
 use kazoo_core::voice::quantise::{QuantiseSettings, Quantiser};
 use kazoo_core::voice::{VoiceFrame, VoiceTracker};
+use kazoo_fx::Context;
 use ringbuf::traits::{Consumer, Observer, Producer};
 use ringbuf::{HeapCons, HeapProd};
 
 use crate::synth::{SynthSettings, VoiceSynth};
 
+pub(crate) mod fx;
+use fx::{FxChain, Slot};
+
 pub trait DeskOut {
     fn send_voice(&mut self, frame: &VoiceFrame) -> bool;
     fn send_audio(&mut self, frames: u32, samples: &[f32]) -> bool;
     fn is_connected(&self) -> bool;
+    fn drain_events(&mut self, on: &mut dyn FnMut(HubEvent));
+    fn stream_frame(&self) -> u64;
     fn shutdown_requested(&mut self) -> bool {
         false
     }
@@ -34,21 +42,37 @@ impl DeskOut for HubLinkAudio {
         Self::is_connected(self)
     }
 
-    fn shutdown_requested(&mut self) -> bool {
-        let mut shutdown = false;
-        for event in kazoo_core::host::link::take_events(&mut self.events) {
-            shutdown |= matches!(event, kazoo_core::host::link::HubEvent::Shutdown);
-        }
-        shutdown
+    fn drain_events(&mut self, on: &mut dyn FnMut(HubEvent)) {
+        kazoo_core::host::link::drain_events(&mut self.events, on);
+    }
+
+    fn stream_frame(&self) -> u64 {
+        Self::stream_frame(self)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Command {
+pub(crate) enum Command {
     SetQuantise(QuantiseSettings),
     SetSynth(SynthSettings),
     SetSilent(bool),
     Shutdown,
+    FxOn {
+        slot: Slot,
+        on: bool,
+    },
+    FxKind {
+        slot: Slot,
+        kind: u8,
+    },
+    FxParam {
+        slot: Slot,
+        kind: u8,
+        index: u8,
+        value: f32,
+    },
+    FxOrder([Slot; 5]),
+    OwnTempo(f64),
 }
 
 #[derive(Debug, Default)]
@@ -60,13 +84,19 @@ pub struct Stats {
     pub audio_refused: AtomicU64,
     pub synth_fault: AtomicBool,
     pub shutdown: AtomicBool,
+    pub fx_faults: AtomicU64,
+    pub fx_refused: AtomicU64,
+    pub desk_lost: AtomicU64,
+    pub own_bpm: AtomicU64,
+    pub desk_bpm: AtomicU64,
+    pub fx_moving: AtomicU64,
 }
 
 pub struct EngineSetup<D> {
     pub rate: u32,
     pub block: usize,
     pub mic: HeapCons<f32>,
-    pub commands: Receiver<Command>,
+    pub(crate) commands: Receiver<Command>,
     pub display: HeapProd<VoiceFrame>,
     pub desk: D,
     pub judge: (JudgeFeed, JudgeResults),
@@ -86,6 +116,15 @@ pub struct MouthEngine<D> {
     mic: Vec<f32>,
     mono: Vec<f32>,
     stereo: Vec<f32>,
+    left: Box<[f32]>,
+    right: Box<[f32]>,
+    fx: FxChain,
+    follower: TransportFollower,
+    desk_bpm: Option<f64>,
+    own_bpm: f64,
+    beat: Option<f64>,
+    beats: Box<[f64]>,
+    rate: u32,
     silent: bool,
     samples: u64,
     stats: Arc<Stats>,
@@ -113,12 +152,32 @@ impl<D: std::fmt::Debug> std::fmt::Debug for MouthEngine<D> {
 
 impl<D: DeskOut> MouthEngine<D> {
     pub fn new(setup: EngineSetup<D>) -> kazoo_core::Result<Self> {
+        Self::with_settings(setup, &crate::controls::settings::Settings::default())
+    }
+
+    pub(crate) fn with_settings(
+        setup: EngineSetup<D>,
+        settings: &crate::controls::settings::Settings,
+    ) -> kazoo_core::Result<Self> {
         if setup.rate == 0 || setup.block == 0 {
             return Err(kazoo_core::Error::Config(
                 "mouth rate and block must be positive".into(),
             ));
         }
         let block = setup.block.min(4096);
+        let mut synth = VoiceSynth::new(setup.rate, block)?;
+        synth.set(settings.synth)?;
+        let mut quantiser = Quantiser::new(setup.rate);
+        quantiser.set(settings.quantise);
+        let own_bpm = if settings.own_bpm.is_finite() {
+            settings.own_bpm.clamp(30.0, 300.0)
+        } else {
+            120.0
+        };
+        setup
+            .stats
+            .own_bpm
+            .store(own_bpm.to_bits(), Ordering::Relaxed);
         Ok(Self {
             mic_in: setup.mic,
             commands: setup.commands,
@@ -127,12 +186,21 @@ impl<D: DeskOut> MouthEngine<D> {
             judge_feed: setup.judge.0,
             judge_results: setup.judge.1,
             tracker: VoiceTracker::new(setup.rate),
-            quantiser: Quantiser::new(setup.rate),
-            synth: VoiceSynth::new(setup.rate, block)?,
+            quantiser,
+            synth,
             mic: vec![0.0; block],
             mono: vec![0.0; block],
             stereo: vec![0.0; block * 2],
-            silent: false,
+            left: vec![0.0; block].into_boxed_slice(),
+            right: vec![0.0; block].into_boxed_slice(),
+            fx: FxChain::new(setup.rate, block, &settings.fx)?,
+            follower: TransportFollower::new(setup.rate),
+            desk_bpm: None,
+            own_bpm,
+            beat: None,
+            beats: vec![f64::NAN; block].into_boxed_slice(),
+            rate: setup.rate,
+            silent: settings.silent,
             samples: 0,
             stats: setup.stats,
         })
@@ -154,12 +222,42 @@ impl<D: DeskOut> MouthEngine<D> {
                     }
                 }
                 Command::SetSilent(silent) => self.silent = silent,
+                Command::FxOn { slot, on } => self.fx.on(slot, on),
+                Command::FxKind { slot, kind } => self.fx.kind(slot, kind, &self.stats),
+                Command::FxParam {
+                    slot,
+                    kind,
+                    index,
+                    value,
+                } => self.fx.param(slot, kind, index, value, &self.stats),
+                Command::FxOrder(order) => self.fx.reorder(order, &self.stats),
+                Command::OwnTempo(bpm) => {
+                    if !bpm.is_nan() {
+                        self.own_bpm = bpm.clamp(30.0, 300.0);
+                        self.stats
+                            .own_bpm
+                            .store(self.own_bpm.to_bits(), Ordering::Relaxed);
+                    }
+                }
                 Command::Shutdown => {
                     self.silent = true;
                     self.stats.shutdown.store(true, Ordering::Release);
                 }
             }
         }
+        let follower = &mut self.follower;
+        let stats = &self.stats;
+        self.desk.drain_events(&mut |event| match event {
+            HubEvent::TransportSync(sync) => {
+                if follower.schedule(&sync).is_err() {
+                    stats.desk_lost.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            HubEvent::Shutdown => stats.shutdown.store(true, Ordering::Release),
+            HubEvent::NoteEvent(_)
+            | HubEvent::ParameterChange(_)
+            | HubEvent::StreamReady { .. } => {}
+        });
         if self.desk.shutdown_requested() {
             self.stats.shutdown.store(true, Ordering::Release);
         }
@@ -185,6 +283,7 @@ impl<D: DeskOut> MouthEngine<D> {
         if count == 0 {
             return;
         }
+        let context = self.transport(count);
         let filled = self.mic_in.pop_slice(&mut self.mic[..count]);
         self.mic[filled..count].fill(0.0);
         for sample in &mut self.mic[..filled] {
@@ -219,14 +318,18 @@ impl<D: DeskOut> MouthEngine<D> {
         self.synth
             .render(&self.mic[start..count], &mut self.mono[start..count]);
         self.samples = self.samples.saturating_add(count as u64);
-        if self.silent || self.stats.synth_fault.load(Ordering::Relaxed) {
-            self.mono[..count].fill(0.0);
-        }
-        for (stereo, &sample) in self.stereo[..count * 2]
-            .chunks_exact_mut(2)
-            .zip(&self.mono[..count])
-        {
-            stereo.fill(sanitize_sample(sample));
+        self.fx.process(
+            &context,
+            &self.mono[..count],
+            [&mut self.left[..count], &mut self.right[..count]],
+            &self.stats,
+        );
+        let mute = self.silent || self.stats.synth_fault.load(Ordering::Relaxed);
+        for (i, stereo) in self.stereo[..count * 2].chunks_exact_mut(2).enumerate() {
+            self.left[i] = fx::ceiling(self.left[i]);
+            self.right[i] = fx::ceiling(self.right[i]);
+            stereo[0] = if mute { 0.0 } else { self.left[i] };
+            stereo[1] = if mute { 0.0 } else { self.right[i] };
         }
         let connected = self.desk.is_connected();
         let accepted = self
@@ -235,10 +338,56 @@ impl<D: DeskOut> MouthEngine<D> {
         if connected && !accepted {
             self.stats.audio_refused.fetch_add(1, Ordering::Relaxed);
         }
-        if !connected && !accepted {
-            for (frame, &sample) in out.chunks_exact_mut(channels).zip(&self.mono[..count]) {
-                frame.fill(sanitize_sample(sample));
+        if !connected && !accepted && !mute {
+            for (i, frame) in out.chunks_exact_mut(channels).enumerate() {
+                frame[0] = if channels == 1 {
+                    0.5 * (self.left[i] + self.right[i])
+                } else {
+                    self.left[i]
+                };
+                if channels > 1 {
+                    frame[1] = self.right[i];
+                }
             }
+        }
+    }
+
+    fn transport(&mut self, count: usize) -> Context {
+        let connected = self.desk.is_connected();
+        if !connected {
+            if let Some(bpm) = self.desk_bpm.take() {
+                self.own_bpm = ((bpm * 10.0).round() / 10.0).clamp(30.0, 300.0);
+                self.stats
+                    .own_bpm
+                    .store(self.own_bpm.to_bits(), Ordering::Relaxed);
+                self.follower = TransportFollower::new(self.rate);
+            }
+            self.beat = None;
+        }
+        let first = self.desk.stream_frame();
+        let mut bpm = self.desk_bpm.unwrap_or(self.own_bpm);
+        for (i, beat) in self.beats[..count].iter_mut().enumerate() {
+            if connected && let Some(change) = self.follower.due(first.saturating_add(i as u64)) {
+                self.desk_bpm = Some(change.bpm);
+                self.beat = change.beat;
+            }
+            if i == 0 {
+                bpm = self.desk_bpm.unwrap_or(self.own_bpm);
+            }
+            *beat = self.beat.unwrap_or(f64::NAN);
+            if let Some(beat) = &mut self.beat {
+                *beat += beats_in(
+                    1.0,
+                    self.desk_bpm.unwrap_or(self.own_bpm),
+                    f64::from(self.rate),
+                );
+            }
+        }
+        self.stats
+            .desk_bpm
+            .store(self.desk_bpm.map_or(0, f64::to_bits), Ordering::Relaxed);
+        Context {
+            bpm: if connected { bpm } else { self.own_bpm },
         }
     }
 }
