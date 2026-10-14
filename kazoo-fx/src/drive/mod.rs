@@ -17,6 +17,7 @@ mod crush;
 mod filter;
 mod fold;
 mod fuzz;
+mod gate;
 mod kit;
 mod klon;
 mod network;
@@ -41,4 +42,5 @@ pub static KINDS: &[EffectKind] = &[
     crush::KIND,
     ringmod::KIND,
     comp::KIND,
+    gate::KIND,
 ];
