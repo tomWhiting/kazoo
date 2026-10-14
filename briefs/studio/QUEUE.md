@@ -168,3 +168,8 @@ START KZ-D04 base=1c2dbfb branch=lane/kz-D04 df=60GB at 07:20
 START KZ-V07a base=dd1bfc6 branch=lane/kz-V07a df=125GB at 09:27
 START KZ-V05b base=dd1bfc6 branch=lane/kz-V05b df=125GB at 09:27
 - Tom, 14 Oct 10:0x: tempo changes should glide over time, not jump: wall_tempo (and the desk's tempo) take a glide in beats or bars like wall_turn's glide_beats, the transport ramping BPM smoothly so every clock, delay sync and loop follows. To brief (Track W/C: the wall's tempo command, the desk's transport ramp, kazoo-mcp's wall_tempo gains glide_beats).
+- Defect (Tom, 14 Oct 10:4x): turning the desk (kazoo mix) off and on reset the wall's tempo (to the desk's default), and Tom could not find how to set the tempo from the wall console. Fix: a returning desk takes the tempo the wall is playing (or keeps its own last tempo from its saved session), never its default; and the wall console gets a tempo control with its key shown in the footer/help.
+- Tom, 14 Oct 10:5x: the wall console's ? help is hard to navigate: each row is a key and a description with no name for the action. Rows need a short action name (and grouping/search), so he can find a control by what it is called.
+START KZ-V12 base=dd1bfc6 branch=lane/kz-V12 df=53GB at 10:48
+START KZ-V11 base=dd1bfc6 branch=lane/kz-V11 df=53GB at 10:49
+- Tom, 14 Oct 11:0x: the public name is `kzoo` on both crates.io and npm (both free at 11:0x; `kazoo` npm taken by an abandoned 0.0.0, `kaz` npm taken by an empty 1.0.0). Commands: `kzoo`, with `kaz` as an alias. npx through per-platform binary packages (esbuild/biome pattern), built by GitHub Actions (no CI yet). Blocked on: a licence (no crate declares one) and Tom's go to publish. Also add publish = false to every crate except the published one(s).
