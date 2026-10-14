@@ -14,6 +14,18 @@ pub(super) fn two_springs_run_two_cascades_and_the_third_comes_back_clean() {
     }
     assert_eq!(spring.lows.live, 2);
     assert_eq!(spring.highs.live, 2);
+    let reads = spring.coils[2].reads;
+    for &input in fixture.iter().take(128) {
+        spring.frame(input, input);
+    }
+    assert_eq!(spring.coils[2].reads, reads, "the silent coil still reads");
+    for delay in 1..8192 {
+        assert_eq!(spring.coils[2].line.tap(delay).to_bits(), 0.0f32.to_bits());
+        assert_eq!(
+            spring.coils[2].high_line.tap(delay).to_bits(),
+            0.0f32.to_bits()
+        );
+    }
     for chains in [&spring.lows, &spring.highs] {
         assert!(
             chains.history[2]

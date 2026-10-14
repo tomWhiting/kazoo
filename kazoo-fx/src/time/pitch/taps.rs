@@ -18,8 +18,14 @@ const MATCH: f32 = 0.008;
 const JUMP: f32 = 0.025;
 /// How long two taps crossfade, seconds.
 const OVERLAP: f32 = 0.012;
-/// The coarse alignment pass looks at the audio at about this rate.
-const COARSE_RATE: f32 = 12_000.0;
+/// Full-span scores keep competing periods comparable. Every fourth lag
+/// covers the entire window; only three peaks need sample-wise refinement.
+/// One tap pair serves both channels. A search starts a crossfade, so a
+/// second search cannot begin in that crossfade. Even the largest shift
+/// gives over 32 frames between steady splices from 44.1 kHz upwards.
+const COARSE_STRIDE: i32 = 4;
+const FINE_RADIUS: i32 = 4;
+const CANDIDATES: usize = 3;
 /// The largest ratio there can be: two octaves and a semitone up.
 pub const MOST_RATIO: f32 = 4.238;
 
@@ -52,7 +58,6 @@ pub struct Geometry {
     pub span: usize,
     jump: f32,
     overlap: f32,
-    stride: i32,
     after: f32,
     before: f32,
     least: f32,
@@ -73,7 +78,6 @@ impl Geometry {
             span: ((MATCH * rate) as usize).max(1),
             jump,
             overlap,
-            stride: (rate / COARSE_RATE).round().max(1.0) as i32,
             after: AFTER_ATTACK * rate,
             before: BEFORE_ATTACK * rate,
             least: LEAST_JUMP * rate,
@@ -374,30 +378,83 @@ impl Taps {
             (both, mine, theirs)
         };
         let fit = |(both, mine, _): (f32, f32, f32)| both / (mine + 1e-20).sqrt();
-        let stride = shape.stride.max(1);
-        let coarse_step = stride.unsigned_abs() as usize;
-        // Where nothing matches better (silence matches everywhere alike),
-        // the jump as planned stands.
         let planned = 0.clamp(low, high);
-        let mut best = (fit(score(planned, coarse_step)), planned);
+        let mut candidates = [(f32::MIN, planned); CANDIDATES];
         let mut lag = low;
         while lag <= high {
-            let value = fit(score(lag, coarse_step));
+            let value = fit(score(lag, 1));
+            if let Some(at) = candidates.iter().position(|candidate| value > candidate.0) {
+                for index in (at + 1..CANDIDATES).rev() {
+                    candidates[index] = candidates[index - 1];
+                }
+                candidates[at] = (value, lag);
+            }
+            lag += COARSE_STRIDE;
+        }
+        // Silence leaves the planned jump in place rather than picking an edge.
+        let mut best = (fit(score(planned, 1)), planned);
+        for (_, coarse) in candidates {
+            for lag in (coarse - FINE_RADIUS).max(low)..=(coarse + FINE_RADIUS).min(high) {
+                let value = fit(score(lag, 1));
+                if value > best.0
+                    || (matches!(value.partial_cmp(&best.0), Some(std::cmp::Ordering::Equal))
+                        && best.1 != planned
+                        && lag < best.1)
+                {
+                    best = (value, lag);
+                }
+            }
+        }
+        let (both, mine, theirs) = score(best.1, 1);
+        let energy = (mine * theirs).sqrt();
+        let alike = if energy > 1e-12 && both.is_finite() {
+            (both / energy).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (centre + best.1 as f32, alike)
+    }
+
+    #[cfg(test)]
+    fn align_exhaustive(
+        &self,
+        target: f32,
+        low: i32,
+        high: i32,
+        shape: &Geometry,
+        guide: &DelayLine,
+    ) -> (f32, f32) {
+        let here = self.heard.round() as usize;
+        let centre = target.round();
+        let lowest = (shape.floor - centre) as i32;
+        let highest = (shape.longest - shape.span as f32 - centre) as i32;
+        let (low, high) = (lowest.max(low), highest.min(high));
+        if low > high {
+            return (target.clamp(shape.floor, shape.longest), 0.0);
+        }
+        let score = |lag: i32, step: usize| {
+            let at = (centre as i64 + i64::from(lag)).max(1) as usize;
+            let (mut both, mut mine, mut theirs) = (0.0f32, 0.0f32, 0.0f32);
+            let mut i = 0;
+            while i < shape.span {
+                let (x, y) = (guide.tap(at + i), guide.tap(here + i));
+                both = x.mul_add(y, both);
+                mine = x.mul_add(x, mine);
+                theirs = y.mul_add(y, theirs);
+                i += step;
+            }
+            (both, mine, theirs)
+        };
+        let fit = |(both, mine, _): (f32, f32, f32)| both / (mine + 1e-20).sqrt();
+        let planned = 0.clamp(low, high);
+        let mut best = (fit(score(planned, 1)), planned);
+        for lag in low..=high {
+            let value = fit(score(lag, 1));
             if value > best.0 {
                 best = (value, lag);
             }
-            lag += stride;
         }
-        let fine_step = (coarse_step / 4).max(1);
-        let coarse = best.1;
-        best = (fit(score(coarse, fine_step)), coarse);
-        for lag in (coarse - stride).max(low)..=(coarse + stride).min(high) {
-            let value = fit(score(lag, fine_step));
-            if value > best.0 {
-                best = (value, lag);
-            }
-        }
-        let (both, mine, theirs) = score(best.1, fine_step);
+        let (both, mine, theirs) = score(best.1, 1);
         let energy = (mine * theirs).sqrt();
         let alike = if energy > 1e-12 && both.is_finite() {
             (both / energy).clamp(0.0, 1.0)
@@ -435,3 +492,6 @@ impl Taps {
         }
     }
 }
+
+#[cfg(test)]
+mod search_tests;

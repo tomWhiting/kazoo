@@ -77,12 +77,12 @@ fn reverbs(c: &mut Criterion) {
         .measurement_time(Duration::from_secs(2));
     let input = fixture(48_000.0);
     let context = Context { bpm: 120.0 };
-    for id in ["hall", "plate", "spring"] {
+    for id in ["hall", "plate", "spring", "shimmer", "pitch"] {
         let Some(kind) = kazoo_fx::find(id) else {
             panic!("the catalogue has no {id}");
         };
-        for variant in ["default", "hot", "two"] {
-            if variant == "two" && id != "spring" {
+        for variant in ["default", "hot", "two", "up7"] {
+            if (variant == "two" && id != "spring") || (variant == "up7" && id != "pitch") {
                 continue;
             }
             let mut effect = (kind.build)();
@@ -90,6 +90,7 @@ fn reverbs(c: &mut Criterion) {
             for (index, param) in kind.params.iter().enumerate() {
                 let value = match (variant, param.name) {
                     ("two", "springs") => 2.0,
+                    ("up7", "shift") => 7.0,
                     ("hot", "decay" | "mod" | "drive") => param.max,
                     _ => param.default,
                 };

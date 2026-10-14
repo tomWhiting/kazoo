@@ -637,8 +637,7 @@ impl Spring {
         } else {
             2
         };
-        self.lows.set_live(live);
-        self.highs.set_live(live);
+        self.set_coils_live(live);
         let tone = matched::lowpass(
             f64::from(self.knobs.get(TONE)),
             std::f64::consts::FRAC_1_SQRT_2,
@@ -713,7 +712,7 @@ impl Spring {
         let mut delays = [0.0f32; 3];
         let mut lows = [0.0f32; 3];
         let mut highs = [0.0f32; 3];
-        for (index, coil) in self.coils.iter_mut().enumerate() {
+        for (index, coil) in self.coils.iter_mut().take(self.lows.live).enumerate() {
             let wander = sine(coil.sweep.next(SPRINGS[index].2, self.rate));
             let noise = coil.wander.next();
             let drift = WANDER * self.rate * 0.5 * (wander + noise);
@@ -727,7 +726,12 @@ impl Spring {
             .process(lows, self.settings.map(|setting| setting.coeff));
         let splashed = self.highs.process(highs, [HIGH_COEFF; 3]);
         let mut pickups = [0.0f32; 3];
-        for (index, (pickup, coil)) in pickups.iter_mut().zip(&mut self.coils).enumerate() {
+        for (index, (pickup, coil)) in pickups
+            .iter_mut()
+            .zip(&mut self.coils)
+            .take(self.lows.live)
+            .enumerate()
+        {
             *pickup = coil.pick_up(
                 chirped[index],
                 splashed[index],

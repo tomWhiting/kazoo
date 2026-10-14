@@ -98,8 +98,14 @@ const MAX_GRAIN: f32 = 0.3;
 /// way, and how much audio the alignment compares.
 const SEARCH: f32 = 0.012;
 const MATCH: f32 = 0.01;
-/// The coarse alignment pass looks at the audio at about this rate.
-const COARSE_RATE: f32 = 12_000.0;
+/// Full-span scores keep competing periods comparable. Every fourth lag
+/// covers the entire window; only three peaks need sample-wise refinement.
+/// Eight shifters occupy consecutive sixteenths of a window, with their
+/// other taps half a window away. Wraps are 6.25 ms apart, over 32 frames
+/// at every supported rate. Idle taps wait for a wrap before aligning.
+const COARSE_STRIDE: i32 = 4;
+const FINE_RADIUS: i32 = 4;
+const CANDIDATES: usize = 3;
 /// The top of the tank's band.
 const PLAIN_TOP: f32 = 18_000.0;
 /// The top of the shifter's band, times the shift ratio, for a rising
@@ -226,6 +232,8 @@ fn blend(phase: f32, alike: f32) -> (f32, f32) {
 /// A two-tap granular reader with aligned grains.
 #[derive(Debug, Clone, Copy, Default)]
 struct Shifter {
+    #[cfg(test)]
+    alignments: usize,
     /// Tap A's window phase, 0 up to 1; tap B is half a grain on.
     phase: f32,
     /// Each tap's alignment, in samples, fixed for its grain.
@@ -249,8 +257,6 @@ struct Reading {
     /// Alignment search, each way, and the stretch compared, samples.
     search: i32,
     span: usize,
-    /// The coarse pass's stride, samples.
-    stride: i32,
 }
 
 impl Shifter {
@@ -280,8 +286,11 @@ impl Shifter {
     /// One sample of shifted audio from `source`.
     fn read(&mut self, source: &Line, reading: Reading) -> f32 {
         if self.stale {
+            // A returning path fades in with unaligned grains until each
+            // silent window edge arrives; aligning all lines here would
+            // put eight searches into the same frame.
             self.slide = [0.0; 2];
-            self.align(1, source, reading);
+            self.alike = 0.0;
             self.stale = false;
         }
         let before = self.phase;
@@ -312,6 +321,10 @@ impl Shifter {
     /// Slide tap `tap`'s new grain to where its audio best matches the other
     /// tap's, and note how alike they are.
     fn align(&mut self, tap: usize, source: &Line, reading: Reading) {
+        #[cfg(test)]
+        {
+            self.alignments += 1;
+        }
         self.slide[tap] = 0.0;
         let other = self.delay(1 - tap, reading).round() as usize;
         let start = self.delay(tap, reading).round() as usize;
@@ -329,20 +342,61 @@ impl Shifter {
             }
             (both, mine, theirs)
         };
-        let stride = reading.stride.max(1);
-        let step = stride.unsigned_abs() as usize;
-        let mut best = (f32::MIN, 0i32);
+        let mut candidates = [(f32::MIN, 0i32); CANDIDATES];
         let mut lag = -search;
         while lag <= search {
-            let (both, _, _) = score(lag, step);
-            if both > best.0 {
-                best = (both, lag);
+            let (value, _, _) = score(lag, 1);
+            if let Some(at) = candidates.iter().position(|candidate| value > candidate.0) {
+                for index in (at + 1..CANDIDATES).rev() {
+                    candidates[index] = candidates[index - 1];
+                }
+                candidates[at] = (value, lag);
             }
-            lag += stride;
+            lag += COARSE_STRIDE;
         }
-        let coarse = best.1;
-        best = (f32::MIN, coarse);
-        for lag in (coarse - stride).max(-search)..=(coarse + stride).min(search) {
+        let mut best = (f32::MIN, 0i32);
+        for (_, coarse) in candidates {
+            for lag in (coarse - FINE_RADIUS).max(-search)..=(coarse + FINE_RADIUS).min(search) {
+                let (value, _, _) = score(lag, 1);
+                if value > best.0
+                    || (matches!(value.partial_cmp(&best.0), Some(std::cmp::Ordering::Equal))
+                        && lag < best.1)
+                {
+                    best = (value, lag);
+                }
+            }
+        }
+        let (both, mine, theirs) = score(best.1, 1);
+        let energy = (mine * theirs).sqrt();
+        self.alike = if energy > 1e-12 && both.is_finite() {
+            (both / energy).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.slide[tap] = best.1 as f32;
+    }
+
+    #[cfg(test)]
+    fn align_exhaustive(&mut self, tap: usize, source: &Line, reading: Reading) {
+        self.slide[tap] = 0.0;
+        let other = self.delay(1 - tap, reading).round() as usize;
+        let start = self.delay(tap, reading).round() as usize;
+        let search = reading.search;
+        let score = |lag: i32, stride: usize| {
+            let at = start.saturating_add_signed(lag as isize);
+            let (mut both, mut mine, mut theirs) = (0.0f32, 0.0f32, 0.0f32);
+            let mut i = 0;
+            while i < reading.span {
+                let (x, y) = (source.tap(at + i), source.tap(other + i));
+                both = x.mul_add(y, both);
+                mine = x.mul_add(x, mine);
+                theirs = y.mul_add(y, theirs);
+                i += stride;
+            }
+            (both, mine, theirs)
+        };
+        let mut best = (f32::MIN, 0i32);
+        for lag in -search..=search {
             let (both, _, _) = score(lag, 1);
             if both > best.0 {
                 best = (both, lag);
@@ -517,7 +571,6 @@ impl Shimmer {
 
         let ratio = ratio_of(self.active);
         let grain = grain_of(ratio, self.rate);
-        let stride = (self.rate / COARSE_RATE).round().max(1.0) as i32;
         // The gate takes the shifted share down; the plain read takes up the
         // power it gives away, so the crossfade stays equal-power.
         let shift_in = equal_power(self.knobs.get(AMOUNT)).1 * gate;
@@ -530,7 +583,6 @@ impl Shimmer {
                 step: (1.0 - ratio) / grain,
                 search: (SEARCH * self.rate) as i32,
                 span: (MATCH * self.rate) as usize,
-                stride,
             };
             let line = &mut self.lines[index];
             let gliding = !self.size.settled();
@@ -649,7 +701,7 @@ impl Effect for Shimmer {
             line.band.reset();
             line.damping.reset();
             line.low_cut.reset();
-            line.shifter.reset(index as f32 / 8.0);
+            line.shifter.reset(index as f32 / 16.0);
         }
         self.countdown = 0;
     }
@@ -720,7 +772,6 @@ mod tests {
                 step: (1.0 - ratio) / grain,
                 search: (super::SEARCH * RATE) as i32,
                 span: (super::MATCH * RATE) as usize,
-                stride: 4,
             };
             let kernel = Kernel::new(RATE);
             let mut line = Line::new((0.4 * RATE) as usize, &kernel);
@@ -901,3 +952,6 @@ mod tests {
         assert!(end < 1e-3 * rms(&fed), "{end}");
     }
 }
+
+#[cfg(test)]
+mod search_tests;

@@ -4,6 +4,8 @@ use crate::dsp::{Phasor, flush};
 /// One spring: its low and high chirp loops and its wander.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Coil {
+    #[cfg(test)]
+    pub(super) reads: usize,
     pub(super) line: Line,
     pub(super) high_line: Line,
     pub(super) loop_filter: [Biquad; 2],
@@ -39,6 +41,10 @@ impl Coil {
         wobble: f32,
         setting: Setting,
     ) -> (f32, f32) {
+        #[cfg(test)]
+        {
+            self.reads += 2;
+        }
         let returned = self.line.read(2.0f32.mul_add(trip, wobble) + self.lag);
         let shaped = cascade(&mut self.loop_filter, f64::from(returned));
         let feedback = setting.gain * shaped as f32;
@@ -61,6 +67,10 @@ impl Coil {
         wobble: f32,
         splash_on: f32,
     ) -> f32 {
+        #[cfg(test)]
+        {
+            self.reads += 2;
+        }
         self.line.push(chirped);
         let late = self.line.read(0.5f32.mul_add(wobble, trip) + self.lag);
         let drip = cascade(&mut self.out_filter, f64::from(late)) as f32;
@@ -70,5 +80,15 @@ impl Coil {
             .process(f64::from(self.high_line.read(trip)));
         let splash = self.high_top.process(above) as f32;
         (HIGH_LEVEL * splash_on).mul_add(splash, drip)
+    }
+}
+
+impl super::Spring {
+    pub(super) fn set_coils_live(&mut self, live: usize) {
+        if live == 2 && self.lows.live == 3 {
+            self.coils[2].clear();
+        }
+        self.lows.set_live(live);
+        self.highs.set_live(live);
     }
 }
