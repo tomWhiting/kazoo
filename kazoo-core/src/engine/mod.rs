@@ -111,6 +111,35 @@ impl Default for EngineConfig {
     }
 }
 
+/// Open the mic at its own rate and channel, resampled to the engine's rate,
+/// with its pushes counted in the engine's stats.
+fn open_engine_mic(
+    stream_config: &StreamConfig,
+    sample_rate: u32,
+    buffer_size: usize,
+    mic_prod: HeapProd<f32>,
+    stats: &Arc<EngineStats>,
+) -> Result<crate::io::mic::Mic> {
+    let mic_stats = Arc::clone(stats);
+    let mic = crate::io::mic::open_mic(
+        crate::io::mic::MicRequest {
+            device: stream_config.input_device.clone().map_or(
+                crate::host::audio::DeviceChoice::Default,
+                crate::host::audio::DeviceChoice::Named,
+            ),
+            channel: stream_config.input_channel,
+        },
+        crate::io::mic::MicTarget {
+            rate: sample_rate,
+            frames: buffer_size,
+        },
+        mic_prod,
+        Arc::new(move |offered, accepted| mic_stats.record_mic_push(offered, accepted)),
+    )?;
+    stats.set_mic(mic.shared())?;
+    Ok(mic)
+}
+
 /// Preserve the requested range and voicing threshold at the device's rate.
 ///
 /// Use the voice judge's window, hop and resolution at the device's rate.
@@ -262,23 +291,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
     // callback owns all processing state and does the actual audio work:
     // draining commands, running the mixer, applying effects, and writing
     // directly to the cpal output buffer.
-    let mic_stats = Arc::clone(&stats);
-    let mic = crate::io::mic::open_mic(
-        crate::io::mic::MicRequest {
-            device: stream_config.input_device.clone().map_or(
-                crate::host::audio::DeviceChoice::Default,
-                crate::host::audio::DeviceChoice::Named,
-            ),
-            channel: stream_config.input_channel,
-        },
-        crate::io::mic::MicTarget {
-            rate: sample_rate,
-            frames: buffer_size,
-        },
-        mic_prod,
-        Arc::new(move |offered, accepted| mic_stats.record_mic_push(offered, accepted)),
-    )?;
-    stats.set_mic(mic.shared())?;
+    let mic = open_engine_mic(stream_config, sample_rate, buffer_size, mic_prod, &stats)?;
 
     // Create processing state and I/O handles. These are moved into the
     // output callback closure — the callback owns all processing state.

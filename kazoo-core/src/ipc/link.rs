@@ -397,13 +397,20 @@ impl PaceSlot {
     }
 }
 
+/// The voice's way to an instrument through the desk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VoiceLink {
+    /// The instrument's persistent follow wish.
+    pub follows: bool,
+    /// The connected desk announced voice support.
+    pub desk_carries: bool,
+}
+
 /// Counters for the instrument's UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkStatus {
-    /// The instrument's persistent follow wish.
-    pub follows_voice: bool,
-    /// The connected desk announced voice support.
-    pub desk_carries_voice: bool,
+    /// Whether the voice reaches this instrument through the desk.
+    pub voice: VoiceLink,
     /// The link was refused real-time scheduling.
     pub normal_priority: bool,
     /// Plugged into the desk.
@@ -483,6 +490,37 @@ pub(crate) fn hub_link(config: LinkConfig) -> io::Result<(HubLink, HubLinkAudio)
     start_link(config, None, true)
 }
 
+impl LinkState {
+    /// A link not yet plugged in, carrying the resolved streams.
+    fn fresh(slots: [Option<StreamConfig>; MAX_STREAMS]) -> Self {
+        Self {
+            connected: Arc::new(AtomicBool::new(false)),
+            desk_features: AtomicU32::new(0),
+            follow_voice: AtomicBool::new(false),
+            voice_sent: AtomicU64::new(0),
+            voice_dropped: AtomicU64::new(0),
+            voice_received: AtomicU64::new(0),
+            voice_overflow: AtomicU64::new(0),
+            strips: std::array::from_fn(|_| AtomicU8::new(NO_STRIP)),
+            stream_live: AtomicU64::new((1 << slots.iter().flatten().count()) - 1),
+            streams: streams::table(slots),
+            last_stream_refusal: std::sync::Mutex::new(None),
+            blocks_sent: AtomicU64::new(0),
+            blocks_dropped: AtomicU64::new(0),
+            messages_dropped: AtomicU64::new(0),
+            connections: AtomicU64::new(0),
+            woken: AtomicU64::new(0),
+            ticked: AtomicU64::new(0),
+            last_refusal: std::sync::Mutex::new(None),
+            pace: PaceSlot::new(),
+            real_time: AtomicU8::new(priority::NOT_ASKED),
+            real_time_refusal: std::sync::OnceLock::new(),
+            placed_afresh: AtomicU64::new(0),
+            desk_dropped: AtomicU64::new(0),
+        }
+    }
+}
+
 pub(crate) fn start_link(
     config: LinkConfig,
     client: Option<HubIpcClient>,
@@ -503,31 +541,7 @@ pub(crate) fn start_link(
     let (callback_tx, callback_rx) = HeapRb::<Request>::new(REQUEST_BACKLOG).split();
     let (voice_out, voice, worker_voice) = voice::rings();
     let (ui_tx, ui_rx) = mpsc::sync_channel(REQUEST_BACKLOG);
-    let state = Arc::new(LinkState {
-        connected: Arc::new(AtomicBool::new(false)),
-        desk_features: AtomicU32::new(0),
-        follow_voice: AtomicBool::new(false),
-        voice_sent: AtomicU64::new(0),
-        voice_dropped: AtomicU64::new(0),
-        voice_received: AtomicU64::new(0),
-        voice_overflow: AtomicU64::new(0),
-        strips: std::array::from_fn(|_| AtomicU8::new(NO_STRIP)),
-        stream_live: AtomicU64::new((1 << slots.iter().flatten().count()) - 1),
-        streams: streams::table(slots),
-        last_stream_refusal: std::sync::Mutex::new(None),
-        blocks_sent: AtomicU64::new(0),
-        blocks_dropped: AtomicU64::new(0),
-        messages_dropped: AtomicU64::new(0),
-        connections: AtomicU64::new(0),
-        woken: AtomicU64::new(0),
-        ticked: AtomicU64::new(0),
-        last_refusal: std::sync::Mutex::new(None),
-        pace: PaceSlot::new(),
-        real_time: AtomicU8::new(priority::NOT_ASKED),
-        real_time_refusal: std::sync::OnceLock::new(),
-        placed_afresh: AtomicU64::new(0),
-        desk_dropped: AtomicU64::new(0),
-    });
+    let state = Arc::new(LinkState::fresh(slots));
     let sample_rate = config.sample_rate;
     #[cfg(test)]
     let wake_audio = config.wake_audio;
@@ -652,8 +666,10 @@ impl HubLink {
             Err(poisoned) => poisoned.into_inner().clone(),
         };
         LinkStatus {
-            follows_voice: self.state.follow_voice.load(Ordering::Acquire),
-            desk_carries_voice: self.desk_carries_voice(),
+            voice: VoiceLink {
+                follows: self.state.follow_voice.load(Ordering::Acquire),
+                desk_carries: self.desk_carries_voice(),
+            },
             normal_priority: self.real_time().is_some_and(Result::is_err),
             connected: self.is_connected(),
             strip: (strip != NO_STRIP).then_some(strip),

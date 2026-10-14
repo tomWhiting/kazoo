@@ -2,20 +2,20 @@
 
 use crate::analysis::score::{SCORE_STEP, Take};
 
-pub(crate) const RATE: u32 = 48_000;
+pub const RATE: u32 = 48_000;
 
-pub(crate) fn named<'a>(takes: &'a [Take], name: &str) -> &'a Take {
+pub fn named<'a>(takes: &'a [Take], name: &str) -> &'a Take {
     takes
         .iter()
         .find(|take| take.name == name)
         .expect("instrument take")
 }
 
-pub(crate) fn cents(hz: f32, truth: f32) -> f32 {
+pub fn cents(hz: f32, truth: f32) -> f32 {
     (1200.0 * (hz / truth).log2()).abs()
 }
 
-pub(crate) fn truth_at(take: &Take, sample: usize) -> Option<f32> {
+pub fn truth_at(take: &Take, sample: usize) -> Option<f32> {
     let position = sample.saturating_sub(SCORE_STEP / 2);
     let before = position / SCORE_STEP;
     let low = take.truth.get(before).copied().flatten()?;
@@ -28,14 +28,14 @@ pub(crate) fn truth_at(take: &Take, sample: usize) -> Option<f32> {
     )
 }
 
-pub(crate) fn note_end(take: &Take, note: usize) -> usize {
+pub fn note_end(take: &Take, note: usize) -> usize {
     take.onsets
         .get(note + 1)
         .copied()
         .unwrap_or(take.samples.len() - RATE as usize / 5)
 }
 
-pub(crate) fn octave_error(hz: f32, truth: f32) -> bool {
+pub fn octave_error(hz: f32, truth: f32) -> bool {
     let difference = 1200.0 * (hz / truth).log2();
     let octave = (difference / 1200.0).round();
     octave != 0.0 && 1200.0_f32.mul_add(-octave, difference).abs() <= 100.0
@@ -53,7 +53,7 @@ impl StringTone {
         let length = (f64::from(rate) / f64::from(lowest)).ceil() as usize + 4;
         // Start at the rising zero of the shaped excitation so its first
         // negative lobe is complete, including the fractional read position.
-        let phase_offset = pluck * 0.5 - (length as f64 - period + 0.5) / period;
+        let phase_offset = pluck.mul_add(0.5, -(length as f64 - period + 0.5) / period);
         let mut noise = seed;
         let delay = (0..length)
             .map(|index| {
@@ -98,7 +98,7 @@ impl StringTone {
 }
 
 /// Retain the suite's notes and sample-clock onsets, varying only excitation.
-pub(crate) fn at_position(take: &Take, pluck: f64) -> Take {
+pub fn at_position(take: &Take, pluck: f64) -> Take {
     let mut output = take.clone();
     output.samples.fill(0.0);
     for (note, &onset) in take.onsets.iter().enumerate() {
@@ -112,7 +112,7 @@ pub(crate) fn at_position(take: &Take, pluck: f64) -> Take {
 }
 
 /// A pluck glides or vibrates from its very first sample, with exact truth.
-pub(crate) fn moving(take: &Take, hz: impl Fn(f64) -> f32) -> Take {
+pub fn moving(take: &Take, hz: impl Fn(f64) -> f32) -> Take {
     let onset = take.onsets[0];
     let body = 2 * take.rate as usize;
     let mut output = take.clone();

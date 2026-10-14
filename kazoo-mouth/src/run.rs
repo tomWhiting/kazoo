@@ -370,7 +370,7 @@ fn link_state(session: &Session) -> String {
     let state = hub.status();
     if !state.connected {
         "playing direct: no desk".into()
-    } else if state.desk_carries_voice {
+    } else if state.voice.desk_carries {
         state.strip.map_or_else(
             || "on the desk, awaiting strip".into(),
             |strip| format!("on the desk, strip {}", u16::from(strip) + 1),

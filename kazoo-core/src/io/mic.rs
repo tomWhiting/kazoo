@@ -500,13 +500,12 @@ impl MicResampler {
                 .process_into_buffer(&input, &mut output, None)
                 .map_err(drop)
         })();
-        match result {
-            Ok((_, written)) => Some(written),
-            Err(()) => {
-                self.shared.resample_errors.fetch_add(1, Ordering::Relaxed);
-                self.resampler.reset();
-                None
-            }
+        if let Ok((_, written)) = result {
+            Some(written)
+        } else {
+            self.shared.resample_errors.fetch_add(1, Ordering::Relaxed);
+            self.resampler.reset();
+            None
         }
     }
 

@@ -357,7 +357,7 @@ fn the_named_channel_is_the_one_heard() {
                 .all(|(out, sample)| (*out - sample * gain).abs() < f32::EPSILON)
         );
         let peak = output.iter().copied().fold(0.0_f32, |a, b| a.max(b.abs()));
-        assert!((peak - 0.5 * gain).abs() < 0.001);
+        assert!(0.5_f32.mul_add(-gain, peak).abs() < 0.001);
     }
     let mut rig = Rig::new(48_000, 48_000, 2, Some(3), false);
     let error = rig.supervisor.start().unwrap_err().to_string();

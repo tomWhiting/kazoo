@@ -146,11 +146,11 @@ fn voice_waits_for_the_desk_to_say_it_carries_it() {
         RequestError::Unsupported.to_string(),
         "this desk is too old to carry the voice"
     );
-    assert!(rig.link.status().follows_voice);
+    assert!(rig.link.status().voice.follows);
     announce(&mut hub, &mut buf, FEATURE_VOICE);
     rig.worker.serve().unwrap();
     assert!(rig.link.desk_carries_voice());
-    assert!(rig.link.status().desk_carries_voice);
+    assert!(rig.link.status().voice.desk_carries);
     assert!(read_follow(&mut hub, &mut buf));
     assert!(rig.audio.send_voice(&frame(2)));
     rig.worker.serve().unwrap();
@@ -193,13 +193,13 @@ fn the_follow_wish_survives_a_desk_restart() {
     let why = rig.worker.serve().unwrap_err();
     rig.worker.disconnect(why);
     assert!(!rig.link.desk_carries_voice());
-    assert!(rig.link.status().follows_voice);
+    assert!(rig.link.status().voice.follows);
     let (mut hub, mut buf) = rig.connect(Some(FEATURE_VOICE));
     assert!(read_follow(&mut hub, &mut buf));
     assert_eq!(rig.link.follow_voice(false), Ok(()));
     rig.worker.serve().unwrap();
     assert!(!read_follow(&mut hub, &mut buf));
-    assert!(!rig.link.status().follows_voice);
+    assert!(!rig.link.status().voice.follows);
     assert_eq!(rig.link.status().connections, 2);
 }
 
@@ -295,8 +295,8 @@ fn a_disconnected_voice_backlog_is_counted_and_never_replayed() {
     rig.worker.serve().unwrap();
     hub.set_nonblocking(true).unwrap();
     assert!(buf.try_read_frame(&mut hub).unwrap().is_none());
-    assert!(rig.link.status().follows_voice);
-    assert!(!rig.link.status().desk_carries_voice);
+    assert!(rig.link.status().voice.follows);
+    assert!(!rig.link.status().voice.desk_carries);
 }
 
 #[test]
@@ -323,7 +323,7 @@ fn a_full_follow_queue_keeps_the_wish_for_reconnection() {
         rig.link.request_tempo(120.0).unwrap();
     }
     assert_eq!(rig.link.follow_voice(true), Err(RequestError::Full));
-    assert!(rig.link.status().follows_voice);
+    assert!(rig.link.status().voice.follows);
     drop(hub);
     drop(buf);
     rig.worker.disconnect("desk restarted".to_string());

@@ -110,7 +110,7 @@ pub(super) struct Rig {
     _analysis: HeapCons<f32>,
     _disk: HeapCons<f32>,
     // The feed in io must drop before this guard joins the worker.
-    judge: JoinedJudge,
+    _judge: JoinedJudge,
 }
 
 struct JoinedJudge(Option<crate::voice::judge::Judge>);
@@ -207,7 +207,7 @@ impl Rig {
             next_track: 0,
             _analysis: analysis,
             _disk: disk_samples,
-            judge: JoinedJudge(Some(judge_worker)),
+            _judge: JoinedJudge(Some(judge_worker)),
         }
     }
 

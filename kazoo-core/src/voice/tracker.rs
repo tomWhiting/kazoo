@@ -21,9 +21,11 @@ pub const VETO_PROB: f32 = 0.1;
 pub const DISAGREE_CENTS: f32 = 100.0;
 /// A 300-cent frame leap exceeds vibrato and stops an old octave verdict folding a new note.
 pub const LEAP_CENTS: f32 = 300.0;
+/// A hint landing within ten milliseconds is the tracker's own correction.
+///
 /// A hint is tried for four cycles: at most 80 ms at 50 Hz but under 10 ms
-/// from 400 Hz up, where a slip costs most. A hint landing within this
-/// interval is our correction; a later landing remains a sung change.
+/// from 400 Hz up, where a slip costs most. A later landing remains a sung
+/// change.
 pub const HINT_LEAP_MS: f32 = 10.0;
 /// A one-millisecond attack lets the fast level see the start of a syllable.
 pub const FAST_ATTACK_MS: f32 = 1.0;

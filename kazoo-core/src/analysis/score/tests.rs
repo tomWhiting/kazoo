@@ -884,6 +884,6 @@ fn the_instrument_truth_scales_with_the_sample_clock() {
         let start = glide.onsets[0];
         let low = glide.truth[start / SCORE_STEP + 1].expect("glide start");
         let high = glide.truth[(start + rate as usize * 2) / SCORE_STEP - 1].expect("glide end");
-        assert!((1200.0 * (high / low).log2() - 500.0).abs() < 1.0);
+        assert!(1200.0_f32.mul_add((high / low).log2(), -500.0).abs() < 1.0);
     }
 }

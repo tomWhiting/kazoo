@@ -503,8 +503,7 @@ mod tests {
                 messages_dropped: 0,
                 connections: 0,
                 last_refusal: None,
-                follows_voice: false,
-                desk_carries_voice: false,
+                voice: kazoo_core::ipc::link::VoiceLink::default(),
             };
             let text = screen_with_link(KeyMode::Hold, Some(hub));
             assert!(text.contains("desk link at normal priority"), "{text}");

@@ -11,7 +11,7 @@ pub(super) const EARLY_CLARITY: f32 = 0.90;
 pub(super) const EARLY_LAGS: [f32; 5] = [0.80, 0.90, 1.00, 1.11, 1.25];
 
 #[cfg(test)]
-pub(crate) mod fixtures;
+pub mod fixtures;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Candidate {
