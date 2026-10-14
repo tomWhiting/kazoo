@@ -3,7 +3,7 @@ use std::time::Instant;
 use crossterm::event::{KeyEvent, KeyEventState, MouseEvent};
 
 use super::*;
-use crate::test_support::{grown, mark};
+use crate::test_support::{batch, grown, mark};
 
 fn app(history: History) -> App {
     let mut app = App {
@@ -176,6 +176,30 @@ fn the_details_say_who_when_what_and_how_it_sounded() {
     assert!(text.contains("save the rock 100"), "{text}");
     assert!(text.contains("the wall is here"), "{text}");
     assert!(text.contains("limb trunk (20 of 20)"), "{text}");
+}
+
+#[test]
+fn a_batchs_details_lead_with_its_note_and_list_its_changes() {
+    let mut history = grown(20, &[]);
+    batch(
+        &mut history,
+        19,
+        "the brass breathes",
+        &["added lfo3", "turned vcf1 res 0.4"],
+    );
+    let app = app(history);
+    let details = app.details();
+    assert_eq!(details[0].1, "the brass breathes");
+    assert_eq!(
+        details[1],
+        ("batch".to_owned(), "2 changes, sent at once".to_owned())
+    );
+    assert_eq!(details[2], ("1".to_owned(), "added lfo3".to_owned()));
+    assert_eq!(
+        details[3],
+        ("2".to_owned(), "turned vcf1 res 0.4".to_owned())
+    );
+    assert_eq!(details[4].0, "who");
 }
 
 #[test]

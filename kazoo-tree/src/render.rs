@@ -7,7 +7,7 @@
 use unicode_width::UnicodeWidthChar;
 
 use crate::growth::{Growth, ROOT_DEPTH, ROOT_REACH, Step};
-use crate::history::History;
+use crate::history::{Batch, History, Moment};
 
 /// How far in the view is: each level shows more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -115,6 +115,21 @@ impl View {
     }
 }
 
+/// Whether any of `step`, with its widest limb around it, is inside
+/// `seen`.
+fn step_seen(step: &Step, seen: (f64, f64, f64, f64)) -> bool {
+    let pad = step.widest;
+    let (lo_x, hi_x) = (
+        step.start.0.min(step.end.0) - pad,
+        step.start.0.max(step.end.0) + pad,
+    );
+    let (lo_y, hi_y) = (
+        step.start.1.min(step.end.1) - pad,
+        step.start.1.max(step.end.1) + pad,
+    );
+    !(hi_x < seen.0 || lo_x > seen.2 || hi_y < seen.1 || lo_y > seen.3)
+}
+
 /// Whether `(x, y)` is inside `rect`.
 fn inside(rect: (f64, f64, f64, f64), (x, y): (f64, f64)) -> bool {
     x >= rect.0 && x <= rect.2 && y >= rect.1 && y <= rect.3
@@ -157,6 +172,8 @@ pub enum Glyph {
     Day,
     /// A limb's tip that grew in the last hour, by the clock.
     Growing,
+    /// A batch: several changes sent at once with a note, one knot.
+    Batch,
 }
 
 impl Glyph {
@@ -170,8 +187,17 @@ impl Glyph {
             Self::Moment => '•',
             Self::Day => '╴',
             Self::Growing => '✧',
+            Self::Batch => '❖',
         }
     }
+}
+
+/// How a label would be written: its letters with their widths, its whole
+/// width, and the width shown.
+struct Fit {
+    letters: Vec<(char, i32)>,
+    width: i32,
+    shown: i32,
 }
 
 /// One terminal cell of the picture.
@@ -357,27 +383,14 @@ impl Picture {
     /// letter takes two cells; a letter with no width is left out. Answers
     /// whether it was written.
     fn label(&mut self, col: i32, row: i32, text: &str, taken: &mut [bool]) -> bool {
-        let letters: Vec<(char, i32)> = text
-            .chars()
-            .filter_map(|ch| match ch.width() {
-                Some(1) => Some((ch, 1)),
-                Some(2) => Some((ch, 2)),
-                _ => None,
-            })
-            .collect();
-        let width: i32 = letters.iter().map(|&(_, w)| w).sum();
-        let room = i32::from(self.cols) - col;
-        if room < 4 {
+        let Some(Fit {
+            letters,
+            width,
+            shown,
+        }) = self.span(col, row, text, taken)
+        else {
             return false;
-        }
-        let shown = width.min(room);
-        for c in (col - 1)..=(col + shown) {
-            if let Some(i) = self.index(c, row)
-                && taken[i]
-            {
-                return false;
-            }
-        }
+        };
         let mut c = col;
         for (k, &(ch, w)) in letters.iter().enumerate() {
             let last = k + 1 == letters.len();
@@ -406,6 +419,38 @@ impl Picture {
         true
     }
 
+    /// Whether `text` would be written from `col`, `row`: its letters with
+    /// their widths, its whole width and the width shown, when every cell
+    /// it needs is free.
+    fn span(&self, col: i32, row: i32, text: &str, taken: &[bool]) -> Option<Fit> {
+        let letters: Vec<(char, i32)> = text
+            .chars()
+            .filter_map(|ch| match ch.width() {
+                Some(1) => Some((ch, 1)),
+                Some(2) => Some((ch, 2)),
+                _ => None,
+            })
+            .collect();
+        let width: i32 = letters.iter().map(|&(_, w)| w).sum();
+        let room = i32::from(self.cols) - col;
+        if room < 4 || row < 0 || row >= i32::from(self.rows) {
+            return None;
+        }
+        let shown = width.min(room);
+        for c in (col - 1)..=(col + shown) {
+            if let Some(i) = self.index(c, row)
+                && taken[i]
+            {
+                return None;
+            }
+        }
+        Some(Fit {
+            letters,
+            width,
+            shown,
+        })
+    }
+
     fn write(&mut self, i: usize, ch: char, taken: &mut [bool]) {
         let cell = &mut self.cells[i];
         cell.text = Some(ch);
@@ -432,6 +477,8 @@ const ROOT: (u8, u8, u8) = (110, 90, 70);
 const HERE: (u8, u8, u8) = (255, 240, 160);
 /// Marks.
 const MARK: (u8, u8, u8) = (240, 200, 120);
+/// A batch's knot and note: pale ink, apart from marks and the limbs.
+const NOTE: (u8, u8, u8) = (190, 215, 250);
 
 /// A gesture: a run of one seat's moments doing the same thing on one limb.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -612,6 +659,8 @@ enum Words {
     Gesture(usize),
     /// A mark's name.
     Mark(usize),
+    /// A batch's note.
+    Note,
     /// A day mark's day.
     Day(usize),
     /// The wall's place.
@@ -641,19 +690,9 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
         }
     }
     for step in &scene.growth.steps {
-        let pad = step.widest;
-        let (lo_x, hi_x) = (
-            step.start.0.min(step.end.0) - pad,
-            step.start.0.max(step.end.0) + pad,
-        );
-        let (lo_y, hi_y) = (
-            step.start.1.min(step.end.1) - pad,
-            step.start.1.max(step.end.1) + pad,
-        );
-        if hi_x < seen.0 || lo_x > seen.2 || hi_y < seen.1 || lo_y > seen.3 {
-            continue;
+        if step_seen(step, seen) {
+            draw_step(&mut picture, scene, view, step, cols, rows);
         }
-        draw_step(&mut picture, scene, view, step, cols, rows);
     }
     let level = Level::of(view.scale);
     let on_screen = |m: usize| {
@@ -665,12 +704,12 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
             .flatten()
             .filter(|&p| inside(seen, p))
     };
-    let hang = hangings(scene, level, &on_screen);
+    let hang = hangings(scene, level, seen, &on_screen);
     // Glyphs first, everywhere, so labels never cover one; then labels,
     // the selected moment's first, then the wall's and marks', then the
     // rest, each only where it fits.
     let mut taken = vec![false; picture.cells.len()];
-    let mut placed: Vec<(i32, i32, usize, Glyph, Words)> = Vec::new();
+    let mut placed: Vec<Placed> = Vec::new();
     for (m, glyph, words) in hang {
         let Some(p) = on_screen(m) else {
             continue;
@@ -678,6 +717,7 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
         let colour = match glyph {
             Glyph::Here => HERE,
             Glyph::Mark | Glyph::Save => MARK,
+            Glyph::Batch => NOTE,
             Glyph::Moment => LABEL,
             Glyph::Day => DAY,
             Glyph::Growing => GROWING,
@@ -689,28 +729,52 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
             placed.push((col, row, m, glyph, words));
         }
     }
-    if let Some(sel) = scene.selected
+    // The selected batch's changes hang after the wall's and marks' words.
+    let opened = if let Some(sel) = scene.selected
         && let Some(p) = on_screen(sel)
     {
-        hang_selected(&mut picture, scene, sel, to(p), &mut taken);
-    }
+        hang_selected(&mut picture, scene, sel, to(p), &mut taken)
+    } else {
+        None
+    };
+    hang_words(&mut picture, scene, level, placed, opened, &mut taken);
+    picture
+}
+
+/// Hang the words of each glyph `placed`, the wall's and marks' first,
+/// then the `opened` selected batch's changes, then batches' and growing
+/// tips', then the rest, each only where it fits and only at a `level`
+/// that shows it.
+fn hang_words(
+    picture: &mut Picture,
+    scene: &Scene<'_>,
+    level: Level,
+    mut placed: Vec<Placed>,
+    mut opened: Option<Opened<'_>>,
+    taken: &mut [bool],
+) {
     placed.sort_by_key(|&(_, _, m, glyph, _)| {
         let rank = match glyph {
             Glyph::Here => 0,
             Glyph::Mark | Glyph::Save => 1,
-            Glyph::Growing => 2,
+            Glyph::Batch | Glyph::Growing => 2,
             Glyph::Moment => 3,
             Glyph::Day => 4,
         };
         (rank, std::cmp::Reverse(m))
     });
     for (col, row, m, glyph, words) in placed {
+        if !matches!(glyph, Glyph::Here | Glyph::Mark | Glyph::Save)
+            && let Some((batch, at)) = opened.take()
+        {
+            hang_steps(picture, batch, at, taken);
+        }
         if Some(m) == scene.selected {
             continue;
         }
         let show = match glyph {
             Glyph::Here | Glyph::Growing => true,
-            Glyph::Mark | Glyph::Save | Glyph::Day => level >= Level::Near,
+            Glyph::Mark | Glyph::Save | Glyph::Batch | Glyph::Day => level >= Level::Near,
             Glyph::Moment => level >= Level::Close,
         };
         if !show {
@@ -720,24 +784,77 @@ pub fn draw(scene: &Scene<'_>, view: &View, cols: u16, rows: u16) -> Picture {
             Words::Summary => short(&scene.history.moments[m].summary),
             Words::Gesture(i) => short(&scene.gestures[i].words(scene.history)),
             Words::Mark(i) => short(&scene.history.marks[i].name),
+            Words::Note => scene.history.moments[m]
+                .batch
+                .as_deref()
+                .map_or_else(String::new, |batch| short(&batch.note)),
             Words::Day(i) => scene.days[i].words.clone(),
             Words::Here => "the wall is here".to_owned(),
             Words::None => continue,
         };
-        picture.label(col + 2, row, &text, &mut taken);
+        let said = picture.label(col + 2, row, &text, taken);
+        // Zoomed right in, a batch opens into its changes under its note.
+        if said
+            && level == Level::Every
+            && matches!(words, Words::Note)
+            && let Some(batch) = scene.history.moments[m].batch.as_deref()
+        {
+            hang_steps(picture, batch, (col, row), taken);
+        }
     }
-    picture
+    if let Some((batch, at)) = opened {
+        hang_steps(picture, batch, at, taken);
+    }
+}
+
+/// Hang a batch's changes one a line under its note (at `col`, `row`),
+/// in order. What fits is measured first: when not every change has a
+/// free line, as many as leave room for a last line saying how many more
+/// there are; when even that has no room, none, so a list is never shown
+/// cut short without saying so.
+fn hang_steps(picture: &mut Picture, batch: &Batch, (col, row): (i32, i32), taken: &mut [bool]) {
+    let lines: Vec<String> = batch
+        .steps
+        .iter()
+        .map(|step| format!("· {}", short(step)))
+        .collect();
+    // The rows, from just under the note, each change has free in turn.
+    let mut rows: Vec<i32> = (row + 1..)
+        .zip(&lines)
+        .map_while(|(below, line)| picture.span(col + 4, below, line, taken).map(|_| below))
+        .collect();
+    let mut more = None;
+    if rows.len() < lines.len() {
+        rows.push(rows.last().map_or(row + 1, |&last| last + 1));
+        more = rows.iter().enumerate().rev().find_map(|(shown, &below)| {
+            let words = format!("· and {} more", lines.len() - shown);
+            picture
+                .span(col + 4, below, &words, taken)
+                .map(|_| (shown, below, words))
+        });
+        if more.is_none() {
+            return;
+        }
+    }
+    let shown = more.as_ref().map_or(lines.len(), |&(shown, _, _)| shown);
+    for (below, line) in (row + 1..).zip(&lines[..shown]) {
+        picture.label(col + 4, below, line, taken);
+    }
+    if let Some((_, below, words)) = more {
+        picture.label(col + 4, below, &words, taken);
+    }
 }
 
 /// Mark the selected moment's cell (at dot point `(x, y)`) and hang its
-/// words, before anything else's.
-fn hang_selected(
+/// words, before anything else's; a batch's changes are answered, to hang
+/// once the wall's and marks' words have.
+fn hang_selected<'s>(
     picture: &mut Picture,
-    scene: &Scene<'_>,
+    scene: &Scene<'s>,
     sel: usize,
     (x, y): (f64, f64),
     taken: &mut [bool],
-) {
+) -> Option<Opened<'s>> {
     if x >= 0.0 && y >= 0.0 {
         let (col, row) = ((x / 2.0).floor() as i32, (y / 4.0).floor() as i32);
         if let Some(i) = picture.index(col, row) {
@@ -748,17 +865,34 @@ fn hang_selected(
             }
             cell.selected = true;
             taken[i] = true;
-            let words = short(&scene.history.moments[sel].summary);
-            picture.label(col + 2, row, &words, taken);
+            let moment: &'s Moment = &scene.history.moments[sel];
+            match moment.batch.as_deref() {
+                Some(batch) => {
+                    if picture.label(col + 2, row, &short(&batch.note), taken) {
+                        return Some((batch, (col, row)));
+                    }
+                }
+                None => {
+                    picture.label(col + 2, row, &short(&moment.summary), taken);
+                }
+            }
         }
     }
+    None
 }
+
+/// A glyph drawn: its cell, its moment, what it is, and its words.
+type Placed = (i32, i32, usize, Glyph, Words);
+
+/// A batch whose note is hung at a cell, its changes still to hang.
+type Opened<'s> = (&'s Batch, (i32, i32));
 
 /// Everything that hangs a glyph at this level and is on screen: days
 /// first, so any other glyph on the same cell is drawn over one.
 fn hangings(
     scene: &Scene<'_>,
     level: Level,
+    seen: (f64, f64, f64, f64),
     on_screen: &impl Fn(usize) -> Option<(f64, f64)>,
 ) -> Vec<(usize, Glyph, Words)> {
     let mut hang: Vec<(usize, Glyph, Words)> = Vec::new();
@@ -786,6 +920,24 @@ fn hangings(
             }
         }
         Level::Far | Level::Near => {}
+    }
+    for step in scene
+        .growth
+        .steps
+        .iter()
+        .filter(|step| step_seen(step, seen))
+    {
+        let Some(knots) = scene.history.knots.get(step.limb) else {
+            continue;
+        };
+        let limb = &scene.history.limbs[step.limb];
+        let from = knots.partition_point(|&at| at < step.first);
+        for &at in knots[from..].iter().take_while(|&&at| at <= step.last) {
+            let m = limb.moments[at];
+            if on_screen(m).is_some() {
+                hang.push((m, Glyph::Batch, Words::Note));
+            }
+        }
     }
     for (i, mark) in scene.history.marks.iter().enumerate() {
         if on_screen(mark.moment).is_some() {
