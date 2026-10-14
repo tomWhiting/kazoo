@@ -65,6 +65,8 @@ fn wall_render(c: &mut Criterion) {
     group
         .sample_size(50)
         .measurement_time(Duration::from_secs(3));
+    measure(&mut group, "empty", Fixture::new());
+    measure(&mut group, "modules/141", chains(47));
     measure(&mut group, "loop/play", loop_fixture(false));
     measure(&mut group, "loop/record", loop_fixture(true));
     for count in [10, 100, 1000] {

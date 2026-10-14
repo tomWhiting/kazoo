@@ -5,7 +5,7 @@ mod tests;
 
 use std::time::{Duration, Instant};
 
-use super::{Bucket, Kept, Outcome, Print, Source, Wall, encode, error, save_error, unchanged};
+use super::{Bucket, Kept, Outcome, Source, Wall, encode, error, save_error, unchanged};
 use super::{SAVE_BURST, SAVE_REFILL_PER_SECOND, SAVES_BURST, SAVES_REFILL_PER_SECOND};
 use crate::patch::Patch;
 use crate::protocol::tree::MAX_MOMENT;
@@ -71,12 +71,13 @@ fn here_error(err: &HereError) -> WallError {
 }
 
 impl Wall {
-    pub(super) fn remember_tree_moment(&mut self, source: &Source, print: Print) {
+    pub(super) fn remember_tree_moment(&mut self, source: &Source, fingerprint: String) {
         self.tree_kept = match source {
-            Source::Moment { to, .. } | Source::Back { to, .. } => {
-                Some((Some(to.commit.clone()), print))
+            Source::Moment { to, .. } => Some((to.commit.clone(), fingerprint)),
+            Source::Back { to, kept, .. } if kept.name.starts_with("tree:") => {
+                Some((to.commit.clone(), fingerprint))
             }
-            Source::Save(_) | Source::Empty | Source::Undo { .. } => None,
+            Source::Save(_) | Source::Empty | Source::Undo { .. } | Source::Back { .. } => None,
         };
     }
 
@@ -85,13 +86,13 @@ impl Wall {
         source: &Source,
     ) -> Result<(Kept, Option<Vec<u8>>), SaveError> {
         if let Source::Moment { from, .. } | Source::Back { from, .. } = source {
-            if let Some((commit, print)) = &self.tree_kept {
-                if commit.as_ref().is_none_or(|commit| *commit == from.commit) && self.still(print)
-                {
+            if let Some((commit, kept)) = &self.tree_kept {
+                let fingerprint = self.patch.fingerprint();
+                if *commit == from.commit && !fingerprint.is_empty() && fingerprint == *kept {
                     return Ok((
                         Kept {
                             name: format!("tree:{:.12}", from.commit),
-                            hash: self.patch.fingerprint(),
+                            hash: fingerprint,
                         },
                         None,
                     ));
@@ -510,7 +511,7 @@ impl Wall {
     /// Complete tree requests without waiting; expired requests are answered once.
     pub fn tree_answers(&mut self, now: Instant) -> Vec<(u64, Result<Outcome, WallError>)> {
         let mut replies = Vec::new();
-        for (ticket, through, answer) in std::mem::take(&mut self.tree_answered) {
+        for (ticket, _, answer) in std::mem::take(&mut self.tree_answered) {
             let Some(mut waiting) = self.tree_waiting.remove(&ticket) else {
                 continue;
             };
@@ -527,19 +528,7 @@ impl Wall {
                         self.tree_waiting.insert(ticket, waiting);
                         continue;
                     }
-                    Ok(false) => {
-                        // A start is usable only once the ordered writer has
-                        // taken the whole wall that supplied its fingerprint.
-                        if through != self.made
-                            && self
-                                .tree_kept
-                                .as_ref()
-                                .is_some_and(|(commit, _)| commit.is_none())
-                        {
-                            self.tree_kept = None;
-                        }
-                        self.act_tree(&waiting, answer)
-                    }
+                    Ok(false) => self.act_tree(&waiting, answer),
                     Err(err) => Err(err),
                 },
             };

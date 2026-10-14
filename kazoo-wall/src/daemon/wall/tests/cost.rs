@@ -147,7 +147,7 @@ fn unheard_modules_do_not_lower_the_average() {
 }
 
 #[test]
-fn a_measured_cost_is_used_before_the_bench_cost() {
+fn a_sleeping_module_costs_its_bench_row_times_busy() {
     let (mut wall, _engine) = wall();
     let cable = request(&mut wall, &patch("vco1.out", "out1.left")).unwrap();
     let slot = wall.rack.slot_of("vco1").unwrap();
@@ -301,7 +301,8 @@ fn a_cable_waking_a_cheap_set_is_allowed() {
     let kind = audio_kind(false);
     let ids = chain(&mut wall, kind, 40);
     let ns = 100.0;
-    let share = super::super::cost::kind_share(kind, 48_000);
+    let share = super::super::cost::kind_share(Kind::MIX, wall.engine.sample_rate());
+    assert_eq!(kind, Kind::MIX);
     for id in &ids {
         wall.engine.set_cost(wall.rack.slot_of(id).unwrap(), ns);
     }
@@ -326,7 +327,10 @@ fn a_cable_waking_a_cheap_set_is_allowed() {
     );
     let recent = wall.load_watch.recent.back().unwrap();
     assert!(recent.1 >= 41);
-    assert!((40.0 * share).mul_add(-busy, recent.2).abs() < 1e-6);
+    let expected = 40.0 * share * busy;
+    assert!((recent.2 - expected).abs() < 1e-6);
+    let stale = 40.0 * ns / (SUB_BLOCK as f32 * 1e9 / 48_000.0) * busy;
+    assert!((recent.2 - stale).abs() > 0.001);
     let held = wall.held();
     let delta: i64 = wall
         .load_watch
@@ -574,7 +578,7 @@ fn a_quiet_machine_is_costed_at_the_bench() {
     );
     let mut notes = Vec::new();
     let warning = wall
-        .load_room_as(true, &incoming, &Source::Empty, &mut notes)
+        .load_room_as(("Tom", true), &incoming, &Source::Empty, &mut notes)
         .unwrap()
         .unwrap();
     assert_eq!(

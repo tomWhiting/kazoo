@@ -625,6 +625,7 @@ pub struct Engine {
     load: f32,
     fixed_load: f32,
     module_cpu: Duration,
+    module_span: fixed::ModuleSpan,
 }
 
 impl std::fmt::Debug for Engine {
@@ -771,6 +772,7 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         load: 0.0,
         fixed_load: 0.0,
         module_cpu: Duration::ZERO,
+        module_span: fixed::ModuleSpan::default(),
         room,
     };
     let control = EngineControl {
@@ -847,6 +849,11 @@ impl Engine {
         // nothing and takes no lock.
         let started = thread_cpu();
         self.module_cpu = Duration::ZERO;
+        self.module_span.started = None;
+        #[cfg(test)]
+        {
+            self.module_span.reads = 0;
+        }
         self.drain_commands();
         self.drain_hub();
         let channels = channels.max(1);
@@ -878,10 +885,12 @@ impl Engine {
 
     /// Render `data` (see [`Self::render`]) once the commands are in.
     fn render_frames(&mut self, data: &mut [f32], channels: usize) {
+        let mut frames_left = data.len() / channels;
         for chunk in data.chunks_mut(MAX_CHUNK_FRAMES * channels) {
             let frames = chunk.len() / channels;
             for frame in 0..frames {
                 if self.carry_used == self.carry_len {
+                    self.module_span.left = frames_left - frame;
                     self.render_sub_block();
                     self.carry_used = 0;
                 }
@@ -889,6 +898,7 @@ impl Engine {
                 self.stereo[frame * 2 + 1] = self.carry[1][self.carry_used];
                 self.carry_used += 1;
             }
+            frames_left -= frames;
             self.apply_monitor(frames);
             // At most MAX_CHUNK_FRAMES: the cast is lossless.
             let to_desk = self
@@ -916,6 +926,7 @@ impl Engine {
                 }
             }
         }
+        self.module_span.left = 0;
     }
 
     /// Frames owed to a desk that paces the wall at `now` (see
@@ -1235,7 +1246,7 @@ impl Engine {
         .at_frame(self.rendered);
         let len = self.order.slots().len();
         self.timed = self.timed.checked_rem(len).unwrap_or(0);
-        let module_start = (len > 0).then(thread_cpu);
+        self.begin_module_span(len);
         for index in 0..len {
             // u32 into usize: lossless.
             let slot = self.order.slots()[index] as usize;
@@ -1252,9 +1263,7 @@ impl Engine {
                 self.render_module(slot, &tick);
             }
         }
-        if let Some(started) = module_start {
-            self.module_cpu += thread_cpu().saturating_sub(started);
-        }
+        self.end_module_span();
         self.timed = (self.timed + 1).checked_rem(len).unwrap_or(0);
         let mut left = [0.0; SUB_BLOCK];
         let mut right = [0.0; SUB_BLOCK];

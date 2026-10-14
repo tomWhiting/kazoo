@@ -417,7 +417,7 @@ impl Wall {
 
     pub(super) fn load_room_as(
         &self,
-        console: bool,
+        (seat, console): (&str, bool),
         incoming: &Patch,
         source: &Source,
         notes: &mut Vec<String>,
@@ -430,10 +430,18 @@ impl Wall {
         if !self.load_watch.on || sum <= 0.0 || projected <= LOAD_GUARD {
             return Ok(None);
         }
-        let name = source.kept().map_or("new", |kept| kept.name.as_str());
+        let action = match source {
+            Source::Moment { to, .. } | Source::Back { to, .. } => {
+                format!("{seat} went to {}", crate::change::moment_words(to))
+            }
+            Source::Save(_) | Source::Empty | Source::Undo { .. } => {
+                let name = source.kept().map_or("new", |kept| kept.name.as_str());
+                format!("Tom loaded \"{name}\"")
+            }
+        };
         let clause = busy_clause(busy);
         let warning = format!(
-            "Tom loaded \"{name}\": about {:.0}% of the wall's time{clause}, past the {:.0}% guard",
+            "{action}: about {:.0}% of the wall's time{clause}, past the {:.0}% guard",
             projected * 100.0,
             LOAD_GUARD * 100.0
         );

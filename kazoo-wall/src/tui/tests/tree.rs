@@ -295,42 +295,58 @@ fn the_tree_list_draws_here_branches_marks_and_recent() {
 
 #[test]
 fn a_go_answer_forgets_the_wall_and_says_where_it_went() {
-    let mut app = connected();
-    let mut to = place();
-    to.mark = Some("dawn".into());
-    let result = LoadResult {
-        change: Change {
-            seq: 815,
-            at: "2026-10-13T10:00:00Z".into(),
-            seat: "Tom".into(),
-            what: What::Go {
-                to,
-                from: place(),
-                backup: "before-go".into(),
-                fingerprint: "abc".into(),
-                modules: 4,
-                cables: 3,
-                tempo: 96.0,
-                by_console: true,
+    for (backup, kept) in [
+        ("before-go", "the wall as it was is saved as “before-go”"),
+        (
+            "tree:abc123def456",
+            "the wall as it was is moment abc123def456 in the tree",
+        ),
+    ] {
+        let mut app = connected();
+        let mut to = place();
+        to.mark = Some("dawn".into());
+        let result = LoadResult {
+            change: Change {
+                seq: 815,
+                at: "2026-10-13T10:00:00Z".into(),
+                seat: "Tom".into(),
+                what: What::Go {
+                    to,
+                    from: place(),
+                    backup: backup.into(),
+                    fingerprint: "abc".into(),
+                    modules: 4,
+                    cables: 3,
+                    tempo: 96.0,
+                    by_console: true,
+                },
+                summary: "went to dawn".into(),
+                undoes: None,
+                clock: None,
             },
-            summary: "went to dawn".into(),
-            undoes: None,
-            clock: None,
-        },
-        backup: "before-go".into(),
-        notes: vec!["kept the old wall".into()],
-    };
-    answer(
-        &mut app,
-        Request::Go {
-            moment: "dawn".into(),
-        },
-        &result,
-    );
-    assert!(app.snapshot().is_some());
-    assert!(status(&app).contains("went to mark \"dawn\""));
-    assert!(status(&app).contains("z undoes it"));
-    assert!(text(&render(&mut app, 120, 40)).contains("kept the old wall"));
+            backup: backup.into(),
+            notes: vec!["kept the old wall".into()],
+        };
+        answer(
+            &mut app,
+            Request::Go {
+                moment: "dawn".into(),
+            },
+            &result,
+        );
+        assert!(app.snapshot().is_some());
+        assert!(status(&app).contains("went to mark \"dawn\""));
+        assert_eq!(
+            status(&app),
+            format!("went to mark \"dawn\", after change 812 · {kept} · z undoes it")
+        );
+        assert!(text(&render(&mut app, 120, 40)).contains("kept the old wall"));
+        answer(&mut app, Request::Undo { change: 815 }, &result);
+        assert_eq!(
+            status(&app),
+            format!("went back to mark \"dawn\", after change 812 · {kept} · z undoes it")
+        );
+    }
 }
 
 fn command(app: &mut App, line: &str) {

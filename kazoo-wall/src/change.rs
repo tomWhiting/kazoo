@@ -275,12 +275,7 @@ fn loaded(
     format!("{what}; the wall as it was is saved as \"{backup}\"")
 }
 
-fn went(
-    to: &crate::protocol::TreePlace,
-    undo: bool,
-    backup: &str,
-    (modules, cables, bpm): (u32, u32, f64),
-) -> String {
+pub(crate) fn moment_words(to: &crate::protocol::TreePlace) -> String {
     let mut place = to.mark.as_ref().map_or_else(
         || {
             to.branch.as_ref().map_or_else(
@@ -300,9 +295,23 @@ fn went(
             place = format!("{place}, after change {change}");
         }
     }
+    place
+}
+
+fn went(
+    to: &crate::protocol::TreePlace,
+    undo: bool,
+    backup: &str,
+    (modules, cables, bpm): (u32, u32, f64),
+) -> String {
+    let place = moment_words(to);
+    let kept = backup.strip_prefix("tree:").map_or_else(
+        || format!("the wall as it was is saved as \"{backup}\""),
+        |commit| format!("the wall as it was is moment {commit} in the tree"),
+    );
     let direction = if undo { "back to" } else { "to" };
     format!(
-        "went {direction} {place}: {}, {}, {}; the wall as it was is saved as \"{backup}\"",
+        "went {direction} {place}: {}, {}, {}; {kept}",
         count(usize::try_from(modules).unwrap_or(usize::MAX), "module"),
         count(usize::try_from(cables).unwrap_or(usize::MAX), "cable"),
         format::bpm(bpm)
@@ -733,28 +742,37 @@ mod tests {
                 branch: branch.map(str::to_string),
                 change,
             };
-            let what = What::Go {
-                from: to.clone(),
-                to,
-                backup: "before-go-20261013-201500".into(),
-                fingerprint: "hash".into(),
-                modules: 41,
-                cables: 51,
-                tempo: 120.0,
-                by_console: true,
-            };
-            assert_eq!(
-                summarise("Tom", &what, None),
-                format!(
-                    "Tom went to {place}: 41 modules, 51 cables, 120 BPM; the wall as it was is saved as \"before-go-20261013-201500\""
-                )
-            );
-            assert_eq!(
-                summarise("Tom", &what, Some(813)),
-                format!(
-                    "Tom undid change 813: went back to {place}: 41 modules, 51 cables, 120 BPM; the wall as it was is saved as \"before-go-20261013-201500\""
-                )
-            );
+            for (backup, kept) in [
+                (
+                    "before-go-20261013-201500",
+                    "the wall as it was is saved as \"before-go-20261013-201500\"",
+                ),
+                (
+                    "tree:abc123def456",
+                    "the wall as it was is moment abc123def456 in the tree",
+                ),
+            ] {
+                let what = What::Go {
+                    from: to.clone(),
+                    to: to.clone(),
+                    backup: backup.into(),
+                    fingerprint: "hash".into(),
+                    modules: 41,
+                    cables: 51,
+                    tempo: 120.0,
+                    by_console: true,
+                };
+                assert_eq!(
+                    summarise("Tom", &what, None),
+                    format!("Tom went to {place}: 41 modules, 51 cables, 120 BPM; {kept}")
+                );
+                assert_eq!(
+                    summarise("Tom", &what, Some(813)),
+                    format!(
+                        "Tom undid change 813: went back to {place}: 41 modules, 51 cables, 120 BPM; {kept}"
+                    )
+                );
+            }
         }
     }
 

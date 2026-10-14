@@ -74,6 +74,12 @@ fn a_console_and_a_seat_go_to_141_modules_under_or_over_the_guard() {
                 .engine
                 .shared()
                 .set_fixed_load(if over { 0.35 } else { 0.09 });
+            let bench: f32 = incoming
+                .modules()
+                .iter()
+                .map(|module| crate::daemon::wall::cost::kind_share(module.kind, 48_000))
+                .sum();
+            let projected = bench.mul_add(rig.wall.busy(), if over { 0.35 } else { 0.09 });
             let outcome = rig
                 .ask(
                     "Seat",
@@ -93,6 +99,23 @@ fn a_console_and_a_seat_go_to_141_modules_under_or_over_the_guard() {
                 "{:?}",
                 result.notes
             );
+            if over {
+                let What::Go { to, .. } = &result.change.what else {
+                    panic!("not a go")
+                };
+                let place = format!("the moment after change {}", to.change.unwrap());
+                assert_eq!(
+                    result
+                        .notes
+                        .iter()
+                        .find(|note| note.contains("% of the wall's time"))
+                        .unwrap(),
+                    &format!(
+                        "Seat went to {place}: about {:.0}% of the wall's time, past the 80% guard",
+                        projected * 100.0
+                    )
+                );
+            }
             rig.wall.close(rig.now);
         }
     }

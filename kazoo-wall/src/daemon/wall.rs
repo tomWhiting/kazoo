@@ -545,7 +545,7 @@ pub struct Wall {
     moved_to: Option<crate::protocol::TreePlace>,
     pub tree_answered: Vec<crate::tree::thread::TreeAnswer>,
     tree_waiting: BTreeMap<u64, moments::Waiting>,
-    tree_kept: Option<(Option<String>, Print)>,
+    tree_kept: Option<(String, String)>,
     next_tree_ticket: u64,
     mark_buckets: HashMap<String, Bucket>,
     tree_buckets: HashMap<String, Bucket>,
@@ -2380,7 +2380,7 @@ impl Wall {
     pub fn attach_tree(&mut self, handle: crate::tree::thread::TreeHandle) {
         self.tree = Some(handle);
         self.whole_tree(crate::tree::thread::WholeKind::Start);
-        self.tree_kept = Some((None, Print::of(&self.patch)));
+        self.tree_kept = None;
     }
 
     fn whole_tree(&mut self, kind: crate::tree::thread::WholeKind) {
@@ -3962,7 +3962,7 @@ impl Wall {
         if self.store.is_none() {
             return Err(no_saves());
         }
-        let warning = self.load_room_as(console, &incoming, source, &mut notes)?;
+        let warning = self.load_room_as((seat, console), &incoming, source, &mut notes)?;
         let how = source.how();
         // The daemon's own changes owed to the log go first (they take
         // their numbers before this one), or nothing is replaced.
@@ -4046,7 +4046,7 @@ impl Wall {
                 incoming_print.clone(),
             )
         });
-        self.remember_tree_moment(source, incoming_print.clone());
+        self.remember_tree_moment(source, self.patch.fingerprint());
         self.kept_in = source.kept().map(|kept| (kept.clone(), incoming_print));
         self.prune();
         notes.push(format!(
