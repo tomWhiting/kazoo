@@ -71,7 +71,7 @@ mod tests;
 use band::Band;
 use level::LevelMatch;
 
-use crate::drive::kit::{DEFAULT_RATE, Knobs, for_each_frame, for_each_frame_wet};
+use crate::drive::kit::{DEFAULT_RATE, Knobs, ceiling, for_each_frame, for_each_frame_wet};
 use crate::dsp::{OnePole, db_to_gain, sane_rate};
 use crate::{Context, Curve, Effect, EffectKind, ParamSpec, WetOut};
 
@@ -405,9 +405,14 @@ impl Octaves {
             }
         }
         let wet = self.level * self.tone.lowpass(octaves);
+        if !wet.is_finite() {
+            self.clear_audio();
+            return [0.0; 2];
+        }
+        let wet = ceiling(wet);
         let output = (self.level * params[3] * 0.01).mul_add(mono, wet);
-        if output.is_finite() && wet.is_finite() {
-            [output.clamp(-4.0, 4.0), wet.clamp(-4.0, 4.0)]
+        if output.is_finite() {
+            [output.clamp(-4.0, 4.0), wet]
         } else {
             self.clear_audio();
             [0.0; 2]

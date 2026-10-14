@@ -2,7 +2,9 @@
 //!
 //! For an effect with a mix knob, the wet output is exactly what the mixed
 //! output is with the knob all the way to wet, whatever the knob is at; for
-//! one without, the wet output is the output. Asking for the wet signal
+//! one with neither a mix knob nor a dry knob, the wet output is the output.
+//! An effect with a dry knob hands over its output as wet when dry is zero.
+//! Asking for the wet signal
 //! leaves the mixed output exactly as it was, and the wet signal is finite
 //! and bounded whatever goes in and wherever the knobs are.
 
@@ -167,7 +169,9 @@ fn the_wet_output_is_the_mix_all_the_way_to_wet_at_any_mix() {
 fn an_effect_with_no_mix_hands_over_its_output_as_the_wet_signal() {
     let input = programme(9_600);
     let mut checked = 0;
-    for kind in catalogue().filter(|kind| mix_knob(kind).is_none()) {
+    for kind in catalogue().filter(|kind| {
+        mix_knob(kind).is_none() && !kind.params.iter().any(|spec| spec.name == "dry")
+    }) {
         let (out, wet) = both(built(kind, &[]).as_mut(), &input);
         assert_eq!(bits(&out), bits(&wet), "{}", kind.id);
         let plain = mixed(built(kind, &[]).as_mut(), &input);
@@ -175,6 +179,48 @@ fn an_effect_with_no_mix_hands_over_its_output_as_the_wet_signal() {
         checked += 1;
     }
     assert!(checked >= 6, "{checked}");
+}
+
+#[test]
+fn octaves_with_dry_at_zero_hands_over_its_output_as_the_wet_signal() {
+    let kind = catalogue().find(|kind| kind.id == "octaves").unwrap();
+    let dry = kind
+        .params
+        .iter()
+        .position(|spec| spec.name == "dry")
+        .unwrap();
+    let mut input = programme(9_600);
+    for side in &mut input {
+        for sample in side.iter_mut().skip(2_400).take(400) {
+            *sample *= 40.0;
+        }
+    }
+    for (name, end) in [
+        (
+            "defaults",
+            (|spec: &kazoo_fx::ParamSpec| spec.default) as fn(_) -> _,
+        ),
+        (
+            "least",
+            (|spec: &kazoo_fx::ParamSpec| spec.min) as fn(_) -> _,
+        ),
+        (
+            "most",
+            (|spec: &kazoo_fx::ParamSpec| spec.max) as fn(_) -> _,
+        ),
+    ] {
+        let mut knobs: Vec<_> = kind
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| (index, end(spec)))
+            .collect();
+        knobs[dry].1 = 0.0;
+        let (out, wet) = both(built(kind, &knobs).as_mut(), &input);
+        assert_eq!(bits(&out), bits(&wet), "octaves {name}");
+        let plain = mixed(built(kind, &knobs).as_mut(), &input);
+        assert_eq!(bits(&out), bits(&plain), "octaves {name}");
+    }
 }
 
 #[test]
