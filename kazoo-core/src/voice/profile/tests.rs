@@ -273,6 +273,10 @@ fn slides_bends_and_vibrato_are_not_onsets() {
             let hz = truth_at(take, pluck + SCORE_STEP).expect("first pluck truth");
             let latency_ms = (onsets[0].at - pluck as u64) as f32 / 48.0;
             let limit_ms = 2000.0 / hz + 3.0;
+            println!(
+                "{profile:?} {name}: onsets={} onset_ms={latency_ms:.6} limit_ms={limit_ms:.6}",
+                onsets.len()
+            );
             assert!(
                 onsets[0].at >= pluck as u64 && latency_ms <= limit_ms,
                 "{profile:?} {name}: onset {latency_ms} ms, limit {limit_ms} ms"
