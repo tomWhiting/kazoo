@@ -674,13 +674,18 @@ fn batch_of(
     Some(Box::new(Batch { note, steps }))
 }
 
-/// The log's records. A record starts at a `RECORD` byte followed by a
-/// commit id and a NUL (which no commit's words can hold); a `RECORD`
-/// byte anywhere else is part of the words before it (a subject or a note
-/// may hold any other byte), so it never splits one commit in two or
-/// stops the tree reading.
+/// The log's records. A record starts at a `RECORD` byte at the start of
+/// the log or of a line (git ends every record with a newline, and no
+/// author or subject holds one), followed by a commit id and the NUL after
+/// it. A `RECORD` byte anywhere else is part of the words around it (an
+/// author, a subject or a note may hold any other byte, and git puts a NUL
+/// after the author and the subject itself), so it never splits one
+/// commit in two or stops the tree reading.
 fn records(log: &[u8]) -> Vec<&[u8]> {
     let starts_record = |i: usize| {
+        if i > 0 && log[i - 1] != b'\n' {
+            return false;
+        }
         let rest = &log[i + 1..];
         let id = rest
             .iter()
