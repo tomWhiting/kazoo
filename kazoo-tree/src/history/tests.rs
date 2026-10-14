@@ -1037,3 +1037,86 @@ fn a_tree_read_in_two_goes_has_the_tints_of_one_read_whole() {
     assert_ne!(tints(&history)[2], tints(&history)[1]);
     assert_eq!(tints(&history)[3], Tint::default());
 }
+
+#[test]
+fn an_invisible_format_character_is_left_out_of_what_is_shown() {
+    // A right-to-left override would show "txt.exe" as "exe.txt"; a
+    // zero-width space hides between letters.
+    assert_eq!(clean("a\u{202E}b\u{200B}c\u{FEFF}d"), "abcd");
+    assert_eq!(clean("one\ttwo"), "one\u{fffd}two");
+    assert_eq!(clean("Chopin 🎹 · é"), "Chopin 🎹 · é");
+}
+
+#[test]
+fn a_trailer_in_another_case_reads_and_a_second_one_is_said_not_put_over_the_first() {
+    let log = [
+        record(
+            "a",
+            "",
+            "one\n\nkazoo-seq: 7\nKAZOO-TEMPO: 96\nKazoo-Seq: 9",
+            "",
+        ),
+        record("b", "a", "two\n\nKazoo-Seq: 8\nKazoo-Gap: 3", ""),
+    ]
+    .concat();
+    let history = History::from_git(&log, "refs/heads/trunk\0b\0\n", None).expect("it opens");
+    let one = &history.moments[0];
+    assert_eq!((one.seq, one.tempo), (Some(7), Some(96.0)));
+    assert_eq!(one.problems.len(), 1, "{:?}", one.problems);
+    assert!(
+        one.problems[0].contains("Kazoo-Seq is given more than once")
+            && one.problems[0].ends_with(": 9"),
+        "{:?}",
+        one.problems
+    );
+    // A trailer the tree has no use for is no problem.
+    assert!(
+        history.moments[1].problems.is_empty(),
+        "{:?}",
+        history.moments[1].problems
+    );
+    let sound = record("c", "", "x\n\nKazoo-Sound: rms=-3 rms=-4 peak=0", "");
+    let twice = History::from_git(&sound, "refs/heads/trunk\0c\0\n", None).expect("it opens");
+    assert!(
+        twice.moments[0].problems[0].contains("gives rms twice"),
+        "{:?}",
+        twice.moments[0].problems
+    );
+}
+
+#[test]
+fn a_ref_line_that_does_not_read_is_said() {
+    let log = [record("a", "", "one", ""), record("b", "a", "two", "")].concat();
+    let refs = "refs/heads/trunk\0b\0\nrefs/heads/broken\n\0a\0\n";
+    let history = History::from_git(&log, refs, None).expect("it opens");
+    let said = history
+        .problems
+        .iter()
+        .filter(|p| p.contains("refs did not read"))
+        .count();
+    assert_eq!(said, 2, "{:?}", history.problems);
+}
+
+#[test]
+fn moments_on_no_branch_are_shared_out_the_same_whatever_order_they_were_read_in() {
+    // b is on no branch, and two tips on no branch (x and y, made in the
+    // same second) both grew from it: whichever was read first, x (the
+    // lesser commit) holds b.
+    let a = record_at("a", "", 1000, "one", "");
+    let b = record_at("b", "a", 1001, "two", "");
+    let x = record_at("x", "b", 1002, "x", "");
+    let y = record_at("y", "b", 1002, "y", "");
+    let refs = "refs/heads/trunk\0a\0\n";
+    let owner = |log: String| {
+        let history = History::from_git(&log, refs, None).expect("it opens");
+        let b = history.moment_of("b").expect("b");
+        let (limb, _) = history.place_of(b).expect("b is drawn");
+        let tip = *history.limbs[limb].moments.last().expect("a tip");
+        history.moments[tip].id.to_string()
+    };
+    assert_eq!(
+        owner([a.clone(), b.clone(), x.clone(), y.clone()].concat()),
+        "x"
+    );
+    assert_eq!(owner([a, b, y, x].concat()), "x");
+}
