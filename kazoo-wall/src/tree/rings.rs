@@ -1,6 +1,6 @@
-//! Replay the wall's change log into the tree's trunk.
+//! Replay the wall's change log into the tree's lines.
 //!
-//! One commit per change, exact wherever the log and the wall's own files
+//! Changes commit and goes move HEAD, exact wherever the log and the wall's own files
 //! allow, with every gap a commit that says what is not known.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +20,9 @@ mod births;
 mod evidence;
 #[cfg(test)]
 mod fixtures;
+mod go;
+#[cfg(test)]
+mod go_tests;
 mod model;
 #[cfg(test)]
 mod regressions;
@@ -40,7 +43,7 @@ pub enum RingsError {
     NotTrunk(String),
     /// The tree has a trunk the import did not grow.
     HasTrunk(String),
-    /// The trunk does not grow from the import's last ring.
+    /// No line in the tree grows from the import's last ring.
     Diverged(String),
     /// The log and the wall's files give no wall to grow from.
     NoWall(String),
@@ -175,7 +178,7 @@ fn existing(tree: &Path, dry_run: bool) -> Result<Option<Rings>, RingsError> {
         }
     }
     match (end, trunk) {
-        (Some(end), Some(trunk)) => in_already(tree, &end, trunk).map(Some),
+        (Some(end), Some(trunk)) => go::already(tree, &end, trunk).map(Some),
         (Some(end), None) => {
             let report = if dry_run {
                 format!(
@@ -226,11 +229,13 @@ fn existing(tree: &Path, dry_run: bool) -> Result<Option<Rings>, RingsError> {
     }
 }
 
-fn in_already(tree: &Path, end: &str, trunk: String) -> Result<Rings, RingsError> {
+/// The import is in already on `line` (at `trunk`), which grows from the
+/// import's last ring `end`.
+fn in_already(tree: &Path, end: &str, trunk: String, line: &str) -> Result<Rings, RingsError> {
     let ancestor = git_output(tree, "merge-base", &["--is-ancestor", end, &trunk])?;
     if ancestor.status.code() == Some(1) {
         return Err(RingsError::Diverged(format!(
-            "trunk does not grow from the import's last ring (rings/end at {}); nothing is changed",
+            "{line} does not grow from the import's last ring (rings/end at {}); nothing is changed",
             short(end)
         )));
     }
@@ -264,7 +269,7 @@ fn in_already(tree: &Path, end: &str, trunk: String) -> Result<Rings, RingsError
     let since = git_text(tree, "rev-list", &["--count", &format!("{end}..{trunk}")])?;
     Ok(Rings {
         report: format!(
-            "the first rings are in already: trunk holds changes {first} to {last} from the import (rings/end at {}), and {since} commits since\n",
+            "the first rings are in already: {line} holds changes {first} to {last} from the import (rings/end at {}), and {since} commits since\n",
             short(end)
         ),
         trunk,
@@ -355,6 +360,7 @@ struct Log<'a> {
 
 struct Walk<'a> {
     log: Log<'a>,
+    line: go::Lineage,
     model: Model,
     importer: Importer,
     /// The files of the commit last written.
@@ -378,10 +384,12 @@ impl Walk<'_> {
         lines: (&str, &str),
         gap: Option<(u64, u64)>,
     ) -> Result<(), TreeError> {
+        self.grow_line(at)?;
         let files = self.model.files(None)?;
         self.mark = self
             .importer
             .commit(&own_commit(kind, seq, at, lines, &files, gap)?)?;
+        self.remember(seq, &files, false);
         self.previous = files;
         self.tip = (seq, at.into());
         match kind {
@@ -513,6 +521,10 @@ impl Walk<'_> {
 
     /// Steps 3 to 5 for change `change`, then step 6 after it.
     fn change(&mut self, change: &Change) -> Result<(), TreeError> {
+        if matches!(change.what, What::Go { .. }) {
+            self.go(change)?;
+            return self.evidence(change.seq, &change.at);
+        }
         let mut whole = false;
         let mut note = String::new();
         if self.model.known {
@@ -591,6 +603,7 @@ impl Walk<'_> {
 
     /// Change `change`'s own commit, as KZ-T02b writes a live one.
     fn commit(&mut self, change: &Change, whole: bool, note: &str) -> Result<(), TreeError> {
+        let whole = self.grow_line(&change.at)? || whole;
         let salt =
             self.log.salts.get(&change.seq).copied().ok_or_else(|| {
                 TreeError::Git(format!("change {} has no logged line", change.seq))
@@ -613,6 +626,7 @@ impl Walk<'_> {
             }
         }
         self.mark = self.importer.commit(&commit)?;
+        self.remember(change.seq, &files, true);
         self.previous = files;
         self.tip = (change.seq, change.at.clone());
         self.report.changes += 1;
@@ -744,6 +758,7 @@ fn run(tree: &Path, log: Log<'_>) -> Result<(Rings, String), RingsError> {
     let abandoned = log.abandoned;
     let mut walk = Walk {
         log,
+        line: go::Lineage::new(tree, changes),
         model,
         importer,
         previous: Files::new(),
@@ -777,16 +792,14 @@ fn run(tree: &Path, log: Log<'_>) -> Result<(Rings, String), RingsError> {
             walk.change(change)?;
         }
     }
-    if walk.mark == 0 {
+    if walk.starts + walk.report.changes + walk.report.gaps + walk.report.settles == 0 {
         return Err(RingsError::NoWall(format!(
             "no known wall could be grown from the log and its kept files: {}",
             walk.unknown_reason
         )));
     }
     walk.ending(last)?;
-    walk.importer
-        .tag("refs/tags/rings/end", &format!(":{}", walk.mark))?;
-    walk.report.trunk = walk.importer.checkpoint(walk.mark)?;
+    walk.finish_line()?;
     let summary = walk.summary(last);
     walk.importer.finish()?;
     Ok((walk.report, summary))
@@ -797,7 +810,7 @@ impl Walk<'_> {
         let model = &self.model;
         let patch = self.log.proofs.patch.as_ref();
         let (tip_seq, tip_at) = &self.tip;
-        let mut trunk = format!("trunk: {} (change {tip_seq}, {tip_at})", self.report.trunk);
+        let mut trunk = self.line_summary(*tip_seq, tip_at);
         if *tip_seq < last.seq {
             trunk = format!(
                 "{trunk}; changes {} to {} are not in it: {}",
@@ -830,7 +843,7 @@ impl Walk<'_> {
         format!(
             "start: {}\ncommits: {} ({} start, {} changes, {} gaps, {} settles)\n{}births: {} found at the start, {} at adds, {} kept across loads, {} found at loads{found_file}\nthis build left out: {knobs} knobs, {modules} modules ({})\n{trunk}\n",
             self.start,
-            self.mark,
+            self.starts + self.report.changes + self.report.gaps + self.report.settles,
             self.starts,
             self.report.changes,
             self.report.gaps,
