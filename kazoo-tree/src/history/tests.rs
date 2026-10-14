@@ -827,3 +827,21 @@ fn a_record_mark_in_the_words_never_splits_a_commit_or_closes_the_tree() {
     assert_eq!(history.moments[1].modules, 2, "its files still read");
     assert_eq!(history.moments[2].summary, "after");
 }
+
+#[test]
+fn a_record_mark_then_an_id_at_the_end_of_an_author_or_subject_never_splits_a_commit() {
+    let hex = "0123456789abcdef0123456789abcdef01234567";
+    let log = [
+        record("a", "", "one", "A\tmodules/vco1.toml\n"),
+        format!(
+            "\u{1e}b\0a\01000\0B\u{1e}{hex}\0sub\u{1e}abc\0Kazoo-Kind: change\n\u{1f}\nA\tmodules/lfo3.toml\n"
+        ),
+        record("c", "b", "after", ""),
+    ]
+    .concat();
+    let history = History::from_git(&log, "refs/heads/trunk\0c\0\n", None).expect("it opens");
+    assert_eq!(history.moments.len(), 3);
+    assert_eq!(history.moments[1].seat, format!("B\u{fffd}{hex}"));
+    assert_eq!(history.moments[1].summary, "sub\u{fffd}abc");
+    assert_eq!(history.moments[1].modules, 2);
+}
