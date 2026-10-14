@@ -31,7 +31,7 @@ fn every_instrument_is_a_subcommand() {
             Command::Glass(_) => name == "glass",
             Command::Arp(_) => name == "arp",
             Command::Play(_) => name == "play",
-            Command::Mouth => name == "mouth",
+            Command::Mouth(_) => name == "mouth",
             Command::Mix(args) => name == "mix" && !args.demo,
             Command::Wall { command } => name == "wall" && command.is_none(),
             Command::Mcp(args) => name == "mcp" && args.seat == "Tom",
@@ -264,4 +264,61 @@ fn arp_keeps_its_target_and_silent_flags() {
         .unwrap();
     assert_eq!(kazoo_arp::Args::from(args), expected);
     assert!(Cli::try_parse_from(["kazoo", "arp", "--target", "bogus"]).is_err());
+}
+
+#[test]
+fn mouth_flags_become_microphone_arguments() {
+    let Command::Mouth(args) = Cli::try_parse_from([
+        "kazoo",
+        "mouth",
+        "--input",
+        "X",
+        "--input-channel",
+        "2",
+        "--list-inputs",
+    ])
+    .unwrap()
+    .command
+    else {
+        panic!("expected mouth");
+    };
+    assert_eq!(args.input.as_deref(), Some("X"));
+    assert_eq!(args.input_channel, Some(2));
+    assert!(args.list_inputs);
+    assert_eq!(
+        kazoo_tui::Args::from(args),
+        kazoo_tui::Args {
+            input: Some("X".into()),
+            input_channel: Some(2),
+            list_inputs: true
+        }
+    );
+}
+
+#[test]
+fn mouth_without_flags_uses_defaults() {
+    let Command::Mouth(args) = Cli::try_parse_from(["kazoo", "mouth"]).unwrap().command else {
+        panic!("expected mouth");
+    };
+    assert_eq!(args, super::MouthArgs::default());
+    assert_eq!(kazoo_tui::Args::from(args), kazoo_tui::Args::default());
+}
+
+#[test]
+fn mouth_refuses_channels_outside_the_interface_range() {
+    for channel in ["0", "65", "x"] {
+        let error =
+            Cli::try_parse_from(["kazoo", "mouth", "--input-channel", channel]).unwrap_err();
+        assert!(error.to_string().contains("--input-channel"));
+    }
+}
+
+#[test]
+fn mouth_help_lists_the_input_flags() {
+    let error = Cli::try_parse_from(["kazoo", "mouth", "--help"]).unwrap_err();
+    assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+    let help = error.to_string();
+    for flag in ["--input", "--input-channel", "--list-inputs"] {
+        assert!(help.contains(flag), "{help}");
+    }
 }

@@ -109,7 +109,7 @@ impl StudioFile {
                     | Command::Glass(_)
                     | Command::Arp(_)
                     | Command::Play(_)
-                    | Command::Mouth
+                    | Command::Mouth(_)
             ) {
                 return Err(eyre!("{:?} is not an instrument", instrument.name));
             }
