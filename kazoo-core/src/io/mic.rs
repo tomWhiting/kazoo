@@ -18,7 +18,7 @@ use rubato::{
 mod watch;
 
 use super::channel_adapt::InputAdapter;
-use crate::host::audio::{DeviceChoice, OpenedInput, OutputRequest, RateChoice};
+use crate::host::audio::{DeviceChoice, InputNotices, OpenedInput, OutputRequest, RateChoice};
 use crate::{Error, Result, sanitize_sample};
 
 /// What to open: which device, and which of its channels.
@@ -58,7 +58,7 @@ pub enum MicState {
     Off,
     /// Running.
     Live,
-    /// The device went away or failed; asked for again every second.
+    /// The device went away or failed; searches back off up to 32 seconds.
     Lost,
     /// A dropped stream never gave the ring back; no further reopening.
     Stuck,
@@ -157,6 +157,7 @@ pub struct Mic {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     shared: Arc<MicShared>,
+    notices: InputNotices,
 }
 
 impl std::fmt::Debug for Mic {
@@ -169,6 +170,11 @@ impl std::fmt::Debug for Mic {
 }
 
 impl Mic {
+    #[must_use]
+    pub const fn input_notices(&self) -> &InputNotices {
+        &self.notices
+    }
+
     #[must_use]
     pub fn shared(&self) -> Arc<MicShared> {
         Arc::clone(&self.shared)
@@ -202,6 +208,16 @@ pub fn open_mic(
     sink: HeapProd<f32>,
     counted: PushCount,
 ) -> Result<Mic> {
+    open_mic_with_notices(request, target, sink, counted, InputNotices::default())
+}
+
+pub fn open_mic_with_notices(
+    request: MicRequest,
+    target: MicTarget,
+    sink: HeapProd<f32>,
+    counted: PushCount,
+    notices: InputNotices,
+) -> Result<Mic> {
     if target.rate == 0 || target.frames == 0 {
         return Err(Error::Config(
             "mic target rate and frames must be non-zero".into(),
@@ -212,18 +228,16 @@ pub fn open_mic(
     let thread_shared = Arc::clone(&shared);
     let thread_stop = Arc::clone(&stop);
     let (started, ready) = crossbeam_channel::bounded(1);
+    let backend = CpalMic {
+        notices: notices.clone(),
+        ..CpalMic::default()
+    };
     let thread = std::thread::Builder::new()
         .name("kazoo-mic".into())
         .spawn(move || {
             // Stream creation and destruction stay on the owning thread.
-            let mut supervisor = Supervisor::new(
-                CpalMic::default(),
-                request,
-                target,
-                sink,
-                counted,
-                thread_shared,
-            );
+            let mut supervisor =
+                Supervisor::new(backend, request, target, sink, counted, thread_shared);
             let result = supervisor.start();
             let running = result.is_ok();
             if let Err(error) = started.send(result) {
@@ -243,6 +257,7 @@ pub fn open_mic(
         stop,
         thread: Some(thread),
         shared,
+        notices,
     };
     ready.recv().map_err(|error| {
         Error::Stream(format!("mic supervisor stopped during startup: {error}"))
@@ -284,6 +299,7 @@ pub(crate) trait MicBackend: Send + 'static {
 struct CpalMic {
     facts: watch::FactsCache<cpal::DeviceId>,
     named: Option<cpal::Device>,
+    notices: InputNotices,
 }
 
 impl std::fmt::Debug for CpalMic {
@@ -303,11 +319,15 @@ impl MicBackend for CpalMic {
             DeviceChoice::Default => None,
             DeviceChoice::Named(name) => Some(name.as_str()),
         };
-        let device = if name.is_some() {
+        let device = if let Some(name) = name {
             if let Some(device) = &self.named {
                 device.clone()
             } else {
-                let device = super::device::resolve_input_device(&cpal::default_host(), name)?;
+                let device = crate::host::audio::resolve_named_input(
+                    &cpal::default_host(),
+                    name,
+                    &self.notices,
+                )?;
                 self.named = Some(device.clone());
                 device
             }
@@ -319,6 +339,7 @@ impl MicBackend for CpalMic {
             .map_err(|error| Error::Device(format!("cannot identify input: {error}")))?;
         // Configuration and description probes create host audio units; only probe a changed device.
         self.facts.read(identity, || {
+            // The picked mic itself is not left out: its failure is a loss.
             let description = device
                 .description()
                 .map_err(|error| Error::Device(format!("cannot name input: {error}")))?;
@@ -623,6 +644,8 @@ struct Supervisor<B: MicBackend> {
     /// When frames off the rate may next send the supervisor to the device.
     recheck_at: Instant,
     recheck_wait: Duration,
+    search_at: Instant,
+    search_wait: Duration,
 }
 
 impl<B: MicBackend> Supervisor<B> {
@@ -655,6 +678,8 @@ impl<B: MicBackend> Supervisor<B> {
             delivery: (now, 0),
             recheck_at: now,
             recheck_wait: FACTS_EVERY,
+            search_at: now + FACTS_EVERY,
+            search_wait: FACTS_EVERY,
         }
     }
 
@@ -770,6 +795,10 @@ impl<B: MicBackend> Supervisor<B> {
         self.last_error = Some(reason);
         self.status.state = MicState::Lost;
         self.last_facts = now;
+        // The search goes on from the wait it reached unless the mic has
+        // since delivered at its rate: a mic that drops as soon as it opens
+        // would otherwise be reopened, host audio units and all, every second.
+        self.search_at = now + self.search_wait;
         self.release();
     }
 
@@ -819,11 +848,16 @@ impl<B: MicBackend> Supervisor<B> {
                     }
                 }
             }
-            MicState::Lost if now.duration_since(self.last_facts) >= FACTS_EVERY => {
+            MicState::Lost if now >= self.search_at => {
                 self.last_facts = now;
+                self.search_wait = self.search_wait.saturating_mul(2).min(RECHECK_MOST);
+                self.search_at = now + self.search_wait;
                 match self.backend.facts(&self.request.device) {
                     Ok(facts) => self.reopen(&facts, now),
-                    Err(error) => self.last_error = Some(error.to_string()),
+                    Err(error) => {
+                        self.backend.forget();
+                        self.last_error = Some(error.to_string());
+                    }
                 }
             }
             MicState::Lost | MicState::Stuck | MicState::Off => {}
@@ -834,7 +868,8 @@ impl<B: MicBackend> Supervisor<B> {
     /// Whether the frames since the last look stray more than a quarter
     /// from the rate the mic was opened at, and the device is due to be
     /// asked again. Each look in a row that finds nothing changed doubles the
-    /// wait, up to [`RECHECK_MOST`]; frames at the rate start it over.
+    /// wait, up to [`RECHECK_MOST`]; frames at the rate start it over, and
+    /// start over the wait between searches for the mic should it go.
     fn delivery_strays(&mut self, now: Instant) -> bool {
         let frames = self.shared.frames.load(Ordering::Relaxed);
         let (since, from) = self.delivery;
@@ -846,6 +881,7 @@ impl<B: MicBackend> Supervisor<B> {
         if delivered * 4 >= expected * 3 && delivered * 3 <= expected * 4 {
             self.recheck_at = now;
             self.recheck_wait = FACTS_EVERY;
+            self.search_wait = FACTS_EVERY;
             return false;
         }
         if now < self.recheck_at {
