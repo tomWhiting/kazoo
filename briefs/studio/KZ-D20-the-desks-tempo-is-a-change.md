@@ -24,3 +24,12 @@ And with the desk linked, a go keeps the desk's tempo, not the moment's (`playin
 - A drag 120 → 100 over 1.5 seconds in 30 messages: one change, before 120, after 100.
 - A seat's `wall_tempo` 110 echoed by the desk: one change (the seat's), none by `desk`.
 - A go to a 96 BPM moment with the desk at 120: the desk is asked for 96 at the landing bar; with a desk that refuses, the go lands and its answer names both tempos.
+
+## Amended 15 Oct 2026, 02:3x (Cassio), after KZ-D17 landed (`01d544f`)
+
+KZ-D17 already logs desk tempo moves: in `daemon/wall/tempo_sync.rs`, `sync_desk_tempo` logs them under seat `desk` as `What::Tempo { desk: true }`, with the summary "the desk set the tempo X → Y" and a threshold of 0.01 BPM. It also already keeps the asks the wall made (`desk_tempo.asked(bpm)`, at most 8), so an echo is not logged twice. This lane changes that one path and adds no second path:
+- **Threshold:** 0.05 BPM (this brief's), replacing D17's 0.01. Change D17's tests that pin 0.01, and say so.
+- **Summary:** "the desk moved the tempo to {bpm}" (this brief's), replacing D17's wording everywhere it is read (the MCP's renderers, the tree's lanes, and the console's log). Find every reader by the old wording, and test one.
+- **Grouping (Outcome 1):** goes inside `sync_desk_tempo`. The desk moves that a seat's ask reveals first (D17 logs any move it had not yet heard before an ask) close the open run before the ask is logged.
+- **Outcome 2's ask on a go** must call `desk_tempo.asked(bpm)`, or the desk's echo is logged as a desk change (D17 review, finding 9).
+- **The status line:** a lasting failure to save the tempo takes the desk's status line until a save succeeds, and hides other hub notices meanwhile (`kazoo-mix/src/run.rs:221`). Show the save failure beside the hub notice, not instead of it. Test: a hub notice during a save failure is shown.
