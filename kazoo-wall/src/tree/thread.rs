@@ -9,7 +9,42 @@ use std::time::{Duration, Instant};
 
 use super::git::{self, Commit, Importer, Planted};
 use super::{Files, TreeError};
-use crate::protocol::{Change, ClockStamp, TreeHealth};
+use crate::protocol::{Change, ClockStamp, MarkResult, TreeHealth, TreePlace, TreeResult, What};
+
+pub mod here;
+pub use here::HereError;
+
+/// A fast-import mark or commit id; absent on an unborn line.
+pub type Tip = Option<String>;
+
+/// The wall is on a line, or at a detached immutable moment.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Line {
+    On {
+        branch: String,
+        tip: Tip,
+    },
+    At {
+        commit: String,
+        mark: Option<String>,
+    },
+}
+
+/// The result of a control-side tree job.
+#[derive(Debug)]
+pub enum Answered {
+    Marked(MarkResult),
+    Resolved {
+        to: TreePlace,
+        here: TreePlace,
+        wall: Box<crate::patch::PatchFile>,
+    },
+    Here(TreePlace),
+    Listed(Box<TreeResult>),
+}
+
+/// An ordered answer, including the latest change taken by the tree.
+pub type TreeAnswer = (u64, u64, Result<Answered, HereError>);
 
 /// Items the queue holds.
 ///
@@ -64,6 +99,22 @@ pub enum TreeItem {
         files: Files,
         generation: u64,
     },
+    /// Give the current moment an immutable name.
+    Mark {
+        ticket: u64,
+        name: String,
+        console: bool,
+    },
+    /// Give a saved wall an immutable name.
+    SaveMark { name: String, at: String },
+    /// Read a named moment's wall.
+    Resolve { ticket: u64, moment: String },
+    /// Read the wall's current place.
+    Here { ticket: u64 },
+    /// List the tree's bounded view.
+    List { ticket: u64, recent: Option<u32> },
+    /// A go missed by the change queue, before its whole-wall gap.
+    Moved { to: TreePlace },
     /// Finish: checkpoint, `done`, and say so.
     Finish,
 }
@@ -88,6 +139,12 @@ pub enum News {
     Down { error: String, through: Option<u64> },
     /// Git works again: send the whole wall.
     NeedWhole,
+    /// An answer after every change ahead of its job.
+    Answer {
+        ticket: u64,
+        through: u64,
+        answer: Result<Answered, HereError>,
+    },
     /// The answer to [`TreeItem::Finish`].
     Finished(Result<(), String>),
 }
@@ -97,7 +154,27 @@ impl TreeItem {
         match self {
             Self::Change { change, .. } => Some(change.seq),
             Self::Whole { seq, .. } => Some(*seq),
-            Self::Finish => None,
+            Self::Mark { .. }
+            | Self::SaveMark { .. }
+            | Self::Resolve { .. }
+            | Self::Here { .. }
+            | Self::List { .. }
+            | Self::Moved { .. }
+            | Self::Finish => None,
+        }
+    }
+
+    fn ticket(&self) -> Option<u64> {
+        match self {
+            Self::Mark { ticket, .. }
+            | Self::Resolve { ticket, .. }
+            | Self::Here { ticket }
+            | Self::List { ticket, .. } => Some(*ticket),
+            Self::Change { .. }
+            | Self::Whole { .. }
+            | Self::SaveMark { .. }
+            | Self::Moved { .. }
+            | Self::Finish => None,
         }
     }
 
@@ -135,7 +212,15 @@ impl TreeItem {
                         .sum::<usize>()
                         + clock.as_ref().map_or(0, |c| c.line.len() + 32)
                 }
-                Self::Finish => 0,
+                Self::Mark { name, .. } => name.len(),
+                Self::SaveMark { name, at } => name.len() + at.len(),
+                Self::Resolve { moment, .. } => moment.len(),
+                Self::Moved { to } => {
+                    to.commit.len()
+                        + to.branch.as_ref().map_or(0, String::len)
+                        + to.mark.as_ref().map_or(0, String::len)
+                }
+                Self::Here { .. } | Self::List { .. } | Self::Finish => 0,
             })
     }
 }
@@ -154,6 +239,7 @@ pub struct TreeHandle {
     pub behind_from: Option<u64>,
     pub through: Option<u64>,
     pub error: Option<String>,
+    pub answered: Vec<TreeAnswer>,
 }
 
 impl TreeHandle {
@@ -175,8 +261,7 @@ impl TreeHandle {
 
     fn spawn(dir: &Path, latch: Option<Receiver<()>>) -> Result<Self, TreeError> {
         git::check_version()?;
-        let planted = git::read(dir)?;
-        let through = planted.through;
+        let (line, through) = here::read_line(dir).map_err(tree_error)?;
         let (sender, receiver) = mpsc::sync_channel(TREE_QUEUE);
         let (news_tx, news) = mpsc::channel();
         let bytes = Arc::new(AtomicUsize::new(0));
@@ -195,7 +280,8 @@ impl TreeHandle {
                 }
                 worker(
                     &dir,
-                    &planted,
+                    line,
+                    through,
                     &receiver,
                     &news_tx,
                     &worker_bytes,
@@ -214,6 +300,7 @@ impl TreeHandle {
             behind_from: None,
             through,
             error: None,
+            answered: Vec::new(),
         })
     }
 
@@ -222,18 +309,25 @@ impl TreeHandle {
     /// tree is marked behind from its change, and a whole item must follow.
     pub fn offer(&mut self, item: TreeItem) -> bool {
         let seq = item.seq();
+        let sent = self.ask(item);
+        if !sent {
+            self.missed(seq);
+        }
+        sent
+    }
+
+    /// Queue a job without changing the resync state when it is refused.
+    pub fn ask(&mut self, item: TreeItem) -> bool {
         let bytes = match item.bytes() {
             Ok(bytes) => bytes,
             Err(err) => {
                 self.error = Some(err.to_string());
-                self.missed(seq);
                 return false;
             }
         };
         let previous = self.bytes.fetch_add(bytes, Ordering::AcqRel);
         if previous.saturating_add(bytes) > TREE_QUEUE_BYTES {
             self.bytes.fetch_sub(bytes, Ordering::AcqRel);
-            self.missed(seq);
             return false;
         }
         self.waiting.fetch_add(1, Ordering::AcqRel);
@@ -245,7 +339,6 @@ impl TreeHandle {
                 if matches!(err, TrySendError::Disconnected(_)) {
                     self.error = Some("the tree thread has stopped".into());
                 }
-                self.missed(seq);
                 false
             }
         }
@@ -307,6 +400,11 @@ impl TreeHandle {
                 self.resync = true;
             }
             News::NeedWhole => self.resync = true,
+            News::Answer {
+                ticket,
+                through,
+                answer,
+            } => self.answered.push((ticket, through, answer)),
             News::Finished(result) => {
                 if let Err(error) = result {
                     self.error = Some(error);
@@ -402,10 +500,21 @@ fn tell(sender: &mpsc::Sender<News>, news: News) {
     }
 }
 
+fn tree_error(error: HereError) -> TreeError {
+    match error {
+        HereError::UnknownMoment(message)
+        | HereError::MarkExists(message)
+        | HereError::Full(message)
+        | HereError::Broken(message)
+        | HereError::Down(message) => TreeError::Git(message),
+    }
+}
+
 /// The tree thread's state while git works.
 struct Writer {
-    /// `None` only while [`Self::renew`] swaps one importer for the next.
     importer: Option<Importer>,
+    line: Line,
+    resolver: here::Resolver,
     accepted: u64,
     through: Option<u64>,
     last: Option<(u64, u64)>,
@@ -414,20 +523,35 @@ struct Writer {
     checkpoints: u64,
     gaps: Vec<(u64, u64)>,
     base: Option<Files>,
+    summary: String,
 }
 
 impl Writer {
-    fn new(dir: &Path, planted: &Planted) -> Result<Self, TreeError> {
+    fn new(dir: &Path, line: Line, through: Option<u64>) -> Result<Self, TreeError> {
+        let importer = match &line {
+            Line::On { branch, tip } => Some(Importer::new(
+                dir,
+                &Planted {
+                    branch: format!("refs/heads/{branch}"),
+                    tip: tip.clone(),
+                    through,
+                },
+            )?),
+            Line::At { .. } => None,
+        };
         Ok(Self {
-            importer: Some(Importer::new(dir, planted)?),
+            importer,
+            line,
+            resolver: here::Resolver::default(),
             accepted: 0,
-            through: planted.through,
+            through,
             last: None,
             pending: 0,
             checkpointed: Instant::now(),
             checkpoints: 0,
             gaps: Vec::new(),
             base: None,
+            summary: String::new(),
         })
     }
 
@@ -437,17 +561,27 @@ impl Writer {
             .ok_or_else(|| TreeError::Git("no fast-import is running".into()))
     }
 
-    /// Repack, between two importers. `fast-import` keeps a `.keep` file on
-    /// every pack it writes until it exits, and a repack leaves kept packs
-    /// alone; so the running importer is finished first (its packs are let
-    /// go), the packs are repacked, and a new importer continues from the
-    /// branch's tip.
-    fn renew(&mut self, dir: &Path) -> Result<(), TreeError> {
+    fn close(&mut self) -> Result<(), TreeError> {
         if let Some(importer) = self.importer.take() {
             importer.finish()?;
         }
+        self.last = None;
+        Ok(())
+    }
+
+    fn renew(&mut self, dir: &Path) -> Result<(), TreeError> {
+        self.close()?;
         git::repack(dir)?;
-        self.importer = Some(Importer::new(dir, &git::read(dir)?)?);
+        if let Line::On { branch, tip } = &self.line {
+            self.importer = Some(Importer::new(
+                dir,
+                &Planted {
+                    branch: format!("refs/heads/{branch}"),
+                    tip: tip.clone(),
+                    through: self.through,
+                },
+            )?);
+        }
         Ok(())
     }
 
@@ -456,7 +590,14 @@ impl Writer {
             return Ok(());
         }
         if let Some((mark, seq)) = self.last {
-            self.importer()?.checkpoint(mark)?;
+            let sha = self.importer()?.checkpoint(mark)?;
+            if let Line::On { branch, tip } = &mut self.line {
+                *tip = Some(sha);
+                self.resolver
+                    .extend(dir, branch, self.pending)
+                    .map_err(tree_error)?;
+            }
+            here::move_head(dir, &self.line, &self.summary).map_err(tree_error)?;
             self.through = Some(seq);
             self.pending = 0;
             self.checkpointed = Instant::now();
@@ -474,8 +615,62 @@ impl Writer {
 
     fn finish(mut self, dir: &Path, news: &mpsc::Sender<News>) -> Result<(), String> {
         self.checkpoint(dir, news)
-            .and_then(|()| self.importer.take().map_or(Ok(()), git::Importer::finish))
+            .and_then(|()| self.close())
             .map_err(|err| err.to_string())
+    }
+
+    fn moved(
+        &mut self,
+        dir: &Path,
+        news: &mpsc::Sender<News>,
+        to: TreePlace,
+        seq: Option<u64>,
+        summary: &str,
+    ) -> Result<(), TreeError> {
+        self.checkpoint(dir, news)?;
+        self.close()?;
+        let commit = here::resolve(dir, &self.line, &to.commit)
+            .map_err(tree_error)?
+            .commit;
+        self.line = if let Some(branch) = to.branch {
+            if here::branch_tip(dir, &branch)
+                .map_err(tree_error)?
+                .as_deref()
+                == Some(commit.as_str())
+            {
+                Line::On {
+                    branch,
+                    tip: Some(commit),
+                }
+            } else {
+                Line::At {
+                    commit,
+                    mark: to.mark,
+                }
+            }
+        } else {
+            Line::At {
+                commit,
+                mark: to.mark,
+            }
+        };
+        here::move_head(dir, &self.line, summary).map_err(tree_error)?;
+        self.base = None;
+        if let Line::On { branch, tip } = &self.line {
+            self.importer = Some(Importer::new(
+                dir,
+                &Planted {
+                    branch: format!("refs/heads/{branch}"),
+                    tip: tip.clone(),
+                    through: self.through,
+                },
+            )?);
+        }
+        if let Some(seq) = seq {
+            self.through = Some(seq);
+            tell(news, News::Committed { through: seq });
+        }
+        Ok(())
     }
 
     fn item(
@@ -484,12 +679,24 @@ impl Writer {
         dir: &Path,
         news: &mpsc::Sender<News>,
     ) -> Result<(), TreeError> {
-        let (commit, seq) = match item {
+        if let Some(ticket) = item.ticket() {
+            return self.answer(item, ticket, dir, news);
+        }
+        let (commit, seq, at) = match item {
+            TreeItem::Moved { to } => {
+                return self.moved(dir, news, to, None, "the wall moved to a moment");
+            }
+            TreeItem::SaveMark { name, at } => {
+                return self.save_mark(dir, news, &name, &at);
+            }
             TreeItem::Change {
                 change,
                 files,
                 generation,
             } => {
+                if let What::Go { to, .. } = &change.what {
+                    return self.moved(dir, news, to.clone(), Some(change.seq), &change.summary);
+                }
                 if generation != self.accepted {
                     return Ok(());
                 }
@@ -505,7 +712,7 @@ impl Writer {
                     commit.files = base.into_iter().map(|(p, b)| (p, Some(b))).collect();
                     commit.whole = true;
                 }
-                (commit, change.seq)
+                (commit, change.seq, change.at.clone())
             }
             TreeItem::Whole {
                 kind,
@@ -516,15 +723,27 @@ impl Writer {
             } => {
                 self.checkpoint(dir, news)?;
                 self.accepted = generation;
-                // A gap item that covers nothing the tree lacks is the base
-                // of the next change commit, not a commit; the tree already
-                // holds every change through `through`, so say so.
-                if let (WholeKind::Gap, Some(through)) = (kind, self.through) {
-                    if seq <= through {
-                        self.base = Some(files);
-                        tell(news, News::Committed { through });
-                        return Ok(());
+                if matches!(kind, WholeKind::Start) {
+                    if let Line::At { commit, .. } = &self.line {
+                        if here::files(dir, commit).map_err(tree_error)? == files {
+                            self.base = Some(files);
+                            self.through = Some(seq);
+                            tell(news, News::Committed { through: seq });
+                            return Ok(());
+                        }
                     }
+                }
+                if matches!(kind, WholeKind::Gap)
+                    && self.through.is_some_and(|through| seq <= through)
+                {
+                    self.base = Some(files);
+                    tell(
+                        news,
+                        News::Committed {
+                            through: self.through.unwrap_or(0),
+                        },
+                    );
+                    return Ok(());
                 }
                 self.base = None;
                 let kind = match kind {
@@ -535,29 +754,120 @@ impl Writer {
                 if seq > self.through.unwrap_or(0) {
                     self.gaps.push((self.through.unwrap_or(0) + 1, seq));
                 }
-                (commit, seq)
+                (commit, seq, crate::change::utc_now())
             }
             TreeItem::Finish => return Ok(()),
+            TreeItem::Mark { .. }
+            | TreeItem::Resolve { .. }
+            | TreeItem::Here { .. }
+            | TreeItem::List { .. } => {
+                return Err(TreeError::Git("a tree question lost its ticket".into()));
+            }
         };
+        self.grow(dir, &at)?;
+        self.summary = commit.message.lines().next().unwrap_or("").into();
         let mark = self.importer()?.commit(&commit)?;
+        if let Line::On { tip, .. } = &mut self.line {
+            *tip = Some(format!(":{mark}"));
+        }
         self.last = Some((mark, seq));
         self.pending += 1;
         Ok(())
     }
+    fn take(
+        &mut self,
+        item: Result<TreeItem, RecvTimeoutError>,
+        dir: &Path,
+        news: &mpsc::Sender<News>,
+        waiting: &AtomicUsize,
+    ) -> Result<(), TreeError> {
+        item.map_or(Ok(()), |item| self.item(item, dir, news))?;
+        if self.pending >= CHECKPOINT_COMMITS
+            || (waiting.load(Ordering::Acquire) == 0
+                && self.checkpointed.elapsed() >= CHECKPOINT_AFTER)
+        {
+            self.checkpoint(dir, news)?;
+        }
+        Ok(())
+    }
+}
+
+type Movement = (TreePlace, Option<u64>, String);
+
+fn remember(
+    item: &TreeItem,
+    moved: &mut Option<Movement>,
+    down: Option<(&str, Option<u64>)>,
+    news: &mpsc::Sender<News>,
+) {
+    match item {
+        TreeItem::Moved { to } => {
+            *moved = Some((to.clone(), None, "the wall moved to a moment".into()))
+        }
+        TreeItem::Change { change, .. } => {
+            if let What::Go { to, .. } = &change.what {
+                *moved = Some((to.clone(), Some(change.seq), change.summary.clone()));
+            }
+        }
+        TreeItem::SaveMark { name, .. } if down.is_some() => {
+            if let Some((why, through)) = down {
+                tell(
+                    news,
+                    News::Down {
+                        error: format!(
+                            "the save \"{name}\" could not be marked in the tree: {why}"
+                        ),
+                        through,
+                    },
+                );
+            }
+        }
+        _ => {}
+    }
+    if let Some((down, through)) = down {
+        if let Some(ticket) = item.ticket() {
+            tell(
+                news,
+                News::Answer {
+                    ticket,
+                    through: through.unwrap_or(0),
+                    answer: Err(HereError::Down(down.into())),
+                },
+            );
+        }
+    }
+}
+
+fn restart(
+    dir: &Path,
+    through: Option<u64>,
+    moved: Option<&Movement>,
+    news: &mpsc::Sender<News>,
+) -> Result<Writer, TreeError> {
+    let (line, read_through) = here::read_line(dir).map_err(tree_error)?;
+    let mut writer = Writer::new(dir, line, read_through.or(through))?;
+    if let Some((to, seq, summary)) = moved {
+        writer.moved(dir, news, to.clone(), *seq, summary)?;
+    }
+    Ok(writer)
 }
 
 fn worker(
     dir: &Path,
-    planted: &Planted,
+    line: Line,
+    initial_through: Option<u64>,
     receiver: &Receiver<TreeItem>,
     news: &mpsc::Sender<News>,
     bytes: &AtomicUsize,
     waiting: &AtomicUsize,
 ) {
-    let mut through = planted.through;
-    let mut writer = match Writer::new(dir, planted) {
+    let mut through = initial_through;
+    let mut down = String::from("the tree is stopped");
+    let mut moved = None;
+    let mut writer = match Writer::new(dir, line, through) {
         Ok(writer) => Some(writer),
         Err(err) => {
+            down = err.to_string();
             tell(
                 news,
                 News::Down {
@@ -576,16 +886,7 @@ fn worker(
         );
         let outcome = receiver.recv_timeout(timeout);
         let finished = match &outcome {
-            Ok(item) => {
-                match item.bytes() {
-                    Ok(size) => {
-                        bytes.fetch_sub(size, Ordering::AcqRel);
-                    }
-                    Err(err) => eprintln!("kazoo-wall: tree item accounting: {err}"),
-                }
-                waiting.fetch_sub(1, Ordering::AcqRel);
-                matches!(item, TreeItem::Finish)
-            }
+            Ok(item) => here::released(item, bytes, waiting),
             Err(RecvTimeoutError::Timeout) => false,
             Err(RecvTimeoutError::Disconnected) => true,
         };
@@ -597,23 +898,26 @@ fn worker(
             tell(news, News::Finished(result));
             return;
         }
+        let received = match &outcome {
+            Ok(item) => Some(item),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        if let Some(item) = received {
+            remember(
+                item,
+                &mut moved,
+                writer.is_none().then_some((down.as_str(), through)),
+                news,
+            );
+        }
         if let Some(w) = writer.as_mut() {
             // `outcome` is an item or a timeout here: a closed queue
             // finished above.
-            let result = outcome
-                .map_or(Ok(()), |item| w.item(item, dir, news))
-                .and_then(|()| {
-                    if w.pending >= CHECKPOINT_COMMITS
-                        || (waiting.load(Ordering::Acquire) == 0
-                            && w.checkpointed.elapsed() >= CHECKPOINT_AFTER)
-                    {
-                        w.checkpoint(dir, news)
-                    } else {
-                        Ok(())
-                    }
-                });
+            let result = w.take(outcome, dir, news, waiting);
             through = w.through;
             if let Err(err) = result {
+                down = err.to_string();
                 tell(
                     news,
                     News::Down {
@@ -623,21 +927,22 @@ fn worker(
                 );
                 writer = None;
                 retry = Instant::now() + RETRY_AFTER;
-            } else if w.pending == 0 && w.checkpointed.elapsed() >= CHECKPOINT_AFTER {
-                w.checkpointed = Instant::now();
+            } else {
+                moved = None;
+                if w.pending == 0 && w.checkpointed.elapsed() >= CHECKPOINT_AFTER {
+                    w.checkpointed = Instant::now();
+                }
             }
         } else if Instant::now() >= retry {
-            match git::read(dir).and_then(|mut planted| {
-                if planted.through.is_none() {
-                    planted.through = through;
-                }
-                Writer::new(dir, &planted)
-            }) {
+            match restart(dir, through, moved.as_ref(), news) {
                 Ok(w) => {
+                    through = w.through;
+                    moved = None;
                     writer = Some(w);
                     tell(news, News::NeedWhole);
                 }
                 Err(err) => {
+                    down = err.to_string();
                     tell(
                         news,
                         News::Down {

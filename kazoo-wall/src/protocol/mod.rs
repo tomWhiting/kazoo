@@ -18,12 +18,14 @@
 
 pub mod client;
 pub mod codec;
+pub mod tree;
 
 mod chains;
 mod loops;
 
 pub use chains::{ChainSaveResult, ChainsResult};
 pub use loops::{LoopState, LoopView, LoopsMeet};
+pub use tree::{BranchView, MarkKind, MarkResult, MarkView, MomentView, TreePlace, TreeResult};
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -931,6 +933,21 @@ pub enum What {
         tempo: f64,
         /// Made by a console: its backup is the last of the wall's own
         /// saves to be let go.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_console: bool,
+    },
+    /// The wall put at a moment in the tree while it played (a go), or,
+    /// when the change undoes a go, put back where that go left. As a
+    /// load, the wall as it was is kept in `backup` first, and undoing
+    /// this brings it back exactly from that save.
+    Go {
+        to: TreePlace,
+        from: TreePlace,
+        backup: String,
+        fingerprint: String,
+        modules: u32,
+        cables: u32,
+        tempo: f64,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         by_console: bool,
     },

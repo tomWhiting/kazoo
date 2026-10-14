@@ -538,6 +538,8 @@ pub struct Wall {
     tree: Option<crate::tree::thread::TreeHandle>,
     tree_mirror: crate::tree::Files,
     tree_error: Option<String>,
+    moved_to: Option<crate::protocol::TreePlace>,
+    pub tree_answered: Vec<crate::tree::thread::TreeAnswer>,
     chain_batch: Option<Vec<What>>,
     patch: Patch,
     rack: Rack,
@@ -1320,6 +1322,8 @@ impl Wall {
             tree: None,
             tree_mirror: crate::tree::Files::new(),
             tree_error: None,
+            moved_to: None,
+            tree_answered: Vec::new(),
             chain_batch: None,
             speech: Speech::new(speech_cache),
             loops,
@@ -2053,7 +2057,7 @@ impl Wall {
                 }
             }
             // The patch is the new wall already.
-            What::Load { .. } => self.swap_engine(),
+            What::Load { .. } | What::Go { .. } => self.swap_engine(),
         }
     }
 
@@ -2351,6 +2355,12 @@ impl Wall {
             .clock_line
             .stamp(shared.beat(), shared.bpm(), shared.following_desk());
         if let Some(tree) = self.tree.as_mut() {
+            if let Some(to) = &self.moved_to {
+                if !tree.offer(crate::tree::thread::TreeItem::Moved { to: to.clone() }) {
+                    return;
+                }
+                self.moved_to = None;
+            }
             self.tree_mirror = files.clone();
             let accepted = tree.offer(crate::tree::thread::TreeItem::Whole {
                 kind,
@@ -2407,29 +2417,49 @@ impl Wall {
     }
 
     fn feed_tree(&mut self, change: &Change) {
+        let go = match &change.what {
+            What::Go { to, .. } => Some(to.clone()),
+            _ => None,
+        };
         if self.tree.as_ref().is_none_or(|tree| tree.resync) {
+            if self.tree.is_some() && go.is_some() {
+                self.moved_to = go;
+            }
             return;
         }
-        let diff =
+        let diff = if go.is_some() {
+            Vec::new()
+        } else {
             match crate::tree::thread::files_diff(&self.patch.to_file(), &mut self.tree_mirror) {
                 Ok(diff) => diff,
                 Err(err) => {
                     self.tree_failed(&err);
                     return;
                 }
-            };
+            }
+        };
         if let Some(tree) = self.tree.as_mut() {
-            tree.offer(crate::tree::thread::TreeItem::Change {
+            let accepted = tree.offer(crate::tree::thread::TreeItem::Change {
                 change: Box::new(change.clone()),
                 files: diff,
                 generation: tree.generation,
             });
+            if go.is_some() {
+                if !accepted {
+                    self.moved_to = go;
+                }
+                tree.generation = tree.generation.saturating_add(1);
+            }
+        }
+        if matches!(change.what, What::Go { .. }) {
+            self.whole_tree(crate::tree::thread::WholeKind::Gap);
         }
     }
 
     fn tick_tree(&mut self) {
         if let Some(tree) = self.tree.as_mut() {
             tree.poll();
+            self.tree_answered.append(&mut tree.answered);
             if !tree.resync {
                 return;
             }
@@ -2448,6 +2478,31 @@ impl Wall {
             None => panic!("no tree attached"),
         }
         self.tick_tree();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tree_test_wait(&mut self) {
+        match self.tree.as_mut() {
+            Some(tree) => tree.wait_event(),
+            None => panic!("no tree attached"),
+        }
+        self.tick_tree();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tree_test_apply(&mut self, file: crate::patch::PatchFile, change: Change) {
+        self.patch = Patch::from_file(&file).unwrap();
+        self.apply(change);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tree_test_ask(&mut self, item: crate::tree::thread::TreeItem) -> bool {
+        self.tree.as_mut().is_some_and(|tree| tree.ask(item))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tree_test_file(&self) -> crate::patch::PatchFile {
+        self.patch.to_file()
     }
 
     // -----------------------------------------------------------------

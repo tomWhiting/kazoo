@@ -283,7 +283,8 @@ pub fn never_undone(what: &What) -> Option<WallError> {
         | What::Remove { .. }
         | What::Restore { .. }
         | What::Tempo { .. }
-        | What::Load { .. } => None,
+        | What::Load { .. }
+        | What::Go { .. } => None,
     }
 }
 
@@ -1245,6 +1246,7 @@ impl Patch {
                 "tempo changes are undone by the daemon",
             )),
             What::Load { .. } => Err(error(ErrorCode::Internal, "loads are undone by the daemon")),
+            What::Go { .. } => Err(error(ErrorCode::Internal, "goes are undone by the daemon")),
             What::Abandoned { .. }
             | What::Resumed { .. }
             | What::SetAside { .. }

@@ -241,6 +241,7 @@ pub fn stamp_births(
             | What::Tempo { .. }
             | What::Record { .. }
             | What::Load { .. }
+            | What::Go { .. }
             | What::Abandoned { .. }
             | What::SetAside { .. }
             | What::Resumed { .. }
@@ -271,6 +272,7 @@ pub(crate) fn has_add(what: &What) -> bool {
         | What::Tempo { .. }
         | What::Record { .. }
         | What::Load { .. }
+        | What::Go { .. }
         | What::Abandoned { .. }
         | What::SetAside { .. }
         | What::Resumed { .. }

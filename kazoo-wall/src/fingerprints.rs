@@ -225,6 +225,7 @@ impl Dye {
             | What::Record { .. }
             | What::Migrate { .. }
             | What::Load { .. }
+            | What::Go { .. }
             | What::Abandoned { .. }
             | What::Resumed { .. }
             | What::SetAside { .. }

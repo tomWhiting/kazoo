@@ -141,6 +141,14 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
             tempo,
             ..
         } => loaded(save.as_deref(), undo, backup, (*modules, *cables, *tempo)),
+        What::Go {
+            to,
+            backup,
+            modules,
+            cables,
+            tempo,
+            ..
+        } => went(to, undo, backup, (*modules, *cables, *tempo)),
         What::Abandoned { .. } | What::Resumed { .. } | What::SetAside { .. } => noted(what),
     }
 }
@@ -238,6 +246,35 @@ fn loaded(
         (None, true) => format!("brought back the wall it replaced ({now})"),
     };
     format!("{what}; the wall as it was is saved as \"{backup}\"")
+}
+
+fn went(
+    to: &crate::protocol::TreePlace,
+    undo: bool,
+    backup: &str,
+    (modules, cables, bpm): (u32, u32, f64),
+) -> String {
+    let mut place = if let Some(mark) = &to.mark {
+        format!("mark \"{mark}\"")
+    } else if let Some(branch) = &to.branch {
+        branch.clone()
+    } else if let Some(change) = to.change {
+        format!("the moment after change {change}")
+    } else {
+        format!("moment {}", to.commit.chars().take(12).collect::<String>())
+    };
+    if to.mark.is_some() || to.branch.is_some() {
+        if let Some(change) = to.change {
+            place.push_str(&format!(", after change {change}"));
+        }
+    }
+    let direction = if undo { "back to" } else { "to" };
+    format!(
+        "went {direction} {place}: {}, {}, {}; the wall as it was is saved as \"{backup}\"",
+        count(usize::try_from(modules).unwrap_or(usize::MAX), "module"),
+        count(usize::try_from(cables).unwrap_or(usize::MAX), "cable"),
+        format::bpm(bpm)
+    )
 }
 
 /// A tempo set on the wall's own clock, or asked of the desk.
@@ -614,6 +651,53 @@ mod tests {
             "Waffles undid change 41: brought back the wall it replaced (12 modules, 1 cable, \
              96 BPM); the wall as it was is saved as \"before-load-20261009-143005\""
         );
+    }
+
+    #[test]
+    fn goes_say_where_the_wall_went_and_where_it_was_kept() {
+        use crate::protocol::TreePlace;
+        let commit = "a1b2c3d4e5f6012345678901234567890123456789";
+        let cases = [
+            (
+                Some("dawn"),
+                None,
+                Some(812),
+                "mark \"dawn\", after change 812",
+            ),
+            (None, Some("trunk"), Some(812), "trunk, after change 812"),
+            (None, None, Some(812), "the moment after change 812"),
+            (None, None, None, "moment a1b2c3d4e5f6"),
+        ];
+        for (mark, branch, change, place) in cases {
+            let to = TreePlace {
+                commit: commit.into(),
+                mark: mark.map(str::to_string),
+                branch: branch.map(str::to_string),
+                change,
+            };
+            let what = What::Go {
+                from: to.clone(),
+                to,
+                backup: "before-go-20261013-201500".into(),
+                fingerprint: "hash".into(),
+                modules: 41,
+                cables: 51,
+                tempo: 120.0,
+                by_console: true,
+            };
+            assert_eq!(
+                summarise("Tom", &what, None),
+                format!(
+                    "Tom went to {place}: 41 modules, 51 cables, 120 BPM; the wall as it was is saved as \"before-go-20261013-201500\""
+                )
+            );
+            assert_eq!(
+                summarise("Tom", &what, Some(813)),
+                format!(
+                    "Tom undid change 813: went back to {place}: 41 modules, 51 cables, 120 BPM; the wall as it was is saved as \"before-go-20261013-201500\""
+                )
+            );
+        }
     }
 
     #[test]
