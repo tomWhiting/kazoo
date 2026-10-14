@@ -133,20 +133,14 @@ impl<D> PreparedOutput<D> {
 }
 
 impl PreparedOutput {
-    pub fn input_pick(&self, explicit: Option<&str>) -> Result<InputPick> {
-        let notices = InputNotices::default();
-        let result = self.input_pick_with_notices(explicit, &notices);
-        if let Some(message) = notices.take() {
-            eprintln!("{message}");
-        }
-        result
-    }
-
-    pub fn input_pick_with_notices(
-        &self,
-        explicit: Option<&str>,
-        notices: &InputNotices,
-    ) -> Result<InputPick> {
+    /// The input to open beside this output. An input device whose name
+    /// cannot be read is left out, and `notices` says so for the status line.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Device`] when the output or the input list cannot be read, or
+    /// when nothing was asked for and no nameable input device is left.
+    pub fn input_pick(&self, explicit: Option<&str>, notices: &InputNotices) -> Result<InputPick> {
         let output = self
             .device
             .description()

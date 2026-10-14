@@ -229,7 +229,7 @@ impl Session {
         }
         .prepare_output()?;
         let notices = InputNotices::default();
-        let input = prepared.input_pick_with_notices(args.input.as_deref(), &notices)?;
+        let input = prepared.input_pick(args.input.as_deref(), &notices)?;
         let input_label = input.why.as_ref().map_or_else(
             || input.name.clone(),
             |why| format!("{} ({why})", input.name),

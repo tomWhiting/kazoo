@@ -339,12 +339,10 @@ impl MicBackend for CpalMic {
             .map_err(|error| Error::Device(format!("cannot identify input: {error}")))?;
         // Configuration and description probes create host audio units; only probe a changed device.
         self.facts.read(identity, || {
-            let description = device.description().map_err(|error| {
-                self.notices.report(format!(
-                    "an input device could not be named: {error}; left out"
-                ));
-                Error::Device(format!("cannot name input: {error}"))
-            })?;
+            // The picked mic itself is not left out: its failure is a loss.
+            let description = device
+                .description()
+                .map_err(|error| Error::Device(format!("cannot name input: {error}")))?;
             let config = device.default_input_config().map_err(|error| {
                 Error::Device(format!(
                     "input device '{}': cannot read native configuration: {error}",
