@@ -121,7 +121,9 @@ impl Control {
             Self::Shape => "Choose sine, triangle, saw or square tone.",
             Self::Cutoff => "Move the filter from 100 to 12,000 Hz.",
             Self::Air => "Mix breath noise into the tone, from 0 to 1.",
-            Self::Voice => "Blend the singing voice onto the synth pitch, from 0 to 1.",
+            Self::Voice => {
+                "Blend the singing voice onto the synth pitch, from 0 to 1; on sine, the voice speaks through a saw."
+            }
             Self::Bands => "Choose 8, 16 or 24 vocoder bands.",
             Self::Sibilance => "Mix consonants above 5,000 Hz into the vocoder, from 0 to 1.",
             Self::Volume => "Set the synth's output level, from 0 to 1.",

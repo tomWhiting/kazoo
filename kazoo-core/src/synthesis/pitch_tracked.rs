@@ -314,9 +314,10 @@ impl PitchTrackedSynth {
             };
 
             // Generate oscillator sample.
+            let phase = self.phase;
             let osc = self.generate_sample(detuned_freq);
             if let Some(carrier) = carrier.as_deref_mut() {
-                carrier[i] = osc;
+                carrier[i] = self.carrier_sample(osc, phase, detuned_freq);
             }
 
             // Scale oscillator by envelope (so silence in = silence out).

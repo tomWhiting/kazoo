@@ -3,10 +3,8 @@ use std::f32::consts::TAU;
 use kazoo_core::synthesis::OscillatorShape;
 use kazoo_core::voice::{VoiceFrame, volts_from_hz};
 
+use super::tests::legacy::LegacyVoiceSynth;
 use super::{SynthSettings, VoiceSynth};
-#[path = "legacy.rs"]
-mod legacy;
-use legacy::LegacyVoiceSynth;
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
@@ -300,18 +298,11 @@ fn sung(shape: OscillatorShape, bands: u8, voice: f32) -> SynthSettings {
     }
 }
 
-/// Singing comes through on every shape with harmonics to carry it, and on
-/// a pitch other than the one sung: the output's first two formants sit
-/// within 15% of the voice's, for /a/ and /i/.
-#[test]
-fn the_vowels_come_through_on_every_bright_shape() -> kazoo_core::ParamResult<()> {
+/// Each place `shape` at `pitch` puts the first two formants of a sung /a/
+/// and /i/ more than 15% from the voice's, at voice 1.
+fn vowel_misses(shapes: &[(OscillatorShape, f32)]) -> kazoo_core::ParamResult<Vec<String>> {
     let mut misses = Vec::new();
-    for (shape, pitch) in [
-        (OscillatorShape::Saw, 100.0),
-        (OscillatorShape::Saw, 150.0),
-        (OscillatorShape::Square, 100.0),
-        (OscillatorShape::Triangle, 100.0),
-    ] {
+    for &(shape, pitch) in shapes {
         for formants in [[800.0, 1200.0], [300.0, 2400.0]] {
             let mic = vowel_at(100.0, formants, 24_000);
             let mut synth = VoiceSynth::new(RATE, BLOCK)?;
@@ -327,6 +318,33 @@ fn the_vowels_come_through_on_every_bright_shape() -> kazoo_core::ParamResult<()
             }
         }
     }
+    Ok(misses)
+}
+
+/// Singing comes through on every shape with harmonics to carry it, and on
+/// a pitch other than the one sung: the output's first two formants sit
+/// within 15% of the voice's, for /a/ and /i/.
+#[test]
+fn the_vowels_come_through_on_every_bright_shape() -> kazoo_core::ParamResult<()> {
+    let misses = vowel_misses(&[
+        (OscillatorShape::Saw, 100.0),
+        (OscillatorShape::Saw, 150.0),
+        (OscillatorShape::Square, 100.0),
+        (OscillatorShape::Triangle, 100.0),
+    ])?;
+    assert!(misses.is_empty(), "{misses:#?}");
+    Ok(())
+}
+
+/// A sine has no harmonics to carry a voice, so on sine the voice speaks
+/// through a saw at the synth's pitch: the vowels come through as on the
+/// bright shapes.
+#[test]
+fn the_vowels_come_through_on_sine() -> kazoo_core::ParamResult<()> {
+    let misses = vowel_misses(&[
+        (OscillatorShape::Sine, 100.0),
+        (OscillatorShape::Sine, 150.0),
+    ])?;
     assert!(misses.is_empty(), "{misses:#?}");
     Ok(())
 }

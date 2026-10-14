@@ -219,3 +219,40 @@ fn the_synths_carrier_render_is_its_plain_render() {
     with_carrier.process_with_carrier(&input[..100], &mut short_output, &mut short[..40]);
     assert!(short_output[40..].iter().all(|x| *x == 0.0));
 }
+
+#[test]
+fn on_sine_the_carrier_is_a_saw_and_the_output_stays_a_sine() {
+    let input = sine(220.0, 0.5, 9_600);
+    let mut plain = PitchTrackedSynth::new(RATE);
+    let mut with_carrier = PitchTrackedSynth::new(RATE);
+    for synth in [&mut plain, &mut with_carrier] {
+        assert!(synth.set_param(0, 0.0).is_ok(), "sine is shape 0");
+        synth.prepare(128);
+        synth.set_target_frequency(200.0);
+    }
+    let mut expected = vec![0.0; 9_600];
+    plain.process(&input, &mut expected);
+    let mut actual = vec![0.0; 9_600];
+    let mut raw = vec![0.0; 9_600];
+    with_carrier.process_with_carrier(&input, &mut actual, &mut raw);
+    assert_eq!(
+        actual.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+        expected.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+    );
+    let tail = &raw[4_800..];
+    let fundamental = power(tail, 200.0);
+    for harmonic in [2.0_f32, 3.0, 5.0, 10.0] {
+        let ratio = power(tail, 200.0 * harmonic) / fundamental;
+        let expected_ratio = 1.0 / (harmonic * harmonic);
+        assert!(
+            (ratio / expected_ratio - 1.0).abs() < 0.25,
+            "harmonic {harmonic}: {ratio} of the fundamental, a saw has {expected_ratio}"
+        );
+    }
+    let mut unpitched = PitchTrackedSynth::new(RATE);
+    assert!(unpitched.set_param(0, 0.0).is_ok(), "sine is shape 0");
+    unpitched.prepare(128);
+    raw[..256].fill(1.0);
+    unpitched.process_with_carrier(&input[..256], &mut actual[..256], &mut raw[..256]);
+    assert!(raw[..256].iter().all(|x| *x == 0.0), "no pitch, no carrier");
+}

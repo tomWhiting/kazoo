@@ -1,3 +1,8 @@
+//! A test fixture, never built into the mouth: the voice synth exactly as it
+//! was before KZ-V15, frozen so `voice_zero_is_todays_sound` can prove that
+//! voice 0 is still that sound, bit for bit. Never change it to follow the
+//! synth.
+
 use kazoo_core::effects::{BiquadFilter, FilterType};
 use kazoo_core::synthesis::{OscillatorShape, PitchTrackedSynth};
 use kazoo_core::voice::VoiceFrame;
