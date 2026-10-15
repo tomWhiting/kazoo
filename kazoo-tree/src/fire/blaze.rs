@@ -14,7 +14,6 @@ use ratatui::layout::Rect;
 use super::field::Field;
 use super::paint::paint;
 use super::place::{Placement, shape_of};
-use crate::history::History;
 use crate::render::{self, Level, Picture, Scene, View};
 
 /// Frames a second while a fire is in view: a fast display's refresh, so
@@ -364,12 +363,28 @@ impl Blaze {
     }
 
     /// Whether the wall's new moment `here` grew on from the burning one:
-    /// it is on `here`'s first-parent path within [`CARRY`] moments, and not
-    /// a moment still dying down (going back to one takes its own fire up).
-    fn grew_on(&self, history: &History, here: Option<usize>) -> bool {
+    /// it is on `here`'s first-parent path within [`CARRY`] moments, not a
+    /// moment still dying down (going back to one takes its own fire up),
+    /// and its fire would stand within the burning fire's reach on screen,
+    /// so a go further along the branch is still a jump.
+    fn grew_on(&self, scene: &Scene<'_>, view: &View, area: Rect, here: Option<usize>) -> bool {
         let Some(here) = here else {
             return false;
         };
+        let Some(was) = self.now.place else {
+            return false;
+        };
+        let Some(next) = Placement::of(scene, view, area.width, area.height, here) else {
+            return false;
+        };
+        let (dx, dy) = (
+            f64::from(next.anchor.0) - f64::from(was.anchor.0),
+            f64::from(next.anchor.1) - f64::from(was.anchor.1),
+        );
+        if dx.hypot(dy) > f64::from(was.shape.reach) {
+            return false;
+        }
+        let history = scene.history;
         let Some(from) = self.now.id.as_deref().and_then(|id| history.moment_of(id)) else {
             return false;
         };
@@ -474,7 +489,7 @@ impl Blaze {
             .and_then(|m| scene.history.moments.get(m))
             .map(|m| m.id.clone());
         if self.now.id != here_id {
-            if self.grew_on(scene.history, here) {
+            if self.grew_on(scene, view, area, here) {
                 // The wall grew on from its moment: the same fire burns on,
                 // and moves with it.
                 self.now.id = here_id;
