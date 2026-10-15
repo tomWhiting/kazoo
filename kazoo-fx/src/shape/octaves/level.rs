@@ -1,5 +1,5 @@
 //! Power matching attacks in 5 ms and releases in 80 ms. Gain falls at most
-//! 60 dB per 100 ms and rises at most 12 dB per 100 ms, leaving the
+//! 100 dB per 100 ms and rises at most 12 dB per 100 ms, leaving the
 //! dividers' continuous phase untouched.
 
 // Below -80 dB of band power the correction holds rather than raising a tail.
@@ -35,7 +35,7 @@ impl LevelMatch {
         self.coefficient = -(-1.0 / (0.080 * f64::from(rate))).exp_m1();
         self.attack_coefficient = -(-1.0 / (0.005 * f64::from(rate))).exp_m1();
         self.slew = 10.0_f64.powf(6.0 / f64::from(rate));
-        self.fall_slew = 10.0_f64.powf(30.0 / f64::from(rate));
+        self.fall_slew = 10.0_f64.powf(50.0 / f64::from(rate));
         self.reset();
     }
 
@@ -145,15 +145,15 @@ mod tests {
             let mut matcher = LevelMatch::default();
             matcher.prepare(rate);
             let frames = (rate * 0.010) as usize;
-            let fall_step = 60.0 / (0.100 * f64::from(rate));
-            for _ in 0..frames {
+            let fall_step = 100.0 / (0.100 * f64::from(rate));
+            for _ in 0..frames / 2 {
                 let before = matcher.gain_db();
                 matcher.sample(1.0, 1000.0);
                 let drop = before - matcher.gain_db();
                 assert!(drop >= 0.0 && drop <= fall_step + 1e-10, "drop: {drop}");
             }
             let low = matcher.gain_db();
-            assert!((low + 6.0).abs() < 1e-8, "10 ms fall: {low} dB");
+            assert!((low + 5.0).abs() < 1e-8, "5 ms fall: {low} dB");
 
             matcher.input_power = 1.0;
             matcher.output_power = 0.001;
