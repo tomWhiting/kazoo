@@ -78,6 +78,8 @@ pub struct App {
     pub go: Go,
     /// Whether the wall follows the selection (`f`), and where to.
     pub follow: Follow,
+    /// The wall's moment ablaze (`b` puts it out or lights it again).
+    pub fire: crate::fire::Blaze,
 }
 
 /// Following: the wall goes wherever the selection comes to rest.
@@ -274,6 +276,7 @@ impl App {
             wants_reading: false,
             go: Go::Idle,
             follow: Follow::Off,
+            fire: crate::fire::Blaze::default(),
         };
         app.show(grown);
         app.selected = app.history.here.or_else(|| {
@@ -302,6 +305,7 @@ impl App {
         let before = self.history.moments.len();
         self.selected = selected_id.and_then(|id| grown.history.moment_of(&id));
         let new = grown.history.moments.len().saturating_sub(before);
+        self.fire.forget();
         self.history = grown.history;
         self.growth = grown.growth;
         self.gestures = grown.gestures;
@@ -547,6 +551,7 @@ impl App {
             }
             KeyCode::Char('y') => self.copy_selected(),
             KeyCode::Enter | KeyCode::Char('g') => self.go_now(),
+            KeyCode::Char('b') => self.fire.toggle().clone_into(&mut self.said),
             KeyCode::Char('f') => {
                 self.follow = match self.follow {
                     Follow::Off => Follow::On(None),
@@ -980,6 +985,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("y", "copy the selected moment's commit"),
             ("Enter, g", "put the wall at the selected moment"),
             ("f", "follow: the wall goes where you stop (off)"),
+            ("b", "the wall's moment ablaze, or put out (on)"),
             ("Shift-drag", "select text (Option-drag in iTerm2)"),
             ("r", "read the tree again"),
             ("?", "this card"),
@@ -999,6 +1005,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "what you see",
         &[
             ("◉", "where the wall is"),
+            ("flames, sparks", "the moment the wall plays, ablaze"),
             ("◆ ▪", "a mark, a save's mark"),
             ("•", "a gesture or a moment (zoomed in)"),
             ("╴ Wed 14 Oct 2026", "a branch's day, or a new day"),

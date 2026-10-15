@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod colour;
+pub mod fire;
 pub mod go;
 pub mod growth;
 pub mod history;
@@ -362,6 +363,7 @@ fn walk(
 ) -> io::Result<()> {
     let mut dirty = true;
     let mut reader_gone = false;
+    let mut beat = fire::blaze::Beat::new(Instant::now());
     let goes = Goes::to(kazoo_wall::paths::socket_path());
     // The shell that started the walk: when it goes (its terminal closed
     // with no hang-up sent), the walk is orphaned, and a terminal that is
@@ -390,17 +392,36 @@ fn walk(
             write!(backend, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
             backend.flush()?;
         }
+        // While the fire is lit and in view, a frame at the display's
+        // refresh: only the fire moved, so the tree's picture is kept.
+        let now = Instant::now();
+        let fire_frame = app.fire.live() && beat.due(now);
+        if fire_frame {
+            app.fire.tick(now);
+            if !dirty {
+                app.fire.fire_only();
+            }
+            dirty = true;
+        }
         if dirty {
             terminal.draw(|frame| frame_of(app, frame.area(), frame.buffer_mut()))?;
             dirty = false;
+            if fire_frame {
+                // The next is a period from when this one finished, so a
+                // slow frame is never followed at once.
+                beat.drawn(Instant::now());
+            }
         }
         // While a follow waits for the selection to rest, look again soon
-        // enough to send it on time.
-        let wait = if app.resting() {
+        // enough to send it on time; while the fire burns, by its next frame.
+        let mut wait = if app.resting() {
             Duration::from_millis(25)
         } else {
             Duration::from_millis(250)
         };
+        if app.fire.live() {
+            wait = wait.min(beat.wait(Instant::now()));
+        }
         if event::poll(wait)? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => app.key(key),
@@ -464,9 +485,21 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
     };
     if app.shown == Shown::Lanes {
         lanes(app, tree, buf);
+        app.fire.out_of_view();
     } else {
-        let picture = render::draw(&scene, &view, tree.width, tree.height);
-        paint(&picture, tree, buf);
+        let picture = app.fire.picture(&scene, &view, tree.width, tree.height);
+        paint(picture, tree, buf);
+        // Over the tree's picture only: the panel and the footer come after.
+        app.fire.draw(&scene, &view, tree, buf);
+    }
+    // A frame where only the fire moved draws the panel and the footer as
+    // they were, without working them out again.
+    let parts = [panel, footer];
+    if app.shown != Shown::Lanes && app.fire.paint_chrome(area, parts, buf) {
+        if app.help {
+            help(app, area, buf);
+        }
+        return;
     }
     if wide {
         details(app, panel, buf);
@@ -504,6 +537,7 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
     Paragraph::new(words)
         .style(Style::new().fg(Color::Gray))
         .render_into(footer, buf);
+    app.fire.keep_chrome(area, parts, buf);
     if app.help {
         help(app, area, buf);
     }

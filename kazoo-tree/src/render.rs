@@ -1124,17 +1124,7 @@ fn draw_step(
         let (Some(at), Some(look)) = (scene.growth.at[m], scene.growth.look[m]) else {
             continue;
         };
-        // Far out a limb keeps some of its thickness, so the trunk still
-        // reads as a trunk; close in it is drawn true to scale, up to a
-        // limit.
-        let width = if trunk {
-            look.width * TRUNK_THICKER
-        } else {
-            look.width
-        };
-        let wide = (width * view.scale)
-            .max(width * FAR_THICKNESS)
-            .clamp(1.0, MAX_DOTS_WIDE);
+        let wide = limb_dots(look.width, trunk, view.scale);
         let colour = mellowed(scene, m, window).unwrap_or(look.colour);
         let bright = scene.line.get(m).copied().unwrap_or(false);
         let style = Style {
@@ -1174,6 +1164,16 @@ fn draw_step(
             done.bright,
         );
     }
+}
+
+/// Dots wide a stretch of `width` is drawn at `scale`, on a `trunk` or not:
+/// far out a limb keeps some thickness, so a trunk still reads as a trunk;
+/// close in it is drawn true to scale, up to a limit.
+pub(crate) fn limb_dots(width: f64, trunk: bool, scale: f64) -> f64 {
+    let width = if trunk { width * TRUNK_THICKER } else { width };
+    (width * scale)
+        .max(width * FAR_THICKNESS)
+        .clamp(1.0, MAX_DOTS_WIDE)
 }
 
 /// A run of stretches drawn alike: from, to, and how.
