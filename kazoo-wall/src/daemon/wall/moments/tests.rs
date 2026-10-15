@@ -8,6 +8,7 @@ use crate::protocol::{MarkResult, TreeResult};
 use crate::tree::{git, thread::TreeHandle};
 
 mod costs;
+mod parts;
 mod savings;
 
 struct Rig {

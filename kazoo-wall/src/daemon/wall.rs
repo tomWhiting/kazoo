@@ -552,6 +552,8 @@ pub struct Wall {
     mark_buckets: HashMap<String, Bucket>,
     tree_buckets: HashMap<String, Bucket>,
     chain_batch: Option<Vec<What>>,
+    /// The wall before the batch being made, for its parts (KZ-T10c).
+    batch_before: Option<crate::patch::PatchFile>,
     patch: Patch,
     rack: Rack,
     engine: EngineControl,
@@ -1353,6 +1355,7 @@ impl Wall {
             mark_buckets: HashMap::new(),
             tree_buckets: HashMap::new(),
             chain_batch: None,
+            batch_before: None,
             speech: Speech::new(speech_cache),
             loops,
             loop_work: loops::Work::default(),
@@ -2517,6 +2520,9 @@ impl Wall {
             }
             return;
         }
+        if go.is_none() && !self.feed_parts(change) {
+            return;
+        }
         let diff = if go.is_some() {
             Vec::new()
         } else {
@@ -2544,6 +2550,45 @@ impl Wall {
         if matches!(change.what, What::Go { .. }) {
             self.whole_tree(crate::tree::thread::WholeKind::Gap);
         }
+    }
+
+    /// A batch's steps before its last, each offered to the tree as a
+    /// moment of its own (KZ-T10c), before the batch's own commit. False
+    /// when the tree took one no more, and resyncs: nothing more of the
+    /// change is offered then. A batch whose parts cannot be made is one
+    /// moment, as before, and the console is told why.
+    fn feed_parts(&mut self, change: &Change) -> bool {
+        let Some(before) = self.batch_before.take() else {
+            return true;
+        };
+        if crate::tree::rings::parts::steps(change).is_none() {
+            return true;
+        }
+        let parts = match crate::tree::rings::parts::batch_parts(&before, change) {
+            Ok(parts) => parts,
+            Err(err) => {
+                eprintln!(
+                    "kazoo-wall: change {} goes on the tree as one moment: {err}",
+                    change.seq
+                );
+                return true;
+            }
+        };
+        for (index, files) in parts.into_iter().enumerate() {
+            let diff = crate::tree::thread::diff_files(files, &mut self.tree_mirror);
+            let Some(tree) = self.tree.as_mut() else {
+                return false;
+            };
+            if !tree.offer(crate::tree::thread::TreeItem::Part {
+                change: Box::new(change.clone()),
+                index,
+                files: diff,
+                generation: tree.generation,
+            }) {
+                return false;
+            }
+        }
+        true
     }
 
     fn tick_tree(&mut self) {

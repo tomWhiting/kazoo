@@ -93,6 +93,15 @@ pub enum TreeItem {
         files: Vec<(String, Option<Vec<u8>>)>,
         generation: u64,
     },
+    /// A step of a batch before its last, as a moment of its own
+    /// (KZ-T10c): what differs from the last item. The batch's own
+    /// [`TreeItem::Change`] follows its parts.
+    Part {
+        change: Box<Change>,
+        index: usize,
+        files: Vec<(String, Option<Vec<u8>>)>,
+        generation: u64,
+    },
     /// The whole wall, after change `seq`.
     Whole {
         kind: WholeKind,
@@ -155,7 +164,7 @@ pub enum News {
 impl TreeItem {
     fn seq(&self) -> Option<u64> {
         match self {
-            Self::Change { change, .. } => Some(change.seq),
+            Self::Change { change, .. } | Self::Part { change, .. } => Some(change.seq),
             Self::Whole { seq, .. } => Some(*seq),
             Self::Mark { .. }
             | Self::SaveMark { .. }
@@ -174,6 +183,7 @@ impl TreeItem {
             | Self::Here { ticket }
             | Self::List { ticket, .. } => Some(*ticket),
             Self::Change { .. }
+            | Self::Part { .. }
             | Self::Whole { .. }
             | Self::SaveMark { .. }
             | Self::Moved { .. }
@@ -195,6 +205,11 @@ impl TreeItem {
         Ok(std::mem::size_of::<Self>()
             + match self {
                 Self::Change {
+                    change,
+                    files: diff,
+                    ..
+                }
+                | Self::Part {
                     change,
                     files: diff,
                     ..
@@ -708,19 +723,19 @@ impl Writer {
                 if generation != self.accepted {
                     return Ok(());
                 }
-                let mut commit = Commit::change(&change, files)?;
-                if let Some(mut base) = self.base.take() {
-                    for (path, bytes) in commit.files {
-                        if let Some(bytes) = bytes {
-                            base.insert(path, bytes);
-                        } else {
-                            base.remove(&path);
-                        }
-                    }
-                    commit.files = base.into_iter().map(|(p, b)| (p, Some(b))).collect();
-                    commit.whole = true;
-                }
+                let commit = self.on_base(Commit::change(&change, files)?);
                 (commit, change.seq, change.at.clone())
+            }
+            TreeItem::Part {
+                change,
+                index,
+                files,
+                generation,
+            } => {
+                if generation != self.accepted {
+                    return Ok(());
+                }
+                return self.part(dir, &change, index, files);
             }
             TreeItem::Whole {
                 kind,
@@ -784,6 +799,45 @@ impl Writer {
         self.pending += 1;
         Ok(())
     }
+    /// Step `index` of batch `change` as a moment of its own (KZ-T10c).
+    /// A part holds no change: the moment the tree holds through stays the
+    /// one before the batch until the batch's own commit.
+    fn part(
+        &mut self,
+        dir: &Path,
+        change: &Change,
+        index: usize,
+        files: Vec<(String, Option<Vec<u8>>)>,
+    ) -> Result<(), TreeError> {
+        let commit = self.on_base(Commit::part(change, index, files)?);
+        self.grow(dir, &change.at)?;
+        self.summary = commit.message.lines().next().unwrap_or("").into();
+        let mark = self.importer()?.commit(&commit)?;
+        if let Line::On { tip, .. } = &mut self.line {
+            *tip = Some(format!(":{mark}"));
+        }
+        self.last = self.last.map(|(_, seq)| (mark, seq));
+        self.pending += 1;
+        Ok(())
+    }
+
+    /// `commit` made whole on the base the tree holds, when it holds one
+    /// (after a start or gap whose files the tree already had).
+    fn on_base(&mut self, mut commit: Commit) -> Commit {
+        if let Some(mut base) = self.base.take() {
+            for (path, bytes) in commit.files {
+                if let Some(bytes) = bytes {
+                    base.insert(path, bytes);
+                } else {
+                    base.remove(&path);
+                }
+            }
+            commit.files = base.into_iter().map(|(p, b)| (p, Some(b))).collect();
+            commit.whole = true;
+        }
+        commit
+    }
+
     fn take(
         &mut self,
         item: Result<TreeItem, RecvTimeoutError>,
@@ -982,7 +1036,12 @@ pub fn files_diff(
     file: &crate::patch::PatchFile,
     mirror: &mut Files,
 ) -> Result<FileDiff, TreeError> {
-    let files = super::to_files(file)?;
+    Ok(diff_files(super::to_files(file)?, mirror))
+}
+
+/// What differs from `mirror` to `files`, and `mirror` made `files`.
+#[must_use]
+pub fn diff_files(files: Files, mirror: &mut Files) -> FileDiff {
     let mut diff: Vec<_> = files
         .iter()
         .filter(|(path, bytes)| mirror.get(*path) != Some(*bytes))
@@ -995,7 +1054,7 @@ pub fn files_diff(
             .map(|p| (p.clone(), None)),
     );
     *mirror = files;
-    Ok(diff)
+    diff
 }
 
 #[cfg(test)]

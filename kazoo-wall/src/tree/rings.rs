@@ -24,6 +24,7 @@ mod go;
 #[cfg(test)]
 mod go_tests;
 mod model;
+pub mod parts;
 #[cfg(test)]
 mod regressions;
 #[cfg(test)]
@@ -527,6 +528,7 @@ impl Walk<'_> {
         }
         let mut whole = false;
         let mut note = String::new();
+        let mut parts = Vec::new();
         if self.model.known {
             match &change.what {
                 What::Load { save, .. } => {
@@ -558,9 +560,14 @@ impl Walk<'_> {
                     note = self.migration(change)?;
                     whole = true;
                 }
-                _ => self.applied(change)?,
+                _ => {
+                    let before = self.model.file.clone();
+                    self.applied(change)?;
+                    parts = self.parts_of(&before, change);
+                }
             }
             if self.model.known {
+                whole = self.parts(change, &parts, whole)?;
                 self.commit(change, whole, &note)?;
             }
         }
@@ -599,6 +606,49 @@ impl Walk<'_> {
                 .push(format!("gap before change {}: {reason}", change.seq));
         }
         Ok(())
+    }
+
+    /// The walls after each step of batch `change` but its last, from
+    /// `before` (KZ-T10c), as the live wall makes them; none for any other
+    /// change, and none, said in the report, for a batch whose steps do not
+    /// apply one by one to the wall before it.
+    fn parts_of(&mut self, before: &crate::patch::PatchFile, change: &Change) -> Vec<Files> {
+        if parts::steps(change).is_none() {
+            return Vec::new();
+        }
+        match parts::batch_parts(before, change) {
+            Ok(parts) => parts,
+            Err(err) => {
+                self.gap_lines
+                    .push(format!("change {} is one moment: {err}", change.seq));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Batch `change`'s parts as moments before its own commit (KZ-T10c).
+    /// Returns whether the batch's own commit must still be whole: when it
+    /// had to be and there were no parts to carry it.
+    fn parts(&mut self, change: &Change, parts: &[Files], whole: bool) -> Result<bool, TreeError> {
+        let mut whole = whole;
+        for (index, files) in parts.iter().enumerate() {
+            whole = self.grow_line(&change.at)? || whole;
+            let paths = if whole {
+                files
+                    .iter()
+                    .map(|(p, b)| (p.clone(), Some(b.clone())))
+                    .collect()
+            } else {
+                delta(&self.previous, files)
+            };
+            let mut commit = Commit::part(change, index, paths)?;
+            commit.whole = whole;
+            self.mark = self.importer.commit(&commit)?;
+            self.line.tip = self.mark;
+            self.previous.clone_from(files);
+            whole = false;
+        }
+        Ok(whole)
     }
 
     /// Change `change`'s own commit, as KZ-T02b writes a live one.

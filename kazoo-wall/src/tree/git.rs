@@ -321,6 +321,16 @@ impl Commit {
                 message.push_str(&crate::change::describe(step));
                 message.push('\n');
             }
+            // The batch's last step: the moments before it are its parts
+            // (KZ-T10c), and this commit is the batch's own.
+            if changes.len() > 1 {
+                let count = changes.len().to_string();
+                message.push_str("Kazoo-Part: ");
+                message.push_str(&count);
+                message.push('/');
+                message.push_str(&count);
+                message.push('\n');
+            }
             message.push_str("Kazoo-Change: ");
             message.push_str(&json);
             message.push('\n');
@@ -332,6 +342,64 @@ impl Commit {
                 trailers("change", change.seq, change.clock.as_ref(), None)
             )
         };
+        Ok(Self {
+            seat: change.seat.clone(),
+            unix,
+            message,
+            whole: false,
+            files,
+        })
+    }
+
+    /// The commit for step `index` (from 0) of batch `change`, one of its
+    /// steps before the last (KZ-T10c): the wall after that step, under
+    /// the batch's note. It is a `part`, not a change: it carries no
+    /// `Kazoo-Seq`, so a tree that holds a batch's parts and not its own
+    /// commit is still missing the change, and is healed as any other.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` when `change` is not a batch, `index` is not one of
+    /// its steps before the last, or `at` does not read.
+    pub fn part(
+        change: &Change,
+        index: usize,
+        files: Vec<(String, Option<Vec<u8>>)>,
+    ) -> Result<Self, TreeError> {
+        let crate::protocol::What::Batch { note, changes } = &change.what else {
+            return Err(TreeError::Git(format!(
+                "change {} is not a batch",
+                change.seq
+            )));
+        };
+        let step = changes
+            .get(index)
+            .filter(|_| index + 1 < changes.len())
+            .ok_or_else(|| {
+                TreeError::Git(format!(
+                    "step {} is not one of change {}'s parts",
+                    index + 1,
+                    change.seq
+                ))
+            })?;
+        let unix = chrono::NaiveDateTime::parse_from_str(&change.at, "%Y-%m-%dT%H:%M:%SZ")
+            .map_err(|err| TreeError::Git(format!("change date: {err}")))?
+            .and_utc()
+            .timestamp();
+        let step = crate::change::describe(step);
+        let clock = change.clock.as_ref().map_or_else(String::new, |clock| {
+            format!(
+                "Kazoo-Beat: {}\nKazoo-Tempo: {}\nKazoo-Clock: {}\n",
+                clock.beat, clock.tempo, clock.line
+            )
+        });
+        let message = format!(
+            "{seat}: {note} ({part}/{count}) {step}\n\nKazoo-Kind: part\nKazoo-Batch: {seq}\n{clock}Kazoo-Note: {note}\nKazoo-Part: {part}/{count}\nKazoo-Step: {step}\n",
+            seat = change.seat,
+            part = index + 1,
+            count = changes.len(),
+            seq = change.seq,
+        );
         Ok(Self {
             seat: change.seat.clone(),
             unix,
