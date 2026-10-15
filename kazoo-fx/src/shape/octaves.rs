@@ -66,6 +66,8 @@
 mod band;
 mod level;
 #[cfg(test)]
+mod regressions;
+#[cfg(test)]
 mod tests;
 
 use band::Band;
@@ -133,6 +135,7 @@ struct Bank {
     gains: [f32; 4],
     input_scale: f64,
     levels: [LevelMatch; 2],
+    level_enabled: [bool; 2],
     settling: usize,
     down1_sign: f32,
     down2_turn: usize,
@@ -182,6 +185,7 @@ impl Bank {
     fn reset(&mut self) {
         self.down1_sign = 1.0;
         self.down2_turn = 0;
+        self.level_enabled = [false; 2];
         for level in &mut self.levels {
             level.reset();
         }
@@ -211,11 +215,16 @@ impl Bank {
         sum[3] = down[1].0;
         let mut paths = std::array::from_fn(|path| sum[path] * self.gains[path]);
         for path in 0..2 {
+            if enabled[path + 2] && !self.level_enabled[path] {
+                self.levels[path].reset();
+            }
+            self.level_enabled[path] = enabled[path + 2];
             if enabled[path + 2] {
                 let (real, imag) = down[path];
-                let output_power =
-                    2.0 * f64::from(real).powi(2) * f64::from(self.gains[path + 2]).powi(2)
-                        / self.input_scale;
+                let output_power = f64::from(real)
+                    .mul_add(f64::from(real), f64::from(imag).powi(2))
+                    * f64::from(self.gains[path + 2]).powi(2)
+                    / self.input_scale;
                 let gain = self.levels[path].sample(input_power, output_power) as f32;
                 paths[path + 2] *= gain;
                 down[path] = (real * gain, imag * gain);
@@ -337,9 +346,14 @@ impl Octaves {
         self.quiet = self.quiet.saturating_add(1).min(self.hold);
         let changed = self.requested.map(f32::to_bits) != self.designed.map(f32::to_bits);
         if changed && self.quiet >= self.hold && self.fade == 0 && self.warming == 0 {
+            let levels = self.banks[self.active].levels;
+            let level_enabled = self.banks[self.active].level_enabled;
             let spare = &mut self.banks[1 - self.active];
             spare.design(self.requested, self.rate);
             spare.reset();
+            // The spare starts with the correction and energy of the audible paths.
+            spare.levels = levels;
+            spare.level_enabled = level_enabled;
             self.designed = self.requested;
             self.warming = spare.settling;
         }

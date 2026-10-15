@@ -795,9 +795,11 @@ cost. No timing or load figure is inferred from the design's estimates.
 uncommitted changes. `circuit_models` now measures 128 frames at 48 kHz.
 The chord and single-note signals and path settings are the P11 fixtures
 above. Setup, buffer allocation and initial settling stay outside the timer.
-`fx/octaves/redesign` sets width to 1.25 and times the block containing the
-first redesign after the 50 ms control hold. It includes filter design,
+`fx/octaves/redesign` sets width to 1.2 in `circuit_models.rs` and times the
+block containing the first redesign after the 50 ms control hold. It includes filter design,
 calibration, state reset and the beginning of spare-bank warming.
+
+These P11b timings were taken at `02e89b6`, before the level gain and shared ceiling.
 
 | bench | before midpoint | after midpoint | after interval |
 |---|---:|---:|---:|
@@ -813,13 +815,16 @@ Before load: 89.81 / 45.16 / 39.59. After load: 175.89 / 112.78 / 73.55.
 These measurements are diagnostic under heavy, different loads; their ratio
 does not establish an attributable speedup or a quiet-machine budget pass.
 
-The wall stores 800,000 ns per 512 frames provisionally until fx/octaves
-is measured with `wall/kind/octaves` at a one-minute load of 40 or less.
+The wall stores 800,000 ns per 512 frames provisionally until
+`wall/kind/octaves` is measured at a one-minute load of 40 or less.
 The earlier 4,143,200 ns row came from multiplying a 128-frame FX measurement
 at load 175.89 by four; it is not comparable to the wall benchmarks.
 The fix run observed load 98.22 before checks and did not run a benchmark.
 The 800 µs per 512-frame chord budget and the complete crossfade block cost
 are not verified.
+
+The 2026-10-15 review fix observed a one-minute load of 95.29 and did not
+run a benchmark. The 800,000 ns wall cost remains provisional.
 
 ## KZ-D04 page-owned delay lines
 

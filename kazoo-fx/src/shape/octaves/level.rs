@@ -1,12 +1,16 @@
-//! Power matching follows with an 80 ms time constant. Gain falls at most
+//! Power matching attacks in 5 ms and releases in 80 ms. Gain falls at most
 //! 60 dB per 100 ms and rises at most 12 dB per 100 ms, leaving the
 //! dividers' continuous phase untouched.
+
+// Below -80 dB of band power the correction holds rather than raising a tail.
+const SILENCE_POWER: f64 = 1e-8;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LevelMatch {
     input_power: f64,
     output_power: f64,
     coefficient: f64,
+    attack_coefficient: f64,
     slew: f64,
     fall_slew: f64,
     gain: f64,
@@ -18,6 +22,7 @@ impl Default for LevelMatch {
             input_power: 0.0,
             output_power: 0.0,
             coefficient: 0.0,
+            attack_coefficient: 0.0,
             slew: 1.0,
             fall_slew: 1.0,
             gain: 1.0,
@@ -28,6 +33,7 @@ impl Default for LevelMatch {
 impl LevelMatch {
     pub(super) fn prepare(&mut self, rate: f32) {
         self.coefficient = -(-1.0 / (0.080 * f64::from(rate))).exp_m1();
+        self.attack_coefficient = -(-1.0 / (0.005 * f64::from(rate))).exp_m1();
         self.slew = 10.0_f64.powf(6.0 / f64::from(rate));
         self.fall_slew = 10.0_f64.powf(30.0 / f64::from(rate));
         self.reset();
@@ -45,18 +51,25 @@ impl LevelMatch {
     }
 
     pub(super) fn sample(&mut self, input: f64, output: f64) -> f64 {
-        self.input_power = self
-            .coefficient
-            .mul_add(input - self.input_power, self.input_power);
-        self.output_power = self
-            .coefficient
-            .mul_add(output - self.output_power, self.output_power);
+        let input_coefficient = if input > self.input_power {
+            self.attack_coefficient
+        } else {
+            self.coefficient
+        };
+        let output_coefficient = if output > self.output_power {
+            self.attack_coefficient
+        } else {
+            self.coefficient
+        };
+        self.input_power = input_coefficient.mul_add(input - self.input_power, self.input_power);
+        self.output_power =
+            output_coefficient.mul_add(output - self.output_power, self.output_power);
         if !self.input_power.is_finite() || !self.output_power.is_finite() {
             self.reset();
             return self.gain;
         }
         // Hold the correction through silence rather than amplifying a note's tail.
-        if input < 1e-24 {
+        if self.input_power < SILENCE_POWER {
             return self.gain;
         }
         let target = if self.output_power > 0.0 {
@@ -74,6 +87,57 @@ impl LevelMatch {
 #[cfg(test)]
 mod tests {
     use super::LevelMatch;
+
+    #[test]
+    fn a_unity_output_step_loses_the_excess_gain_within_ten_ms() {
+        let mut maximum = f64::NEG_INFINITY;
+        for rate in [48_000.0, 96_000.0] {
+            let mut matcher = LevelMatch::default();
+            matcher.prepare(rate);
+            let quiet_power = 10.0_f64.powf(-7.3 / 10.0);
+            for _ in 0..rate as usize {
+                matcher.sample(1.0, quiet_power);
+            }
+            assert!((matcher.gain_db() - 7.3).abs() < 0.01);
+            for _ in 0..(rate * 0.010) as usize {
+                matcher.sample(1.0, 1.0);
+            }
+            let excess = matcher.gain_db();
+            maximum = maximum.max(excess);
+            for _ in 0..(rate * 0.001) as usize {
+                matcher.sample(1.0, 1.0);
+            }
+            eprintln!(
+                "{rate} Hz: gained output at 10 ms {excess:.6} dB, at 11 ms {:.6} dB",
+                matcher.gain_db()
+            );
+        }
+        assert!(maximum < 1.0, "gained output at ten ms: {maximum:.6} dB");
+    }
+
+    #[test]
+    fn a_sixty_db_decay_holds_the_gain_through_the_tail() {
+        let mut matcher = LevelMatch::default();
+        matcher.prepare(48_000.0);
+        for _ in 0..48_000 {
+            matcher.sample(1e-4, 1e-5);
+        }
+        // The output band's release outlasts the source's exponential decay.
+        for frame in 0..48_000 {
+            let input = 1e-4 * 10.0_f64.powf(-6.0 * f64::from(frame) / 48_000.0);
+            matcher.sample(input, 0.1 * input);
+        }
+        let held = matcher.gain_db();
+        for frame in 0..48_000 {
+            let tail = 1e-10 * (-f64::from(frame) / 3840.0).exp();
+            matcher.sample(1e-10, tail);
+            let change = matcher.gain_db() - held;
+            assert!(
+                change.abs() <= 0.1,
+                "tail frame {frame}: gain moved {change:.6} dB"
+            );
+        }
+    }
 
     #[test]
     fn gain_falls_fast_and_rises_slow() {

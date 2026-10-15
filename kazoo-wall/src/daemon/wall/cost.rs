@@ -71,7 +71,7 @@ pub(super) const KIND_BENCH_NS: &[(&str, u32)] = &[
     ("sidestep", 379_420),
     ("comp", 592_430),
     ("gate", 592_430),
-    ("octaves", 800_000), // provisional until fx/octaves is measured
+    ("octaves", 800_000), // provisional until wall/kind/octaves is measured
     ("tape", 491_630),
     ("bbd", 162_010),
     ("digital", 133_860),

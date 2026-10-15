@@ -54,20 +54,7 @@ fn audio_kind(dearest: bool) -> Kind {
 }
 
 fn heavy() -> Kind {
-    let kind = Kind::from_name("screamer").unwrap();
-    assert!(
-        kind.spec()
-            .inputs
-            .iter()
-            .any(|port| port.signal == crate::catalogue::Signal::Audio)
-    );
-    assert!(
-        kind.spec()
-            .outputs
-            .iter()
-            .any(|port| port.signal == crate::catalogue::Signal::Audio)
-    );
-    kind
+    audio_kind(true)
 }
 
 fn last_output(ids: &[String], kind: Kind) -> String {

@@ -198,7 +198,7 @@ impl Band {
                 }
             }
         }
-        (paths, down, 2.0 * y.real * y.real)
+        (paths, down, power)
     }
 
     /// Evaluate the stored coefficients, without narrowing their precision.

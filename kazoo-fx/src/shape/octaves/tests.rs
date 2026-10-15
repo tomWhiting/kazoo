@@ -439,10 +439,35 @@ fn largest_step(signal: &[f32]) -> f32 {
 #[test]
 fn a_redesign_never_bangs_or_dips() {
     let kind = kind();
-    let input = sine(1000.0, 48_000);
-    for (name, value) in [("low", 150.0), ("high", 5000.0), ("width", 1.2)] {
-        let mut effect = isolated("down1");
-        let before = render(effect.as_mut(), &input);
+    for (path, name, value) in [
+        ("down1", "low", 150.0),
+        ("down1", "high", 5000.0),
+        ("down1", "width", 1.2),
+        ("down2", "low", 150.0),
+        ("down2", "high", 5000.0),
+        ("down2", "width", 1.2),
+    ] {
+        let frequency = if path == "down2" {
+            centre(60.0, 2000.0, 40.0)
+        } else {
+            1000.0
+        };
+        let input = sine(frequency, 48_000);
+        let mut effect = Octaves::new();
+        effect.set_param(3, 0.0);
+        effect.set_param(8, 16_000.0);
+        for (index, name) in PATHS.into_iter().enumerate() {
+            effect.set_param(4 + index, if name == path { 100.0 } else { 0.0 });
+        }
+        effect.prepare(RATE);
+        if path == "down2" {
+            render(&mut effect, &sine(frequency * 1.06, 12_000));
+        }
+        let before = render(&mut effect, &input);
+        if path == "down2" {
+            let gain = effect.banks[effect.active].levels[1].gain_db();
+            assert!(gain > 6.0, "down2 history gain: {gain:.6} dB");
+        }
         let reference = rms(&before[24_000..]);
         let index = kind
             .params
@@ -450,10 +475,19 @@ fn a_redesign_never_bangs_or_dips() {
             .position(|param| param.name == name)
             .expect("knob exists");
         effect.set_param(index, value);
-        let after = render(effect.as_mut(), &input[..9600]);
-        for (window, samples) in after.chunks_exact(96).enumerate() {
+        let after = render(&mut effect, &input[..9600]);
+        // A down2 window spans its full cycle so its phase cannot resemble a dip.
+        let frames = if path == "down2" {
+            (4.0 * f64::from(RATE) / frequency).round() as usize
+        } else {
+            96
+        };
+        for (window, samples) in after.chunks_exact(frames).enumerate() {
             let change = 20.0 * (rms(samples) / reference).log10();
-            assert!(change.abs() <= 3.0, "{name}, window {window}: {change} dB");
+            assert!(
+                change.abs() <= 3.0,
+                "{path}, {name}, window {window}: {change} dB"
+            );
         }
     }
 }

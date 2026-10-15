@@ -128,7 +128,7 @@ fn octaves(group: &mut BenchmarkGroup<'_, WallTime>, kind: &kazoo_fx::EffectKind
                         for block in input[..8192].chunks_exact(128) {
                             effect.process(&context, [block, block], [&mut left, &mut right]);
                         }
-                        effect.set_param(2, 1.25);
+                        effect.set_param(2, 1.2);
                         for block in input[..2304].chunks_exact(128) {
                             effect.process(&context, [block, block], [&mut left, &mut right]);
                         }
