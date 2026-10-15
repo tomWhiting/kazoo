@@ -26,6 +26,7 @@
 
 mod batch;
 mod desk_tempo;
+mod fixed;
 mod line_commands;
 mod moments;
 pub use moments::TimedSwap;
@@ -246,6 +247,7 @@ pub struct Shared {
     lines: AtomicUsize,
     /// The render load, as f32 bits.
     load: AtomicU32,
+    fixed: AtomicU32,
     frames: AtomicU64,
     faults: AtomicU64,
     faults_unreported: AtomicU64,
@@ -275,6 +277,7 @@ impl Shared {
             slots: AtomicUsize::new(slots),
             lines: AtomicUsize::new(lines),
             load: AtomicU32::new(0.0_f32.to_bits()),
+            fixed: AtomicU32::new(0.0_f32.to_bits()),
             frames: AtomicU64::new(0),
             faults: AtomicU64::new(0),
             faults_unreported: AtomicU64::new(0),
@@ -632,6 +635,9 @@ pub struct Engine {
     hush_step: f32,
     /// The render load, averaged (see [`Shared::render_load`]).
     load: f32,
+    fixed_load: f32,
+    module_cpu: Duration,
+    module_span: fixed::ModuleSpan,
 }
 
 impl std::fmt::Debug for Engine {
@@ -776,6 +782,9 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         hushed: false,
         hush_step: 1.0 / (rate * SWAP_FADE_SECONDS),
         load: 0.0,
+        fixed_load: 0.0,
+        module_cpu: Duration::ZERO,
+        module_span: fixed::ModuleSpan::default(),
         room,
     };
     let control = EngineControl {
@@ -851,6 +860,12 @@ impl Engine {
         // load, not the wall's. Reading the thread's CPU clock allocates
         // nothing and takes no lock.
         let started = thread_cpu();
+        self.module_cpu = Duration::ZERO;
+        self.module_span.started = None;
+        #[cfg(test)]
+        {
+            self.module_span.reads = 0;
+        }
         self.drain_commands();
         self.drain_hub();
         let channels = channels.max(1);
@@ -866,9 +881,11 @@ impl Engine {
         }
         // Blocks are at most a few seconds: close enough in f32.
         let lasted = frames as f32 / self.sample_rate;
-        let load = thread_cpu().saturating_sub(started).as_secs_f32() / lasted;
+        let elapsed = thread_cpu().saturating_sub(started);
+        let load = elapsed.as_secs_f32() / lasted;
         // An average over about LOAD_SECONDS, whatever the block size.
         let weight = 1.0 - (-lasted / LOAD_SECONDS).exp();
+        self.measure_fixed(elapsed, lasted, weight);
         let averaged = weight.mul_add(load - self.load, self.load);
         if averaged.is_finite() {
             self.load = averaged;
@@ -1238,6 +1255,7 @@ impl Engine {
         .at_frame(self.rendered);
         let len = self.order.slots().len();
         self.timed = self.timed.checked_rem(len).unwrap_or(0);
+        self.begin_module_span(len);
         for index in 0..len {
             // u32 into usize: lossless.
             let slot = self.order.slots()[index] as usize;
@@ -1254,6 +1272,7 @@ impl Engine {
                 self.render_module(slot, &tick);
             }
         }
+        self.end_module_span();
         self.timed = (self.timed + 1).checked_rem(len).unwrap_or(0);
         let mut left = [0.0; SUB_BLOCK];
         let mut right = [0.0; SUB_BLOCK];

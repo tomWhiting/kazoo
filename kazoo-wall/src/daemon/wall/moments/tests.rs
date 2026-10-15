@@ -7,6 +7,9 @@ use crate::engine::{Engine, EngineConfig, engine};
 use crate::protocol::{MarkResult, TreeResult};
 use crate::tree::{git, thread::TreeHandle};
 
+mod costs;
+mod savings;
+
 struct Rig {
     wall: Wall,
     engine: Engine,
@@ -77,6 +80,16 @@ impl Rig {
             if let Some((_, result)) = answers.into_iter().find(|(t, _)| *t == ticket) {
                 return result;
             }
+        }
+    }
+
+    /// Plays the engine until every swap sent has landed, as the audio
+    /// callback does, for a go that waits for its landing to be answered.
+    fn land(&mut self) {
+        let shared = self.wall.engine.shared();
+        let mut buffer = [0.0; crate::SUB_BLOCK * 2];
+        while shared.unhushed() < self.wall.swaps_sent {
+            self.engine.render(&mut buffer, 2);
         }
     }
 
@@ -554,6 +567,13 @@ fn the_backups_goes_need_are_not_pruned() {
     }
     rig.wall.prune();
     for backup in backups {
-        assert!(rig.wall.saves_store().unwrap().read_save(&backup).is_ok());
+        if let Some(commit) = backup.strip_prefix("tree:") {
+            assert_eq!(
+                command(rig.tree.path(), &["cat-file", "-t", commit]),
+                "commit"
+            );
+        } else {
+            assert!(rig.wall.saves_store().unwrap().read_save(&backup).is_ok());
+        }
     }
 }

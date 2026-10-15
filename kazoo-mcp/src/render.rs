@@ -608,11 +608,14 @@ pub fn saves(result: &SavesResult) -> String {
 /// A load this seat made.
 #[must_use]
 pub fn loaded(result: &LoadResult) -> String {
+    let kept = result.backup.strip_prefix("tree:").map_or_else(
+        || format!("kept as the save \"{}\"", result.backup),
+        |commit| format!("moment {commit} in the tree"),
+    );
     let mut out = format!(
         "Change #{}: {}. The whole wall is new: call wall_look before changing anything. \
-         wall_undo with change {} brings back the wall as it was (it is also kept as the save \
-         \"{}\").",
-        result.change.seq, result.change.summary, result.change.seq, result.backup
+         wall_undo with change {} brings back the wall as it was (it is also {kept}).",
+        result.change.seq, result.change.summary, result.change.seq
     );
     if !result.notes.is_empty() {
         out.push_str(" Notes: ");

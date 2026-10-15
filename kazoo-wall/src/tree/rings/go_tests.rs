@@ -11,6 +11,8 @@ use crate::daemon::wall::{Outcome, Wall};
 use crate::protocol::{Change, Request, TreePlace, What};
 use crate::tree::{git, thread::TreeHandle};
 
+mod backups;
+
 fn place(seq: Option<u64>) -> TreePlace {
     TreePlace {
         commit: "0123456789abcdef0123456789abcdef01234567".into(),
@@ -75,6 +77,83 @@ fn going(undo: bool) -> tempfile::TempDir {
     }
     write_state(state.path(), &moment, &changes);
     state
+}
+
+fn going_without_a_save() -> tempfile::TempDir {
+    let state = going(true);
+    let store = crate::store::Store::open(state.path()).unwrap();
+    let mut changes = store.load_log().unwrap().changes;
+    drop(store);
+    for change in &mut changes {
+        if let What::Go { backup, .. } = &mut change.what {
+            *backup = "tree:0123456789ab".into();
+        }
+    }
+    let file = crate::migrate::read(&fs::read(state.path().join("patch.json")).unwrap())
+        .unwrap()
+        .0;
+    fs::remove_file(state.path().join("saves/before-go.json")).unwrap();
+    write_state(state.path(), &file, &changes);
+    state
+}
+
+#[test]
+fn unproved_tree_go_backups_are_not_counted_as_held_by_the_tree() {
+    let state = going_without_a_save();
+    let tree = tempfile::tempdir().unwrap();
+    let report = grow(state.path(), tree.path(), false).unwrap();
+    assert!(
+        report.report.contains("0 go backups held by the tree"),
+        "{report}"
+    );
+    assert!(report.report.contains("2 do not (tree:"), "{report}");
+}
+
+#[test]
+fn an_undone_tree_go_refuses_a_made_up_backup() {
+    let state = going_without_a_save();
+    let tree = tempfile::tempdir().unwrap();
+    let report = grow(state.path(), tree.path(), false).unwrap();
+    assert!(report.gaps > 0, "{report}");
+}
+
+#[test]
+fn an_undone_tree_go_reads_its_unnumbered_source_moment() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let source_tree = root.path().join("tree");
+    fs::create_dir(&state).unwrap();
+    let (source_state, before, _) = fixture(10);
+    with_start(source_state.path());
+    grow(source_state.path(), &source_tree, false).unwrap();
+    let commit = super::fixtures::commit_of(&source_tree, "change", 10);
+    let mut original = go(11, Some(4), &before);
+    if let What::Go {
+        from,
+        backup,
+        fingerprint,
+        ..
+    } = &mut original.what
+    {
+        from.commit.clone_from(&commit);
+        from.change = None;
+        *backup = format!("tree:{}", &commit[..12]);
+        *fingerprint = crate::patch::Patch::load(&kept(&source_tree, &commit))
+            .unwrap()
+            .0
+            .fingerprint();
+    }
+    let mut undone = go(12, None, &before);
+    undone.undoes = Some(11);
+    let changes = vec![original, undone.clone()];
+    let mut after = before.clone();
+    after.last_seq = 12;
+    write_state(&state, &after, &changes);
+    let proofs = super::evidence::Proofs::read(&state, &changes).unwrap();
+    let (restored, note) = proofs.incoming(&state, &undone, &changes).unwrap();
+    assert_eq!(restored.modules, kept(&source_tree, &commit).modules);
+    assert_eq!(restored.cables, before.cables);
+    assert!(note.is_none());
 }
 
 fn branch_changes(tree: &Path, branch: &str) -> Vec<String> {

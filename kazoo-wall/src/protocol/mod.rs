@@ -997,10 +997,12 @@ pub enum What {
     /// The wall put at a moment in the tree while it played (a go), or,
     /// when the change undoes a go, put back where that go left. As a
     /// load, the wall as it was is kept in `backup` first, and undoing
-    /// this brings it back exactly from that save.
+    /// this brings it back exactly from the save or tree moment. A backup
+    /// beginning with `tree:` names an unchanged moment in the tree.
     Go {
         to: TreePlace,
         from: TreePlace,
+        /// A save name or `tree:<12-char commit>` holding the previous wall.
         backup: String,
         fingerprint: String,
         modules: u32,
@@ -1160,7 +1162,8 @@ pub enum Event {
         /// The save loaded; none for an empty wall or an undone load.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         save: Option<String>,
-        /// The save the wall as it was went to first.
+        /// The save holding the previous wall, or `tree:<12-char commit>`
+        /// when that exact wall is already a moment in the tree.
         backup: String,
     },
     /// A seat saved the wall: sent to every subscriber, the saver
@@ -2032,12 +2035,13 @@ pub struct SavesResult {
     pub pending: Vec<String>,
 }
 
-/// The result of `load` and `new`.
+/// The result of `load`, `new`, `go` and their undo.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoadResult {
     /// The change, as logged (undo it to bring the wall back).
     pub change: Change,
-    /// The save the wall as it was went to first.
+    /// The save holding the previous wall, or `tree:<12-char commit>`
+    /// when that exact wall is already a moment in the tree.
     pub backup: String,
     /// What else there is to know, one sentence each: parts of an old or
     /// damaged save that were brought up to date or left out, and the

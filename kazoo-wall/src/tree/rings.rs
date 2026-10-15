@@ -966,7 +966,7 @@ fn report_text(
     );
 
     format!(
-        "the first rings: {} → {} ({mode})\nlog: changes {first} to {last} ({} lines, {}.{:03} MB); {} unreadable, {} repeated, {abandoned} abandoned\nevidence: {} wall files; {} load backups hold their fingerprints, {} do not ({}); {} unreadable ({})\n{}{summary}{}took {:.3} s\n",
+        "the first rings: {} → {} ({mode})\nlog: changes {first} to {last} ({} lines, {}.{:03} MB); {} unreadable, {} repeated, {abandoned} abandoned\nevidence: {} wall files; {} load backups hold their fingerprints, {} do not ({}); {} go backups held by the tree; {} unreadable ({})\n{}{summary}{}took {:.3} s\n",
         state.display(),
         tree.display(),
         loaded.changes.len() + loaded.skipped + loaded.repeated,
@@ -978,6 +978,7 @@ fn report_text(
         proofs.backups,
         proofs.bad_backups.len(),
         proofs.bad_backups.join(", "),
+        proofs.tree_backups,
         proofs.unreadable.len(),
         proofs.unreadable.join(", "),
         joined_lines(&proofs.disagreements),

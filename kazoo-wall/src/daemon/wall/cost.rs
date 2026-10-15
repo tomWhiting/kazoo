@@ -247,8 +247,21 @@ fn busy_clause(busy: f32) -> String {
 }
 
 impl Wall {
+    /// The engine's measured render load, fixed load, heard-module bench
+    /// sum and busy factor, in that order. Read on the control thread.
+    #[must_use]
+    pub fn render_costs(&self) -> (f32, f32, f32, f32) {
+        let shared = self.engine.shared();
+        (
+            shared.render_load(),
+            shared.fixed_load(),
+            self.bench_beside(&[]),
+            self.busy(),
+        )
+    }
+
     /// How many times its bench cost the wall up now takes to render: its
-    /// render load over the sum of the bench shares of the modules the
+    /// render load less fixed work over the sum of the bench shares of the modules the
     /// engine renders now, held to 1 to [`BUSY_MAX`]; 1 for a wall too small
     /// to say (below [`BUSY_MIN_BENCH`]) or a load not measured.
     pub(super) fn busy(&self) -> f32 {
@@ -264,7 +277,25 @@ impl Wall {
     /// the modules it would wake render nothing yet. Counted, they would
     /// lower the factor, and the wake would be costed the less the busier
     /// the machine. With nothing staged the two are the same modules.
+    ///
+    /// Until the averaging window has taken in a replacement wall, use
+    /// 1.0: the old wall's load divided by the new wall's bench sum would
+    /// inflate the factor after a go to a smaller wall and ratchet up
+    /// the cost of every subsequent load or go.
     fn busy_beside(&self, taken: &[&ModuleRecord]) -> f32 {
+        if self.engine.shared().frames() < self.load_watch.measured_from {
+            return 1.0;
+        }
+        let bench = self.bench_beside(taken);
+        let load = self.engine.shared().render_load() - self.engine.shared().fixed_load();
+        if bench < BUSY_MIN_BENCH || !load.is_finite() || load <= 0.0 {
+            return 1.0;
+        }
+        // Bench rows err high, so quiet module work keeps its bench cost.
+        (load / bench).clamp(1.0, BUSY_MAX)
+    }
+
+    fn bench_beside(&self, taken: &[&ModuleRecord]) -> f32 {
         let rate = self.engine.sample_rate();
         let unheard: HashSet<&str> = self.unheard.iter().map(String::as_str).collect();
         let on_wall = self
@@ -277,20 +308,12 @@ impl Wall {
             .iter()
             .filter(|module| self.patch.module(&module.id).is_none())
             .map(|module| (module.id.as_str(), Kind::from_name(&module.kind)));
-        let bench: f32 = on_wall
+        on_wall
             .chain(going)
             .filter(|(id, _)| self.rack.slot_of(id).is_some() && !unheard.contains(id))
             .filter_map(|(_, kind)| kind)
             .map(|kind| kind_share(kind, rate))
-            .sum();
-        let load = self.engine.shared().render_load();
-        if bench < BUSY_MIN_BENCH || !load.is_finite() {
-            return 1.0;
-        }
-        // Both measures cover the whole render. A module's own timing omits
-        // the source, sink and engine work included in its bench row. The
-        // bench errs high deliberately, so quiet work keeps its bench cost.
-        (load / bench).clamp(1.0, BUSY_MAX)
+            .sum()
     }
 
     pub(super) fn kind_share_now(&self, kind: Kind, busy: f32) -> f32 {
@@ -311,23 +334,17 @@ impl Wall {
     }
 
     pub(super) fn module_share(&self, id: &str, kind: Kind, busy: f32) -> f32 {
+        // A sleeping module's old timing cannot describe its next wake.
+        if self.unheard.iter().any(|unheard| unheard == id) {
+            return self.kind_share_now(kind, busy);
+        }
         let rate = self.engine.sample_rate();
         self.rack
             .slot_of(id)
             .and_then(|slot| self.engine.cost(slot))
             .map_or_else(
                 || self.kind_share_now(kind, busy),
-                // A sub-block is small; timings need relative precision.
-                |ns| {
-                    let share = ns / (SUB_BLOCK as f32 * 1e9 / rate as f32);
-                    // Culled modules retain a timing from when they were
-                    // last heard, so their cost needs the current factor.
-                    if self.unheard.iter().any(|unheard| unheard == id) {
-                        share * busy
-                    } else {
-                        share
-                    }
-                },
+                |ns| ns / (SUB_BLOCK as f32 * 1e9 / rate as f32),
             )
     }
 
@@ -400,15 +417,8 @@ impl Wall {
             .iter()
             .map(|&index| self.kind_share_now(incoming.modules()[index].kind, busy))
             .sum();
-        let current: f32 = heard_modules(&self.patch)
-            .iter()
-            .map(|&index| {
-                let module = &self.patch.modules()[index];
-                self.module_share(&module.id, module.kind, busy)
-            })
-            .sum();
-        let rest = (self.engine.shared().render_load() - current).max(0.0);
-        (heard.len(), sum, rest + sum, busy)
+        let fixed = self.engine.shared().fixed_load();
+        (heard.len(), sum, fixed + sum, busy)
     }
 
     pub(super) fn load_room(&self, incoming: &Patch) -> Result<(), WallError> {
@@ -432,12 +442,12 @@ impl Wall {
 
     pub(super) fn load_room_as(
         &self,
-        console: bool,
+        (seat, console): (&str, bool),
         incoming: &Patch,
         source: &Source,
         notes: &mut Vec<String>,
     ) -> Result<Option<String>, WallError> {
-        if !console {
+        if !console && !matches!(source, Source::Moment { .. } | Source::Back { .. }) {
             self.load_room(incoming)?;
             return Ok(None);
         }
@@ -445,10 +455,18 @@ impl Wall {
         if !self.load_watch.on || sum <= 0.0 || projected <= LOAD_GUARD {
             return Ok(None);
         }
-        let name = source.kept().map_or("new", |kept| kept.name.as_str());
+        let action = match source {
+            Source::Moment { to, .. } | Source::Back { to, .. } => {
+                format!("{seat} went to {}", crate::change::moment_words(to))
+            }
+            Source::Save(_) | Source::Empty | Source::Undo { .. } => {
+                let name = source.kept().map_or("new", |kept| kept.name.as_str());
+                format!("Tom loaded \"{name}\"")
+            }
+        };
         let clause = busy_clause(busy);
         let warning = format!(
-            "Tom loaded \"{name}\": about {:.0}% of the wall's time{clause}, past the {:.0}% guard",
+            "{action}: about {:.0}% of the wall's time{clause}, past the {:.0}% guard",
             projected * 100.0,
             LOAD_GUARD * 100.0
         );

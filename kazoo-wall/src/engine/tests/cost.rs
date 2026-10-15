@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn module_cpu_is_read_twice_per_sub_block() {
+    for frames in [1, SUB_BLOCK, SUB_BLOCK * 3, SUB_BLOCK * 20 + 1] {
+        let (mut engine, mut control) = fresh();
+        let mut model = Model::default();
+        model.add(&mut control, 0, Kind::VCO);
+        model.send_tables(&mut control);
+        let mut buffer = vec![0.0; frames * 2];
+        on_audio_thread(|| engine.render(&mut buffer, 2));
+        assert_eq!(
+            engine.module_span.reads,
+            2 * frames.div_ceil(SUB_BLOCK),
+            "frames={frames}"
+        );
+        assert!(engine.module_cpu > Duration::ZERO);
+        assert!(control.shared().fixed_load().is_finite());
+        assert!(control.shared().fixed_load() <= control.shared().render_load());
+        if frames % SUB_BLOCK != 0 {
+            let mut carried = [0.0; 2];
+            on_audio_thread(|| engine.render(&mut carried, 2));
+            assert_eq!(engine.module_span.reads, 0);
+            assert_eq!(engine.module_cpu, Duration::ZERO);
+        }
+        engine.module_cpu = Duration::from_millis(3);
+        engine.measure_fixed(Duration::from_millis(10), 0.02, 1.0);
+        assert!((control.shared().fixed_load() - 0.35).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn an_empty_engine_measures_only_fixed_work_without_allocating() {
+    let (mut engine, control) = fresh();
+    let mut buffer = [0.0; SUB_BLOCK * 2];
+    on_audio_thread(|| engine.render(&mut buffer, 2));
+    let load = control.shared().render_load();
+    let fixed = control.shared().fixed_load();
+    assert!(fixed > 0.0, "load={load}, fixed={fixed}");
+    assert_eq!(load.to_bits(), fixed.to_bits());
+}
+
+#[test]
 fn every_heard_module_is_timed_in_turn() {
     let (mut engine, mut control) = fresh();
     let mut model = Model::default();

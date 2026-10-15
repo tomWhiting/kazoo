@@ -49,6 +49,15 @@ enum Asked {
     },
 }
 
+/// The parts of an undo of a go that the tree answers with the moment
+/// the go left.
+struct TreeBack<'a> {
+    go: u64,
+    backup: &'a String,
+    fingerprint: &'a String,
+    back_to: &'a TreePlace,
+}
+
 impl Asked {
     const fn label(&self) -> &'static str {
         match self {
@@ -72,6 +81,37 @@ fn here_error(err: &HereError) -> WallError {
 }
 
 impl Wall {
+    pub(super) fn remember_tree_moment(&mut self, source: &Source, fingerprint: String) {
+        self.tree_kept = match source {
+            Source::Moment { to, .. } => Some((to.commit.clone(), fingerprint)),
+            Source::Back { to, kept, .. } if kept.name.starts_with("tree:") => {
+                Some((to.commit.clone(), fingerprint))
+            }
+            Source::Save(_) | Source::Empty | Source::Undo { .. } | Source::Back { .. } => None,
+        };
+    }
+
+    pub(super) fn keeping_before(
+        &self,
+        source: &Source,
+    ) -> Result<(Kept, Option<Vec<u8>>), SaveError> {
+        if let Source::Moment { from, .. } | Source::Back { from, .. } = source {
+            if let Some((commit, kept)) = &self.tree_kept {
+                let fingerprint = self.patch.fingerprint();
+                if *commit == from.commit && !fingerprint.is_empty() && fingerprint == *kept {
+                    return Ok((
+                        Kept {
+                            name: format!("tree:{:.12}", from.commit),
+                            hash: fingerprint,
+                        },
+                        None,
+                    ));
+                }
+            }
+        }
+        self.keeping(source.how())
+    }
+
     pub(super) fn read_backup(
         &mut self,
         seq: u64,
@@ -277,7 +317,21 @@ impl Wall {
     ) -> Result<Outcome, WallError> {
         self.tree_ready()?;
         let ticket = self.tree_ticket()?;
-        self.tree_send(TreeItem::Here { ticket })?;
+        let job = if backup.starts_with("tree:") {
+            if backup != format!("tree:{:.12}", back_to.commit) {
+                return Err(error(
+                    ErrorCode::BrokenSave,
+                    "the go's tree backup names a different moment; nothing was changed",
+                ));
+            }
+            TreeItem::Resolve {
+                ticket,
+                moment: back_to.commit.clone(),
+            }
+        } else {
+            TreeItem::Here { ticket }
+        };
+        self.tree_send(job)?;
         Ok(self.tree_pending(
             ticket,
             Waiting {
@@ -326,7 +380,24 @@ impl Wall {
                     moment: moment.clone(),
                 },
             ),
-            Asked::Back { made, tries, .. } => (made, tries, TreeItem::Here { ticket }),
+            Asked::Back {
+                made,
+                tries,
+                backup,
+                back_to,
+                ..
+            } => (
+                made,
+                tries,
+                if backup.starts_with("tree:") {
+                    TreeItem::Resolve {
+                        ticket,
+                        moment: back_to.commit.clone(),
+                    }
+                } else {
+                    TreeItem::Here { ticket }
+                },
+            ),
             Asked::Mark | Asked::List => return Ok(false),
         };
         if *made == self.made {
@@ -398,6 +469,24 @@ impl Wall {
                     back_to,
                     ..
                 },
+                Answered::Resolved { to, here, wall },
+            ) if backup.starts_with("tree:") => {
+                let back = TreeBack {
+                    go: *go,
+                    backup,
+                    fingerprint,
+                    back_to,
+                };
+                self.back_from_tree(seat, &back, &to, here, &wall, now)
+            }
+            (
+                Asked::Back {
+                    go,
+                    backup,
+                    fingerprint,
+                    back_to,
+                    ..
+                },
                 Answered::Here(here),
             ) => {
                 let read = self.read_backup(*go, backup, fingerprint)?;
@@ -423,6 +512,47 @@ impl Wall {
                 "the tree answered a different request; nothing was changed",
             )),
         }
+    }
+
+    /// Undoes a go whose wall as it was is a moment in the tree: the moment
+    /// the tree resolved must be the one the go left and hold the wall the
+    /// go recorded, or nothing is changed.
+    fn back_from_tree(
+        &mut self,
+        seat: (&str, bool),
+        back: &TreeBack<'_>,
+        to: &TreePlace,
+        here: TreePlace,
+        wall: &crate::patch::PatchFile,
+        now: Instant,
+    ) -> Result<TreeOutcome, WallError> {
+        let (incoming, notes) =
+            Patch::load(wall).map_err(|err| error(ErrorCode::BrokenSave, err))?;
+        if to.commit != back.back_to.commit
+            || back.fingerprint.is_empty()
+            || incoming.fingerprint() != *back.fingerprint
+        {
+            return Err(error(
+                ErrorCode::BrokenSave,
+                "the go's tree backup no longer holds the same wall; nothing was changed",
+            ));
+        }
+        self.replace(
+            seat,
+            incoming,
+            &Source::Back {
+                go: back.go,
+                kept: Kept {
+                    name: back.backup.clone(),
+                    hash: back.fingerprint.clone(),
+                },
+                to: back.back_to.clone(),
+                from: here,
+            },
+            notes,
+            now,
+        )
+        .map(TreeOutcome::Loaded)
     }
 
     /// Complete tree requests without waiting; expired requests are answered once.

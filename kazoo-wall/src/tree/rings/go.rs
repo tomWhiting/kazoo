@@ -50,10 +50,16 @@ impl Lineage {
     pub(super) fn new(tree: &Path, changes: &[Change]) -> Self {
         let wanted: HashSet<u64> = changes
             .iter()
-            .filter_map(|c| match &c.what {
-                What::Go { to, .. } => to.change,
-                _ => None,
+            .flat_map(|c| match &c.what {
+                What::Go {
+                    to, from, backup, ..
+                } => [
+                    to.change,
+                    from.change.filter(|_| backup.starts_with("tree:")),
+                ],
+                _ => [None, None],
             })
+            .flatten()
             .collect();
         Self {
             tree: tree.into(),
@@ -253,9 +259,27 @@ impl Walk<'_> {
         change: &Change,
         held: Option<u64>,
     ) -> Result<(PatchFile, Option<String>), TreeError> {
-        if change.undoes.is_none()
-            && let Some(seq) = held
-        {
+        if let Some(undone) = change.undoes {
+            if let Some(What::Go {
+                from,
+                backup,
+                fingerprint,
+                ..
+            }) = self
+                .log
+                .changes
+                .iter()
+                .find(|c| c.seq == undone)
+                .map(|original| &original.what)
+                && backup.starts_with("tree:")
+                && let Some(files) = from.change.and_then(|seq| self.line.walls.get(&seq))
+            {
+                let file = from_files(files)?;
+                super::evidence::prove_tree_backup(from, backup, fingerprint, &file)
+                    .map_err(TreeError::Git)?;
+                return Ok((file, None));
+            }
+        } else if let Some(seq) = held {
             let files = self.line.walls.get(&seq).ok_or_else(|| {
                 TreeError::Git(format!(
                     "the import did not keep the wall of change {seq}, which a go went to"

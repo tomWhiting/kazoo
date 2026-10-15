@@ -685,7 +685,7 @@ pub(super) fn files(tree: &Path, commit: &str) -> Result<Files, HereError> {
     result
 }
 
-pub(super) fn wall(tree: &Path, commit: &str) -> Result<Box<PatchFile>, HereError> {
+pub(in crate::tree) fn wall(tree: &Path, commit: &str) -> Result<Box<PatchFile>, HereError> {
     let result = files(tree, commit).and_then(|files| {
         crate::tree::from_files(&files).map_err(|err| HereError::Broken(err.to_string()))
     });

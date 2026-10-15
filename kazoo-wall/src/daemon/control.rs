@@ -748,7 +748,7 @@ impl Control {
         console: bool,
         watcher: bool,
     ) -> Response {
-        if matches!(seat, "desk" | "kazoo-wall") {
+        if seat.eq_ignore_ascii_case("desk") || seat.eq_ignore_ascii_case("kazoo-wall") {
             return Response::failure(
                 id,
                 WallError::new(

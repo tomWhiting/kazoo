@@ -191,6 +191,13 @@ pub(super) fn mark_name_problem(name: &str) -> Option<String> {
     ))
 }
 
+fn backup_words(backup: &str) -> String {
+    backup.strip_prefix("tree:").map_or_else(
+        || format!("the wall as it was is saved as “{backup}”"),
+        |commit| format!("the wall as it was is moment {commit} in the tree"),
+    )
+}
+
 fn place_words(to: &TreePlace) -> String {
     let mut place = to.mark.as_ref().map_or_else(
         || {
@@ -482,9 +489,9 @@ impl App {
                         self.say(
                             Tone::Done,
                             format!(
-                                "went to {} · the wall as it was is saved as “{}” · z undoes it",
+                                "went to {} · {} · z undoes it",
                                 place_words(to),
-                                result.backup,
+                                backup_words(&result.backup),
                             ),
                             now,
                         );
@@ -515,10 +522,7 @@ impl App {
                     };
                     self.say(
                         Tone::Done,
-                        format!(
-                            "{what} · the wall as it was is saved as “{}” · z undoes it",
-                            result.backup
-                        ),
+                        format!("{what} · {} · z undoes it", backup_words(&result.backup)),
                         now,
                     );
                     self.refresh_tree();
