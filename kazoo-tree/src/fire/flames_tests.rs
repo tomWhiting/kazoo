@@ -376,6 +376,24 @@ fn a_wall_growing_on_from_its_moment_carries_its_fire_on() {
 }
 
 #[test]
+fn a_go_far_along_the_same_branch_still_sinks_and_catches() {
+    let (mut stage, _) = Stage::new();
+    let trunk = stage.history.limbs[0].moments.clone();
+    // Every moment a dot: a go 40 changes on is a jump across the screen.
+    stage.view = View {
+        centre: stage.growth.at[trunk[170]].expect("grown"),
+        scale: 8.0,
+    };
+    let mut blaze = Blaze::default();
+    stage.go(&mut blaze, Some(trunk[150]));
+    stage.burn(&mut blaze, 2.0);
+    assert!(blaze.caught() > 0.9, "the control: it caught");
+    stage.go(&mut blaze, Some(trunk[190]));
+    assert_eq!(blaze.dying(), 1, "the moment left dies down where it was");
+    assert!(blaze.caught() <= 0.0, "the new moment catches from a spark");
+}
+
+#[test]
 fn a_jump_to_another_branch_still_sinks_the_old_fire_and_catches_the_new() {
     let (mut stage, _) = Stage::new();
     let trunk = stage.history.limbs[0].moments.clone();
