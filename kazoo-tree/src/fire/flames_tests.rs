@@ -342,6 +342,77 @@ fn a_wall_at_no_moment_lets_its_fire_die_down() {
     assert!(!blaze.live(), "with nothing burning, no frames are drawn");
 }
 
+#[test]
+fn a_wall_growing_on_from_its_moment_carries_its_fire_on() {
+    let (mut stage, _) = Stage::new();
+    let trunk = stage.history.limbs[0].moments.clone();
+    let mut blaze = Blaze::default();
+    stage.go(&mut blaze, Some(trunk[150]));
+    // A change every half second, each grown from the last: the same fire
+    // burns on, catching as it would on one moment.
+    for step in 1..=5 {
+        stage.burn(&mut blaze, 0.5);
+        let before = blaze.caught();
+        stage.go(&mut blaze, Some(trunk[150 + step]));
+        assert_eq!(
+            blaze.dying(),
+            0,
+            "step {step}: a moment grown on is no jump"
+        );
+        assert!(
+            blaze.caught() >= before,
+            "step {step}: it caught again from cold, {before} -> {}",
+            blaze.caught()
+        );
+    }
+    stage.burn(&mut blaze, 0.5);
+    assert!(
+        blaze.caught() >= 1.0,
+        "never a full blaze: {}",
+        blaze.caught()
+    );
+    let hot = total(blaze.field());
+    assert!(hot > 10.0, "the field went cold: {hot}");
+}
+
+#[test]
+fn a_jump_to_another_branch_still_sinks_the_old_fire_and_catches_the_new() {
+    let (mut stage, _) = Stage::new();
+    let trunk = stage.history.limbs[0].moments.clone();
+    let bud = stage.history.limbs[1].moments[10];
+    let mut blaze = Blaze::default();
+    stage.go(&mut blaze, Some(trunk[150]));
+    stage.burn(&mut blaze, 2.0);
+    assert!(total(blaze.field()) > 10.0, "the control: it burned");
+    stage.go(&mut blaze, Some(bud));
+    assert_eq!(blaze.dying(), 1, "the moment left dies down");
+    assert!(blaze.caught() <= 0.0, "the new moment catches from a spark");
+    assert!(total(blaze.field()) < 1.0, "the new moment starts cold");
+}
+
+#[test]
+fn spent_fires_are_not_kept_beyond_one() {
+    let (mut stage, _) = Stage::new();
+    let trunk = stage.history.limbs[0].moments.clone();
+    let mut blaze = Blaze::default();
+    stage.go(&mut blaze, Some(trunk[150]));
+    stage.burn(&mut blaze, 1.0);
+    // Six jumps back along the trunk, each caught a little: several fires
+    // die down at once.
+    for k in 1..=6 {
+        stage.go(&mut blaze, Some(trunk[150 - 10 * k]));
+        stage.burn(&mut blaze, 0.3);
+    }
+    assert!(
+        blaze.dying() >= 3,
+        "the control: they die down together, {}",
+        blaze.dying()
+    );
+    stage.burn(&mut blaze, 6.0);
+    assert_eq!(blaze.dying(), 0, "every fire left went out");
+    assert!(blaze.spares() <= 1, "{} spent fires kept", blaze.spares());
+}
+
 /// The field as braille, for looking at.
 fn picture(field: &Field) -> String {
     const DOT: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];

@@ -8,12 +8,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::Rect;
 
 use super::field::Field;
 use super::paint::paint;
 use super::place::{Placement, shape_of};
+use crate::history::History;
 use crate::render::{self, Level, Picture, Scene, View};
 
 /// Frames a second while a fire is in view: a fast display's refresh, so
@@ -35,6 +36,38 @@ pub fn next_frame(due: Instant, now: Instant) -> Instant {
     if next <= now { now + period() } else { next }
 }
 
+/// When fire frames are drawn: each a period after the last, counted from
+/// when that one finished.
+#[derive(Debug, Clone, Copy)]
+pub struct Beat {
+    next: Instant,
+}
+
+impl Beat {
+    /// A beat whose first frame is due at `now`.
+    #[must_use]
+    pub const fn new(now: Instant) -> Self {
+        Self { next: now }
+    }
+
+    /// Whether a fire frame is due at `now`.
+    #[must_use]
+    pub fn due(&self, now: Instant) -> bool {
+        now >= self.next
+    }
+
+    /// A fire frame was drawn, finishing at `finished`.
+    pub fn drawn(&mut self, finished: Instant) {
+        self.next = next_frame(self.next, finished);
+    }
+
+    /// How long from `now` until the next fire frame is due.
+    #[must_use]
+    pub fn wait(&self, now: Instant) -> Duration {
+        self.next.saturating_duration_since(now)
+    }
+}
+
 /// What a kept picture was drawn from: a picture is kept only for the same.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Key {
@@ -52,6 +85,22 @@ const CATCH: f32 = 1.4;
 const SINK: f32 = 0.6;
 /// How long the embers of a moment left behind glow on, seconds.
 const GLOW_ON: f32 = 2.5;
+/// How many moments along the first-parent path the wall's new moment may
+/// have grown from the burning one and still carry its fire on: every change
+/// to the wall is a moment, so a wall being played grows by one at a time;
+/// more than this between two frames reads as a jump.
+const CARRY: usize = 64;
+
+/// Whether a frame may draw the tree's picture kept from the frame before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reuse {
+    /// Drawn afresh.
+    No,
+    /// The next frame is one where only the fire moved.
+    Asked,
+    /// The last frame drew the kept picture.
+    Drawn,
+}
 
 /// One moment's fire: which moment, its field, how far it has caught or
 /// died down, and where it was last drawn.
@@ -118,10 +167,10 @@ impl Fire {
 pub struct Blaze {
     /// Lit (the default) or out: `b` turns it.
     pub on: bool,
-    /// The next frame only the fire moved: the kept picture of the tree
-    /// may be drawn again if it was drawn from the same. Taken by the
-    /// frame that reads it.
-    reuse: bool,
+    /// Whether the next frame is one where only the fire moved (the kept
+    /// picture of the tree may be drawn again if it was drawn from the
+    /// same; taken by the frame that reads it), or the last drew it.
+    reuse: Reuse,
     /// The wall's moment, burning.
     now: Fire,
     /// The moments the wall has left, dying down, the oldest first: each
@@ -135,19 +184,24 @@ pub struct Blaze {
     /// When the fire last burned on.
     last: Option<Instant>,
     kept: Option<(Key, Picture)>,
+    /// The cells of the panel and the footer from the last frame drawn
+    /// afresh, and the screen they were drawn on: drawn again as they were
+    /// on a frame where only the fire moved.
+    chrome: Option<(Rect, Vec<Cell>)>,
 }
 
 impl Default for Blaze {
     fn default() -> Self {
         Self {
             on: true,
-            reuse: false,
+            reuse: Reuse::No,
             now: Fire::new(),
             dying: Vec::new(),
             spare: Vec::new(),
             seen: false,
             last: None,
             kept: None,
+            chrome: None,
         }
     }
 }
@@ -174,13 +228,13 @@ impl Blaze {
     /// kept from the last frame may be drawn again, if it was drawn from the
     /// same view, size, selection and second.
     pub const fn fire_only(&mut self) {
-        self.reuse = true;
+        self.reuse = Reuse::Asked;
     }
 
     /// The tree read has changed: the kept picture is never drawn again.
     pub fn forget(&mut self) {
         self.kept = None;
-        self.reuse = false;
+        self.reuse = Reuse::No;
     }
 
     /// Whether the fire is lit and was in view at the last frame: while it
@@ -213,6 +267,27 @@ impl Blaze {
     #[must_use]
     pub fn left_behind(&self) -> Option<&Field> {
         self.dying.last().map(|fire| &fire.field)
+    }
+
+    /// How far the wall's moment's fire has caught, `0.0..=1.0`: for tests
+    /// and measures.
+    #[must_use]
+    pub const fn caught(&self) -> f32 {
+        self.now.lit
+    }
+
+    /// How many spent fires are kept to be lit again: for tests and
+    /// measures.
+    #[must_use]
+    pub fn spares(&self) -> usize {
+        self.spare.len()
+    }
+
+    /// Whether the last frame drew the tree's picture kept from the frame
+    /// before.
+    #[must_use]
+    pub const fn reused(&self) -> bool {
+        matches!(self.reuse, Reuse::Drawn)
     }
 
     /// How many moments the wall has left are still dying down.
@@ -249,6 +324,12 @@ impl Blaze {
                 i += 1;
             }
         }
+        // Once nothing dies down, one spent fire is kept to be lit again and
+        // the rest let go: a burst of moves leaves no memory behind.
+        if self.dying.is_empty() && self.spare.len() > 1 {
+            self.spare.truncate(1);
+            self.spare.shrink_to_fit();
+        }
     }
 
     /// The dying fire at `i` is out: kept to be lit again.
@@ -282,6 +363,33 @@ impl Blaze {
         }
     }
 
+    /// Whether the wall's new moment `here` grew on from the burning one:
+    /// it is on `here`'s first-parent path within [`CARRY`] moments, and not
+    /// a moment still dying down (going back to one takes its own fire up).
+    fn grew_on(&self, history: &History, here: Option<usize>) -> bool {
+        let Some(here) = here else {
+            return false;
+        };
+        let Some(from) = self.now.id.as_deref().and_then(|id| history.moment_of(id)) else {
+            return false;
+        };
+        let here_id = history.moments.get(here).map(|moment| &moment.id);
+        if self.dying.iter().any(|fire| fire.id.as_ref() == here_id) {
+            return false;
+        }
+        let mut m = here;
+        for _ in 0..CARRY {
+            let Some(parent) = history.moments.get(m).and_then(|moment| moment.parent) else {
+                return false;
+            };
+            if parent == from {
+                return true;
+            }
+            m = parent;
+        }
+        false
+    }
+
     /// The tree's picture for `scene` through `view` in `cols` × `rows`:
     /// the one kept from the last frame when only the fire has moved since
     /// and it was drawn from the same, else drawn afresh and kept.
@@ -293,10 +401,13 @@ impl Blaze {
             selected: scene.selected,
             now: scene.now,
         };
-        let reuse = std::mem::take(&mut self.reuse);
-        if !reuse || self.kept.as_ref().is_none_or(|(kept, _)| *kept != key) {
+        let asked = self.reuse == Reuse::Asked;
+        self.reuse = if asked && self.kept.as_ref().is_some_and(|(kept, _)| *kept == key) {
+            Reuse::Drawn
+        } else {
             self.kept = None;
-        }
+            Reuse::No
+        };
         &self
             .kept
             .get_or_insert_with(|| (key, render::draw(scene, view, cols, rows)))
@@ -308,6 +419,46 @@ impl Blaze {
     pub const fn out_of_view(&mut self) {
         self.seen = false;
         self.last = None;
+        self.reuse = Reuse::No;
+    }
+
+    /// Keep the cells of `parts` (the panel and the footer) of `buf`, drawn
+    /// afresh on a screen of `area`, to be drawn again on fire-only frames.
+    pub fn keep_chrome(&mut self, area: Rect, parts: [Rect; 2], buf: &Buffer) {
+        let (kept, cells) = self.chrome.get_or_insert_with(|| (area, Vec::new()));
+        *kept = area;
+        cells.clear();
+        for part in parts {
+            for y in part.top()..part.bottom() {
+                for x in part.left()..part.right() {
+                    cells.push(buf[(x, y)].clone());
+                }
+            }
+        }
+    }
+
+    /// Draw the panel and the footer kept from the last frame into `parts`
+    /// of `buf`, when the last frame drew the kept picture and the screen is
+    /// the same: answers whether they were, else they must be worked out.
+    pub fn paint_chrome(&self, area: Rect, parts: [Rect; 2], buf: &mut Buffer) -> bool {
+        let Some((kept, cells)) = &self.chrome else {
+            return false;
+        };
+        if self.reuse != Reuse::Drawn || *kept != area {
+            return false;
+        }
+        let mut cells = cells.iter();
+        for part in parts {
+            for y in part.top()..part.bottom() {
+                for x in part.left()..part.right() {
+                    let Some(cell) = cells.next() else {
+                        return false;
+                    };
+                    buf[(x, y)] = cell.clone();
+                }
+            }
+        }
+        true
     }
 
     /// Draw the fire for `scene` through `view` over the tree's picture
@@ -323,7 +474,13 @@ impl Blaze {
             .and_then(|m| scene.history.moments.get(m))
             .map(|m| m.id.clone());
         if self.now.id != here_id {
-            self.move_to(here_id);
+            if self.grew_on(scene.history, here) {
+                // The wall grew on from its moment: the same fire burns on,
+                // and moves with it.
+                self.now.id = here_id;
+            } else {
+                self.move_to(here_id);
+            }
         }
         let mut seen = false;
         let mut i = 0;

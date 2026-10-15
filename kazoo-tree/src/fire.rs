@@ -34,4 +34,6 @@ pub use place::Placement;
 #[cfg(test)]
 mod flames_tests;
 #[cfg(test)]
+mod frame_tests;
+#[cfg(test)]
 mod tests;
