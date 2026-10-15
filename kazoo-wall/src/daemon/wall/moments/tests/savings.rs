@@ -55,13 +55,35 @@ fn a_desk_tempo_move_between_goes_is_kept_and_undone_exactly() {
         .unwrap();
     let (link, audio) = linking.join().unwrap();
     assert!(link.is_connected());
-    rig.wall.desk = Some(link);
     rig.go("#4");
     assert_eq!(rig.wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
+    // The desk is linked while the go decides whether to keep a save, and
+    // has moved the tempo off the moment's own; it is gone before the go
+    // lands, so the go settles on its landing without waiting for a reply.
+    rig.wall.desk = Some(link);
     rig.wall.patch.tempo = 128.0;
     let before = rig.wall.patch.fingerprint();
     let count = rig.wall.saves_store().unwrap().list_saves().unwrap().len();
-    let go = rig.go("#5").change.unwrap();
+    let ticket = rig
+        .wall
+        .request_as(
+            "Tom",
+            true,
+            &request(serde_json::json!({"op":"go", "moment":"#5"})),
+            rig.now,
+        )
+        .unwrap()
+        .pending
+        .unwrap();
+    rig.wall.desk = None;
+    let go = loop {
+        rig.wall.tree_test_wait();
+        rig.land();
+        let answers = rig.wall.tree_answers(rig.now);
+        if let Some((_, result)) = answers.into_iter().find(|(t, _)| *t == ticket) {
+            break result.unwrap().change.unwrap();
+        }
+    };
     rig.ask(
         "Tom",
         true,

@@ -83,6 +83,16 @@ impl Rig {
         }
     }
 
+    /// Plays the engine until every swap sent has landed, as the audio
+    /// callback does, for a go that waits for its landing to be answered.
+    fn land(&mut self) {
+        let shared = self.wall.engine.shared();
+        let mut buffer = [0.0; crate::SUB_BLOCK * 2];
+        while shared.unhushed() < self.wall.swaps_sent {
+            self.engine.render(&mut buffer, 2);
+        }
+    }
+
     fn turn(&mut self, value: f64) -> Outcome {
         self.ask("Tom", true, serde_json::json!({"op":"turn", "module":"vcf1", "knob":"cutoff", "value":value, "glide_beats":0})).unwrap()
     }
