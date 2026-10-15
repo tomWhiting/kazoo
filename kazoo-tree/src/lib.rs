@@ -657,7 +657,12 @@ fn lanes(app: &mut App, area: Rect, buf: &mut Buffer) {
                 Span::styled("■ ", Style::new().fg(Color::Rgb(r, g, b))),
                 Span::raw(moment.batch.as_deref().map_or_else(
                     || moment.summary.clone(),
-                    |batch| format!("❖ {} ({})", batch.note, changes(batch.steps.len())),
+                    |batch| match batch.part {
+                        Some((part, count)) if part < count => {
+                            format!("❖ {} ({part} of {count})", batch.note)
+                        }
+                        _ => format!("❖ {} ({})", batch.note, changes(batch.steps.len())),
+                    },
                 )),
                 Span::styled(
                     format!("  {} {when}", moment.seat),

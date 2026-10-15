@@ -876,12 +876,25 @@ impl App {
         let mut lines = vec![(String::new(), moment.summary.clone())];
         if let Some(batch) = moment.batch.as_deref() {
             lines[0].1.clone_from(&batch.note);
-            lines.push((
-                "batch".to_owned(),
-                format!("{}, sent at once", crate::changes(batch.steps.len())),
-            ));
-            for (i, step) in batch.steps.iter().enumerate() {
-                lines.push((format!("{}", i + 1), step.clone()));
+            match batch.part {
+                Some((part, count)) if part < count => {
+                    lines.push((
+                        "batch".to_owned(),
+                        format!("change {part} of {count}, sent at once"),
+                    ));
+                    for step in &batch.steps {
+                        lines.push((format!("{part}"), step.clone()));
+                    }
+                }
+                _ => {
+                    lines.push((
+                        "batch".to_owned(),
+                        format!("{}, sent at once", crate::changes(batch.steps.len())),
+                    ));
+                    for (i, step) in batch.steps.iter().enumerate() {
+                        lines.push((format!("{}", i + 1), step.clone()));
+                    }
+                }
             }
         }
         lines.push(("who".to_owned(), moment.seat.clone()));

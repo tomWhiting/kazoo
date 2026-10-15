@@ -93,14 +93,31 @@ pub struct Moment {
     pub problems: Vec<String>,
 }
 
-/// Several changes a seat or Tom sent at once, with a note like a commit
-/// message (`Kazoo-Kind: batch`, KZ-T10a): one moment on the tree.
+/// Several changes a seat or Tom sent at once, with a note.
+///
+/// A note like a commit message (`Kazoo-Kind: batch`, KZ-T10a). Since
+/// KZ-T10c each change is a moment of its own: the changes before the last
+/// are its parts (`Kazoo-Kind: part`), and the batch's own moment is its
+/// last change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Batch {
     /// The sender's note (`Kazoo-Note`).
     pub note: String,
-    /// Each change in it, in words, in the order applied (`Kazoo-Step`).
+    /// Each change in it, in words, in the order applied (`Kazoo-Step`):
+    /// every one on the batch's own moment, the part's own on a part.
     pub steps: Vec<String>,
+    /// Which change of how many this moment is (`Kazoo-Part: k/n`), when
+    /// the batch grew a moment for each; `None` for a batch of one moment.
+    pub part: Option<(usize, usize)>,
+}
+
+impl Batch {
+    /// Whether this moment is the batch's own (its last change, or the
+    /// whole of a batch of one moment): where its knot is tied.
+    #[must_use]
+    pub fn is_own(&self) -> bool {
+        self.part.is_none_or(|(part, count)| part == count)
+    }
 }
 
 /// A run of moments grown from one moment of an older limb.
@@ -166,7 +183,7 @@ const BODY_END: char = '\u{1f}';
 /// only the wall's own trailers (never the whole message: a `Kazoo-Change`
 /// trailer holds a page of JSON, and a million of them would be most of
 /// the read).
-const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,key=Kazoo-Note,key=Kazoo-Step,unfold)%x1f";
+const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,key=Kazoo-Note,key=Kazoo-Step,key=Kazoo-Part,unfold)%x1f";
 
 /// Git as the tree reads it: the wall's own way to run git, with the
 /// person's own settings that would change what `log` says held fixed.
@@ -716,7 +733,7 @@ const fn is_format(c: char) -> bool {
 
 /// The trailers the tree reads from a moment's commit; the wall writes
 /// others (`Kazoo-Gap`, `Kazoo-Clock` and the like) that it has no use for.
-const TRAILERS: [&str; 7] = [
+const TRAILERS: [&str; 8] = [
     "Kazoo-Kind",
     "Kazoo-Seq",
     "Kazoo-Beat",
@@ -724,6 +741,7 @@ const TRAILERS: [&str; 7] = [
     "Kazoo-Sound",
     "Kazoo-Note",
     "Kazoo-Step",
+    "Kazoo-Part",
 ];
 
 /// One log record as a moment. `index` finds a parent's place, `alive_at`
@@ -777,6 +795,7 @@ fn moment(
     let mut tempo = None;
     let mut sound = None;
     let mut note = None;
+    let mut part = None;
     let mut steps = Vec::new();
     // Each trailer the tree reads, by its key in any case (git's own
     // trailers are), the first of each kept: a second is said, never put
@@ -807,10 +826,11 @@ fn moment(
             "Kazoo-Tempo" => tempo = keep(&mut problems, number(key, value)),
             "Kazoo-Sound" => sound = keep(&mut problems, sound_of(value)),
             "Kazoo-Note" => note = Some(clean(value)),
+            "Kazoo-Part" => part = keep(&mut problems, part_of(value)),
             _ => steps.push(clean(value)),
         }
     }
-    let batch = batch_of(&kind, &summary, note, steps, &mut problems);
+    let batch = batch_of(&kind, &summary, (note, part), steps, &mut problems);
     let before = parent.map_or_else(|| (0, Kinds::default(), Tint::default()), &alive_at);
     let (modules, alive, tint) = files_of(files, before, prints, &mut problems);
     Ok(Moment {
@@ -832,8 +852,30 @@ fn moment(
     })
 }
 
-/// A moment's batch, from its kind and its `Kazoo-Note` and `Kazoo-Step`
-/// trailers: only a `batch` is one. A batch with no note is shown by its
+/// A batch part's place, `k/n` with `1 <= k <= n`.
+fn part_of(value: &str) -> Result<(usize, usize), String> {
+    let wrong = |why: &str| {
+        format!(
+            "its Kazoo-Part does not read as k/n ({why}): {}",
+            clean(value)
+        )
+    };
+    let (part, count) = value.split_once('/').ok_or_else(|| wrong("no /"))?;
+    let read = |n: &str| {
+        n.trim()
+            .parse::<usize>()
+            .map_err(|err| wrong(&err.to_string()))
+    };
+    let (part, count) = (read(part)?, read(count)?);
+    if (1..=count).contains(&part) {
+        Ok((part, count))
+    } else {
+        Err(wrong("k is not from 1 to n"))
+    }
+}
+
+/// A moment's batch, from its kind and its `Kazoo-Note`, `Kazoo-Part` and
+/// `Kazoo-Step` trailers: only a `batch` or one of its `part`s is one. A batch with no note is shown by its
 /// subject (the wall writes it `{seat}: {note}`), and with no steps as one
 /// with none; each is said in `problems`. A note or steps on a moment that
 /// is not a batch make no knot, and are said in `problems` word for word:
@@ -841,11 +883,19 @@ fn moment(
 fn batch_of(
     kind: &str,
     summary: &str,
-    note: Option<String>,
+    (note, part): (Option<String>, Option<(usize, usize)>),
     steps: Vec<String>,
     problems: &mut Vec<String>,
 ) -> Option<Box<Batch>> {
-    if kind != "batch" {
+    if kind == "part" && part.is_none() {
+        problems.push("a batch's part without its place (no Kazoo-Part)".to_owned());
+    }
+    if kind != "batch" && kind != "part" {
+        if let Some((part, count)) = part {
+            problems.push(format!(
+                "a batch's place on a moment that is not a batch: {part}/{count}"
+            ));
+        }
         if let Some(note) = note {
             problems.push(format!("a note on a moment that is not a batch: {note}"));
         }
@@ -863,7 +913,7 @@ fn batch_of(
         problems.push("a batch without its note (no Kazoo-Note)".to_owned());
         summary.to_owned()
     });
-    Some(Box::new(Batch { note, steps }))
+    Some(Box::new(Batch { note, steps, part }))
 }
 
 /// The log's records. A record starts at a `RECORD` byte at the start of
@@ -906,7 +956,7 @@ pub(crate) fn knots(limbs: &[Limb], moments: &[Arc<Moment>]) -> Vec<Vec<usize>> 
             limb.moments
                 .iter()
                 .enumerate()
-                .filter(|&(_, &m)| moments[m].batch.is_some())
+                .filter(|&(_, &m)| moments[m].batch.as_deref().is_some_and(Batch::is_own))
                 .map(|(at, _)| at)
                 .collect()
         })
