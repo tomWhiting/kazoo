@@ -8,12 +8,17 @@
 //! Whichever comes first does the work; the others find nothing to do, so
 //! a panic during the restore, or a drop after a leave, never runs it
 //! twice.
+//!
+//! A program that catches the panics of its other threads itself asks for
+//! [`Panics::ThisThread`]: a panic elsewhere then neither restores the
+//! terminal nor writes over the screen, and the program says it.
 
 use std::fmt;
 use std::io::{self, IsTerminal, Stdout};
 use std::ops::{Deref, DerefMut};
-use std::sync::Once;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, Once, PoisonError};
+use std::thread::{self, ThreadId};
 
 use crossterm::cursor::Show;
 use crossterm::event::{
@@ -37,6 +42,9 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static PUSHED: AtomicBool = AtomicBool::new(false);
 /// Whether mouse capture was enabled and must be disabled.
 static MOUSE: AtomicBool = AtomicBool::new(false);
+/// The thread whose panics alone put the terminal back, when the program
+/// asked for [`Panics::ThisThread`].
+static OWNER: Mutex<Option<ThreadId>> = Mutex::new(None);
 
 /// What a program asks of the terminal beyond raw mode and the alternate
 /// screen.
@@ -46,6 +54,20 @@ pub struct Options {
     pub mouse: bool,
     /// Ask for key-release events, which instruments need for note-offs.
     pub key_release_events: bool,
+    /// Whose panics put the terminal back.
+    pub panics: Panics,
+}
+
+/// Whose panics put the terminal back while it is entered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Panics {
+    /// A panic on any thread puts the terminal back and is reported.
+    #[default]
+    AnyThread,
+    /// Only a panic on the thread that entered the terminal does. A panic on
+    /// another thread is neither restored for nor reported over the screen:
+    /// the program catches it on that thread and says it.
+    ThisThread,
 }
 
 /// Whether the terminal reports key releases, or why it does not.
@@ -187,6 +209,10 @@ pub fn enter_with(options: Options) -> Result<Terminal, Error> {
         return Err(Error::NoTty);
     }
     install_panic_hook();
+    *OWNER.lock().unwrap_or_else(PoisonError::into_inner) = match options.panics {
+        Panics::AnyThread => None,
+        Panics::ThisThread => Some(thread::current().id()),
+    };
     enable_raw_mode().map_err(Error::RawMode)?;
     ACTIVE.store(true, Ordering::Release);
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
@@ -269,29 +295,52 @@ fn restore_once(active: &AtomicBool, undo: impl FnOnce() -> io::Result<()>) -> i
 
 fn undo() -> io::Result<()> {
     let mut stdout = io::stdout();
+    let left = leave_into(&mut stdout);
+    let raw = disable_raw_mode();
+    let cursor = execute!(stdout, Show);
+    left.and(raw).and(cursor)
+}
+
+/// Write what leaves the screen: the keyboard flags popped and the mouse
+/// let go if they were taken, then the alternate screen left. Every step is
+/// attempted; the first failure is returned.
+fn leave_into(out: &mut impl io::Write) -> io::Result<()> {
     let pop = if PUSHED.swap(false, Ordering::AcqRel) {
-        execute!(stdout, PopKeyboardEnhancementFlags)
+        execute!(out, PopKeyboardEnhancementFlags)
     } else {
         Ok(())
     };
     let mouse = if MOUSE.swap(false, Ordering::AcqRel) {
-        execute!(stdout, DisableMouseCapture)
+        execute!(out, DisableMouseCapture)
     } else {
         Ok(())
     };
-    let screen = execute!(stdout, LeaveAlternateScreen);
-    let raw = disable_raw_mode();
-    let cursor = execute!(stdout, Show);
-    pop.and(mouse).and(screen).and(raw).and(cursor)
+    let screen = execute!(out, LeaveAlternateScreen);
+    pop.and(mouse).and(screen)
+}
+
+/// Whether a panic on the current thread is another thread's, while the
+/// terminal is entered for a program that catches those itself.
+fn elsewhere() -> bool {
+    ACTIVE.load(Ordering::Acquire)
+        && OWNER
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some_and(|owner| owner != thread::current().id())
 }
 
 /// Restore the terminal before a panic is reported, then report it as the
-/// hook before would. Installed once per process.
+/// hook before would; a panic on another thread of a program that asked for
+/// [`Panics::ThisThread`] is left to that program. Installed once per
+/// process.
 fn install_panic_hook() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            if elsewhere() {
+                return;
+            }
             if let Err(error) = restore() {
                 eprintln!("kazoo: could not restore the terminal: {error}");
             }
@@ -351,7 +400,37 @@ mod tests {
             Options {
                 mouse: false,
                 key_release_events: false,
+                panics: Panics::AnyThread,
             }
         );
+    }
+
+    #[test]
+    fn leaving_lets_go_of_the_mouse_it_took() {
+        MOUSE.store(true, Ordering::Release);
+        let mut out = Vec::new();
+        leave_into(&mut out).expect("written to memory");
+        let written = String::from_utf8(out).expect("escape codes are text");
+        assert!(written.contains("?1000l"), "{written:?}");
+        assert!(written.contains("?1003l"), "{written:?}");
+        assert!(written.contains("?1049l"), "{written:?}");
+        let mut again = Vec::new();
+        leave_into(&mut again).expect("written to memory");
+        let again = String::from_utf8(again).expect("escape codes are text");
+        assert!(!again.contains("?1000l"), "let go once: {again:?}");
+    }
+
+    #[test]
+    fn another_threads_panic_is_the_programs_only_when_asked() {
+        assert!(!elsewhere(), "nothing is entered");
+        ACTIVE.store(true, Ordering::Release);
+        *OWNER.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread::current().id());
+        assert!(!elsewhere(), "this thread entered");
+        let other = thread::spawn(elsewhere).join().expect("the thread ran");
+        assert!(other, "another thread's panic is the program's");
+        *OWNER.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        let other = thread::spawn(elsewhere).join().expect("the thread ran");
+        assert!(!other, "any thread's panic restores");
+        ACTIVE.store(false, Ordering::Release);
     }
 }

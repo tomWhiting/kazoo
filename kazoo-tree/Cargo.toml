@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 crossterm = "0.29.0"
+kazoo-host = { path = "../kazoo-host", version = "=0.1.0" }
 kazoo-wall = { path = "../kazoo-wall", version = "=0.1.0" }
 libm = "0.2.16"
 ratatui = "0.30.0"

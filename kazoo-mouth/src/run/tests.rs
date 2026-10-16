@@ -153,34 +153,46 @@ fn a_saved_loop_is_a_float_wav_that_loops() -> color_eyre::Result<()> {
     Ok(())
 }
 
+/// The terminal, which let go of the mouse it took (kazoo-host's test of
+/// leaving checks that), is left on the way out whether the run failed or
+/// not, and a failure to leave is kept with the run's own.
 #[test]
-fn mouse_is_released_on_exit() {
-    use super::terminal::{Restore, finish};
-    use std::cell::RefCell;
+fn the_terminal_is_left_on_exit() {
+    use super::finish::{Restore, finish};
+    use std::cell::Cell;
     use std::rc::Rc;
     #[derive(Debug)]
-    struct Guard(Rc<RefCell<Vec<u8>>>);
+    struct Guard(Rc<Cell<usize>>, bool);
     impl Restore for Guard {
         fn leave(self) -> std::io::Result<()> {
-            let mut output = self.0.borrow_mut();
-            crossterm::execute!(&mut *output, crossterm::event::DisableMouseCapture)
+            self.0.set(self.0.get() + 1);
+            if self.1 {
+                Err(std::io::Error::other("injected restore error"))
+            } else {
+                Ok(())
+            }
         }
     }
     assert!(super::terminal_options().mouse);
-    for failed in [false, true] {
-        let output = Rc::new(RefCell::new(Vec::new()));
-        let guard = Guard(Rc::clone(&output));
+    for (failed, refused) in [(false, false), (true, false), (false, true), (true, true)] {
+        let left = Rc::new(Cell::new(0));
         let result = if failed {
             Err(color_eyre::eyre::eyre!("injected event error"))
         } else {
             Ok(())
         };
-        let result = finish(result, guard, Ok(()));
-        assert_eq!(result.is_err(), failed);
-        let bytes = output.borrow();
-        let restored = std::str::from_utf8(&bytes).unwrap();
-        assert!(restored.contains("?1000l"));
-        assert!(restored.contains("?1003l"));
+        let result = finish(result, Guard(Rc::clone(&left), refused), Ok(()));
+        assert_eq!(left.get(), 1, "left once");
+        assert_eq!(result.is_err(), failed || refused);
+        if let Err(error) = result {
+            let said = format!("{error:#}");
+            assert_eq!(said.contains("injected event error"), failed, "{said}");
+            assert_eq!(
+                said.contains("restoring the mouth terminal"),
+                refused,
+                "{said}"
+            );
+        }
     }
 }
 

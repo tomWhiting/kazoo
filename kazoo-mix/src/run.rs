@@ -115,6 +115,7 @@ pub fn run(args: Args) -> Result<()> {
     let mut terminal_guard = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
         mouse: true,
         key_release_events: false,
+        panics: kazoo_host::terminal::Panics::AnyThread,
     })?;
     let mouse = terminal_guard.mouse_captured();
 

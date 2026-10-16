@@ -25,7 +25,7 @@ use crate::engine::looper::{LoopFeed, LoopOut};
 use crate::engine::{Command, EngineSetup, MouthEngine, Stats};
 use crate::ui::{self, Display};
 
-mod terminal;
+mod finish;
 
 #[cfg(test)]
 mod tests;
@@ -202,7 +202,7 @@ pub fn run(args: Args) -> Result<()> {
     app.sync_stats(&session.stats, Instant::now());
     app.save_if_due(Instant::now(), true);
     let stopped = session.stop();
-    terminal::finish(result, terminal, stopped)
+    finish::finish(result, terminal, stopped)
 }
 
 struct Session {
@@ -671,5 +671,6 @@ const fn terminal_options() -> kazoo_host::terminal::Options {
     kazoo_host::terminal::Options {
         mouse: true,
         key_release_events: false,
+        panics: kazoo_host::terminal::Panics::AnyThread,
     }
 }
