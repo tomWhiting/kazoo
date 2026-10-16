@@ -121,7 +121,7 @@ struct Counter {
 }
 
 /// Every counter in [`EngineStatsSnapshot`], most serious first.
-const COUNTERS: [Counter; 17] = [
+const COUNTERS: [Counter; 20] = [
     Counter {
         short: "rec gaps",
         long: "recorded audio lost (the WAV file has gaps)",
@@ -196,6 +196,21 @@ const COUNTERS: [Counter; 17] = [
         short: "pitch out",
         long: "pitch results dropped",
         read: |s| s.analysis_results_dropped,
+    },
+    Counter {
+        short: "judge in",
+        long: "samples the voice judge missed",
+        read: |s| s.judge_samples_dropped,
+    },
+    Counter {
+        short: "judge out",
+        long: "voice judge verdicts dropped",
+        read: |s| s.judge_results_dropped,
+    },
+    Counter {
+        short: "pyin",
+        long: "pYIN runs that failed (read as unvoiced)",
+        read: |s| s.pitch_runs_failed,
     },
     Counter {
         short: "rt frees",
@@ -403,10 +418,28 @@ mod tests {
             takes_unavailable: 15,
             processors_rejected: 16,
             take_samples_dropped: 17,
+            judge_samples_dropped: 18,
+            judge_results_dropped: 19,
+            pitch_runs_failed: 20,
         };
         let mut read: Vec<u64> = COUNTERS.iter().map(|c| (c.read)(&latest)).collect();
         read.sort_unstable();
-        assert_eq!(read, (1..=17).collect::<Vec<u64>>());
+        assert_eq!(read, (1..=20).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn a_failed_pitch_run_is_reported() {
+        let mut health = EngineHealth::default();
+        let latest = EngineStatsSnapshot {
+            pitch_runs_failed: 1,
+            ..EngineStatsSnapshot::default()
+        };
+        assert!(!latest.is_clean());
+        assert_eq!(
+            health.observe(latest, Instant::now()).as_deref(),
+            Some("Engine: 1 pYIN runs that failed (read as unvoiced)")
+        );
+        assert_eq!(health.nonzero().collect::<Vec<_>>(), vec![("pyin", 1)]);
     }
 
     #[test]

@@ -94,6 +94,15 @@ pub struct EngineStatsSnapshot {
     /// to the reclaim thread. The engine is built so this never happens;
     /// any non-zero value is an engine bug.
     pub callback_frees: u64,
+    /// Samples the voice judge (pYIN and onsets) missed because its input
+    /// ring was full: it fell behind.
+    pub judge_samples_dropped: u64,
+    /// Voice judge verdicts lost because the output callback had not drained
+    /// the ones before.
+    pub judge_results_dropped: u64,
+    /// pYIN runs that failed in the voice judge, each read as an unvoiced
+    /// frame. A validated configuration never fails one.
+    pub pitch_runs_failed: u64,
 }
 
 impl EngineStatsSnapshot {
@@ -117,6 +126,9 @@ impl EngineStatsSnapshot {
             && self.takes_unavailable == 0
             && self.take_samples_dropped == 0
             && self.callback_frees == 0
+            && self.judge_samples_dropped == 0
+            && self.judge_results_dropped == 0
+            && self.pitch_runs_failed == 0
     }
 }
 
@@ -279,6 +291,10 @@ impl EngineStats {
             takes_unavailable: load(&self.takes_unavailable),
             take_samples_dropped: load(&self.take_samples_dropped),
             callback_frees: load(&self.callback_frees),
+            // The judge keeps its own counters; the handle adds them.
+            judge_samples_dropped: 0,
+            judge_results_dropped: 0,
+            pitch_runs_failed: 0,
         }
     }
 }
@@ -286,6 +302,26 @@ impl EngineStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_judges_counters_count_against_a_clean_engine() {
+        for snapshot in [
+            EngineStatsSnapshot {
+                judge_samples_dropped: 1,
+                ..EngineStatsSnapshot::default()
+            },
+            EngineStatsSnapshot {
+                judge_results_dropped: 1,
+                ..EngineStatsSnapshot::default()
+            },
+            EngineStatsSnapshot {
+                pitch_runs_failed: 1,
+                ..EngineStatsSnapshot::default()
+            },
+        ] {
+            assert!(!snapshot.is_clean(), "{snapshot:?}");
+        }
+    }
 
     #[test]
     fn new_stats_are_clean() {

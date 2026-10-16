@@ -225,12 +225,20 @@ impl EngineHandle {
     }
 
     /// Current engine health counters: dropped samples, lost commands,
-    /// rejected parameters and clips, and disk failures. Every counter is
+    /// rejected parameters and clips, disk failures, and the voice judge's
+    /// own (samples missed, verdicts lost, failed pYIN runs). Every counter is
     /// zero while the engine has lost nothing; frontends should surface
     /// non-zero values.
     #[must_use]
     pub fn stats(&self) -> EngineStatsSnapshot {
-        self.stats.snapshot()
+        let mut snapshot = self.stats.snapshot();
+        if let Some(handles) = &self.thread_handles {
+            let judge = handles.judge.stats();
+            snapshot.judge_samples_dropped = judge.samples_dropped;
+            snapshot.judge_results_dropped = judge.results_dropped;
+            snapshot.pitch_runs_failed = judge.pitch_runs_failed;
+        }
+        snapshot
     }
 
     /// Attach worker thread handles so they can be joined on shutdown.
