@@ -100,7 +100,7 @@ fn bench(loops: &mut Loops) -> Bench {
     let (module, feed) = build_loop(48_000.0);
     bench.module = module;
     bench.knob("bars", 1.0);
-    loops.attach("loop1", feed);
+    loops.attach("loop1", feed, 48_000.0);
     bench
 }
 

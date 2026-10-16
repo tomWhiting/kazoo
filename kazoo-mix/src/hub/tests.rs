@@ -874,3 +874,25 @@ fn a_stream_dropped_for_a_full_ring_is_not_counted_as_placed_afresh_too() {
     }
     assert_eq!(health.placed_afresh, placed, "{health:?}");
 }
+
+#[test]
+fn an_instrument_at_another_rate_reads_the_desks_rate_from_its_refusal() {
+    use kazoo_core::host::link::connect_config_or_direct;
+    use kazoo_core::ipc::link::{HubAddress, LinkConfig};
+    let rig = Rig::new([false; DESK_CHANNELS]);
+    let mut config = LinkConfig::new("kazoo-wall", 2, 44_100, 512);
+    config.address = HubAddress::Socket(rig.socket);
+    // As the wall links to the desk.
+    let (link, _audio) = connect_config_or_direct(config).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while link.status().refused_for_rate().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "never refused for its rate: {:?}",
+            link.status().last_refusal
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(link.status().refused_for_rate(), Some(RATE));
+    assert!(!link.is_connected());
+}

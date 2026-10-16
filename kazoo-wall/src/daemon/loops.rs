@@ -293,13 +293,12 @@ impl Loops {
         Some(view)
     }
 
-    /// Attach a freshly built loop's feed. Its tapes from here on have room
-    /// for a take recorded at any rate (see [`looper::tape_geometry`]).
+    /// Attach a freshly built loop's feed; the loop was built at `rate`.
     /// Anything still on its way to a loop of this id is dropped.
-    pub fn attach(&mut self, module: &str, feed: LoopFeed) {
+    pub fn attach(&mut self, module: &str, feed: LoopFeed, rate: f32) {
         self.forget(module);
         self.geometry
-            .insert(module.to_string(), looper::tape_geometry());
+            .insert(module.to_string(), looper::geometry(rate));
         self.feeds.insert(module.to_string(), feed);
     }
 

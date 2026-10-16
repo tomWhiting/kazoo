@@ -285,6 +285,13 @@ impl Wall {
         Ok(())
     }
 
+    /// The loops recording, or with a take on its way: opening the audio
+    /// again now would lose what they recorded since their last take.
+    #[must_use]
+    pub fn loops_recording(&self) -> Vec<String> {
+        self.loops.recording_modules()
+    }
+
     pub(super) fn note_loop_restart(&mut self) {
         let frame = self.engine.shared().frames();
         for module in self.loops.recording_modules() {

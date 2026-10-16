@@ -277,10 +277,9 @@ impl fmt::Display for HubNotice {
 impl fmt::Display for RefuseReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SampleRate { instrument, desk } => write!(
-                f,
-                "it runs at {instrument} Hz, the desk at {desk} Hz (use the same device)"
-            ),
+            Self::SampleRate { instrument, desk } => {
+                f.write_str(&kazoo_core::ipc::link::rate_refusal(*instrument, *desk))
+            }
             Self::Channels(n) => write!(f, "{n} channels (mono or stereo only)"),
             Self::BlockTooLarge {
                 frames,
@@ -376,7 +375,7 @@ impl Hub {
         };
         listener.set_nonblocking(true)?;
         if config.advertise {
-            discovery::write_pid_file(&config.socket, config.sample_rate)?;
+            discovery::write_pid_file(&config.socket)?;
         }
 
         let running = Arc::new(AtomicBool::new(true));

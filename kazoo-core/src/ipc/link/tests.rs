@@ -576,3 +576,49 @@ fn a_refused_promotion_is_reported_not_printed() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// A link's status that last failed for `refusal`.
+fn refused(refusal: &str) -> LinkStatus {
+    LinkStatus {
+        voice: VoiceLink::default(),
+        normal_priority: false,
+        connected: false,
+        strip: None,
+        blocks_sent: 0,
+        blocks_dropped: 0,
+        messages_dropped: 0,
+        connections: 0,
+        last_refusal: Some(refusal.to_string()),
+    }
+}
+
+#[test]
+fn the_desks_rate_reads_back_from_its_refusal_for_another_rate() {
+    let said = |instrument, desk| {
+        refused(&format!(
+            "{DESK_REFUSED}kazoo-wall: {}",
+            rate_refusal(instrument, desk)
+        ))
+    };
+    assert_eq!(said(48_000, 44_100).refused_for_rate(), Some(44_100));
+    assert_eq!(said(44_100, 96_000).refused_for_rate(), Some(96_000));
+    // A rate no instrument runs at is not believed.
+    assert_eq!(said(48_000, 1).refused_for_rate(), None);
+    assert_eq!(said(48_000, 4_000_000_000).refused_for_rate(), None);
+    // Refused for another reason, or not refused by the desk at all.
+    assert_eq!(
+        refused(&format!("{DESK_REFUSED}kazoo-wall: every strip is taken")).refused_for_rate(),
+        None
+    );
+    assert_eq!(
+        refused("cannot find the desk: no such file").refused_for_rate(),
+        None
+    );
+    assert_eq!(
+        refused(&format!(
+            "{DESK_REFUSED}kazoo-wall: it runs at 48000 Hz, the desk at +44100 Hz (use the same device)"
+        ))
+        .refused_for_rate(),
+        None
+    );
+}

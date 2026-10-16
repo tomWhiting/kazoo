@@ -448,6 +448,42 @@ impl LinkStatus {
             .split_once(": ")
             .map(|(_, reason)| reason)
     }
+
+    /// The desk's rate, when the desk refused this instrument for running
+    /// at another (see [`rate_refusal`]) and said a rate an instrument can
+    /// run at; `None` otherwise.
+    #[must_use]
+    pub fn refused_for_rate(&self) -> Option<u32> {
+        refused_desk_rate(self.desk_refusal()?)
+    }
+}
+
+/// The lowest and highest rates the desk's rate is believed at.
+const DESK_RATES: std::ops::RangeInclusive<u32> = 8_000..=768_000;
+
+/// The words a desk refuses an instrument at `instrument` Hz with when it
+/// runs at `desk` Hz.
+///
+/// The desk says them, and an instrument reads the desk's rate back from
+/// them (see [`LinkStatus::refused_for_rate`]).
+#[must_use]
+pub fn rate_refusal(instrument: u32, desk: u32) -> String {
+    format!("it runs at {instrument} Hz, the desk at {desk} Hz (use the same device)")
+}
+
+/// The desk's rate in `reason`, when it is a [`rate_refusal`] naming a
+/// rate in [`DESK_RATES`].
+fn refused_desk_rate(reason: &str) -> Option<u32> {
+    let (_, rest) = reason
+        .strip_prefix("it runs at ")?
+        .split_once(" Hz, the desk at ")?;
+    let digits = rest.strip_suffix(" Hz (use the same device)")?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits
+        .parse::<u32>()
+        .map_or(None, |rate| DESK_RATES.contains(&rate).then_some(rate))
 }
 
 /// The UI half of the link. Dropping it says goodbye to the hub.

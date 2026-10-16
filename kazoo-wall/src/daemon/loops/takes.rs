@@ -370,9 +370,12 @@ impl Loops {
                 continue;
             }
             if !take.started {
-                let Some(&(capacity, tail)) = self.geometry.get(&take.module) else {
+                if !self.geometry.contains_key(&take.module) {
                     continue;
-                };
+                }
+                // The loop may hold a take made at a higher rate than its
+                // own (KZ-D21): its spare has room for one at any rate.
+                let (capacity, tail) = crate::dsp::looper::tape_geometry();
                 take.started = true;
                 self.recordings.jobs.push_back((
                     *ticket,

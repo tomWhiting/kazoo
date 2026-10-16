@@ -403,13 +403,17 @@ fn start_headless(
     let link = link_to_desk(desk, rate, Pacing::Timer);
     let (hub, link) = split_link(link);
     let (engine, mut control) = engine(engine_config(rate, at, heard), hub);
-    let running = match Headless::start(engine, rate) {
-        Ok(headless) => Running::Headless(headless),
+    let (running, retry_at) = match Headless::start(engine, rate) {
+        Ok(headless) => (Running::Headless(headless), retry_at),
         Err(err) => {
-            // Without a thread there is nothing to render on: the next
-            // housekeeping round sees it finished and tries again.
-            eprintln!("kazoo-wall: the render thread could not start: {err}");
-            Running::Headless(Headless::stopped())
+            // Without a thread there is nothing to render on: it is tried
+            // again once the retry is up, never on every round.
+            eprintln!("kazoo-wall: the render thread could not start: {err}; retrying in 2 s");
+            let retry = Instant::now() + DEVICE_RETRY;
+            (
+                Running::Headless(Headless::stopped()),
+                Some(retry_at.map_or(retry, |at| at.max(retry))),
+            )
         }
     };
     (
@@ -933,11 +937,14 @@ impl Control {
                 failed
             }
             Running::Headless(headless) => {
-                let died = headless.finished();
+                // A render loop that stopped starts again at once, unless a
+                // retry is set (one that could not start waits for it).
+                let due = backend.retry_at.is_some_and(|at| now >= at);
+                let died = headless.finished() && (backend.retry_at.is_none() || due);
                 if died {
                     eprintln!("kazoo-wall: the render loop stopped; restarting it");
                 }
-                died || backend.retry_at.is_some_and(|at| now >= at)
+                died || due
             }
         };
         if rebuild {
@@ -1005,11 +1012,6 @@ impl Control {
             Some(Running::Device { .. })
         );
         let following = self.desk_rate.following();
-        if following.is_none() {
-            // The audio opens again other than to match a desk: whatever
-            // rate it comes back at, a desk at another is matched afresh.
-            self.desk_rate.forget_tried();
-        }
         self.replace_audio(now, |control, at| {
             if let Some(rate) = following {
                 // The render loop rendering for a desk stopped: it starts
