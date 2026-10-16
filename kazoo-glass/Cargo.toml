@@ -2,6 +2,7 @@
 name = "kazoo-glass"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 description = "Polyphonic modal bell synthesizer: tuned glass, chimes and metallic keys"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/tomWhiting/kazoo"
@@ -10,7 +11,7 @@ repository = "https://github.com/tomWhiting/kazoo"
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host", version = "0.1.0" }
+kazoo-host = { path = "../kazoo-host", version = "=0.1.0" }
 kazoo-core = { version = "0.1.0", path = "../kazoo-core" }
 color-eyre = "0.6.5"
 cpal = "0.17"

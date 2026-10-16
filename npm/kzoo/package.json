@@ -8,17 +8,31 @@
     "type": "git",
     "url": "git+https://github.com/tomWhiting/kazoo.git"
   },
-  "keywords": ["synthesizer", "modular", "audio", "music", "terminal", "tui"],
+  "keywords": [
+    "synthesizer",
+    "modular",
+    "audio",
+    "music",
+    "terminal",
+    "tui"
+  ],
   "bin": {
-    "kzoo": "bin/kzoo.js"
+    "kzoo": "bin/kzoo.js",
+    "kazoo": "bin/kzoo.js"
   },
-  "files": ["bin/kzoo.js", "README.md", "LICENSE"],
-  "os": ["darwin"],
+  "files": [
+    "bin/kzoo.js",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=18"
   },
   "optionalDependencies": {
     "kzoo-darwin-arm64": "0.1.0",
     "kzoo-darwin-x64": "0.1.0"
+  },
+  "scripts": {
+    "prepublishOnly": "test -f LICENSE && test -f README.md"
   }
 }

@@ -14,22 +14,25 @@ pub fn main(name: &'static str) -> ExitCode {
     let matches = Cli::command().name(name).bin_name(name).get_matches();
     let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
-        Err(err) => err.format(&mut Cli::command().name(name).bin_name(name)).exit(),
+        Err(err) => err
+            .format(&mut Cli::command().name(name).bin_name(name))
+            .exit(),
     };
     if let Err(err) = kazoo_host::reports::install() {
-        eprintln!("kazoo: {err}");
+        eprintln!("{name}: {err}");
         return ExitCode::FAILURE;
     }
+    let finish = |result| finish_as(name, result);
     match cli.command {
         Command::Mix(args) => finish(kazoo_mix::run(args.into())),
         Command::Studio { command } => match crate::studio::run(&command) {
             Ok(code) => code,
             Err(report) => {
-                eprintln!("kazoo: {report:#}");
+                eprintln!("{name}: {report:#}");
                 ExitCode::FAILURE
             }
         },
-        Command::Wall { command } => finish(wall(command)),
+        Command::Wall { command } => finish(wall(name, command)),
         Command::Mcp(args) => finish(kazoo_mcp::run(args.into())),
         Command::EightOhEight => finish(kazoo_808::run(kazoo_808::Args)),
         Command::ThreeOhThree => finish(kazoo_303::run(kazoo_303::Args)),
@@ -47,7 +50,7 @@ pub fn main(name: &'static str) -> ExitCode {
                 ExitCode::from(1)
             }
             Err(err) => {
-                eprintln!("kazoo-play: {err}");
+                eprintln!("{name} play: {err}");
                 ExitCode::from(err.exit_code())
             }
         },
@@ -57,11 +60,13 @@ pub fn main(name: &'static str) -> ExitCode {
     }
 }
 
-fn finish(result: color_eyre::Result<()>) -> ExitCode {
+/// The exit code for `result`, with its report said under the program's
+/// `name` when it failed.
+fn finish_as(name: &str, result: color_eyre::Result<()>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(report) => {
-            eprintln!("kazoo: {report:?}");
+            eprintln!("{name}: {report:?}");
             ExitCode::FAILURE
         }
     }
@@ -87,7 +92,7 @@ fn tree(args: &crate::cli::TreeArgs) -> color_eyre::Result<()> {
     Ok(())
 }
 
-fn wall(command: Option<WallCommand>) -> color_eyre::Result<()> {
+fn wall(name: &str, command: Option<WallCommand>) -> color_eyre::Result<()> {
     match command {
         Some(WallCommand::Tree {
             command: TreeCommand::Import(args),
@@ -116,7 +121,7 @@ fn wall(command: Option<WallCommand>) -> color_eyre::Result<()> {
                 &kazoo_wall::paths::socket_path(),
                 Duration::from_secs(10),
             )?;
-            eprintln!("kazoo: stopped");
+            eprintln!("{name}: stopped");
             Ok(())
         }
     }

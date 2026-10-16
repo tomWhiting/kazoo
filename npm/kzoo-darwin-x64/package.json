@@ -8,7 +8,18 @@
     "type": "git",
     "url": "git+https://github.com/tomWhiting/kazoo.git"
   },
-  "files": ["bin/kzoo", "LICENSE"],
-  "os": ["darwin"],
-  "cpu": ["x64"]
+  "files": [
+    "bin/kzoo",
+    "LICENSE"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "preferUnplugged": true,
+  "scripts": {
+    "prepublishOnly": "test -x bin/kzoo && test -f LICENSE"
+  }
 }

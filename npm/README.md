@@ -12,4 +12,6 @@ Each release, in order (`publish.sh` does it):
    `x86_64-apple-darwin`, and copy each into its package's `bin/kzoo`.
 2. Set every package's `version`, and the launcher's
    `optionalDependencies`, to the crate's version.
-3. Publish the two platform packages, then `kzoo`.
+3. Check each tarball: the program executable and signed in each platform
+   package, the licence in all three, the README in `kzoo`.
+4. Publish the two platform packages, then `kzoo`.
