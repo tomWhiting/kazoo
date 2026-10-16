@@ -15,6 +15,14 @@ if [ "${1:-}" = "--dry-run" ]; then
   dry="--dry-run"
 fi
 
+# A release is made from main as it stands, so its tag names what went out.
+if [ -z "$dry" ]; then
+  if [ "$(git -C "$root" branch --show-current)" != main ] || [ -n "$(git -C "$root" status --porcelain)" ]; then
+    echo "publish.sh: release from a clean checkout of main" >&2
+    exit 1
+  fi
+fi
+
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/kazoo-cli/Cargo.toml" | head -n 1)
 if [ -z "$version" ]; then
   echo "publish.sh: kazoo-cli/Cargo.toml has no version" >&2
@@ -77,4 +85,7 @@ done
 # Tagged once all of it is out (the crates.io release tags the same).
 if [ -z "$dry" ] && ! git -C "$root" rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
   git -C "$root" tag -a "v$version" -m "kzoo $version"
+fi
+if [ -z "$dry" ]; then
+  git -C "$root" push origin "v$version"
 fi
