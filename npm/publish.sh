@@ -44,6 +44,9 @@ for pair in aarch64-apple-darwin:arm64 x86_64-apple-darwin:x64; do
   codesign --force --sign - "$package/bin/kzoo"
   codesign --verify "$package/bin/kzoo"
   cp "$root/LICENSE" "$package/LICENSE"
+  # Every crate linked into this build, with its licence, and the code
+  # vendored into kzoo's own: refused if any crate's notice is missing.
+  python3 -I "$here/notices.py" "$root" "$target" > "$package/THIRD-PARTY-NOTICES"
 done
 cp "$root/LICENSE" "$here/kzoo/LICENSE"
 cp "$root/README.md" "$here/kzoo/README.md"
@@ -57,13 +60,15 @@ done
     "optionalDependencies.kzoo-darwin-x64=$version")
 
 # What each tarball holds, checked before anything goes out: the program
-# executable in each platform package, the licence in all three.
+# executable and the third-party notices in each platform package, the
+# licence in all three.
 for package in kzoo-darwin-arm64 kzoo-darwin-x64; do
   (cd "$here/$package" && npm pack --dry-run --json) | node -e '
     const files = JSON.parse(require("fs").readFileSync(0, "utf8"))[0].files;
     const program = files.find((f) => f.path === "bin/kzoo");
     if (!program || (program.mode & 0o111) === 0) throw new Error("bin/kzoo is missing or not executable");
-    if (!files.some((f) => f.path === "LICENSE")) throw new Error("LICENSE is missing");'
+    if (!files.some((f) => f.path === "LICENSE")) throw new Error("LICENSE is missing");
+    if (!files.some((f) => f.path === "THIRD-PARTY-NOTICES")) throw new Error("THIRD-PARTY-NOTICES is missing");'
 done
 (cd "$here/kzoo" && npm pack --dry-run --json) | node -e '
   const files = JSON.parse(require("fs").readFileSync(0, "utf8"))[0].files.map((f) => f.path);

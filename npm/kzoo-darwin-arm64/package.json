@@ -10,7 +10,8 @@
   },
   "files": [
     "bin/kzoo",
-    "LICENSE"
+    "LICENSE",
+    "THIRD-PARTY-NOTICES"
   ],
   "os": [
     "darwin"
@@ -20,6 +21,6 @@
   ],
   "preferUnplugged": true,
   "scripts": {
-    "prepublishOnly": "test -x bin/kzoo && test -f LICENSE"
+    "prepublishOnly": "test -x bin/kzoo && test -f LICENSE && test -s THIRD-PARTY-NOTICES"
   }
 }
