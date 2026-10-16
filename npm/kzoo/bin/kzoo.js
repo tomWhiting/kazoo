@@ -26,7 +26,7 @@ if (!name) {
   const from_source =
     process.platform === "win32"
       ? ""
-      : "\nFrom source, with Rust 1.89 or later: cargo install --locked kzoo";
+      : "\nFrom source, with Rust 1.89 or later: cargo install kzoo";
   fail(
     `there is no build for ${key}: kazoo runs on macOS (Apple silicon or Intel).${from_source}`,
   );

@@ -20,6 +20,7 @@ mod envelope;
 mod formant;
 mod onset;
 mod pitch;
+mod pyin;
 pub mod score;
 mod spectrum;
 

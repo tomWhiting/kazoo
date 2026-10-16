@@ -418,24 +418,23 @@ fn reset_forgets_the_voice() {
     );
 }
 
-/// pYIN builds a dense `(2 × pitch_bins)²` table of `f64`s; at resolution
-/// 0.01 over 50–4000 Hz that is about 1.8 GB. A table past the 64 MiB ceiling
-/// is refused by `validate`, before `new` allocates anything, and the refusal
-/// names the size; the configs callers use are still accepted.
+/// At resolution 0.01 over 50–4000 Hz pYIN would run 15174 states. A grid
+/// past the ceiling is refused by `validate`, before `new` allocates anything,
+/// and the refusal names the count; the configs callers use are still accepted.
 #[test]
-fn a_pyin_table_past_the_ceiling_is_refused() {
+fn a_pyin_grid_past_the_ceiling_is_refused() {
     let voice_range = PitchDetectorConfig {
         min_frequency: 50.0,
         max_frequency: 4_000.0,
         ..PitchDetectorConfig::for_rate(48_000)
     };
-    for (resolution, size) in [(0.01, "1756.7 MiB"), (0.05, "70.3 MiB")] {
+    for (resolution, size) in [(0.01, "15174 pyin states"), (0.05, "3036 pyin states")] {
         let asked = PitchDetectorConfig {
             resolution,
             ..voice_range.clone()
         };
         for config in [asked.clone(), asked.with_longest_hop()] {
-            let refused = validate(&config).expect_err("an oversized table is refused");
+            let refused = validate(&config).expect_err("an oversized grid is refused");
             assert!(
                 matches!(refused, crate::Error::Config(ref message) if message.contains(size)),
                 "resolution {resolution}: {refused}"

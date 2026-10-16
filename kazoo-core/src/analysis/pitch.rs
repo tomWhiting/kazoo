@@ -1,13 +1,13 @@
 //! Pitch detection via the pYIN algorithm.
 //!
-//! Wraps the [`pyin`] crate's `PYINExecutor` to provide an incremental,
+//! Wraps kazoo's pYIN tracker to provide an incremental,
 //! frame-based pitch detector suitable for real-time audio analysis. Incoming
 //! samples enter a sliding history window; every hop the pYIN algorithm
 //! judges the newest frame with preceding frames as context.
 
 use crate::{frequency_to_midi_note, sanitize_sample};
-use pyin::{Framing, PYINExecutor};
 
+use super::pyin::{Framing, Pyin, Settings, Track};
 use super::{VOICE_MAX_HZ, VOICE_MIN_HZ};
 
 /// pYIN frames per run; the HMM picks the newest frame's octave with two frames of context behind it.
@@ -16,18 +16,11 @@ pub const JUDGE_FRAMES: usize = 3;
 /// The judge only rules on octave and voicing: fusion folds within 300 cents
 /// and flags disagreement past 100. pYIN rounds `1 / 0.34` up to three bins a
 /// semitone, so the bins are 33.3 cents: inside both, and they cut pYIN's
-/// states from 1518 to 456, measured at 1.5 ms CPU a run at three frames,
-/// under the 2.1 ms budget.
+/// states from 1518 to 456. A run of three frames then measured 1.3 to
+/// 1.8 ms CPU with the pyin crate, and 0.19 to 0.34 ms with kazoo's own
+/// (17 Oct 2026, release, a sine, noise and silence at 48 kHz), under the
+/// 2.1 ms budget.
 pub const JUDGE_RESOLUTION: f64 = 0.34;
-
-/// The largest pYIN transition table a detector may build, in bytes.
-///
-/// pYIN 1.2 builds a dense `(2 × pitch_bins)²` table of `f64`s inside
-/// `PYINExecutor::new`. The wall listener uses 0.1 over its range, while the
-/// voice judge uses coarser bins to rule only on octave and voicing.
-/// A 64 MiB ceiling leaves room for 0.1 over the full 50–4000 Hz voice range
-/// (about 18.4 MB) and refuses 0.05 over that range (about 73.7 MB).
-const PYIN_TABLE_CEILING: f64 = 64.0 * 1024.0 * 1024.0;
 
 /// Configuration for the pitch detector.
 #[derive(Debug, Clone)]
@@ -138,12 +131,14 @@ pub struct PitchEstimate {
 /// accumulated into an internal ring buffer. Every hop the detector runs
 /// pYIN and returns a [`PitchEstimate`] for the newest frame.
 pub struct PitchDetector {
-    executor: PYINExecutor<f64>,
+    tracker: Pyin,
     config: PitchDetectorConfig,
     history: Vec<f64>,
     scratch: Vec<f64>,
     buffer_pos: usize,
     since_run: usize,
+    failed_runs: u64,
+    last_failure: Option<String>,
 }
 
 impl std::fmt::Debug for PitchDetector {
@@ -153,6 +148,8 @@ impl std::fmt::Debug for PitchDetector {
             .field("history_len", &self.history.len())
             .field("buffer_pos", &self.buffer_pos)
             .field("since_run", &self.since_run)
+            .field("failed_runs", &self.failed_runs)
+            .field("last_failure", &self.last_failure)
             .finish_non_exhaustive()
     }
 }
@@ -174,27 +171,21 @@ impl PitchDetector {
             .and_then(|context| config.frame_length.checked_add(context))
             .ok_or_else(|| crate::Error::Config("pitch history length overflow".into()))?;
 
-        let executor = PYINExecutor::new(
-            f64::from(config.min_frequency),
-            f64::from(config.max_frequency),
-            config.sample_rate,
-            config.frame_length,
-            None, // win_length: default frame_length / 2
-            Some(config.hop_length),
-            Some(config.resolution),
-        );
+        let tracker = Pyin::new(pyin_settings(&config))?;
 
         // A full silent history makes startup use the same path as every later hop.
         let history = vec![0.0_f64; history_len];
         let scratch = vec![0.0_f64; history_len];
 
         Ok(Self {
-            executor,
+            tracker,
             config,
             history,
             scratch,
             buffer_pos: 0,
             since_run: 0,
+            failed_runs: 0,
+            last_failure: None,
         })
     }
 
@@ -232,6 +223,19 @@ impl PitchDetector {
         self.since_run = 0;
     }
 
+    /// How many runs pYIN could not make since the detector was built; each
+    /// was reported unvoiced.
+    #[must_use]
+    pub const fn failed_runs(&self) -> u64 {
+        self.failed_runs
+    }
+
+    /// Why the last failed run failed, if one has.
+    #[must_use]
+    pub fn last_failure(&self) -> Option<&str> {
+        self.last_failure.as_deref()
+    }
+
     /// Return the current configuration.
     #[must_use]
     pub const fn config(&self) -> &PitchDetectorConfig {
@@ -243,11 +247,22 @@ impl PitchDetector {
         let oldest_len = self.history.len() - self.buffer_pos;
         self.scratch[..oldest_len].copy_from_slice(&self.history[self.buffer_pos..]);
         self.scratch[oldest_len..].copy_from_slice(&self.history[..self.buffer_pos]);
-        let (_, f0, voiced_flag, voiced_prob) =
-            self.executor.pyin(&self.scratch, f64::NAN, Framing::Valid);
-        let (Some(&frequency), Some(&voiced), Some(&probability)) =
-            (f0.last(), voiced_flag.last(), voiced_prob.last())
-        else {
+        // The history is one frame and two hops, which `new` checked pYIN
+        // can read. A run that fails all the same is counted, its reason
+        // kept, and the frame reported unvoiced.
+        let track = match self.tracker.track(&self.scratch, f64::NAN, Framing::Valid) {
+            Ok(track) => track,
+            Err(error) => {
+                self.failed_runs += 1;
+                self.last_failure = Some(error.to_string());
+                Track::default()
+            }
+        };
+        let (Some(&frequency), Some(&voiced), Some(&probability)) = (
+            track.f0.last(),
+            track.voiced.last(),
+            track.voiced_prob.last(),
+        ) else {
             return PitchEstimate {
                 frequency: None,
                 voiced_probability: 0.0,
@@ -322,69 +337,26 @@ fn validate(config: &PitchDetectorConfig) -> crate::Result<()> {
     check_pyin_limits(config)
 }
 
-/// Refuse a configuration that pyin's `PYINExecutor::new` would panic on.
-///
-/// Mirrors pYIN's arithmetic with `win_length = frame_length / 2` and
-/// the configured resolution, so the two never disagree. The caller has already
-/// checked the range, the Nyquist limit, a `frame_length` of at least 4 and a
-/// hop in `1..=frame_length`.
+/// The pYIN settings the detector runs: a window of half the frame.
+fn pyin_settings(config: &PitchDetectorConfig) -> Settings {
+    Settings {
+        fmin: f64::from(config.min_frequency),
+        fmax: f64::from(config.max_frequency),
+        rate: config.sample_rate,
+        frame_length: config.frame_length,
+        win_length: config.frame_length / 2,
+        hop_length: config.hop_length,
+        resolution: config.resolution,
+    }
+}
+
+/// Refuse a configuration pYIN cannot build a tracker for, or one with more
+/// states than its ceiling ([`super::pyin::MAX_STATES`]), before anything is
+/// allocated.
+/// The caller has already checked the range, the Nyquist limit, a
+/// `frame_length` of at least 4 and a hop in `1..=frame_length`.
 fn check_pyin_limits(config: &PitchDetectorConfig) -> crate::Result<()> {
-    // The executor asserts a strict upper bound even though one semitone is a valid bin size.
-    if config.resolution >= 1.0 {
-        return Err(crate::Error::Config(
-            "pyin requires resolution strictly below 1.0".into(),
-        ));
-    }
-    let rate = f64::from(config.sample_rate);
-    let fmin = f64::from(config.min_frequency);
-    let fmax = f64::from(config.max_frequency);
-
-    // The longest period pyin searches is `frame_length - win_length - 1`.
-    let longest = config.frame_length - config.frame_length / 2 - 1;
-    let longest = u32::try_from(longest)
-        .map(f64::from)
-        .map_err(|_| crate::Error::Config("frame_length too large for pyin".into()))?;
-    let min_period = (rate / fmax).floor().max(1.0);
-    let max_period = (rate / fmin).ceil().min(longest);
-    if max_period < min_period + 2.0 {
-        return Err(crate::Error::Config(format!(
-            "frame_length {} is too short for {fmin} Hz at {rate} Hz: pyin needs \
-             periods {min_period} to {max_period} to span at least 2 samples",
-            config.frame_length
-        )));
-    }
-
-    let bins_per_semitone = (1.0 / config.resolution).ceil();
-    let pitch_bins = (12.0 * bins_per_semitone * (fmax / fmin).log2()).floor() + 1.0;
-    if pitch_bins < 2.0 {
-        return Err(crate::Error::Config(format!(
-            "range [{fmin}, {fmax}] Hz holds fewer than 2 pyin pitch bins"
-        )));
-    }
-
-    let table = (2.0 * pitch_bins).powi(2) * 8.0;
-    if table > PYIN_TABLE_CEILING {
-        return Err(crate::Error::Config(format!(
-            "resolution {} over [{fmin}, {fmax}] Hz needs a {:.1} MiB pyin table, more than the 64 MiB ceiling",
-            config.resolution,
-            table / 1_048_576.0
-        )));
-    }
-
-    let hop = u32::try_from(config.hop_length)
-        .map(f64::from)
-        .map_err(|_| crate::Error::Config("hop_length too large for pyin".into()))?;
-    let transition_width = (35.92 * 12.0 * hop / rate)
-        .round()
-        .mul_add(bins_per_semitone, 1.0);
-    if pitch_bins < transition_width {
-        return Err(crate::Error::Config(format!(
-            "hop_length {} at {rate} Hz lets a pitch move {transition_width} bins \
-             per hop, more than the range's {pitch_bins} bins",
-            config.hop_length
-        )));
-    }
-    Ok(())
+    pyin_settings(config).grid().map(drop)
 }
 
 #[cfg(test)]

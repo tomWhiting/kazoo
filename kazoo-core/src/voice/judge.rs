@@ -53,12 +53,15 @@ impl Default for OnsetConfig {
 struct JudgeStats {
     samples_dropped: AtomicU64,
     results_dropped: AtomicU64,
+    pitch_runs_failed: AtomicU64,
 }
 /// Ring overflow counters since this judge started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JudgeStatsSnapshot {
     pub samples_dropped: u64,
     pub results_dropped: u64,
+    /// pYIN runs that failed, each reported as an unvoiced frame.
+    pub pitch_runs_failed: u64,
 }
 
 /// Callback-side producer and a wake token for the worker.
@@ -119,6 +122,7 @@ pub fn spawn(
     let stats = Arc::new(JudgeStats::default());
     let worker_stats = Arc::clone(&stats);
     let mut buffer = vec![0.0; block.max(256)];
+    let mut failed_runs = 0;
     let handle = std::thread::Builder::new()
         .name("kazoo-judge".into())
         .spawn(move || {
@@ -137,6 +141,13 @@ pub fn spawn(
                         if output.try_push(JudgeResult::Pitch(estimate)).is_err() {
                             worker_stats.results_dropped.fetch_add(1, Ordering::Relaxed);
                         }
+                    }
+                    let failed = detector.failed_runs();
+                    if failed > failed_runs {
+                        worker_stats
+                            .pitch_runs_failed
+                            .fetch_add(failed - failed_runs, Ordering::Relaxed);
+                        failed_runs = failed;
                     }
                     for event in onset.push_samples(samples) {
                         if output
@@ -185,6 +196,7 @@ impl Judge {
         JudgeStatsSnapshot {
             samples_dropped: self.stats.samples_dropped.load(Ordering::Relaxed),
             results_dropped: self.stats.results_dropped.load(Ordering::Relaxed),
+            pitch_runs_failed: self.stats.pitch_runs_failed.load(Ordering::Relaxed),
         }
     }
     /// Join after dropping the feed; a wake makes producer shutdown immediate.

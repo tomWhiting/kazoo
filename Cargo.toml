@@ -43,5 +43,3 @@ cast_sign_loss = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
-[profile.dev.package.pyin]
-opt-level = 3

@@ -88,7 +88,7 @@ cargo run -p kazoo-tui --release
 | cpal | 0.17 | Audio I/O (mic input, speaker output) |
 | rustfft | 6.4 | FFT/IFFT for spectral processing |
 | fundsp | 0.23 | DSP primitives and synthesis nodes |
-| pyin | 1.2 | Vocal pitch detection (PYIN algorithm) |
+| realfft | 3.5 | FFTs for the pYIN port in `kazoo-core/src/analysis/pyin` (from pyin 1.2.0, MIT) |
 | hound | 3.5 | WAV file read/write |
 | symphonia | 0.5 | Multi-format audio file decoding |
 | rubato | 1.0 | Sample rate conversion |
