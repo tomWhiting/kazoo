@@ -937,12 +937,14 @@ fn part_of(value: &str) -> Result<(usize, usize), String> {
     }
 }
 
-/// A moment's batch, from its kind and its `Kazoo-Note`, `Kazoo-Part` and
-/// `Kazoo-Step` trailers: only a `batch` or one of its `part`s is one. A batch with no note is shown by its
-/// subject (the wall writes it `{seat}: {note}`), and with no steps as one
-/// with none; each is said in `problems`. A note or steps on a moment that
-/// is not a batch make no knot, and are said in `problems` word for word:
-/// they are someone's words, and nothing is thrown away.
+/// A moment's batch, from its kind and its `Kazoo-Note`, `Kazoo-Part`,
+/// `Kazoo-Step` and `Kazoo-Step-Comment` trailers: only a `batch` or one of
+/// its `part`s is one. A batch with no note is shown by its subject (the
+/// wall writes it `{seat}: {note}`), and with no steps as one with none;
+/// each is said in `problems`, as is a step's comment given twice or for a
+/// step the batch does not have. A note, steps or step comments on a moment
+/// that is not a batch make no knot, and are said in `problems` word for
+/// word: they are someone's words, and nothing is thrown away.
 fn batch_of(
     kind: &str,
     summary: &str,
@@ -981,11 +983,18 @@ fn batch_of(
         problems.push("a batch without its note (no Kazoo-Note)".to_owned());
         summary.to_owned()
     });
+    let mut commented = HashSet::new();
     for (step, comment) in &comments {
         if *step > steps.len() {
             problems.push(format!(
                 "a comment for step {step} of a batch of {} steps: {comment}",
                 steps.len()
+            ));
+        }
+        if !commented.insert(*step) {
+            problems.push(format!(
+                "step {step}'s comment is given more than once; the first is shown, and this \
+                 one is not: {comment}"
             ));
         }
     }

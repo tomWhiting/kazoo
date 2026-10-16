@@ -413,6 +413,31 @@ fn a_recording_stopped_keeps_its_comment_even_while_the_log_owes() {
         ["change", "part", "part", "batch"]
     );
     assert_eq!(comments(rig.tree.path(), 4)[0], "end of take");
+    // Each moment holds the wall it was made to: the stop, paid before the
+    // batch was staged, holds none of the batch's work.
+    let cutoffs: Vec<String> = (0..4)
+        .rev()
+        .map(|back| {
+            command(
+                rig.tree.path(),
+                &["show", &format!("HEAD~{back}:modules/vcf1.toml")],
+            )
+            .lines()
+            .find(|line| line.trim_start().starts_with("cutoff"))
+            .unwrap()
+            .trim()
+            .to_string()
+        })
+        .collect();
+    assert_eq!(
+        cutoffs,
+        [
+            "cutoff = 2000.0",
+            "cutoff = 300.0",
+            "cutoff = 400.0",
+            "cutoff = 500.0"
+        ]
+    );
 }
 
 #[test]

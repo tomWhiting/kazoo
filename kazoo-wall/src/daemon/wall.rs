@@ -2804,6 +2804,13 @@ impl Wall {
                 ));
             }
         }
+        // What the log owes goes in first, before anything of this request
+        // is staged: an owed change's moment holds the wall it was made to,
+        // never this request's work. A request that logs a change of its
+        // own is one that takes a comment, or a batch.
+        if request.takes_comment() || matches!(request, Request::Batch { .. }) {
+            self.pay_owed()?;
+        }
         // A change that cannot be logged is not made: what of the patch it
         // touched goes back as it was.
         let before = self.before(request);

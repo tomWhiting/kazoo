@@ -291,7 +291,7 @@ fn parse(bytes: &[u8]) -> Result<RequestLine, Response> {
                 id,
                 format!(
                     "step {step}: a step's comment goes in the batch's \"comments\", one per \
-                     step (null for a step without one), not inside the step"
+                     step (null for a step without one), never inside the step, not even as null"
                 ),
             ));
         }

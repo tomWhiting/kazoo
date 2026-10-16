@@ -384,6 +384,9 @@ impl Commit {
             None,
         ) = (&change.what, change.undoes)
         {
+            // On one line each, whatever a log edited by hand holds: a
+            // line break would end the trailers.
+            let note = one_line(note);
             let mut message = format!(
                 "{}: {note}\n\n{}Kazoo-Note: {note}\n",
                 change.seat,
@@ -391,7 +394,7 @@ impl Commit {
             );
             for step in changes {
                 message.push_str("Kazoo-Step: ");
-                message.push_str(&crate::change::describe(step));
+                message.push_str(&one_line(&crate::change::describe(step)));
                 message.push('\n');
             }
             // The batch's last step: the moments before it are its parts
@@ -423,7 +426,7 @@ impl Commit {
         } else {
             format!(
                 "{}\n\n{}{}Kazoo-Change: {json}\n",
-                change.summary.replace(['\r', '\n'], " "),
+                one_line(&change.summary),
                 trailers("change", change.seq, change.clock.as_ref(), None),
                 comment_trailer(change.comment.as_deref())
             )
@@ -477,7 +480,7 @@ impl Commit {
             .map_err(|err| TreeError::Git(format!("change date: {err}")))?
             .and_utc()
             .timestamp();
-        let step = crate::change::describe(step);
+        let (note, step) = (one_line(note), one_line(&crate::change::describe(step)));
         let clock = change.clock.as_ref().map_or_else(String::new, |clock| {
             format!(
                 "Kazoo-Beat: {}\nKazoo-Tempo: {}\nKazoo-Clock: {}\n",

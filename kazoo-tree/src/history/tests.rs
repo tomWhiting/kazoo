@@ -902,6 +902,31 @@ fn a_comment_is_read_onto_its_moment_and_each_step_onto_its_own() {
 }
 
 #[test]
+fn a_step_comment_given_twice_or_for_no_step_is_said() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    kazoo_wall::tree::git::plant(dir.path()).expect("planted");
+    let mut stream = Stream::default();
+    let at = stream.commit("trunk", None, 1, &[("modules/vco1.toml", Some("a"))], None);
+    stream.write(
+        "trunk",
+        Some(at),
+        1_001,
+        "Cally: two\n\nKazoo-Kind: batch\nKazoo-Seq: 2\nKazoo-Note: two\nKazoo-Step: one\nKazoo-Step: two\nKazoo-Step-Comment: 1: first\nKazoo-Step-Comment: 1: again\nKazoo-Step-Comment: 3: nowhere\nKazoo-Step-Comment: zero: no number\n",
+        &[("modules/vco1.toml", Some("b"))],
+    );
+    stream.import(dir.path());
+    let history = History::read(dir.path()).expect("it reads");
+    let moment = &history.moments[1];
+    let problems = moment.problems.join("\n");
+    assert!(problems.contains("given more than once"), "{problems}");
+    assert!(
+        problems.contains("step 3 of a batch of 2 steps"),
+        "{problems}"
+    );
+    assert!(problems.contains("not a number from 1"), "{problems}");
+}
+
+#[test]
 fn a_batch_missing_its_words_is_said_and_still_shown() {
     let log = [
         record("a", "", "one", ""),

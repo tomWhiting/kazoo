@@ -92,6 +92,9 @@ pub struct Rings {
     pub trunk: String,
     /// Change commits written.
     pub changes: usize,
+    /// Batch parts written: a moment for each step of a batch but its last
+    /// (KZ-T10c).
+    pub parts: usize,
     /// Gap commits written.
     pub gaps: usize,
     /// Settle commits written.
@@ -650,6 +653,7 @@ impl Walk<'_> {
             self.mark = self.importer.commit(&commit)?;
             self.line.tip = self.mark;
             self.previous.clone_from(files);
+            self.report.parts += 1;
             whole = false;
         }
         Ok(whole)
@@ -846,7 +850,13 @@ fn run(tree: &Path, log: Log<'_>) -> Result<(Rings, String), RingsError> {
             walk.change(change)?;
         }
     }
-    if walk.starts + walk.report.changes + walk.report.gaps + walk.report.settles == 0 {
+    if walk.starts
+        + walk.report.changes
+        + walk.report.parts
+        + walk.report.gaps
+        + walk.report.settles
+        == 0
+    {
         return Err(RingsError::NoWall(format!(
             "no known wall could be grown from the log and its kept files: {}",
             walk.unknown_reason
@@ -895,11 +905,16 @@ impl Walk<'_> {
             String::new()
         };
         format!(
-            "start: {}\ncommits: {} ({} start, {} changes, {} gaps, {} settles)\n{}births: {} found at the start, {} at adds, {} kept across loads, {} found at loads{found_file}\nthis build left out: {knobs} knobs, {modules} modules ({})\n{trunk}\n",
+            "start: {}\ncommits: {} ({} start, {} changes, {} batch parts, {} gaps, {} settles)\n{}births: {} found at the start, {} at adds, {} kept across loads, {} found at loads{found_file}\nthis build left out: {knobs} knobs, {modules} modules ({})\n{trunk}\n",
             self.start,
-            self.starts + self.report.changes + self.report.gaps + self.report.settles,
+            self.starts
+                + self.report.changes
+                + self.report.parts
+                + self.report.gaps
+                + self.report.settles,
             self.starts,
             self.report.changes,
+            self.report.parts,
             self.report.gaps,
             self.report.settles,
             joined_lines(&self.gap_lines),
