@@ -80,6 +80,12 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// Longest wait between attempts after the desk refuses the instrument.
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
+/// The wait between attempts while the desk refuses the instrument for its
+/// rate. An instrument that follows the desk's rate reads it from the
+/// refusal, so the refusal is kept fresh: a desk that has gone or started
+/// again at another rate is seen within this, never after a long backoff.
+const RATE_REFUSAL_RETRY: Duration = Duration::from_secs(2);
+
 /// How long the hub may stop reading before the link gives up on it.
 const STUCK_LIMIT: Duration = Duration::from_millis(500);
 
@@ -442,11 +448,7 @@ impl LinkStatus {
     /// down for another reason, which `last_refusal` still holds).
     #[must_use]
     pub fn desk_refusal(&self) -> Option<&str> {
-        self.last_refusal
-            .as_deref()?
-            .strip_prefix(DESK_REFUSED)?
-            .split_once(": ")
-            .map(|(_, reason)| reason)
+        desk_reason(self.last_refusal.as_deref()?)
     }
 
     /// The desk's rate, when the desk refused this instrument for running
@@ -456,6 +458,15 @@ impl LinkStatus {
     pub fn refused_for_rate(&self) -> Option<u32> {
         refused_desk_rate(self.desk_refusal()?)
     }
+}
+
+/// The desk's own reason in `refusal`, a `last_refusal`, when the desk
+/// itself refused the instrument (see [`LinkStatus::desk_refusal`]).
+fn desk_reason(refusal: &str) -> Option<&str> {
+    refusal
+        .strip_prefix(DESK_REFUSED)?
+        .split_once(": ")
+        .map(|(_, reason)| reason)
 }
 
 /// The lowest and highest rates the desk's rate is believed at.

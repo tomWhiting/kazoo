@@ -292,6 +292,36 @@ impl Wall {
         self.loops.recording_modules()
     }
 
+    /// Ask every loop recording for a take, before the audio opens again on
+    /// purpose (KZ-D21: following the desk's rate), so what it recorded is
+    /// kept: the takes asked for. A loop whose take cannot be asked for has
+    /// had that noted.
+    pub fn keep_recording_loops(&mut self) -> Vec<u64> {
+        self.loops.collect();
+        let modules = self.loops.recording_modules();
+        modules
+            .iter()
+            .filter_map(|module| self.loops.request_take(module, TakeWhy::Rebuild, None))
+            .collect()
+    }
+
+    /// Whether every take in `tickets` is logged, or failed.
+    #[must_use]
+    pub fn takes_settled(&self, tickets: &[u64]) -> bool {
+        tickets
+            .iter()
+            .all(|ticket| self.loops.recordings.settled(*ticket))
+    }
+
+    /// Tell every seat `summary`, one plain sentence, at the next tick.
+    pub fn tell_seats(&mut self, summary: String) {
+        eprintln!("kazoo-wall: {summary}");
+        self.told.push(crate::protocol::Event::Fault {
+            summary,
+            seq: Some(self.revision()),
+        });
+    }
+
     pub(super) fn note_loop_restart(&mut self) {
         let frame = self.engine.shared().frames();
         for module in self.loops.recording_modules() {

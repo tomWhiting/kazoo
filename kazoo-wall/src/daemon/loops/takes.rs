@@ -66,6 +66,14 @@ impl Default for Takes {
 }
 
 impl Takes {
+    /// Whether take `ticket` is no longer on its way: logged, or failed
+    /// (and said so).
+    #[must_use]
+    pub fn settled(&self, ticket: u64) -> bool {
+        !self.pending.contains_key(&ticket)
+            && !self.finished.iter().any(|take| take.ticket == ticket)
+    }
+
     #[must_use]
     pub fn has_pending(&self, module: &str) -> bool {
         self.pending.values().any(|take| take.module == module)
@@ -370,12 +378,19 @@ impl Loops {
                 continue;
             }
             if !take.started {
-                if !self.geometry.contains_key(&take.module) {
+                let Some(&(own, _)) = self.geometry.get(&take.module) else {
                     continue;
-                }
+                };
                 // The loop may hold a take made at a higher rate than its
-                // own (KZ-D21): its spare has room for one at any rate.
-                let (capacity, tail) = crate::dsp::looper::tape_geometry();
+                // own (KZ-D21): its spare has room for whichever is longer,
+                // what it holds or what it can record, and the longest seam.
+                let (most, tail) = crate::dsp::looper::tape_geometry();
+                let holds = self
+                    .feeds
+                    .get(&take.module)
+                    .map_or(0, |feed| feed.gauges().frames.load(Ordering::Relaxed));
+                let capacity =
+                    usize::try_from(holds).map_or(most, |holds| holds.max(own).min(most));
                 take.started = true;
                 self.recordings.jobs.push_back((
                     *ticket,

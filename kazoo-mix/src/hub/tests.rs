@@ -881,7 +881,7 @@ fn an_instrument_at_another_rate_reads_the_desks_rate_from_its_refusal() {
     use kazoo_core::ipc::link::{HubAddress, LinkConfig};
     let rig = Rig::new([false; DESK_CHANNELS]);
     let mut config = LinkConfig::new("kazoo-wall", 2, 44_100, 512);
-    config.address = HubAddress::Socket(rig.socket);
+    config.address = HubAddress::Socket(rig.socket.clone());
     // As the wall links to the desk.
     let (link, _audio) = connect_config_or_direct(config).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -895,4 +895,17 @@ fn an_instrument_at_another_rate_reads_the_desks_rate_from_its_refusal() {
     }
     assert_eq!(link.status().refused_for_rate(), Some(RATE));
     assert!(!link.is_connected());
+    // The desk goes: its refusal does not outlive it (the link tries again
+    // within two seconds of a refusal for its rate, not after a backoff).
+    drop(rig);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while link.status().refused_for_rate().is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the gone desk's refusal stayed: {:?}",
+            link.status().last_refusal
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(link.status().desk_refusal(), None);
 }

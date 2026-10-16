@@ -15,10 +15,12 @@
 //! The desk's rate is read from its refusal, which the desk link already
 //! holds: nothing is read from disk and no socket is knocked on. A look is
 //! made at most once per [`DEVICE_RETRY`], and none while plugged in.
-//! While a loop records, the audio is not opened again (that would lose
-//! what it recorded since its last take): following waits, and says so.
+//! While a loop records, what it recorded is kept first: each recording
+//! loop is asked for a take, and the audio opens again once they are logged
+//! (at most [`HOLD_FOR`] later; what a late take misses is said, as for any
+//! audio restart). The seats are told why the wall waits.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use kazoo_core::ipc::link::HubLink;
 
@@ -29,6 +31,10 @@ use super::{Control, DEVICE_RETRY, play_on, start_audio, start_headless};
 /// Looks in a row that find no desk before the wall, following one, goes
 /// back to its device: one look can land while the desk is starting again.
 const GONE_AFTER: u8 = 2;
+
+/// The longest a follow waits for recording loops' takes (as long as a
+/// named save waits for them).
+const HOLD_FOR: Duration = crate::daemon::loops::SAVE_WAIT;
 
 /// What a look at the desk link finds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,8 +96,32 @@ pub(super) struct Watch {
     due: Option<Instant>,
     /// Looks in a row that found no desk.
     missed: u8,
-    /// The loops a follow is waiting on, said once until they change.
-    waiting: Vec<String>,
+    /// A follow waiting for recording loops' takes.
+    held: Option<Held>,
+}
+
+/// A follow waiting for recording loops' takes to be logged.
+#[derive(Debug)]
+struct Held {
+    /// What to do once they are.
+    next: Follow,
+    /// When the takes were asked for.
+    since: Instant,
+    /// The takes asked for.
+    tickets: Vec<u64>,
+}
+
+/// What a follow does this round.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// Nothing.
+    Nothing,
+    /// Loops are recording: ask for their takes, then hold this.
+    Keep(Follow),
+    /// Still waiting for the takes.
+    Wait,
+    /// Do this; with a line to tell when takes did not land in time.
+    Act(Follow, Option<String>),
 }
 
 impl Watch {
@@ -127,28 +157,46 @@ impl Watch {
         follow(found, wall, self.following, self.missed)
     }
 
-    /// Whether `next` must wait for `recording`, the loops recording now,
-    /// and a line to log when the loops waited on are new.
-    fn wait_for(&mut self, next: Follow, recording: Vec<String>) -> (bool, Option<String>) {
-        if next == Follow::Stay || recording.is_empty() {
-            self.waiting.clear();
-            return (false, None);
+    /// What to do with `next` at `now`: `recording` says whether any loop
+    /// is recording, `settled` whether takes asked for are all logged.
+    fn step(
+        &mut self,
+        next: Follow,
+        now: Instant,
+        recording: impl FnOnce() -> bool,
+        settled: impl FnOnce(&[u64]) -> bool,
+    ) -> Step {
+        if let Some(held) = self.held.take() {
+            let settled = settled(&held.tickets);
+            if !settled && now < held.since + HOLD_FOR {
+                self.held = Some(held);
+                return Step::Wait;
+            }
+            let late = (!settled).then(|| {
+                format!(
+                    "the loops' takes were not kept within {} s; the wall follows the desk's rate anyway",
+                    HOLD_FOR.as_secs()
+                )
+            });
+            return Step::Act(held.next, late);
         }
-        let say = (self.waiting != recording).then(|| {
-            format!(
-                "{} recording; the wall follows the desk's rate once {} done",
-                recording.join(", "),
-                if recording.len() == 1 {
-                    "it is"
-                } else {
-                    "they are"
-                }
-            )
+        if next == Follow::Stay {
+            return Step::Nothing;
+        }
+        if recording() {
+            return Step::Keep(next);
+        }
+        Step::Act(next, None)
+    }
+
+    /// Hold `next` from `now` until `tickets`, the takes asked for, are
+    /// logged.
+    fn hold(&mut self, next: Follow, now: Instant, tickets: Vec<u64>) {
+        self.held = Some(Held {
+            next,
+            since: now,
+            tickets,
         });
-        self.waiting = recording;
-        // Looked at again at the next round, not a retry later.
-        self.due = None;
-        (true, say)
     }
 }
 
@@ -168,21 +216,49 @@ impl Control {
         self.follow_with(next, now, || Device::open(None));
     }
 
-    /// Do `next`, unless a loop is recording; `open` opens the device as
-    /// it is set.
+    /// Do `next`, keeping recording loops' takes first (see the module's
+    /// words); `open` opens the device as it is set.
     fn follow_with(
         &mut self,
         next: Follow,
         now: Instant,
         open: impl FnOnce() -> Result<Device, String>,
     ) {
-        let (wait, say) = self.desk_rate.wait_for(next, self.wall.loops_recording());
-        if let Some(line) = say {
-            eprintln!("kazoo-wall: {line}");
-        }
-        if wait {
-            return;
-        }
+        let wall = &self.wall;
+        let next = match self.desk_rate.step(
+            next,
+            now,
+            || !wall.loops_recording().is_empty(),
+            |tickets| wall.takes_settled(tickets),
+        ) {
+            Step::Nothing | Step::Wait => return,
+            Step::Keep(next) => {
+                let recording = self.wall.loops_recording();
+                let tickets = self.wall.keep_recording_loops();
+                let why = match next {
+                    Follow::Match(rate) => format!("the desk runs at {rate} Hz"),
+                    Follow::Device | Follow::Stay => "the desk has gone".to_string(),
+                };
+                self.wall.tell_seats(format!(
+                    "{why}; {} {} recording, so {} kept before the wall opens its audio again",
+                    recording.join(", "),
+                    if recording.len() == 1 { "is" } else { "are" },
+                    if recording.len() == 1 {
+                        "its take is"
+                    } else {
+                        "their takes are"
+                    },
+                ));
+                self.desk_rate.hold(next, now, tickets);
+                return;
+            }
+            Step::Act(next, late) => {
+                if let Some(line) = late {
+                    self.wall.tell_seats(line);
+                }
+                next
+            }
+        };
         match next {
             Follow::Stay => {}
             Follow::Match(rate) => {

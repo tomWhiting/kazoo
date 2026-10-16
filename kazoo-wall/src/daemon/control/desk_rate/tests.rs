@@ -96,48 +96,87 @@ fn a_followed_desk_is_gone_only_after_two_looks_a_retry_apart() {
     );
 }
 
+/// Takes that must not be asked about.
+fn no_takes(_: &[u64]) -> bool {
+    panic!("takes were asked about when none were held for")
+}
+
 #[test]
-fn a_follow_waits_for_recording_loops_and_says_so_once() {
+fn a_follow_keeps_recording_loops_takes_first_and_waits_for_them_at_most_a_while() {
     let start = Instant::now();
     let mut watch = Watch::default();
-    watch.round(start, 48_000, false, || Look::Refused(44_100));
-    let loops = |names: &[&str]| names.iter().map(ToString::to_string).collect::<Vec<_>>();
-    // Nothing to do, or nothing recording: no wait.
+    // Nothing to do: whether loops record is not even asked.
     assert_eq!(
-        watch.wait_for(Follow::Stay, loops(&["loop1"])),
-        (false, None)
+        watch.step(Follow::Stay, start, || panic!("asked"), no_takes),
+        Step::Nothing
+    );
+    // Nothing recording: do it now.
+    assert_eq!(
+        watch.step(Follow::Match(44_100), start, || false, no_takes),
+        Step::Act(Follow::Match(44_100), None)
+    );
+    // A loop recording: its take first.
+    assert_eq!(
+        watch.step(Follow::Match(44_100), start, || true, no_takes),
+        Step::Keep(Follow::Match(44_100))
+    );
+    watch.hold(Follow::Match(44_100), start, vec![7]);
+    // Held: whatever the rounds say, it waits for take 7.
+    let mut asked = Vec::new();
+    assert_eq!(
+        watch.step(
+            Follow::Stay,
+            start + Duration::from_secs(1),
+            || panic!("asked"),
+            |tickets| {
+                asked.extend_from_slice(tickets);
+                false
+            }
+        ),
+        Step::Wait
+    );
+    assert_eq!(asked, [7]);
+    // Logged: the held follow is done.
+    assert_eq!(
+        watch.step(
+            Follow::Stay,
+            start + Duration::from_secs(2),
+            || panic!("asked"),
+            |_| true
+        ),
+        Step::Act(Follow::Match(44_100), None)
     );
     assert_eq!(
-        watch.wait_for(Follow::Match(44_100), Vec::new()),
-        (false, None)
+        watch.step(
+            Follow::Stay,
+            start + Duration::from_secs(2),
+            || panic!("asked"),
+            no_takes
+        ),
+        Step::Nothing
     );
-    // A loop recording: wait, said once.
+    // A take that never lands holds it no longer than HOLD_FOR, and says so.
+    watch.hold(Follow::Device, start, vec![8]);
     assert_eq!(
-        watch.wait_for(Follow::Match(44_100), loops(&["loop1"])),
-        (
-            true,
-            Some("loop1 recording; the wall follows the desk's rate once it is done".into())
-        )
+        watch.step(
+            Follow::Stay,
+            start + (HOLD_FOR.saturating_sub(Duration::from_millis(1))),
+            || panic!("asked"),
+            |_| false
+        ),
+        Step::Wait
     );
-    // Looked at again at the very next round.
-    assert_eq!(
-        watch.round(start, 48_000, false, || Look::Refused(44_100)),
-        Follow::Match(44_100)
-    );
-    assert_eq!(
-        watch.wait_for(Follow::Match(44_100), loops(&["loop1"])),
-        (true, None)
-    );
-    assert_eq!(
-        watch.wait_for(Follow::Match(44_100), loops(&["loop1", "loop2"])),
-        (
-            true,
-            Some(
-                "loop1, loop2 recording; the wall follows the desk's rate once they are done"
-                    .into()
-            )
-        )
-    );
+    match watch.step(
+        Follow::Stay,
+        start + HOLD_FOR,
+        || panic!("asked"),
+        |_| false,
+    ) {
+        Step::Act(Follow::Device, Some(line)) => {
+            assert!(line.contains("not kept within 5 s"), "{line}");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// A control thread's state with no backend yet, its audio `audio`,
