@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 description = "Four-operator FM synth in the DX/TX81Z tradition — pure sine math, eight algorithms, eight voices"
 license = "AGPL-3.0-or-later"
-publish = false
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host" }
+kazoo-host = { path = "../kazoo-host", version = "0.1.0" }
 kazoo-core = { version = "0.1.0", path = "../kazoo-core" }
 color-eyre = "0.6.5"
 cpal = "0.17"

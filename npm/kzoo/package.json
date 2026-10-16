@@ -1,0 +1,24 @@
+{
+  "name": "kzoo",
+  "version": "0.1.0",
+  "description": "kazoo: a shared modular synth that never stops, a desk, instruments and a mouth synth, in the terminal",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://github.com/tomWhiting/kazoo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomWhiting/kazoo.git"
+  },
+  "keywords": ["synthesizer", "modular", "audio", "music", "terminal", "tui"],
+  "bin": {
+    "kzoo": "bin/kzoo.js"
+  },
+  "files": ["bin/kzoo.js", "README.md", "LICENSE"],
+  "os": ["darwin"],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "kzoo-darwin-arm64": "0.1.0",
+    "kzoo-darwin-x64": "0.1.0"
+  }
+}

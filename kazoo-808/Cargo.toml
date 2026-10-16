@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 description = "TR-808 drum machine — all-synthesis, no samples"
 license = "AGPL-3.0-or-later"
-publish = false
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host" }
+kazoo-host = { path = "../kazoo-host", version = "0.1.0" }
 kazoo-core = { version = "0.1.0", path = "../kazoo-core" }
 cpal = "0.17.1"
 crossbeam-channel = "0.5.15"

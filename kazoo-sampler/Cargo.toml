@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 hound = "3.5.1"
-kazoo-fx = { path = "../kazoo-fx" }
+kazoo-fx = { path = "../kazoo-fx", version = "0.1.0" }
 ringbuf = "0.4.8"
 
 [dev-dependencies]

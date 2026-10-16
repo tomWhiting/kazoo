@@ -1,18 +1,28 @@
+//! The program itself, shared by its two names (see `src/bin`).
+
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::Parser;
-use kazoo::cli::{Cli, Command, TreeCommand, WallCommand, console_serve};
+use clap::{CommandFactory, FromArgMatches};
 
-fn main() -> ExitCode {
-    let cli = Cli::parse();
+use crate::cli::{Cli, Command, TreeCommand, WallCommand, console_serve};
+
+/// Run the program as `name` (`kzoo` or `kazoo`: the name its help and
+/// errors use), with this process's arguments.
+#[must_use]
+pub fn main(name: &'static str) -> ExitCode {
+    let matches = Cli::command().name(name).bin_name(name).get_matches();
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(err) => err.format(&mut Cli::command().name(name).bin_name(name)).exit(),
+    };
     if let Err(err) = kazoo_host::reports::install() {
         eprintln!("kazoo: {err}");
         return ExitCode::FAILURE;
     }
     match cli.command {
         Command::Mix(args) => finish(kazoo_mix::run(args.into())),
-        Command::Studio { command } => match kazoo::studio::run(&command) {
+        Command::Studio { command } => match crate::studio::run(&command) {
             Ok(code) => code,
             Err(report) => {
                 eprintln!("kazoo: {report:#}");
@@ -57,7 +67,7 @@ fn finish(result: color_eyre::Result<()>) -> ExitCode {
     }
 }
 
-fn tree(args: &kazoo::cli::TreeArgs) -> color_eyre::Result<()> {
+fn tree(args: &crate::cli::TreeArgs) -> color_eyre::Result<()> {
     let dir = kazoo_tree::tree_dir()?;
     if args.print {
         let text = kazoo_tree::print(dir, args.cols, args.rows)?;

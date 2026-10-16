@@ -2,19 +2,20 @@
 name = "kazoo-mix"
 version = "0.1.0"
 edition = "2024"
+description = "The kazoo desk: the studio hub every instrument plays into, with its mixer"
 license = "AGPL-3.0-or-later"
-publish = false
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host" }
+kazoo-host = { path = "../kazoo-host", version = "0.1.0" }
 color-eyre = "0.6.5"
 cpal = "0.17.1"
 crossterm = "0.29.0"
-kazoo-core = { path = "../kazoo-core" }
-kazoo-808 = { path = "../kazoo-808" }
+kazoo-core = { path = "../kazoo-core", version = "0.1.0" }
+kazoo-808 = { path = "../kazoo-808", version = "0.1.0" }
 ratatui = "0.30.0"
 ringbuf = "0.4.8"
 rustix = { version = "1.1.3", features = ["event"] }

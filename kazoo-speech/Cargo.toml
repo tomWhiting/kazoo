@@ -5,13 +5,13 @@ edition = "2024"
 rust-version = "1.85"
 description = "Kazoo's studio vocoder, text-to-speech renderer and phrase player"
 license = "AGPL-3.0-or-later"
-publish = false
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true
 
 [dependencies]
-kazoo-fx = { path = "../kazoo-fx" }
+kazoo-fx = { path = "../kazoo-fx", version = "0.1.0" }
 hound = "3.5"
 ringbuf = "0.4.8"
 

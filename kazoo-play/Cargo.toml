@@ -2,13 +2,14 @@
 name = "kazoo-play"
 version = "0.1.0"
 edition = "2024"
+description = "kazoo-play: phrases and notes for kazoo instruments, from the command line"
 license = "AGPL-3.0-or-later"
-publish = false
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true
 
 [dependencies]
 cpal = "0.17.1"
-kazoo-core = { path = "../kazoo-core" }
+kazoo-core = { path = "../kazoo-core", version = "0.1.0" }
 ringbuf = "0.4.8"

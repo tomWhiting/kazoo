@@ -4,6 +4,26 @@ A voice-driven synthesizer that transforms vocal input into synthesized instrume
 
 Hum a melody and hear it as a synth lead. Beatbox a rhythm and hear it as electronic drums. Make mouth noises and hear them as evolving textures. Kazoo uses genuine synthesis techniques — granular, wavetable, vocoder, phase vocoder, and pitch-tracked resynthesis — to turn your voice into music.
 
+## Install
+
+kazoo is one command, `kzoo` (also installed as `kazoo`). On macOS:
+
+```sh
+npx kzoo wall        # run it straight from npm
+cargo install --locked kzoo
+```
+
+```sh
+kzoo wall    # the wall: a shared modular synth that never stops
+kzoo tree    # every moment the wall has been, grown as a tree you can walk
+kzoo mix     # the desk every instrument plays into
+kzoo mouth   # sing or whistle into a synth
+kzoo 808     # and the instruments: 808, 303, cs80, mini, juno, prophet, dx, string, glass, arp
+kzoo mcp --seat <name>   # the wall for a Claude seat, as an MCP server on stdio
+```
+
+kazoo is free software under the GNU Affero General Public License, version 3 or later (see `LICENSE`).
+
 ## Building
 
 ```bash
