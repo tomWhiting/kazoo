@@ -657,7 +657,10 @@ fn log_line(out: &mut String, change: &Change) {
         out,
         format_args!(
             "#{} {} {}: {}{undoes}",
-            change.seq, change.at, change.seat, change.summary
+            change.seq,
+            change.at,
+            change.seat,
+            change.said()
         ),
     );
 }
@@ -1396,6 +1399,7 @@ mod tests {
             summary: "Waffles added lfo3".to_string(),
             undoes: Some(57),
             clock: None,
+            comment: None,
         };
         let result = ChangeResult {
             change: change.clone(),
@@ -1441,6 +1445,7 @@ mod tests {
             summary: summary.to_string(),
             undoes: None,
             clock: None,
+            comment: None,
         };
         let started = RecordResult {
             on: true,
@@ -1899,6 +1904,7 @@ mod tests {
                     .to_string(),
                 undoes: None,
                 clock: None,
+                comment: None,
             },
             backup: "before-load-20260929-120000".to_string(),
             notes: vec!["the desk keeps the tempo at 120 BPM".to_string()],

@@ -104,6 +104,7 @@ pub(super) fn change(seq: u64, what: What) -> Change {
         what,
         undoes: None,
         clock: None,
+        comment: None,
     }
 }
 

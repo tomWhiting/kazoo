@@ -180,6 +180,7 @@ impl Rig {
                 to: value,
                 glide_beats: 0.0,
             }],
+            comments: Vec::new(),
         };
         let change = make_change(file.last_seq + 1, what);
         self.wall.tree_test_apply(&file, change);
@@ -223,6 +224,7 @@ fn make_change(seq: u64, what: What) -> Change {
         what,
         undoes: None,
         clock: None,
+        comment: None,
     }
 }
 

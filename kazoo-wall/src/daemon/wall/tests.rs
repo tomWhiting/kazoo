@@ -3358,6 +3358,7 @@ fn a_load_kept_by_an_older_build_still_undoes() {
         summary: "Tom loaded the save \"jam\"".to_string(),
         undoes: None,
         clock: None,
+        comment: None,
     };
     let mut up = seed().unwrap();
     up.last_seq = 5;
@@ -3683,6 +3684,7 @@ fn logged(seq: u64, what: What) -> Change {
         what,
         undoes: None,
         clock: None,
+        comment: None,
     }
 }
 

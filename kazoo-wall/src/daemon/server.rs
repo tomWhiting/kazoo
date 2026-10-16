@@ -280,6 +280,22 @@ fn parse(bytes: &[u8]) -> Result<RequestLine, Response> {
             "every request needs an \"id\": a whole number".to_string(),
         ));
     };
+    // A step's comment goes beside it, in the batch's `comments`: inside
+    // the step it would be read as nothing at all, so it is refused.
+    if value.get("op").and_then(serde_json::Value::as_str) == Some("batch") {
+        let steps = value.get("changes").and_then(serde_json::Value::as_array);
+        if let Some(step) =
+            steps.and_then(|steps| steps.iter().position(|step| step.get("comment").is_some()))
+        {
+            return Err(bad(
+                id,
+                format!(
+                    "step {step}: a step's comment goes in the batch's \"comments\", one per \
+                     step (null for a step without one), never inside the step, not even as null"
+                ),
+            ));
+        }
+    }
     serde_json::from_value(value).map_err(|err| bad(id, format!("not a request: {err}")))
 }
 
@@ -297,6 +313,14 @@ mod tests {
         assert_eq!(parse(b"nope").unwrap_err().id, 0);
         assert_eq!(parse(br#"{"op":"look"}"#).unwrap_err().id, 0);
         assert_eq!(parse(br#"{"id":-1,"op":"look"}"#).unwrap_err().id, 0);
+        let inside = parse(
+            br#"{"id":5,"op":"batch","note":"n","changes":[{"op":"tempo","bpm":90},{"op":"tempo","bpm":91,"comment":"why"}]}"#,
+        )
+        .unwrap_err();
+        assert_eq!(inside.id, 5);
+        let message = inside.error.unwrap().message;
+        assert!(message.starts_with("step 1: "), "{message}");
+        assert!(message.contains("\"comments\""), "{message}");
     }
 
     #[test]

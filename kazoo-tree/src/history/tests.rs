@@ -782,6 +782,151 @@ fn a_batch_reads_with_its_note_and_its_steps_in_order() {
 }
 
 #[test]
+fn a_batch_grows_a_moment_for_each_change_and_ties_one_knot() {
+    use kazoo_wall::tree::git::Commit;
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    kazoo_wall::tree::git::plant(dir.path()).expect("planted");
+    let change: kazoo_wall::protocol::Change = serde_json::from_value(serde_json::json!({"seq":2,"at":"2026-10-16T09:30:00Z","seat":"Cally","summary":"unused","what":{"op":"batch","note":"three tempos","changes":[
+        {"op":"tempo","from":120.0,"to":121.0,"desk":false},
+        {"op":"tempo","from":121.0,"to":122.0,"desk":false},
+        {"op":"tempo","from":122.0,"to":123.0,"desk":false}
+    ]}}))
+    .expect("a change");
+    let mut stream = Stream::default();
+    let mut at = stream.commit("trunk", None, 1, &[("modules/vco1.toml", Some("a"))], None);
+    for index in 0..2 {
+        let message = Commit::part(&change, index, Vec::new())
+            .expect("a part")
+            .message;
+        let file = format!("{index}");
+        at = stream.write(
+            "trunk",
+            Some(at),
+            1_002,
+            &message,
+            &[("modules/vco1.toml", Some(file.as_str()))],
+        );
+    }
+    let own = Commit::change(&change, Vec::new())
+        .expect("the batch")
+        .message;
+    stream.write(
+        "trunk",
+        Some(at),
+        1_002,
+        &own,
+        &[("modules/vco1.toml", Some("z"))],
+    );
+    stream.import(dir.path());
+    let history = History::read(dir.path()).expect("it reads");
+    assert_eq!(history.moments.len(), 4, "a moment for each change");
+    let parts: Vec<_> = history.moments[1..]
+        .iter()
+        .map(|m| {
+            let batch = m.batch.as_deref().expect("each is the batch's");
+            assert!(m.problems.is_empty(), "{:?}", m.problems);
+            (batch.note.as_str(), batch.part, batch.steps.len())
+        })
+        .collect();
+    assert_eq!(
+        parts,
+        [
+            ("three tempos", Some((1, 3)), 1),
+            ("three tempos", Some((2, 3)), 1),
+            ("three tempos", Some((3, 3)), 3),
+        ]
+    );
+    assert_eq!(history.knots[0], [3], "one knot, on the batch's own moment");
+}
+
+#[test]
+fn a_comment_is_read_onto_its_moment_and_each_step_onto_its_own() {
+    use kazoo_wall::tree::git::Commit;
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    kazoo_wall::tree::git::plant(dir.path()).expect("planted");
+    let turn: kazoo_wall::protocol::Change = serde_json::from_value(serde_json::json!({"seq":2,"at":"2026-10-16T09:30:00Z","seat":"Cally","summary":"Cally set the tempo 120 → 121","comment":"a touch faster","what":{"op":"tempo","from":120.0,"to":121.0,"desk":false}}))
+        .expect("a change");
+    let batch: kazoo_wall::protocol::Change = serde_json::from_value(serde_json::json!({"seq":3,"at":"2026-10-16T09:31:00Z","seat":"Cally","summary":"unused","what":{"op":"batch","note":"two tempos","changes":[
+        {"op":"tempo","from":121.0,"to":122.0,"desk":false},
+        {"op":"tempo","from":122.0,"to":123.0,"desk":false}
+    ],"comments":["first push",null]}}))
+    .expect("a batch");
+    let mut stream = Stream::default();
+    let mut at = stream.commit("trunk", None, 1, &[("modules/vco1.toml", Some("a"))], None);
+    let message = Commit::change(&turn, Vec::new()).expect("a commit").message;
+    at = stream.write(
+        "trunk",
+        Some(at),
+        1_001,
+        &message,
+        &[("modules/vco1.toml", Some("b"))],
+    );
+    let message = Commit::part(&batch, 0, Vec::new()).expect("a part").message;
+    at = stream.write(
+        "trunk",
+        Some(at),
+        1_002,
+        &message,
+        &[("modules/vco1.toml", Some("c"))],
+    );
+    let message = Commit::change(&batch, Vec::new())
+        .expect("the batch")
+        .message;
+    stream.write(
+        "trunk",
+        Some(at),
+        1_002,
+        &message,
+        &[("modules/vco1.toml", Some("d"))],
+    );
+    stream.import(dir.path());
+    let history = History::read(dir.path()).expect("it reads");
+    let comments: Vec<Option<&str>> = history
+        .moments
+        .iter()
+        .map(|m| {
+            assert!(m.problems.is_empty(), "{:?}", m.problems);
+            m.comment.as_deref()
+        })
+        .collect();
+    assert_eq!(
+        comments,
+        [None, Some("a touch faster"), Some("first push"), None]
+    );
+    // The batch's own moment lists every step's comment by its number.
+    let own = history.moments[3]
+        .batch
+        .as_deref()
+        .expect("the batch's own");
+    assert_eq!(own.comments, [(1, "first push".to_owned())]);
+}
+
+#[test]
+fn a_step_comment_given_twice_or_for_no_step_is_said() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    kazoo_wall::tree::git::plant(dir.path()).expect("planted");
+    let mut stream = Stream::default();
+    let at = stream.commit("trunk", None, 1, &[("modules/vco1.toml", Some("a"))], None);
+    stream.write(
+        "trunk",
+        Some(at),
+        1_001,
+        "Cally: two\n\nKazoo-Kind: batch\nKazoo-Seq: 2\nKazoo-Note: two\nKazoo-Step: one\nKazoo-Step: two\nKazoo-Step-Comment: 1: first\nKazoo-Step-Comment: 1: again\nKazoo-Step-Comment: 3: nowhere\nKazoo-Step-Comment: zero: no number\n",
+        &[("modules/vco1.toml", Some("b"))],
+    );
+    stream.import(dir.path());
+    let history = History::read(dir.path()).expect("it reads");
+    let moment = &history.moments[1];
+    let problems = moment.problems.join("\n");
+    assert!(problems.contains("given more than once"), "{problems}");
+    assert!(
+        problems.contains("step 3 of a batch of 2 steps"),
+        "{problems}"
+    );
+    assert!(problems.contains("not a number from 1"), "{problems}");
+}
+
+#[test]
 fn a_batch_missing_its_words_is_said_and_still_shown() {
     let log = [
         record("a", "", "one", ""),

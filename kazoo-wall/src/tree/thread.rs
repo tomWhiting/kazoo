@@ -93,6 +93,19 @@ pub enum TreeItem {
         files: Vec<(String, Option<Vec<u8>>)>,
         generation: u64,
     },
+    /// A batch of more than one step (KZ-T10c): the tree grows a moment
+    /// for each step before its last (its parts, made here from `before`,
+    /// the wall just before it, so the wall's own thread does none of that
+    /// work), then the batch's own moment. `mirror` is the tree's files as
+    /// the last item left them, and `files` what differs from them after
+    /// the whole batch, as for a [`TreeItem::Change`].
+    Batch {
+        change: Box<Change>,
+        before: Box<crate::patch::PatchFile>,
+        mirror: Files,
+        files: Vec<(String, Option<Vec<u8>>)>,
+        generation: u64,
+    },
     /// The whole wall, after change `seq`.
     Whole {
         kind: WholeKind,
@@ -155,7 +168,7 @@ pub enum News {
 impl TreeItem {
     fn seq(&self) -> Option<u64> {
         match self {
-            Self::Change { change, .. } => Some(change.seq),
+            Self::Change { change, .. } | Self::Batch { change, .. } => Some(change.seq),
             Self::Whole { seq, .. } => Some(*seq),
             Self::Mark { .. }
             | Self::SaveMark { .. }
@@ -174,6 +187,7 @@ impl TreeItem {
             | Self::Here { ticket }
             | Self::List { ticket, .. } => Some(*ticket),
             Self::Change { .. }
+            | Self::Batch { .. }
             | Self::Whole { .. }
             | Self::SaveMark { .. }
             | Self::Moved { .. }
@@ -202,6 +216,25 @@ impl TreeItem {
                     serde_json::to_vec(change)
                         .map_err(|err| TreeError::Git(format!("queued change: {err}")))?
                         .len()
+                        + files(diff)
+                }
+                Self::Batch {
+                    change,
+                    before,
+                    mirror,
+                    files: diff,
+                    ..
+                } => {
+                    serde_json::to_vec(change)
+                        .map_err(|err| TreeError::Git(format!("queued change: {err}")))?
+                        .len()
+                        + serde_json::to_vec(before)
+                            .map_err(|err| TreeError::Git(format!("queued batch: {err}")))?
+                            .len()
+                        + mirror
+                            .iter()
+                            .map(|(p, b)| p.len() + b.len() + 64)
+                            .sum::<usize>()
                         + files(diff)
                 }
                 Self::Whole {
@@ -708,18 +741,21 @@ impl Writer {
                 if generation != self.accepted {
                     return Ok(());
                 }
-                let mut commit = Commit::change(&change, files)?;
-                if let Some(mut base) = self.base.take() {
-                    for (path, bytes) in commit.files {
-                        if let Some(bytes) = bytes {
-                            base.insert(path, bytes);
-                        } else {
-                            base.remove(&path);
-                        }
-                    }
-                    commit.files = base.into_iter().map(|(p, b)| (p, Some(b))).collect();
-                    commit.whole = true;
+                let commit = self.on_base(Commit::change(&change, files)?);
+                (commit, change.seq, change.at.clone())
+            }
+            TreeItem::Batch {
+                change,
+                before,
+                mirror,
+                files,
+                generation,
+            } => {
+                if generation != self.accepted {
+                    return Ok(());
                 }
+                let files = self.parts(dir, &change, &before, mirror, files)?;
+                let commit = self.on_base(Commit::change(&change, files)?);
                 (commit, change.seq, change.at.clone())
             }
             TreeItem::Whole {
@@ -784,6 +820,80 @@ impl Writer {
         self.pending += 1;
         Ok(())
     }
+
+    /// Grow batch `change`'s parts (KZ-T10c): a moment for each step
+    /// before its last, made from `before`, the wall just before it, each
+    /// what differs from the moment before it, starting from `mirror`.
+    /// Returns what the batch's own moment holds that differs from the
+    /// last part: `files` (what differs from `mirror` after the whole
+    /// batch) made relative to it. A batch whose parts cannot be made is
+    /// one moment: the daemon's log says why, and its own moment carries
+    /// every step's comment.
+    fn parts(
+        &mut self,
+        dir: &Path,
+        change: &Change,
+        before: &crate::patch::PatchFile,
+        mirror: Files,
+        files: FileDiff,
+    ) -> Result<FileDiff, TreeError> {
+        let parts = match crate::tree::rings::parts::batch_parts(before, change) {
+            Ok(parts) => parts,
+            Err(err) => {
+                eprintln!(
+                    "kazoo-wall: change {} goes on the tree as one moment: {err}",
+                    change.seq
+                );
+                return Ok(files);
+            }
+        };
+        // The wall after the whole batch, as the files say it.
+        let mut after = mirror.clone();
+        for (path, bytes) in files {
+            match bytes {
+                Some(bytes) => {
+                    after.insert(path, bytes);
+                }
+                None => {
+                    after.remove(&path);
+                }
+            }
+        }
+        let mut last = mirror;
+        for (index, part) in parts.into_iter().enumerate() {
+            let diff = diff_files(part, &mut last);
+            let commit = self.on_base(Commit::part(change, index, diff)?);
+            self.grow(dir, &change.at)?;
+            self.summary = commit.message.lines().next().unwrap_or("").into();
+            let mark = self.importer()?.commit(&commit)?;
+            if let Line::On { tip, .. } = &mut self.line {
+                *tip = Some(format!(":{mark}"));
+            }
+            // A part holds no change: the moment the tree holds through
+            // stays the one before the batch until its own commit.
+            self.last = self.last.map(|(_, seq)| (mark, seq));
+            self.pending += 1;
+        }
+        Ok(diff_files(after, &mut last))
+    }
+
+    /// `commit` made whole on the base the tree holds, when it holds one
+    /// (after a start or gap whose files the tree already had).
+    fn on_base(&mut self, mut commit: Commit) -> Commit {
+        if let Some(mut base) = self.base.take() {
+            for (path, bytes) in commit.files {
+                if let Some(bytes) = bytes {
+                    base.insert(path, bytes);
+                } else {
+                    base.remove(&path);
+                }
+            }
+            commit.files = base.into_iter().map(|(p, b)| (p, Some(b))).collect();
+            commit.whole = true;
+        }
+        commit
+    }
+
     fn take(
         &mut self,
         item: Result<TreeItem, RecvTimeoutError>,
@@ -982,7 +1092,12 @@ pub fn files_diff(
     file: &crate::patch::PatchFile,
     mirror: &mut Files,
 ) -> Result<FileDiff, TreeError> {
-    let files = super::to_files(file)?;
+    Ok(diff_files(super::to_files(file)?, mirror))
+}
+
+/// What differs from `mirror` to `files`, and `mirror` made `files`.
+#[must_use]
+pub fn diff_files(files: Files, mirror: &mut Files) -> FileDiff {
     let mut diff: Vec<_> = files
         .iter()
         .filter(|(path, bytes)| mirror.get(*path) != Some(*bytes))
@@ -995,7 +1110,7 @@ pub fn files_diff(
             .map(|p| (p.clone(), None)),
     );
     *mirror = files;
-    Ok(diff)
+    diff
 }
 
 #[cfg(test)]

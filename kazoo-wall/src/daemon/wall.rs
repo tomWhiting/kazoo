@@ -552,6 +552,11 @@ pub struct Wall {
     mark_buckets: HashMap<String, Bucket>,
     tree_buckets: HashMap<String, Bucket>,
     chain_batch: Option<Vec<What>>,
+    /// The wall before the batch being made, for its parts (KZ-T10c).
+    batch_before: Option<crate::patch::PatchFile>,
+    /// The comment on the request being answered (see
+    /// [`Self::request_commented`]), until its change takes it.
+    comment: Option<String>,
     patch: Patch,
     rack: Rack,
     engine: EngineControl,
@@ -644,8 +649,9 @@ pub struct Wall {
     /// change said not to have happened) that the log could not take yet,
     /// oldest first, by seat: unnumbered and untold until written, before
     /// anything else; until then no change is made and `patch.json` is not
-    /// written.
-    owed: VecDeque<(String, What)>,
+    /// written. Each keeps the comment its seat gave it, if any (a
+    /// recording a seat stopped).
+    owed: VecDeque<(String, What, Option<String>)>,
     /// The wall up just before the first change kept in memory (see
     /// [`walls_of`]).
     memory_opens_on: u64,
@@ -1070,6 +1076,15 @@ fn log_opens_on(patch: &Patch, history: &[Change]) -> u64 {
     }
 }
 
+/// Where the wall keeps `what` (`speech`, `recordings`): in its state's
+/// directory, or with no state (as in tests) in one of this process's own.
+fn kept_in(store: Option<&Store>, what: &str) -> std::path::PathBuf {
+    store.map_or_else(
+        || std::env::temp_dir().join(format!("kazoo-wall-{what}-{}", std::process::id())),
+        |store| store.dir().join(what),
+    )
+}
+
 /// Which wall each of `changes` (oldest first) was made to, and how the
 /// walls came from each other (see [`Walls`]), with wall `start` up before
 /// the first. A load that did not happen puts up nothing. The wall started
@@ -1225,6 +1240,7 @@ pub fn resume(
             what,
             undoes: None,
             clock: None,
+            comment: None,
         };
         store.append_synced(&change)?;
         eprintln!("kazoo-wall: {}", change.summary);
@@ -1327,16 +1343,10 @@ impl Wall {
         let start = log_opens_on(&patch, &history);
         let memory_opens_on = walls_of(start, history[..skip].iter()).up;
         // Rendered speech is cached with the wall's state, or (with no
-        // state to keep, as in tests) in a directory of this process's own.
-        let speech_cache = store.as_ref().map_or_else(
-            || std::env::temp_dir().join(format!("kazoo-wall-speech-{}", std::process::id())),
-            |store| store.dir().join("speech"),
-        );
-        // Recordings likewise, until the daemon says where they go.
-        let recordings = store.as_ref().map_or_else(
-            || std::env::temp_dir().join(format!("kazoo-wall-recordings-{}", std::process::id())),
-            |store| store.dir().join("recordings"),
-        );
+        // state to keep, as in tests) in a directory of this process's own;
+        // recordings likewise, until the daemon says where they go.
+        let speech_cache = kept_in(store.as_ref(), "speech");
+        let recordings = kept_in(store.as_ref(), "recordings");
         let recorder = Recorder::new(recordings, &mut engine);
         let probe_ring = engine.take_probes().map(ProbeRing);
         let loops = reels_dir.map_or_else(Loops::new, Loops::with_reels_dir);
@@ -1353,6 +1363,8 @@ impl Wall {
             mark_buckets: HashMap::new(),
             tree_buckets: HashMap::new(),
             chain_batch: None,
+            batch_before: None,
+            comment: None,
             speech: Speech::new(speech_cache),
             loops,
             loop_work: loops::Work::default(),
@@ -2166,7 +2178,9 @@ impl Wall {
             self.unmade = true;
             return Err(err);
         }
-        Ok(self.new_change(seat, what, undoes))
+        let mut change = self.new_change(seat, what, undoes);
+        change.comment = self.comment.take();
+        Ok(change)
     }
 
     /// Write `change` (from [`Self::next_change`]) to the log, without
@@ -2221,7 +2235,18 @@ impl Wall {
     /// `patch.json` is not written, so nothing the log lacks is ever
     /// numbered, told or saved.
     fn commit_own(&mut self, seat: &str, what: What) -> Option<(Change, Option<Event>)> {
-        self.owed.push_back((seat.to_string(), what));
+        self.commit_own_commented(seat, what, None)
+    }
+
+    /// [`Self::commit_own`], with `comment` on the change, owed with it
+    /// when the log cannot take it yet.
+    fn commit_own_commented(
+        &mut self,
+        seat: &str,
+        what: What,
+        comment: Option<String>,
+    ) -> Option<(Change, Option<Event>)> {
+        self.owed.push_back((seat.to_string(), what, comment));
         let mut paid = self.pay_owed_all();
         // This one is the last owed: when all went, it is the last paid,
         // for the caller to tell; those paid before it were owed already.
@@ -2278,8 +2303,9 @@ impl Wall {
     /// [`Self::pay_owed`]); returns what was paid, each made, not yet told.
     fn pay_owed_all(&mut self) -> Vec<(Change, Option<Event>)> {
         let mut paid = Vec::new();
-        while let Some((seat, what)) = self.owed.front().cloned() {
-            let change = self.new_change(&seat, what, None);
+        while let Some((seat, what, comment)) = self.owed.front().cloned() {
+            let mut change = self.new_change(&seat, what, None);
+            change.comment = comment;
             if let Some(store) = self.store.as_mut() {
                 if let Err(err) = store.append_synced(&change) {
                     eprintln!(
@@ -2323,6 +2349,7 @@ impl Wall {
             what,
             undoes,
             clock,
+            comment: None,
         }
     }
 
@@ -2517,6 +2544,13 @@ impl Wall {
             }
             return;
         }
+        // A batch of steps grows its parts on the tree's thread, from the
+        // wall before it and the tree's files as they stand (KZ-T10c).
+        // Taken only by the batch it was kept for: a change owed to the
+        // log, made first, leaves it be.
+        let batch = crate::tree::rings::parts::steps(change)
+            .and_then(|_| self.batch_before.take())
+            .map(|before| (before, self.tree_mirror.clone()));
         let diff = if go.is_some() {
             Vec::new()
         } else {
@@ -2529,11 +2563,21 @@ impl Wall {
             }
         };
         if let Some(tree) = self.tree.as_mut() {
-            let accepted = tree.offer(crate::tree::thread::TreeItem::Change {
-                change: Box::new(change.clone()),
-                files: diff,
-                generation: tree.generation,
-            });
+            let item = match batch {
+                Some((before, mirror)) => crate::tree::thread::TreeItem::Batch {
+                    change: Box::new(change.clone()),
+                    before: Box::new(before),
+                    mirror,
+                    files: diff,
+                    generation: tree.generation,
+                },
+                None => crate::tree::thread::TreeItem::Change {
+                    change: Box::new(change.clone()),
+                    files: diff,
+                    generation: tree.generation,
+                },
+            };
+            let accepted = tree.offer(item);
             if go.is_some() {
                 if !accepted {
                     self.moved_to = go;
@@ -2653,6 +2697,40 @@ impl Wall {
         self.request_as(seat, true, request, now)
     }
 
+    /// [`Self::request_as`], with the sender's `comment` (checked already:
+    /// see [`crate::protocol::RequestLine::comment`]) on the change the
+    /// request makes, now or, for one answered later, when it is made.
+    pub fn request_commented(
+        &mut self,
+        (seat, console): (&str, bool),
+        request: &Request,
+        comment: Option<&str>,
+        now: Instant,
+    ) -> Result<Outcome, WallError> {
+        self.comment = comment.map(str::to_string);
+        let outcome = self.request_as(seat, console, request, now);
+        // Taken by the change made, or kept for the one made later. A
+        // request refused, or one that changed nothing (a recording
+        // started while one runs), made nothing for it to go on, and its
+        // answer says so; one that made a change and left its comment
+        // would be the wall's own fault, and is said.
+        let left = self.comment.take();
+        if let (
+            Some(comment),
+            Ok(Outcome {
+                change: Some(change),
+                ..
+            }),
+        ) = (left, &outcome)
+        {
+            eprintln!(
+                "kazoo-wall: change {} by {seat} was made without its comment: {comment}",
+                change.seq
+            );
+        }
+        outcome
+    }
+
     /// Handle a request from `seat`, a `console` or not (after hello;
     /// connection requests are the caller's). Change requests count
     /// against the seat's flood guard; a seat that is not a console is
@@ -2725,6 +2803,13 @@ impl Wall {
                     ),
                 ));
             }
+        }
+        // What the log owes goes in first, before anything of this request
+        // is staged: an owed change's moment holds the wall it was made to,
+        // never this request's work. A request that logs a change of its
+        // own is one that takes a comment, or a batch.
+        if request.takes_comment() || matches!(request, Request::Batch { .. }) {
+            self.pay_owed()?;
         }
         // A change that cannot be logged is not made: what of the patch it
         // touched goes back as it was.
@@ -2857,6 +2942,26 @@ impl Wall {
         }
     }
 
+    /// Take out one cable, by its number or by the input it is in.
+    fn unpatch(
+        &mut self,
+        seat: &str,
+        cable: Option<u32>,
+        to: Option<&str>,
+    ) -> Result<Outcome, WallError> {
+        let what = match (cable, to) {
+            (Some(cable), None) => self.patch.unplug(cable, None)?,
+            (None, Some(to)) => self.patch.unplug_jack(to)?,
+            _ => {
+                return Err(error(
+                    ErrorCode::BadRequest,
+                    "unpatch takes a cable number or an input, not both",
+                ));
+            }
+        };
+        self.changed(seat, what, None, None, None)
+    }
+
     /// Answer `request` from `seat`, once it has passed the flood check.
     fn answer(
         &mut self,
@@ -2891,19 +2996,7 @@ impl Wall {
                 self.changed(seat, what, None, None, None)
             }
             Request::Patch { from, to, amount } => self.plug(seat, from, to, *amount),
-            Request::Unpatch { cable, to } => {
-                let what = match (cable, to) {
-                    (Some(cable), None) => self.patch.unplug(*cable, None)?,
-                    (None, Some(to)) => self.patch.unplug_jack(to)?,
-                    _ => {
-                        return Err(error(
-                            ErrorCode::BadRequest,
-                            "unpatch takes a cable number or an input, not both",
-                        ));
-                    }
-                };
-                self.changed(seat, what, None, None, None)
-            }
+            Request::Unpatch { cable, to } => self.unpatch(seat, *cable, to.as_deref()),
             Request::Add { .. } => self.batch_add(seat, request),
             Request::Remove { module } => {
                 let what = self.patch.remove(module, &[])?;
@@ -2932,7 +3025,11 @@ impl Wall {
                 modules,
                 overwrite,
             } => self.chain_save(name, modules, console && *overwrite),
-            Request::Batch { note, changes } => self.batch(seat, note, changes, now),
+            Request::Batch {
+                note,
+                changes,
+                comments,
+            } => self.batch(seat, (note, comments), changes, now),
             Request::ChainAdd { name } => self.chain_add(seat, name, now),
             Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change, now),
@@ -4032,7 +4129,8 @@ impl Wall {
         // put back; once it may be in the log, its line is never reused.
         let unbroken = self.clock_line.mark();
         self.clock_line.break_line();
-        let change = self.new_change(seat, what, source.undoes());
+        let mut change = self.new_change(seat, what, source.undoes());
+        change.comment = self.comment.take();
         // The wall put up is named by the change that puts it up, and goes
         // to patch.json as of that change.
         incoming.last_seq = change.seq;
@@ -4347,7 +4445,9 @@ impl Wall {
         };
         // Stopped whatever the log says; while it owes, the change has no
         // number yet and is told once written.
-        let (change, fingerprints) = self.log_stop(seat, &finished, reason).unzip();
+        // The seat's comment goes with the stop it asked for.
+        let comment = self.comment.take();
+        let (change, fingerprints) = self.log_stop((seat, comment), &finished, reason).unzip();
         let result = encode(&RecordResult {
             on: false,
             path: Some(finished.path.to_string_lossy().into_owned()),
@@ -4363,12 +4463,12 @@ impl Wall {
         })
     }
 
-    /// Log `finished` as stopped by `seat`, for `reason` when the wall
-    /// stopped it on its own (see [`Self::commit_own`]: `None` while the
-    /// log owes it).
+    /// Log `finished` as stopped by `seat`, with its `comment`, for
+    /// `reason` when the wall stopped it on its own (see
+    /// [`Self::commit_own`]: `None` while the log owes it).
     fn log_stop(
         &mut self,
-        seat: &str,
+        (seat, comment): (&str, Option<String>),
         finished: &Finished,
         reason: Option<String>,
     ) -> Option<(Change, Option<Event>)> {
@@ -4380,7 +4480,7 @@ impl Wall {
             continues: None,
             reason,
         };
-        self.commit_own(seat, what)
+        self.commit_own_commented(seat, what, comment)
     }
 
     /// A recording ended that nobody asked to stop: log that as the
@@ -4401,7 +4501,7 @@ impl Wall {
             ),
             Ending::Asked => (why.to_string(), carry, true),
         };
-        let stopped = self.log_stop(LOADER_SEAT, finished, Some(reason.clone()));
+        let stopped = self.log_stop((LOADER_SEAT, None), finished, Some(reason.clone()));
         self.tell_paid(stopped.into_iter().collect());
         if !carry {
             return;
@@ -4443,7 +4543,7 @@ impl Wall {
             Ending::Failed(why) => why.clone(),
             Ending::Asked | Ending::Full => "the wall stopped".to_string(),
         };
-        let (change, _) = self.log_stop(LOADER_SEAT, &finished, Some(reason))?;
+        let (change, _) = self.log_stop((LOADER_SEAT, None), &finished, Some(reason))?;
         Some(Event::Change {
             change: Box::new(change),
         })
@@ -4467,7 +4567,7 @@ impl Wall {
                 self.owed.len(),
                 self.log_error.as_deref().unwrap_or("no reason given")
             );
-            for (seat, what) in &self.owed {
+            for (seat, what, _) in &self.owed {
                 let summary =
                     summarise_with(seat, what, None, |id| self.patch.module(id).map(|m| m.kind));
                 eprintln!("kazoo-wall:   {summary}");

@@ -50,9 +50,11 @@ impl Patch {
             inverse.push(undone);
         }
         *self = staged;
+        // The steps' comments said why each went on; undone, none does.
         Ok(What::Batch {
             note: note.to_string(),
             changes: inverse,
+            comments: Vec::new(),
         })
     }
 

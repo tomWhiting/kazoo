@@ -43,7 +43,12 @@ async fn wall_undo_renders_replacements_and_notes_its_own_change() {
         let (feed, mut heard) = mpsc::unbounded_channel();
         let (peer, receiver) = watch::channel(None);
         let seat = Seat::new(Arc::new(Wall::new(socket, "Tom".into())), feed, peer);
-        let result = seat.wall_undo(Parameters(UndoArgs { change: 2 })).await;
+        let result = seat
+            .wall_undo(Parameters(UndoArgs {
+                change: 2,
+                comment: None,
+            }))
+            .await;
         assert_ne!(result.is_error, Some(true), "{result:?}");
         let text = result
             .content
@@ -197,6 +202,65 @@ fn wall_loop_needs_exactly_one_of_erase_and_from() {
         );
     }
     assert!(serde_json::from_str::<LoopArgs>(r#"{"module":"loop1","from":42}"#).is_err());
+}
+
+#[test]
+fn a_batch_carries_each_steps_comment_beside_it() {
+    let args: super::batch::BatchArgs = serde_json::from_value(serde_json::json!({
+        "note": "brass",
+        "changes": [
+            {"op": "tempo", "bpm": 70.0, "comment": "half-time"},
+            {"op": "turn", "module": "vcf1", "knob": "cutoff", "value": 500.0},
+        ],
+    }))
+    .unwrap();
+    let Request::Batch {
+        changes, comments, ..
+    } = args.request().unwrap()
+    else {
+        panic!("a batch");
+    };
+    assert_eq!(comments, [Some("half-time".to_string()), None]);
+    assert_eq!(
+        changes[0],
+        Request::Tempo { bpm: 70.0 },
+        "the step is the single tool's"
+    );
+    let none: super::batch::BatchArgs = serde_json::from_value(serde_json::json!({
+        "note": "plain",
+        "changes": [{"op": "tempo", "bpm": 70.0}],
+    }))
+    .unwrap();
+    let Request::Batch { comments, .. } = none.request().unwrap() else {
+        panic!("a batch");
+    };
+    assert!(comments.is_empty());
+}
+
+#[test]
+fn every_tool_that_makes_a_change_takes_a_comment() {
+    let tools = Seat::tool_router().list_all();
+    for name in [
+        "wall_turn",
+        "wall_patch",
+        "wall_unpatch",
+        "wall_add",
+        "wall_remove",
+        "wall_chain",
+        "wall_undo",
+        "wall_tempo",
+        "wall_loop",
+        "wall_record",
+        "wall_load",
+        "wall_go",
+    ] {
+        let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+        let schema = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+        assert!(
+            schema["properties"]["comment"].is_object(),
+            "{name} takes no comment"
+        );
+    }
 }
 
 /// Every tool, in the router's order.

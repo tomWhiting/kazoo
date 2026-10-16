@@ -462,6 +462,7 @@ fn batch(wall: &mut Wall, note: &str, first: f64, second: f64) -> u64 {
                 super::fixtures::turn_request("vcf1", "cutoff", first, None),
                 super::fixtures::turn_request("vcf1", "cutoff", second, None),
             ],
+            comments: Vec::new(),
         },
     )
     .change

@@ -28,6 +28,8 @@ pub(super) struct Waiting {
     console: bool,
     asked: Instant,
     what: Asked,
+    /// The sender's comment, for the change made when the tree answers.
+    comment: Option<String>,
 }
 
 #[derive(Debug)]
@@ -185,7 +187,8 @@ impl Wall {
         Ok(ticket)
     }
 
-    fn tree_pending(&mut self, ticket: u64, waiting: Waiting) -> Outcome {
+    fn tree_pending(&mut self, ticket: u64, mut waiting: Waiting) -> Outcome {
+        waiting.comment = self.comment.take();
         self.tree_waiting.insert(ticket, waiting);
         Outcome {
             pending: Some(ticket),
@@ -222,6 +225,7 @@ impl Wall {
             seat: seat.into(),
             console,
             asked: now,
+            comment: None,
             what: Asked::Mark,
         };
         let ticket = self.tree_ticket()?;
@@ -260,6 +264,7 @@ impl Wall {
                 seat: seat.into(),
                 console,
                 asked: now,
+                comment: None,
                 what: Asked::Go {
                     made: self.made,
                     tries: 0,
@@ -302,6 +307,7 @@ impl Wall {
                 seat: seat.into(),
                 console: false,
                 asked: now,
+                comment: None,
                 what: Asked::List,
             },
         ))
@@ -338,6 +344,7 @@ impl Wall {
                 seat: seat.into(),
                 console,
                 asked: Instant::now(),
+                comment: None,
                 what: Asked::Back {
                     go,
                     backup,
@@ -575,7 +582,12 @@ impl Wall {
                         self.tree_waiting.insert(ticket, waiting);
                         continue;
                     }
-                    Ok(false) => self.act_tree(&waiting, answer, now),
+                    Ok(false) => {
+                        self.comment.clone_from(&waiting.comment);
+                        let acted = self.act_tree(&waiting, answer, now);
+                        self.comment = None;
+                        acted
+                    }
                     Err(err) => Err(err),
                 },
             };

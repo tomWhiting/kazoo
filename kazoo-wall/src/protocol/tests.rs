@@ -21,6 +21,7 @@ fn round_trip_request(request: Request) {
         id: 7,
         wall: None,
         request,
+        comment: None,
     };
     let text = serde_json::to_string(&line).unwrap();
     let back: RequestLine = serde_json::from_str(&text).unwrap();
@@ -204,6 +205,7 @@ fn responses_and_events_have_the_design_shape() {
         summary: "Tom turned vcf1 cutoff 420 Hz → 800 Hz over 4 beats".to_string(),
         undoes: None,
         clock: None,
+        comment: None,
     };
     let event = Event::Change {
         change: Box::new(change),
@@ -353,6 +355,7 @@ fn changes_undo_and_every_what_round_trip() {
             summary: String::new(),
             undoes: Some(9),
             clock: None,
+            comment: None,
         };
         let text = serde_json::to_string(&change).unwrap();
         assert_eq!(serde_json::from_str::<Change>(&text).unwrap(), change);
@@ -383,7 +386,8 @@ fn change_ops_are_the_flood_guarded_ones() {
         serde_json::to_value(RequestLine {
             id: 4,
             wall: None,
-            request: Request::Monitor { on: true }
+            request: Request::Monitor { on: true },
+            comment: None,
         })
         .unwrap(),
         json!({"id":4,"op":"monitor","on":true})
@@ -468,7 +472,8 @@ fn recording_has_its_shape_and_old_snapshots_have_none() {
         serde_json::to_value(RequestLine {
             id: 7,
             wall: None,
-            request: Request::Record { on: true }
+            request: Request::Record { on: true },
+            comment: None,
         })
         .unwrap(),
         json!({"id":7,"op":"record","on":true})
@@ -534,6 +539,7 @@ fn the_rack_has_its_shape_and_older_walls_and_consoles_still_read() {
             id: 9,
             wall: None,
             request: arrange,
+            comment: None,
         })
         .unwrap(),
         json!({"id":9,"op":"arrange","module":"lfo3","row":1,"before":"vco2"})
@@ -563,7 +569,8 @@ fn the_rack_has_its_shape_and_older_walls_and_consoles_still_read() {
         serde_json::to_value(RequestLine {
             id: 7,
             wall: None,
-            request: with
+            request: with,
+            comment: None,
         })
         .unwrap(),
         json!({"id":7,"op":"add","kind":"lfo","place":{"row":3}})
@@ -595,7 +602,10 @@ fn the_rack_has_its_shape_and_older_walls_and_consoles_still_read() {
     assert_eq!(snapshot.rack, Some(vec![vec!["vco1".to_string()]]));
     let rows: ArrangeResult = serde_json::from_value(json!({"rows":[["a1"],["b1","c1"]]})).unwrap();
     assert_eq!(rows.rows.len(), 2);
+}
 
+#[test]
+fn a_removal_reads_with_its_place_or_without() {
     // A removal logged before the rows reads with no place; one logged
     // since carries it, and an older console reading it ignores it.
     let module = json!({"id":"lfo3","kind":"lfo","knobs":{}});
@@ -707,6 +717,7 @@ fn saving_and_loading_have_their_shapes() {
             id: 7,
             wall: None,
             request,
+            comment: None,
         };
         assert_eq!(serde_json::to_value(&line).unwrap(), wire);
     }
@@ -835,6 +846,7 @@ fn a_load_names_the_save_its_wall_is_kept_in_and_nothing_more() {
         summary: "Tom loaded the save \"jam\"".to_string(),
         undoes: None,
         clock: None,
+        comment: None,
     };
     // The log line is small whatever the wall, and the words in the wall
     // it replaced are never in it: they stay in the save, privately.
@@ -871,6 +883,7 @@ fn a_request_says_which_wall_it_is_for() {
             value: 800.0,
             glide_beats: None,
         },
+        comment: None,
     };
     let wire = serde_json::to_value(&line).unwrap();
     assert_eq!(
@@ -978,7 +991,8 @@ fn a_probe_is_a_read_and_older_walls_have_none() {
         serde_json::to_value(RequestLine {
             id: 7,
             wall: None,
-            request: one.clone()
+            request: one.clone(),
+            comment: None,
         })
         .unwrap(),
         json!({"id":7,"op":"probe","module":"scope1"})

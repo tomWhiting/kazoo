@@ -593,6 +593,7 @@ fn take_change(seq: u64, module: &str, tape: TapeRecord, why: TakeWhy) -> Change
         summary: "take".into(),
         undoes: None,
         clock: None,
+        comment: None,
     }
 }
 

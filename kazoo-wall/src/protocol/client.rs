@@ -147,6 +147,7 @@ impl WallClient {
                 seats: Vec::new(),
                 revision: 0,
                 watcher,
+                comments: false,
             },
             events: VecDeque::new(),
             wall: None,
@@ -197,6 +198,7 @@ impl WallClient {
             id,
             wall: self.wall,
             request,
+            comment: None,
         };
         codec::write_line(&mut self.writer, &line)?;
         loop {

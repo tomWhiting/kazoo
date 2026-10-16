@@ -47,6 +47,7 @@ fn change(seq: u64, go: bool) -> Change {
         summary: "changed".into(),
         undoes: None,
         clock: None,
+        comment: None,
     }
 }
 
