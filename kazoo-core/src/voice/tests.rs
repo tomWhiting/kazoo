@@ -304,7 +304,8 @@ fn the_judge_thread_comes_and_goes() -> crate::Result<()> {
         judge.stats(),
         judge::JudgeStatsSnapshot {
             samples_dropped: 0,
-            results_dropped: 0
+            results_dropped: 0,
+            pitch_runs_failed: 0,
         }
     );
     drop(feed);

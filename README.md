@@ -16,7 +16,7 @@ kazoo is one command, `kzoo`, also installed as `kazoo`. It runs on macOS (Apple
 
 ```sh
 npm install -g kzoo            # or try it once: npx kzoo wall
-cargo install --locked kzoo    # from source, with Rust 1.89 or later
+cargo install kzoo             # from source, with Rust 1.89 or later
 ```
 
 Install it (rather than run it through `npx`) for anything that keeps running: `npx` runs from npm's cache, and the wall and the studio start programs from where `kzoo` is.
