@@ -67,9 +67,13 @@ pub struct HubRecord {
     pub socket: PathBuf,
     /// The hub's process id.
     pub pid: u32,
+    /// The rate the desk runs at, so an instrument can start at it (`None`
+    /// in a file written before the desk said it).
+    pub sample_rate: Option<u32>,
 }
 
-/// Write the PID file for a hub serving on `socket_path`, as this process.
+/// Write the PID file for a hub serving on `socket_path` at `sample_rate`,
+/// as this process.
 ///
 /// The file is written to a temporary name and renamed into place, so a
 /// reader never sees a half-written file.
@@ -77,10 +81,14 @@ pub struct HubRecord {
 /// # Errors
 ///
 /// Fails if the runtime directory or file cannot be written.
-pub fn write_pid_file(socket_path: &Path) -> io::Result<()> {
+pub fn write_pid_file(socket_path: &Path, sample_rate: u32) -> io::Result<()> {
     let dir = runtime_dir();
     fs::create_dir_all(&dir)?;
-    let contents = format!("{}\n{}\n", socket_path.display(), std::process::id());
+    let contents = format!(
+        "{}\n{}\n{sample_rate}\n",
+        socket_path.display(),
+        std::process::id()
+    );
     let temporary = dir.join(format!(
         "{PID_NAME}.{}.{}",
         std::process::id(),
@@ -122,9 +130,19 @@ fn parse_pid_file(contents: &str) -> io::Result<HubRecord> {
         .trim()
         .parse::<u32>()
         .map_err(|_| malformed())?;
+    // The rate is the third line; a file from before the desk wrote it has
+    // two, and its hub's rate is not known.
+    let sample_rate = match lines.next().map(str::trim) {
+        None | Some("") => None,
+        Some(rate) => match rate.parse::<u32>().map_err(|_| malformed())? {
+            0 => return Err(malformed()),
+            rate => Some(rate),
+        },
+    };
     Ok(HubRecord {
         socket: PathBuf::from(socket),
         pid,
+        sample_rate,
     })
 }
 
@@ -248,9 +266,20 @@ mod tests {
             parse_pid_file("/tmp/kazoo/hub.sock\n4242\n").unwrap(),
             HubRecord {
                 socket: PathBuf::from("/tmp/kazoo/hub.sock"),
-                pid: 4242
+                pid: 4242,
+                sample_rate: None,
             }
         );
+        assert_eq!(
+            parse_pid_file("/tmp/kazoo/hub.sock\n4242\n44100\n").unwrap(),
+            HubRecord {
+                socket: PathBuf::from("/tmp/kazoo/hub.sock"),
+                pid: 4242,
+                sample_rate: Some(44_100),
+            }
+        );
+        assert!(parse_pid_file("/tmp/kazoo/hub.sock\n4242\nfast\n").is_err());
+        assert!(parse_pid_file("/tmp/kazoo/hub.sock\n4242\n0\n").is_err());
         assert!(parse_pid_file("").is_err());
         assert!(parse_pid_file("/tmp/kazoo/hub.sock\nnot-a-pid\n").is_err());
         assert!(parse_pid_file("/tmp/kazoo/hub.sock\n").is_err());

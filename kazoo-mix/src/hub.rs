@@ -376,7 +376,7 @@ impl Hub {
         };
         listener.set_nonblocking(true)?;
         if config.advertise {
-            discovery::write_pid_file(&config.socket)?;
+            discovery::write_pid_file(&config.socket, config.sample_rate)?;
         }
 
         let running = Arc::new(AtomicBool::new(true));
