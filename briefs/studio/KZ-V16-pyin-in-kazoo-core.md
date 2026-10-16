@@ -30,7 +30,7 @@ kzoo 0.1.0 went to crates.io on 17 Oct 2026, but a plain `cargo install kzoo` fa
 
   The fixture test runs in 10 s in debug, against 96 s before.
 - **The ceiling.** The detector's 64 MiB transition-table ceiling becomes `MAX_STATES`, 2896 states, inside `Settings::grid`. That is exactly where the crate's table passed 64 MiB, so the configurations accepted are unchanged, apart from the band-as-wide-as-the-range case above. The refusal names the state count.
-- **Failed runs.** A pYIN run that fails in the voice judge is counted (`PitchDetector::failed_runs`, `last_failure`) and reported in `JudgeStatsSnapshot::pitch_runs_failed`, not hidden. The frame reads as unvoiced.
+- **Failed runs.** A pYIN run that fails is counted, not hidden: `PitchDetector::failed_runs` and `last_failure` record it, and the voice judge adds it to `JudgeStatsSnapshot::pitch_runs_failed`, read through `Judge::stats()`. The frame reads as unvoiced. Nothing shows the judge's counters on screen yet, this one or the two it already had. A run cannot fail under a validated configuration, so the counter is there to be honest about a failure, not because one is expected.
 
 ## Decisions
 

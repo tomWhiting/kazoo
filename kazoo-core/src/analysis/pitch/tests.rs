@@ -463,3 +463,17 @@ fn a_pyin_grid_past_the_ceiling_is_refused() {
     };
     assert!(validate(&narrow).is_ok());
 }
+
+/// Frequencies so low their periods pass any usize: these passed `new`'s
+/// checks and then overflowed (a panic in debug, an out-of-bounds read on
+/// the first hop in release). They are refused.
+#[test]
+fn a_range_too_low_for_any_period_is_refused() {
+    let config = PitchDetectorConfig {
+        min_frequency: 1e-30,
+        max_frequency: 1e-20,
+        ..PitchDetectorConfig::for_rate(48_000)
+    };
+    let built = std::panic::catch_unwind(|| PitchDetector::new(config));
+    assert!(matches!(built, Ok(Err(crate::Error::Config(_)))));
+}

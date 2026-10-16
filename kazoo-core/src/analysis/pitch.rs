@@ -328,9 +328,9 @@ fn validate(config: &PitchDetectorConfig) -> crate::Result<()> {
         return Err(crate::Error::Config("sample_rate must be > 0".into()));
     }
 
-    if !config.resolution.is_finite() || !(0.01..=1.0).contains(&config.resolution) {
+    if !config.resolution.is_finite() || !(0.01..1.0).contains(&config.resolution) {
         return Err(crate::Error::Config(
-            "resolution must be finite and between 0.01 and 1.0".into(),
+            "resolution must be finite, from 0.01 to under 1.0".into(),
         ));
     }
 

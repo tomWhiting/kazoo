@@ -197,7 +197,40 @@ fn settings_pyin_cannot_hold_are_refused_not_panicked_on() {
             hop_length: 48_000,
             ..good
         },
+        // Periods past any usize, which a cast would have saturated.
+        Settings {
+            fmin: 1e-30,
+            fmax: 1e-20,
+            ..good
+        },
+        // Bins finer than a tenth of a cent.
+        Settings {
+            resolution: 1e-300,
+            ..good
+        },
+        Settings {
+            resolution: 0.0009,
+            ..good
+        },
+        // Past the state ceiling: 3036 states.
+        Settings {
+            fmin: 50.0,
+            fmax: 4000.0,
+            resolution: 0.05,
+            ..good
+        },
     ];
+    // The finest resolution allowed is a tenth of a cent, exactly: 173 bins
+    // from 200 to 202 Hz, with a hop short enough that a pitch moves under
+    // one semitone of them.
+    let finest = Settings {
+        fmin: 200.0,
+        fmax: 202.0,
+        hop_length: 1,
+        resolution: 0.001,
+        ..good
+    };
+    assert!(Pyin::new(finest).is_ok(), "{finest:?}");
     for settings in refused {
         assert!(
             matches!(Pyin::new(settings), Err(crate::Error::Config(_))),
