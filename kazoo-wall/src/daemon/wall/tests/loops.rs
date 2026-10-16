@@ -4,7 +4,7 @@
 //! of the same paths are in `daemon/loops/tests.rs`.
 use super::*;
 use crate::daemon::loops::Loops;
-use crate::daemon::loops::tests::{BAR, put_reel_of, record, reels_dir, saved};
+use crate::daemon::loops::tests::{BAR, TAIL, put_reel_of, record, reels_dir, saved};
 use crate::dsp::looper::{LoopGauges, LoopState};
 use crate::patch::{LoopRecord, TapeRecord};
 use crate::protocol::LoopOp;
@@ -328,6 +328,43 @@ fn an_engine_rebuilt_after_a_device_change_puts_the_tapes_back() {
     assert_eq!(state(&wall), LoopState::Blank as u8);
     tape_arrives(&mut wall, &mut replacement);
     holds_the_reel(&wall, &mut replacement);
+    drop(engine);
+}
+
+#[test]
+fn a_take_longer_than_the_new_rate_holds_comes_back_when_the_audio_opens_at_it() {
+    // A take of 16 s at 48 kHz: more frames than 96 s at 8 kHz, the most
+    // a loop built at 8 kHz once held (KZ-D21: the wall opens its audio
+    // again at a desk's rate; 8 kHz keeps the reel small, and a take of
+    // 90 s at 48 kHz meets 44.1 kHz the same way).
+    let frames = 800_000;
+    let dir = reels_dir();
+    let samples: Vec<f32> = (0..frames + TAIL)
+        .flat_map(|frame| {
+            let value = ((frame % 101) as f32 - 50.0) / 400.0;
+            [value, -value]
+        })
+        .collect();
+    let id = ReelStore::open(dir.path())
+        .unwrap()
+        .put(48_000, &samples)
+        .unwrap();
+    let tape = TapeRecord {
+        reel: id.to_string(),
+        frames: frames as u64,
+        ..record()
+    };
+    let (mut wall, mut engine) = saved_wall(Some(tape), dir.path());
+    tape_arrives(&mut wall, &mut engine);
+    assert_eq!(state(&wall), LoopState::Holding as u8);
+    let (mut replacement, control) =
+        crate::engine::engine(EngineConfig::new(8_000, 120.0, 0.0), None);
+    wall.attach(control, None, Instant::now());
+    tape_arrives(&mut wall, &mut replacement);
+    let notes: Vec<&str> = wall.loops.notes().collect();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(state(&wall), LoopState::Holding as u8);
+    assert_eq!(gauges(&wall).frames.load(Ordering::Relaxed), frames as u64);
     drop(engine);
 }
 

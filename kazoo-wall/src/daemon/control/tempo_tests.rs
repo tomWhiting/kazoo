@@ -31,8 +31,7 @@ fn hello_refuses_reserved_seat_names() {
         told_link_refused: false,
         desk_refusals: link_diagnostics::DeskRefusals::default(),
         reported_link_shutdowns: link_diagnostics::LinkShutdowns::default(),
-        following_desk: None,
-        desk_rate_tried: None,
+        desk_rate: super::desk_rate::Watch::default(),
     };
     for seat in [
         "desk",

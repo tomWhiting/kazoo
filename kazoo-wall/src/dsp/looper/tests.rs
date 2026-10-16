@@ -587,3 +587,14 @@ fn a_post_roll_into_the_tail_never_writes_the_first_bar() {
         assert_eq!(tape[2 * cell].to_bits(), 0.75_f32.to_bits(), "cell {cell}");
     }
 }
+
+#[test]
+fn the_tape_the_control_side_gives_holds_the_longest_take_at_any_rate() {
+    let (capacity, tail) = tape_geometry();
+    for rate in [8_000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0, 768_000.0] {
+        let (most, seam) = geometry(rate);
+        assert!(most <= capacity, "{rate} Hz records {most} frames");
+        assert!(seam <= tail, "{rate} Hz has a {seam}-frame seam");
+    }
+    assert_eq!(tail, geometry(768_000.0).1);
+}

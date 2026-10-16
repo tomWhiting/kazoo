@@ -263,12 +263,8 @@ struct Control {
     desk_refusals: link_diagnostics::DeskRefusals,
     /// The process-wide desk link shutdown counts already logged.
     reported_link_shutdowns: link_diagnostics::LinkShutdowns,
-    /// The desk's rate the wall renders at on the headless loop, when its
-    /// device plays at another (KZ-D21).
-    following_desk: Option<u32>,
-    /// The desk's and the wall's rates the audio was last opened again
-    /// for, so a device that cannot match is not opened again and again.
-    desk_rate_tried: Option<(u32, u32)>,
+    /// Following the rate of a desk the wall joins (KZ-D21).
+    desk_rate: desk_rate::Watch,
 }
 
 /// Run the control thread until stopped.
@@ -300,8 +296,7 @@ pub fn run(setup: Setup) {
         told_link_refused: false,
         desk_refusals: link_diagnostics::DeskRefusals::default(),
         reported_link_shutdowns: link_diagnostics::LinkShutdowns::default(),
-        following_desk: None,
-        desk_rate_tried: None,
+        desk_rate: desk_rate::Watch::default(),
     };
     while !control.stopping {
         match setup.inbox.recv_timeout(TICK) {
@@ -346,30 +341,10 @@ fn start_audio(
     let bpm = crate::engine::clamp_bpm(bpm);
     if let AudioMode::Device { sample_rate } = mode {
         match Device::open(sample_rate) {
-            Ok(device) => {
-                let rate = device.sample_rate();
-                let link = link_to_desk(desk, rate, Pacing::Device);
-                let (hub, link) = split_link(link);
-                let (engine, mut control) =
-                    engine(engine_config(rate, (bpm, beat, origin), heard), hub);
-                let health = Arc::new(StreamHealth::default());
-                match device.play(engine, &health) {
-                    Ok(stream) => {
-                        eprintln!("kazoo-wall: playing on {} at {rate} Hz", device.name());
-                        let backend = backend(
-                            Running::Device {
-                                _stream: stream,
-                                health,
-                            },
-                            &mut control,
-                            listen_tx,
-                            None,
-                        );
-                        return (backend, control, link);
-                    }
-                    Err(why) => eprintln!("kazoo-wall: {why}; retrying in 2 s"),
-                }
-            }
+            Ok(device) => match play_on(&device, desk, (bpm, beat, origin), heard, listen_tx) {
+                Ok(started) => return started,
+                Err(why) => eprintln!("kazoo-wall: {why}; retrying in 2 s"),
+            },
             Err(why) => {
                 if failed_before.is_none() {
                     eprintln!("kazoo-wall: {why}; retrying every 2 s");
@@ -383,6 +358,35 @@ fn start_audio(
     };
     let retry_at = matches!(mode, AudioMode::Device { .. }).then(|| Instant::now() + DEVICE_RETRY);
     start_headless(desk, rate, (bpm, beat, origin), heard, listen_tx, retry_at)
+}
+
+/// The engine on `device` at the rate it is set to, with its desk link and
+/// listening thread, at `(bpm, beat)` with the wall playing from `origin`,
+/// heard or silent; why not, when the device will not play.
+fn play_on(
+    device: &Device,
+    desk: &DeskMode,
+    at: (f64, f64, f64),
+    heard: bool,
+    listen_tx: &Sender<Listen>,
+) -> Result<(Backend, EngineControl, Option<HubLink>), String> {
+    let rate = device.sample_rate();
+    let link = link_to_desk(desk, rate, Pacing::Device);
+    let (hub, link) = split_link(link);
+    let (engine, mut control) = engine(engine_config(rate, at, heard), hub);
+    let health = Arc::new(StreamHealth::default());
+    let stream = device.play(engine, &health)?;
+    eprintln!("kazoo-wall: playing on {} at {rate} Hz", device.name());
+    let backend = backend(
+        Running::Device {
+            _stream: stream,
+            health,
+        },
+        &mut control,
+        listen_tx,
+        None,
+    );
+    Ok((backend, control, link))
 }
 
 /// The headless loop at `rate`, with its desk link and listening thread,
@@ -1000,8 +1004,26 @@ impl Control {
             self.backend.as_ref().map(|b| &b.running),
             Some(Running::Device { .. })
         );
+        let following = self.desk_rate.following();
+        if following.is_none() {
+            // The audio opens again other than to match a desk: whatever
+            // rate it comes back at, a desk at another is matched afresh.
+            self.desk_rate.forget_tried();
+        }
         self.replace_audio(now, |control, at| {
-            if device_failed {
+            if let Some(rate) = following {
+                // The render loop rendering for a desk stopped: it starts
+                // again at the desk's rate, never back on the device while
+                // the desk is up.
+                start_headless(
+                    &control.desk,
+                    rate,
+                    at,
+                    control.heard,
+                    &control.listen_tx,
+                    None,
+                )
+            } else if device_failed {
                 // Stand in with the headless loop now; the device is tried
                 // again in two seconds.
                 start_headless(

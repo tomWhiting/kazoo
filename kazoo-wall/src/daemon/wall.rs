@@ -1689,7 +1689,7 @@ impl Wall {
             (built, needs)
         } else if module.kind == Kind::LOOP {
             let (built, feed) = dsp::looper::build_loop(rate);
-            self.loops.attach(&module.id, feed, rate);
+            self.loops.attach(&module.id, feed);
             if let Some(tape) = self
                 .patch
                 .loop_record(&module.id)
