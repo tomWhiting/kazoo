@@ -2,15 +2,18 @@
 name = "kazoo-mouth"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 description = "The mouth: a voice synth and voice source for the desk"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true
 
 [dependencies]
-kazoo-core = { path = "../kazoo-core" }
-kazoo-host = { path = "../kazoo-host" }
-kazoo-fx = { path = "../kazoo-fx" }
+kazoo-core = { path = "../kazoo-core", version = "=0.1.0" }
+kazoo-host = { path = "../kazoo-host", version = "=0.1.0" }
+kazoo-fx = { path = "../kazoo-fx", version = "=0.1.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["float_roundtrip"] }
 crossbeam-channel = "0.5"

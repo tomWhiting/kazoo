@@ -9,14 +9,14 @@ It is a client of the wall daemon's control socket and never starts the daemon i
 **Tom** starts the wall once. It then plays forever:
 
 ```sh
-cargo build --release -p kazoo
-target/release/kazoo wall            # opens the TUI and starts the daemon if none is running
+npm install -g kzoo                  # or: cargo install --locked kzoo
+kazoo wall                           # opens the TUI and starts the daemon if none is running
 ```
 
 **Each seat** registers the server under its own name, then starts Claude with the channel loaded:
 
 ```sh
-claude mcp add kazoo -- /Users/tom/Developer/projects/deno_rust/kazoo/target/release/kazoo mcp --seat <Name>
+claude mcp add kazoo -- kazoo mcp --seat <Name>
 claude --dangerously-load-development-channels server:kazoo
 ```
 

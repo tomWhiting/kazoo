@@ -1,0 +1,25 @@
+{
+  "name": "kzoo-darwin-arm64",
+  "version": "0.1.0",
+  "description": "The kzoo program for macOS on Apple silicon: installed by the kzoo package",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://github.com/tomWhiting/kazoo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomWhiting/kazoo.git"
+  },
+  "files": [
+    "bin/kzoo",
+    "LICENSE"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "preferUnplugged": true,
+  "scripts": {
+    "prepublishOnly": "test -x bin/kzoo && test -f LICENSE"
+  }
+}

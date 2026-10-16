@@ -2,15 +2,16 @@
 name = "kazoo-tui"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
+description = "The kazoo voice tracker: a DAW in the terminal, driven by your voice"
 license = "AGPL-3.0-or-later"
-publish = false
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host" }
+kazoo-host = { path = "../kazoo-host", version = "=0.1.0" }
 color-eyre = "0.6.5"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures = "0.3"

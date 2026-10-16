@@ -1455,35 +1455,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kazoo"
-version = "0.1.0"
-dependencies = [
- "clap",
- "color-eyre",
- "kazoo-303",
- "kazoo-808",
- "kazoo-arp",
- "kazoo-core",
- "kazoo-cs80",
- "kazoo-dx",
- "kazoo-glass",
- "kazoo-host",
- "kazoo-juno",
- "kazoo-mcp",
- "kazoo-mini",
- "kazoo-mix",
- "kazoo-mouth",
- "kazoo-play",
- "kazoo-prophet",
- "kazoo-string",
- "kazoo-tree",
- "kazoo-tui",
- "kazoo-wall",
- "serde",
- "toml",
-]
-
-[[package]]
 name = "kazoo-303"
 version = "0.1.0"
 dependencies = [
@@ -1810,6 +1781,35 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "kzoo"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "kazoo-303",
+ "kazoo-808",
+ "kazoo-arp",
+ "kazoo-core",
+ "kazoo-cs80",
+ "kazoo-dx",
+ "kazoo-glass",
+ "kazoo-host",
+ "kazoo-juno",
+ "kazoo-mcp",
+ "kazoo-mini",
+ "kazoo-mix",
+ "kazoo-mouth",
+ "kazoo-play",
+ "kazoo-prophet",
+ "kazoo-string",
+ "kazoo-tree",
+ "kazoo-tui",
+ "kazoo-wall",
+ "serde",
  "toml",
 ]
 

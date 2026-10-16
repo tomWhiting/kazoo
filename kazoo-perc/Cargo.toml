@@ -2,16 +2,16 @@
 name = "kazoo-perc"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Kazoo's percussion, written from scratch: drum voices and rhythm generators"
 license = "AGPL-3.0-or-later"
-publish = false
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true
 
 [dependencies]
-kazoo-fx = { path = "../kazoo-fx" }
+kazoo-fx = { path = "../kazoo-fx", version = "=0.1.0" }
 
 [dev-dependencies]
 assert_no_alloc = "1.1.2"

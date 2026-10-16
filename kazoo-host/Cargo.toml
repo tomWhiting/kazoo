@@ -2,10 +2,10 @@
 name = "kazoo-host"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "What every kazoo terminal program shares: error reports installed once, and a terminal entered and always restored"
 license = "AGPL-3.0-or-later"
-publish = false
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true

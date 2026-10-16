@@ -2,15 +2,16 @@
 name = "kazoo-arp"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 description = "Jupiter-8 style arpeggiator — note scheduler for any synth"
 license = "AGPL-3.0-or-later"
-publish = false
+repository = "https://github.com/tomWhiting/kazoo"
 
 [lints]
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host" }
+kazoo-host = { path = "../kazoo-host", version = "=0.1.0" }
 kazoo-core = { version = "0.1.0", path = "../kazoo-core" }
 cpal = "0.17"
 crossbeam-channel = "0.5"
