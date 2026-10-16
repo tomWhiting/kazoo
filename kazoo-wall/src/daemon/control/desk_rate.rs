@@ -185,7 +185,7 @@ impl Watch {
             // The seats were told the audio opens again: say what happens.
             let said = if next == Follow::Stay {
                 Some(
-                    "the desk is as the wall needs it after all; the wall's audio stays as it is"
+                    "the desk changed while the takes were kept; the wall's audio stays as it is"
                         .to_string(),
                 )
             } else if settled {

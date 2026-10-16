@@ -97,7 +97,7 @@ fn a_followed_desk_is_gone_only_after_two_looks_a_retry_apart() {
 }
 
 /// What the seats hear when a hold ends with nothing to do.
-const STAYS: &str = "the desk is as the wall needs it after all; the wall's audio stays as it is";
+const STAYS: &str = "the desk changed while the takes were kept; the wall's audio stays as it is";
 
 /// Takes that must not be asked about.
 fn no_takes(_: &[u64]) -> bool {
