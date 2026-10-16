@@ -893,6 +893,12 @@ fn a_comment_is_read_onto_its_moment_and_each_step_onto_its_own() {
         comments,
         [None, Some("a touch faster"), Some("first push"), None]
     );
+    // The batch's own moment lists every step's comment by its number.
+    let own = history.moments[3]
+        .batch
+        .as_deref()
+        .expect("the batch's own");
+    assert_eq!(own.comments, [(1, "first push".to_owned())]);
 }
 
 #[test]

@@ -112,6 +112,10 @@ pub struct Batch {
     /// Which change of how many this moment is (`Kazoo-Part: k/n`), when
     /// the batch grew a moment for each; `None` for a batch of one moment.
     pub part: Option<(usize, usize)>,
+    /// Each step's comment, by the step's number from 1
+    /// (`Kazoo-Step-Comment: k: …`), on the batch's own moment: a part
+    /// carries its own as the moment's comment.
+    pub comments: Vec<(usize, String)>,
 }
 
 impl Batch {
@@ -186,7 +190,7 @@ const BODY_END: char = '\u{1f}';
 /// only the wall's own trailers (never the whole message: a `Kazoo-Change`
 /// trailer holds a page of JSON, and a million of them would be most of
 /// the read).
-const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,key=Kazoo-Note,key=Kazoo-Step,key=Kazoo-Part,key=Kazoo-Comment,unfold)%x1f";
+const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,key=Kazoo-Note,key=Kazoo-Step,key=Kazoo-Part,key=Kazoo-Comment,key=Kazoo-Step-Comment,unfold)%x1f";
 
 /// Git as the tree reads it: the wall's own way to run git, with the
 /// person's own settings that would change what `log` says held fixed.
@@ -736,7 +740,7 @@ const fn is_format(c: char) -> bool {
 
 /// The trailers the tree reads from a moment's commit; the wall writes
 /// others (`Kazoo-Gap`, `Kazoo-Clock` and the like) that it has no use for.
-const TRAILERS: [&str; 9] = [
+const TRAILERS: [&str; 10] = [
     "Kazoo-Kind",
     "Kazoo-Seq",
     "Kazoo-Beat",
@@ -746,6 +750,7 @@ const TRAILERS: [&str; 9] = [
     "Kazoo-Step",
     "Kazoo-Part",
     "Kazoo-Comment",
+    "Kazoo-Step-Comment",
 ];
 
 /// One log record as a moment. `index` finds a parent's place, `alive_at`
@@ -793,50 +798,25 @@ fn moment(
         .parse::<i64>()
         .map_err(|err| HistoryError::Broken(format!("{id:.10}'s time does not read: {err}")))?;
     let mut problems = Vec::new();
-    let mut kind = String::new();
-    let mut seq = None;
-    let mut beat = None;
-    let mut tempo = None;
-    let mut sound = None;
-    let mut note = None;
-    let mut part = None;
-    let mut comment = None;
-    let mut steps = Vec::new();
-    // Each trailer the tree reads, by its key in any case (git's own
-    // trailers are), the first of each kept: a second is said, never put
-    // over the first. `Kazoo-Step` is the one that comes many times.
-    let mut given: HashSet<&'static str> = HashSet::new();
-    for line in trailers.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let Some(&key) = TRAILERS
-            .iter()
-            .find(|known| known.eq_ignore_ascii_case(key.trim()))
-        else {
-            continue;
-        };
-        let value = value.trim();
-        if key != "Kazoo-Step" && !given.insert(key) {
-            problems.push(format!(
-                "its {key} is given more than once; the first is kept, and this one is not: {}",
-                clean(value)
-            ));
-            continue;
-        }
-        match key {
-            "Kazoo-Kind" => kind = clean(value),
-            "Kazoo-Seq" => seq = keep(&mut problems, number(key, value)),
-            "Kazoo-Beat" => beat = keep(&mut problems, number(key, value)),
-            "Kazoo-Tempo" => tempo = keep(&mut problems, number(key, value)),
-            "Kazoo-Sound" => sound = keep(&mut problems, sound_of(value)),
-            "Kazoo-Note" => note = Some(clean(value)),
-            "Kazoo-Part" => part = keep(&mut problems, part_of(value)),
-            "Kazoo-Comment" => comment = Some(clean(value)),
-            _ => steps.push(clean(value)),
-        }
-    }
-    let batch = batch_of(&kind, &summary, (note, part), steps, &mut problems);
+    let Read {
+        kind,
+        seq,
+        beat,
+        tempo,
+        sound,
+        note,
+        part,
+        comment,
+        steps,
+        step_comments,
+    } = Read::trailers(trailers, &mut problems);
+    let batch = batch_of(
+        &kind,
+        &summary,
+        (note, part),
+        (steps, step_comments),
+        &mut problems,
+    );
     let before = parent.map_or_else(|| (0, Kinds::default(), Tint::default()), &alive_at);
     let (modules, alive, tint) = files_of(files, before, prints, &mut problems);
     Ok(Moment {
@@ -857,6 +837,82 @@ fn moment(
         comment,
         problems,
     })
+}
+
+/// What a moment's trailers say, as [`moment`] reads them.
+#[derive(Default)]
+struct Read {
+    kind: String,
+    seq: Option<u64>,
+    beat: Option<f64>,
+    tempo: Option<f64>,
+    sound: Option<Sound>,
+    note: Option<String>,
+    part: Option<(usize, usize)>,
+    comment: Option<String>,
+    steps: Vec<String>,
+    step_comments: Vec<(usize, String)>,
+}
+
+impl Read {
+    /// Each trailer the tree reads, by its key in any case (git's own
+    /// trailers are), the first of each kept: a second is said in
+    /// `problems`, never put over the first. `Kazoo-Step` and
+    /// `Kazoo-Step-Comment` are the ones that come many times.
+    fn trailers(trailers: &str, problems: &mut Vec<String>) -> Self {
+        let mut read = Self::default();
+        let mut given: HashSet<&'static str> = HashSet::new();
+        for line in trailers.lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let Some(&key) = TRAILERS
+                .iter()
+                .find(|known| known.eq_ignore_ascii_case(key.trim()))
+            else {
+                continue;
+            };
+            let value = value.trim();
+            if key != "Kazoo-Step" && key != "Kazoo-Step-Comment" && !given.insert(key) {
+                problems.push(format!(
+                    "its {key} is given more than once; the first is kept, and this one is not: {}",
+                    clean(value)
+                ));
+                continue;
+            }
+            match key {
+                "Kazoo-Kind" => read.kind = clean(value),
+                "Kazoo-Seq" => read.seq = keep(problems, number(key, value)),
+                "Kazoo-Beat" => read.beat = keep(problems, number(key, value)),
+                "Kazoo-Tempo" => read.tempo = keep(problems, number(key, value)),
+                "Kazoo-Sound" => read.sound = keep(problems, sound_of(value)),
+                "Kazoo-Note" => read.note = Some(clean(value)),
+                "Kazoo-Part" => read.part = keep(problems, part_of(value)),
+                "Kazoo-Comment" => read.comment = Some(clean(value)),
+                "Kazoo-Step-Comment" => {
+                    if let Some(step) = keep(problems, step_comment_of(value)) {
+                        read.step_comments.push(step);
+                    }
+                }
+                _ => read.steps.push(clean(value)),
+            }
+        }
+        read
+    }
+}
+
+/// A step's comment on a batch's own moment, `k: text` with `k` from 1.
+fn step_comment_of(value: &str) -> Result<(usize, String), String> {
+    let (step, text) = value
+        .split_once(':')
+        .ok_or_else(|| format!("its Kazoo-Step-Comment names no step: {}", clean(value)))?;
+    match step.trim().parse::<usize>() {
+        Ok(step) if step >= 1 => Ok((step, clean(text.trim()))),
+        Ok(_) | Err(_) => Err(format!(
+            "its Kazoo-Step-Comment's step is not a number from 1: {}",
+            clean(value)
+        )),
+    }
 }
 
 /// A batch part's place, `k/n` with `1 <= k <= n`.
@@ -891,7 +947,7 @@ fn batch_of(
     kind: &str,
     summary: &str,
     (note, part): (Option<String>, Option<(usize, usize)>),
-    steps: Vec<String>,
+    (steps, comments): (Vec<String>, Vec<(usize, String)>),
     problems: &mut Vec<String>,
 ) -> Option<Box<Batch>> {
     if kind == "part" && part.is_none() {
@@ -911,6 +967,11 @@ fn batch_of(
                 "a batch's change on a moment that is not a batch: {step}"
             ));
         }
+        for (step, comment) in comments {
+            problems.push(format!(
+                "a batch step's comment on a moment that is not a batch: {step}: {comment}"
+            ));
+        }
         return None;
     }
     if steps.is_empty() {
@@ -920,7 +981,20 @@ fn batch_of(
         problems.push("a batch without its note (no Kazoo-Note)".to_owned());
         summary.to_owned()
     });
-    Some(Box::new(Batch { note, steps, part }))
+    for (step, comment) in &comments {
+        if *step > steps.len() {
+            problems.push(format!(
+                "a comment for step {step} of a batch of {} steps: {comment}",
+                steps.len()
+            ));
+        }
+    }
+    Some(Box::new(Batch {
+        note,
+        steps,
+        part,
+        comments,
+    }))
 }
 
 /// The log's records. A record starts at a `RECORD` byte at the start of

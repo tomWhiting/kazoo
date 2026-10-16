@@ -224,23 +224,11 @@ pub fn read(dir: &Path) -> Result<Planted, TreeError> {
             String::from_utf8_lossy(&result.stderr)
         )));
     };
-    let mut through = None;
-    if tip.is_some() {
-        for key in ["Kazoo-Seq", "Kazoo-After"] {
-            let text = checked(git_command("log", Some(dir)).args([
-                "-1",
-                &format!("--format=%(trailers:key={key},valueonly,separator=%x2C)"),
-                &branch,
-            ]))?;
-            if !text.is_empty() {
-                through = Some(
-                    text.parse()
-                        .map_err(|err| TreeError::Git(format!("{key}: {err}")))?,
-                );
-                break;
-            }
-        }
-    }
+    let through = if tip.is_some() {
+        through_at(dir, &branch)?
+    } else {
+        None
+    };
     Ok(Planted {
         branch,
         tip,
@@ -292,13 +280,79 @@ fn trailers(kind: &str, seq: u64, clock: Option<&ClockStamp>, gap: Option<(u64, 
 /// one line whatever the log held.
 fn comment_trailer(comment: Option<&str>) -> String {
     comment.map_or_else(String::new, |comment| {
-        format!("Kazoo-Comment: {}\n", comment.replace(['\r', '\n'], " "))
+        format!("Kazoo-Comment: {}\n", one_line(comment))
     })
+}
+
+/// `text` as one line of a commit message, whatever the log held: every
+/// character that would break or turn a line (see
+/// [`crate::protocol::batch::breaks_line`]) a space.
+fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if crate::protocol::batch::breaks_line(c) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// Step `index`'s comment in a batch's `comments` (none, or one per step).
 fn step_comment(comments: &[Option<String>], index: usize) -> Option<&str> {
     comments.get(index).and_then(Option::as_deref)
+}
+
+/// The most parts a batch's moments can hold before its own: a request
+/// line holds fewer steps than this.
+const MOST_PARTS: usize = crate::protocol::MAX_LINE / 16;
+
+/// The last logged change the tree holds at `rev`.
+///
+/// That is its `Kazoo-Seq` (or a gap's `Kazoo-After`). A batch's parts
+/// (KZ-T10c) hold no change of their own, so the tree at a part holds
+/// through the moment before its batch: the walk back passes them. `None`
+/// for a moment with neither.
+///
+/// # Errors
+///
+/// `TreeError::Git` when git fails or a number does not read.
+pub fn through_at(dir: &Path, rev: &str) -> Result<Option<u64>, TreeError> {
+    let text = checked(git_command("log", Some(dir)).args([
+        &format!("-n{}", MOST_PARTS + 1),
+        "--format=%(trailers:key=Kazoo-Kind,valueonly,separator=%x2C)%x1f%(trailers:key=Kazoo-Seq,valueonly,separator=%x2C)%x1f%(trailers:key=Kazoo-After,valueonly,separator=%x2C)%x1e",
+        rev,
+        "--",
+    ]))?;
+    for record in text
+        .split('\u{1e}')
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
+        let mut fields = record.split('\u{1f}').map(str::trim);
+        let kind = fields.next().unwrap_or_default();
+        if kind == "part" {
+            continue;
+        }
+        let (seq, after) = (
+            fields.next().unwrap_or_default(),
+            fields.next().unwrap_or_default(),
+        );
+        let (key, number) = if seq.is_empty() {
+            ("Kazoo-After", after)
+        } else {
+            ("Kazoo-Seq", seq)
+        };
+        if number.is_empty() {
+            return Ok(None);
+        }
+        return number
+            .parse()
+            .map(Some)
+            .map_err(|err| TreeError::Git(format!("{key}: {err}")));
+    }
+    Ok(None)
 }
 
 impl Commit {
@@ -350,11 +404,18 @@ impl Commit {
                 message.push_str(&count);
                 message.push('\n');
             }
-            // This moment is the last step's: its comment, if it has one.
-            message.push_str(&comment_trailer(step_comment(
-                comments,
-                changes.len().saturating_sub(1),
-            )));
+            // Every step's comment, by its number from 1, so none is lost
+            // when the batch's parts are not grown (each part carries its
+            // own as well).
+            for (index, comment) in comments.iter().enumerate() {
+                if let Some(comment) = comment {
+                    message.push_str("Kazoo-Step-Comment: ");
+                    message.push_str(&(index + 1).to_string());
+                    message.push_str(": ");
+                    message.push_str(&one_line(comment));
+                    message.push('\n');
+                }
+            }
             message.push_str("Kazoo-Change: ");
             message.push_str(&json);
             message.push('\n');

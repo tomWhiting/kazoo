@@ -892,7 +892,15 @@ impl App {
                         format!("{}, sent at once", crate::changes(batch.steps.len())),
                     ));
                     for (i, step) in batch.steps.iter().enumerate() {
-                        lines.push((format!("{}", i + 1), step.clone()));
+                        let said = batch
+                            .comments
+                            .iter()
+                            .find(|(number, _)| *number == i + 1)
+                            .map_or_else(
+                                || step.clone(),
+                                |(_, comment)| format!("{step} \u{2014} \"{comment}\""),
+                            );
+                        lines.push((format!("{}", i + 1), said));
                     }
                 }
             }

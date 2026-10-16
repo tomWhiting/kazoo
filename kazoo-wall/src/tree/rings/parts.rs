@@ -39,10 +39,17 @@ pub fn batch_parts(before: &PatchFile, change: &Change) -> Result<Vec<Files>, Tr
     let mut model = Model::new(before.clone(), true)?;
     let mut parts = Vec::with_capacity(steps.len() - 1);
     for (index, step) in steps[..steps.len() - 1].iter().enumerate() {
+        // The step as a change of its own, by the batch's seat, at its
+        // time: never a copy of the whole batch for each step.
         let part = Change {
+            seq: change.seq,
+            at: change.at.clone(),
+            seat: change.seat.clone(),
             what: step.clone(),
+            summary: crate::change::describe(step),
             undoes: None,
-            ..change.clone()
+            clock: change.clock.clone(),
+            comment: None,
         };
         let applied = model.apply(&part);
         if let Some(why) = applied.unknown.or(applied.doubt) {

@@ -649,8 +649,9 @@ pub struct Wall {
     /// change said not to have happened) that the log could not take yet,
     /// oldest first, by seat: unnumbered and untold until written, before
     /// anything else; until then no change is made and `patch.json` is not
-    /// written.
-    owed: VecDeque<(String, What)>,
+    /// written. Each keeps the comment its seat gave it, if any (a
+    /// recording a seat stopped).
+    owed: VecDeque<(String, What, Option<String>)>,
     /// The wall up just before the first change kept in memory (see
     /// [`walls_of`]).
     memory_opens_on: u64,
@@ -2234,7 +2235,18 @@ impl Wall {
     /// `patch.json` is not written, so nothing the log lacks is ever
     /// numbered, told or saved.
     fn commit_own(&mut self, seat: &str, what: What) -> Option<(Change, Option<Event>)> {
-        self.owed.push_back((seat.to_string(), what));
+        self.commit_own_commented(seat, what, None)
+    }
+
+    /// [`Self::commit_own`], with `comment` on the change, owed with it
+    /// when the log cannot take it yet.
+    fn commit_own_commented(
+        &mut self,
+        seat: &str,
+        what: What,
+        comment: Option<String>,
+    ) -> Option<(Change, Option<Event>)> {
+        self.owed.push_back((seat.to_string(), what, comment));
         let mut paid = self.pay_owed_all();
         // This one is the last owed: when all went, it is the last paid,
         // for the caller to tell; those paid before it were owed already.
@@ -2291,8 +2303,9 @@ impl Wall {
     /// [`Self::pay_owed`]); returns what was paid, each made, not yet told.
     fn pay_owed_all(&mut self) -> Vec<(Change, Option<Event>)> {
         let mut paid = Vec::new();
-        while let Some((seat, what)) = self.owed.front().cloned() {
-            let change = self.new_change(&seat, what, None);
+        while let Some((seat, what, comment)) = self.owed.front().cloned() {
+            let mut change = self.new_change(&seat, what, None);
+            change.comment = comment;
             if let Some(store) = self.store.as_mut() {
                 if let Err(err) = store.append_synced(&change) {
                     eprintln!(
@@ -2531,9 +2544,13 @@ impl Wall {
             }
             return;
         }
-        if go.is_none() && !self.feed_parts(change) {
-            return;
-        }
+        // A batch of steps grows its parts on the tree's thread, from the
+        // wall before it and the tree's files as they stand (KZ-T10c).
+        // Taken only by the batch it was kept for: a change owed to the
+        // log, made first, leaves it be.
+        let batch = crate::tree::rings::parts::steps(change)
+            .and_then(|_| self.batch_before.take())
+            .map(|before| (before, self.tree_mirror.clone()));
         let diff = if go.is_some() {
             Vec::new()
         } else {
@@ -2546,11 +2563,21 @@ impl Wall {
             }
         };
         if let Some(tree) = self.tree.as_mut() {
-            let accepted = tree.offer(crate::tree::thread::TreeItem::Change {
-                change: Box::new(change.clone()),
-                files: diff,
-                generation: tree.generation,
-            });
+            let item = match batch {
+                Some((before, mirror)) => crate::tree::thread::TreeItem::Batch {
+                    change: Box::new(change.clone()),
+                    before: Box::new(before),
+                    mirror,
+                    files: diff,
+                    generation: tree.generation,
+                },
+                None => crate::tree::thread::TreeItem::Change {
+                    change: Box::new(change.clone()),
+                    files: diff,
+                    generation: tree.generation,
+                },
+            };
+            let accepted = tree.offer(item);
             if go.is_some() {
                 if !accepted {
                     self.moved_to = go;
@@ -2561,45 +2588,6 @@ impl Wall {
         if matches!(change.what, What::Go { .. }) {
             self.whole_tree(crate::tree::thread::WholeKind::Gap);
         }
-    }
-
-    /// A batch's steps before its last, each offered to the tree as a
-    /// moment of its own (KZ-T10c), before the batch's own commit. False
-    /// when the tree took one no more, and resyncs: nothing more of the
-    /// change is offered then. A batch whose parts cannot be made is one
-    /// moment, as before, and the console is told why.
-    fn feed_parts(&mut self, change: &Change) -> bool {
-        let Some(before) = self.batch_before.take() else {
-            return true;
-        };
-        if crate::tree::rings::parts::steps(change).is_none() {
-            return true;
-        }
-        let parts = match crate::tree::rings::parts::batch_parts(&before, change) {
-            Ok(parts) => parts,
-            Err(err) => {
-                eprintln!(
-                    "kazoo-wall: change {} goes on the tree as one moment: {err}",
-                    change.seq
-                );
-                return true;
-            }
-        };
-        for (index, files) in parts.into_iter().enumerate() {
-            let diff = crate::tree::thread::diff_files(files, &mut self.tree_mirror);
-            let Some(tree) = self.tree.as_mut() else {
-                return false;
-            };
-            if !tree.offer(crate::tree::thread::TreeItem::Part {
-                change: Box::new(change.clone()),
-                index,
-                files: diff,
-                generation: tree.generation,
-            }) {
-                return false;
-            }
-        }
-        true
     }
 
     fn tick_tree(&mut self) {
@@ -2721,12 +2709,23 @@ impl Wall {
     ) -> Result<Outcome, WallError> {
         self.comment = comment.map(str::to_string);
         let outcome = self.request_as(seat, console, request, now);
-        // Taken by the change made, or kept for the one made later; a
-        // request refused made nothing for it to go on.
-        if let (Some(comment), Ok(_)) = (self.comment.take(), &outcome) {
+        // Taken by the change made, or kept for the one made later. A
+        // request refused, or one that changed nothing (a recording
+        // started while one runs), made nothing for it to go on, and its
+        // answer says so; one that made a change and left its comment
+        // would be the wall's own fault, and is said.
+        let left = self.comment.take();
+        if let (
+            Some(comment),
+            Ok(Outcome {
+                change: Some(change),
+                ..
+            }),
+        ) = (left, &outcome)
+        {
             eprintln!(
-                "kazoo-wall: {seat}'s comment found no change of its own to go on, and was \
-                 not kept: {comment}"
+                "kazoo-wall: change {} by {seat} was made without its comment: {comment}",
+                change.seq
             );
         }
         outcome
@@ -2936,7 +2935,6 @@ impl Wall {
         }
     }
 
-    /// Answer `request` from `seat`, once it has passed the flood check.
     /// Take out one cable, by its number or by the input it is in.
     fn unpatch(
         &mut self,
@@ -2957,6 +2955,7 @@ impl Wall {
         self.changed(seat, what, None, None, None)
     }
 
+    /// Answer `request` from `seat`, once it has passed the flood check.
     fn answer(
         &mut self,
         (seat, console): (&str, bool),
@@ -4439,7 +4438,9 @@ impl Wall {
         };
         // Stopped whatever the log says; while it owes, the change has no
         // number yet and is told once written.
-        let (change, fingerprints) = self.log_stop(seat, &finished, reason).unzip();
+        // The seat's comment goes with the stop it asked for.
+        let comment = self.comment.take();
+        let (change, fingerprints) = self.log_stop((seat, comment), &finished, reason).unzip();
         let result = encode(&RecordResult {
             on: false,
             path: Some(finished.path.to_string_lossy().into_owned()),
@@ -4455,12 +4456,12 @@ impl Wall {
         })
     }
 
-    /// Log `finished` as stopped by `seat`, for `reason` when the wall
-    /// stopped it on its own (see [`Self::commit_own`]: `None` while the
-    /// log owes it).
+    /// Log `finished` as stopped by `seat`, with its `comment`, for
+    /// `reason` when the wall stopped it on its own (see
+    /// [`Self::commit_own`]: `None` while the log owes it).
     fn log_stop(
         &mut self,
-        seat: &str,
+        (seat, comment): (&str, Option<String>),
         finished: &Finished,
         reason: Option<String>,
     ) -> Option<(Change, Option<Event>)> {
@@ -4472,7 +4473,7 @@ impl Wall {
             continues: None,
             reason,
         };
-        self.commit_own(seat, what)
+        self.commit_own_commented(seat, what, comment)
     }
 
     /// A recording ended that nobody asked to stop: log that as the
@@ -4493,7 +4494,7 @@ impl Wall {
             ),
             Ending::Asked => (why.to_string(), carry, true),
         };
-        let stopped = self.log_stop(LOADER_SEAT, finished, Some(reason.clone()));
+        let stopped = self.log_stop((LOADER_SEAT, None), finished, Some(reason.clone()));
         self.tell_paid(stopped.into_iter().collect());
         if !carry {
             return;
@@ -4535,7 +4536,7 @@ impl Wall {
             Ending::Failed(why) => why.clone(),
             Ending::Asked | Ending::Full => "the wall stopped".to_string(),
         };
-        let (change, _) = self.log_stop(LOADER_SEAT, &finished, Some(reason))?;
+        let (change, _) = self.log_stop((LOADER_SEAT, None), &finished, Some(reason))?;
         Some(Event::Change {
             change: Box::new(change),
         })
@@ -4559,7 +4560,7 @@ impl Wall {
                 self.owed.len(),
                 self.log_error.as_deref().unwrap_or("no reason given")
             );
-            for (seat, what) in &self.owed {
+            for (seat, what, _) in &self.owed {
                 let summary =
                     summarise_with(seat, what, None, |id| self.patch.module(id).map(|m| m.kind));
                 eprintln!("kazoo-wall:   {summary}");

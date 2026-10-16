@@ -147,6 +147,7 @@ impl WallClient {
                 seats: Vec::new(),
                 revision: 0,
                 watcher,
+                comments: false,
             },
             events: VecDeque::new(),
             wall: None,

@@ -121,12 +121,12 @@ impl Wall {
                 return Err(err);
             }
         };
-        // What a loop added reserved for its tape stays reckoned; the room
-        // for the rest is what the batch made, as the single changes would
-        // reckon it: a module per add, a cable per cable that is new.
         // The wall before the batch, for the tree to grow a moment from
         // each step (KZ-T10c); taken when the batch is fed to the tree.
         self.batch_before = Some(before.to_file());
+        // What a loop added reserved for its tape stays reckoned; the room
+        // for the rest is what the batch made, as the single changes would
+        // reckon it: a module per add, a cable per cable that is new.
         let outcome = self.room_to_grow(growth_of(&changes)).and_then(|()| {
             self.patch = staged;
             self.changed(

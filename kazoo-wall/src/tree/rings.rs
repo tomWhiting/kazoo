@@ -561,9 +561,13 @@ impl Walk<'_> {
                     whole = true;
                 }
                 _ => {
-                    let before = self.model.file.clone();
+                    // Only a batch of steps needs the wall before it, for
+                    // its parts: no other change pays for a copy.
+                    let before = parts::steps(change).map(|_| self.model.file.clone());
                     self.applied(change)?;
-                    parts = self.parts_of(&before, change);
+                    if let Some(before) = before {
+                        parts = self.parts_of(&before, change);
+                    }
                 }
             }
             if self.model.known {

@@ -402,6 +402,7 @@ fn a_list_that_meets_something_drawn_ends_saying_how_many_more() {
         note: "five".to_owned(),
         steps: (1..=5).map(|i| format!("step {i}")).collect(),
         part: None,
+        comments: Vec::new(),
     };
     hang_steps(&mut drawn, &batch, (0, 0), &mut taken);
     let text = drawn.text();

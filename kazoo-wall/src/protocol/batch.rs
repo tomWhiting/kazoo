@@ -29,16 +29,36 @@ pub fn at_step(mut error: WallError, index: usize) -> WallError {
     error
 }
 
+/// Whether `c` would break a line of text or turn its direction: a control
+/// character, a line or paragraph separator, or a direction mark, embedding,
+/// override or isolate. A note or comment holds none of them.
+#[must_use]
+pub fn breaks_line(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{2028}'
+                | '\u{2029}'
+                | '\u{061C}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+        )
+}
+
 /// Check a comment (see [`super::RequestLine::comment`]): one line with no
-/// control characters, 1 to 200 characters after trimming. Returned
-/// trimmed.
+/// control or direction characters (see [`breaks_line`]), 1 to 200
+/// characters after trimming. Returned trimmed.
 ///
 /// # Errors
 ///
 /// `bad_request`, saying which rule it broke.
 pub fn comment(comment: &str) -> Result<&str, WallError> {
-    if comment.chars().any(char::is_control) {
-        return Err(bad("a comment must be one line with no control characters"));
+    if comment.chars().any(breaks_line) {
+        return Err(bad(
+            "a comment must be one line with no control or direction characters",
+        ));
     }
     let comment = comment.trim();
     if !(1..=200).contains(&comment.chars().count()) {
@@ -99,9 +119,9 @@ pub fn validate<'a>(
     changes: &[Request],
     comments: &[Option<String>],
 ) -> Result<(&'a str, Vec<Option<String>>), WallError> {
-    if note.chars().any(char::is_control) {
+    if note.chars().any(breaks_line) {
         return Err(bad(
-            "a batch note must be one line with no control characters",
+            "a batch note must be one line with no control or direction characters",
         ));
     }
     let note = note.trim();

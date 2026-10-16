@@ -143,6 +143,8 @@ struct Connection {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
     next_id: u64,
+    /// Whether the wall keeps comments (see [`HelloResult::comments`]).
+    comments: bool,
 }
 
 impl Connection {
@@ -163,6 +165,7 @@ impl Connection {
             reader: BufReader::new(read),
             writer,
             next_id: 1,
+            comments: false,
         };
         let hello = Request::Hello {
             seat: seat.to_string(),
@@ -178,7 +181,8 @@ impl Connection {
             Ok(Err(failure)) => return Err(LinkError::Broken(failure.why)),
             Err(_) => return Err(LinkError::Broken(timed_out(ANSWER_WITHIN))),
         };
-        let hello = decode(value).map_err(LinkError::Broken)?;
+        let hello: HelloResult = decode(value).map_err(LinkError::Broken)?;
+        connection.comments = hello.comments;
         Ok((connection, hello))
     }
 
@@ -247,6 +251,17 @@ impl Connection {
             Ok(_) => false,
         }
     }
+}
+
+/// Why a comment cannot go to a wall older than comments.
+const OLD_WALL: &str = "the wall running is older than comments and would drop them; nothing \
+                        was sent. Send it again without comments, or ask Tom to restart the wall \
+                        (kazoo wall stop, then kazoo wall) to keep them";
+
+/// Whether `request`, with `comment`, carries a comment: its own, or one
+/// on a step of a batch.
+fn commented(request: &Request, comment: Option<&str>) -> bool {
+    comment.is_some() || matches!(request, Request::Batch { comments, .. } if !comments.is_empty())
 }
 
 /// A request encoded as its line, with the id it carries.
@@ -454,6 +469,10 @@ impl Wall {
                     (slot.insert(connection), false)
                 }
             };
+            // A wall older than comments would drop them without a word.
+            if !connection.comments && commented(request, comment) {
+                return Err(LinkError::Unsendable(OLD_WALL.to_string()));
+            }
             let line = line_for(
                 &mut connection.next_id,
                 request.clone(),
@@ -606,6 +625,37 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[tokio::test]
+    async fn a_comment_is_never_sent_to_a_wall_that_would_drop_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("wall.sock");
+        // The stub's hello says nothing of comments: a wall older than them.
+        tokio::spawn(stub(UnixListener::bind(&socket).unwrap()));
+        let wall = Wall::new(socket, "Tom".to_string());
+        let turn = Request::Turn {
+            module: "vcf1".to_string(),
+            knob: "cutoff".to_string(),
+            value: 500.0,
+            glide_beats: None,
+        };
+        let refused = wall
+            .ask_raw(turn.clone(), Some("darker"))
+            .await
+            .unwrap_err();
+        assert_eq!(refused, LinkError::Unsendable(OLD_WALL.to_string()));
+        let batch = Request::Batch {
+            note: "two".to_string(),
+            changes: vec![turn.clone(), turn.clone()],
+            comments: vec![Some("first".to_string()), None],
+        };
+        assert_eq!(
+            wall.ask_raw(batch, None).await.unwrap_err(),
+            LinkError::Unsendable(OLD_WALL.to_string())
+        );
+        // Without one, it goes as ever.
+        assert!(wall.ask_raw(turn, None).await.is_ok());
     }
 
     #[tokio::test]

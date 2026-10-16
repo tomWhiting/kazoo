@@ -656,6 +656,13 @@ impl Seat {
         &self,
         Parameters(args): Parameters<ChainArgs>,
     ) -> CallToolResult {
+        // Only an add changes the wall; a comment on a save or a list
+        // would go nowhere, so it is refused rather than dropped.
+        if args.comment.is_some() && args.action != ChainAction::Add {
+            return bad(
+                "a comment goes on chain add, which changes the wall; a chain save or list changes nothing",
+            );
+        }
         match args.action {
             ChainAction::List
                 if args.name.is_none() && args.modules.is_empty() && args.group.is_none() =>

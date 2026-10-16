@@ -111,6 +111,7 @@ pub fn batch(history: &mut History, m: usize, note: &str, steps: &[&str]) {
         note: note.to_owned(),
         steps: steps.iter().map(|&step| step.to_owned()).collect(),
         part: None,
+        comments: Vec::new(),
     }));
     history.knots = crate::history::knots(&history.limbs, &history.moments);
 }

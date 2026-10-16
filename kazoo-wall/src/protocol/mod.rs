@@ -270,7 +270,7 @@ pub enum Request {
     /// [`BatchResult`]). One seq, one log line, one commit and one undo.
     Batch {
         /// The sender's words: 1 to 200 characters after trimming, one line
-        /// with no control characters.
+        /// with no control or direction characters.
         note: String,
         /// One or more adds, removes, turns, patches, unpatches or tempos.
         changes: Vec<Self>,
@@ -825,7 +825,14 @@ impl Change {
     pub fn said(&self) -> String {
         self.comment.as_ref().map_or_else(
             || self.summary.clone(),
-            |comment| format!("{} — \"{comment}\"", self.summary),
+            |comment| {
+                // As one line, whatever a log edited by hand holds.
+                let comment: String = comment
+                    .chars()
+                    .map(|c| if batch::breaks_line(c) { ' ' } else { c })
+                    .collect();
+                format!("{} — \"{comment}\"", self.summary)
+            },
         )
     }
 }
@@ -1312,6 +1319,11 @@ pub struct HelloResult {
     /// Whether this connection is a watcher.
     #[serde(default)]
     pub watcher: bool,
+    /// Whether the wall keeps comments on changes ([`RequestLine::comment`],
+    /// a batch's step comments). A wall older than them leaves this out,
+    /// and would drop them without a word: a client checks it first.
+    #[serde(default)]
+    pub comments: bool,
 }
 
 /// Where the wall's beat comes from.

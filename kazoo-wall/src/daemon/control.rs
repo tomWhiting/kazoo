@@ -585,17 +585,21 @@ impl Control {
         let seat = state.seat.clone();
         let console = state.console;
         let watcher = state.watcher;
-        let mut comment = None;
+        // A comment on anything but a change of its own (a hello among
+        // them) is refused, before or after hello.
+        let comment = match commented(line) {
+            Ok(comment) => comment,
+            Err(refused) => {
+                self.send(conn, &Response::failure(id, refused));
+                return;
+            }
+        };
         if seat.is_some() {
             let refused = refusal(&line.request, console, watcher)
-                .map_or_else(|| self.wall.check_wall(line.wall, &line.request), Err)
-                .and_then(|()| commented(line));
-            match refused {
-                Ok(checked) => comment = checked,
-                Err(refused) => {
-                    self.send(conn, &Response::failure(id, refused));
-                    return;
-                }
+                .map_or_else(|| self.wall.check_wall(line.wall, &line.request), Err);
+            if let Err(refused) = refused {
+                self.send(conn, &Response::failure(id, refused));
+                return;
             }
         }
         let response = match (&line.request, seat) {
@@ -836,6 +840,7 @@ impl Control {
                 seats: self.wall.seats(),
                 revision: self.wall.revision(),
                 watcher,
+                comments: true,
             },
         )
     }
@@ -1307,6 +1312,18 @@ mod moments_tests {
         let mut longest = turn;
         longest.comment = Some("é".repeat(200));
         assert!(commented(&longest).is_ok(), "200 characters, not bytes");
+        for turned in ["a\u{2028}b", "a\u{202E}b", "a\u{2067}b"] {
+            let mut turn = longest.clone();
+            turn.comment = Some(turned.to_string());
+            assert!(
+                commented(&turn).is_err(),
+                "{turned:?} breaks or turns the line"
+            );
+        }
+        let hello = line(serde_json::json!({
+            "id": 5, "op": "hello", "seat": "Cally", "client": "raw", "comment": "hi",
+        }));
+        assert_eq!(commented(&hello).unwrap_err().code, ErrorCode::BadRequest);
     }
 
     #[test]
