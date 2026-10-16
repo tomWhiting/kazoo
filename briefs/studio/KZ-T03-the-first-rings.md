@@ -115,7 +115,7 @@ the first rings: <state dir> → <tree dir> (dry run: grown in <temp dir>, then 
 log: changes <first> to <last> (<lines> lines, <MB> MB); <n> unreadable, <n> repeated, <n> abandoned
 evidence: <n> wall files; <n> load backups hold their fingerprints, <n> do not (<names>); <n> unreadable (<names>)
 start: <the start commit's subject> (<modules> modules, <cables> cables, <bpm> BPM)
-commits: <total> (1 start, <n> changes, <n> gaps, <n> settles)
+commits: <total> (1 start, <n> changes, <n> batch parts, <n> gaps, <n> settles)   (batch parts since KZ-T10c)
 gap before change <k>: <sentence>            (one line for every gap)
 gap after change <s>: <sentence>
 births: <n> found at the start, <n> at adds, <n> kept across loads, <n> found at loads
