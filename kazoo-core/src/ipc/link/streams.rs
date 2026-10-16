@@ -3,8 +3,9 @@
 use super::{
     Arc, Duration, HubAddress, HubIpcClient, HubLink, HubMessage, LinkConfig, LinkState,
     LinkWorker, MAX_LINK_BLOCK_FRAMES, MAX_RETRY_INTERVAL, MAX_STREAMS, NO_STRIP, Ordering,
-    Producer, RETRY_INTERVAL, RegisterMsg, Request, RequestError, STREAM_NAME_LEN, SYNC_NOW,
-    StreamAddMsg, StreamId, StreamSpec, ToAudio, TransportSyncMsg, discovery, io,
+    Producer, RATE_REFUSAL_RETRY, RETRY_INTERVAL, RegisterMsg, Request, RequestError,
+    STREAM_NAME_LEN, SYNC_NOW, StreamAddMsg, StreamId, StreamSpec, ToAudio, TransportSyncMsg,
+    discovery, io,
 };
 use std::sync::{Mutex, MutexGuard};
 
@@ -249,15 +250,26 @@ impl LinkWorker {
                     io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
                 ) =>
             {
+                // No desk: a refusal from a desk that was there does not
+                // outlive it. Any other reason stays as it was said.
+                if self.refused_by_desk() {
+                    self.set_refusal(Some(format!("no desk at {}", socket.display())));
+                }
                 self.refusal_delay = RETRY_INTERVAL;
                 RETRY_INTERVAL
             }
             Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-                self.set_refusal(Some(format!(
-                    "{}{}: {err}",
-                    super::DESK_REFUSED,
-                    self.config.name
-                )));
+                let refusal = format!("{}{}: {err}", super::DESK_REFUSED, self.config.name);
+                let for_rate = super::desk_reason(&refusal)
+                    .and_then(super::refused_desk_rate)
+                    .is_some();
+                self.set_refusal(Some(refusal));
+                if for_rate {
+                    // Kept fresh for an instrument that follows the
+                    // desk's rate from it.
+                    self.refusal_delay = RATE_REFUSAL_RETRY;
+                    return RATE_REFUSAL_RETRY;
+                }
                 self.refusal_delay = (self.refusal_delay * 2).min(MAX_RETRY_INTERVAL);
                 self.refusal_delay
             }

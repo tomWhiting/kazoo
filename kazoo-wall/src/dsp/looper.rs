@@ -164,6 +164,20 @@ pub fn geometry(rate: f32) -> (usize, usize) {
     (capacity, (SEAM_SECONDS * rate).round() as usize)
 }
 
+/// The tape the control side gives a loop, whatever rate the wall runs at.
+///
+/// `(capacity, tail)` in frames: room for the longest take at any rate a
+/// loop records at. A wall that opens its audio again at another rate
+/// (KZ-D21) keeps its loops' takes, which were recorded at the old one; a
+/// loop still records no more than [`MAX_LOOP_SECONDS`] at its own rate.
+#[must_use]
+pub const fn tape_geometry() -> (usize, usize) {
+    (MAX_LOOP_FRAMES, MAX_TAIL)
+}
+
+/// The longest seam a loop records, at the highest rate one runs at.
+const MAX_TAIL: usize = 6_144;
+
 /// Whether a loop takes `splice` on a tape of `len` interleaved samples:
 /// the geometry an install is checked against, for the control side to
 /// check first.
@@ -365,7 +379,7 @@ impl LoopModule {
                 let len = tape.samples.len();
                 if (only_if_blank && (self.splice.is_some() || self.spliced_here))
                     || tape.splice.is_some_and(|s| !splice_fits(s, len))
-                    || len > 2 * (MAX_LOOP_FRAMES + (SEAM_SECONDS * 768_000.0).round() as usize + 1)
+                    || len > 2 * (MAX_LOOP_FRAMES + MAX_TAIL + 1)
                 {
                     self.gauges.refused.fetch_add(1, Ordering::Relaxed);
                     LoopOut::Refused(LoopIn::Install {
@@ -387,9 +401,11 @@ impl LoopModule {
                     std::mem::swap(&mut self.splice, &mut tape.splice);
                     std::mem::swap(&mut self.bar_pass, &mut tape.bar_pass);
                     std::mem::swap(&mut self.bins, &mut tape.bins);
+                    // A tape made for any rate (see [`tape_geometry`])
+                    // records no more than this loop's own seconds.
                     self.capacity = (self.tape.len() / 2)
                         .saturating_sub(self.tail + 1)
-                        .min(MAX_LOOP_FRAMES);
+                        .min(geometry(self.rate).0);
                     self.rec = Rec::Idle;
                     self.gain = 0.0;
                     self.last_cell = None;

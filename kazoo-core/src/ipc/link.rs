@@ -80,6 +80,12 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// Longest wait between attempts after the desk refuses the instrument.
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
+/// The wait between attempts while the desk refuses the instrument for its
+/// rate. An instrument that follows the desk's rate reads it from the
+/// refusal, so the refusal is kept fresh: a desk that has gone or started
+/// again at another rate is seen within this, never after a long backoff.
+const RATE_REFUSAL_RETRY: Duration = Duration::from_secs(2);
+
 /// How long the hub may stop reading before the link gives up on it.
 const STUCK_LIMIT: Duration = Duration::from_millis(500);
 
@@ -442,12 +448,53 @@ impl LinkStatus {
     /// down for another reason, which `last_refusal` still holds).
     #[must_use]
     pub fn desk_refusal(&self) -> Option<&str> {
-        self.last_refusal
-            .as_deref()?
-            .strip_prefix(DESK_REFUSED)?
-            .split_once(": ")
-            .map(|(_, reason)| reason)
+        desk_reason(self.last_refusal.as_deref()?)
     }
+
+    /// The desk's rate, when the desk refused this instrument for running
+    /// at another (see [`rate_refusal`]) and said a rate an instrument can
+    /// run at; `None` otherwise.
+    #[must_use]
+    pub fn refused_for_rate(&self) -> Option<u32> {
+        refused_desk_rate(self.desk_refusal()?)
+    }
+}
+
+/// The desk's own reason in `refusal`, a `last_refusal`, when the desk
+/// itself refused the instrument (see [`LinkStatus::desk_refusal`]).
+fn desk_reason(refusal: &str) -> Option<&str> {
+    refusal
+        .strip_prefix(DESK_REFUSED)?
+        .split_once(": ")
+        .map(|(_, reason)| reason)
+}
+
+/// The lowest and highest rates the desk's rate is believed at.
+const DESK_RATES: std::ops::RangeInclusive<u32> = 8_000..=768_000;
+
+/// The words a desk refuses an instrument at `instrument` Hz with when it
+/// runs at `desk` Hz.
+///
+/// The desk says them, and an instrument reads the desk's rate back from
+/// them (see [`LinkStatus::refused_for_rate`]).
+#[must_use]
+pub fn rate_refusal(instrument: u32, desk: u32) -> String {
+    format!("it runs at {instrument} Hz, the desk at {desk} Hz (use the same device)")
+}
+
+/// The desk's rate in `reason`, when it is a [`rate_refusal`] naming a
+/// rate in [`DESK_RATES`].
+fn refused_desk_rate(reason: &str) -> Option<u32> {
+    let (_, rest) = reason
+        .strip_prefix("it runs at ")?
+        .split_once(" Hz, the desk at ")?;
+    let digits = rest.strip_suffix(" Hz (use the same device)")?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits
+        .parse::<u32>()
+        .map_or(None, |rate| DESK_RATES.contains(&rate).then_some(rate))
 }
 
 /// The UI half of the link. Dropping it says goodbye to the hub.
@@ -958,6 +1005,15 @@ impl LinkWorker {
     /// Go back to normal priority, if promoted.
     fn demote(priority: Option<RealTime>) -> Result<(), NotRealTime> {
         priority.map_or(Ok(()), RealTime::demote)
+    }
+
+    /// Whether the link last failed because the desk itself refused it.
+    fn refused_by_desk(&self) -> bool {
+        let refusal = match self.state.last_refusal.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        refusal.as_deref().and_then(desk_reason).is_some()
     }
 
     fn set_refusal(&self, refusal: Option<String>) {

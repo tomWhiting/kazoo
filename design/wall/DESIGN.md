@@ -264,6 +264,7 @@ The daemon listens on a Unix socket, `kazoo-wall.sock`. It lives in kazoo's runt
 {"event":"change","change":{ "seq":58, "at":"2026-09-26T12:00:01Z", "seat":"Tom", "what":{...op...}, "summary":"Tom turned vcf1 cutoff 420 Hz → 800 Hz over 4 beats" }}
 {"event":"seat","seat":"Vesper","joined":true}
 {"event":"fault","summary":"vco2 produced NaN; reset"}
+{"event":"notice","summary":"the desk runs at 44100 Hz; loop1 is recording, so its take is kept before the wall opens its audio again"}  // not a fault
 {"event":"loaded","seq":81,"seat":"Waffles","save":"tom fiddle 2026-10-09","backup":"before-load-20261009-143005"}  // to everyone: look again
 {"event":"saved","seat":"Waffles","name":"waffles dub","replaced":false}   // to everyone; not a change
 {"event":"save_deleted","seat":"Tom","name":"waffles dub"}                 // to everyone

@@ -395,11 +395,16 @@ fn fetch(
             record.rate
         ));
     }
-    if frames > capacity || tail > tail_cap {
+    let (most, most_tail) = crate::dsp::looper::tape_geometry();
+    if frames > most || tail > most_tail {
         return Err(format!(
-            "holds {frames} frames and a {tail}-frame seam, more than this loop's {capacity} and {tail_cap}"
+            "holds {frames} frames and a {tail}-frame seam, more than any loop's {most} and {most_tail}"
         ));
     }
+    // A take recorded at a higher rate than the loop now runs at (the
+    // audio opened again at another, KZ-D21) is given the room it needs.
+    let capacity = capacity.max(frames);
+    let tail_cap = tail_cap.max(tail);
     let splice = Splice {
         beats: record.beats,
         frames,

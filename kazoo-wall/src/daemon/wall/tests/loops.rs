@@ -4,7 +4,7 @@
 //! of the same paths are in `daemon/loops/tests.rs`.
 use super::*;
 use crate::daemon::loops::Loops;
-use crate::daemon::loops::tests::{BAR, put_reel_of, record, reels_dir, saved};
+use crate::daemon::loops::tests::{BAR, TAIL, put_reel_of, record, reels_dir, saved};
 use crate::dsp::looper::{LoopGauges, LoopState};
 use crate::patch::{LoopRecord, TapeRecord};
 use crate::protocol::LoopOp;
@@ -332,6 +332,43 @@ fn an_engine_rebuilt_after_a_device_change_puts_the_tapes_back() {
 }
 
 #[test]
+fn a_take_longer_than_the_new_rate_holds_comes_back_when_the_audio_opens_at_it() {
+    // A take of 16 s at 48 kHz: more frames than 96 s at 8 kHz, the most
+    // a loop built at 8 kHz once held (KZ-D21: the wall opens its audio
+    // again at a desk's rate; 8 kHz keeps the reel small, and a take of
+    // 90 s at 48 kHz meets 44.1 kHz the same way).
+    let frames = 800_000;
+    let dir = reels_dir();
+    let samples: Vec<f32> = (0..frames + TAIL)
+        .flat_map(|frame| {
+            let value = ((frame % 101) as f32 - 50.0) / 400.0;
+            [value, -value]
+        })
+        .collect();
+    let id = ReelStore::open(dir.path())
+        .unwrap()
+        .put(48_000, &samples)
+        .unwrap();
+    let tape = TapeRecord {
+        reel: id.to_string(),
+        frames: frames as u64,
+        ..record()
+    };
+    let (mut wall, mut engine) = saved_wall(Some(tape), dir.path());
+    tape_arrives(&mut wall, &mut engine);
+    assert_eq!(state(&wall), LoopState::Holding as u8);
+    let (mut replacement, control) =
+        crate::engine::engine(EngineConfig::new(8_000, 120.0, 0.0), None);
+    wall.attach(control, None, Instant::now());
+    tape_arrives(&mut wall, &mut replacement);
+    let notes: Vec<&str> = wall.loops.notes().collect();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(state(&wall), LoopState::Holding as u8);
+    assert_eq!(gauges(&wall).frames.load(Ordering::Relaxed), frames as u64);
+    drop(engine);
+}
+
+#[test]
 fn the_tree_keeps_active_and_retired_loop_records() {
     let dir = reels_dir();
     let tape = TapeRecord {
@@ -426,6 +463,77 @@ fn punch(wall: &mut Wall, engine: &mut Engine) -> u64 {
     wall.loops.wait_take_for_test(ticket);
     wall.tick(Instant::now());
     wall.log.back().unwrap().seq
+}
+
+#[test]
+fn a_recording_loop_is_kept_before_the_audio_opens_again() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, _state_dir) = taking_wall(dir.path());
+    rolling(&mut wall, &mut engine);
+    assert_eq!(wall.loops_recording(), ["loop1"]);
+    let tickets = wall.keep_recording_loops();
+    let [ticket] = tickets[..] else {
+        panic!("{tickets:?}")
+    };
+    assert!(!wall.takes_settled(&tickets));
+    wall.loops.wait_snapshot_for_test(ticket);
+    render(&mut engine, 4_096);
+    wall.loops.wait_take_for_test(ticket);
+    wall.tick(Instant::now());
+    assert!(wall.takes_settled(&tickets));
+    let change = wall.log.back().unwrap();
+    let What::Take { why, tape, .. } = &change.what else {
+        panic!("the last change is not a take")
+    };
+    assert_eq!(*why, TakeWhy::Rebuild);
+    assert!(tape.is_some());
+    assert_eq!(
+        change.summary,
+        format!("{LOADER_SEAT} loop1 was kept before the audio restarted")
+    );
+    // Still recording: the loop carries on after the take.
+    assert_eq!(state(&wall), LoopState::Rolling as u8);
+}
+
+#[test]
+fn a_take_whose_copy_the_loop_refuses_fails_and_the_next_is_kept() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, _state_dir) = taking_wall(dir.path());
+    rolling(&mut wall, &mut engine);
+    assert!(wall.loops.pending_for_test("loop1").is_empty());
+    let refused = wall
+        .loops
+        .request_take("loop1", TakeWhy::Rebuild, None)
+        .unwrap();
+    // A spare with no room: the loop refuses the copy.
+    wall.loops.start_take_for_test(refused, Box::default());
+    render(&mut engine, 4_096);
+    wall.tick(Instant::now());
+    assert!(wall.takes_settled(&[refused]));
+    assert!(
+        wall.loops.notes().any(|note| note
+            == "loop1's take could not be kept: the loop refused a copy of its tape; it is still playing, and is only in memory"),
+        "{:?}",
+        wall.loops.notes().collect::<Vec<_>>()
+    );
+    // The take after it starts and is kept.
+    let kept = wall.keep_recording_loops();
+    let [ticket] = kept[..] else {
+        panic!("{kept:?}")
+    };
+    wall.loops.wait_snapshot_for_test(ticket);
+    render(&mut engine, 4_096);
+    wall.loops.wait_take_for_test(ticket);
+    wall.tick(Instant::now());
+    assert!(wall.takes_settled(&kept));
+    assert!(matches!(
+        wall.log.back().unwrap().what,
+        What::Take {
+            why: TakeWhy::Rebuild,
+            tape: Some(_),
+            ..
+        }
+    ));
 }
 
 #[test]
