@@ -1006,6 +1006,10 @@ impl App {
                 self.say(Tone::Trouble, summary.clone(), now);
                 self.note(summary, LogTone::Fault);
             }
+            Event::Notice { summary } => {
+                self.say(Tone::Info, summary.clone(), now);
+                self.note(summary, LogTone::Note);
+            }
             // From a newer wall: nothing this build can show.
             Event::Unknown => {}
             Event::Fingerprints {

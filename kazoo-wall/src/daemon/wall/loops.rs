@@ -285,6 +285,44 @@ impl Wall {
         Ok(())
     }
 
+    /// The loops recording, or with a take on its way: opening the audio
+    /// again now would lose what they recorded since their last take.
+    #[must_use]
+    pub fn loops_recording(&self) -> Vec<String> {
+        self.loops.recording_modules()
+    }
+
+    /// Ask every loop recording for a take, before the audio opens again on
+    /// purpose (KZ-D21: following the desk's rate), so what it recorded is
+    /// kept: the takes asked for. A loop whose take cannot be asked for has
+    /// had that noted.
+    pub fn keep_recording_loops(&mut self) -> Vec<u64> {
+        self.loops.collect();
+        let modules = self.loops.recording_modules();
+        modules
+            .iter()
+            .filter_map(|module| self.loops.request_take(module, TakeWhy::Rebuild, None))
+            .collect()
+    }
+
+    /// Whether every take in `tickets` is logged, or failed. A take kept
+    /// but still owed to the log is not: the loop would come back with the
+    /// take before it.
+    #[must_use]
+    pub fn takes_settled(&self, tickets: &[u64]) -> bool {
+        tickets.iter().all(|ticket| {
+            self.loops.recordings.settled(*ticket)
+                && !self.loop_work.awaiting_log.contains_key(ticket)
+        })
+    }
+
+    /// Tell every seat `summary`, one plain sentence that is not a fault,
+    /// at the next tick.
+    pub fn tell_seats(&mut self, summary: String) {
+        eprintln!("kazoo-wall: {summary}");
+        self.told.push(crate::protocol::Event::Notice { summary });
+    }
+
     pub(super) fn note_loop_restart(&mut self) {
         let frame = self.engine.shared().frames();
         for module in self.loops.recording_modules() {

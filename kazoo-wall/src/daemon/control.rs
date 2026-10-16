@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use kazoo_core::host::link::connect_config_or_direct;
 use kazoo_core::ipc::link::{HubAddress, HubLink, LinkConfig};
 
+mod desk_rate;
 mod link_diagnostics;
 #[cfg(test)]
 mod tempo_tests;
@@ -262,6 +263,8 @@ struct Control {
     desk_refusals: link_diagnostics::DeskRefusals,
     /// The process-wide desk link shutdown counts already logged.
     reported_link_shutdowns: link_diagnostics::LinkShutdowns,
+    /// Following the rate of a desk the wall joins (KZ-D21).
+    desk_rate: desk_rate::Watch,
 }
 
 /// Run the control thread until stopped.
@@ -293,6 +296,7 @@ pub fn run(setup: Setup) {
         told_link_refused: false,
         desk_refusals: link_diagnostics::DeskRefusals::default(),
         reported_link_shutdowns: link_diagnostics::LinkShutdowns::default(),
+        desk_rate: desk_rate::Watch::default(),
     };
     while !control.stopping {
         match setup.inbox.recv_timeout(TICK) {
@@ -337,30 +341,10 @@ fn start_audio(
     let bpm = crate::engine::clamp_bpm(bpm);
     if let AudioMode::Device { sample_rate } = mode {
         match Device::open(sample_rate) {
-            Ok(device) => {
-                let rate = device.sample_rate();
-                let link = link_to_desk(desk, rate, Pacing::Device);
-                let (hub, link) = split_link(link);
-                let (engine, mut control) =
-                    engine(engine_config(rate, (bpm, beat, origin), heard), hub);
-                let health = Arc::new(StreamHealth::default());
-                match device.play(engine, &health) {
-                    Ok(stream) => {
-                        eprintln!("kazoo-wall: playing on {} at {rate} Hz", device.name());
-                        let backend = backend(
-                            Running::Device {
-                                _stream: stream,
-                                health,
-                            },
-                            &mut control,
-                            listen_tx,
-                            None,
-                        );
-                        return (backend, control, link);
-                    }
-                    Err(why) => eprintln!("kazoo-wall: {why}; retrying in 2 s"),
-                }
-            }
+            Ok(device) => match play_on(&device, desk, (bpm, beat, origin), heard, listen_tx) {
+                Ok(started) => return started,
+                Err(why) => eprintln!("kazoo-wall: {why}; retrying in 2 s"),
+            },
             Err(why) => {
                 if failed_before.is_none() {
                     eprintln!("kazoo-wall: {why}; retrying every 2 s");
@@ -372,17 +356,64 @@ fn start_audio(
         AudioMode::Headless { sample_rate } => sample_rate.max(8_000),
         AudioMode::Device { sample_rate } => sample_rate.unwrap_or(FALLBACK_RATE).max(8_000),
     };
+    let retry_at = matches!(mode, AudioMode::Device { .. }).then(|| Instant::now() + DEVICE_RETRY);
+    start_headless(desk, rate, (bpm, beat, origin), heard, listen_tx, retry_at)
+}
+
+/// The engine on `device` at the rate it is set to, with its desk link and
+/// listening thread, at `(bpm, beat)` with the wall playing from `origin`,
+/// heard or silent; why not, when the device will not play.
+fn play_on(
+    device: &Device,
+    desk: &DeskMode,
+    at: (f64, f64, f64),
+    heard: bool,
+    listen_tx: &Sender<Listen>,
+) -> Result<(Backend, EngineControl, Option<HubLink>), String> {
+    let rate = device.sample_rate();
+    let link = link_to_desk(desk, rate, Pacing::Device);
+    let (hub, link) = split_link(link);
+    let (engine, mut control) = engine(engine_config(rate, at, heard), hub);
+    let health = Arc::new(StreamHealth::default());
+    let stream = device.play(engine, &health)?;
+    eprintln!("kazoo-wall: playing on {} at {rate} Hz", device.name());
+    let backend = backend(
+        Running::Device {
+            _stream: stream,
+            health,
+        },
+        &mut control,
+        listen_tx,
+        None,
+    );
+    Ok((backend, control, link))
+}
+
+/// The headless loop at `rate`, with its desk link and listening thread,
+/// at `(bpm, beat)` with the wall playing from `origin`, heard or silent;
+/// the device is tried again at `retry_at`, if one is given.
+fn start_headless(
+    desk: &DeskMode,
+    rate: u32,
+    at: (f64, f64, f64),
+    heard: bool,
+    listen_tx: &Sender<Listen>,
+    retry_at: Option<Instant>,
+) -> (Backend, EngineControl, Option<HubLink>) {
     let link = link_to_desk(desk, rate, Pacing::Timer);
     let (hub, link) = split_link(link);
-    let (engine, mut control) = engine(engine_config(rate, (bpm, beat, origin), heard), hub);
-    let retry_at = matches!(mode, AudioMode::Device { .. }).then(|| Instant::now() + DEVICE_RETRY);
-    let running = match Headless::start(engine, rate) {
-        Ok(headless) => Running::Headless(headless),
+    let (engine, mut control) = engine(engine_config(rate, at, heard), hub);
+    let (running, retry_at) = match Headless::start(engine, rate) {
+        Ok(headless) => (Running::Headless(headless), retry_at),
         Err(err) => {
-            // Without a thread there is nothing to render on: the next
-            // housekeeping round sees it finished and tries again.
-            eprintln!("kazoo-wall: the render thread could not start: {err}");
-            Running::Headless(Headless::stopped())
+            // Without a thread there is nothing to render on: it is tried
+            // again once the retry is up, never on every round.
+            eprintln!("kazoo-wall: the render thread could not start: {err}; retrying in 2 s");
+            let retry = Instant::now() + DEVICE_RETRY;
+            (
+                Running::Headless(Headless::stopped()),
+                Some(retry_at.map_or(retry, |at| at.max(retry))),
+            )
         }
     };
     (
@@ -906,16 +937,21 @@ impl Control {
                 failed
             }
             Running::Headless(headless) => {
-                let died = headless.finished();
+                // A render loop that stopped starts again at once, unless a
+                // retry is set (one that could not start waits for it).
+                let due = backend.retry_at.is_some_and(|at| now >= at);
+                let died = headless.finished() && (backend.retry_at.is_none() || due);
                 if died {
                     eprintln!("kazoo-wall: the render loop stopped; restarting it");
                 }
-                died || backend.retry_at.is_some_and(|at| now >= at)
+                died || due
             }
         };
         if rebuild {
             self.rebuild(now);
+            return;
         }
+        self.follow_desk_rate(now);
     }
 
     /// What the running backend and desk link have counted.
@@ -971,52 +1007,66 @@ impl Control {
     }
 
     fn rebuild(&mut self, now: Instant) {
-        let shared = Arc::clone(self.wall.engine_mut().shared());
-        // The wall playing carries on from the bar it landed on.
-        let (bpm, beat, origin) = (shared.bpm(), shared.beat(), shared.origin());
         let device_failed = matches!(
             self.backend.as_ref().map(|b| &b.running),
             Some(Running::Device { .. })
         );
+        let following = self.desk_rate.following();
+        self.replace_audio(now, |control, at| {
+            if let Some(rate) = following {
+                // The render loop rendering for a desk stopped: it starts
+                // again at the desk's rate, never back on the device while
+                // the desk is up.
+                start_headless(
+                    &control.desk,
+                    rate,
+                    at,
+                    control.heard,
+                    &control.listen_tx,
+                    None,
+                )
+            } else if device_failed {
+                // Stand in with the headless loop now; the device is tried
+                // again in two seconds.
+                start_headless(
+                    &control.desk,
+                    FALLBACK_RATE,
+                    at,
+                    control.heard,
+                    &control.listen_tx,
+                    Some(now + DEVICE_RETRY),
+                )
+            } else {
+                eprintln!("kazoo-wall: trying the audio device again");
+                start_audio(
+                    control.audio,
+                    &control.desk,
+                    at,
+                    control.heard,
+                    &control.listen_tx,
+                    Some(now),
+                )
+            }
+        });
+    }
+
+    /// Stop the audio and start it again with `start`, which is given the
+    /// wall's `(bpm, beat, origin)` to carry on from (the wall playing
+    /// carries on from the bar it landed on).
+    fn replace_audio(
+        &mut self,
+        now: Instant,
+        start: impl FnOnce(&mut Self, (f64, f64, f64)) -> (Backend, EngineControl, Option<HubLink>),
+    ) {
+        let shared = Arc::clone(self.wall.engine_mut().shared());
+        let at = (shared.bpm(), shared.beat(), shared.origin());
         // The old backend's counts are read as it goes; the old desk link
         // serves until the new one takes its place, so what the desk says
         // in the meantime is read last of all.
         let device = self.running_counts();
         // The old engine (and its half of the desk link) stops first.
         self.backend = None;
-        let (backend, engine, link) = if device_failed {
-            // Stand in with the headless loop now; the device is tried again
-            // in two seconds.
-            let rate = FALLBACK_RATE;
-            let link = link_to_desk(&self.desk, rate, Pacing::Timer);
-            let (hub, link) = split_link(link);
-            let (engine, mut control) =
-                engine(engine_config(rate, (bpm, beat, origin), self.heard), hub);
-            let running = match Headless::start(engine, rate) {
-                Ok(headless) => Running::Headless(headless),
-                Err(err) => {
-                    eprintln!("kazoo-wall: the render thread could not start: {err}");
-                    Running::Headless(Headless::stopped())
-                }
-            };
-            let backend = backend(
-                running,
-                &mut control,
-                &self.listen_tx,
-                Some(now + DEVICE_RETRY),
-            );
-            (backend, control, link)
-        } else {
-            eprintln!("kazoo-wall: trying the audio device again");
-            start_audio(
-                self.audio,
-                &self.desk,
-                (bpm, beat, origin),
-                self.heard,
-                &self.listen_tx,
-                Some(now),
-            )
-        };
+        let (backend, engine, link) = start(self, at);
         let desk = self.desk_counts();
         self.finish_with(
             Counts {

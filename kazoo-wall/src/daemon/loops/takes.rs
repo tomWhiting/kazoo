@@ -66,6 +66,14 @@ impl Default for Takes {
 }
 
 impl Takes {
+    /// Whether take `ticket` is no longer on its way: logged, or failed
+    /// (and said so).
+    #[must_use]
+    pub fn settled(&self, ticket: u64) -> bool {
+        !self.pending.contains_key(&ticket)
+            && !self.finished.iter().any(|take| take.ticket == ticket)
+    }
+
     #[must_use]
     pub fn has_pending(&self, module: &str) -> bool {
         self.pending.values().any(|take| take.module == module)
@@ -159,6 +167,16 @@ impl Loops {
         while self.recordings.pending.contains_key(&ticket) {
             self.wait_for_test();
         }
+    }
+
+    /// Start take `ticket` with `into` as its spare, as a tick would.
+    #[cfg(test)]
+    pub(crate) fn start_take_for_test(&mut self, ticket: u64, into: Box<[f32]>) {
+        let take = self.recordings.pending.get_mut(&ticket).unwrap();
+        take.started = true;
+        take.snapshot_sent = true;
+        let module = take.module.clone();
+        self.feeds.get_mut(&module).unwrap().snapshot(into).unwrap();
     }
 
     #[cfg(test)]
@@ -328,6 +346,22 @@ impl Loops {
         ));
     }
 
+    /// `module` refused a copy of its tape: the take it was for fails and
+    /// is said to, so it does not wait for ever and the takes after it can
+    /// start.
+    pub(super) fn copy_refused(&mut self, module: &str) {
+        let ticket = self
+            .recordings
+            .pending
+            .iter()
+            .find(|(_, take)| take.module == module && take.started && take.snapshot_sent)
+            .map(|(ticket, _)| *ticket);
+        if let Some(ticket) = ticket {
+            self.recordings.pending.remove(&ticket);
+        }
+        self.take_failed(module, "the loop refused a copy of its tape");
+    }
+
     pub(super) fn snapped(&mut self, module: &str, snapshot: Box<LoopSnapshot>) {
         let ticket = self
             .recordings
@@ -370,9 +404,19 @@ impl Loops {
                 continue;
             }
             if !take.started {
-                let Some(&(capacity, tail)) = self.geometry.get(&take.module) else {
+                let Some(&(own, _)) = self.geometry.get(&take.module) else {
                     continue;
                 };
+                // The loop may hold a take made at a higher rate than its
+                // own (KZ-D21): its spare has room for whichever is longer,
+                // what it holds or what it can record, and the longest seam.
+                let (most, tail) = crate::dsp::looper::tape_geometry();
+                let holds = self
+                    .feeds
+                    .get(&take.module)
+                    .map_or(0, |feed| feed.gauges().frames.load(Ordering::Relaxed));
+                let capacity =
+                    usize::try_from(holds).map_or(most, |holds| holds.max(own).min(most));
                 take.started = true;
                 self.recordings.jobs.push_back((
                     *ticket,
