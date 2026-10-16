@@ -250,8 +250,11 @@ impl LinkWorker {
                     io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
                 ) =>
             {
-                // No desk: a refusal from a desk that was there is over.
-                self.set_refusal(Some(format!("no desk at {}", socket.display())));
+                // No desk: a refusal from a desk that was there does not
+                // outlive it. Any other reason stays as it was said.
+                if self.refused_by_desk() {
+                    self.set_refusal(Some(format!("no desk at {}", socket.display())));
+                }
                 self.refusal_delay = RETRY_INTERVAL;
                 RETRY_INTERVAL
             }

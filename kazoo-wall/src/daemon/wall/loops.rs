@@ -305,21 +305,22 @@ impl Wall {
             .collect()
     }
 
-    /// Whether every take in `tickets` is logged, or failed.
+    /// Whether every take in `tickets` is logged, or failed. A take kept
+    /// but still owed to the log is not: the loop would come back with the
+    /// take before it.
     #[must_use]
     pub fn takes_settled(&self, tickets: &[u64]) -> bool {
-        tickets
-            .iter()
-            .all(|ticket| self.loops.recordings.settled(*ticket))
+        tickets.iter().all(|ticket| {
+            self.loops.recordings.settled(*ticket)
+                && !self.loop_work.awaiting_log.contains_key(ticket)
+        })
     }
 
-    /// Tell every seat `summary`, one plain sentence, at the next tick.
+    /// Tell every seat `summary`, one plain sentence that is not a fault,
+    /// at the next tick.
     pub fn tell_seats(&mut self, summary: String) {
         eprintln!("kazoo-wall: {summary}");
-        self.told.push(crate::protocol::Event::Fault {
-            summary,
-            seq: Some(self.revision()),
-        });
+        self.told.push(crate::protocol::Event::Notice { summary });
     }
 
     pub(super) fn note_loop_restart(&mut self) {

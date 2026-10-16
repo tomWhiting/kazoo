@@ -101,33 +101,43 @@ fn no_takes(_: &[u64]) -> bool {
     panic!("takes were asked about when none were held for")
 }
 
+/// Whether loops record, when it must not be asked.
+fn not_asked() -> bool {
+    panic!("whether loops record was asked when there was nothing to do")
+}
+
 #[test]
 fn a_follow_keeps_recording_loops_takes_first_and_waits_for_them_at_most_a_while() {
     let start = Instant::now();
+    let refused = || Look::Refused(44_100);
     let mut watch = Watch::default();
     // Nothing to do: whether loops record is not even asked.
     assert_eq!(
-        watch.step(Follow::Stay, start, || panic!("asked"), no_takes),
+        watch.decide(start, 48_000, false, || Look::Up, not_asked, no_takes),
         Step::Nothing
     );
     // Nothing recording: do it now.
+    let mut watch = Watch::default();
     assert_eq!(
-        watch.step(Follow::Match(44_100), start, || false, no_takes),
+        watch.decide(start, 48_000, false, refused, || false, no_takes),
         Step::Act(Follow::Match(44_100), None)
     );
     // A loop recording: its take first.
+    let mut watch = Watch::default();
     assert_eq!(
-        watch.step(Follow::Match(44_100), start, || true, no_takes),
+        watch.decide(start, 48_000, false, refused, || true, no_takes),
         Step::Keep(Follow::Match(44_100))
     );
-    watch.hold(Follow::Match(44_100), start, vec![7]);
-    // Held: whatever the rounds say, it waits for take 7.
+    watch.hold(start, vec![7]);
+    // Held: no look, nothing else asked; it waits for take 7.
     let mut asked = Vec::new();
     assert_eq!(
-        watch.step(
-            Follow::Stay,
+        watch.decide(
             start + Duration::from_secs(1),
-            || panic!("asked"),
+            48_000,
+            false,
+            no_look,
+            not_asked,
             |tickets| {
                 asked.extend_from_slice(tickets);
                 false
@@ -136,47 +146,78 @@ fn a_follow_keeps_recording_loops_takes_first_and_waits_for_them_at_most_a_while
         Step::Wait
     );
     assert_eq!(asked, [7]);
-    // Logged: the held follow is done.
+    // Logged: the desk is looked at again at once, and what it says now is
+    // done, without holding again.
     assert_eq!(
-        watch.step(
-            Follow::Stay,
-            start + Duration::from_secs(2),
-            || panic!("asked"),
+        watch.decide(
+            start + Duration::from_secs(1),
+            48_000,
+            false,
+            refused,
+            not_asked,
             |_| true
         ),
         Step::Act(Follow::Match(44_100), None)
     );
-    assert_eq!(
-        watch.step(
-            Follow::Stay,
-            start + Duration::from_secs(2),
-            || panic!("asked"),
-            no_takes
-        ),
-        Step::Nothing
-    );
     // A take that never lands holds it no longer than HOLD_FOR, and says so.
-    watch.hold(Follow::Device, start, vec![8]);
+    watch.hold(start, vec![8]);
     assert_eq!(
-        watch.step(
-            Follow::Stay,
-            start + (HOLD_FOR.saturating_sub(Duration::from_millis(1))),
-            || panic!("asked"),
+        watch.decide(
+            start + HOLD_FOR.saturating_sub(Duration::from_millis(1)),
+            48_000,
+            false,
+            no_look,
+            not_asked,
             |_| false
         ),
         Step::Wait
     );
-    match watch.step(
-        Follow::Stay,
-        start + HOLD_FOR,
-        || panic!("asked"),
-        |_| false,
-    ) {
-        Step::Act(Follow::Device, Some(line)) => {
-            assert!(line.contains("not kept within 5 s"), "{line}");
+    match watch.decide(start + HOLD_FOR, 48_000, false, refused, not_asked, |_| {
+        false
+    }) {
+        Step::Act(Follow::Match(44_100), Some(line)) => {
+            assert!(line.contains("not all kept within 5 s"), "{line}");
         }
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn a_desk_that_comes_back_while_a_return_to_the_device_is_held_is_kept() {
+    let start = Instant::now();
+    let mut watch = Watch {
+        following: Some(44_100),
+        missed: 1,
+        ..Watch::default()
+    };
+    // The desk is gone a second look in a row, and a loop records: hold.
+    assert_eq!(
+        watch.decide(start, 44_100, false, || Look::Gone, || true, no_takes),
+        Step::Keep(Follow::Device)
+    );
+    watch.hold(start, vec![3]);
+    // The desk came back and the wall plugged in again: once the take is
+    // logged, nothing to do.
+    assert_eq!(
+        watch.decide(
+            start + Duration::from_secs(1),
+            44_100,
+            true,
+            no_look,
+            not_asked,
+            |_| true
+        ),
+        Step::Act(Follow::Stay, None)
+    );
+    assert_eq!(watch.following(), Some(44_100));
+    // A held match whose desk went in the meantime: one look that misses it
+    // is not yet gone, and nothing opens again.
+    let mut watch = Watch::default();
+    watch.hold(start, vec![4]);
+    assert_eq!(
+        watch.decide(start, 48_000, false, || Look::Gone, not_asked, |_| true),
+        Step::Act(Follow::Stay, None)
+    );
 }
 
 /// A control thread's state with no backend yet, its audio `audio`,
@@ -224,7 +265,7 @@ fn renders_headless_at(control: &mut Control, rate: u32) {
 #[test]
 fn a_desk_at_another_rate_than_the_device_is_rendered_for_on_the_headless_loop() {
     let mut control = control(AudioMode::Device { sample_rate: None }, DeskMode::Discover);
-    control.follow_with(Follow::Match(44_100), Instant::now(), || {
+    control.follow_now(Follow::Match(44_100), Instant::now(), || {
         Err("no device in a test".to_string())
     });
     renders_headless_at(&mut control, 44_100);

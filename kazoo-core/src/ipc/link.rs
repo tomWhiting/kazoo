@@ -1007,6 +1007,15 @@ impl LinkWorker {
         priority.map_or(Ok(()), RealTime::demote)
     }
 
+    /// Whether the link last failed because the desk itself refused it.
+    fn refused_by_desk(&self) -> bool {
+        let refusal = match self.state.last_refusal.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        refusal.as_deref().and_then(desk_reason).is_some()
+    }
+
     fn set_refusal(&self, refusal: Option<String>) {
         match self.state.last_refusal.lock() {
             Ok(mut guard) => *guard = refusal,

@@ -576,6 +576,7 @@ impl Loops {
     /// snapshots whose allocations come from the tape thread.
     pub fn collect(&mut self) {
         let mut refused = Vec::new();
+        let mut copies_refused = Vec::new();
         let mut recorded = Vec::new();
         let mut snapped = Vec::new();
         for (module, feed) in &mut self.feeds {
@@ -587,24 +588,21 @@ impl Loops {
                         self.takes = self.takes.saturating_add(1);
                         recorded.push((module.clone(), mark));
                     }
-                    LoopOut::Refused(request) => {
-                        // The tape thread checked the splice and length
-                        // against the loop's own checks: a put-back is
-                        // refused only because the loop recorded first.
-                        refused.push(match request {
-                            LoopIn::Install {
-                                only_if_blank: true,
-                                ..
-                            } => format!(
-                                "{module} was recorded before its saved tape arrived; the saved tape was not put back"
-                            ),
-                            LoopIn::Install { .. } => {
-                                format!("{module} refused the tape it was given; it keeps what it had")
-                            }
-                            LoopIn::Snapshot { .. } => {
-                                format!("{module} refused a copy of its tape")
-                            }
-                        });
+                    // The tape thread checked the splice and length against
+                    // the loop's own checks: a put-back is refused only
+                    // because the loop recorded first.
+                    LoopOut::Refused(LoopIn::Install {
+                        only_if_blank: true,
+                        ..
+                    }) => refused.push(format!(
+                        "{module} was recorded before its saved tape arrived; the saved tape was not put back"
+                    )),
+                    LoopOut::Refused(LoopIn::Install { .. }) => refused.push(format!(
+                        "{module} refused the tape it was given; it keeps what it had"
+                    )),
+                    // Its take fails, so takes after it can start.
+                    LoopOut::Refused(LoopIn::Snapshot { .. }) => {
+                        copies_refused.push(module.clone());
                     }
                 }
             }
@@ -614,6 +612,9 @@ impl Loops {
         }
         for (module, snapshot) in snapped {
             self.snapped(&module, snapshot);
+        }
+        for module in copies_refused {
+            self.copy_refused(&module);
         }
         for note in refused {
             self.note(note);

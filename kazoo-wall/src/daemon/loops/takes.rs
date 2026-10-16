@@ -169,6 +169,16 @@ impl Loops {
         }
     }
 
+    /// Start take `ticket` with `into` as its spare, as a tick would.
+    #[cfg(test)]
+    pub(crate) fn start_take_for_test(&mut self, ticket: u64, into: Box<[f32]>) {
+        let take = self.recordings.pending.get_mut(&ticket).unwrap();
+        take.started = true;
+        take.snapshot_sent = true;
+        let module = take.module.clone();
+        self.feeds.get_mut(&module).unwrap().snapshot(into).unwrap();
+    }
+
     #[cfg(test)]
     pub(crate) fn pending_for_test(&self, module: &str) -> Vec<u64> {
         self.recordings
@@ -334,6 +344,22 @@ impl Loops {
         self.note(format!(
             "{module}'s take could not be kept: {error}; it is still playing, and is only in memory"
         ));
+    }
+
+    /// `module` refused a copy of its tape: the take it was for fails and
+    /// is said to, so it does not wait for ever and the takes after it can
+    /// start.
+    pub(super) fn copy_refused(&mut self, module: &str) {
+        let ticket = self
+            .recordings
+            .pending
+            .iter()
+            .find(|(_, take)| take.module == module && take.started && take.snapshot_sent)
+            .map(|(ticket, _)| *ticket);
+        if let Some(ticket) = ticket {
+            self.recordings.pending.remove(&ticket);
+        }
+        self.take_failed(module, "the loop refused a copy of its tape");
     }
 
     pub(super) fn snapped(&mut self, module: &str, snapshot: Box<LoopSnapshot>) {

@@ -1121,6 +1121,13 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Something about the wall worth knowing that is not a fault: what
+    /// the wall is waiting for, or about to do, and why. Sent to every
+    /// subscriber.
+    Notice {
+        /// One plain sentence.
+        summary: String,
+    },
     /// Fingerprints moved: sent to every subscriber, the actor included,
     /// right after the change that moved them. Only what changed is here;
     /// an entry with empty shares is gone (removed, or no dye reaches it).

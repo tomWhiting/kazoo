@@ -466,6 +466,77 @@ fn punch(wall: &mut Wall, engine: &mut Engine) -> u64 {
 }
 
 #[test]
+fn a_recording_loop_is_kept_before_the_audio_opens_again() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, _state_dir) = taking_wall(dir.path());
+    rolling(&mut wall, &mut engine);
+    assert_eq!(wall.loops_recording(), ["loop1"]);
+    let tickets = wall.keep_recording_loops();
+    let [ticket] = tickets[..] else {
+        panic!("{tickets:?}")
+    };
+    assert!(!wall.takes_settled(&tickets));
+    wall.loops.wait_snapshot_for_test(ticket);
+    render(&mut engine, 4_096);
+    wall.loops.wait_take_for_test(ticket);
+    wall.tick(Instant::now());
+    assert!(wall.takes_settled(&tickets));
+    let change = wall.log.back().unwrap();
+    let What::Take { why, tape, .. } = &change.what else {
+        panic!("the last change is not a take")
+    };
+    assert_eq!(*why, TakeWhy::Rebuild);
+    assert!(tape.is_some());
+    assert_eq!(
+        change.summary,
+        format!("{LOADER_SEAT} loop1 was kept before the audio restarted")
+    );
+    // Still recording: the loop carries on after the take.
+    assert_eq!(state(&wall), LoopState::Rolling as u8);
+}
+
+#[test]
+fn a_take_whose_copy_the_loop_refuses_fails_and_the_next_is_kept() {
+    let dir = reels_dir();
+    let (mut wall, mut engine, _state_dir) = taking_wall(dir.path());
+    rolling(&mut wall, &mut engine);
+    assert!(wall.loops.pending_for_test("loop1").is_empty());
+    let refused = wall
+        .loops
+        .request_take("loop1", TakeWhy::Rebuild, None)
+        .unwrap();
+    // A spare with no room: the loop refuses the copy.
+    wall.loops.start_take_for_test(refused, Box::default());
+    render(&mut engine, 4_096);
+    wall.tick(Instant::now());
+    assert!(wall.takes_settled(&[refused]));
+    assert!(
+        wall.loops.notes().any(|note| note
+            == "loop1's take could not be kept: the loop refused a copy of its tape; it is still playing, and is only in memory"),
+        "{:?}",
+        wall.loops.notes().collect::<Vec<_>>()
+    );
+    // The take after it starts and is kept.
+    let kept = wall.keep_recording_loops();
+    let [ticket] = kept[..] else {
+        panic!("{kept:?}")
+    };
+    wall.loops.wait_snapshot_for_test(ticket);
+    render(&mut engine, 4_096);
+    wall.loops.wait_take_for_test(ticket);
+    wall.tick(Instant::now());
+    assert!(wall.takes_settled(&kept));
+    assert!(matches!(
+        wall.log.back().unwrap().what,
+        What::Take {
+            why: TakeWhy::Rebuild,
+            tape: Some(_),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn a_finished_recording_becomes_a_logged_take_with_its_exact_samples() {
     let dir = reels_dir();
     let (mut wall, mut engine, state_dir) = taking_wall(dir.path());

@@ -178,6 +178,9 @@ impl News {
                 self.push_told(format!("fault: {}", clean(&summary)), now);
                 self.urgent = true;
             }
+            Feed::Event(Event::Notice { summary }) => {
+                self.push_told(format!("the wall: {}", clean(&summary)), now);
+            }
             Feed::Event(Event::Log { log }) => self.log_said(&log, now),
             // A go's change precedes its replacement event. Only the first
             // replacement of a walk adds new information about staleness.
@@ -762,6 +765,23 @@ mod tests {
         // A send that failed is tried again a window later, fault or not.
         news.failed(at);
         assert_eq!(news.due(WINDOW), Some(at + WINDOW));
+    }
+
+    #[test]
+    fn a_notice_is_told_with_the_news_not_rushed_as_a_fault() {
+        let t0 = Instant::now();
+        let mut news = News::new("Waffles".to_string());
+        news.sent(t0);
+        news.take(
+            Feed::Event(Event::Notice {
+                summary: "loop1 is recording, so its take is kept first".to_string(),
+            }),
+            t0 + Duration::from_secs(1),
+        );
+        assert_eq!(news.due(WINDOW), Some(t0 + Duration::from_secs(1) + WINDOW));
+        let text = content(&news);
+        assert!(text.contains("- the wall: loop1 is recording, so its take is kept first\n"));
+        assert!(!text.contains("fault"));
     }
 
     #[test]

@@ -223,6 +223,13 @@ fn responses_and_events_have_the_design_shape() {
     };
     let text = serde_json::to_string(&fault).unwrap();
     assert_eq!(ServerLine::parse(&text).unwrap(), ServerLine::Event(fault));
+    let notice = Event::Notice {
+        summary: "loop1 is recording, so its take is kept first".to_string(),
+    };
+    let value = serde_json::to_value(&notice).unwrap();
+    assert_eq!(value["event"], "notice");
+    let text = serde_json::to_string(&notice).unwrap();
+    assert_eq!(ServerLine::parse(&text).unwrap(), ServerLine::Event(notice));
 }
 
 #[test]

@@ -16,9 +16,10 @@
 //! holds: nothing is read from disk and no socket is knocked on. A look is
 //! made at most once per [`DEVICE_RETRY`], and none while plugged in.
 //! While a loop records, what it recorded is kept first: each recording
-//! loop is asked for a take, and the audio opens again once they are logged
-//! (at most [`HOLD_FOR`] later; what a late take misses is said, as for any
-//! audio restart). The seats are told why the wall waits.
+//! loop is asked for a take, and once they are logged (at most [`HOLD_FOR`]
+//! later; what a late take misses is said, as for any audio restart) the
+//! desk is looked at again and followed as it is then. The seats are told
+//! why the wall waits.
 
 use std::time::{Duration, Instant};
 
@@ -103,8 +104,6 @@ pub(super) struct Watch {
 /// A follow waiting for recording loops' takes to be logged.
 #[derive(Debug)]
 struct Held {
-    /// What to do once they are.
-    next: Follow,
     /// When the takes were asked for.
     since: Instant,
     /// The takes asked for.
@@ -116,7 +115,8 @@ struct Held {
 enum Step {
     /// Nothing.
     Nothing,
-    /// Loops are recording: ask for their takes, then hold this.
+    /// Loops are recording: ask for their takes and hold, then look again
+    /// (this is what the look said).
     Keep(Follow),
     /// Still waiting for the takes.
     Wait,
@@ -157,12 +157,19 @@ impl Watch {
         follow(found, wall, self.following, self.missed)
     }
 
-    /// What to do with `next` at `now`: `recording` says whether any loop
-    /// is recording, `settled` whether takes asked for are all logged.
-    fn step(
+    /// What to do at `now` for a wall at `wall` Hz, plugged into the desk
+    /// or not: `look` looks at the desk when a look is due, `recording`
+    /// says whether any loop is recording, `settled` whether the takes
+    /// held for are all logged. When a hold ends the desk is looked at
+    /// again at once, and what that says is done without holding again
+    /// (the takes were just kept): a desk that came back or went in the
+    /// meantime is followed as it is now.
+    fn decide(
         &mut self,
-        next: Follow,
         now: Instant,
+        wall: u32,
+        plugged_in: bool,
+        look: impl FnOnce() -> Look,
         recording: impl FnOnce() -> bool,
         settled: impl FnOnce(&[u64]) -> bool,
     ) -> Step {
@@ -174,12 +181,14 @@ impl Watch {
             }
             let late = (!settled).then(|| {
                 format!(
-                    "the loops' takes were not kept within {} s; the wall follows the desk's rate anyway",
+                    "the loops' takes were not all kept within {} s; what they missed since their last take is said as the audio opens again",
                     HOLD_FOR.as_secs()
                 )
             });
-            return Step::Act(held.next, late);
+            self.due = None;
+            return Step::Act(self.round(now, wall, plugged_in, look), late);
         }
+        let next = self.round(now, wall, plugged_in, look);
         if next == Follow::Stay {
             return Step::Nothing;
         }
@@ -189,11 +198,9 @@ impl Watch {
         Step::Act(next, None)
     }
 
-    /// Hold `next` from `now` until `tickets`, the takes asked for, are
-    /// logged.
-    fn hold(&mut self, next: Follow, now: Instant, tickets: Vec<u64>) {
+    /// Hold from `now` until `tickets`, the takes asked for, are logged.
+    fn hold(&mut self, now: Instant, tickets: Vec<u64>) {
         self.held = Some(Held {
-            next,
             since: now,
             tickets,
         });
@@ -209,29 +216,30 @@ impl Control {
         if self.audio != (AudioMode::Device { sample_rate: None }) || self.desk == DeskMode::Off {
             return;
         }
-        let wall = self.wall.engine_mut().sample_rate();
-        let link = self.wall.desk_link();
+        let rate = self.wall.engine_mut().sample_rate();
+        let wall = &self.wall;
+        let link = wall.desk_link();
         let plugged_in = link.is_some_and(HubLink::is_connected);
-        let next = self.desk_rate.round(now, wall, plugged_in, || look(link));
-        self.follow_with(next, now, || Device::open(None));
+        let step = self.desk_rate.decide(
+            now,
+            rate,
+            plugged_in,
+            || look(link),
+            || !wall.loops_recording().is_empty(),
+            |tickets| wall.takes_settled(tickets),
+        );
+        self.take_step(step, now, || Device::open(None));
     }
 
-    /// Do `next`, keeping recording loops' takes first (see the module's
-    /// words); `open` opens the device as it is set.
-    fn follow_with(
+    /// Take `step`; `open` opens the device as it is set.
+    fn take_step(
         &mut self,
-        next: Follow,
+        step: Step,
         now: Instant,
         open: impl FnOnce() -> Result<Device, String>,
     ) {
-        let wall = &self.wall;
-        let next = match self.desk_rate.step(
-            next,
-            now,
-            || !wall.loops_recording().is_empty(),
-            |tickets| wall.takes_settled(tickets),
-        ) {
-            Step::Nothing | Step::Wait => return,
+        match step {
+            Step::Nothing | Step::Wait => {}
             Step::Keep(next) => {
                 let recording = self.wall.loops_recording();
                 let tickets = self.wall.keep_recording_loops();
@@ -249,16 +257,24 @@ impl Control {
                         "their takes are"
                     },
                 ));
-                self.desk_rate.hold(next, now, tickets);
-                return;
+                self.desk_rate.hold(now, tickets);
             }
             Step::Act(next, late) => {
                 if let Some(line) = late {
                     self.wall.tell_seats(line);
                 }
-                next
+                self.follow_now(next, now, open);
             }
-        };
+        }
+    }
+
+    /// Do `next` now; `open` opens the device as it is set.
+    fn follow_now(
+        &mut self,
+        next: Follow,
+        now: Instant,
+        open: impl FnOnce() -> Result<Device, String>,
+    ) {
         match next {
             Follow::Stay => {}
             Follow::Match(rate) => {
