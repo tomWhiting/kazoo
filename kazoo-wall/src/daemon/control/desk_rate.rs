@@ -120,7 +120,8 @@ enum Step {
     Keep(Follow),
     /// Still waiting for the takes.
     Wait,
-    /// Do this; with a line to tell when takes did not land in time.
+    /// Do this; with a line to tell the seats after a hold: that the audio
+    /// stays as it is after all, or that takes did not land in time.
     Act(Follow, Option<String>),
 }
 
@@ -179,14 +180,23 @@ impl Watch {
                 self.held = Some(held);
                 return Step::Wait;
             }
-            let late = (!settled).then(|| {
-                format!(
+            self.due = None;
+            let next = self.round(now, wall, plugged_in, look);
+            // The seats were told the audio opens again: say what happens.
+            let said = if next == Follow::Stay {
+                Some(
+                    "the desk is as the wall needs it after all; the wall's audio stays as it is"
+                        .to_string(),
+                )
+            } else if settled {
+                None
+            } else {
+                Some(format!(
                     "the loops' takes were not all kept within {} s; what they missed since their last take is said as the audio opens again",
                     HOLD_FOR.as_secs()
-                )
-            });
-            self.due = None;
-            return Step::Act(self.round(now, wall, plugged_in, look), late);
+                ))
+            };
+            return Step::Act(next, said);
         }
         let next = self.round(now, wall, plugged_in, look);
         if next == Follow::Stay {

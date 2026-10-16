@@ -96,6 +96,9 @@ fn a_followed_desk_is_gone_only_after_two_looks_a_retry_apart() {
     );
 }
 
+/// What the seats hear when a hold ends with nothing to do.
+const STAYS: &str = "the desk is as the wall needs it after all; the wall's audio stays as it is";
+
 /// Takes that must not be asked about.
 fn no_takes(_: &[u64]) -> bool {
     panic!("takes were asked about when none were held for")
@@ -207,7 +210,7 @@ fn a_desk_that_comes_back_while_a_return_to_the_device_is_held_is_kept() {
             not_asked,
             |_| true
         ),
-        Step::Act(Follow::Stay, None)
+        Step::Act(Follow::Stay, Some(STAYS.to_string()))
     );
     assert_eq!(watch.following(), Some(44_100));
     // A held match whose desk went in the meantime: one look that misses it
@@ -216,7 +219,7 @@ fn a_desk_that_comes_back_while_a_return_to_the_device_is_held_is_kept() {
     watch.hold(start, vec![4]);
     assert_eq!(
         watch.decide(start, 48_000, false, || Look::Gone, not_asked, |_| true),
-        Step::Act(Follow::Stay, None)
+        Step::Act(Follow::Stay, Some(STAYS.to_string()))
     );
 }
 
