@@ -143,6 +143,8 @@ struct Connection {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
     next_id: u64,
+    /// Whether the wall keeps comments (see [`HelloResult::comments`]).
+    comments: bool,
 }
 
 impl Connection {
@@ -163,6 +165,7 @@ impl Connection {
             reader: BufReader::new(read),
             writer,
             next_id: 1,
+            comments: false,
         };
         let hello = Request::Hello {
             seat: seat.to_string(),
@@ -170,7 +173,7 @@ impl Connection {
             console: false,
             watcher: false,
         };
-        let line = line_for(&mut connection.next_id, hello, None)?;
+        let line = line_for(&mut connection.next_id, hello, (None, None))?;
         let answered = tokio::time::timeout(ANSWER_WITHIN, connection.exchange(&line)).await;
         let value = match answered {
             Ok(Ok(Ok(value))) => value,
@@ -178,7 +181,8 @@ impl Connection {
             Ok(Err(failure)) => return Err(LinkError::Broken(failure.why)),
             Err(_) => return Err(LinkError::Broken(timed_out(ANSWER_WITHIN))),
         };
-        let hello = decode(value).map_err(LinkError::Broken)?;
+        let hello: HelloResult = decode(value).map_err(LinkError::Broken)?;
+        connection.comments = hello.comments;
         Ok((connection, hello))
     }
 
@@ -249,6 +253,17 @@ impl Connection {
     }
 }
 
+/// Why a comment cannot go to a wall older than comments.
+const OLD_WALL: &str = "the wall running is older than comments and would drop them; nothing \
+                        was sent. Send it again without comments, or ask Tom to restart the wall \
+                        (kazoo wall stop, then kazoo wall) to keep them";
+
+/// Whether `request`, with `comment`, carries a comment: its own, or one
+/// on a step of a batch.
+fn commented(request: &Request, comment: Option<&str>) -> bool {
+    comment.is_some() || matches!(request, Request::Batch { comments, .. } if !comments.is_empty())
+}
+
 /// A request encoded as its line, with the id it carries.
 #[derive(Debug)]
 struct Outgoing {
@@ -257,12 +272,21 @@ struct Outgoing {
 }
 
 /// Number `request` with the next id and encode it, for `wall` (see
-/// [`RequestLine::wall`]).
-fn line_for(next_id: &mut u64, request: Request, wall: Option<u64>) -> Result<Outgoing, LinkError> {
+/// [`RequestLine::wall`]) with `comment` (see [`RequestLine::comment`]).
+fn line_for(
+    next_id: &mut u64,
+    request: Request,
+    (wall, comment): (Option<u64>, Option<&str>),
+) -> Result<Outgoing, LinkError> {
     let id = *next_id;
     *next_id += 1;
-    let bytes = encode_line(&RequestLine { id, wall, request })
-        .map_err(|err| LinkError::Unsendable(err.to_string()))?;
+    let bytes = encode_line(&RequestLine {
+        id,
+        wall,
+        comment: comment.map(str::to_string),
+        request,
+    })
+    .map_err(|err| LinkError::Unsendable(err.to_string()))?;
     Ok(Outgoing { id, bytes })
 }
 
@@ -379,14 +403,29 @@ impl Wall {
     ///
     /// As [`Self::ask_raw`].
     pub async fn ask<T: DeserializeOwned>(&self, request: Request) -> Result<Answer<T>, LinkError> {
-        let value = self.ask_raw(request).await?;
+        self.ask_commented(request, None).await
+    }
+
+    /// Ask the wall, with the sender's `comment` on the change it makes
+    /// (see [`RequestLine::comment`]), and read the result as `T`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ask_raw`].
+    pub async fn ask_commented<T: DeserializeOwned>(
+        &self,
+        request: Request,
+        comment: Option<&str>,
+    ) -> Result<Answer<T>, LinkError> {
+        let value = self.ask_raw(request, comment).await?;
         Ok(match serde_json::from_value(value.clone()) {
             Ok(read) => Answer::Read(read),
             Err(err) => Answer::Unread(err.to_string(), value),
         })
     }
 
-    /// Ask the wall, connecting first if there is no live connection.
+    /// Ask the wall, with the sender's `comment` on the change it makes,
+    /// connecting first if there is no live connection.
     ///
     /// A connection that fails before the request was written, or during a
     /// request that changes nothing, is made again and the request tried
@@ -397,7 +436,11 @@ impl Wall {
     /// [`LinkError::NotRunning`] while the daemon is down,
     /// [`LinkError::Wall`] for the daemon's refusal, and the others for a
     /// line that failed.
-    pub async fn ask_raw(&self, request: Request) -> Result<serde_json::Value, LinkError> {
+    async fn ask_raw(
+        &self,
+        request: Request,
+        comment: Option<&str>,
+    ) -> Result<serde_json::Value, LinkError> {
         // One request at a time on each connection: the lock is held for
         // the whole exchange. Words wait on their own.
         let connection = if matches!(request, Request::Speak { .. }) {
@@ -405,7 +448,8 @@ impl Wall {
         } else {
             &self.connection
         };
-        self.ask_on(&mut *connection.lock().await, &request).await
+        self.ask_on(&mut *connection.lock().await, &request, comment)
+            .await
     }
 
     /// [`Self::ask_raw`] on the connection in `slot`.
@@ -413,6 +457,7 @@ impl Wall {
         &self,
         slot: &mut Option<Connection>,
         request: &Request,
+        comment: Option<&str>,
     ) -> Result<serde_json::Value, LinkError> {
         let changes = request.is_change();
         let mut tried_again = false;
@@ -424,7 +469,15 @@ impl Wall {
                     (slot.insert(connection), false)
                 }
             };
-            let line = line_for(&mut connection.next_id, request.clone(), self.seen())?;
+            // A wall older than comments would drop them without a word.
+            if !connection.comments && commented(request, comment) {
+                return Err(LinkError::Unsendable(OLD_WALL.to_string()));
+            }
+            let line = line_for(
+                &mut connection.next_id,
+                request.clone(),
+                (self.seen(), comment),
+            )?;
             let within = if matches!(request, Request::Speak { .. }) {
                 SPEECH_WITHIN
             } else {
@@ -522,7 +575,7 @@ async fn subscribe(
     seat: &str,
 ) -> Result<(Connection, HelloResult, SubscribeResult), LinkError> {
     let (mut connection, hello) = Connection::open(socket, seat).await?;
-    let line = line_for(&mut connection.next_id, Request::Subscribe, None)?;
+    let line = line_for(&mut connection.next_id, Request::Subscribe, (None, None))?;
     let answered = tokio::time::timeout(ANSWER_WITHIN, connection.exchange(&line)).await;
     let value = match answered {
         Ok(Ok(Ok(value))) => value,
@@ -575,6 +628,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_comment_is_never_sent_to_a_wall_that_would_drop_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("wall.sock");
+        // The stub's hello says nothing of comments: a wall older than them.
+        tokio::spawn(stub(UnixListener::bind(&socket).unwrap()));
+        let wall = Wall::new(socket, "Tom".to_string());
+        let turn = Request::Turn {
+            module: "vcf1".to_string(),
+            knob: "cutoff".to_string(),
+            value: 500.0,
+            glide_beats: None,
+        };
+        let refused = wall
+            .ask_raw(turn.clone(), Some("darker"))
+            .await
+            .unwrap_err();
+        assert_eq!(refused, LinkError::Unsendable(OLD_WALL.to_string()));
+        let batch = Request::Batch {
+            note: "two".to_string(),
+            changes: vec![turn.clone(), turn.clone()],
+            comments: vec![Some("first".to_string()), None],
+        };
+        assert_eq!(
+            wall.ask_raw(batch, None).await.unwrap_err(),
+            LinkError::Unsendable(OLD_WALL.to_string())
+        );
+        // Without one, it goes as ever.
+        assert!(wall.ask_raw(turn, None).await.is_ok());
+    }
+
+    #[tokio::test]
     async fn other_tools_never_wait_behind_words_being_rendered() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("wall.sock");
@@ -583,16 +667,20 @@ mod tests {
         let speaking = Arc::clone(&wall);
         let speak = tokio::spawn(async move {
             speaking
-                .ask_raw(Request::Speak {
-                    module: "speak1".to_string(),
-                    text: "hello".to_string(),
-                    voice: None,
-                })
+                .ask_raw(
+                    Request::Speak {
+                        module: "speak1".to_string(),
+                        text: "hello".to_string(),
+                        voice: None,
+                    },
+                    None,
+                )
                 .await
         });
         // Let the speak go out first.
         tokio::time::sleep(Duration::from_millis(200)).await;
-        let look = tokio::time::timeout(Duration::from_secs(2), wall.ask_raw(Request::Look)).await;
+        let look =
+            tokio::time::timeout(Duration::from_secs(2), wall.ask_raw(Request::Look, None)).await;
         assert!(
             matches!(look, Ok(Ok(_))),
             "look waited behind the speak: {look:?}"
@@ -643,10 +731,10 @@ mod tests {
             place: None,
         };
         assert!(matches!(
-            line_for(&mut next, huge, None),
+            line_for(&mut next, huge, (None, None)),
             Err(LinkError::Unsendable(_))
         ));
-        let line = line_for(&mut next, Request::Look, None).unwrap();
+        let line = line_for(&mut next, Request::Look, (None, None)).unwrap();
         assert_eq!(line.id, 8);
         assert_eq!(line.bytes, b"{\"id\":8,\"op\":\"look\"}\n");
     }
@@ -656,7 +744,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let wall = Wall::new(dir.path().join("none.sock"), "Tom".to_string());
         assert_eq!(
-            wall.ask_raw(Request::Look).await.unwrap_err(),
+            wall.ask_raw(Request::Look, None).await.unwrap_err(),
             LinkError::NotRunning
         );
     }

@@ -28,6 +28,7 @@ pub fn moment(
         alive: Kinds::default(),
         tint: Tint::default(),
         batch: None,
+        comment: None,
         problems: Vec::new(),
     }
 }
@@ -109,6 +110,8 @@ pub fn batch(history: &mut History, m: usize, note: &str, steps: &[&str]) {
     moment.batch = Some(Box::new(Batch {
         note: note.to_owned(),
         steps: steps.iter().map(|&step| step.to_owned()).collect(),
+        part: None,
+        comments: Vec::new(),
     }));
     history.knots = crate::history::knots(&history.limbs, &history.moments);
 }

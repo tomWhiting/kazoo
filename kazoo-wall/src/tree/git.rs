@@ -224,23 +224,11 @@ pub fn read(dir: &Path) -> Result<Planted, TreeError> {
             String::from_utf8_lossy(&result.stderr)
         )));
     };
-    let mut through = None;
-    if tip.is_some() {
-        for key in ["Kazoo-Seq", "Kazoo-After"] {
-            let text = checked(git_command("log", Some(dir)).args([
-                "-1",
-                &format!("--format=%(trailers:key={key},valueonly,separator=%x2C)"),
-                &branch,
-            ]))?;
-            if !text.is_empty() {
-                through = Some(
-                    text.parse()
-                        .map_err(|err| TreeError::Git(format!("{key}: {err}")))?,
-                );
-                break;
-            }
-        }
-    }
+    let through = if tip.is_some() {
+        through_at(dir, &branch)?
+    } else {
+        None
+    };
     Ok(Planted {
         branch,
         tip,
@@ -288,6 +276,85 @@ fn trailers(kind: &str, seq: u64, clock: Option<&ClockStamp>, gap: Option<(u64, 
     format!("Kazoo-Kind: {kind}\nKazoo-Seq: {seq}\n{clock}{gap}")
 }
 
+/// The `Kazoo-Comment` trailer for a sender's comment, if there is one: on
+/// one line whatever the log held.
+fn comment_trailer(comment: Option<&str>) -> String {
+    comment.map_or_else(String::new, |comment| {
+        format!("Kazoo-Comment: {}\n", one_line(comment))
+    })
+}
+
+/// `text` as one line of a commit message, whatever the log held: every
+/// character that would break or turn a line (see
+/// [`crate::protocol::batch::breaks_line`]) a space.
+fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if crate::protocol::batch::breaks_line(c) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Step `index`'s comment in a batch's `comments` (none, or one per step).
+fn step_comment(comments: &[Option<String>], index: usize) -> Option<&str> {
+    comments.get(index).and_then(Option::as_deref)
+}
+
+/// The most parts a batch's moments can hold before its own: a request
+/// line holds fewer steps than this.
+const MOST_PARTS: usize = crate::protocol::MAX_LINE / 16;
+
+/// The last logged change the tree holds at `rev`.
+///
+/// That is its `Kazoo-Seq` (or a gap's `Kazoo-After`). A batch's parts
+/// (KZ-T10c) hold no change of their own, so the tree at a part holds
+/// through the moment before its batch: the walk back passes them. `None`
+/// for a moment with neither.
+///
+/// # Errors
+///
+/// `TreeError::Git` when git fails or a number does not read.
+pub fn through_at(dir: &Path, rev: &str) -> Result<Option<u64>, TreeError> {
+    let text = checked(git_command("log", Some(dir)).args([
+        &format!("-n{}", MOST_PARTS + 1),
+        "--format=%(trailers:key=Kazoo-Kind,valueonly,separator=%x2C)%x1f%(trailers:key=Kazoo-Seq,valueonly,separator=%x2C)%x1f%(trailers:key=Kazoo-After,valueonly,separator=%x2C)%x1e",
+        rev,
+        "--",
+    ]))?;
+    for record in text
+        .split('\u{1e}')
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
+        let mut fields = record.split('\u{1f}').map(str::trim);
+        let kind = fields.next().unwrap_or_default();
+        if kind == "part" {
+            continue;
+        }
+        let (seq, after) = (
+            fields.next().unwrap_or_default(),
+            fields.next().unwrap_or_default(),
+        );
+        let (key, number) = if seq.is_empty() {
+            ("Kazoo-After", after)
+        } else {
+            ("Kazoo-Seq", seq)
+        };
+        if number.is_empty() {
+            return Ok(None);
+        }
+        return number
+            .parse()
+            .map(Some)
+            .map_err(|err| TreeError::Git(format!("{key}: {err}")));
+    }
+    Ok(None)
+}
+
 impl Commit {
     /// The commit for one made change: the seat as author, dated the
     /// change's `at`, the summary as subject, and the change as JSON.
@@ -308,9 +375,18 @@ impl Commit {
             .map_err(|err| TreeError::Git(format!("change JSON: {err}")))?;
         // A batch sent is one knot with its note; an undo of one is said as
         // the undo it is, like any other change, never as the batch again.
-        let message = if let (crate::protocol::What::Batch { note, changes }, None) =
-            (&change.what, change.undoes)
+        let message = if let (
+            crate::protocol::What::Batch {
+                note,
+                changes,
+                comments,
+            },
+            None,
+        ) = (&change.what, change.undoes)
         {
+            // On one line each, whatever a log edited by hand holds: a
+            // line break would end the trailers.
+            let note = one_line(note);
             let mut message = format!(
                 "{}: {note}\n\n{}Kazoo-Note: {note}\n",
                 change.seat,
@@ -318,8 +394,30 @@ impl Commit {
             );
             for step in changes {
                 message.push_str("Kazoo-Step: ");
-                message.push_str(&crate::change::describe(step));
+                message.push_str(&one_line(&crate::change::describe(step)));
                 message.push('\n');
+            }
+            // The batch's last step: the moments before it are its parts
+            // (KZ-T10c), and this commit is the batch's own.
+            if changes.len() > 1 {
+                let count = changes.len().to_string();
+                message.push_str("Kazoo-Part: ");
+                message.push_str(&count);
+                message.push('/');
+                message.push_str(&count);
+                message.push('\n');
+            }
+            // Every step's comment, by its number from 1, so none is lost
+            // when the batch's parts are not grown (each part carries its
+            // own as well).
+            for (index, comment) in comments.iter().enumerate() {
+                if let Some(comment) = comment {
+                    message.push_str("Kazoo-Step-Comment: ");
+                    message.push_str(&(index + 1).to_string());
+                    message.push_str(": ");
+                    message.push_str(&one_line(comment));
+                    message.push('\n');
+                }
             }
             message.push_str("Kazoo-Change: ");
             message.push_str(&json);
@@ -327,11 +425,76 @@ impl Commit {
             message
         } else {
             format!(
-                "{}\n\n{}Kazoo-Change: {json}\n",
-                change.summary.replace(['\r', '\n'], " "),
-                trailers("change", change.seq, change.clock.as_ref(), None)
+                "{}\n\n{}{}Kazoo-Change: {json}\n",
+                one_line(&change.summary),
+                trailers("change", change.seq, change.clock.as_ref(), None),
+                comment_trailer(change.comment.as_deref())
             )
         };
+        Ok(Self {
+            seat: change.seat.clone(),
+            unix,
+            message,
+            whole: false,
+            files,
+        })
+    }
+
+    /// The commit for step `index` (from 0) of batch `change`, one of its
+    /// steps before the last (KZ-T10c): the wall after that step, under
+    /// the batch's note. It is a `part`, not a change: it carries no
+    /// `Kazoo-Seq`, so a tree that holds a batch's parts and not its own
+    /// commit is still missing the change, and is healed as any other.
+    ///
+    /// # Errors
+    ///
+    /// `TreeError::Git` when `change` is not a batch, `index` is not one of
+    /// its steps before the last, or `at` does not read.
+    pub fn part(
+        change: &Change,
+        index: usize,
+        files: Vec<(String, Option<Vec<u8>>)>,
+    ) -> Result<Self, TreeError> {
+        let crate::protocol::What::Batch {
+            note,
+            changes,
+            comments,
+        } = &change.what
+        else {
+            return Err(TreeError::Git(format!(
+                "change {} is not a batch",
+                change.seq
+            )));
+        };
+        let step = changes
+            .get(index)
+            .filter(|_| index + 1 < changes.len())
+            .ok_or_else(|| {
+                TreeError::Git(format!(
+                    "step {} is not one of change {}'s parts",
+                    index + 1,
+                    change.seq
+                ))
+            })?;
+        let unix = chrono::NaiveDateTime::parse_from_str(&change.at, "%Y-%m-%dT%H:%M:%SZ")
+            .map_err(|err| TreeError::Git(format!("change date: {err}")))?
+            .and_utc()
+            .timestamp();
+        let (note, step) = (one_line(note), one_line(&crate::change::describe(step)));
+        let clock = change.clock.as_ref().map_or_else(String::new, |clock| {
+            format!(
+                "Kazoo-Beat: {}\nKazoo-Tempo: {}\nKazoo-Clock: {}\n",
+                clock.beat, clock.tempo, clock.line
+            )
+        });
+        let message = format!(
+            "{seat}: {note} ({part}/{count}) {step}\n\nKazoo-Kind: part\nKazoo-Batch: {seq}\n{clock}Kazoo-Note: {note}\nKazoo-Part: {part}/{count}\nKazoo-Step: {step}\n{comment}",
+            seat = change.seat,
+            comment = comment_trailer(step_comment(comments, index)),
+            part = index + 1,
+            count = changes.len(),
+            seq = change.seq,
+        );
         Ok(Self {
             seat: change.seat.clone(),
             unix,

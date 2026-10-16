@@ -24,6 +24,7 @@ mod go;
 #[cfg(test)]
 mod go_tests;
 mod model;
+pub mod parts;
 #[cfg(test)]
 mod regressions;
 #[cfg(test)]
@@ -91,6 +92,9 @@ pub struct Rings {
     pub trunk: String,
     /// Change commits written.
     pub changes: usize,
+    /// Batch parts written: a moment for each step of a batch but its last
+    /// (KZ-T10c).
+    pub parts: usize,
     /// Gap commits written.
     pub gaps: usize,
     /// Settle commits written.
@@ -527,6 +531,7 @@ impl Walk<'_> {
         }
         let mut whole = false;
         let mut note = String::new();
+        let mut parts = Vec::new();
         if self.model.known {
             match &change.what {
                 What::Load { save, .. } => {
@@ -558,9 +563,18 @@ impl Walk<'_> {
                     note = self.migration(change)?;
                     whole = true;
                 }
-                _ => self.applied(change)?,
+                _ => {
+                    // Only a batch of steps needs the wall before it, for
+                    // its parts: no other change pays for a copy.
+                    let before = parts::steps(change).map(|_| self.model.file.clone());
+                    self.applied(change)?;
+                    if let Some(before) = before {
+                        parts = self.parts_of(&before, change);
+                    }
+                }
             }
             if self.model.known {
+                whole = self.parts(change, &parts, whole)?;
                 self.commit(change, whole, &note)?;
             }
         }
@@ -599,6 +613,50 @@ impl Walk<'_> {
                 .push(format!("gap before change {}: {reason}", change.seq));
         }
         Ok(())
+    }
+
+    /// The walls after each step of batch `change` but its last, from
+    /// `before` (KZ-T10c), as the live wall makes them; none for any other
+    /// change, and none, said in the report, for a batch whose steps do not
+    /// apply one by one to the wall before it.
+    fn parts_of(&mut self, before: &crate::patch::PatchFile, change: &Change) -> Vec<Files> {
+        if parts::steps(change).is_none() {
+            return Vec::new();
+        }
+        match parts::batch_parts(before, change) {
+            Ok(parts) => parts,
+            Err(err) => {
+                self.gap_lines
+                    .push(format!("change {} is one moment: {err}", change.seq));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Batch `change`'s parts as moments before its own commit (KZ-T10c).
+    /// Returns whether the batch's own commit must still be whole: when it
+    /// had to be and there were no parts to carry it.
+    fn parts(&mut self, change: &Change, parts: &[Files], whole: bool) -> Result<bool, TreeError> {
+        let mut whole = whole;
+        for (index, files) in parts.iter().enumerate() {
+            whole = self.grow_line(&change.at)? || whole;
+            let paths = if whole {
+                files
+                    .iter()
+                    .map(|(p, b)| (p.clone(), Some(b.clone())))
+                    .collect()
+            } else {
+                delta(&self.previous, files)
+            };
+            let mut commit = Commit::part(change, index, paths)?;
+            commit.whole = whole;
+            self.mark = self.importer.commit(&commit)?;
+            self.line.tip = self.mark;
+            self.previous.clone_from(files);
+            self.report.parts += 1;
+            whole = false;
+        }
+        Ok(whole)
     }
 
     /// Change `change`'s own commit, as KZ-T02b writes a live one.
@@ -792,7 +850,13 @@ fn run(tree: &Path, log: Log<'_>) -> Result<(Rings, String), RingsError> {
             walk.change(change)?;
         }
     }
-    if walk.starts + walk.report.changes + walk.report.gaps + walk.report.settles == 0 {
+    if walk.starts
+        + walk.report.changes
+        + walk.report.parts
+        + walk.report.gaps
+        + walk.report.settles
+        == 0
+    {
         return Err(RingsError::NoWall(format!(
             "no known wall could be grown from the log and its kept files: {}",
             walk.unknown_reason
@@ -841,11 +905,16 @@ impl Walk<'_> {
             String::new()
         };
         format!(
-            "start: {}\ncommits: {} ({} start, {} changes, {} gaps, {} settles)\n{}births: {} found at the start, {} at adds, {} kept across loads, {} found at loads{found_file}\nthis build left out: {knobs} knobs, {modules} modules ({})\n{trunk}\n",
+            "start: {}\ncommits: {} ({} start, {} changes, {} batch parts, {} gaps, {} settles)\n{}births: {} found at the start, {} at adds, {} kept across loads, {} found at loads{found_file}\nthis build left out: {knobs} knobs, {modules} modules ({})\n{trunk}\n",
             self.start,
-            self.starts + self.report.changes + self.report.gaps + self.report.settles,
+            self.starts
+                + self.report.changes
+                + self.report.parts
+                + self.report.gaps
+                + self.report.settles,
             self.starts,
             self.report.changes,
+            self.report.parts,
             self.report.gaps,
             self.report.settles,
             joined_lines(&self.gap_lines),

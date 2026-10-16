@@ -119,18 +119,7 @@ fn number(text: &str) -> Result<Option<u64>, HereError> {
 }
 
 fn through(tree: &Path, commit: &str) -> Result<Option<u64>, HereError> {
-    for key in ["Kazoo-Seq", "Kazoo-After"] {
-        let text = checked(git::git_command("log", Some(tree)).args([
-            "-1",
-            &format!("--format=%(trailers:key={key},valueonly,separator=%x2C)"),
-            commit,
-            "--",
-        ]))?;
-        if let Some(seq) = number(&text)? {
-            return Ok(Some(seq));
-        }
-    }
-    Ok(None)
+    git::through_at(tree, commit).map_err(|err| HereError::Broken(err.to_string()))
 }
 
 /// Read HEAD, including an unborn branch and a detached moment.

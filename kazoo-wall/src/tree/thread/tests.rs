@@ -658,6 +658,7 @@ fn the_tree_repacks_and_keeps_every_commit() {
             summary: format!("turn {seq}"),
             undoes: None,
             clock: None,
+            comment: None,
         };
         writer
             .item(
@@ -708,6 +709,7 @@ fn stamps_read_back_exactly() {
             tempo: 120.0,
             line: "9c41d07a3be2f610.3".into(),
         }),
+        comment: None,
     };
     let commit = git::Commit::change(&change, Vec::new()).unwrap();
     let stamp = Stamp::parse(&commit.message).unwrap();
@@ -775,6 +777,7 @@ fn evening_tree_cost() {
             summary: "Tom turned cutoff".into(),
             undoes: None,
             clock: None,
+            comment: None,
         };
         items.push(thread::TreeItem::Change {
             change: Box::new(change),

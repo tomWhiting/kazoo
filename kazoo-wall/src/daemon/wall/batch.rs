@@ -85,11 +85,12 @@ impl Wall {
     pub(super) fn batch(
         &mut self,
         seat: &str,
-        note: &str,
+        (note, comments): (&str, &[Option<String>]),
         requests: &[Request],
         now: Instant,
     ) -> Result<Outcome, WallError> {
-        let note = validate(note, requests)?.to_string();
+        let (note, comments) = validate(note, requests, comments)?;
+        let note = note.to_string();
         // A desk move not yet heard by a tick is logged first, as before a
         // single tempo: the batch's tempo starts from what plays.
         if requests
@@ -120,13 +121,27 @@ impl Wall {
                 return Err(err);
             }
         };
+        // The wall before the batch, for the tree to grow a moment from
+        // each step (KZ-T10c); taken when the batch is fed to the tree.
+        self.batch_before = Some(before.to_file());
         // What a loop added reserved for its tape stays reckoned; the room
         // for the rest is what the batch made, as the single changes would
         // reckon it: a module per add, a cable per cable that is new.
         let outcome = self.room_to_grow(growth_of(&changes)).and_then(|()| {
             self.patch = staged;
-            self.changed(seat, What::Batch { note, changes }, None, None, None)
+            self.changed(
+                seat,
+                What::Batch {
+                    note,
+                    changes,
+                    comments,
+                },
+                None,
+                None,
+                None,
+            )
         });
+        self.batch_before = None;
         match outcome {
             Ok(mut outcome) => {
                 outcome.result["steps"] = steps;
@@ -322,7 +337,7 @@ fn growth_of(changes: &[What]) -> Growth {
 /// tempo step from `now`, and every tempo step on the desk or off it as
 /// `desk` says.
 fn tempo_as_now(inverse: What, now: f64, desk: bool) -> What {
-    let What::Batch { note, changes } = inverse else {
+    let What::Batch { note, changes, .. } = inverse else {
         return inverse;
     };
     let mut first = true;
@@ -337,7 +352,12 @@ fn tempo_as_now(inverse: What, now: f64, desk: bool) -> What {
             other => other,
         })
         .collect();
-    What::Batch { note, changes }
+    // The steps' comments said why each went on; undone, none does.
+    What::Batch {
+        note,
+        changes,
+        comments: Vec::new(),
+    }
 }
 
 /// Stamp `birth` on the record of module `id` removed in batch `what`

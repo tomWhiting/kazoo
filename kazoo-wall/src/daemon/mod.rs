@@ -805,6 +805,7 @@ mod tests {
                 },
                 undoes: None,
                 clock: None,
+                comment: None,
             })
             .unwrap();
         store.sync_log().unwrap();

@@ -32,6 +32,7 @@ fn go(news: &mut News, seq: u64, seat: &str, moment: u64, now: Instant) {
                 what,
                 undoes: None,
                 clock: None,
+                comment: None,
             }),
         }),
         now,
@@ -174,6 +175,7 @@ fn a_save_load_is_urgent_and_splits_the_walk() {
                     .to_string(),
                 undoes: None,
                 clock: None,
+                comment: None,
             }),
         }),
         load,
@@ -255,6 +257,7 @@ fn a_rested_walk_joins_ordinary_news_without_shortening_its_window() {
                 summary: "Cally set the tempo to 96 BPM".to_string(),
                 undoes: None,
                 clock: None,
+                comment: None,
             }),
         }),
         changed,
@@ -319,6 +322,7 @@ fn go_change(seq: u64, seat: &str, what: What, undoes: Option<u64>) -> Feed {
             what,
             undoes,
             clock: None,
+            comment: None,
         }),
     })
 }
@@ -346,6 +350,7 @@ fn tempo(seq: u64, seat: &str) -> Feed {
             summary: format!("{seat} did {seq}"),
             undoes: None,
             clock: None,
+            comment: None,
         }),
     })
 }

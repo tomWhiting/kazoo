@@ -317,6 +317,43 @@ const fn error_code(response: &Response) -> ErrorCode {
 }
 
 #[test]
+fn a_comment_is_kept_with_its_change_and_told_to_the_other_seats() {
+    let (runtime, state) = dirs();
+    let daemon = start(runtime.path(), state.path());
+    let mut tom = Raw::connect(daemon.socket());
+    assert!(
+        tom.send(br#"{"id":1,"op":"hello","seat":"Tom","client":"raw"}"#)
+            .ok
+    );
+    let mut cally = Raw::connect(daemon.socket());
+    assert!(
+        cally
+            .send(br#"{"id":1,"op":"hello","seat":"Cally","client":"raw"}"#)
+            .ok
+    );
+    assert!(tom.send(br#"{"id":2,"op":"subscribe"}"#).ok);
+    let response = cally.send(
+        br#"{"id":2,"op":"turn","module":"vcf1","knob":"cutoff","value":500,"glide_beats":0,"comment":" darker "}"#,
+    );
+    assert!(response.ok, "{response:?}");
+    let change: kazoo_wall::protocol::Change =
+        serde_json::from_value(response.result.unwrap()["change"].clone()).unwrap();
+    assert_eq!(change.comment.as_deref(), Some("darker"));
+    // Tom hears it with its comment.
+    let told = loop {
+        let mut line = String::new();
+        tom.reader.read_line(&mut line).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        if value["event"] == "change" {
+            break value;
+        }
+    };
+    assert_eq!(told["change"]["comment"], "darker");
+    let refused = cally.send(br#"{"id":3,"op":"look","comment":"why"}"#);
+    assert_eq!(error_code(&refused), ErrorCode::BadRequest);
+}
+
+#[test]
 fn the_protocol_holds_its_rules() {
     let (runtime, state) = dirs();
     let daemon = start(runtime.path(), state.path());
@@ -438,6 +475,7 @@ fn a_patch_json_past_the_limits_with_the_log_ahead_starts_within_them() {
             },
             undoes: None,
             clock: None,
+            comment: None,
         })
         .unwrap();
     store.sync_log().unwrap();

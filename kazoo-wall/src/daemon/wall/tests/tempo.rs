@@ -644,6 +644,7 @@ fn a_batch_tempo_on_the_desk_starts_from_what_plays_as_a_single_tempo_does() {
                     to: 100.0,
                     desk: true
                 }],
+                comments: Vec::new(),
             },
         ]
     );

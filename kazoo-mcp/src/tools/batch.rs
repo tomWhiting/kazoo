@@ -36,12 +36,20 @@ pub enum BatchChange {
         /// answer gives the id beside it.
         #[serde(rename = "as")]
         alias: Option<String>,
+        /// Why this step, in a line (1 to 200 characters): shown on its
+        /// own moment in the tree.
+        #[serde(default, skip_serializing)]
+        comment: Option<String>,
     },
     /// As `wall_remove`.
     Remove {
         /// The module's id, e.g. `lfo3`, or `@label` for one added earlier
         /// in this batch. Its cables go with it.
         module: String,
+        /// Why this step, in a line (1 to 200 characters): shown on its
+        /// own moment in the tree.
+        #[serde(default, skip_serializing)]
+        comment: Option<String>,
     },
     /// As `wall_turn`.
     Turn {
@@ -56,6 +64,10 @@ pub enum BatchChange {
         /// How long the knob takes to get there, in beats: 0 jumps, 64 is
         /// the longest. Default 2.
         glide_beats: Option<f64>,
+        /// Why this step, in a line (1 to 200 characters): shown on its
+        /// own moment in the tree.
+        #[serde(default, skip_serializing)]
+        comment: Option<String>,
     },
     /// As `wall_patch`.
     Patch {
@@ -67,6 +79,10 @@ pub enum BatchChange {
         to: String,
         /// The attenuverter, -1 to 1. Default 1.
         amount: Option<f64>,
+        /// Why this step, in a line (1 to 200 characters): shown on its
+        /// own moment in the tree.
+        #[serde(default, skip_serializing)]
+        comment: Option<String>,
     },
     /// As `wall_unpatch`: give `cable` or `to`, not both.
     Unpatch {
@@ -75,11 +91,19 @@ pub enum BatchChange {
         /// The input whose cable comes out, e.g. `vcf1.cutoff` or
         /// `@osc.rate`.
         to: Option<String>,
+        /// Why this step, in a line (1 to 200 characters): shown on its
+        /// own moment in the tree.
+        #[serde(default, skip_serializing)]
+        comment: Option<String>,
     },
     /// As `wall_tempo`.
     Tempo {
         /// Beats per minute, 20 to 300.
         bpm: f64,
+        /// Why this step, in a line (1 to 200 characters): shown on its
+        /// own moment in the tree.
+        #[serde(default, skip_serializing)]
+        comment: Option<String>,
     },
 }
 
@@ -91,6 +115,13 @@ impl BatchArgs {
     /// When a change does not make a request (it cannot happen for the
     /// fields above; said rather than assumed).
     pub(super) fn request(self) -> Result<Request, serde_json::Error> {
+        // Each step's comment goes beside it, not in it: the wall's step
+        // is the single tool's request.
+        let comments: Vec<Option<String>> = self
+            .changes
+            .iter()
+            .map(|change| change.comment().map(str::to_string))
+            .collect();
         let changes = self
             .changes
             .into_iter()
@@ -99,6 +130,25 @@ impl BatchArgs {
         Ok(Request::Batch {
             note: self.note,
             changes,
+            comments: if comments.iter().all(Option::is_none) {
+                Vec::new()
+            } else {
+                comments
+            },
         })
+    }
+}
+
+impl BatchChange {
+    /// The step's comment, if it has one.
+    fn comment(&self) -> Option<&str> {
+        match self {
+            Self::Add { comment, .. }
+            | Self::Remove { comment, .. }
+            | Self::Turn { comment, .. }
+            | Self::Patch { comment, .. }
+            | Self::Unpatch { comment, .. }
+            | Self::Tempo { comment, .. } => comment.as_deref(),
+        }
     }
 }

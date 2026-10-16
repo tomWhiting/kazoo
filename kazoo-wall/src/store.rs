@@ -2041,6 +2041,7 @@ mod tests {
             summary: format!("change {seq}"),
             undoes: None,
             clock: None,
+            comment: None,
         }
     }
 
@@ -2767,6 +2768,7 @@ mod tests {
             summary: "Tom loaded the save \"jam\"".to_string(),
             undoes: None,
             clock: None,
+            comment: None,
         }
     }
 

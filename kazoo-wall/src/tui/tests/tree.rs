@@ -323,6 +323,7 @@ fn a_go_answer_forgets_the_wall_and_says_where_it_went() {
                 summary: "went to dawn".into(),
                 undoes: None,
                 clock: None,
+                comment: None,
             },
             backup: backup.into(),
             notes: vec!["kept the old wall".into()],

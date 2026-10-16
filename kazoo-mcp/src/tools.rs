@@ -99,6 +99,10 @@ pub struct TurnArgs {
     /// longest. Default 2.
     #[serde(default)]
     pub glide_beats: Option<f64>,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// `wall_patch`.
@@ -115,6 +119,10 @@ pub struct PatchArgs {
     /// Default 1.
     #[serde(default)]
     pub amount: Option<f64>,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// `wall_unpatch`.
@@ -129,6 +137,10 @@ pub struct UnpatchArgs {
     /// `vcf1.cutoff`. Give this or `cable`.
     #[serde(default)]
     pub to: Option<String>,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// `wall_add`.
@@ -141,6 +153,10 @@ pub struct AddArgs {
     /// wobble`.
     #[serde(default)]
     pub name: Option<String>,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// `wall_remove`.
@@ -149,6 +165,10 @@ pub struct AddArgs {
 pub struct RemoveArgs {
     /// The module's id, e.g. `lfo3`. Its cables go with it.
     pub module: String,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -169,6 +189,10 @@ pub struct ChainArgs {
     pub modules: Vec<String>,
     #[serde(default)]
     pub group: Option<String>,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// `wall_group`.
@@ -185,11 +209,15 @@ pub struct GroupArgs {
 }
 
 /// `wall_undo`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UndoArgs {
     /// The change's number, as `wall_log` lists it (`#57`).
     pub change: u64,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// `wall_log`.
@@ -206,12 +234,16 @@ pub struct LogArgs {
 }
 
 /// `wall_tempo`.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TempoArgs {
     /// Beats per minute, 20 to 300. When the wall is following the kazoo-mix
     /// desk, the desk is asked, and it changes the tempo for everyone.
     pub bpm: f64,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// `wall_speak`.
@@ -241,6 +273,10 @@ pub struct LoopArgs {
     #[serde(default, deserialize_with = "loop_from")]
     #[schemars(with = "Option<String>")]
     pub from: Option<LoopSource>,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// A supplied source distinguishes patched inputs from a named desk strip.
@@ -292,6 +328,10 @@ pub struct SaveArgs {
 pub struct LoadArgs {
     /// The save's name, as `wall_saves` lists it (any case).
     pub name: String,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// `wall_mark`.
@@ -312,6 +352,10 @@ pub struct GoArgs {
     /// `wall_tree` lists it), a change as `#<number>` (the wall just after that
     /// change, from `wall_log`), or a commit id (7 to 40 hex digits).
     pub moment: String,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// `wall_tree`.
@@ -336,12 +380,16 @@ pub struct ProbeArgs {
 }
 
 /// `wall_record`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecordArgs {
     /// true starts recording what the wall plays; false stops the
     /// recording under way, whoever started it.
     pub on: bool,
+    /// Why, in a line (1 to 200 characters): kept with the change in the
+    /// log, told to the other seats and shown on its moment in the tree.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// One text block, as a successful tool result.
@@ -404,9 +452,14 @@ impl Seat {
         }
     }
 
-    /// Make a change, note its number for the channel, and say what it did.
-    async fn change(&self, request: Request) -> CallToolResult {
-        match self.wall.ask::<ChangeResult>(request).await {
+    /// Make a change, with the sender's `comment` on it, note its number
+    /// for the channel, and say what it did.
+    async fn change(&self, request: Request, comment: Option<&str>) -> CallToolResult {
+        match self
+            .wall
+            .ask_commented::<ChangeResult>(request, comment)
+            .await
+        {
             Ok(Answer::Read(result)) => {
                 self.own(result.change.seq);
                 ok(render::changed(&result))
@@ -457,12 +510,15 @@ impl Seat {
         description = "Turn one knob: module id, knob name and the value in the knob's own unit (Hz, seconds, semitones; stepped knobs take a position number). It glides there over glide_beats (default 2 beats, 0 jumps, at most 64). The value is held to the knob's range. Answers with the change's number and what happened."
     )]
     async fn wall_turn(&self, Parameters(args): Parameters<TurnArgs>) -> CallToolResult {
-        self.change(Request::Turn {
-            module: args.module,
-            knob: args.knob,
-            value: args.value,
-            glide_beats: args.glide_beats,
-        })
+        self.change(
+            Request::Turn {
+                module: args.module,
+                knob: args.knob,
+                value: args.value,
+                glide_beats: args.glide_beats,
+            },
+            args.comment.as_deref(),
+        )
         .await
     }
 
@@ -471,11 +527,14 @@ impl Seat {
         description = "Plug a cable from an output (module.port, e.g. lfo1.out) into an input (module.port, e.g. vcf1.in). Every knob is also an input by its name, so lfo1.out into vcf1.cutoff moves the cutoff. amount runs from -1 (inverted) to 1, default 1. An input takes one cable: plugging into a used one replaces it. Outputs can feed any number of inputs. Answers with the cable's number."
     )]
     async fn wall_patch(&self, Parameters(args): Parameters<PatchArgs>) -> CallToolResult {
-        self.change(Request::Patch {
-            from: args.from,
-            to: args.to,
-            amount: args.amount,
-        })
+        self.change(
+            Request::Patch {
+                from: args.from,
+                to: args.to,
+                amount: args.amount,
+            },
+            args.comment.as_deref(),
+        )
         .await
     }
 
@@ -484,19 +543,25 @@ impl Seat {
         description = "Unplug one cable: by its number (cable, as wall_look lists it) or by the input it is plugged into (to, as module.port). Give exactly one of them."
     )]
     async fn wall_unpatch(&self, Parameters(args): Parameters<UnpatchArgs>) -> CallToolResult {
-        match (args.cable, args.to) {
+        match (args.cable, args.to.clone()) {
             (Some(cable), None) => {
-                self.change(Request::Unpatch {
-                    cable: Some(cable),
-                    to: None,
-                })
+                self.change(
+                    Request::Unpatch {
+                        cable: Some(cable),
+                        to: None,
+                    },
+                    args.comment.as_deref(),
+                )
                 .await
             }
             (None, Some(to)) => {
-                self.change(Request::Unpatch {
-                    cable: None,
-                    to: Some(to),
-                })
+                self.change(
+                    Request::Unpatch {
+                        cable: None,
+                        to: Some(to),
+                    },
+                    args.comment.as_deref(),
+                )
                 .await
             }
             (Some(_), Some(_)) | (None, None) => bad(
@@ -511,12 +576,15 @@ impl Seat {
         description = "Add a module of a kind wall_catalogue lists, with an optional display name (1 to 24 of A-Z a-z 0-9 space _ . -). Answers with its id (kind and number, e.g. lfo3), which is how every other tool names it. A new module starts at its defaults with nothing plugged in."
     )]
     async fn wall_add(&self, Parameters(args): Parameters<AddArgs>) -> CallToolResult {
-        self.change(Request::Add {
-            alias: None,
-            kind: args.kind,
-            name: args.name,
-            place: None,
-        })
+        self.change(
+            Request::Add {
+                alias: None,
+                kind: args.kind,
+                name: args.name,
+                place: None,
+            },
+            args.comment.as_deref(),
+        )
         .await
     }
 
@@ -525,15 +593,18 @@ impl Seat {
         description = "Take a module away by its id. Its cables go with it; the change log keeps everything, so wall_undo can bring it back."
     )]
     async fn wall_remove(&self, Parameters(args): Parameters<RemoveArgs>) -> CallToolResult {
-        self.change(Request::Remove {
-            module: args.module,
-        })
+        self.change(
+            Request::Remove {
+                module: args.module,
+            },
+            args.comment.as_deref(),
+        )
         .await
     }
 
     #[tool(
         name = "wall_batch",
-        description = "Make several changes toward one idea in one call, so the tree shows that idea with its note. note is 1 to 200 characters on one line. changes is an ordered array of add, remove, turn, patch, unpatch or tempo objects with the same fields as their single tools. An add may have as: a unique label without spaces or dots; later modules and ports can use @label or @label.out. Every step succeeds or the entire batch is refused, naming the refused step by its index from 0. Answers with every step, numbered from 0, and each add's id beside its label."
+        description = "Make several changes toward one idea in one call, so the tree shows that idea with its note. note is 1 to 200 characters on one line. changes is an ordered array of add, remove, turn, patch, unpatch or tempo objects with the same fields as their single tools. An add may have as: a unique label without spaces or dots; later modules and ports can use @label or @label.out. Any step may carry a comment (1 to 200 characters, one line) saying why, shown on its own moment in the tree. Every step succeeds or the entire batch is refused, naming the refused step by its index from 0. Answers with every step, numbered from 0, and each add's id beside its label."
     )]
     async fn wall_batch(&self, Parameters(args): Parameters<BatchArgs>) -> CallToolResult {
         let request = match args.request() {
@@ -551,7 +622,10 @@ impl Seat {
                     "Change #{}: {}",
                     result.change.seq, result.change.summary
                 )];
-                if let kazoo_wall::protocol::What::Batch { changes, .. } = &result.change.what {
+                if let kazoo_wall::protocol::What::Batch {
+                    changes, comments, ..
+                } = &result.change.what
+                {
                     for (index, (change, step)) in changes.iter().zip(&result.steps).enumerate() {
                         // Numbered from 0, as a refusal names its step.
                         let mut line =
@@ -560,6 +634,9 @@ impl Seat {
                             (step["as"].as_str(), step["module"].as_str())
                         {
                             line = format!("{line} (@{label} = {id})");
+                        }
+                        if let Some(comment) = comments.get(index).and_then(Option::as_deref) {
+                            line = format!("{line} \u{2014} \"{comment}\"");
                         }
                         lines.push(line);
                     }
@@ -579,6 +656,13 @@ impl Seat {
         &self,
         Parameters(args): Parameters<ChainArgs>,
     ) -> CallToolResult {
+        // Only an add changes the wall; a comment on a save or a list
+        // would go nowhere, so it is refused rather than dropped.
+        if args.comment.is_some() && args.action != ChainAction::Add {
+            return bad(
+                "a comment goes on chain add, which changes the wall; a chain save or list changes nothing",
+            );
+        }
         match args.action {
             ChainAction::List
                 if args.name.is_none() && args.modules.is_empty() && args.group.is_none() =>
@@ -594,7 +678,10 @@ impl Seat {
             }
             ChainAction::Add if args.modules.is_empty() && args.group.is_none() => {
                 match args.name {
-                    Some(name) => self.change(Request::ChainAdd { name }).await,
+                    Some(name) => {
+                        self.change(Request::ChainAdd { name }, args.comment.as_deref())
+                            .await
+                    }
                     None => bad("chain add requires a name"),
                 }
             }
@@ -669,9 +756,12 @@ impl Seat {
     async fn wall_undo(&self, Parameters(args): Parameters<UndoArgs>) -> CallToolResult {
         match self
             .wall
-            .ask::<serde_json::Value>(Request::Undo {
-                change: args.change,
-            })
+            .ask_commented::<serde_json::Value>(
+                Request::Undo {
+                    change: args.change,
+                },
+                args.comment.as_deref(),
+            )
             .await
         {
             Ok(Answer::Read(value)) => {
@@ -742,11 +832,14 @@ impl Seat {
         description = "Give a speak module words to say, rendered with macOS `say` (this can take a few seconds; the answer comes when they are ready). The module plays them on its gate input (once, looped or held, by its mode knob) out of its out jack; patch a clock or a gate into it, and its out into an out module or a vocoder's modulator. The words stay private: other seats hear only that the module was given words."
     )]
     async fn wall_speak(&self, Parameters(args): Parameters<SpeakArgs>) -> CallToolResult {
-        self.change(Request::Speak {
-            module: args.module,
-            text: args.text,
-            voice: args.voice,
-        })
+        self.change(
+            Request::Speak {
+                module: args.module,
+                text: args.text,
+                voice: args.voice,
+            },
+            None,
+        )
         .await
     }
 
@@ -755,8 +848,9 @@ impl Seat {
         description = "Erase a loop module's tape (undoable with wall_undo), or set which desk strip it records from (e.g. `mouth/dry` for Tom's voice; `null` to record what is patched into its left and right). To record, turn its `record` knob to 1 with wall_turn: it starts at the loop's next bar line and stops at the bar line after you turn it back to 0. Its `bars` and `beats` knobs set the length of a blank loop; two loops of unequal lengths (17 and 23 bars) drift against each other and meet again rarely."
     )]
     async fn wall_loop(&self, Parameters(args): Parameters<LoopArgs>) -> CallToolResult {
+        let comment = args.comment.clone();
         match args.request() {
-            Ok(request) => self.change(request).await,
+            Ok(request) => self.change(request, comment.as_deref()).await,
             Err(why) => bad(why),
         }
     }
@@ -768,7 +862,7 @@ impl Seat {
     async fn wall_record(&self, Parameters(args): Parameters<RecordArgs>) -> CallToolResult {
         match self
             .wall
-            .ask::<RecordResult>(Request::Record { on: args.on })
+            .ask_commented::<RecordResult>(Request::Record { on: args.on }, args.comment.as_deref())
             .await
         {
             Ok(Answer::Read(result)) => {
@@ -813,7 +907,7 @@ impl Seat {
     async fn wall_load(&self, Parameters(args): Parameters<LoadArgs>) -> CallToolResult {
         match self
             .wall
-            .ask::<LoadResult>(Request::Load { name: args.name })
+            .ask_commented::<LoadResult>(Request::Load { name: args.name }, args.comment.as_deref())
             .await
         {
             Ok(Answer::Read(result)) => {
@@ -843,9 +937,12 @@ impl Seat {
     async fn wall_go(&self, Parameters(args): Parameters<GoArgs>) -> CallToolResult {
         match self
             .wall
-            .ask::<LoadResult>(Request::Go {
-                moment: args.moment,
-            })
+            .ask_commented::<LoadResult>(
+                Request::Go {
+                    moment: args.moment,
+                },
+                args.comment.as_deref(),
+            )
             .await
         {
             Ok(Answer::Read(result)) => {
@@ -878,7 +975,7 @@ impl Seat {
     async fn wall_tempo(&self, Parameters(args): Parameters<TempoArgs>) -> CallToolResult {
         match self
             .wall
-            .ask::<TempoResult>(Request::Tempo { bpm: args.bpm })
+            .ask_commented::<TempoResult>(Request::Tempo { bpm: args.bpm }, args.comment.as_deref())
             .await
         {
             Ok(Answer::Read(result)) => {

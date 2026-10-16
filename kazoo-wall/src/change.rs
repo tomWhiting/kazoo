@@ -55,7 +55,7 @@ pub fn describe(what: &What) -> String {
 /// load that brought a wall back from one that cleared it).
 fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind>) -> String {
     match what {
-        What::Batch { note, changes } => described_batch(note, changes, undo, kind_of),
+        What::Batch { note, changes, .. } => described_batch(note, changes, undo, kind_of),
         What::Take {
             module, tape, why, ..
         } => taken(module, tape.as_ref(), *why, undo),

@@ -34,6 +34,7 @@ mod tests {
                 name,
                 modules,
                 group: None,
+                comment: None,
             })
         };
         let saved = seat
