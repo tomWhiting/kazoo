@@ -197,6 +197,7 @@ impl WallClient {
             id,
             wall: self.wall,
             request,
+            comment: None,
         };
         codec::write_line(&mut self.writer, &line)?;
         loop {

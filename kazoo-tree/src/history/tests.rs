@@ -840,6 +840,62 @@ fn a_batch_grows_a_moment_for_each_change_and_ties_one_knot() {
 }
 
 #[test]
+fn a_comment_is_read_onto_its_moment_and_each_step_onto_its_own() {
+    use kazoo_wall::tree::git::Commit;
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    kazoo_wall::tree::git::plant(dir.path()).expect("planted");
+    let turn: kazoo_wall::protocol::Change = serde_json::from_value(serde_json::json!({"seq":2,"at":"2026-10-16T09:30:00Z","seat":"Cally","summary":"Cally set the tempo 120 → 121","comment":"a touch faster","what":{"op":"tempo","from":120.0,"to":121.0,"desk":false}}))
+        .expect("a change");
+    let batch: kazoo_wall::protocol::Change = serde_json::from_value(serde_json::json!({"seq":3,"at":"2026-10-16T09:31:00Z","seat":"Cally","summary":"unused","what":{"op":"batch","note":"two tempos","changes":[
+        {"op":"tempo","from":121.0,"to":122.0,"desk":false},
+        {"op":"tempo","from":122.0,"to":123.0,"desk":false}
+    ],"comments":["first push",null]}}))
+    .expect("a batch");
+    let mut stream = Stream::default();
+    let mut at = stream.commit("trunk", None, 1, &[("modules/vco1.toml", Some("a"))], None);
+    let message = Commit::change(&turn, Vec::new()).expect("a commit").message;
+    at = stream.write(
+        "trunk",
+        Some(at),
+        1_001,
+        &message,
+        &[("modules/vco1.toml", Some("b"))],
+    );
+    let message = Commit::part(&batch, 0, Vec::new()).expect("a part").message;
+    at = stream.write(
+        "trunk",
+        Some(at),
+        1_002,
+        &message,
+        &[("modules/vco1.toml", Some("c"))],
+    );
+    let message = Commit::change(&batch, Vec::new())
+        .expect("the batch")
+        .message;
+    stream.write(
+        "trunk",
+        Some(at),
+        1_002,
+        &message,
+        &[("modules/vco1.toml", Some("d"))],
+    );
+    stream.import(dir.path());
+    let history = History::read(dir.path()).expect("it reads");
+    let comments: Vec<Option<&str>> = history
+        .moments
+        .iter()
+        .map(|m| {
+            assert!(m.problems.is_empty(), "{:?}", m.problems);
+            m.comment.as_deref()
+        })
+        .collect();
+    assert_eq!(
+        comments,
+        [None, Some("a touch faster"), Some("first push"), None]
+    );
+}
+
+#[test]
 fn a_batch_missing_its_words_is_said_and_still_shown() {
     let log = [
         record("a", "", "one", ""),

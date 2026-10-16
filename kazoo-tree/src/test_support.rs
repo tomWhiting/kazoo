@@ -28,6 +28,7 @@ pub fn moment(
         alive: Kinds::default(),
         tint: Tint::default(),
         batch: None,
+        comment: None,
         problems: Vec::new(),
     }
 }

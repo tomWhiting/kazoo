@@ -90,7 +90,7 @@ impl Log {
         let line = Line {
             seq: Some(change.seq),
             at: unix_seconds(&change.at),
-            text: change.summary.clone(),
+            text: change.said(),
             tone: if mine { Tone::Mine } else { Tone::Other },
             undoes: change.undoes,
         };
@@ -233,6 +233,7 @@ mod tests {
             summary: format!("{seat} set the tempo ({seq})"),
             undoes,
             clock: None,
+            comment: None,
         }
     }
 

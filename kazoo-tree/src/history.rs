@@ -88,6 +88,9 @@ pub struct Moment {
     pub tint: Tint,
     /// Several changes sent at once with a note, when the moment is one.
     pub batch: Option<Box<Batch>>,
+    /// Why, in the sender's words, when they gave a comment with the
+    /// change (`Kazoo-Comment`).
+    pub comment: Option<String>,
     /// What did not read in its commit: said in the details, never a
     /// reason not to open the tree.
     pub problems: Vec<String>,
@@ -183,7 +186,7 @@ const BODY_END: char = '\u{1f}';
 /// only the wall's own trailers (never the whole message: a `Kazoo-Change`
 /// trailer holds a page of JSON, and a million of them would be most of
 /// the read).
-const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,key=Kazoo-Note,key=Kazoo-Step,key=Kazoo-Part,unfold)%x1f";
+const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,key=Kazoo-Note,key=Kazoo-Step,key=Kazoo-Part,key=Kazoo-Comment,unfold)%x1f";
 
 /// Git as the tree reads it: the wall's own way to run git, with the
 /// person's own settings that would change what `log` says held fixed.
@@ -733,7 +736,7 @@ const fn is_format(c: char) -> bool {
 
 /// The trailers the tree reads from a moment's commit; the wall writes
 /// others (`Kazoo-Gap`, `Kazoo-Clock` and the like) that it has no use for.
-const TRAILERS: [&str; 8] = [
+const TRAILERS: [&str; 9] = [
     "Kazoo-Kind",
     "Kazoo-Seq",
     "Kazoo-Beat",
@@ -742,6 +745,7 @@ const TRAILERS: [&str; 8] = [
     "Kazoo-Note",
     "Kazoo-Step",
     "Kazoo-Part",
+    "Kazoo-Comment",
 ];
 
 /// One log record as a moment. `index` finds a parent's place, `alive_at`
@@ -796,6 +800,7 @@ fn moment(
     let mut sound = None;
     let mut note = None;
     let mut part = None;
+    let mut comment = None;
     let mut steps = Vec::new();
     // Each trailer the tree reads, by its key in any case (git's own
     // trailers are), the first of each kept: a second is said, never put
@@ -827,6 +832,7 @@ fn moment(
             "Kazoo-Sound" => sound = keep(&mut problems, sound_of(value)),
             "Kazoo-Note" => note = Some(clean(value)),
             "Kazoo-Part" => part = keep(&mut problems, part_of(value)),
+            "Kazoo-Comment" => comment = Some(clean(value)),
             _ => steps.push(clean(value)),
         }
     }
@@ -848,6 +854,7 @@ fn moment(
         alive,
         tint,
         batch,
+        comment,
         problems,
     })
 }

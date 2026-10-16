@@ -1215,7 +1215,7 @@ impl Patch {
             What::LoopFrom { module, was, .. } => {
                 self.loop_op(module, &crate::protocol::LoopOp::From { from: was.clone() })
             }
-            What::Batch { note, changes } => self.undo_batch(note, changes),
+            What::Batch { note, changes, .. } => self.undo_batch(note, changes),
             What::Chain { name, changes } => self.undo_chain(name, changes),
             What::Turn {
                 module,

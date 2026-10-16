@@ -150,7 +150,7 @@ impl News {
                 self.orphan(now);
                 self.seq = self.seq.max(change.seq);
                 if change.seat != self.seat && !self.walks.changed(&change) {
-                    self.push(clean(&change.summary), now);
+                    self.push(clean(&change.said()), now);
                 }
             }
             Feed::Event(Event::Seat { seat, joined, .. }) => {
@@ -521,6 +521,7 @@ mod tests {
                 summary: summary.to_string(),
                 undoes: None,
                 clock: None,
+                comment: None,
             }),
         })
     }
@@ -572,6 +573,27 @@ mod tests {
         assert_eq!(
             news.due(WINDOW),
             Some(sent + Duration::from_secs(1) + WINDOW)
+        );
+    }
+
+    #[test]
+    fn a_change_is_told_with_its_comment() {
+        let t0 = Instant::now();
+        let mut news = News::new("Waffles".to_string());
+        news.take(up(&["Waffles", "Cally"]), t0);
+        let Feed::Event(Event::Change { mut change }) =
+            change(41, "Cally", "Cally set the tempo to 70 BPM")
+        else {
+            panic!("a change");
+        };
+        change.comment = Some("half-time for the brass".to_string());
+        news.take(Feed::Event(Event::Change { change }), t0);
+        assert_eq!(
+            content(&news),
+            format!(
+                "News from the wall:\n- Cally set the tempo to 70 BPM \u{2014} \"half-time for \
+                 the brass\"\n{HINT}"
+            )
         );
     }
 

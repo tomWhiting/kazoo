@@ -7,6 +7,7 @@ use crate::engine::{Engine, EngineConfig, engine};
 use crate::protocol::{MarkResult, TreeResult};
 use crate::tree::{git, thread::TreeHandle};
 
+mod comments;
 mod costs;
 mod parts;
 mod savings;
@@ -69,9 +70,19 @@ impl Rig {
         console: bool,
         value: serde_json::Value,
     ) -> Result<Outcome, WallError> {
+        self.ask_commented((seat, console), value, None)
+    }
+
+    /// [`Self::ask`] with the sender's `comment` on the change.
+    fn ask_commented(
+        &mut self,
+        seat: (&str, bool),
+        value: serde_json::Value,
+        comment: Option<&str>,
+    ) -> Result<Outcome, WallError> {
         let outcome = self
             .wall
-            .request_as(seat, console, &request(value), self.now)?;
+            .request_commented(seat, &request(value), comment, self.now)?;
         let Some(ticket) = outcome.pending else {
             return Ok(outcome);
         };

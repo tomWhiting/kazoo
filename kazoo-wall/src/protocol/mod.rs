@@ -181,6 +181,14 @@ pub struct RequestLine {
     /// new wall's. Left out, nothing is checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wall: Option<u64>,
+    /// The sender's comment on the change this request makes: why, in a
+    /// line, kept with the change in the log and on its moment in the
+    /// tree. 1 to 200 characters after trimming, one line with no control
+    /// characters; only a request that makes a change of its own at once
+    /// takes one (see [`Request::takes_comment`]). A batch says why with
+    /// its note, and each of its steps with `comments`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
     /// What is asked.
     #[serde(flatten)]
     pub request: Request,
@@ -266,6 +274,11 @@ pub enum Request {
         note: String,
         /// One or more adds, removes, turns, patches, unpatches or tempos.
         changes: Vec<Self>,
+        /// Each step's own comment, in step order: none, or one entry for
+        /// every step (`null` for a step without one), each held to the
+        /// rules of [`RequestLine::comment`]. Shown on the step's moment.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        comments: Vec<Option<String>>,
     },
     /// Take a module away, with its cables.
     Remove {
@@ -498,6 +511,31 @@ impl Request {
                 | Self::ChainAdd { .. }
                 | Self::Speak { .. }
                 | Self::Loop { .. }
+        )
+    }
+
+    /// Whether the request may carry a comment ([`RequestLine::comment`]):
+    /// one that makes a change of its own, said by its sender. A batch
+    /// says why with its note (and its steps with their comments); a
+    /// mark, a save or a group changes no sound; spoken words say
+    /// themselves.
+    #[must_use]
+    pub const fn takes_comment(&self) -> bool {
+        matches!(
+            self,
+            Self::Turn { .. }
+                | Self::Patch { .. }
+                | Self::Unpatch { .. }
+                | Self::Add { .. }
+                | Self::Remove { .. }
+                | Self::ChainAdd { .. }
+                | Self::Undo { .. }
+                | Self::Tempo { .. }
+                | Self::Loop { .. }
+                | Self::Record { .. }
+                | Self::Load { .. }
+                | Self::Go { .. }
+                | Self::New
         )
     }
 
@@ -775,6 +813,21 @@ pub struct Change {
     /// Where in the music the change landed; `None` means no beat known, never beat 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock: Option<ClockStamp>,
+    /// The sender's comment on it ([`RequestLine::comment`]), trimmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+}
+
+impl Change {
+    /// The change as told to people: its summary, and the sender's comment
+    /// after it when there is one.
+    #[must_use]
+    pub fn said(&self) -> String {
+        self.comment.as_ref().map_or_else(
+            || self.summary.clone(),
+            |comment| format!("{} — \"{comment}\"", self.summary),
+        )
+    }
 }
 
 /// Why the wall preserved a loop's tape.
@@ -801,6 +854,10 @@ pub enum What {
         note: String,
         /// Each step's change, in the order applied.
         changes: Vec<Self>,
+        /// Each step's comment, in step order: none, or one entry for
+        /// every step (`None` for a step without one).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        comments: Vec<Option<String>>,
     },
     /// A loop's tape erased (`tape` none), or put back by the erase's
     /// undo (`tape` the reel put back). Undone, the loop holds `was` again.

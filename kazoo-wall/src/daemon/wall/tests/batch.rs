@@ -257,6 +257,7 @@ fn a_batch_tempo_asked_of_the_desk_is_undone_once_the_desk_is_gone() {
             to: 100.0,
             desk: true,
         }],
+        comments: Vec::new(),
     };
     let change = wall.new_change("Tom", what, None);
     let seq = change.seq;

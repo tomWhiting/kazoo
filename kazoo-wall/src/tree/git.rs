@@ -288,6 +288,19 @@ fn trailers(kind: &str, seq: u64, clock: Option<&ClockStamp>, gap: Option<(u64, 
     format!("Kazoo-Kind: {kind}\nKazoo-Seq: {seq}\n{clock}{gap}")
 }
 
+/// The `Kazoo-Comment` trailer for a sender's comment, if there is one: on
+/// one line whatever the log held.
+fn comment_trailer(comment: Option<&str>) -> String {
+    comment.map_or_else(String::new, |comment| {
+        format!("Kazoo-Comment: {}\n", comment.replace(['\r', '\n'], " "))
+    })
+}
+
+/// Step `index`'s comment in a batch's `comments` (none, or one per step).
+fn step_comment(comments: &[Option<String>], index: usize) -> Option<&str> {
+    comments.get(index).and_then(Option::as_deref)
+}
+
 impl Commit {
     /// The commit for one made change: the seat as author, dated the
     /// change's `at`, the summary as subject, and the change as JSON.
@@ -308,8 +321,14 @@ impl Commit {
             .map_err(|err| TreeError::Git(format!("change JSON: {err}")))?;
         // A batch sent is one knot with its note; an undo of one is said as
         // the undo it is, like any other change, never as the batch again.
-        let message = if let (crate::protocol::What::Batch { note, changes }, None) =
-            (&change.what, change.undoes)
+        let message = if let (
+            crate::protocol::What::Batch {
+                note,
+                changes,
+                comments,
+            },
+            None,
+        ) = (&change.what, change.undoes)
         {
             let mut message = format!(
                 "{}: {note}\n\n{}Kazoo-Note: {note}\n",
@@ -331,15 +350,21 @@ impl Commit {
                 message.push_str(&count);
                 message.push('\n');
             }
+            // This moment is the last step's: its comment, if it has one.
+            message.push_str(&comment_trailer(step_comment(
+                comments,
+                changes.len().saturating_sub(1),
+            )));
             message.push_str("Kazoo-Change: ");
             message.push_str(&json);
             message.push('\n');
             message
         } else {
             format!(
-                "{}\n\n{}Kazoo-Change: {json}\n",
+                "{}\n\n{}{}Kazoo-Change: {json}\n",
                 change.summary.replace(['\r', '\n'], " "),
-                trailers("change", change.seq, change.clock.as_ref(), None)
+                trailers("change", change.seq, change.clock.as_ref(), None),
+                comment_trailer(change.comment.as_deref())
             )
         };
         Ok(Self {
@@ -366,7 +391,12 @@ impl Commit {
         index: usize,
         files: Vec<(String, Option<Vec<u8>>)>,
     ) -> Result<Self, TreeError> {
-        let crate::protocol::What::Batch { note, changes } = &change.what else {
+        let crate::protocol::What::Batch {
+            note,
+            changes,
+            comments,
+        } = &change.what
+        else {
             return Err(TreeError::Git(format!(
                 "change {} is not a batch",
                 change.seq
@@ -394,8 +424,9 @@ impl Commit {
             )
         });
         let message = format!(
-            "{seat}: {note} ({part}/{count}) {step}\n\nKazoo-Kind: part\nKazoo-Batch: {seq}\n{clock}Kazoo-Note: {note}\nKazoo-Part: {part}/{count}\nKazoo-Step: {step}\n",
+            "{seat}: {note} ({part}/{count}) {step}\n\nKazoo-Kind: part\nKazoo-Batch: {seq}\n{clock}Kazoo-Note: {note}\nKazoo-Part: {part}/{count}\nKazoo-Step: {step}\n{comment}",
             seat = change.seat,
+            comment = comment_trailer(step_comment(comments, index)),
             part = index + 1,
             count = changes.len(),
             seq = change.seq,

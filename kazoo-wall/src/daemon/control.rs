@@ -585,12 +585,17 @@ impl Control {
         let seat = state.seat.clone();
         let console = state.console;
         let watcher = state.watcher;
+        let mut comment = None;
         if seat.is_some() {
             let refused = refusal(&line.request, console, watcher)
-                .map_or_else(|| self.wall.check_wall(line.wall, &line.request), Err);
-            if let Err(refused) = refused {
-                self.send(conn, &Response::failure(id, refused));
-                return;
+                .map_or_else(|| self.wall.check_wall(line.wall, &line.request), Err)
+                .and_then(|()| commented(line));
+            match refused {
+                Ok(checked) => comment = checked,
+                Err(refused) => {
+                    self.send(conn, &Response::failure(id, refused));
+                    return;
+                }
             }
         }
         let response = match (&line.request, seat) {
@@ -658,26 +663,32 @@ impl Control {
                     )
                 }
             }
-            (request, Some(seat)) => match self.ask_wall(conn, id, (&seat, console), request) {
-                Some(response) => response,
-                // Answered when it is ready (see `housekeeping`).
-                None => return,
-            },
+            (request, Some(seat)) => {
+                match self.ask_wall((conn, id), (&seat, console), request, comment.as_deref()) {
+                    Some(response) => response,
+                    // Answered when it is ready (see `housekeeping`).
+                    None => return,
+                }
+            }
         };
         self.send(conn, &response);
     }
 
     /// Ask the wall `request` (line `id` on `conn`) for `seat`, a console
-    /// or not, and tell everyone what it changed. The response; none for
-    /// a request answered later (its ticket is kept).
+    /// or not, with the sender's `comment` (checked already) on its change,
+    /// and tell everyone what it changed. The response; none for a request
+    /// answered later (its ticket is kept).
     fn ask_wall(
         &mut self,
-        conn: u64,
-        id: u64,
+        (conn, id): (u64, u64),
         (seat, console): (&str, bool),
         request: &Request,
+        comment: Option<&str>,
     ) -> Option<Response> {
-        match self.wall.request_as(seat, console, request, Instant::now()) {
+        match self
+            .wall
+            .request_commented((seat, console), request, comment, Instant::now())
+        {
             Ok(outcome) => {
                 if let Some(ticket) = outcome.pending {
                     self.awaiting.insert(ticket, (conn, id));
@@ -1114,6 +1125,28 @@ impl Control {
     }
 }
 
+/// The comment `line` carries, trimmed, if it has one: only a request that
+/// takes one may (see [`Request::takes_comment`]), held to the rules of
+/// [`crate::protocol::RequestLine::comment`].
+fn commented(line: &RequestLine) -> Result<Option<String>, WallError> {
+    let Some(comment) = line.comment.as_deref() else {
+        return Ok(None);
+    };
+    if !line.request.takes_comment() {
+        let why = if matches!(line.request, Request::Batch { .. }) {
+            "a batch says why with its note, and each step with its own comments".to_string()
+        } else {
+            format!(
+                "a comment goes on a change of its own (a turn, patch, unpatch, add, remove, \
+                 chain add, undo, tempo, loop, record, load, go or new), not on {}",
+                line.request.op()
+            )
+        };
+        return Err(WallError::new(ErrorCode::BadRequest, why));
+    }
+    crate::protocol::batch::comment(comment).map(|kept| Some(kept.to_string()))
+}
+
 /// Why a connection that has said hello may not make `request`, if it may
 /// not: a watcher changes nothing; and the saves are Tom's safety net, so
 /// only a console may destroy one, by deleting it or saving over it.
@@ -1230,8 +1263,51 @@ mod tests {
 
 #[cfg(test)]
 mod moments_tests {
-    use super::refusal;
-    use crate::protocol::{ErrorCode, Request};
+    use super::{commented, refusal};
+    use crate::protocol::{ErrorCode, Request, RequestLine};
+
+    fn line(value: serde_json::Value) -> RequestLine {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_comment_goes_only_on_a_change_of_its_own_and_is_kept_trimmed() {
+        let turn = line(serde_json::json!({
+            "id": 1, "op": "turn", "module": "vcf1", "knob": "cutoff", "value": 300.0,
+            "comment": "  brighter  ",
+        }));
+        assert_eq!(commented(&turn).unwrap().as_deref(), Some("brighter"));
+        let plain = line(serde_json::json!({"id": 2, "op": "look"}));
+        assert_eq!(commented(&plain).unwrap(), None);
+        let look = line(serde_json::json!({"id": 3, "op": "look", "comment": "why"}));
+        let refused = commented(&look).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::BadRequest);
+        assert!(
+            refused.message.contains("not on look"),
+            "{}",
+            refused.message
+        );
+        let batch = line(serde_json::json!({
+            "id": 4, "op": "batch", "note": "n",
+            "changes": [{"op": "tempo", "bpm": 90.0}], "comment": "why",
+        }));
+        assert!(
+            commented(&batch).unwrap_err().message.contains("its note"),
+            "a batch says why with its note"
+        );
+        for broken in ["", "   ", "two\nlines", &"x".repeat(201)] {
+            let mut turn = turn.clone();
+            turn.comment = Some(broken.to_string());
+            assert_eq!(
+                commented(&turn).unwrap_err().code,
+                ErrorCode::BadRequest,
+                "{broken:?}"
+            );
+        }
+        let mut longest = turn;
+        longest.comment = Some("é".repeat(200));
+        assert!(commented(&longest).is_ok(), "200 characters, not bytes");
+    }
 
     #[test]
     fn watchers_read_moments_and_seats_may_go() {

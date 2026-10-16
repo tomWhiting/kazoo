@@ -554,6 +554,9 @@ pub struct Wall {
     chain_batch: Option<Vec<What>>,
     /// The wall before the batch being made, for its parts (KZ-T10c).
     batch_before: Option<crate::patch::PatchFile>,
+    /// The comment on the request being answered (see
+    /// [`Self::request_commented`]), until its change takes it.
+    comment: Option<String>,
     patch: Patch,
     rack: Rack,
     engine: EngineControl,
@@ -1072,6 +1075,15 @@ fn log_opens_on(patch: &Patch, history: &[Change]) -> u64 {
     }
 }
 
+/// Where the wall keeps `what` (`speech`, `recordings`): in its state's
+/// directory, or with no state (as in tests) in one of this process's own.
+fn kept_in(store: Option<&Store>, what: &str) -> std::path::PathBuf {
+    store.map_or_else(
+        || std::env::temp_dir().join(format!("kazoo-wall-{what}-{}", std::process::id())),
+        |store| store.dir().join(what),
+    )
+}
+
 /// Which wall each of `changes` (oldest first) was made to, and how the
 /// walls came from each other (see [`Walls`]), with wall `start` up before
 /// the first. A load that did not happen puts up nothing. The wall started
@@ -1227,6 +1239,7 @@ pub fn resume(
             what,
             undoes: None,
             clock: None,
+            comment: None,
         };
         store.append_synced(&change)?;
         eprintln!("kazoo-wall: {}", change.summary);
@@ -1329,16 +1342,10 @@ impl Wall {
         let start = log_opens_on(&patch, &history);
         let memory_opens_on = walls_of(start, history[..skip].iter()).up;
         // Rendered speech is cached with the wall's state, or (with no
-        // state to keep, as in tests) in a directory of this process's own.
-        let speech_cache = store.as_ref().map_or_else(
-            || std::env::temp_dir().join(format!("kazoo-wall-speech-{}", std::process::id())),
-            |store| store.dir().join("speech"),
-        );
-        // Recordings likewise, until the daemon says where they go.
-        let recordings = store.as_ref().map_or_else(
-            || std::env::temp_dir().join(format!("kazoo-wall-recordings-{}", std::process::id())),
-            |store| store.dir().join("recordings"),
-        );
+        // state to keep, as in tests) in a directory of this process's own;
+        // recordings likewise, until the daemon says where they go.
+        let speech_cache = kept_in(store.as_ref(), "speech");
+        let recordings = kept_in(store.as_ref(), "recordings");
         let recorder = Recorder::new(recordings, &mut engine);
         let probe_ring = engine.take_probes().map(ProbeRing);
         let loops = reels_dir.map_or_else(Loops::new, Loops::with_reels_dir);
@@ -1356,6 +1363,7 @@ impl Wall {
             tree_buckets: HashMap::new(),
             chain_batch: None,
             batch_before: None,
+            comment: None,
             speech: Speech::new(speech_cache),
             loops,
             loop_work: loops::Work::default(),
@@ -2169,7 +2177,9 @@ impl Wall {
             self.unmade = true;
             return Err(err);
         }
-        Ok(self.new_change(seat, what, undoes))
+        let mut change = self.new_change(seat, what, undoes);
+        change.comment = self.comment.take();
+        Ok(change)
     }
 
     /// Write `change` (from [`Self::next_change`]) to the log, without
@@ -2326,6 +2336,7 @@ impl Wall {
             what,
             undoes,
             clock,
+            comment: None,
         }
     }
 
@@ -2698,6 +2709,29 @@ impl Wall {
         self.request_as(seat, true, request, now)
     }
 
+    /// [`Self::request_as`], with the sender's `comment` (checked already:
+    /// see [`crate::protocol::RequestLine::comment`]) on the change the
+    /// request makes, now or, for one answered later, when it is made.
+    pub fn request_commented(
+        &mut self,
+        (seat, console): (&str, bool),
+        request: &Request,
+        comment: Option<&str>,
+        now: Instant,
+    ) -> Result<Outcome, WallError> {
+        self.comment = comment.map(str::to_string);
+        let outcome = self.request_as(seat, console, request, now);
+        // Taken by the change made, or kept for the one made later; a
+        // request refused made nothing for it to go on.
+        if let (Some(comment), Ok(_)) = (self.comment.take(), &outcome) {
+            eprintln!(
+                "kazoo-wall: {seat}'s comment found no change of its own to go on, and was \
+                 not kept: {comment}"
+            );
+        }
+        outcome
+    }
+
     /// Handle a request from `seat`, a `console` or not (after hello;
     /// connection requests are the caller's). Change requests count
     /// against the seat's flood guard; a seat that is not a console is
@@ -2903,6 +2937,26 @@ impl Wall {
     }
 
     /// Answer `request` from `seat`, once it has passed the flood check.
+    /// Take out one cable, by its number or by the input it is in.
+    fn unpatch(
+        &mut self,
+        seat: &str,
+        cable: Option<u32>,
+        to: Option<&str>,
+    ) -> Result<Outcome, WallError> {
+        let what = match (cable, to) {
+            (Some(cable), None) => self.patch.unplug(cable, None)?,
+            (None, Some(to)) => self.patch.unplug_jack(to)?,
+            _ => {
+                return Err(error(
+                    ErrorCode::BadRequest,
+                    "unpatch takes a cable number or an input, not both",
+                ));
+            }
+        };
+        self.changed(seat, what, None, None, None)
+    }
+
     fn answer(
         &mut self,
         (seat, console): (&str, bool),
@@ -2936,19 +2990,7 @@ impl Wall {
                 self.changed(seat, what, None, None, None)
             }
             Request::Patch { from, to, amount } => self.plug(seat, from, to, *amount),
-            Request::Unpatch { cable, to } => {
-                let what = match (cable, to) {
-                    (Some(cable), None) => self.patch.unplug(*cable, None)?,
-                    (None, Some(to)) => self.patch.unplug_jack(to)?,
-                    _ => {
-                        return Err(error(
-                            ErrorCode::BadRequest,
-                            "unpatch takes a cable number or an input, not both",
-                        ));
-                    }
-                };
-                self.changed(seat, what, None, None, None)
-            }
+            Request::Unpatch { cable, to } => self.unpatch(seat, *cable, to.as_deref()),
             Request::Add { .. } => self.batch_add(seat, request),
             Request::Remove { module } => {
                 let what = self.patch.remove(module, &[])?;
@@ -2977,7 +3019,11 @@ impl Wall {
                 modules,
                 overwrite,
             } => self.chain_save(name, modules, console && *overwrite),
-            Request::Batch { note, changes } => self.batch(seat, note, changes, now),
+            Request::Batch {
+                note,
+                changes,
+                comments,
+            } => self.batch(seat, (note, comments), changes, now),
             Request::ChainAdd { name } => self.chain_add(seat, name, now),
             Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change, now),
@@ -4077,7 +4123,8 @@ impl Wall {
         // put back; once it may be in the log, its line is never reused.
         let unbroken = self.clock_line.mark();
         self.clock_line.break_line();
-        let change = self.new_change(seat, what, source.undoes());
+        let mut change = self.new_change(seat, what, source.undoes());
+        change.comment = self.comment.take();
         // The wall put up is named by the change that puts it up, and goes
         // to patch.json as of that change.
         incoming.last_seq = change.seq;

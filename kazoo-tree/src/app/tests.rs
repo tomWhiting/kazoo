@@ -180,6 +180,21 @@ fn the_details_say_who_when_what_and_how_it_sounded() {
 }
 
 #[test]
+fn the_details_say_why_when_the_change_came_with_a_comment() {
+    let mut history = grown(20, &[]);
+    std::sync::Arc::make_mut(&mut history.moments[19]).comment =
+        Some("darker under the pads".to_owned());
+    let details = app(history).details();
+    assert_eq!(
+        details[1],
+        ("why".to_owned(), "darker under the pads".to_owned()),
+        "straight after what it did"
+    );
+    let plain = app(grown(20, &[])).details();
+    assert!(plain.iter().all(|(key, _)| key != "why"), "{plain:?}");
+}
+
+#[test]
 fn a_batchs_details_lead_with_its_note_and_list_its_changes() {
     let mut history = grown(20, &[]);
     batch(

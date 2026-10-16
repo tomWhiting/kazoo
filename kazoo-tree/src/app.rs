@@ -897,6 +897,9 @@ impl App {
                 }
             }
         }
+        if let Some(comment) = &moment.comment {
+            lines.push(("why".to_owned(), comment.clone()));
+        }
         lines.push(("who".to_owned(), moment.seat.clone()));
         lines.push(("when".to_owned(), local_time(moment.time)));
         if self.history.here != Some(m) {

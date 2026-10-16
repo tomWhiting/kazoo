@@ -85,11 +85,12 @@ impl Wall {
     pub(super) fn batch(
         &mut self,
         seat: &str,
-        note: &str,
+        (note, comments): (&str, &[Option<String>]),
         requests: &[Request],
         now: Instant,
     ) -> Result<Outcome, WallError> {
-        let note = validate(note, requests)?.to_string();
+        let (note, comments) = validate(note, requests, comments)?;
+        let note = note.to_string();
         // A desk move not yet heard by a tick is logged first, as before a
         // single tempo: the batch's tempo starts from what plays.
         if requests
@@ -128,7 +129,17 @@ impl Wall {
         self.batch_before = Some(before.to_file());
         let outcome = self.room_to_grow(growth_of(&changes)).and_then(|()| {
             self.patch = staged;
-            self.changed(seat, What::Batch { note, changes }, None, None, None)
+            self.changed(
+                seat,
+                What::Batch {
+                    note,
+                    changes,
+                    comments,
+                },
+                None,
+                None,
+                None,
+            )
         });
         self.batch_before = None;
         match outcome {
@@ -326,7 +337,7 @@ fn growth_of(changes: &[What]) -> Growth {
 /// tempo step from `now`, and every tempo step on the desk or off it as
 /// `desk` says.
 fn tempo_as_now(inverse: What, now: f64, desk: bool) -> What {
-    let What::Batch { note, changes } = inverse else {
+    let What::Batch { note, changes, .. } = inverse else {
         return inverse;
     };
     let mut first = true;
@@ -341,7 +352,12 @@ fn tempo_as_now(inverse: What, now: f64, desk: bool) -> What {
             other => other,
         })
         .collect();
-    What::Batch { note, changes }
+    // The steps' comments said why each went on; undone, none does.
+    What::Batch {
+        note,
+        changes,
+        comments: Vec::new(),
+    }
 }
 
 /// Stamp `birth` on the record of module `id` removed in batch `what`
