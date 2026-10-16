@@ -27,3 +27,22 @@ fn kzoo_and_kazoo_each_answer_to_their_own_name() {
         assert!(text.contains(&format!("Usage: {name} ")), "{name}: {text}");
     }
 }
+
+#[test]
+fn kzoo_run_by_npm_as_kazoo_answers_to_kazoo() {
+    let help = Command::new(env!("CARGO_BIN_EXE_kzoo"))
+        .arg("--help")
+        .env("KZOO_RUN_AS", "kazoo")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(text.contains("Usage: kazoo "), "{text}");
+    // Anything else it is told is no name of its own.
+    let help = Command::new(env!("CARGO_BIN_EXE_kzoo"))
+        .arg("--help")
+        .env("KZOO_RUN_AS", "other")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(text.contains("Usage: kzoo "), "{text}");
+}

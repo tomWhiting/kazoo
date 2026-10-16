@@ -31,8 +31,9 @@ for pair in aarch64-apple-darwin:arm64 x86_64-apple-darwin:x64; do
   mkdir -p "$package/bin"
   cp "$root/target/$target/release/kzoo" "$package/bin/kzoo"
   chmod 755 "$package/bin/kzoo"
-  # Never stripped here: the linker's own signature must hold, or macOS
-  # kills the program as it starts.
+  # Signed ad hoc here: the linker signs only Apple silicon builds, and
+  # macOS kills an unsigned program as it starts.
+  codesign --force --sign - "$package/bin/kzoo"
   codesign --verify "$package/bin/kzoo"
   cp "$root/LICENSE" "$package/LICENSE"
 done
@@ -63,6 +64,17 @@ done
   }'
 
 # The programs first: the launcher must never be out before what it runs.
+# A package already out at this version is passed over, so a release that
+# stopped part way is finished by running this again.
 for package in kzoo-darwin-arm64 kzoo-darwin-x64 kzoo; do
+  if [ -z "$dry" ] && npm view "$package@$version" version >/dev/null 2>&1; then
+    echo "publish.sh: $package $version is out already"
+    continue
+  fi
   (cd "$here/$package" && npm publish --access public $dry)
 done
+
+# Tagged once all of it is out (the crates.io release tags the same).
+if [ -z "$dry" ] && ! git -C "$root" rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+  git -C "$root" tag -a "v$version" -m "kzoo $version"
+fi

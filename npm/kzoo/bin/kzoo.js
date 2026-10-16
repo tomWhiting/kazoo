@@ -50,7 +50,12 @@ try {
   fail(`${name} is installed but holds no program it can run (${binary}): install it again.`);
 }
 
-const child = spawn(binary, process.argv.slice(2), { stdio: "inherit" });
+// The program names itself as it was run: `kazoo` or `kzoo`.
+const ranAs = path.basename(process.argv[1] ?? "kzoo").replace(/\.js$/, "");
+const child = spawn(binary, process.argv.slice(2), {
+  stdio: "inherit",
+  env: { ...process.env, KZOO_RUN_AS: ranAs === "kazoo" ? "kazoo" : "kzoo" },
+});
 
 // Ctrl-C goes to the whole foreground group, the program included: it
 // decides what to do with it, and this launcher waits for it to end.
