@@ -205,6 +205,17 @@ pub enum HubNotice {
     },
     /// The desk's patching did something it never should: a bug.
     Fault(String),
+    /// An instrument plays into the desk over the network, and the desk
+    /// holds its audio back this long to ride out the network's delays:
+    /// said when it plugs in, and each time it came late and that grew.
+    NetworkLead {
+        /// Desk strip.
+        slot: usize,
+        /// Instrument name.
+        name: String,
+        /// The lead for the network, beyond the usual.
+        lead: Duration,
+    },
 }
 
 /// Why an instrument left the desk.
@@ -253,6 +264,12 @@ impl fmt::Display for HubNotice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Joined { slot, name } => write!(f, "{name} plugged into strip {}", slot + 1),
+            Self::NetworkLead { slot, name, lead } => write!(
+                f,
+                "{name} on strip {} plays over the network: the desk holds it {} ms behind to ride out the network's delays",
+                slot + 1,
+                lead.as_millis()
+            ),
             Self::Left { slot, name, reason } => {
                 write!(f, "{name} left strip {}", slot + 1)?;
                 match reason {
@@ -536,6 +553,9 @@ struct Server {
     notes: Vec<([u8; 16], NoteMessage)>,
     /// Instruments leaving this pass, kept for the same reason.
     leaving: Vec<(usize, LeaveReason)>,
+    /// Instruments whose network lead grew this poll, and what it is now:
+    /// kept between polls so a poll allocates nothing.
+    grown: Vec<(usize, Duration)>,
 }
 
 /// Space for both listeners, every instrument, and twice as many pending streams.
@@ -577,6 +597,7 @@ impl Server {
             last_refusal: None,
             notes: Vec::with_capacity(DESK_CHANNELS * MESSAGES_PER_POLL),
             leaving: Vec::with_capacity(2 * DESK_CHANNELS),
+            grown: Vec::with_capacity(DESK_CHANNELS),
         }
     }
 
@@ -892,20 +913,40 @@ impl Server {
             name: short_name(display_name(&name)),
             consumer,
         });
+        let network_lead = instrument.network_lead();
         self.instruments.push(instrument);
-        self.notify(HubNotice::Joined { slot, name });
+        self.joined(slot, name, network_lead);
+    }
+
+    /// Say an instrument plugged into strip `slot`, and, when it plays over
+    /// the network, the lead the desk gives it for that.
+    fn joined(&mut self, slot: usize, name: String, network_lead: Option<Duration>) {
+        self.notify(HubNotice::Joined {
+            slot,
+            name: name.clone(),
+        });
+        if let Some(lead) = network_lead {
+            self.notify(HubNotice::NetworkLead { slot, name, lead });
+        }
     }
 
     fn read_instruments(&mut self) {
         let clock = self.clock();
         let mut notes = std::mem::take(&mut self.notes);
         let mut leaving = std::mem::take(&mut self.leaving);
+        let mut grown = std::mem::take(&mut self.grown);
         for (index, instrument) in self.instruments.iter_mut().enumerate() {
             for _ in 0..MESSAGES_PER_POLL {
                 match instrument.poll(clock) {
                     Ok(None) => break,
-                    Ok(Some(Inbound::Audio { resynced })) => {
+                    Ok(Some(Inbound::Audio {
+                        resynced,
+                        network_lead,
+                    })) => {
                         self.stats.blocks.fetch_add(1, Ordering::Relaxed);
+                        if let Some(lead) = network_lead {
+                            grown.push((index, lead));
+                        }
                         if resynced {
                             self.stats.resyncs.fetch_add(1, Ordering::Relaxed);
                             // Its stream moved on the studio clock: where the
@@ -940,6 +981,15 @@ impl Server {
         }
         notes.clear();
         self.notes = notes;
+        for &(index, lead) in &grown {
+            let (slot, name) = {
+                let instrument = &self.instruments[index];
+                (instrument.slot, instrument.name.clone())
+            };
+            self.notify(HubNotice::NetworkLead { slot, name, lead });
+        }
+        grown.clear();
+        self.grown = grown;
         self.remove(leaving);
     }
 

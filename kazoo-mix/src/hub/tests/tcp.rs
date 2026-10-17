@@ -4,6 +4,7 @@ use kazoo_core::ipc::protocol::encode_audio_payload;
 use kazoo_core::ipc::types::MSG_AUDIO;
 
 use super::*;
+use crate::hub::instrument::{NETWORK_LEAD_MOST, NETWORK_LEAD_START};
 
 fn rig() -> Rig {
     Rig::with_network(
@@ -289,4 +290,64 @@ fn a_failed_tcp_bind_leaves_no_new_unix_socket() {
         if error.kind() == std::io::ErrorKind::AddrInUse));
     assert!(!socket.exists());
     drop(callback);
+}
+
+/// The next notice, which must be strip 0's network lead.
+fn network_lead(rig: &mut Rig) -> Duration {
+    match rig.notice() {
+        HubNotice::NetworkLead { slot: 0, lead, .. } => lead,
+        other => panic!("expected strip 0's network lead, got {other:?}"),
+    }
+}
+
+/// Wait until the hub has counted `blocks` blocks.
+fn counted(rig: &Rig, blocks: u64) {
+    let sent = Instant::now();
+    while rig.hub.snapshot().blocks < blocks {
+        assert!(sent.elapsed() < Duration::from_secs(3), "audio not counted");
+        std::hint::spin_loop();
+    }
+}
+
+#[test]
+fn a_network_stream_has_its_own_lead_doubled_each_time_it_comes_late_up_to_the_cap() {
+    let mut rig = rig();
+    let mut peer = Peer::connect(rig.hub.listen_addr().unwrap());
+    assert!(matches!(rig.notice(), HubNotice::Joined { slot: 0, .. }));
+    assert_eq!(network_lead(&mut rig), NETWORK_LEAD_START);
+    rig.until("the TCP strip", |rig| {
+        rig.shared.channel_readout(0).connected
+    });
+    // The first block places the stream: that is not coming late.
+    peer.audio(0, 256, &[0.0; 512]);
+    counted(&rig, 1);
+    // Each block that goes back to frame 0 is placed afresh, as a late one.
+    let mut expected = NETWORK_LEAD_START;
+    let mut blocks = 1;
+    while expected < NETWORK_LEAD_MOST {
+        peer.audio(0, 256, &[0.0; 512]);
+        blocks += 1;
+        expected = (expected * 2).min(NETWORK_LEAD_MOST);
+        assert_eq!(network_lead(&mut rig), expected);
+    }
+    assert_eq!(expected, Duration::from_millis(160));
+    // At the cap, coming late again grows nothing and says nothing.
+    peer.audio(0, 256, &[0.0; 512]);
+    counted(&rig, blocks + 1);
+    assert_eq!(rig.hub.snapshot().resyncs, blocks + 1);
+    assert_eq!(rig.hub.next_notice().unwrap(), None);
+}
+
+#[test]
+fn a_local_stream_has_no_network_lead() {
+    let mut rig = rig();
+    let mut client = rig.connect("kazoo-local", RATE).unwrap();
+    assert!(matches!(rig.notice(), HubNotice::Joined { slot: 0, .. }));
+    rig.until("the strip", |rig| rig.shared.channel_readout(0).connected);
+    for _ in 0..3 {
+        client.send_audio(0, 256, &[0.0; 512]).unwrap();
+    }
+    counted(&rig, 3);
+    assert_eq!(rig.hub.snapshot().resyncs, 3);
+    assert_eq!(rig.hub.next_notice().unwrap(), None);
 }

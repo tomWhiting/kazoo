@@ -36,6 +36,14 @@ pub const PACE_INTERVAL: Duration = Duration::from_millis(5);
 /// sent as it leaves: up to that tenth of a second goes untold.)
 pub const HEALTH_INTERVAL: Duration = Duration::from_millis(100);
 
+/// The lead a stream over the network starts with, beyond the usual: a
+/// home network's jitter is a few milliseconds.
+pub const NETWORK_LEAD_START: Duration = Duration::from_millis(10);
+
+/// The most a stream over the network's lead grows to: Wi-Fi's power
+/// saving can hold packets for tens of milliseconds.
+pub const NETWORK_LEAD_MOST: Duration = Duration::from_millis(160);
+
 /// Something an instrument sent that the hub must act on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Inbound {
@@ -43,6 +51,9 @@ pub enum Inbound {
     Audio {
         /// The block was re-placed on the studio clock.
         resynced: bool,
+        /// The stream arrives over the network and came late, so its lead
+        /// grew: what it is now.
+        network_lead: Option<Duration>,
     },
     /// A block of audio was lost because the desk's ring was full.
     AudioDropped,
@@ -143,6 +154,10 @@ pub struct Instrument {
     sample_rate: u32,
     /// Times its stream was placed on the studio clock, the first included.
     placements: u64,
+    /// Its lead for the network's delays, in frames, when it arrives over
+    /// TCP: [`NETWORK_LEAD_START`], doubled each time it is placed afresh
+    /// (up to [`NETWORK_LEAD_MOST`]), never shrinking while connected.
+    network_lead: Option<u32>,
     /// Blocks lost because the strip's ring was full.
     dropped: u64,
     /// Whether the stream was let go because the ring was full, and not
@@ -161,6 +176,8 @@ impl Instrument {
         read_buf: FrameBuffer,
         producer: AudioBlockProducer,
     ) -> Self {
+        let network_lead = matches!(stream, HubStream::Tcp(_))
+            .then(|| frames_of(NETWORK_LEAD_START, registration.sample_rate));
         Self {
             stream,
             id: registration.id,
@@ -180,6 +197,7 @@ impl Instrument {
             sample_rate: registration.sample_rate,
             last_pace: None,
             placements: 0,
+            network_lead,
             dropped: 0,
             dropped_since: false,
             last_health: (DeskHealthMsg::default(), None),
@@ -231,7 +249,10 @@ impl Instrument {
                 let samples = frames * usize::from(self.channels);
                 need(AUDIO_PAYLOAD_HEADER + samples * 4)?;
                 if frames == 0 {
-                    return Ok(Inbound::Audio { resynced: false });
+                    return Ok(Inbound::Audio {
+                        resynced: false,
+                        network_lead: None,
+                    });
                 }
                 let stream_frame = decode_audio_stream_frame(payload);
                 Ok(self.push_audio(stream_frame, frames, samples, clock))
@@ -284,12 +305,16 @@ impl Instrument {
         // A placement after the ring was full is the desk starting the
         // stream afresh once it takes it again, not a block that came late:
         // the drop was counted, and that is not.
-        if stamped.resynced && !std::mem::take(&mut self.dropped_since) {
+        let grew = if stamped.resynced && !std::mem::take(&mut self.dropped_since) {
             self.placements = self.placements.saturating_add(1);
-        }
+            self.placements > 1 && self.grow_network_lead()
+        } else {
+            false
+        };
         match pushed {
             Ok(()) => Inbound::Audio {
                 resynced: stamped.resynced,
+                network_lead: grew.then(|| self.network_lead()).flatten(),
             },
             Err(AudioRingPushError::Full | AudioRingPushError::InvalidSampleCount { .. }) => {
                 // The desk is not consuming (stream stopped, or the strip is
@@ -346,7 +371,31 @@ impl Instrument {
     fn fit_lead(&mut self, clock: DeskClock) {
         let most =
             super::most_extra_lead(self.ring_frames, clock, self.sample_rate, self.block_frames);
-        self.stamp.set_extra_lead(self.asked_lead.min(most));
+        let wanted = self
+            .asked_lead
+            .saturating_add(self.network_lead.unwrap_or(0));
+        self.stamp.set_extra_lead(wanted.min(most));
+    }
+
+    /// Double the network lead after the stream came late, up to
+    /// [`NETWORK_LEAD_MOST`]; whether it grew.
+    fn grow_network_lead(&mut self) -> bool {
+        let most = frames_of(NETWORK_LEAD_MOST, self.sample_rate);
+        match self.network_lead {
+            Some(lead) if lead < most => {
+                self.network_lead = Some(lead.saturating_mul(2).min(most));
+                true
+            }
+            Some(_) | None => false,
+        }
+    }
+
+    /// Its lead for the network's delays, when it arrives over TCP.
+    #[must_use]
+    pub fn network_lead(&self) -> Option<Duration> {
+        let rate = u64::from(self.sample_rate.max(1));
+        self.network_lead
+            .map(|frames| Duration::from_nanos(u64::from(frames) * 1_000_000_000 / rate))
     }
 
     /// How the desk has been taking this instrument's audio since it
@@ -426,4 +475,10 @@ pub enum ConnectionError {
     Io(io::Error),
     /// The instrument broke the protocol.
     Protocol(ProtocolError),
+}
+
+/// `duration` in frames at `sample_rate`, rounded to the nearest.
+fn frames_of(duration: Duration, sample_rate: u32) -> u32 {
+    // At most a second of a u32 rate: exact enough, and in range.
+    (duration.as_secs_f64() * f64::from(sample_rate)).round() as u32
 }
