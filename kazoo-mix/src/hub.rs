@@ -553,8 +553,9 @@ struct Server {
     notes: Vec<([u8; 16], NoteMessage)>,
     /// Instruments leaving this pass, kept for the same reason.
     leaving: Vec<(usize, LeaveReason)>,
-    /// Instruments whose network lead grew this poll, and what it is now:
-    /// kept between polls so a poll allocates nothing.
+    /// Instruments whose network lead the desk gives changed this poll,
+    /// and what it is now (one each at most): kept between polls so a poll
+    /// allocates nothing.
     grown: Vec<(usize, Duration)>,
 }
 
@@ -913,7 +914,7 @@ impl Server {
             name: short_name(display_name(&name)),
             consumer,
         });
-        let network_lead = instrument.network_lead();
+        let network_lead = instrument.network_news(clock);
         self.instruments.push(instrument);
         self.joined(slot, name, network_lead);
     }
@@ -939,14 +940,8 @@ impl Server {
             for _ in 0..MESSAGES_PER_POLL {
                 match instrument.poll(clock) {
                     Ok(None) => break,
-                    Ok(Some(Inbound::Audio {
-                        resynced,
-                        network_lead,
-                    })) => {
+                    Ok(Some(Inbound::Audio { resynced })) => {
                         self.stats.blocks.fetch_add(1, Ordering::Relaxed);
-                        if let Some(lead) = network_lead {
-                            grown.push((index, lead));
-                        }
                         if resynced {
                             self.stats.resyncs.fetch_add(1, Ordering::Relaxed);
                             // Its stream moved on the studio clock: where the
@@ -974,6 +969,9 @@ impl Server {
                         break;
                     }
                 }
+            }
+            if let Some(lead) = instrument.network_news(clock) {
+                grown.push((index, lead));
             }
         }
         for (source, note) in &notes {

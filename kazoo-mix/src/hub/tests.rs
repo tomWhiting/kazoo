@@ -65,13 +65,14 @@ impl Rig {
     }
 
     fn with_shared(reserved: [bool; DESK_CHANNELS], shared: SharedState) -> Self {
-        Self::with_network(reserved, shared, None)
+        Self::with_network(reserved, shared, None, RATE)
     }
 
     fn with_network(
         reserved: [bool; DESK_CHANNELS],
         shared: SharedState,
         listen: Option<SocketAddr>,
+        rate: u32,
     ) -> Self {
         let shared = Arc::new(shared);
         let (hub_end, callback_end) = patchbay(PATCH_CAPACITY);
@@ -81,14 +82,14 @@ impl Rig {
                 socket: socket.clone(),
                 advertise: false,
                 listen,
-                sample_rate: RATE,
+                sample_rate: rate,
                 reserved,
             },
             Arc::clone(&shared),
             hub_end,
         )
         .unwrap();
-        let engine = MixerEngine::with_tempo(DESK_CHANNELS, RATE, shared.transport().bpm).unwrap();
+        let engine = MixerEngine::with_tempo(DESK_CHANNELS, rate, shared.transport().bpm).unwrap();
         let callback =
             AudioCallback::new(engine, Arc::clone(&shared), 2).with_patchbay(callback_end);
         Self {

@@ -1,16 +1,22 @@
 use std::net::{SocketAddr, TcpStream};
 
 use kazoo_core::ipc::protocol::encode_audio_payload;
-use kazoo_core::ipc::types::MSG_AUDIO;
+use kazoo_core::ipc::types::{MSG_AUDIO, MSG_DESK_PACE};
 
 use super::*;
 use crate::hub::instrument::{NETWORK_LEAD_MOST, NETWORK_LEAD_START};
 
 fn rig() -> Rig {
+    rig_at(RATE)
+}
+
+/// A hub listening on loopback, its desk running at `rate`.
+fn rig_at(rate: u32) -> Rig {
     Rig::with_network(
         [false; DESK_CHANNELS],
         SharedState::new(),
         Some("127.0.0.1:0".parse().unwrap()),
+        rate,
     )
 }
 
@@ -22,6 +28,11 @@ struct Peer {
 
 impl Peer {
     fn connect(address: SocketAddr) -> Self {
+        Self::register(address, &RegisterMsg::new("kazoo-network", 2, RATE, 256))
+    }
+
+    /// Connect to `address` and register as `register` says.
+    fn register(address: SocketAddr, register: &RegisterMsg) -> Self {
         let mut stream = TcpStream::connect(address).unwrap();
         stream.set_nodelay(true).unwrap();
         // Readiness drives progress; these bounds only turn a missing reply into failure.
@@ -30,7 +41,6 @@ impl Peer {
             .set_write_timeout(Some(REGISTRATION_TIMEOUT))
             .unwrap();
         let mut buffer = FrameBuffer::new();
-        let register = RegisterMsg::new("kazoo-network", 2, RATE, 256);
         let len = register.encode(buffer.payload_mut());
         buffer
             .write_frame(MSG_REGISTER, 0, len, &mut stream)
@@ -350,4 +360,170 @@ fn a_local_stream_has_no_network_lead() {
     counted(&rig, 3);
     assert_eq!(rig.hub.snapshot().resyncs, 3);
     assert_eq!(rig.hub.next_notice().unwrap(), None);
+}
+
+/// The desk's callback length in these tests, once it has run.
+const DEVICE: u32 = 256;
+
+/// The lead every stream at `rate` gets before anything extra: one device
+/// buffer, one 256-frame block, and the margin.
+fn usual_lead(rate: u32) -> u32 {
+    let margin = (rate as f32 * crate::studio_clock::MARGIN_SECONDS).round() as u32;
+    DEVICE + 256 + margin
+}
+
+/// `frames` at `rate` as a duration, as the desk says it.
+fn duration_of(frames: u32, rate: u32) -> Duration {
+    Duration::from_nanos(u64::from(frames) * 1_000_000_000 / u64::from(rate))
+}
+
+/// The next notice the hub has, without running the desk.
+fn next_notice_now(rig: &Rig) -> HubNotice {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(notice) = rig.hub.next_notice().unwrap() {
+            return notice;
+        }
+        assert!(Instant::now() < deadline, "no notice came");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Send a block at stream frame 0 (back to the start, so the desk places
+/// it afresh, as a block that came late) and say how many frames after the
+/// frame the desk renders next it first sounds.
+fn onset_of_a_late_block(rig: &mut Rig, peer: &mut Peer, blocks: &mut u64) -> u32 {
+    // Play out whatever earlier blocks left: more than the largest lead.
+    for _ in 0..128 {
+        rig.render();
+    }
+    // Let a whole device buffer pass on this frame, so the frame the hub
+    // takes as playing is the frame rendered next plus one buffer.
+    thread::sleep(Duration::from_millis(20));
+    peer.audio(0, 256, &[0.25; 512]);
+    *blocks += 1;
+    counted(rig, *blocks);
+    let mut frames = 0_u32;
+    // As long as a strip's whole ring, at any rate.
+    for _ in 0..128 {
+        let left = rig.render();
+        if let Some(at) = left.iter().position(|sample| sample.abs() > 0.001) {
+            return frames + u32::try_from(at).unwrap();
+        }
+        frames += u32::try_from(left.len()).unwrap();
+    }
+    panic!("the block never sounded");
+}
+
+#[test]
+fn a_grown_network_lead_holds_from_the_block_that_came_late() {
+    let mut rig = rig();
+    let mut peer = Peer::connect(rig.hub.listen_addr().unwrap());
+    assert!(matches!(rig.notice(), HubNotice::Joined { slot: 0, .. }));
+    assert_eq!(network_lead(&mut rig), NETWORK_LEAD_START);
+    rig.until("the TCP strip", |rig| {
+        rig.shared.channel_readout(0).connected
+    });
+    let mut blocks = 0;
+    // 10 ms at first; then each late block doubles it, and is itself
+    // placed at the doubled lead: the lead said is the lead heard.
+    for (given, said) in [
+        (480, None),
+        (960, Some(20)),
+        (1_920, Some(40)),
+        (3_840, Some(80)),
+        (7_680, Some(160)),
+        (7_680, None),
+    ] {
+        let onset = onset_of_a_late_block(&mut rig, &mut peer, &mut blocks);
+        let lead = usual_lead(RATE) + given;
+        assert!(
+            (lead..=lead + DEVICE).contains(&onset),
+            "a {given}-frame network lead sounded at {onset}, not {lead} to {}",
+            lead + DEVICE
+        );
+        if let Some(said) = said {
+            match next_notice_now(&rig) {
+                HubNotice::NetworkLead { slot: 0, lead, .. } => {
+                    assert_eq!(lead, Duration::from_millis(said));
+                }
+                other => panic!("expected the grown lead, got {other:?}"),
+            }
+        }
+    }
+    assert_eq!(rig.hub.next_notice().unwrap(), None);
+}
+
+#[test]
+fn the_network_lead_said_is_what_the_strips_ring_gives() {
+    // A stereo strip's ring (65 536 samples) holds 32 768 frames, and a
+    // stream may lead by at most half of that less the usual lead: at
+    // 192 kHz, 79.7 ms, short of the 160 ms cap.
+    const FAST: u32 = 192_000;
+    let mut rig = rig_at(FAST);
+    let mut peer = Peer::register(
+        rig.hub.listen_addr().unwrap(),
+        &RegisterMsg::new("kazoo-network", 2, FAST, 256),
+    );
+    assert!(matches!(rig.notice(), HubNotice::Joined { slot: 0, .. }));
+    assert_eq!(network_lead(&mut rig), NETWORK_LEAD_START);
+    rig.until("the TCP strip", |rig| {
+        rig.shared.channel_readout(0).connected
+    });
+    let most = 32_768 / 2 - usual_lead(FAST);
+    let mut blocks = 0;
+    for (given, said) in [
+        (1_920, None),
+        (3_840, Some(duration_of(3_840, FAST))),
+        (7_680, Some(duration_of(7_680, FAST))),
+        (most, Some(duration_of(most, FAST))),
+        (most, None),
+        (most, None),
+    ] {
+        let onset = onset_of_a_late_block(&mut rig, &mut peer, &mut blocks);
+        let lead = usual_lead(FAST) + given;
+        assert!(
+            (lead..=lead + DEVICE).contains(&onset),
+            "a {given}-frame network lead sounded at {onset}, not {lead} to {}",
+            lead + DEVICE
+        );
+        if let Some(said) = said {
+            match next_notice_now(&rig) {
+                HubNotice::NetworkLead { slot: 0, lead, .. } => assert_eq!(lead, said),
+                other => panic!("expected the lead the ring gives, got {other:?}"),
+            }
+        }
+    }
+    assert_eq!(rig.hub.next_notice().unwrap(), None);
+}
+
+#[test]
+fn a_paced_network_stream_is_told_the_grown_lead() {
+    const ASKED: u32 = 960;
+    let mut rig = rig();
+    let mut register = RegisterMsg::new("kazoo-network", 2, RATE, 256);
+    register.pace_lead_frames = ASKED;
+    let mut peer = Peer::register(rig.hub.listen_addr().unwrap(), &register);
+    assert!(matches!(rig.notice(), HubNotice::Joined { slot: 0, .. }));
+    assert_eq!(network_lead(&mut rig), NETWORK_LEAD_START);
+    rig.until("the TCP strip", |rig| {
+        rig.shared.channel_readout(0).connected
+    });
+    let mut blocks = 0;
+    for given in [480, 960, 1_920] {
+        onset_of_a_late_block(&mut rig, &mut peer, &mut blocks);
+        let lead = usual_lead(RATE) + ASKED + given;
+        let budget = Instant::now() + Duration::from_secs(1);
+        let mut told = None;
+        while told != Some(lead) {
+            assert!(
+                Instant::now() < budget,
+                "paced at {told:?}, not {lead} frames"
+            );
+            let header = peer.buffer.read_frame(&mut peer.stream).unwrap();
+            if header.msg_type == MSG_DESK_PACE {
+                told = Some(DeskPaceMsg::decode(peer.buffer.payload()).lead_frames);
+            }
+        }
+    }
 }
