@@ -290,17 +290,16 @@ impl EngineHealth {
         };
         // The reason goes with a failed run whenever one rose, whether or not
         // it is the worst: the header keeps the count, but only this says why.
-        let why = match pitch_failure {
+        // Said straight after the failure when it is the worst; after the
+        // others' note when it is not.
+        let (lead, tail) = match pitch_failure {
+            Some(why) if worst.says_pitch_failure => (format!(": {why}"), String::new()),
             Some(why) if rises.iter().any(|(counter, _)| counter.says_pitch_failure) => {
-                if worst.says_pitch_failure {
-                    format!(": {why}")
-                } else {
-                    format!("; pYIN failed: {why}")
-                }
+                (String::new(), format!("; pYIN failed: {why}"))
             }
-            _ => String::new(),
+            _ => (String::new(), String::new()),
         };
-        Some(format!("Engine: {amount} {}{more}{why}", worst.long))
+        Some(format!("Engine: {amount} {}{lead}{more}{tail}", worst.long))
     }
 
     /// Every non-zero counter as `(short name, total)`, worst first.
@@ -507,7 +506,7 @@ mod tests {
                  pyin's forward FFT: wrong length"
             )
         );
-        // Another counter's message never carries it.
+        // Another counter's message carries it only when a run failed too.
         let other = EngineStatsSnapshot {
             mic_samples_dropped: 5,
             ..more
@@ -517,6 +516,42 @@ mod tests {
                 .observe(other, Instant::now(), Some("ignored"))
                 .as_deref(),
             Some("Engine: 5 mic samples dropped")
+        );
+        let both = EngineStatsSnapshot {
+            mic_samples_dropped: 6,
+            pitch_runs_failed: 3,
+            ..other
+        };
+        assert_eq!(
+            health
+                .observe(both, Instant::now(), Some("wrong length"))
+                .as_deref(),
+            Some(
+                "Engine: 1 mic samples dropped (+1 other problem, see header); \
+                 pYIN failed: wrong length"
+            )
+        );
+        // The worst, with another rise: the reason follows the failure.
+        let worst = EngineStatsSnapshot {
+            pitch_runs_failed: 4,
+            display_frames_dropped: 1,
+            ..both
+        };
+        assert_eq!(
+            health
+                .observe(worst, Instant::now(), Some("wrong length"))
+                .as_deref(),
+            Some(
+                "Engine: 1 pYIN runs that failed, read as unvoiced (engine fault): \
+                 wrong length (+1 other problem, see header)"
+            )
+        );
+        assert_eq!(
+            COUNTERS
+                .iter()
+                .filter(|counter| counter.says_pitch_failure)
+                .count(),
+            1
         );
     }
 
