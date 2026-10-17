@@ -1,6 +1,6 @@
 [package]
 name = "kazoo-wall"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 description = "The wall: a shared modular synth that never stops"
@@ -11,16 +11,16 @@ repository = "https://github.com/tomWhiting/kazoo"
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host", version = "=0.1.0" }
+kazoo-host = { path = "../kazoo-host", version = "=0.2.0" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 color-eyre = "0.6.5"
 cpal = "0.17.1"
 crossterm = "0.29.0"
 hound = "3.5.1"
-kazoo-core = { path = "../kazoo-core", version = "=0.1.0" }
-kazoo-fx = { path = "../kazoo-fx", version = "=0.1.0" }
-kazoo-perc = { path = "../kazoo-perc", version = "=0.1.0" }
-kazoo-speech = { path = "../kazoo-speech", version = "=0.1.0" }
+kazoo-core = { path = "../kazoo-core", version = "=0.2.0" }
+kazoo-fx = { path = "../kazoo-fx", version = "=0.2.0" }
+kazoo-perc = { path = "../kazoo-perc", version = "=0.2.0" }
+kazoo-speech = { path = "../kazoo-speech", version = "=0.2.0" }
 ratatui = "0.30.0"
 ringbuf = "0.4.8"
 # Already in the tree through crossterm: a plain fsync, without unsafe

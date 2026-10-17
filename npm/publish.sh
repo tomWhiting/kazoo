@@ -1,11 +1,16 @@
 #!/bin/sh
-# Build kzoo for both Macs, put each in its npm package, and publish the
-# platform packages and then the launcher, all at the crate's version.
+# Build kzoo for both Macs, put each in its npm package with its
+# third-party notices, and publish the platform packages and then the
+# launcher, all at the crate's version.
 #
 #   npm/publish.sh            build, fill and publish
 #   npm/publish.sh --dry-run  build and fill, then npm publish --dry-run
 #
-# Run from anywhere; builds with the repository's lock, four jobs, niced.
+# npm follows crates.io (release/crates.sh): a release publishes the commit
+# tagged v<version>, which must be the commit crates.io has kzoo <version>
+# from, and on origin/main. Check it out (main at the tag, or the tag itself)
+# and run this. A dry run checks what it can and says what it could not.
+# Builds with the repository's lock, four jobs, niced.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -14,21 +19,84 @@ dry=""
 if [ "${1:-}" = "--dry-run" ]; then
   dry="--dry-run"
 fi
+agent="kazoo-release (https://github.com/tomWhiting/kazoo)"
 
-# A release is made from main as it stands, so its tag names what went out.
-if [ -z "$dry" ]; then
-  if [ "$(git -C "$root" branch --show-current)" != main ] || [ -n "$(git -C "$root" status --porcelain)" ]; then
-    echo "publish.sh: release from a clean checkout of main" >&2
+# What a dry run may pass over; a release may not.
+refuse() {
+  if [ -n "$dry" ]; then
+    echo "publish.sh: (dry run) $1" >&2
+  else
+    echo "publish.sh: $1" >&2
     exit 1
   fi
-fi
+}
 
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/kazoo-cli/Cargo.toml" | head -n 1)
 if [ -z "$version" ]; then
   echo "publish.sh: kazoo-cli/Cargo.toml has no version" >&2
   exit 1
 fi
+head=$(git -C "$root" rev-parse HEAD)
 
+if [ -n "$(git -C "$root" status --porcelain)" ]; then
+  refuse "the checkout has changes; release from a clean one"
+fi
+if git -C "$root" fetch -q --tags origin; then
+  if ! git -C "$root" merge-base --is-ancestor "$head" origin/main; then
+    refuse "this commit is not on origin/main"
+  fi
+else
+  refuse "could not fetch from origin, so the tags and main are unchecked"
+fi
+# A version is one commit: the one tagged, which crates.io has too.
+if tagged=$(git -C "$root" rev-parse -q --verify "refs/tags/v$version^{commit}"); then
+  if [ "$tagged" != "$head" ]; then
+    refuse "v$version was released from $tagged, not this commit; check out v$version, or bump the version"
+  fi
+else
+  refuse "v$version is not tagged; release the crates first (release/crates.sh)"
+fi
+crate=$(mktemp)
+trap 'rm -f "$crate"' EXIT
+code=$(curl -sSL -A "$agent" -o "$crate" -w '%{http_code}' \
+  "https://static.crates.io/crates/kzoo/kzoo-$version.crate" || true)
+case $code in
+  200)
+    if published=$(tar -xzOf "$crate" "kzoo-$version/.cargo_vcs_info.json" 2>/dev/null |
+      python3 -I -c 'import json, sys
+git = json.load(sys.stdin)["git"]
+print("" if git.get("dirty") else git["sha1"])' 2>/dev/null); then
+      if [ -z "$published" ]; then
+        refuse "crates.io's kzoo $version was published from a checkout with changes"
+      elif [ "$published" != "$head" ]; then
+        refuse "crates.io has kzoo $version from $published, not this commit"
+      fi
+    else
+      refuse "crates.io's kzoo $version does not say which commit it came from"
+    fi
+    ;;
+  403 | 404)
+    refuse "crates.io has no kzoo $version yet; release the crates first (release/crates.sh)"
+    ;;
+  000 | '')
+    refuse "could not reach crates.io, so where kzoo $version came from is unchecked"
+    ;;
+  *)
+    refuse "crates.io answered $code, so where kzoo $version came from is unchecked"
+    ;;
+esac
+
+# The notices first: quick, and a release with one missing stops before
+# the long builds. Written whole or not at all.
+for pair in aarch64-apple-darwin:arm64 x86_64-apple-darwin:x64; do
+  target=${pair%%:*}
+  arch=${pair##*:}
+  nice -n 10 lockf -k "$HOME/.kazoo-cargo.lock" \
+    python3 -I "$here/notices.py" "$root" "$target" "$here/kzoo-darwin-$arch/THIRD-PARTY-NOTICES"
+done
+
+# A sanitizer's runtime must never be linked into a release.
+unset RTSAN_ENABLE
 for pair in aarch64-apple-darwin:arm64 x86_64-apple-darwin:x64; do
   target=${pair%%:*}
   arch=${pair##*:}
@@ -39,6 +107,16 @@ for pair in aarch64-apple-darwin:arm64 x86_64-apple-darwin:x64; do
   mkdir -p "$package/bin"
   cp "$root/target/$target/release/kzoo" "$package/bin/kzoo"
   chmod 755 "$package/bin/kzoo"
+  # Only the system's own libraries: anything else is not on the
+  # machines it is installed on. otool runs on its own, so its failure
+  # stops the release.
+  libraries=$(otool -L "$package/bin/kzoo")
+  foreign=$(printf '%s\n' "$libraries" | tail -n +2 | awk '{print $1}' |
+    grep -v -e '^/usr/lib/' -e '^/System/Library/' || true)
+  if [ -n "$foreign" ]; then
+    echo "publish.sh: $target links libraries outside the system: $foreign" >&2
+    exit 1
+  fi
   # Signed ad hoc here: the linker signs only Apple silicon builds, and
   # macOS kills an unsigned program as it starts.
   codesign --force --sign - "$package/bin/kzoo"
@@ -57,13 +135,15 @@ done
     "optionalDependencies.kzoo-darwin-x64=$version")
 
 # What each tarball holds, checked before anything goes out: the program
-# executable in each platform package, the licence in all three.
+# executable and the third-party notices in each platform package, the
+# licence in all three, the README in the launcher.
 for package in kzoo-darwin-arm64 kzoo-darwin-x64; do
   (cd "$here/$package" && npm pack --dry-run --json) | node -e '
     const files = JSON.parse(require("fs").readFileSync(0, "utf8"))[0].files;
     const program = files.find((f) => f.path === "bin/kzoo");
     if (!program || (program.mode & 0o111) === 0) throw new Error("bin/kzoo is missing or not executable");
-    if (!files.some((f) => f.path === "LICENSE")) throw new Error("LICENSE is missing");'
+    if (!files.some((f) => f.path === "LICENSE")) throw new Error("LICENSE is missing");
+    if (!files.some((f) => f.path === "THIRD-PARTY-NOTICES")) throw new Error("THIRD-PARTY-NOTICES is missing");'
 done
 (cd "$here/kzoo" && npm pack --dry-run --json) | node -e '
   const files = JSON.parse(require("fs").readFileSync(0, "utf8"))[0].files.map((f) => f.path);
@@ -81,11 +161,3 @@ for package in kzoo-darwin-arm64 kzoo-darwin-x64 kzoo; do
   fi
   (cd "$here/$package" && npm publish --access public $dry)
 done
-
-# Tagged once all of it is out (the crates.io release tags the same).
-if [ -z "$dry" ] && ! git -C "$root" rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
-  git -C "$root" tag -a "v$version" -m "kzoo $version"
-fi
-if [ -z "$dry" ]; then
-  git -C "$root" push origin "v$version"
-fi

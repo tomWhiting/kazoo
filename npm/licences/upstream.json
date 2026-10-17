@@ -1,0 +1,112 @@
+{
+  "_": "Licence texts for linked crates that ship none, kept here and checked by notices.py. Each entry names exact versions: a crate upgraded past them fails the notices until its texts are checked again.",
+  "entries": [
+    {
+      "crates": [
+        "audio-core@0.2.1"
+      ],
+      "files": [
+        "audio-LICENSE-MIT.txt"
+      ],
+      "licence": "MIT",
+      "source": "https://github.com/udoprog/audio at 10489fc, the commit audio-core 0.2.1 was published from",
+      "copyright": "Copyright (c) John-John Tedro <udoprog@tedro.se>, the crate's author (its MIT text has no copyright line)"
+    },
+    {
+      "crates": [
+        "block@0.1.6"
+      ],
+      "files": [],
+      "licence": "MIT",
+      "source": "http://github.com/SSheldon/rust-block, which holds no licence text, as the crate ships none",
+      "copyright": "Copyright (c) Steven Sheldon, the crate's author (from its Cargo.toml)"
+    },
+    {
+      "crates": [
+        "realfft@3.5.0"
+      ],
+      "files": [],
+      "licence": "MIT",
+      "source": "https://github.com/HEnquist/realfft, which holds no licence text, as the crate ships none",
+      "copyright": "Copyright (c) HEnquist <henrik.enquist@gmail.com>, the crate's author (from its Cargo.toml)"
+    },
+    {
+      "crates": [
+        "block2@0.6.2",
+        "objc2@0.6.3",
+        "objc2-encode@4.1.0",
+        "objc2-foundation@0.3.2",
+        "dispatch2@0.3.0",
+        "objc2-audio-toolbox@0.3.2",
+        "objc2-core-audio@0.3.2",
+        "objc2-core-audio-types@0.3.2",
+        "objc2-core-foundation@0.3.2"
+      ],
+      "files": [
+        "objc2-LICENSE.md",
+        "objc2-LICENSE-MIT.txt"
+      ],
+      "licence": "MIT",
+      "source": "https://github.com/madsmtm/objc2 (LICENSE.md at b4167b5, the commit objc2 0.6.3 was published from; LICENSE-MIT.txt at ee9a7ad on main, fetched 17 Oct 2026: the published commits had no MIT text)"
+    },
+    {
+      "crates": [
+        "dasp_sample@0.11.0"
+      ],
+      "files": [
+        "dasp-LICENSE-MIT.txt"
+      ],
+      "licence": "MIT",
+      "source": "https://github.com/RustAudio/dasp at 97c3bb9, the commit dasp_sample 0.11.0 was published from"
+    },
+    {
+      "crates": [
+        "ratatui@0.30.0",
+        "ratatui-core@0.1.0",
+        "ratatui-crossterm@0.1.0",
+        "ratatui-widgets@0.3.0"
+      ],
+      "files": [
+        "ratatui-LICENSE.txt"
+      ],
+      "licence": "MIT",
+      "source": "https://github.com/ratatui/ratatui at 0a2a7c0, the commit ratatui 0.30.0 was published from"
+    },
+    {
+      "crates": [
+        "rmcp@3.5.1"
+      ],
+      "files": [
+        "rmcp-LICENSE.txt"
+      ],
+      "licence": "Apache-2.0",
+      "source": "https://github.com/modelcontextprotocol/rust-sdk at 79437f2, the commit rmcp 3.5.1 was published from"
+    },
+    {
+      "crates": [
+        "symphonia@0.5.5",
+        "symphonia-bundle-flac@0.5.5",
+        "symphonia-bundle-mp3@0.5.5",
+        "symphonia-codec-aac@0.5.5",
+        "symphonia-codec-adpcm@0.5.5",
+        "symphonia-codec-alac@0.5.5",
+        "symphonia-codec-pcm@0.5.5",
+        "symphonia-codec-vorbis@0.5.5",
+        "symphonia-core@0.5.5",
+        "symphonia-format-caf@0.5.5",
+        "symphonia-format-isomp4@0.5.5",
+        "symphonia-format-mkv@0.5.5",
+        "symphonia-format-ogg@0.5.5",
+        "symphonia-format-riff@0.5.5",
+        "symphonia-metadata@0.5.5",
+        "symphonia-utils-xiph@0.5.5"
+      ],
+      "files": [
+        "symphonia-LICENSE.txt"
+      ],
+      "licence": "MPL-2.0",
+      "source": "https://github.com/pdeljanov/Symphonia at 6d533f2, the commit symphonia 0.5.5 was published from",
+      "copyright": "Copyright (c) 2019-2022 The Project Symphonia Developers."
+    }
+  ]
+}
