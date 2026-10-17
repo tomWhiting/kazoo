@@ -7,7 +7,7 @@ every kazoo instrument plugs into, all following one tempo and one play/stop.
 
 ```sh
 # install the studio once (or: cargo install kzoo)
-npm install -g @tomwhiting/kzoo
+npm install -g kzuu
 
 # terminal 1: the desk
 kazoo mix

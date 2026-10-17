@@ -1,8 +1,9 @@
 # npm packages for kzoo
 
-- `@tomwhiting/kzoo` (in `kzoo/`): the launcher `npx @tomwhiting/kzoo` runs.
-  npm refuses the bare name `kzoo` as too like `koa` and `zod`; the command
-  it installs is still `kzoo` (and `kazoo`). It finds the build for this machine
+- `kzuu` (in `kzoo/`): the launcher `npx kzuu` runs. npm refuses the bare
+  name `kzoo` as too like `koa` and `zod`. It installs the commands `kzuu`,
+  `kzoo` and `kazoo`; 0.3.0 also went out as `@tomwhiting/kzoo`, deprecated
+  in favour of `kzuu`. It finds the build for this machine
   and runs it with the same arguments.
 - `kzoo-darwin-arm64`, `kzoo-darwin-x64`: the program itself for each Mac
   (`bin/kzoo`), installed by the launcher as an optional dependency for the

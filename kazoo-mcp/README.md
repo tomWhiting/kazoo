@@ -9,7 +9,7 @@ It is a client of the wall daemon's control socket and never starts the daemon i
 **Tom** starts the wall once. It then plays forever:
 
 ```sh
-npm install -g @tomwhiting/kzoo      # or: cargo install kzoo
+npm install -g kzuu                  # or: cargo install kzoo
 kazoo wall                           # opens the TUI and starts the daemon if none is running
 ```
 
