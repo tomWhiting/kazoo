@@ -230,6 +230,12 @@ impl Judge {
         self.counters().snapshot()
     }
 
+    /// Whether the worker has stopped: its feed is gone, or it panicked.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.handle.is_finished()
+    }
+
     /// The counters, to read from elsewhere while the judge runs.
     #[must_use]
     pub fn counters(&self) -> JudgeCounters {

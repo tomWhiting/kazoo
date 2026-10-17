@@ -24,6 +24,9 @@ use looper::{LoopFeed, LoopLength, Looper};
 
 pub trait DeskOut {
     fn send_voice(&mut self, frame: &VoiceFrame) -> bool;
+    /// Whether the desk is connected and can carry the voice: only then is
+    /// a frame it does not take a loss.
+    fn carries_voice(&self) -> bool;
     fn send_audio(&mut self, frames: u32, samples: &[f32]) -> bool;
     fn is_connected(&self) -> bool;
     fn drain_events(&mut self, on: &mut dyn FnMut(HubEvent));
@@ -36,6 +39,10 @@ pub trait DeskOut {
 impl DeskOut for HubLinkAudio {
     fn send_voice(&mut self, frame: &VoiceFrame) -> bool {
         Self::send_voice(self, frame)
+    }
+
+    fn carries_voice(&self) -> bool {
+        Self::carries_voice(self)
     }
 
     fn send_audio(&mut self, frames: u32, samples: &[f32]) -> bool {
@@ -405,7 +412,10 @@ impl<D: DeskOut> MouthEngine<D> {
         for mut frame in frames.into_iter().take(emitted).flatten() {
             self.quantiser.process(&mut frame);
             self.synth.control(&frame);
-            if !self.desk.send_voice(&frame) {
+            // Playing direct, or to a desk too old for the voice, is not a
+            // loss: only a desk that carries it and had no room is.
+            let carries = self.desk.carries_voice();
+            if !self.desk.send_voice(&frame) && carries {
                 self.stats.voice_refused.fetch_add(1, Ordering::Relaxed);
             }
             if self.display.try_push(frame).is_err() {

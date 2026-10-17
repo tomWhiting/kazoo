@@ -13,6 +13,7 @@ use crate::engine::looper::{
     BAR_CHOICES, LoopFeed, LoopGauges, LoopLength, Note, State, VOLUME_DEFAULT,
 };
 use crate::engine::{Command, Stats};
+use crate::health::{Health, Losses};
 use kazoo_fx::Curve;
 use ringbuf::traits::Producer;
 
@@ -20,6 +21,9 @@ pub mod panels;
 pub mod settings;
 mod voice;
 use crate::synth::SynthSettings;
+
+/// How long a message stays in the footer.
+const MESSAGE_LIFETIME: Duration = Duration::from_secs(3);
 
 #[cfg(test)]
 mod tests;
@@ -340,8 +344,10 @@ pub struct App {
     pub selected_cell: usize,
     pub desk_bpm: Option<f64>,
     pub moving: u64,
-    pub fx_faults: u64,
-    pub fx_refused: u64,
+    /// What the mouth has lost, for the header's health row.
+    pub(crate) health: Health,
+    /// Why the voice judge's first pYIN run failed, once one has.
+    pub(crate) pitch_failure: Option<String>,
     pub settings_path: PathBuf,
     busy_until: Option<Instant>,
     dirty_at: Option<Instant>,
@@ -407,8 +413,8 @@ impl App {
             selected_cell: 0,
             desk_bpm: None,
             moving: 0,
-            fx_faults: 0,
-            fx_refused: 0,
+            health: Health::default(),
+            pitch_failure: None,
             settings_path: path,
             busy_until: None,
             dirty_at: None,
@@ -434,7 +440,7 @@ impl App {
     }
 
     pub(crate) fn message(&mut self, message: String, now: Instant) {
-        self.message = Some((message, now + Duration::from_secs(3)));
+        self.message = Some((message, now + MESSAGE_LIFETIME));
     }
 
     pub(crate) const fn save_returned(&mut self) {
@@ -601,6 +607,15 @@ impl App {
         self.notes.get(index).map(String::as_str)
     }
 
+    /// Take the losses the session read at `now` for the health row, and
+    /// the first pYIN failure's reason once there is one.
+    pub fn observe_losses(&mut self, losses: Losses, pitch_failure: Option<&str>, now: Instant) {
+        self.health.observe(losses, now);
+        if self.pitch_failure.is_none() {
+            self.pitch_failure = pitch_failure.map(str::to_owned);
+        }
+    }
+
     pub fn sync_stats(&mut self, stats: &Stats, now: Instant) {
         let bits = stats.desk_bpm.load(Ordering::Relaxed);
         self.desk_bpm = if bits == 0 {
@@ -626,8 +641,6 @@ impl App {
         });
         self.mic_rms = f32::from_bits(stats.mic_rms.load(Ordering::Relaxed));
         self.output_rms = f32::from_bits(stats.output_rms.load(Ordering::Relaxed));
-        self.fx_faults = stats.fx_faults.load(Ordering::Relaxed);
-        self.fx_refused = stats.fx_refused.load(Ordering::Relaxed);
     }
 
     pub fn save_if_due(&mut self, now: Instant, quitting: bool) {

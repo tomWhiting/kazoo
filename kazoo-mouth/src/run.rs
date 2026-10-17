@@ -15,7 +15,7 @@ use kazoo_core::host::link::{LinkSetup, connect_or_direct};
 use kazoo_core::io::mic::{Mic, MicRequest, MicTarget};
 use kazoo_core::ipc::link::HubLink;
 use kazoo_core::voice::VoiceFrame;
-use kazoo_core::voice::judge::{self, Judge, OnsetConfig};
+use kazoo_core::voice::judge::{self, Judge, JudgeCounters, OnsetConfig};
 use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
 use ringbuf::traits::{Consumer, Split};
 use ringbuf::{HeapCons, HeapRb};
@@ -23,6 +23,7 @@ use ringbuf::{HeapCons, HeapRb};
 use crate::controls::{Action, App, settings};
 use crate::engine::looper::{LoopFeed, LoopOut};
 use crate::engine::{Command, EngineSetup, MouthEngine, Stats};
+use crate::health::Losses;
 use crate::ui::{self, Display};
 
 #[cfg(test)]
@@ -199,8 +200,35 @@ pub fn run(args: Args) -> Result<()> {
     let result = event_loop(&mut session, &mut terminal, &mut app);
     app.sync_stats(&session.stats, Instant::now());
     app.save_if_due(Instant::now(), true);
+    // The desk's counters go with the link, so they are read before it is.
+    let desk = session.hub.as_ref().map(HubLink::status);
     let stopped = session.stop();
-    leave(result, terminal, stopped)
+    // Now the judge has been joined, its counters are final.
+    let losses = Losses::read(
+        &session.stats,
+        &session.judge_counters,
+        false,
+        desk.as_ref(),
+    );
+    app.observe_losses(
+        losses,
+        session.judge_counters.first_pitch_failure(),
+        Instant::now(),
+    );
+    let left = leave(result, terminal, stopped);
+    // Said once the terminal is back, where it stays on the screen.
+    let report = app.health.report(app.pitch_failure.as_deref());
+    let said = say(session.after.drain(..).chain(report));
+    combine(left, said)
+}
+
+/// Lines for the terminal once it is back, each on stderr.
+fn say(lines: impl Iterator<Item = String>) -> Result<()> {
+    let mut err = io::stderr().lock();
+    for line in lines {
+        writeln!(err, "{line}").wrap_err("writing to stderr")?;
+    }
+    Ok(())
 }
 
 struct Session {
@@ -210,6 +238,8 @@ struct Session {
     mic: Option<Mic>,
     hub: Option<HubLink>,
     judge: Option<Judge>,
+    /// The judge's counters, read with the mouth's own; they outlive it.
+    judge_counters: JudgeCounters,
     commands: Sender<Command>,
     display: HeapCons<VoiceFrame>,
     stats: Arc<Stats>,
@@ -218,6 +248,9 @@ struct Session {
     writers: Vec<std::thread::JoinHandle<()>>,
     saved: crossbeam_channel::Receiver<String>,
     saved_tx: Sender<String>,
+    /// What to say once the terminal is left: written while the screen is
+    /// up, it would vanish with it.
+    after: Vec<String>,
 }
 
 impl Session {
@@ -260,6 +293,7 @@ impl Session {
             output: None,
             mic: None,
             hub: Some(hub),
+            judge_counters: judge.counters(),
             judge: Some(judge),
             commands,
             display,
@@ -269,6 +303,7 @@ impl Session {
             writers: Vec::new(),
             saved,
             saved_tx,
+            after: Vec::new(),
         };
         let mut engine = MouthEngine::with_settings(
             EngineSetup {
@@ -300,7 +335,7 @@ impl Session {
             Arc::new(move |offered, accepted| {
                 stats
                     .mic_dropped
-                    .fetch_add((offered - accepted) as u64, Ordering::Relaxed);
+                    .fetch_add(offered.saturating_sub(accepted) as u64, Ordering::Relaxed);
             }),
             notices,
         )?);
@@ -322,11 +357,19 @@ impl Session {
             })
         });
         drop(self.hub.take());
-        let reported = kazoo_core::host::link::exit_report().map_or_else(
-            || Ok(()),
-            |report| writeln!(io::stderr().lock(), "{report}").map_err(Into::into),
-        );
-        combine(writers, combine(joined, reported))
+        self.after.extend(kazoo_core::host::link::exit_report());
+        combine(writers, joined)
+    }
+
+    /// What the session has lost so far, for the health row, with the
+    /// desk's status as read this frame.
+    fn losses(&self, desk: Option<&kazoo_core::ipc::link::LinkStatus>) -> Losses {
+        Losses::read(
+            &self.stats,
+            &self.judge_counters,
+            self.judge.as_ref().is_some_and(Judge::is_finished),
+            desk,
+        )
     }
 
     fn join_writers(&mut self) -> Result<()> {
@@ -334,7 +377,7 @@ impl Session {
         for handle in self.writers.drain(..) {
             // Draining reports before joining leaves room for every worker to finish.
             for message in self.saved.try_iter() {
-                eprintln!("kazoo-mouth: {message}");
+                self.after.push(format!("kazoo-mouth: {message}"));
             }
             if let Err(panic) = handle.join() {
                 drop(panic);
@@ -342,7 +385,7 @@ impl Session {
             }
         }
         for message in self.saved.try_iter() {
-            eprintln!("kazoo-mouth: {message}");
+            self.after.push(format!("kazoo-mouth: {message}"));
         }
         result
     }
@@ -510,8 +553,12 @@ fn save_loop(directory: &Path, samples: &[f32], rate: u32, seconds: u64) -> io::
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // Here the terminal has been left, or the program is unwinding.
         if let Err(error) = self.stop() {
             eprintln!("kazoo-mouth: stopping audio failed: {error}");
+        }
+        for line in self.after.drain(..) {
+            eprintln!("{line}");
         }
     }
 }
@@ -544,6 +591,37 @@ fn combine(first: Result<()>, second: Result<()>) -> Result<()> {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Err(first), Err(second)) => Err(eyre!("{first:#}; also: {second:#}")),
+    }
+}
+
+/// Each part of the delay from the voice to the speaker, as far as it is known.
+fn latency(
+    session: &Session,
+    desk: Option<&kazoo_core::ipc::link::LinkStatus>,
+) -> ui::latency::Latency {
+    let rate = f64::from(session.rate);
+    ui::latency::Latency {
+        input: session.mic.as_ref().and_then(Mic::input_latency_ms),
+        resampler: session
+            .mic
+            .as_ref()
+            .and_then(Mic::resampler_delay_frames)
+            .map(|frames| frames as f64 * 1000.0 / rate),
+        block: session
+            .output
+            .as_ref()
+            .map(|output| output.buffer_frames().min(4096) as f64 * 1000.0 / rate),
+        effects: Some(session.stats.fx_latency.load(Ordering::Relaxed) as f64 * 1000.0 / rate),
+        device_buffers_only: kazoo_core::host::audio::LATENCY_COVERS
+            == kazoo_core::host::audio::LatencyCovers::BufferOnly,
+        output: if desk.is_some_and(|desk| desk.connected) {
+            None
+        } else {
+            session
+                .output
+                .as_ref()
+                .and_then(|output| output.health().latency_ms())
+        },
     }
 }
 
@@ -586,39 +664,18 @@ fn event_loop(
                     app.spectrum.update(app.scope.voice(), session.rate);
                 }
             }
-            let rate = f64::from(session.rate);
-            app.latency = ui::latency::Latency {
-                input: session.mic.as_ref().and_then(Mic::input_latency_ms),
-                resampler: session
-                    .mic
-                    .as_ref()
-                    .and_then(Mic::resampler_delay_frames)
-                    .map(|frames| frames as f64 * 1000.0 / rate),
-                block: session
-                    .output
-                    .as_ref()
-                    .map(|output| output.buffer_frames().min(4096) as f64 * 1000.0 / rate),
-                effects: Some(
-                    session.stats.fx_latency.load(Ordering::Relaxed) as f64 * 1000.0 / rate,
-                ),
-                device_buffers_only: kazoo_core::host::audio::LATENCY_COVERS
-                    == kazoo_core::host::audio::LatencyCovers::BufferOnly,
-                output: if session
-                    .hub
-                    .as_ref()
-                    .is_some_and(|hub| hub.status().connected)
-                {
-                    None
-                } else {
-                    session
-                        .output
-                        .as_ref()
-                        .and_then(|output| output.health().latency_ms())
-                },
-            };
-            let link = link_state(session);
+            // The desk's status, read once a frame: it takes a lock and
+            // copies a string.
+            let desk = session.hub.as_ref().map(HubLink::status);
+            app.latency = latency(session, desk.as_ref());
+            let link = link_state(desk.as_ref());
             let now = Instant::now();
             app.sync_stats(&session.stats, now);
+            app.observe_losses(
+                session.losses(desk.as_ref()),
+                session.judge_counters.first_pitch_failure(),
+                now,
+            );
             app.sync_loop(session.rate, now);
             session.loop_returns(app, now);
             app.save_if_due(now, false);
@@ -658,11 +715,8 @@ fn show_input_notice(app: &mut App, notices: &InputNotices, now: Instant) {
     }
 }
 
-fn link_state(session: &Session) -> String {
-    let Some(hub) = &session.hub else {
-        return "playing direct: no desk".into();
-    };
-    desk_status(&hub.status())
+fn link_state(desk: Option<&kazoo_core::ipc::link::LinkStatus>) -> String {
+    desk.map_or_else(|| "playing direct: no desk".into(), desk_status)
 }
 
 fn desk_status(state: &kazoo_core::ipc::link::LinkStatus) -> String {

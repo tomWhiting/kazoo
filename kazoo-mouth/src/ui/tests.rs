@@ -663,3 +663,93 @@ fn a_narrow_header_keeps_every_word_of_the_mic_and_the_desk() {
         );
     }
 }
+
+/// The health row sits in the header, wrapped to the width and red while
+/// it rises: on an 80 by 24 screen its words are whole, the footer is whole,
+/// and the rest of the header still fits.
+#[test]
+fn the_health_row_wraps_in_the_header_and_leaves_the_footer_alone() {
+    use crate::health::Losses;
+    use ratatui::style::Color;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    let display = Display::new(RATE);
+    let now = Instant::now();
+    let losses = Losses {
+        mic_dropped: 28,
+        display_dropped: 3,
+        judge: kazoo_core::voice::judge::JudgeStatsSnapshot {
+            pitch_runs_failed: 1,
+            ..Default::default()
+        },
+        ..Losses::default()
+    };
+    let why = "pyin's forward FFT: the input and output buffers are the wrong length";
+    app.observe_losses(losses, Some(why), now);
+    let buffer = render(&app, &display, 80, 24, now);
+    let screen = text(&buffer);
+    let joined: String = screen.lines().map(str::trim_end).collect();
+    assert!(
+        joined.contains(&format!(
+            "28 mic samples dropped (+2 others); pYIN failed: {why}"
+        )),
+        "{screen}"
+    );
+    let footer = screen.lines().last().unwrap();
+    assert!(footer.starts_with(super::FOOTER), "{footer}");
+    assert!(!footer.contains("lost"), "{footer}");
+    // The rise wraps to several red rows here; the rest still fit.
+    let width = usize::from(buffer.area.width);
+    let red = (0..usize::from(buffer.area.height))
+        .filter(|row| buffer.content[width * row].fg == Color::Red)
+        .count();
+    assert!(red >= 2, "the rise wraps: {screen}");
+    // The rest of the header still fits, after the health rows.
+    assert!(screen.contains("mic: "), "{screen}");
+    assert!(screen.contains("playing direct: no desk"), "{screen}");
+    let row = screen
+        .lines()
+        .position(|line| line.contains("28 mic samples dropped"))
+        .unwrap();
+    let start = usize::from(buffer.area.width) * row;
+    assert_eq!(buffer.content[start].fg, Color::Red, "fresh is red");
+
+    // Once settled, the totals stay, amber.
+    let later = now + crate::health::RISE_LIFETIME;
+    let buffer = render(&app, &display, 80, 24, later);
+    let screen = text(&buffer);
+    let row = screen
+        .lines()
+        .position(|line| line.contains("lost so far: mic 28 · pyin 1 · screen 3"))
+        .unwrap_or_else(|| panic!("{screen}"));
+    let start = usize::from(buffer.area.width) * row;
+    assert_eq!(buffer.content[start].fg, Color::Yellow, "settled is amber");
+}
+
+#[test]
+fn nothing_lost_draws_no_health_row() {
+    let app = App::new(QuantiseSettings::default(), false);
+    let screen = text(&render(&app, &Display::new(RATE), 120, 40, Instant::now()));
+    assert!(!screen.contains("lost"), "{screen}");
+}
+
+/// On a short screen the header is cut from the bottom, so the health row,
+/// straight after the title, is the last of it to go.
+#[test]
+fn a_short_screen_keeps_the_health_row_before_the_latency() {
+    use crate::health::Losses;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.plots.latency_open = true;
+    let now = Instant::now();
+    app.observe_losses(
+        Losses {
+            mic_dropped: 28,
+            ..Losses::default()
+        },
+        None,
+        now,
+    );
+    let screen = text(&render(&app, &Display::new(RATE), 80, 12, now));
+    // Straight after the title, wherever the rest of the header falls.
+    let second = screen.lines().nth(1).unwrap_or_default();
+    assert!(second.contains("28 mic samples dropped"), "{screen}");
+}

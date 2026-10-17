@@ -90,6 +90,14 @@ impl HubLinkAudio {
         self.waker.unpark();
         true
     }
+
+    /// Whether the desk is connected and carries the voice: only then is a
+    /// frame [`Self::send_voice`] refuses a frame the desk had no room for.
+    /// No allocation, lock or I/O.
+    #[must_use]
+    pub fn carries_voice(&self) -> bool {
+        self.is_connected() && self.state.desk_features.load(Ordering::Acquire) & FEATURE_VOICE != 0
+    }
 }
 
 impl HubLink {

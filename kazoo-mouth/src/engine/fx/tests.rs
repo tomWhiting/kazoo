@@ -340,6 +340,9 @@ impl DeskOut for FakeDesk {
     fn send_voice(&mut self, frame: &VoiceFrame) -> bool {
         frame.hz.is_finite()
     }
+    fn carries_voice(&self) -> bool {
+        self.connected
+    }
     fn send_audio(&mut self, frames: u32, samples: &[f32]) -> bool {
         assert_eq!(samples.len(), frames as usize * 2);
         self.frame += u64::from(frames);

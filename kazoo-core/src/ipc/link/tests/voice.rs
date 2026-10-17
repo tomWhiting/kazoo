@@ -136,9 +136,11 @@ fn read_follow(hub: &mut UnixStream, buf: &mut FrameBuffer) -> bool {
 #[test]
 fn voice_waits_for_the_desk_to_say_it_carries_it() {
     let mut rig = Rig::new();
+    assert!(!rig.audio.carries_voice(), "not connected");
     assert!(!rig.audio.send_voice(&frame(0)));
     let (mut hub, mut buf) = rig.connect(None);
     assert!(!rig.link.desk_carries_voice());
+    assert!(!rig.audio.carries_voice(), "a desk without voice");
     assert!(!rig.audio.send_voice(&frame(1)));
     assert_eq!(rig.link.voice_stats().dropped, 2);
     assert_eq!(rig.link.follow_voice(true), Err(RequestError::Unsupported));
@@ -150,6 +152,7 @@ fn voice_waits_for_the_desk_to_say_it_carries_it() {
     announce(&mut hub, &mut buf, FEATURE_VOICE);
     rig.worker.serve().unwrap();
     assert!(rig.link.desk_carries_voice());
+    assert!(rig.audio.carries_voice(), "the audio half agrees");
     assert!(rig.link.status().voice.desk_carries);
     assert!(read_follow(&mut hub, &mut buf));
     assert!(rig.audio.send_voice(&frame(2)));

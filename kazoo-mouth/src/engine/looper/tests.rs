@@ -509,6 +509,9 @@ impl DeskOut for TestDesk {
     fn send_voice(&mut self, _: &kazoo_core::voice::VoiceFrame) -> bool {
         true
     }
+    fn carries_voice(&self) -> bool {
+        false
+    }
     fn send_audio(&mut self, _: u32, _: &[f32]) -> bool {
         false
     }

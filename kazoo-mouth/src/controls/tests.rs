@@ -811,3 +811,27 @@ fn bands_select_only_preallocated_choices_and_restore_default() {
     assert_eq!(app.accepted.synth.bands, 16);
     assert_whole_command(&app, &sender, Control::Bands);
 }
+
+/// The app keeps the first pYIN failure's reason, as the judge does, and
+/// gives the health row each read.
+#[test]
+fn losses_reach_the_health_row_with_the_first_reason() {
+    let now = Instant::now();
+    let mut app = App::new(QuantiseSettings::default(), false);
+    let losses = crate::health::Losses {
+        judge: kazoo_core::voice::judge::JudgeStatsSnapshot {
+            pitch_runs_failed: 1,
+            ..Default::default()
+        },
+        ..crate::health::Losses::default()
+    };
+    app.observe_losses(losses, Some("first"), now);
+    app.observe_losses(losses, Some("second"), now);
+    assert_eq!(app.pitch_failure.as_deref(), Some("first"));
+    let row = app
+        .health
+        .row(now, app.pitch_failure.as_deref())
+        .expect("a failed run is shown");
+    assert!(row.fresh);
+    assert!(row.text.ends_with(": first"), "{}", row.text);
+}
