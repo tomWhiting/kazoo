@@ -1,6 +1,6 @@
 {
   "name": "kzoo-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The kzoo program for macOS on Apple silicon: installed by the kzoo package",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/tomWhiting/kazoo",
