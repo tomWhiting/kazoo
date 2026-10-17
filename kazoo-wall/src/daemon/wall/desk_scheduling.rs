@@ -25,7 +25,7 @@ fn last_tempo(what: &What) -> Option<(f64, bool, f64)> {
 }
 
 /// Why the desk did not take a tempo, in words.
-const fn refusal_words(error: &RequestError) -> &'static str {
+const fn refusal_words(error: RequestError) -> &'static str {
     match error {
         RequestError::Full => "it had too many requests waiting",
         RequestError::NotConnected => "it had gone away (the wall keeps its own tempo off it)",
@@ -90,7 +90,7 @@ impl Wall {
                     "the desk could not take the scheduled tempo of {} for change {}: {}",
                     crate::format::bpm(pending.bpm),
                     pending.seq,
-                    refusal_words(&error)
+                    refusal_words(error)
                 );
                 eprintln!("kazoo-wall: {summary}");
                 self.told.push(Event::Notice { summary });
