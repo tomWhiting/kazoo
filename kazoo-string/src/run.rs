@@ -73,6 +73,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let mut terminal = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
         mouse: false,
         key_release_events: true,
+        panics: kazoo_host::terminal::Panics::AnyThread,
     })?;
     let keyboard = terminal.key_releases().clone();
 
