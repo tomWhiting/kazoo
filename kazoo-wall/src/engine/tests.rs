@@ -36,6 +36,9 @@ struct Model {
     slots: Vec<(usize, Kind)>,
     cables: Vec<Cable>,
     next_tag: u32,
+    /// Give every cable a wait and a fade drawn from its ends (KZ-T12), so
+    /// timed cables are rendered too.
+    timed: bool,
 }
 
 impl Model {
@@ -74,16 +77,22 @@ impl Model {
             // A tag from the cable's ends: a line that changes hands is
             // started afresh by the engine.
             let tag = u32::try_from(((from * 7 + port) * 97 + to) * 31 + input + 1).unwrap();
-            assert!(table.set(
-                to,
-                input,
-                Some(Route::new(
-                    u32::try_from(from).unwrap(),
-                    u8::try_from(port).unwrap(),
-                    amount,
-                    tag,
-                )),
-            ));
+            let route = Route::new(
+                u32::try_from(from).unwrap(),
+                u8::try_from(port).unwrap(),
+                amount,
+                tag,
+            );
+            let route = if self.timed {
+                Route {
+                    wait: tag % 3_000,
+                    glide: tag % 700,
+                    ..route
+                }
+            } else {
+                route
+            };
+            assert!(table.set(to, input, Some(route)));
         }
         let slots: Vec<usize> = self.slots.iter().map(|(s, _)| *s).collect();
         let edges: Vec<(usize, usize)> = self.cables.iter().map(|c| (c.0, c.2)).collect();
@@ -117,7 +126,16 @@ fn peak(samples: &[f32]) -> f32 {
 #[test]
 fn random_patching_never_allocates_on_the_audio_thread() {
     let (mut engine, mut control) = fresh();
-    let mut model = Model::default();
+    let mut model = Model {
+        timed: true,
+        ..Model::default()
+    };
+    let curves = [
+        crate::protocol::GlideCurve::Linear,
+        crate::protocol::GlideCurve::EaseIn,
+        crate::protocol::GlideCurve::EaseOut,
+        crate::protocol::GlideCurve::SCurve,
+    ];
     let mut rng = Rng::new(1234);
     let mut buffer = Vec::with_capacity(8_192);
     // The wall's own kinds and the test effect: every real effect gets its
@@ -170,8 +188,8 @@ fn random_patching_never_allocates_on_the_audio_thread() {
                     knob,
                     target: spec.knobs[knob].denormalise(rng.unit()),
                     glide_frames: pick(&mut rng, 20_000) as u32,
-                    wait_frames: 0,
-                    curve: crate::protocol::GlideCurve::Linear,
+                    wait_frames: pick(&mut rng, 3) as u32 * pick(&mut rng, 5_000) as u32,
+                    curve: curves[pick(&mut rng, curves.len())],
                 });
             }
             5 | 6 if !model.slots.is_empty() => {
@@ -187,6 +205,11 @@ fn random_patching_never_allocates_on_the_audio_thread() {
                     control.send(Command::Unline { slot, jack });
                 }
             }
+            _ if round % 3 == 0 => control.send(Command::TempoGlide {
+                bpm: f64::from(rng.unit()) * 300.0,
+                frames: pick(&mut rng, 4_000) as u32,
+                wait_frames: pick(&mut rng, 4_000) as u32,
+            }),
             _ => control.send(Command::Tempo(f64::from(rng.unit()) * 300.0)),
         }
         let frames = 1 + pick(&mut rng, 1_500);

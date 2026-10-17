@@ -122,7 +122,7 @@ pub enum BatchChange {
         /// Beats to hold before the sound starts at the acceptance tempo: 0 to 256, default 0.
         #[serde(default)]
         after_beats: f64,
-        /// Beats for the tempo to move linearly after its wait: 0 to 64, default 0.
+        /// Beats for the tempo to move linearly after its wait, on the wall's own clock only (refused while it follows the desk): 0 to 64, default 0.
         #[serde(default)]
         glide_beats: f64,
         /// Beats per minute, 20 to 300.

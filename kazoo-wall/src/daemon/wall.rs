@@ -3140,30 +3140,6 @@ impl Wall {
         }
     }
 
-    /// Plug output `from` into jack `to` for `seat`. The request is checked
-    /// first, then the room for it, and only then is the patch changed. A
-    /// cable into a jack already in use replaces it: no more work than
-    /// before.
-    fn plug(
-        &mut self,
-        seat: &str,
-        from: &str,
-        to: &str,
-        amount: Option<f64>,
-    ) -> Result<Outcome, WallError> {
-        let growth = Growth {
-            cables: usize::from(self.patch.check_plug(from, to, amount)?),
-            ..Growth::NONE
-        };
-        self.room_to_grow(growth)?;
-        let what = self.patch.plug(from, to, amount, None)?;
-        let cable = match &what {
-            What::Patch { cable, .. } => Some(cable.id),
-            _ => None,
-        };
-        self.changed(seat, what, None, None, cable)
-    }
-
     /// Add a module of `kind` for `seat`: checked, then the room for it,
     /// then added.
     fn add(
@@ -3632,6 +3608,15 @@ impl Wall {
         }
         let bpm = clamp_bpm(bpm);
         let desk = self.desk.as_ref().is_some_and(HubLink::is_connected);
+        // The desk takes one tempo and moves to it at once: a glide asked of
+        // it would be logged as one and jump.
+        if desk && timing.1 > 0.0 {
+            return Err(error(
+                ErrorCode::BadRequest,
+                "the desk moves its tempo at once; glide_beats is for the wall's own clock \
+                 (after_beats still holds the desk's tempo back)",
+            ));
+        }
         // What plays now: on the desk, the desk's; off it, the wall's own
         // as last changed (the engine hears a change a block later, and
         // through a load's fade later still).
