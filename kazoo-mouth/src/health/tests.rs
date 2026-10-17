@@ -275,7 +275,8 @@ fn losses_are_read_from_the_stats_the_desk_and_the_judge() {
     judge.join().expect("the judge exits");
 }
 
-/// Losses that keep rising never hide the others: the totals ride along.
+/// Losses that keep rising never hide the others, whether they rise with
+/// them or came before: the totals ride along.
 #[test]
 fn rising_for_half_a_minute_keeps_the_others_in_sight() {
     let mut health = Health::default();
@@ -309,5 +310,35 @@ fn a_judge_seen_stopped_is_in_the_report() {
     assert_eq!(
         health.report(None).as_deref(),
         Some("kazoo-mouth: the voice judge stopped")
+    );
+}
+
+/// One counter rising alone after others settled still shows them.
+#[test]
+fn one_counter_rising_alone_keeps_earlier_losses_in_sight() {
+    let mut health = Health::default();
+    let start = Instant::now();
+    health.observe(losses(|l| l.mic_dropped = 28), start);
+    let later = start + RISE_LIFETIME;
+    for step in 0..6_u64 {
+        let now = later + Duration::from_secs(5 * step);
+        health.observe(
+            losses(|l| {
+                l.mic_dropped = 28;
+                l.desk_blocks_dropped = 10 * (step + 1);
+            }),
+            now,
+        );
+        let row = health.row(now, None).expect("a loss is shown");
+        assert!(row.fresh);
+        assert!(row.text.contains("lost so far:"), "{}", row.text);
+        assert!(row.text.contains("mic 28"), "{}", row.text);
+    }
+    // A first loss alone says no totals beside it: they would repeat it.
+    let mut first = Health::default();
+    first.observe(losses(|l| l.mic_dropped = 3), start);
+    assert_eq!(
+        text(&first, start, None).as_deref(),
+        Some("3 mic samples dropped")
     );
 }

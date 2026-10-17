@@ -697,14 +697,12 @@ fn the_health_row_wraps_in_the_header_and_leaves_the_footer_alone() {
     let footer = screen.lines().last().unwrap();
     assert!(footer.starts_with(super::FOOTER), "{footer}");
     assert!(!footer.contains("lost"), "{footer}");
-    // The health row takes three rows here; the rest still fit.
-    let health_rows = screen
-        .lines()
-        .filter(|line| {
-            line.contains("mic samples") || line.contains("FFT") || line.contains("length")
-        })
+    // The rise wraps to several red rows here; the rest still fit.
+    let width = usize::from(buffer.area.width);
+    let red = (0..usize::from(buffer.area.height))
+        .filter(|row| buffer.content[width * row].fg == Color::Red)
         .count();
-    assert!(health_rows >= 2, "{screen}");
+    assert!(red >= 2, "the rise wraps: {screen}");
     // The rest of the header still fits, after the health rows.
     assert!(screen.contains("mic: "), "{screen}");
     assert!(screen.contains("playing direct: no desk"), "{screen}");
@@ -751,5 +749,7 @@ fn a_short_screen_keeps_the_health_row_before_the_latency() {
         now,
     );
     let screen = text(&render(&app, &Display::new(RATE), 80, 12, now));
-    assert!(screen.contains("28 mic samples dropped"), "{screen}");
+    // Straight after the title, wherever the rest of the header falls.
+    let second = screen.lines().nth(1).unwrap_or_default();
+    assert!(second.contains("28 mic samples dropped"), "{screen}");
 }

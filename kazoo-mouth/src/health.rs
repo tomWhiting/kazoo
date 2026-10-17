@@ -255,9 +255,15 @@ impl Health {
             && now < until
         {
             let mut rise = describe(&since, &self.seen, pitch_failure);
-            // The others are named in the totals, which stay in sight
+            // Whatever the rise does not name (others rising with it, or
+            // losses from before it) is in the totals, which stay in sight
             // however long the losses keep rising.
-            if rises(&since, &self.seen).len() > 1
+            let named = rises(&since, &self.seen).len();
+            let lost = COUNTERS
+                .iter()
+                .filter(|counter| (counter.read)(&self.seen) > 0)
+                .count();
+            if (named > 1 || lost > named)
                 && let Some(totals) = self.totals()
             {
                 rise = format!("{rise} · lost so far: {totals}");
