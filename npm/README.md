@@ -1,8 +1,9 @@
 # npm packages for kzoo
 
-- `@tomwhiting/kzoo` (in `kzoo/`): the launcher `npx @tomwhiting/kzoo` runs.
-  npm refuses the bare name `kzoo` as too like `koa` and `zod` (and `kzuu` as
-  too like `bluu` and `zuul`). It installs the commands `kzoo` and `kazoo`.
+- `kzhz` (in `kzoo/`): the launcher `npx kzhz` runs. npm refuses the bare
+  name `kzoo` as too like `koa` and `zod` (and `kzuu` as too like `bluu` and
+  `zuul`). It installs the commands `kzhz`, `kzoo` and `kazoo`. 0.3.0 also
+  went out as `@tomwhiting/kzoo`, deprecated for `kzhz`.
   `launcher.sh name...` publishes the same launcher under the first of those
   names npm takes, with that name as one more command. It finds the build for this machine
   and runs it with the same arguments.
