@@ -62,6 +62,26 @@ So the old laptop runs the desk (kazoo-mix) and the wall, and plays to the speak
 
    **Decision:** first measure what the network costs, then decide.
 
+   **Decided, 17 Oct 2026 about 18:50, from the lane's measurement.** The margin is 3 ms (`studio_clock.rs`). Loopback TCP stays inside it (p99 68 µs), but Wi-Fi does not: a home network's jitter is a few milliseconds, and power saving holds packets for tens. Every late block would be re-placed, and each re-placement is a click.
+
+   So a stream that arrives over TCP gets a lead of its own on top of the usual (`StudioClock::with_extra_lead`):
+
+   - It starts at 10 ms of the desk's frames.
+   - Each time the stream is placed afresh after its first placement, the lead doubles, up to 160 ms.
+   - It never shrinks while the connection lasts. A new connection starts again at 10 ms.
+
+   The desk's health line for the strip, and the health report sent to the instrument (`DeskHealthMsg` if it has room; otherwise the desk's own notices), say the network lead in milliseconds. Tom can then hear and see what the network costs.
+
+   A Unix stream is unchanged.
+
+   Tests (red first):
+
+   - a TCP stream starts with the 10 ms lead;
+   - re-placements double it, up to the cap;
+   - a Unix stream's lead is as before.
+
+   **Decision:** a few tens of milliseconds of latency is better than clicks, and the lead grows only as far as this network needs.
+
 5. **Tests (red first).**
    - The hub with `--listen 127.0.0.1:0` takes a registration over TCP, seats it on a strip, and carries audio and a transport anchor, as `hub/tests` does for Unix.
    - A connection whose peer address is outside the local network is refused, through a function that takes the peer address. A test cannot dial from a public address.
