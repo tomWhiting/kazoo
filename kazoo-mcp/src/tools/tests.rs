@@ -239,7 +239,7 @@ fn a_batch_carries_each_steps_comment_beside_it() {
 
 #[test]
 fn every_tool_that_makes_a_change_takes_a_comment() {
-    let tools = Seat::tool_router().list_all();
+    let tools = Seat::all_tools().list_all();
     for name in [
         "wall_turn",
         "wall_patch",
@@ -264,7 +264,7 @@ fn every_tool_that_makes_a_change_takes_a_comment() {
 }
 
 /// Every tool, in the router's order.
-const TOOLS: [&str; 24] = [
+const TOOLS: [&str; 25] = [
     "wall_add",
     "wall_batch",
     "wall_catalogue",
@@ -277,6 +277,7 @@ const TOOLS: [&str; 24] = [
     "wall_look",
     "wall_loop",
     "wall_mark",
+    "wall_notes",
     "wall_patch",
     "wall_probe",
     "wall_record",
@@ -293,7 +294,7 @@ const TOOLS: [&str; 24] = [
 
 #[test]
 fn the_router_holds_every_tool_with_a_description_and_schema() {
-    let tools = Seat::tool_router().list_all();
+    let tools = Seat::all_tools().list_all();
     let mut names = tools
         .iter()
         .map(|tool| tool.name.as_ref())
@@ -402,7 +403,7 @@ fn undescribed(schema: &serde_json::Value, path: &str, missing: &mut Vec<String>
 
 #[test]
 fn wall_batch_describes_its_note_its_changes_and_every_field_of_a_step() {
-    let tools = Seat::tool_router().list_all();
+    let tools = Seat::all_tools().list_all();
     let batch = tools
         .iter()
         .find(|tool| tool.name == "wall_batch")
@@ -413,4 +414,25 @@ fn wall_batch_describes_its_note_its_changes_and_every_field_of_a_step() {
     assert!(missing.is_empty(), "undescribed: {missing:?}\n{batch:#}");
     let text = batch.to_string();
     assert!(text.contains("@label"), "{batch:#}");
+}
+
+#[test]
+fn notes_schema_roundtrip_preserves_texts_and_readback() {
+    let value = serde_json::json!({"note":"Proof", "description":"# Why\nline", "attachments":[{"name":"proof.md","text":"QED"}],"changes":[{"op":"tempo","bpm":140.0}]});
+    let args: super::batch::BatchArgs = serde_json::from_value(value).unwrap();
+    let request = args.request().unwrap();
+    let wire = serde_json::to_value(&request).unwrap();
+    assert_eq!(wire["description"], "# Why\nline");
+    assert_eq!(wire["attachments"][0]["text"], "QED");
+    assert_eq!(serde_json::from_value::<Request>(wire).unwrap(), request);
+    let tools = Seat::all_tools().list_all();
+    assert!(tools.iter().any(|tool| tool.name == "wall_notes"));
+    let batch = tools.iter().find(|tool| tool.name == "wall_batch").unwrap();
+    let schema = serde_json::Value::Object(batch.input_schema.as_ref().clone());
+    assert!(
+        schema["properties"]["attachments"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("read back with wall_notes")
+    );
 }

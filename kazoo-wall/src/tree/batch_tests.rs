@@ -46,3 +46,26 @@ fn an_undone_batch_is_committed_as_its_undo_not_as_the_batch_again() {
         )
     );
 }
+
+#[test]
+fn notes_commit_has_body_trailers_and_no_text_in_change_json() {
+    let change: Change = serde_json::from_value(serde_json::json!({"seq":7,"at":"2026-10-14T10:00:00Z","seat":"Tom","summary":"proof","notes":[{"name":"description.md","bytes":5,"sha256":"unused"},{"name":"proof.md","bytes":3,"sha256":"unused"}],"what":{"op":"batch","note":"A voice","changes":[{"op":"tempo","from":120.0,"to":130.0,"desk":false},{"op":"tempo","from":130.0,"to":140.0,"desk":false}]}})).unwrap();
+    let files = vec![(
+        "notes/7/description.md".into(),
+        Some("é".repeat(2001).into_bytes()),
+    )];
+    let commit = Commit::change(&change, files).unwrap();
+    assert!(commit.message.starts_with(&format!(
+        "Tom: A voice\n\n{}…\n\nKazoo-Kind:",
+        "é".repeat(2000)
+    )));
+    assert!(
+        commit
+            .message
+            .contains("Kazoo-Attachment: description.md (5)\nKazoo-Attachment: proof.md (3)\n")
+    );
+    let part = Commit::part(&change, 0, Vec::new()).unwrap();
+    assert!(!part.message.contains("Kazoo-Attachment"));
+    assert!(!part.message.contains('é'));
+    assert!(part.files.is_empty());
+}

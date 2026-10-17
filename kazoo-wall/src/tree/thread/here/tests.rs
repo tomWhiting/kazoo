@@ -217,6 +217,7 @@ impl Drop for Rig {
 
 fn make_change(seq: u64, what: What) -> Change {
     Change {
+        notes: Vec::new(),
         seq,
         at: AT.into(),
         seat: "Tom".into(),
@@ -1001,3 +1002,5 @@ fn a_batch_moment_is_a_change_with_its_number() {
         "a restart finds the batch's own commit"
     );
 }
+
+mod notes;

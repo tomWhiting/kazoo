@@ -18,6 +18,7 @@ use moments::land;
 
 mod batch;
 mod delay_lines;
+mod notes;
 mod tempo;
 
 fn wall() -> (Wall, Engine) {
@@ -3343,6 +3344,7 @@ fn a_load_kept_by_an_older_build_still_undoes() {
     // through its migration into another shape entirely.
     std::fs::write(saves.join("before-load-20260927-120000.json"), AIRPORTS).unwrap();
     let load = Change {
+        notes: Vec::new(),
         seq: 5,
         at: "2026-09-27T02:00:00Z".to_string(),
         seat: "Tom".to_string(),
@@ -3677,6 +3679,7 @@ fn a_save_holds_the_wall_to_the_last_bit() {
 /// Change `seq`, `what`, by Tom, as a log holds it.
 fn logged(seq: u64, what: What) -> Change {
     Change {
+        notes: Vec::new(),
         seq,
         at: "2026-10-09T00:00:00Z".to_string(),
         seat: "Tom".to_string(),

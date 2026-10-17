@@ -150,7 +150,7 @@ impl News {
                 self.orphan(now);
                 self.seq = self.seq.max(change.seq);
                 if change.seat != self.seat && !self.walks.changed(&change) {
-                    self.push(clean(&change.said()), now);
+                    self.push(clean_change(&change), now);
                 }
             }
             Feed::Event(Event::Seat { seat, joined, .. }) => {
@@ -424,12 +424,27 @@ fn who(seat: String) -> String {
 /// most [`MAX_SUMMARY`] characters.
 #[must_use]
 pub fn clean(summary: &str) -> String {
+    clean_to(summary, MAX_SUMMARY)
+}
+
+fn clean_change(change: &kazoo_wall::protocol::Change) -> String {
+    clean_to(
+        &change.said(),
+        if change.notes.is_empty() {
+            MAX_SUMMARY
+        } else {
+            1536
+        },
+    )
+}
+
+fn clean_to(summary: &str, limit: usize) -> String {
     let mut out: String = summary
         .chars()
         .filter(|c| !c.is_control())
-        .take(MAX_SUMMARY)
+        .take(limit)
         .collect();
-    if summary.chars().filter(|c| !c.is_control()).count() > MAX_SUMMARY {
+    if summary.chars().filter(|c| !c.is_control()).count() > limit {
         out.push('…');
     }
     out
@@ -510,6 +525,7 @@ mod tests {
     fn change(seq: u64, seat: &str, summary: &str) -> Feed {
         Feed::Event(Event::Change {
             change: Box::new(Change {
+                notes: Vec::new(),
                 seq,
                 at: "2026-09-26T12:00:01Z".to_string(),
                 seat: seat.to_string(),
@@ -837,3 +853,6 @@ mod tests {
         assert_eq!(clean(&"y".repeat(MAX_SUMMARY)).chars().count(), MAX_SUMMARY);
     }
 }
+
+#[cfg(test)]
+mod notes_tests;

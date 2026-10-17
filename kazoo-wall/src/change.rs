@@ -549,6 +549,25 @@ fn described_batch(
     format!("\"{note}\" ({count}: {list})")
 }
 
+#[must_use]
+pub fn notes_summary(notes: &[crate::protocol::NoteRef]) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    let names = notes
+        .iter()
+        .map(|note| {
+            if note.bytes >= 1024 {
+                format!("{} ({} KB)", note.name, note.bytes.div_ceil(1024))
+            } else {
+                note.name.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(", with notes: {names}")
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

@@ -90,6 +90,7 @@ impl fmt::Display for LinkError {
 pub const fn code_name(code: kazoo_wall::protocol::ErrorCode) -> &'static str {
     use kazoo_wall::protocol::ErrorCode;
     match code {
+        ErrorCode::NotFound => "not_found",
         ErrorCode::BadRequest => "bad_request",
         ErrorCode::NotHello => "not_hello",
         ErrorCode::BadName => "bad_name",
@@ -145,6 +146,7 @@ struct Connection {
     next_id: u64,
     /// Whether the wall keeps comments (see [`HelloResult::comments`]).
     comments: bool,
+    notes: bool,
 }
 
 impl Connection {
@@ -166,6 +168,7 @@ impl Connection {
             writer,
             next_id: 1,
             comments: false,
+            notes: false,
         };
         let hello = Request::Hello {
             seat: seat.to_string(),
@@ -183,6 +186,7 @@ impl Connection {
         };
         let hello: HelloResult = decode(value).map_err(LinkError::Broken)?;
         connection.comments = hello.comments;
+        connection.notes = hello.notes;
         Ok((connection, hello))
     }
 
@@ -469,6 +473,11 @@ impl Wall {
                     (slot.insert(connection), false)
                 }
             };
+            if !connection.notes
+                && matches!(request, Request::Batch {description, attachments, ..} if description.is_some() || !attachments.is_empty())
+            {
+                return Err(LinkError::Unsendable("this wall is older than batch notes; ask Tom to restart the wall. Nothing was sent".to_string()));
+            }
             // A wall older than comments would drop them without a word.
             if !connection.comments && commented(request, comment) {
                 return Err(LinkError::Unsendable(OLD_WALL.to_string()));
@@ -628,6 +637,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn notes_never_go_to_a_wall_without_the_capability() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("wall.sock");
+        tokio::spawn(stub(UnixListener::bind(&socket).unwrap()));
+        let wall = Wall::new(socket, "Tom".to_string());
+        for fields in [
+            serde_json::json!({"description":"why"}),
+            serde_json::json!({"attachments":[{"name":"proof.md","text":"QED"}]}),
+        ] {
+            let mut value = serde_json::json!({"op":"batch","note":"proof","changes":[{"op":"tempo","bpm":140.0}]});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let refused = wall
+                .ask_raw(serde_json::from_value(value).unwrap(), None)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&refused, LinkError::Unsendable(reason) if reason.contains("restart the wall")),
+                "{refused:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_comment_is_never_sent_to_a_wall_that_would_drop_it() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("wall.sock");
@@ -647,6 +682,8 @@ mod tests {
         assert_eq!(refused, LinkError::Unsendable(OLD_WALL.to_string()));
         let batch = Request::Batch {
             note: "two".to_string(),
+            description: None,
+            attachments: Vec::new(),
             changes: vec![turn.clone(), turn.clone()],
             comments: vec![Some("first".to_string()), None],
         };

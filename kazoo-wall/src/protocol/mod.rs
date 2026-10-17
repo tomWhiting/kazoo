@@ -21,7 +21,11 @@ pub mod codec;
 pub mod tree;
 
 pub(crate) mod batch;
+pub mod notes;
+pub use notes::{Attachment, NoteRef, NotesResult};
 mod chains;
+mod hello;
+pub use hello::HelloRole;
 mod loops;
 
 pub use batch::BatchResult;
@@ -39,7 +43,7 @@ use crate::fingerprints::{Fingerprints, Shares};
 
 /// Longest request line a client may send, in bytes (newline excluded). A
 /// longer one closes the connection with a `bad_request` error.
-pub const MAX_LINE: usize = 64 * 1024;
+pub const MAX_LINE: usize = 512 * 1024;
 
 /// Longest line the daemon sends. Requests are capped at [`MAX_LINE`]; the
 /// daemon's own answers can be longer (a big wall's snapshot), and this
@@ -272,6 +276,10 @@ pub enum Request {
         /// The sender's words: 1 to 200 characters after trimming, one line
         /// with no control or direction characters.
         note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
         /// One or more adds, removes, turns, patches, unpatches or tempos.
         changes: Vec<Self>,
         /// Each step's own comment, in step order: none, or one entry for
@@ -448,6 +456,9 @@ pub enum Request {
     },
     /// Stop the daemon. Console only.
     Shutdown,
+    Notes {
+        seq: u64,
+    },
 }
 
 impl Request {
@@ -455,6 +466,7 @@ impl Request {
     #[must_use]
     pub const fn op(&self) -> &'static str {
         match self {
+            Self::Notes { .. } => "notes",
             Self::Batch { .. } => "batch",
             Self::Hello { .. } => "hello",
             Self::Look => "look",
@@ -703,11 +715,12 @@ pub enum ErrorCode {
     UnknownMoment,
     /// A permanent mark with that name already exists.
     MarkExists,
+    NotFound,
 }
 
 impl ErrorCode {
     /// Every code.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::BadRequest,
         Self::NotHello,
         Self::BadName,
@@ -727,6 +740,7 @@ impl ErrorCode {
         Self::Internal,
         Self::UnknownMoment,
         Self::MarkExists,
+        Self::NotFound,
     ];
 }
 
@@ -816,6 +830,8 @@ pub struct Change {
     /// The sender's comment on it ([`RequestLine::comment`]), trimmed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<NoteRef>,
 }
 
 impl Change {
@@ -1310,20 +1326,20 @@ pub struct HelloResult {
     pub daemon: String,
     /// The seat, as accepted.
     pub seat: String,
-    /// Whether this connection is a console.
-    pub console: bool,
+    #[serde(flatten)]
+    pub role: HelloRole,
     /// Seats online now, this one included (unless it is a watcher).
     pub seats: Vec<String>,
     /// The latest change's sequence number.
     pub revision: u64,
-    /// Whether this connection is a watcher.
-    #[serde(default)]
-    pub watcher: bool,
+
     /// Whether the wall keeps comments on changes ([`RequestLine::comment`],
     /// a batch's step comments). A wall older than them leaves this out,
     /// and would drop them without a word: a client checks it first.
     #[serde(default)]
     pub comments: bool,
+    #[serde(default)]
+    pub notes: bool,
 }
 
 /// Where the wall's beat comes from.

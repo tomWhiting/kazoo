@@ -464,6 +464,7 @@ fn a_patch_json_past_the_limits_with_the_log_ahead_starts_within_them() {
     let mut store = kazoo_wall::store::Store::open(state.path()).unwrap();
     store
         .append(&kazoo_wall::protocol::Change {
+            notes: Vec::new(),
             seq: 1,
             at: "2026-10-09T00:00:00Z".to_string(),
             seat: "Tom".to_string(),

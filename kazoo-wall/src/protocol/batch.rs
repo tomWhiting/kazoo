@@ -130,6 +130,9 @@ pub fn validate<'a>(
             "a batch note must contain 1 to 200 characters after trimming",
         ));
     }
+    if changes.len() > crate::tree::git::MOST_PARTS {
+        return Err(bad("a batch takes at most 4096 steps"));
+    }
     if changes.is_empty() {
         return Err(bad("a batch must contain at least one change"));
     }

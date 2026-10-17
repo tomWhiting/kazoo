@@ -770,7 +770,8 @@ impl Writer {
                 self.accepted = generation;
                 if matches!(kind, WholeKind::Start) {
                     if let Line::At { commit, .. } = &self.line {
-                        if here::files(dir, commit).map_err(tree_error)? == files {
+                        let wall_files = super::notes::wall_only(&files);
+                        if here::files(dir, commit).map_err(tree_error)? == wall_files {
                             self.base = Some(files);
                             self.through = Some(seq);
                             tell(news, News::Committed { through: seq });

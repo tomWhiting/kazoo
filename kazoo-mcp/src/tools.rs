@@ -6,6 +6,7 @@
 //! a tool is adding one method.
 
 mod batch;
+mod notes;
 use batch::BatchArgs;
 
 use std::future::Future;
@@ -432,7 +433,7 @@ impl Seat {
             wall,
             feed,
             peer: Arc::new(peer),
-            tool_router: Self::tool_router(),
+            tool_router: Self::all_tools(),
         }
     }
 

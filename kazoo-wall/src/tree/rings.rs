@@ -668,7 +668,7 @@ impl Walk<'_> {
             })?;
         self.model.stamp(change, salt)?;
         let files = self.model.files(Some(change))?;
-        let paths = if whole {
+        let mut paths = if whole {
             files
                 .iter()
                 .map(|(p, b)| (p.clone(), Some(b.clone())))
@@ -676,6 +676,7 @@ impl Walk<'_> {
         } else {
             delta(&self.previous, &files)
         };
+        super::notes::append(self.log.state, change, &mut paths);
         let mut commit = Commit::change(change, paths)?;
         commit.whole = whole;
         if !note.is_empty() {

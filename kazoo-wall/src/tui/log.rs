@@ -222,6 +222,7 @@ mod tests {
 
     fn change(seq: u64, seat: &str, undoes: Option<u64>) -> Change {
         Change {
+            notes: Vec::new(),
             seq,
             at: "2026-09-26T12:00:01Z".to_string(),
             seat: seat.to_string(),

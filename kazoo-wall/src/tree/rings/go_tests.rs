@@ -12,6 +12,7 @@ use crate::protocol::{Change, Request, TreePlace, What};
 use crate::tree::{git, thread::TreeHandle};
 
 mod backups;
+mod notes;
 
 fn place(seq: Option<u64>) -> TreePlace {
     TreePlace {
@@ -457,6 +458,8 @@ fn batch(wall: &mut Wall, note: &str, first: f64, second: f64) -> u64 {
     ask(
         wall,
         &Request::Batch {
+            description: None,
+            attachments: Vec::new(),
             note: note.into(),
             changes: vec![
                 super::fixtures::turn_request("vcf1", "cutoff", first, None),

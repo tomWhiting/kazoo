@@ -75,6 +75,7 @@ fn with_the_list() -> App {
 /// The load of `save` (none: an empty wall) as change 80.
 fn load_change(save: Option<&str>, undoes: Option<u64>) -> Change {
     Change {
+        notes: Vec::new(),
         seq: 80,
         at: "2026-09-26T12:00:01Z".to_string(),
         seat: "Tom".to_string(),

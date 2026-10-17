@@ -794,6 +794,7 @@ mod tests {
         let mut store = Store::open(&state).unwrap();
         store
             .append(&crate::protocol::Change {
+                notes: Vec::new(),
                 seq: 1,
                 at: "2026-10-09T00:00:00Z".to_string(),
                 seat: "Tom".to_string(),

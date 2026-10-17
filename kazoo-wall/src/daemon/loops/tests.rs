@@ -578,6 +578,7 @@ fn short_tape(id: kazoo_core::reels::ReelId) -> TapeRecord {
 
 fn take_change(seq: u64, module: &str, tape: TapeRecord, why: TakeWhy) -> Change {
     Change {
+        notes: Vec::new(),
         seq,
         at: crate::change::utc(seq),
         seat: "kazoo-wall".into(),

@@ -143,11 +143,11 @@ impl WallClient {
             hello: HelloResult {
                 daemon: String::new(),
                 seat: seat.to_string(),
-                console,
+                role: super::HelloRole { console, watcher },
                 seats: Vec::new(),
                 revision: 0,
-                watcher,
                 comments: false,
+                notes: false,
             },
             events: VecDeque::new(),
             wall: None,

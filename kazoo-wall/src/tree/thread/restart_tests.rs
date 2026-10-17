@@ -40,6 +40,7 @@ fn change(seq: u64, go: bool) -> Change {
         }
     };
     Change {
+        notes: Vec::new(),
         seq,
         at: "2026-10-13T09:01:07Z".into(),
         seat: "Tom".into(),

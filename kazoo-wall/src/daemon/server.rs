@@ -280,6 +280,14 @@ fn parse(bytes: &[u8]) -> Result<RequestLine, Response> {
             "every request needs an \"id\": a whole number".to_string(),
         ));
     };
+    if value.get("op").and_then(serde_json::Value::as_str) == Some("undo")
+        && (value.get("description").is_some() || value.get("attachments").is_some())
+    {
+        return Err(bad(
+            id,
+            "an undo cannot carry a description or attachments".to_string(),
+        ));
+    }
     // A step's comment goes beside it, in the batch's `comments`: inside
     // the step it would be read as nothing at all, so it is refused.
     if value.get("op").and_then(serde_json::Value::as_str) == Some("batch") {
@@ -321,6 +329,22 @@ mod tests {
         let message = inside.error.unwrap().message;
         assert!(message.starts_with("step 1: "), "{message}");
         assert!(message.contains("\"comments\""), "{message}");
+    }
+
+    #[test]
+    fn notes_are_refused_on_undo() {
+        for extra in [
+            serde_json::json!({"description":"why"}),
+            serde_json::json!({"attachments":[{"name":"a","text":"why"}]}),
+        ] {
+            let mut value = serde_json::json!({"id":7,"op":"undo","change":1});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let refused = parse(&serde_json::to_vec(&value).unwrap()).unwrap_err();
+            assert_eq!(refused.error.unwrap().code, ErrorCode::BadRequest);
+        }
     }
 
     #[test]
