@@ -6,6 +6,7 @@
 //! a tool is adding one method.
 
 mod batch;
+mod scheduling;
 use batch::BatchArgs;
 
 use std::future::Future;
@@ -88,6 +89,12 @@ pub struct CatalogueArgs {
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TurnArgs {
+    /// Beats to hold before the sound starts, counted at the acceptance tempo: 0 to 256, default 0.
+    #[serde(default)]
+    pub after_beats: f64,
+    /// Shape in knob position: `linear` (default), `ease_in`, `ease_out` or `s_curve`.
+    #[serde(default)]
+    pub curve: scheduling::GlideCurve,
     /// The module's id, as `wall_look` lists it, e.g. `vcf1`.
     pub module: String,
     /// The knob's name, e.g. `cutoff`.
@@ -109,6 +116,12 @@ pub struct TurnArgs {
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatchArgs {
+    /// Beats to hold before the sound starts, counted at the acceptance tempo: 0 to 256, default 0.
+    #[serde(default)]
+    pub after_beats: f64,
+    /// Beats for a linear cable fade after its wait: 0 to 64, default 0.
+    #[serde(default)]
+    pub fade_beats: f64,
     /// The output to plug from, as `module.port`, e.g. `lfo1.out`.
     pub from: String,
     /// The input to plug into, as `module.port`, e.g. `vcf1.in`; every
@@ -237,6 +250,12 @@ pub struct LogArgs {
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TempoArgs {
+    /// Beats to hold before the sound starts, counted at the acceptance tempo: 0 to 256, default 0.
+    #[serde(default)]
+    pub after_beats: f64,
+    /// Beats for the tempo to move linearly after its wait: 0 to 64, default 0.
+    #[serde(default)]
+    pub glide_beats: f64,
     /// Beats per minute, 20 to 300. When the wall is following the kazoo-mix
     /// desk, the desk is asked, and it changes the tempo for everyone.
     pub bpm: f64,
@@ -507,7 +526,7 @@ impl Seat {
 
     #[tool(
         name = "wall_turn",
-        description = "Turn one knob: module id, knob name and the value in the knob's own unit (Hz, seconds, semitones; stepped knobs take a position number). It glides there over glide_beats (default 2 beats, 0 jumps, at most 64). The value is held to the knob's range. Answers with the change's number and what happened."
+        description = "Turn one knob: module id, knob name and the value in the knob's own unit (Hz, seconds, semitones; stepped knobs take a position number). It waits after_beats (default 0, at most 256), then glides over glide_beats (default 2 beats, 0 jumps, at most 64), following curve in knob position. The value is held to the knob's range. Answers with the change's number and what happened."
     )]
     async fn wall_turn(&self, Parameters(args): Parameters<TurnArgs>) -> CallToolResult {
         self.change(
@@ -516,6 +535,8 @@ impl Seat {
                 knob: args.knob,
                 value: args.value,
                 glide_beats: args.glide_beats,
+                after_beats: args.after_beats,
+                curve: args.curve.into(),
             },
             args.comment.as_deref(),
         )
@@ -524,7 +545,7 @@ impl Seat {
 
     #[tool(
         name = "wall_patch",
-        description = "Plug a cable from an output (module.port, e.g. lfo1.out) into an input (module.port, e.g. vcf1.in). Every knob is also an input by its name, so lfo1.out into vcf1.cutoff moves the cutoff. amount runs from -1 (inverted) to 1, default 1. An input takes one cable: plugging into a used one replaces it. Outputs can feed any number of inputs. Answers with the cable's number."
+        description = "Plug a cable from an output (module.port, e.g. lfo1.out) into an input (module.port, e.g. vcf1.in). Every knob is also an input by its name, so lfo1.out into vcf1.cutoff moves the cutoff. amount runs from -1 (inverted) to 1, default 1. An input takes one cable: plugging into a used one replaces it. Outputs can feed any number of inputs. after_beats holds the current amount (a new cable is silent), then fade_beats fades linearly; both default 0. Answers with the cable's number."
     )]
     async fn wall_patch(&self, Parameters(args): Parameters<PatchArgs>) -> CallToolResult {
         self.change(
@@ -532,6 +553,9 @@ impl Seat {
                 from: args.from,
                 to: args.to,
                 amount: args.amount,
+                after_beats: args.after_beats,
+                fade_beats: args.fade_beats,
+                curve: None,
             },
             args.comment.as_deref(),
         )
@@ -545,24 +569,12 @@ impl Seat {
     async fn wall_unpatch(&self, Parameters(args): Parameters<UnpatchArgs>) -> CallToolResult {
         match (args.cable, args.to.clone()) {
             (Some(cable), None) => {
-                self.change(
-                    Request::Unpatch {
-                        cable: Some(cable),
-                        to: None,
-                    },
-                    args.comment.as_deref(),
-                )
-                .await
+                self.change(Request::unpatch(Some(cable), None), args.comment.as_deref())
+                    .await
             }
             (None, Some(to)) => {
-                self.change(
-                    Request::Unpatch {
-                        cable: None,
-                        to: Some(to),
-                    },
-                    args.comment.as_deref(),
-                )
-                .await
+                self.change(Request::unpatch(None, Some(to)), args.comment.as_deref())
+                    .await
             }
             (Some(_), Some(_)) | (None, None) => bad(
                 "wall_unpatch takes exactly one of cable (its number) or to (the input it is \
@@ -577,12 +589,7 @@ impl Seat {
     )]
     async fn wall_add(&self, Parameters(args): Parameters<AddArgs>) -> CallToolResult {
         self.change(
-            Request::Add {
-                alias: None,
-                kind: args.kind,
-                name: args.name,
-                place: None,
-            },
+            Request::add(args.kind, args.name, None, None),
             args.comment.as_deref(),
         )
         .await
@@ -593,13 +600,8 @@ impl Seat {
         description = "Take a module away by its id. Its cables go with it; the change log keeps everything, so wall_undo can bring it back."
     )]
     async fn wall_remove(&self, Parameters(args): Parameters<RemoveArgs>) -> CallToolResult {
-        self.change(
-            Request::Remove {
-                module: args.module,
-            },
-            args.comment.as_deref(),
-        )
-        .await
+        self.change(Request::remove(args.module), args.comment.as_deref())
+            .await
     }
 
     #[tool(
@@ -970,12 +972,19 @@ impl Seat {
 
     #[tool(
         name = "wall_tempo",
-        description = "Set the tempo in BPM (20 to 300). On its own clock the wall changes at once; while it follows the kazoo-mix desk, the desk is asked and changes the tempo for everyone."
+        description = "Set the tempo in BPM (20 to 300). On its own clock after_beats holds the tempo, then glide_beats moves it linearly (both default 0); while it follows the kazoo-mix desk, the desk is asked and changes the tempo for everyone."
     )]
     async fn wall_tempo(&self, Parameters(args): Parameters<TempoArgs>) -> CallToolResult {
         match self
             .wall
-            .ask_commented::<TempoResult>(Request::Tempo { bpm: args.bpm }, args.comment.as_deref())
+            .ask_commented::<TempoResult>(
+                Request::Tempo {
+                    bpm: args.bpm,
+                    after_beats: args.after_beats,
+                    glide_beats: args.glide_beats,
+                },
+                args.comment.as_deref(),
+            )
             .await
         {
             Ok(Answer::Read(result)) => {

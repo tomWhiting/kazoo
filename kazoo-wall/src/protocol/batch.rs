@@ -177,7 +177,7 @@ fn validate_step<'a>(
                 }
             }
         }
-        Request::Turn { module, .. } | Request::Remove { module } => reference(module, labels)?,
+        Request::Turn { module, .. } | Request::Remove { module, .. } => reference(module, labels)?,
         Request::Patch { from, to, .. } => {
             reference(from, labels)?;
             reference(to, labels)?;

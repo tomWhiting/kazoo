@@ -98,12 +98,7 @@ fn ask(wall: &mut Wall, request: &Request, now: Instant) -> Change {
 }
 
 fn add() -> Request {
-    Request::Add {
-        alias: None,
-        kind: "lfo".into(),
-        name: None,
-        place: None,
-    }
+    Request::add("lfo".into(), None, None, None)
 }
 
 fn changed_module(change: &Change) -> &ModuleRecord {
@@ -181,6 +176,8 @@ fn stamping_numbers_each_newborn_of_a_change() {
                 from: 1.0,
                 to: 2.0,
                 glide_beats: 0.0,
+                after_beats: 0.0,
+                curve: crate::protocol::GlideCurve::Linear,
             },
             What::Add {
                 module: record("lfo2", "lfo"),
@@ -364,13 +361,7 @@ fn a_birth_survives_save_load_and_the_undo_of_a_remove() {
     let now = Instant::now();
     let added = ask(&mut wall, &add(), now);
     let module = changed_module(&added);
-    let removed = ask(
-        &mut wall,
-        &Request::Remove {
-            module: module.id.clone(),
-        },
-        now,
-    );
+    let removed = ask(&mut wall, &Request::remove(module.id.clone()), now);
     assert_eq!(changed_module(&removed).birth, module.birth);
     let restored = ask(
         &mut wall,
@@ -551,24 +542,18 @@ fn random_roundtrips(compare_files: bool) {
             let file = wall.patch().to_file();
             let module = file.modules.iter().find(|m| m.kind == "lfo");
             let request = match (random % 6, module) {
-                (1, Some(module)) => Request::Remove {
-                    module: module.id.clone(),
-                },
-                (2, Some(module)) => Request::Turn {
-                    module: module.id.clone(),
-                    knob: "rate".into(),
-                    value: 0.35,
-                    glide_beats: Some(0.0),
-                },
-                (3, Some(module)) => Request::Patch {
-                    from: format!("{}.out", module.id),
-                    to: "vcf1.cutoff".into(),
-                    amount: Some(-0.4),
-                },
-                (4, _) if !file.cables.is_empty() => Request::Unpatch {
-                    cable: Some(file.cables[0].id),
-                    to: None,
-                },
+                (1, Some(module)) => Request::remove(module.id.clone()),
+                (2, Some(module)) => {
+                    Request::turn(module.id.clone(), "rate".into(), 0.35, Some(0.0))
+                }
+                (3, Some(module)) => Request::patch(
+                    format!("{}.out", module.id),
+                    "vcf1.cutoff".into(),
+                    Some(-0.4),
+                ),
+                (4, _) if !file.cables.is_empty() => {
+                    Request::unpatch(Some(file.cables[0].id), None)
+                }
                 (5, _) if undo.is_some() => Request::Undo {
                     change: undo.unwrap(),
                 },

@@ -272,12 +272,12 @@ impl WallClient {
         value: f64,
         glide_beats: Option<f64>,
     ) -> Result<ChangeResult, ClientError> {
-        self.call_as(Request::Turn {
-            module: module.to_string(),
-            knob: knob.to_string(),
+        self.call_as(Request::turn(
+            module.to_string(),
+            knob.to_string(),
             value,
             glide_beats,
-        })
+        ))
     }
 
     /// Plug output `from` (`lfo1.out`) into input or knob jack `to`
@@ -292,11 +292,7 @@ impl WallClient {
         to: &str,
         amount: Option<f64>,
     ) -> Result<ChangeResult, ClientError> {
-        self.call_as(Request::Patch {
-            from: from.to_string(),
-            to: to.to_string(),
-            amount,
-        })
+        self.call_as(Request::patch(from.to_string(), to.to_string(), amount))
     }
 
     /// Unplug cable number `cable`.
@@ -305,10 +301,7 @@ impl WallClient {
     ///
     /// As [`Self::call`].
     pub fn unpatch_cable(&mut self, cable: u32) -> Result<ChangeResult, ClientError> {
-        self.call_as(Request::Unpatch {
-            cable: Some(cable),
-            to: None,
-        })
+        self.call_as(Request::unpatch(Some(cable), None))
     }
 
     /// Unplug whatever is plugged into `to`.
@@ -317,10 +310,7 @@ impl WallClient {
     ///
     /// As [`Self::call`].
     pub fn unpatch_input(&mut self, to: &str) -> Result<ChangeResult, ClientError> {
-        self.call_as(Request::Unpatch {
-            cable: None,
-            to: Some(to.to_string()),
-        })
+        self.call_as(Request::unpatch(None, Some(to.to_string())))
     }
 
     /// Add a module of `kind`, optionally with a display name. The result's
@@ -330,12 +320,12 @@ impl WallClient {
     ///
     /// As [`Self::call`].
     pub fn add(&mut self, kind: &str, name: Option<&str>) -> Result<ChangeResult, ClientError> {
-        self.call_as(Request::Add {
-            alias: None,
-            kind: kind.to_string(),
-            name: name.map(str::to_string),
-            place: None,
-        })
+        self.call_as(Request::add(
+            kind.to_string(),
+            name.map(str::to_string),
+            None,
+            None,
+        ))
     }
 
     /// Move `module` to `place` on the rack. The result is the rows now.
@@ -358,9 +348,7 @@ impl WallClient {
     ///
     /// As [`Self::call`].
     pub fn remove(&mut self, module: &str) -> Result<ChangeResult, ClientError> {
-        self.call_as(Request::Remove {
-            module: module.to_string(),
-        })
+        self.call_as(Request::remove(module.to_string()))
     }
 
     /// Undo change `change`.
@@ -409,7 +397,7 @@ impl WallClient {
     ///
     /// As [`Self::call`].
     pub fn tempo(&mut self, bpm: f64) -> Result<TempoResult, ClientError> {
-        self.call_as(Request::Tempo { bpm })
+        self.call_as(Request::tempo(bpm))
     }
 
     /// Give `speak` module `module` words to say, in `voice` if given. The

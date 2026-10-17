@@ -173,15 +173,7 @@ fn wall_remove_and_undo_bring_the_loop_and_its_tape_back() {
     let (tape, _) = put_reel(dir.path());
     let (mut wall, mut engine) = saved_wall(Some(tape.clone()), dir.path());
     tape_arrives(&mut wall, &mut engine);
-    let removed = changed(
-        ask(
-            &mut wall,
-            &Request::Remove {
-                module: "loop1".into(),
-            },
-        )
-        .unwrap(),
-    );
+    let removed = changed(ask(&mut wall, &Request::remove("loop1".into())).unwrap());
     let file = wall.patch.to_file();
     assert!(file.loops.is_empty());
     assert_eq!(file.retired_loops.len(), 1);
@@ -204,12 +196,7 @@ fn wall_remove_and_undo_bring_the_loop_and_its_tape_back() {
 #[test]
 fn the_ninth_loop_on_a_wall_is_refused_by_name() {
     let (mut wall, _engine) = loaded(Patch::empty(120.0), reels_dir().path());
-    let add = Request::Add {
-        alias: None,
-        kind: "loop".into(),
-        name: None,
-        place: None,
-    };
+    let add = Request::add("loop".into(), None, None, None);
     for _ in 0..8 {
         ask(&mut wall, &add).unwrap();
     }
@@ -265,24 +252,11 @@ fn a_loop_nobody_hears_is_still_rendered() {
     let dir = reels_dir();
     let (mut wall, mut engine) = loaded(Patch::empty(120.0), dir.path());
     for kind in ["loop", "vco"] {
-        ask(
-            &mut wall,
-            &Request::Add {
-                alias: None,
-                kind: kind.into(),
-                name: None,
-                place: None,
-            },
-        )
-        .unwrap();
+        ask(&mut wall, &Request::add(kind.into(), None, None, None)).unwrap();
     }
     ask(
         &mut wall,
-        &Request::Patch {
-            from: "vco1.out".into(),
-            to: "loop1.left".into(),
-            amount: None,
-        },
+        &Request::patch("vco1.out".into(), "loop1.left".into(), None),
     )
     .unwrap();
     ask(&mut wall, &turn("loop1", "bars", 1.0)).unwrap();

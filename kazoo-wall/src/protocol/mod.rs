@@ -18,7 +18,9 @@
 
 pub mod client;
 pub mod codec;
+pub mod scheduling;
 pub mod tree;
+pub use scheduling::GlideCurve;
 
 pub(crate) mod batch;
 mod chains;
@@ -218,6 +220,10 @@ pub enum Request {
     Catalogue,
     /// Turn a knob, gliding over `glide_beats` (default 2, 0 to 64).
     Turn {
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        after_beats: f64,
+        #[serde(default, skip_serializing_if = "GlideCurve::is_linear")]
+        curve: GlideCurve,
         /// Module id, e.g. `vcf1`.
         module: String,
         /// Knob name, e.g. `cutoff`.
@@ -230,6 +236,12 @@ pub enum Request {
     },
     /// Plug an output into an input, replacing any cable already in it.
     Patch {
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        after_beats: f64,
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        fade_beats: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        curve: Option<serde_json::Value>,
         /// Output, e.g. `lfo1.out`.
         from: String,
         /// Input, e.g. `vcf1.cutoff`.
@@ -240,6 +252,8 @@ pub enum Request {
     },
     /// Unplug a cable, by its number or by the input it is plugged into.
     Unpatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_beats: Option<f64>,
         /// Cable number.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cable: Option<u32>,
@@ -249,6 +263,8 @@ pub enum Request {
     },
     /// Add a module.
     Add {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_beats: Option<f64>,
         /// In a batch, a label later steps name this module by, as
         /// `@label` or `@label.port` (no spaces, dots or `@`; unique in the
         /// batch). Refused outside a batch.
@@ -282,6 +298,8 @@ pub enum Request {
     },
     /// Take a module away, with its cables.
     Remove {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_beats: Option<f64>,
         /// Module id.
         module: String,
     },
@@ -378,6 +396,10 @@ pub enum Request {
     },
     /// Set the tempo: asks the desk when the wall is on it.
     Tempo {
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        after_beats: f64,
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        glide_beats: f64,
         /// Beats per minute, 20 to 300.
         bpm: f64,
     },
@@ -888,6 +910,10 @@ pub enum What {
     },
     /// A knob turned from one target to another.
     Turn {
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        after_beats: f64,
+        #[serde(default, skip_serializing_if = "GlideCurve::is_linear")]
+        curve: GlideCurve,
         /// Module id.
         module: String,
         /// Knob name.
@@ -901,6 +927,10 @@ pub enum What {
     },
     /// A cable plugged in.
     Patch {
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        after_beats: f64,
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        fade_beats: f64,
         /// The new cable.
         cable: CableRecord,
         /// The cable it replaced in the same input.
@@ -978,6 +1008,10 @@ pub enum What {
     /// (the wall follows, and saves, whatever the desk then plays). A desk
     /// that went away before sending it never changes tempo for it.
     Tempo {
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        after_beats: f64,
+        #[serde(default, skip_serializing_if = "scheduling::is_zero")]
+        glide_beats: f64,
         /// Beats per minute before.
         from: f64,
         /// Beats per minute asked for.

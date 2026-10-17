@@ -109,6 +109,8 @@ impl Wall {
                     from: gesture.from,
                     to: gesture.to,
                     desk: true,
+                    after_beats: 0.0,
+                    glide_beats: 0.0,
                 },
             );
             self.tell_paid(paid.into_iter().collect());

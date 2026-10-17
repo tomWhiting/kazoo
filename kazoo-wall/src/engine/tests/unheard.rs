@@ -48,6 +48,8 @@ fn an_unheard_module_keeps_its_state() {
         knob: 0,
         target: 1.0,
         glide_frames: 1_000,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     render(&mut engine, SUB_BLOCK, &mut buffer);
     let frozen = control.knob(0, 0).unwrap();

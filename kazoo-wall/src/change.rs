@@ -61,45 +61,38 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
         } => taken(module, tape.as_ref(), *why, undo),
         What::Erase { module, was, tape } => erased(module, was.as_ref(), tape.as_ref()),
         What::LoopFrom { module, from, .. } => loop_from(module, from.as_deref()),
-        What::Chain { name, changes } => format!(
-            "changed chain {name}: {}",
-            changes
-                .iter()
-                .map(|change| describe_with(change, undo, kind_of))
-                .collect::<Vec<_>>()
-                .join("; ")
-        ),
+        What::Chain { name, changes } => described_chain(name, changes, undo, kind_of),
         What::Turn {
             module,
             knob,
             from,
             to,
             glide_beats,
-        } => turned(module, knob, *from, *to, *glide_beats, kind_of(module)),
-        What::Patch { cable, replaced } => patched(cable, replaced.as_ref()),
-        What::Unpatch { cable, replugged } => {
-            let mut parts = vec![format!("unplugged {}", cable_words(cable))];
-            if let Some(back) = replugged {
-                parts.push(format!("; cable {} from {} is back in", back.id, back.from));
-            }
-            parts.concat()
-        }
+            after_beats,
+            curve,
+        } => turned(
+            (module, knob),
+            (*from, *to),
+            (*after_beats, *glide_beats, *curve),
+            kind_of(module),
+        ),
+        What::Patch {
+            cable,
+            replaced,
+            after_beats,
+            fade_beats,
+        } => timed_words(
+            patched(cable, replaced.as_ref()),
+            (*after_beats, *fade_beats),
+        ),
+        What::Unpatch { cable, replugged } => unpatched(cable, replugged.as_ref()),
         What::Add { module } => format!("added {}", module_words(module)),
         What::Remove {
             module,
             cables,
             replugged,
             ..
-        } => {
-            let mut parts = vec![format!("removed {}", module_words(module))];
-            if !cables.is_empty() {
-                parts.push(format!(" and {}", count(cables.len(), "cable")));
-            }
-            if !replugged.is_empty() {
-                parts.push(format!("; {} back in", count(replugged.len(), "cable")));
-            }
-            parts.concat()
-        }
+        } => removed(module, cables.len(), replugged.len()),
         What::Restore {
             module,
             cables,
@@ -133,7 +126,13 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
             continues.as_deref(),
             reason.as_deref(),
         ),
-        What::Tempo { from, to, desk } => tempo(*from, *to, *desk),
+        What::Tempo {
+            from,
+            to,
+            desk,
+            after_beats,
+            glide_beats,
+        } => timed_words(tempo(*from, *to, *desk), (*after_beats, *glide_beats)),
         What::Load {
             save,
             backup,
@@ -155,20 +154,81 @@ fn describe_with(what: &What, undo: bool, kind_of: &impl Fn(&str) -> Option<Kind
 }
 
 fn turned(
-    module: &str,
-    knob: &str,
-    from: f64,
-    to: f64,
-    glide_beats: f64,
+    knob: (&str, &str),
+    values: (f64, f64),
+    timing: (f64, f64, crate::protocol::GlideCurve),
     kind: Option<Kind>,
 ) -> String {
-    let (from, to) = knob_values(kind, knob, from, to);
-    let glide = if glide_beats > 0.0 {
-        format!("over {}", format::beats(glide_beats))
+    let (module, knob) = knob;
+    let (from, to) = knob_values(kind, knob, values.0, values.1);
+    let glide = if timing.1 > 0.0 {
+        format!("over {}", format::beats(timing.1))
     } else {
         "at once".to_string()
     };
-    format!("turned {module} {knob} {from} → {to} {glide}")
+    let after = if timing.0 > 0.0 {
+        format!(" after {}", format::beats(timing.0))
+    } else {
+        String::new()
+    };
+    let curve = match timing.2 {
+        crate::protocol::GlideCurve::Linear => "",
+        crate::protocol::GlideCurve::EaseIn => ", easing in",
+        crate::protocol::GlideCurve::EaseOut => ", easing out",
+        crate::protocol::GlideCurve::SCurve => ", with an s curve",
+    };
+    format!("turned {module} {knob} {from} → {to}{after} {glide}{curve}")
+}
+
+fn timed_words(mut words: String, timing: (f64, f64)) -> String {
+    scheduling_words(&mut words, timing.0, timing.1);
+    words
+}
+
+fn scheduling_words(words: &mut String, after: f64, over: f64) {
+    if after > 0.0 {
+        words.push_str(" after ");
+        words.push_str(&format::beats(after));
+    }
+    if over > 0.0 {
+        words.push_str(" over ");
+        words.push_str(&format::beats(over));
+    }
+}
+
+fn described_chain(
+    name: &str,
+    changes: &[What],
+    undo: bool,
+    kind_of: &impl Fn(&str) -> Option<Kind>,
+) -> String {
+    format!(
+        "changed chain {name}: {}",
+        changes
+            .iter()
+            .map(|change| describe_with(change, undo, kind_of))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )
+}
+
+fn removed(module: &ModuleRecord, cables: usize, replugged: usize) -> String {
+    let mut parts = vec![format!("removed {}", module_words(module))];
+    if cables > 0 {
+        parts.push(format!(" and {}", count(cables, "cable")));
+    }
+    if replugged > 0 {
+        parts.push(format!("; {} back in", count(replugged, "cable")));
+    }
+    parts.concat()
+}
+
+fn unpatched(cable: &CableRecord, replugged: Option<&CableRecord>) -> String {
+    let mut parts = vec![format!("unplugged {}", cable_words(cable))];
+    if let Some(back) = replugged {
+        parts.push(format!("; cable {} from {} is back in", back.id, back.from));
+    }
+    parts.concat()
 }
 
 fn patched(cable: &CableRecord, replaced: Option<&CableRecord>) -> String {
@@ -572,6 +632,8 @@ mod tests {
             from: 420.0,
             to: 800.0,
             glide_beats: 4.0,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear,
         };
         assert_eq!(
             summarise("Tom", &what, None),
@@ -583,6 +645,8 @@ mod tests {
             from: 0.25,
             to: 1.5,
             glide_beats: 0.0,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear,
         };
         assert_eq!(
             summarise("Waffles", &what, Some(57)),
@@ -595,6 +659,8 @@ mod tests {
         let what = What::Patch {
             cable: cable(12, "lfo1.out", "vcf1.cutoff", 0.4),
             replaced: Some(cable(7, "lfo2.out", "vcf1.cutoff", 1.0)),
+            after_beats: 0.0,
+            fade_beats: 0.0,
         };
         assert_eq!(
             summarise("Vesper", &what, None),
@@ -631,6 +697,8 @@ mod tests {
             from: 96.0,
             to: 120.0,
             desk: false,
+            after_beats: 0.0,
+            glide_beats: 0.0,
         };
         assert_eq!(
             summarise("Tom", &what, None),
@@ -640,6 +708,8 @@ mod tests {
             from: 96.0,
             to: 120.0,
             desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0,
         };
         assert_eq!(
             summarise("Tom", &what, None),

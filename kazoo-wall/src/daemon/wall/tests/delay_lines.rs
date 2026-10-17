@@ -54,14 +54,7 @@ fn only_a_delayed_cable_gets_a_line_and_keeps_it() {
         .find(|cable| cable.from_module == "klon1" && cable.to_module == "mix2")
         .unwrap()
         .id;
-    ask(
-        &mut wall,
-        &Request::Unpatch {
-            cable: Some(wet),
-            to: None,
-        },
-    )
-    .unwrap();
+    ask(&mut wall, &Request::unpatch(Some(wet), None)).unwrap();
     play(&mut wall, &mut engine);
     assert!(!wall.timing.delays.contains_key(&dry));
     assert_eq!(wall.lined[&dry], tag);
@@ -71,7 +64,7 @@ fn only_a_delayed_cable_gets_a_line_and_keeps_it() {
     ask(&mut wall, &patch("lfo2.out", "vcf1.cutoff")).unwrap();
     play(&mut wall, &mut engine);
     assert_eq!(wall.engine.shared().lines(), before);
-    ask(&mut wall, &Request::Remove { module: reverb }).unwrap();
+    ask(&mut wall, &Request::remove(reverb)).unwrap();
     play(&mut wall, &mut engine);
     assert!(wall.engine.shared().lines() < before);
 }
@@ -205,10 +198,7 @@ fn a_direct_cable_heard_again_starts_silent_at_its_first_delay() {
     play(&mut wall, &mut engine);
     ask(
         &mut wall,
-        &Request::Unpatch {
-            cable: None,
-            to: Some("readout1.in".to_string()),
-        },
+        &Request::unpatch(None, Some("readout1.in".to_string())),
     )
     .unwrap();
     delayed_path(&mut wall);

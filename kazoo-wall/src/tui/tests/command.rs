@@ -112,11 +112,11 @@ fn tab_completes_commands_modules_and_jacks_and_enter_patches() {
     assert_eq!(app.mode(), &Mode::Normal);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Patch {
-            from: "lfo1.out".to_string(),
-            to: "vcf1.cutoff".to_string(),
-            amount: Some(0.5),
-        }]
+        vec![Request::patch(
+            "lfo1.out".to_string(),
+            "vcf1.cutoff".to_string(),
+            Some(0.5)
+        )]
     );
 }
 
@@ -177,33 +177,11 @@ fn every_command_sends_its_request() {
     for (typed, wanted) in [
         (
             "add lfo slow one",
-            Request::Add {
-                alias: None,
-                kind: "lfo".to_string(),
-                name: Some("slow one".to_string()),
-                place: None,
-            },
+            Request::add("lfo".to_string(), Some("slow one".to_string()), None, None),
         ),
-        (
-            "remove vco1",
-            Request::Remove {
-                module: "vco1".to_string(),
-            },
-        ),
-        (
-            "unplug vcf1.cutoff",
-            Request::Unpatch {
-                cable: Some(2),
-                to: None,
-            },
-        ),
-        (
-            "unplug 2",
-            Request::Unpatch {
-                cable: Some(2),
-                to: None,
-            },
-        ),
+        ("remove vco1", Request::remove("vco1".to_string())),
+        ("unplug vcf1.cutoff", Request::unpatch(Some(2), None)),
+        ("unplug 2", Request::unpatch(Some(2), None)),
         (
             "save tom fiddle",
             Request::Save {

@@ -18,6 +18,7 @@ use moments::land;
 
 mod batch;
 mod delay_lines;
+mod scheduling;
 mod tempo;
 
 fn wall() -> (Wall, Engine) {
@@ -38,12 +39,7 @@ fn code(result: Result<serde_json::Value, WallError>) -> ErrorCode {
 }
 
 fn turn(module: &str, knob: &str, value: f64) -> Request {
-    Request::Turn {
-        module: module.to_string(),
-        knob: knob.to_string(),
-        value,
-        glide_beats: Some(0.0),
-    }
+    Request::turn(module.to_string(), knob.to_string(), value, Some(0.0))
 }
 
 fn changed(value: serde_json::Value) -> ChangeResult {
@@ -95,22 +91,14 @@ fn every_wall_error_code_is_reachable() {
     assert_eq!(
         code(ask(
             &mut wall,
-            &Request::Unpatch {
-                cable: Some(1),
-                to: Some("vcf1.in".to_string())
-            }
+            &Request::unpatch(Some(1), Some("vcf1.in".to_string()))
         )),
         ErrorCode::BadRequest
     );
     assert_eq!(
         code(ask(
             &mut wall,
-            &Request::Add {
-                alias: None,
-                kind: "lfo".to_string(),
-                name: Some("bad/name".to_string()),
-                place: None,
-            }
+            &Request::add("lfo".to_string(), Some("bad/name".to_string()), None, None)
         )),
         ErrorCode::BadName
     );
@@ -125,34 +113,19 @@ fn every_wall_error_code_is_reachable() {
     assert_eq!(
         code(ask(
             &mut wall,
-            &Request::Patch {
-                from: "vcf1.nope".to_string(),
-                to: "vco1.pitch".to_string(),
-                amount: None
-            }
+            &Request::patch("vcf1.nope".to_string(), "vco1.pitch".to_string(), None)
         )),
         ErrorCode::UnknownPort
     );
     assert_eq!(
         code(ask(
             &mut wall,
-            &Request::Add {
-                alias: None,
-                kind: "theremin".to_string(),
-                name: None,
-                place: None,
-            }
+            &Request::add("theremin".to_string(), None, None, None)
         )),
         ErrorCode::UnknownKind
     );
     assert_eq!(
-        code(ask(
-            &mut wall,
-            &Request::Unpatch {
-                cable: Some(999),
-                to: None
-            }
-        )),
+        code(ask(&mut wall, &Request::unpatch(Some(999), None))),
         ErrorCode::UnknownCable
     );
     assert_eq!(
@@ -164,18 +137,7 @@ fn every_wall_error_code_is_reachable() {
 #[test]
 fn undo_that_no_longer_applies_is_an_error() {
     let (mut wall, _engine) = wall();
-    let added = changed(
-        ask(
-            &mut wall,
-            &Request::Add {
-                alias: None,
-                kind: "sh".to_string(),
-                name: None,
-                place: None,
-            },
-        )
-        .unwrap(),
-    );
+    let added = changed(ask(&mut wall, &Request::add("sh".to_string(), None, None, None)).unwrap());
     ask(
         &mut wall,
         &Request::Undo {
@@ -193,15 +155,7 @@ fn undo_that_no_longer_applies_is_an_error() {
         )),
         ErrorCode::UnknownModule
     );
-    let removed = changed(
-        ask(
-            &mut wall,
-            &Request::Remove {
-                module: "lfo2".to_string(),
-            },
-        )
-        .unwrap(),
-    );
+    let removed = changed(ask(&mut wall, &Request::remove("lfo2".to_string())).unwrap());
     ask(
         &mut wall,
         &Request::Undo {
@@ -225,20 +179,11 @@ fn undo_that_no_longer_applies_is_an_error() {
 }
 
 fn add(kind: &str) -> Request {
-    Request::Add {
-        alias: None,
-        kind: kind.to_string(),
-        name: None,
-        place: None,
-    }
+    Request::add(kind.to_string(), None, None, None)
 }
 
 fn patch(from: &str, to: &str) -> Request {
-    Request::Patch {
-        from: from.to_string(),
-        to: to.to_string(),
-        amount: None,
-    }
+    Request::patch(from.to_string(), to.to_string(), None)
 }
 
 #[test]
@@ -278,29 +223,12 @@ fn the_wall_has_no_fixed_size_and_grows_its_engine_as_it_goes() {
 #[test]
 fn the_wall_refuses_more_work_while_rendering_takes_most_of_its_time() {
     let (mut wall, _engine) = wall();
-    let removed = changed(
-        ask(
-            &mut wall,
-            &Request::Remove {
-                module: "lfo2".to_string(),
-            },
-        )
-        .unwrap(),
-    );
+    let removed = changed(ask(&mut wall, &Request::remove("lfo2".to_string())).unwrap());
     let mixer = changed(ask(&mut wall, &add("mix")).unwrap())
         .module
         .unwrap();
     let plugged = changed(ask(&mut wall, &patch("vco1.out", &format!("{mixer}.a"))).unwrap());
-    let unplugged = changed(
-        ask(
-            &mut wall,
-            &Request::Unpatch {
-                cable: plugged.cable,
-                to: None,
-            },
-        )
-        .unwrap(),
-    );
+    let unplugged = changed(ask(&mut wall, &Request::unpatch(plugged.cable, None)).unwrap());
     ask(&mut wall, &patch("vco1.out", &format!("{mixer}.b"))).unwrap();
 
     // The daemon turns the guard on; the wall's load has been measured
@@ -327,7 +255,7 @@ fn the_wall_refuses_more_work_while_rendering_takes_most_of_its_time() {
     // already in use, taking things away.
     ask(&mut wall, &turn("vcf1", "cutoff", 420.0)).unwrap();
     ask(&mut wall, &patch("lfo1.out", &format!("{mixer}.b"))).unwrap();
-    ask(&mut wall, &Request::Remove { module: mixer }).unwrap();
+    ask(&mut wall, &Request::remove(mixer)).unwrap();
 
     // Once refusing, a load just under the guard is not enough: it takes
     // more only below RESUME_SHARE of it.
@@ -418,15 +346,7 @@ fn each_addition_is_costed_and_they_come_apart_near_the_guard() {
     let wait = ask(&mut wall, &add("mix")).unwrap_err();
     assert_eq!(wait.code, ErrorCode::SlowDown);
     // Taking something away is no reason to wait, and is no addition.
-    let removed = changed(
-        ask(
-            &mut wall,
-            &Request::Remove {
-                module: "lfo2".to_string(),
-            },
-        )
-        .unwrap(),
-    );
+    let removed = changed(ask(&mut wall, &Request::remove("lfo2".to_string())).unwrap());
     assert_eq!(code(ask(&mut wall, &add("mix"))), ErrorCode::SlowDown);
     // Below it, additions come as fast as the seats make them.
     wall.engine.shared().set_render_load(settling * 0.5);
@@ -460,13 +380,7 @@ fn what_was_taken_away_lately_counts_against_the_cost() {
     // Taking a module away, the load (not yet taking it in) is shared
     // over what it was measured on, not over what is left: the next
     // addition is costed no higher than before.
-    ask(
-        &mut wall,
-        &Request::Remove {
-            module: "lfo2".to_string(),
-        },
-    )
-    .unwrap();
+    ask(&mut wall, &Request::remove("lfo2".to_string())).unwrap();
     ask(&mut wall, &add("mix")).unwrap();
 }
 
@@ -482,12 +396,12 @@ fn changes_are_numbered_summarised_and_undone() {
     let added = changed(
         ask(
             &mut wall,
-            &Request::Add {
-                alias: None,
-                kind: "lfo".to_string(),
-                name: Some("slow wobble".to_string()),
-                place: None,
-            },
+            &Request::add(
+                "lfo".to_string(),
+                Some("slow wobble".to_string()),
+                None,
+                None,
+            ),
         )
         .unwrap(),
     );
@@ -495,11 +409,7 @@ fn changes_are_numbered_summarised_and_undone() {
     let patched = changed(
         ask(
             &mut wall,
-            &Request::Patch {
-                from: "lfo3.out".to_string(),
-                to: "vcf1.drive".to_string(),
-                amount: Some(0.4),
-            },
+            &Request::patch("lfo3.out".to_string(), "vcf1.drive".to_string(), Some(0.4)),
         )
         .unwrap(),
     );
@@ -549,7 +459,7 @@ fn tempo_changes_the_own_clock_and_undoes() {
     // engine was started at 120).
     let initial = wall.patch().tempo;
     let set: TempoResult =
-        serde_json::from_value(ask(&mut wall, &Request::Tempo { bpm: 1_000.0 }).unwrap()).unwrap();
+        serde_json::from_value(ask(&mut wall, &Request::tempo(1_000.0)).unwrap()).unwrap();
     assert!((set.bpm - 300.0).abs() < f64::EPSILON);
     assert!(!set.desk);
     let mut buffer = vec![0.0; 64];
@@ -568,7 +478,7 @@ fn tempo_changes_the_own_clock_and_undoes() {
     engine.render(&mut buffer, 2);
     assert!((wall.snapshot().tempo - initial).abs() < f64::EPSILON);
     assert_eq!(
-        code(ask(&mut wall, &Request::Tempo { bpm: f64::NAN })),
+        code(ask(&mut wall, &Request::tempo(f64::NAN))),
         ErrorCode::BadRequest
     );
 }
@@ -578,12 +488,7 @@ fn the_snapshot_shows_values_on_their_way() {
     let (mut wall, mut engine) = wall();
     ask(
         &mut wall,
-        &Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: 1_900.0,
-            glide_beats: Some(2.0),
-        },
+        &Request::turn("vcf1".to_string(), "cutoff".to_string(), 1_900.0, Some(2.0)),
     )
     .unwrap();
     // Half the glide: one beat at 120 BPM.
@@ -724,7 +629,7 @@ fn a_tempo_is_saved_before_the_engine_hears_it() {
     let (_engine, control) = engine(EngineConfig::new(48_000, 92.0, 0.0), None);
     let mut wall = Wall::new(seed().unwrap(), control, None, Vec::new(), Some(store));
     // The engine never renders here: the tempo must be saved regardless.
-    ask(&mut wall, &Request::Tempo { bpm: 100.0 }).unwrap();
+    ask(&mut wall, &Request::tempo(100.0)).unwrap();
     wall.save(Instant::now());
     let saved = Store::peek(dir.path()).unwrap();
     let crate::store::Loaded::Patch { patch, .. } = saved.load_patch().unwrap() else {
@@ -738,11 +643,7 @@ fn amounts_and_labels_read_as_people_wrote_them() {
     let (mut wall, _engine) = wall();
     ask(
         &mut wall,
-        &Request::Patch {
-            from: "lfo1.out".to_string(),
-            to: "vcf1.drive".to_string(),
-            amount: Some(0.35),
-        },
+        &Request::patch("lfo1.out".to_string(), "vcf1.drive".to_string(), Some(0.35)),
     )
     .unwrap();
     let text = serde_json::to_string(&ask(&mut wall, &Request::Look).unwrap()).unwrap();
@@ -811,7 +712,7 @@ fn a_change_moves_the_fingerprints_and_says_so_with_its_seq() {
         .unwrap();
     assert!(again.change.is_some() && again.event.is_none());
     let tempo = wall
-        .request("Tom", &Request::Tempo { bpm: 99.0 }, Instant::now())
+        .request("Tom", &Request::tempo(99.0), Instant::now())
         .unwrap();
     assert!(tempo.event.is_none());
 
@@ -838,12 +739,7 @@ fn fingerprints_survive_a_restart() {
         .unwrap();
     wall.request(
         "Cassio",
-        &Request::Add {
-            alias: None,
-            kind: "noise".to_string(),
-            name: None,
-            place: None,
-        },
+        &Request::add("noise".to_string(), None, None, None),
         Instant::now(),
     )
     .unwrap();
@@ -868,20 +764,11 @@ fn a_dry_path_is_held_back_to_meet_a_drive() {
     let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
     let now = Instant::now();
     for kind in ["vco", "klon", "mix"] {
-        let add = Request::Add {
-            alias: None,
-            kind: kind.to_string(),
-            name: None,
-            place: None,
-        };
+        let add = Request::add(kind.to_string(), None, None, None);
         wall.request("Tom", &add, now).unwrap();
     }
     let plug = |wall: &mut Wall, from: &str, to: &str| {
-        let patch = Request::Patch {
-            from: from.to_string(),
-            to: to.to_string(),
-            amount: None,
-        };
+        let patch = Request::patch(from.to_string(), to.to_string(), None);
         let outcome = wall.request("Tom", &patch, now).unwrap();
         outcome.change.map(|change| match change.what {
             What::Patch { cable, .. } => cable.id,
@@ -905,10 +792,7 @@ fn a_dry_path_is_held_back_to_meet_a_drive() {
     assert!(timing.uncompensated.is_empty());
 
     // Unplug the wet path: nothing needs holding back any more.
-    let unpatch = Request::Unpatch {
-        cable: Some(wet),
-        to: None,
-    };
+    let unpatch = Request::unpatch(Some(wet), None);
     wall.request("Tom", &unpatch, now).unwrap();
     let timing = wall.snapshot().timing;
     assert!(timing.cables.is_empty());
@@ -951,21 +835,12 @@ fn built(kinds: &[&str], cables: &[(&str, &str)], now: Instant) -> (Wall, Vec<u3
     let (_engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
     let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
     for kind in kinds {
-        let add = Request::Add {
-            alias: None,
-            kind: (*kind).to_string(),
-            name: None,
-            place: None,
-        };
+        let add = Request::add((*kind).to_string(), None, None, None);
         wall.request("Tom", &add, now).unwrap();
     }
     let mut ids = Vec::new();
     for (from, to) in cables {
-        let patch = Request::Patch {
-            from: (*from).to_string(),
-            to: (*to).to_string(),
-            amount: None,
-        };
+        let patch = Request::patch((*from).to_string(), (*to).to_string(), None);
         match wall.request("Tom", &patch, now).unwrap().change {
             Some(Change {
                 what: What::Patch { cable, .. },
@@ -981,12 +856,7 @@ fn built(kinds: &[&str], cables: &[(&str, &str)], now: Instant) -> (Wall, Vec<u3
 }
 
 fn glided(module: &str, knob: &str, value: f64, beats: f64) -> Request {
-    Request::Turn {
-        module: module.to_string(),
-        knob: knob.to_string(),
-        value,
-        glide_beats: Some(beats),
-    }
+    Request::turn(module.to_string(), knob.to_string(), value, Some(beats))
 }
 
 fn latency_of_module(wall: &Wall, module: &str) -> Option<u32> {
@@ -1075,11 +945,7 @@ fn one_effect_gliding_never_holds_up_another() {
     // flanger1 is still on its way (it lands half-way, 16 s in).
     assert_eq!(latency_of_module(&wall, "flanger1"), classic);
     // Nor does a new cable re-time flanger1 early.
-    let plug = Request::Patch {
-        from: "vco1.out".to_string(),
-        to: "mix1.d".to_string(),
-        amount: None,
-    };
+    let plug = Request::patch("vco1.out".to_string(), "mix1.d".to_string(), None);
     wall.request("Tom", &plug, now + Duration::from_secs(1))
         .unwrap();
     assert_eq!(latency_of_module(&wall, "flanger1"), classic);
@@ -1150,16 +1016,9 @@ fn a_cable_keeps_its_line_and_a_new_one_takes_the_lowest_free() {
         now,
     );
     assert!(wall.lined.is_empty());
-    let unplug = Request::Unpatch {
-        cable: Some(cables[1]),
-        to: None,
-    };
+    let unplug = Request::unpatch(Some(cables[1]), None);
     wall.request("Tom", &unplug, now).unwrap();
-    let plug = Request::Patch {
-        from: "vco1.out".to_string(),
-        to: "mix1.d".to_string(),
-        amount: None,
-    };
+    let plug = Request::patch("vco1.out".to_string(), "mix1.d".to_string(), None);
     let new = match wall.request("Tom", &plug, now).unwrap().change {
         Some(Change {
             what: What::Patch { cable, .. },
@@ -1176,9 +1035,7 @@ fn an_effect_leaving_the_wall_lets_its_probe_go() {
     let now = Instant::now();
     let (mut wall, _) = built(&["vco", "flanger", "mix"], &FLANGED, now);
     assert_eq!(wall.probes.len(), 1);
-    let remove = Request::Remove {
-        module: "flanger1".to_string(),
-    };
+    let remove = Request::remove("flanger1".to_string());
     wall.request("Tom", &remove, now).unwrap();
     assert!(wall.probes.is_empty());
 }
@@ -1210,12 +1067,7 @@ fn a_speaker_brought_back_by_undo_says_its_words_again() {
     let (speech, script) = super::super::speech::tests::scripted(16);
     wall.speech = speech;
     let now = Instant::now();
-    let add = Request::Add {
-        alias: None,
-        kind: "speak".to_string(),
-        name: None,
-        place: None,
-    };
+    let add = Request::add("speak".to_string(), None, None, None);
     wall.request("Tom", &add, now).unwrap();
     let speak = Request::Speak {
         module: "speak1".to_string(),
@@ -1226,9 +1078,7 @@ fn a_speaker_brought_back_by_undo_says_its_words_again() {
     script.lock().unwrap().finish_all();
     let answers = wall.spoken();
     assert!(answers[0].1.is_ok());
-    let remove = Request::Remove {
-        module: "speak1".to_string(),
-    };
+    let remove = Request::remove("speak1".to_string());
     let removed = wall.request("Tom", &remove, now).unwrap();
     let seq = removed.change.unwrap().seq;
     assert!(wall.patch().speech.is_empty());
@@ -1261,11 +1111,7 @@ fn a_latency_that_a_cable_moves_is_said_to_be_unsteady() {
     );
     assert!(wall.snapshot().timing.unsteady.is_empty());
     // ...the mode knob does.
-    let plug = Request::Patch {
-        from: "lfo2.out".to_string(),
-        to: "flanger1.mode".to_string(),
-        amount: None,
-    };
+    let plug = Request::patch("lfo2.out".to_string(), "flanger1.mode".to_string(), None);
     wall.request("Tom", &plug, now).unwrap();
     assert_eq!(wall.snapshot().timing.unsteady, ["flanger1"]);
 }
@@ -1303,12 +1149,7 @@ fn a_dry_path_and_its_held_back_twin_cancel() {
     let (mut engine, control) = engine(EngineConfig::new(48_000, 120.0, 0.0), None);
     let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
     for kind in ["vco", "flanger", "mix", "out"] {
-        let add = Request::Add {
-            alias: None,
-            kind: kind.to_string(),
-            name: None,
-            place: None,
-        };
+        let add = Request::add(kind.to_string(), None, None, None);
         wall.request("Tom", &add, now).unwrap();
     }
     wall.request("Tom", &turn("flanger1", "mode", 1.0), now)
@@ -1322,11 +1163,7 @@ fn a_dry_path_and_its_held_back_twin_cancel() {
         ("vco1.out", "mix1.b", Some(-1.0)),
         ("mix1.out", "out1.left", None),
     ] {
-        let plug = Request::Patch {
-            from: from.to_string(),
-            to: to.to_string(),
-            amount,
-        };
+        let plug = Request::patch(from.to_string(), to.to_string(), amount);
         if let Some(Change {
             what: What::Patch { cable, .. },
             ..
@@ -1342,10 +1179,7 @@ fn a_dry_path_and_its_held_back_twin_cancel() {
     wall.tick(now + RETIME_AFTER);
     assert!(latency_of_module(&wall, "flanger1").is_some());
     let cancelled = loudest(&mut wall, &mut engine, 100);
-    let unplug = Request::Unpatch {
-        cable: Some(dry),
-        to: None,
-    };
+    let unplug = Request::unpatch(Some(dry), None);
     wall.request("Tom", &unplug, now).unwrap();
     let alone = loudest(&mut wall, &mut engine, 100);
     assert!(alone > 0.05, "the flanger path alone is {alone}");
@@ -1845,16 +1679,16 @@ fn adding_in_a_place_and_undoing_a_removal_keep_the_rows() {
     let added = changed(
         ask(
             &mut wall,
-            &Request::Add {
-                alias: None,
-                kind: "noise".to_string(),
-                name: None,
-                place: Some(Place {
+            &Request::add(
+                "noise".to_string(),
+                None,
+                Some(Place {
                     row: 0,
                     before: Some("vco2".to_string()),
                     own: false,
                 }),
-            },
+                None,
+            ),
         )
         .unwrap(),
     );
@@ -1867,12 +1701,7 @@ fn adding_in_a_place_and_undoing_a_removal_keep_the_rows() {
     let second = changed(
         ask(
             &mut wall,
-            &Request::Add {
-                alias: None,
-                kind: "noise".to_string(),
-                name: None,
-                place: None,
-            },
+            &Request::add("noise".to_string(), None, None, None),
         )
         .unwrap(),
     )
@@ -1881,7 +1710,7 @@ fn adding_in_a_place_and_undoing_a_removal_keep_the_rows() {
     assert_eq!(rows(&wall)[0].last(), Some(&second));
     // Taken away and brought back: where it was.
     let before = rows(&wall);
-    let removed = changed(ask(&mut wall, &Request::Remove { module: id.clone() }).unwrap());
+    let removed = changed(ask(&mut wall, &Request::remove(id.clone())).unwrap());
     assert!(!rows(&wall)[0].contains(&id));
     ask(
         &mut wall,
@@ -1979,18 +1808,18 @@ fn playing(wall: &Wall) -> Vec<(String, Vec<f64>)> {
 /// Put a slow wobble on the filter and save the wall as `jam`; returns the
 /// wobble's id.
 fn save_a_wobble(wall: &mut Wall) -> String {
-    let add = Request::Add {
-        alias: None,
-        kind: "lfo".to_string(),
-        name: Some("slow wobble".to_string()),
-        place: None,
-    };
+    let add = Request::add(
+        "lfo".to_string(),
+        Some("slow wobble".to_string()),
+        None,
+        None,
+    );
     let lfo = changed(ask(wall, &add).unwrap()).module.unwrap();
-    let patch = Request::Patch {
-        from: format!("{lfo}.out"),
-        to: "vcf1.resonance".to_string(),
-        amount: Some(0.3),
-    };
+    let patch = Request::patch(
+        format!("{lfo}.out"),
+        "vcf1.resonance".to_string(),
+        Some(0.3),
+    );
     ask(wall, &patch).unwrap();
     save(wall, "jam", false).unwrap();
     lfo
@@ -2101,15 +1930,10 @@ fn a_load_replaces_the_wall_as_it_plays_and_undo_brings_it_back_exactly() {
     let lfo = save_a_wobble(&mut wall);
     let saved = as_saved(&wall);
     // Then the wall moves on: a module goes, another comes, a knob glides.
-    ask(&mut wall, &Request::Remove { module: lfo }).unwrap();
+    ask(&mut wall, &Request::remove(lfo)).unwrap();
     ask(
         &mut wall,
-        &Request::Add {
-            alias: None,
-            kind: "noise".to_string(),
-            name: None,
-            place: None,
-        },
+        &Request::add("noise".to_string(), None, None, None),
     )
     .unwrap();
     ask(&mut wall, &glided("vcf1", "cutoff", 3_000.0, 64.0)).unwrap();
@@ -2384,12 +2208,7 @@ fn a_wall_of_decisions_and_routers_saves_and_loads_back_exactly() {
         "compare", "logic", "branch", "switch", "select", "divide", "math",
     ];
     for kind in kinds {
-        let add = Request::Add {
-            alias: None,
-            kind: kind.to_string(),
-            name: None,
-            place: None,
-        };
+        let add = Request::add(kind.to_string(), None, None, None);
         let id = changed(ask(&mut wall, &add).unwrap()).module.unwrap();
         assert_eq!(id, format!("{kind}1"));
     }
@@ -2420,11 +2239,7 @@ fn a_wall_of_decisions_and_routers_saves_and_loads_back_exactly() {
         ("divide1.count", "select1.select", 1.0),
         ("select1.out", "vcf1.cutoff", 0.2),
     ] {
-        let patch = Request::Patch {
-            from: from.to_string(),
-            to: to.to_string(),
-            amount: Some(amount),
-        };
+        let patch = Request::patch(from.to_string(), to.to_string(), Some(amount));
         ask(&mut wall, &patch).unwrap();
     }
     play(&mut wall, &mut engine);
@@ -3032,12 +2847,7 @@ fn a_change_the_log_cannot_take_is_not_made() {
     // And what was refused goes through now, numbered after.
     let added = ask(
         &mut wall,
-        &Request::Add {
-            alias: None,
-            kind: "lfo".to_string(),
-            name: None,
-            place: None,
-        },
+        &Request::add("lfo".to_string(), None, None, None),
     )
     .unwrap();
     assert!(changed(added).change.seq > next.change.seq);
@@ -3052,78 +2862,30 @@ fn every_kind_of_change(wall: &mut Wall) -> Vec<Request> {
     let plugged = changed(
         ask(
             wall,
-            &Request::Patch {
-                from: "lfo1.out".to_string(),
-                to: "vco1.fm".to_string(),
-                amount: Some(0.25),
-            },
+            &Request::patch("lfo1.out".to_string(), "vco1.fm".to_string(), Some(0.25)),
         )
         .unwrap(),
     );
     let cable = plugged.cable.unwrap();
-    let removed = changed(
-        ask(
-            wall,
-            &Request::Remove {
-                module: "lfo2".to_string(),
-            },
-        )
-        .unwrap(),
-    );
-    let added = changed(
-        ask(
-            wall,
-            &Request::Add {
-                alias: None,
-                kind: "lfo".to_string(),
-                name: None,
-                place: None,
-            },
-        )
-        .unwrap(),
-    );
+    let removed = changed(ask(wall, &Request::remove("lfo2".to_string())).unwrap());
+    let added = changed(ask(wall, &Request::add("lfo".to_string(), None, None, None)).unwrap());
     let unplugged = changed(
         ask(
             wall,
-            &Request::Unpatch {
-                cable: None,
-                to: Some("vcf1.resonance".to_string()),
-            },
+            &Request::unpatch(None, Some("vcf1.resonance".to_string())),
         )
         .unwrap(),
     );
     // A module taken away and brought back: its restoring, to undo.
-    let gone = changed(
-        ask(
-            wall,
-            &Request::Remove {
-                module: "mix1".to_string(),
-            },
-        )
-        .unwrap(),
-    );
+    let gone = changed(ask(wall, &Request::remove("mix1".to_string())).unwrap());
     let restored = changed(undo(wall, gone.change.seq).unwrap());
     assert!(matches!(restored.change.what, What::Restore { .. }));
     vec![
         turn("vco1", "tune", 3.0),
-        Request::Add {
-            alias: None,
-            kind: "lfo".to_string(),
-            name: None,
-            place: None,
-        },
-        Request::Patch {
-            from: "lfo1.out".to_string(),
-            to: "vco2.fm".to_string(),
-            amount: None,
-        },
-        Request::Unpatch {
-            cable: Some(cable),
-            to: None,
-        },
-        Request::Remove {
-            module: "vco1".to_string(),
-        },
+        Request::add("lfo".to_string(), None, None, None),
+        Request::patch("lfo1.out".to_string(), "vco2.fm".to_string(), None),
+        Request::unpatch(Some(cable), None),
+        Request::remove("vco1".to_string()),
         // Undoing a turn, a cable, a removal, an addition, an unplugging
         // and a restoring.
         Request::Undo {
@@ -3557,7 +3319,7 @@ fn a_change_meant_for_a_replaced_wall_is_refused() {
     assert!(wall.check_wall(Some(up), &aimed).is_ok());
     assert!(wall.check_wall(None, &aimed).is_ok(), "an older client");
     // What names no module is not checked.
-    for free in [Request::Look, Request::Tempo { bpm: 100.0 }, Request::Saves] {
+    for free in [Request::Look, Request::tempo(100.0), Request::Saves] {
         assert!(wall.check_wall(Some(first), &free).is_ok(), "{free:?}");
     }
 }
@@ -3696,6 +3458,8 @@ fn a_turn() -> What {
         from: 1_000.0,
         to: 1_200.0,
         glide_beats: 0.0,
+        after_beats: 0.0,
+        curve: crate::protocol::GlideCurve::Linear,
     }
 }
 
@@ -3727,11 +3491,11 @@ fn a_tempo_the_log_cannot_take_never_reaches_the_desk() {
     let mut wall = Wall::new(patch, control, Some(link), Vec::new(), Some(store));
     let tempo = wall.patch().tempo;
     fail_once(&mut wall, FailAt::AppendLog);
-    let refused = ask(&mut wall, &Request::Tempo { bpm: 140.0 }).unwrap_err();
+    let refused = ask(&mut wall, &Request::tempo(140.0)).unwrap_err();
     assert_eq!(refused.code, ErrorCode::Internal);
     assert!((wall.patch().tempo - tempo).abs() < 1e-9);
     let asked: TempoResult =
-        serde_json::from_value(ask(&mut wall, &Request::Tempo { bpm: 150.0 }).unwrap()).unwrap();
+        serde_json::from_value(ask(&mut wall, &Request::tempo(150.0)).unwrap()).unwrap();
     assert!(asked.desk);
     // The first tempo the desk hears is the one the log took: the other
     // never went.
@@ -3761,12 +3525,7 @@ fn words_the_log_cannot_take_never_reach_the_player() {
     let (speech, script) = super::super::speech::tests::scripted(16);
     wall.speech = speech;
     let now = Instant::now();
-    let add = Request::Add {
-        alias: None,
-        kind: "speak".to_string(),
-        name: None,
-        place: None,
-    };
+    let add = Request::add("speak".to_string(), None, None, None);
     wall.request("Tom", &add, now).unwrap();
     let say = |text: &str| Request::Speak {
         module: "speak1".to_string(),
@@ -4026,10 +3785,10 @@ fn back_to_back_tempos_undo_to_the_one_before() {
     let (mut wall, _engine) = wall();
     let initial = wall.patch().tempo;
     let first: TempoResult =
-        serde_json::from_value(ask(&mut wall, &Request::Tempo { bpm: 100.0 }).unwrap()).unwrap();
+        serde_json::from_value(ask(&mut wall, &Request::tempo(100.0)).unwrap()).unwrap();
     // At once, before the engine has played a block of the first.
     let second: TempoResult =
-        serde_json::from_value(ask(&mut wall, &Request::Tempo { bpm: 110.0 }).unwrap()).unwrap();
+        serde_json::from_value(ask(&mut wall, &Request::tempo(110.0)).unwrap()).unwrap();
     let What::Tempo { from, .. } = second.change.what else {
         panic!("{:?}", second.change);
     };
@@ -4221,23 +3980,12 @@ fn a_wall_too_large_to_keep_says_so_and_takes_nothing_that_grows_it() {
     // What grows it is refused; what takes away goes through.
     let refused = ask(
         &mut wall,
-        &Request::Add {
-            alias: None,
-            kind: "lfo".to_string(),
-            name: None,
-            place: None,
-        },
+        &Request::add("lfo".to_string(), None, None, None),
     )
     .unwrap_err();
     assert_eq!(refused.code, ErrorCode::Full);
     assert!(refused.message.contains("take some"), "{}", refused.message);
-    ask(
-        &mut wall,
-        &Request::Remove {
-            module: "lfo2".to_string(),
-        },
-    )
-    .unwrap();
+    ask(&mut wall, &Request::remove("lfo2".to_string())).unwrap();
     // No load either: the wall as it is cannot be kept first.
     let refused = ask(&mut wall, &Request::New).unwrap_err();
     assert_eq!(refused.code, ErrorCode::Full);
@@ -4256,12 +4004,7 @@ fn a_wall_too_large_to_keep_says_so_and_takes_nothing_that_grows_it() {
     )));
     ask(
         &mut wall,
-        &Request::Add {
-            alias: None,
-            kind: "lfo".to_string(),
-            name: None,
-            place: None,
-        },
+        &Request::add("lfo".to_string(), None, None, None),
     )
     .unwrap();
 }
@@ -4386,7 +4129,7 @@ fn a_change_that_could_take_the_file_past_its_bound_is_refused() {
     ask(&mut wall, &patch("vco1.out", &format!("{mixer}.a"))).unwrap();
     // What adds nothing goes: a knob, taking things away.
     ask(&mut wall, &turn("vcf1", "cutoff", 420.0)).unwrap();
-    ask(&mut wall, &Request::Remove { module: mixer }).unwrap();
+    ask(&mut wall, &Request::remove(mixer)).unwrap();
     // Well inside the bound, the file is not measured for every change.
     wall.file_limit = measured * 10;
     wall.file_bytes = Some(measured);
@@ -4586,9 +4329,7 @@ fn readings_of_modules_gone_or_replaced_are_let_go() {
     let (mut wall, mut engine) = probing_wall(&["readout"], &[]);
     run_for(&mut wall, &mut engine, 0.3);
     assert!(probed(&mut wall, None).probes[0].readout.is_some());
-    let remove = Request::Remove {
-        module: "readout1".to_string(),
-    };
+    let remove = Request::remove("readout1".to_string());
     ask(&mut wall, &remove).unwrap();
     run_for(&mut wall, &mut engine, 0.1);
     assert!(wall.readings.is_empty());
@@ -4607,12 +4348,7 @@ fn readings_of_modules_gone_or_replaced_are_let_go() {
 fn a_wall_of_scopes_and_readouts_saves_and_loads_back_and_measures_again() {
     let (mut wall, mut engine, dir) = saving_wall();
     for kind in ["scope", "readout"] {
-        let add = Request::Add {
-            alias: None,
-            kind: kind.to_string(),
-            name: Some(format!("my {kind}")),
-            place: None,
-        };
+        let add = Request::add(kind.to_string(), Some(format!("my {kind}")), None, None);
         ask(&mut wall, &add).unwrap();
     }
     for (module, knob, value) in [
@@ -4630,11 +4366,7 @@ fn a_wall_of_scopes_and_readouts_saves_and_loads_back_and_measures_again() {
         ("clock1.out", "readout1.in"),
         ("readout1.out", "scope1.trigger"),
     ] {
-        let patch = Request::Patch {
-            from: from.to_string(),
-            to: to.to_string(),
-            amount: Some(0.5),
-        };
+        let patch = Request::patch(from.to_string(), to.to_string(), Some(0.5));
         ask(&mut wall, &patch).unwrap();
     }
     play(&mut wall, &mut engine);
@@ -4704,11 +4436,7 @@ fn what_was_measured_before_a_cable_moved_is_never_shown() {
     );
     // Captures of the oscillator wait in the ring when the cable moves.
     render_only(&mut engine, 9_600);
-    let patch = Request::Patch {
-        from: "noise1.out".to_string(),
-        to: "scope1.a".to_string(),
-        amount: None,
-    };
+    let patch = Request::patch("noise1.out".to_string(), "scope1.a".to_string(), None);
     ask(&mut wall, &patch).unwrap();
     assert!(
         probed(&mut wall, Some("scope1")).probes[0].scope.is_none(),
@@ -4737,16 +4465,9 @@ fn a_removed_scope_s_capture_never_lands_on_what_takes_its_slot() {
     // Captures of the scope wait in the ring as it goes and a readout
     // takes its slot.
     render_only(&mut engine, 9_600);
-    let remove = Request::Remove {
-        module: "scope1".to_string(),
-    };
+    let remove = Request::remove("scope1".to_string());
     ask(&mut wall, &remove).unwrap();
-    let add = Request::Add {
-        alias: None,
-        kind: "readout".to_string(),
-        name: None,
-        place: None,
-    };
+    let add = Request::add("readout".to_string(), None, None, None);
     ask(&mut wall, &add).unwrap();
     wall.tick(Instant::now());
     let found = probed(&mut wall, Some("readout1"));
@@ -4757,18 +4478,9 @@ fn a_removed_scope_s_capture_never_lands_on_what_takes_its_slot() {
 #[test]
 fn readings_follow_a_load_and_its_undo() {
     let (mut wall, mut engine, _dir) = saving_wall();
-    let add = Request::Add {
-        alias: None,
-        kind: "scope".to_string(),
-        name: None,
-        place: None,
-    };
+    let add = Request::add("scope".to_string(), None, None, None);
     ask(&mut wall, &add).unwrap();
-    let patch = Request::Patch {
-        from: "vco1.out".to_string(),
-        to: "scope1.a".to_string(),
-        amount: None,
-    };
+    let patch = Request::patch("vco1.out".to_string(), "scope1.a".to_string(), None);
     ask(&mut wall, &patch).unwrap();
     save(&mut wall, "measured", false).unwrap();
     ask(&mut wall, &Request::New).unwrap();
@@ -4820,9 +4532,7 @@ fn a_rebuilt_engine_at_another_rate_measures_afresh() {
 fn probing_several_passes_over_one_another_seat_took_away() {
     let (mut wall, mut engine) = probing_wall(&["readout", "readout", "vco"], &[]);
     run_for(&mut wall, &mut engine, 0.3);
-    let remove = Request::Remove {
-        module: "readout2".to_string(),
-    };
+    let remove = Request::remove("readout2".to_string());
     wall.request("Ava", &remove, Instant::now()).unwrap();
     let several = Request::Probe {
         module: None,
@@ -4861,11 +4571,7 @@ fn plugging_b_alone_lets_go_of_b_and_keeps_a() {
     assert!(before.input_a.hz.is_some());
     // Captures wait in the ring as b is plugged.
     render_only(&mut engine, 4_800);
-    let patch = Request::Patch {
-        from: "lfo1.out".to_string(),
-        to: "scope1.b".to_string(),
-        amount: None,
-    };
+    let patch = Request::patch("lfo1.out".to_string(), "scope1.b".to_string(), None);
     ask(&mut wall, &patch).unwrap();
     let kept = probed(&mut wall, Some("scope1")).probes[0]
         .scope
@@ -5064,12 +4770,7 @@ fn a_wall_that_fits_its_file_fits_a_look() {
         let at = start + Duration::from_secs(n);
         let added = worn.request(
             &format!("Adder{n}"),
-            &Request::Add {
-                alias: None,
-                kind: kind.name().to_string(),
-                name: Some("x".repeat(24)),
-                place: None,
-            },
+            &Request::add(kind.name().to_string(), Some("x".repeat(24)), None, None),
             at,
         );
         let id = changed(added.unwrap().result).module.unwrap();

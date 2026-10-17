@@ -625,6 +625,8 @@ impl Patch {
             from: widen(spec.knobs[index].clamp(from)),
             to: widen(spec.knobs[index].clamp(target)),
             glide_beats: glide,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear,
         })
     }
 
@@ -710,6 +712,8 @@ impl Patch {
         Ok(What::Patch {
             cable: record,
             replaced,
+            after_beats: 0.0,
+            fade_beats: 0.0,
         })
     }
 
@@ -1010,6 +1014,7 @@ impl Patch {
                 Ok(What::Patch {
                     cable,
                     replaced: displaced,
+                    ..
                 }) => {
                     back.push(cable);
                     replaced.extend(displaced);
@@ -1224,7 +1229,9 @@ impl Patch {
                 glide_beats,
                 ..
             } => self.turn(module, knob, *from, Some(*glide_beats)),
-            What::Patch { cable, replaced } => self.unplug(cable.id, replaced.as_ref()),
+            What::Patch {
+                cable, replaced, ..
+            } => self.unplug(cable.id, replaced.as_ref()),
             What::Unpatch { cable, .. } => {
                 if self.cable_at(cable.id).is_ok() {
                     return Err(error(

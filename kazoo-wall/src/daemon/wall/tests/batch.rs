@@ -213,11 +213,7 @@ fn a_cable_that_replaces_one_in_a_batch_grows_nothing_as_a_single_patch() {
     let (mut single, _single_engine) = wall();
     let cable = single.patch.to_file().cables[0].clone();
     let (from, to) = (cable.from, cable.to);
-    let replace = Request::Patch {
-        from: from.clone(),
-        to: to.clone(),
-        amount: Some(0.5),
-    };
+    let replace = Request::patch(from.clone(), to.clone(), Some(0.5));
     ask(&mut single, &replace).unwrap();
     let (mut batched, _batched_engine) = wall();
     ask(
@@ -256,6 +252,8 @@ fn a_batch_tempo_asked_of_the_desk_is_undone_once_the_desk_is_gone() {
             from: 120.0,
             to: 100.0,
             desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0,
         }],
         comments: Vec::new(),
     };
@@ -277,7 +275,7 @@ fn undoing_a_batch_tempo_starts_from_the_tempo_now_as_a_single_undo_does() {
         &batch("faster", serde_json::json!([{"op":"tempo","bpm":130.0}])),
     )
     .unwrap();
-    ask(&mut wall, &Request::Tempo { bpm: 140.0 }).unwrap();
+    ask(&mut wall, &Request::tempo(140.0)).unwrap();
     let seq = made["change"]["seq"].as_u64().unwrap();
     let undone = ask(&mut wall, &Request::Undo { change: seq }).unwrap();
     assert_eq!(undone["change"]["what"]["changes"][0]["from"], 140.0);

@@ -117,7 +117,7 @@ fn one_cable_waking_forty_heavy_unheard_modules_is_refused() {
     )
     .unwrap();
     let cable = changed(plugged.result).cable;
-    let unplugged = request(&mut wall, &Request::Unpatch { cable, to: None }).unwrap();
+    let unplugged = request(&mut wall, &Request::unpatch(cable, None)).unwrap();
     guarded(&mut wall, 0.30);
     let err = request(
         &mut wall,
@@ -161,14 +161,7 @@ fn a_sleeping_module_costs_its_bench_row_times_busy() {
         .map(|cable| cable.id)
         .collect();
     for id in outgoing {
-        request(
-            &mut wall,
-            &Request::Unpatch {
-                cable: Some(id),
-                to: None,
-            },
-        )
-        .unwrap();
+        request(&mut wall, &Request::unpatch(Some(id), None)).unwrap();
     }
     assert!(wall.unheard.iter().any(|id| id == "vco1"));
     drop(cable);
@@ -403,16 +396,11 @@ fn undoing_a_restore_that_replaced_a_cable_is_costed_at_what_it_wakes() {
         &patch(&format!("{cheap}.out"), &format!("{mixer}.a")),
     )
     .unwrap();
-    let removed = request(
-        &mut wall,
-        &Request::Remove {
-            module: cheap.clone(),
-        },
-    )
-    .unwrap()
-    .change
-    .unwrap()
-    .seq;
+    let removed = request(&mut wall, &Request::remove(cheap.clone()))
+        .unwrap()
+        .change
+        .unwrap()
+        .seq;
     let ids = chain(&mut wall, heavy(), 40);
     request(
         &mut wall,
@@ -763,16 +751,11 @@ fn a_wake_that_takes_a_module_away_counts_it_as_rendered_now() {
     )
     .unwrap();
     let taken = taken[0].clone();
-    let removed = request(
-        &mut wall,
-        &Request::Remove {
-            module: taken.clone(),
-        },
-    )
-    .unwrap()
-    .change
-    .unwrap()
-    .seq;
+    let removed = request(&mut wall, &Request::remove(taken.clone()))
+        .unwrap()
+        .change
+        .unwrap()
+        .seq;
     let dormant = chain(&mut wall, heavy(), 2);
     request(
         &mut wall,

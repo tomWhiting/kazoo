@@ -34,7 +34,7 @@ impl Patch {
         let mut staged = self.clone();
         let mut inverse = Vec::with_capacity(changes.len());
         for change in changes.iter().rev() {
-            let undone = if let What::Tempo { from, to, desk } = change {
+            let undone = if let What::Tempo { from, to, desk, .. } = change {
                 if !from.is_finite() || !to.is_finite() {
                     return Err(error(ErrorCode::BadRequest, "a batch tempo is not finite"));
                 }
@@ -43,6 +43,8 @@ impl Patch {
                     from: *to,
                     to: *from,
                     desk: *desk,
+                    after_beats: 0.0,
+                    glide_beats: 0.0,
                 }
             } else {
                 staged.undo(change)?
@@ -193,22 +195,18 @@ impl Chain {
                 ));
             };
             ids.push(record.id);
-            requests.push(Request::Add {
-                alias: None,
-                kind: module.kind.clone(),
-                name: module.label.clone(),
-                place: Some(place),
-            });
+            requests.push(Request::add(
+                module.kind.clone(),
+                module.label.clone(),
+                Some(place),
+                None,
+            ));
         }
         for cable in &self.cables {
             let from = format!("{}.{}", ids[cable.from.0], cable.from.1);
             let to = format!("{}.{}", ids[cable.to.0], cable.to.1);
             staged.plug(&from, &to, Some(f64::from(cable.amount)), None)?;
-            requests.push(Request::Patch {
-                from,
-                to,
-                amount: Some(f64::from(cable.amount)),
-            });
+            requests.push(Request::patch(from, to, Some(f64::from(cable.amount))));
         }
         Ok(requests)
     }

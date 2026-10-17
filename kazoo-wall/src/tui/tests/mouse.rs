@@ -137,12 +137,12 @@ fn dragging_a_knob_turns_it_with_a_short_glide_at_most_ten_times_a_second() {
     let first = dragged_value(&travel, anchor, cell.1, cell.1 - 4, false);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: first,
-            glide_beats: Some(DRAG_GLIDE),
-        }]
+        vec![Request::turn(
+            "vcf1".to_string(),
+            "cutoff".to_string(),
+            first,
+            Some(DRAG_GLIDE)
+        )]
     );
     // Within the interval, nothing more goes...
     let at = t0 + Duration::from_millis(50);
@@ -173,12 +173,12 @@ fn dragging_a_knob_turns_it_with_a_short_glide_at_most_ten_times_a_second() {
     assert!(last > first);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: last,
-            glide_beats: Some(DRAG_GLIDE),
-        }]
+        vec![Request::turn(
+            "vcf1".to_string(),
+            "cutoff".to_string(),
+            last,
+            Some(DRAG_GLIDE)
+        )]
     );
     assert!(app.rack.drag.is_none());
 }
@@ -300,12 +300,12 @@ fn a_double_click_sends_a_knob_home() {
         .default;
     assert_eq!(
         calls(&mut app),
-        vec![Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: default,
-            glide_beats: Some(DRAG_GLIDE),
-        }]
+        vec![Request::turn(
+            "vcf1".to_string(),
+            "cutoff".to_string(),
+            default,
+            Some(DRAG_GLIDE)
+        )]
     );
     // Two clicks too far apart are not a double-click.
     let slow = again + Duration::from_secs(1);
@@ -332,11 +332,11 @@ fn dragging_between_jacks_patches_either_way_round() {
     mouse(&mut app, MouseEventKind::Up(LEFT), target, false, t0);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Patch {
-            from: "lfo1.out".to_string(),
-            to: "vcf1.resonance".to_string(),
-            amount: None,
-        }]
+        vec![Request::patch(
+            "lfo1.out".to_string(),
+            "vcf1.resonance".to_string(),
+            None
+        )]
     );
     // From an input to an output.
     let input = jack_at(&app, 3, "left", false);
@@ -345,11 +345,11 @@ fn dragging_between_jacks_patches_either_way_round() {
     mouse(&mut app, MouseEventKind::Up(LEFT), output, false, t0);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Patch {
-            from: "vco1.out".to_string(),
-            to: "out1.left".to_string(),
-            amount: None,
-        }]
+        vec![Request::patch(
+            "vco1.out".to_string(),
+            "out1.left".to_string(),
+            None
+        )]
     );
     // Output to output, or onto the bare rack, plugs nothing.
     mouse(&mut app, MouseEventKind::Down(LEFT), from, false, t0);
@@ -396,13 +396,7 @@ fn right_clicking_a_cable_or_its_input_unplugs_it() {
         false,
         t0,
     );
-    assert_eq!(
-        calls(&mut app),
-        vec![Request::Unpatch {
-            cable: Some(2),
-            to: None
-        }]
-    );
+    assert_eq!(calls(&mut app), vec![Request::unpatch(Some(2), None)]);
     let input = jack_at(&app, 2, "in", false);
     mouse(
         &mut app,
@@ -411,13 +405,7 @@ fn right_clicking_a_cable_or_its_input_unplugs_it() {
         false,
         t0,
     );
-    assert_eq!(
-        calls(&mut app),
-        vec![Request::Unpatch {
-            cable: Some(1),
-            to: None
-        }]
-    );
+    assert_eq!(calls(&mut app), vec![Request::unpatch(Some(1), None)]);
     // An output can feed many cables: it says to pick the cable.
     let output = jack_at(&app, 0, "out", true);
     mouse(
@@ -449,12 +437,12 @@ fn the_wheel_turns_a_knob_finely_and_pans_the_rack() {
     let expected = cutoff_travel().turned(800.0, true, Step::Fine);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: expected,
-            glide_beats: Some(2.0),
-        }]
+        vec![Request::turn(
+            "vcf1".to_string(),
+            "cutoff".to_string(),
+            expected,
+            Some(2.0)
+        )]
     );
 
     // A long wall on a small screen pans.
@@ -667,12 +655,12 @@ fn compact_knobs_turn_and_overview_blocks_zoom_back_to_the_faceplates() {
     let expected = dragged_value(&travel, travel.position(800.0), cell.1, cell.1 - 4, false);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: expected,
-            glide_beats: Some(DRAG_GLIDE),
-        }]
+        vec![Request::turn(
+            "vcf1".to_string(),
+            "cutoff".to_string(),
+            expected,
+            Some(DRAG_GLIDE)
+        )]
     );
 
     // The overview: a click on a block goes back to compact, there.
@@ -711,11 +699,11 @@ fn compact_knobs_turn_and_overview_blocks_zoom_back_to_the_faceplates() {
     mouse(&mut app, MouseEventKind::Up(LEFT), to, false, t0);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Patch {
-            from: "vco1.out".to_string(),
-            to: "out1.right".to_string(),
-            amount: None,
-        }]
+        vec![Request::patch(
+            "vco1.out".to_string(),
+            "out1.right".to_string(),
+            None
+        )]
     );
     assert_eq!(app.rack.density, Density::Overview, "a jack does not zoom");
 }

@@ -41,6 +41,8 @@ fn loop_fixture(record: bool) -> Fixture {
             knob: Kind::LOOP.spec().knob_index(name).unwrap(),
             target: value,
             glide_frames: 0,
+            wait_frames: 0,
+            curve: kazoo_wall::protocol::GlideCurve::Linear,
         });
     }
     let mut buffer = [0.0; 1024];
@@ -54,6 +56,8 @@ fn loop_fixture(record: bool) -> Fixture {
             knob: Kind::LOOP.spec().knob_index("record").unwrap(),
             target: 0.0,
             glide_frames: 0,
+            wait_frames: 0,
+            curve: kazoo_wall::protocol::GlideCurve::Linear,
         });
         for _ in 0..(96_000 / 512 + 2) {
             fixture.render(&mut buffer);

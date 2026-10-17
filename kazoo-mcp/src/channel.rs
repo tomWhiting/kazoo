@@ -517,6 +517,8 @@ mod tests {
                     from: 92.0,
                     to: 96.0,
                     desk: false,
+                    after_beats: 0.0,
+                    glide_beats: 0.0,
                 },
                 summary: summary.to_string(),
                 undoes: None,

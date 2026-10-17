@@ -141,6 +141,8 @@ fn touches_leave_dye_by_their_size() {
         from: 90.0,
         to: 100.0,
         desk: false,
+        after_beats: 0.0,
+        glide_beats: 0.0,
     };
     dye.touch("Waffles", &tempo, &patch);
     assert_eq!(dye.deposits().len(), 2);

@@ -51,50 +51,28 @@ fn every_request_round_trips() {
         },
         Request::Look,
         Request::Catalogue,
-        Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: 800.0,
-            glide_beats: Some(4.0),
-        },
-        Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: 800.0,
-            glide_beats: None,
-        },
-        Request::Patch {
-            from: "lfo1.out".to_string(),
-            to: "vcf1.cutoff".to_string(),
-            amount: Some(0.4),
-        },
-        Request::Unpatch {
-            cable: Some(12),
-            to: None,
-        },
-        Request::Unpatch {
-            cable: None,
-            to: Some("vcf1.cutoff".to_string()),
-        },
-        Request::Add {
-            alias: None,
-            kind: "lfo".to_string(),
-            name: Some("slow wobble".to_string()),
-            place: None,
-        },
-        Request::Add {
-            alias: None,
-            kind: "lfo".to_string(),
-            name: None,
-            place: Some(Place {
+        Request::turn("vcf1".to_string(), "cutoff".to_string(), 800.0, Some(4.0)),
+        Request::turn("vcf1".to_string(), "cutoff".to_string(), 800.0, None),
+        Request::patch("lfo1.out".to_string(), "vcf1.cutoff".to_string(), Some(0.4)),
+        Request::unpatch(Some(12), None),
+        Request::unpatch(None, Some("vcf1.cutoff".to_string())),
+        Request::add(
+            "lfo".to_string(),
+            Some("slow wobble".to_string()),
+            None,
+            None,
+        ),
+        Request::add(
+            "lfo".to_string(),
+            None,
+            Some(Place {
                 row: 2,
                 before: Some("vcf1".to_string()),
                 own: false,
             }),
-        },
-        Request::Remove {
-            module: "lfo3".to_string(),
-        },
+            None,
+        ),
+        Request::remove("lfo3".to_string()),
         Request::Arrange {
             module: "lfo3".to_string(),
             row: 1,
@@ -113,7 +91,7 @@ fn every_request_round_trips() {
             limit: Some(50),
         },
         Request::Listen,
-        Request::Tempo { bpm: 96.0 },
+        Request::tempo(96.0),
         Request::Subscribe,
         Request::Monitor { on: true },
         Request::Monitor { on: false },
@@ -201,6 +179,8 @@ fn responses_and_events_have_the_design_shape() {
             from: 420.0,
             to: 800.0,
             glide_beats: 4.0,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear,
         },
         summary: "Tom turned vcf1 cutoff 420 Hz → 800 Hz over 4 beats".to_string(),
         undoes: None,
@@ -316,6 +296,8 @@ fn changes_undo_and_every_what_round_trip() {
         What::Patch {
             cable: cable.clone(),
             replaced: None,
+            after_beats: 0.0,
+            fade_beats: 0.0,
         },
         What::Unpatch {
             cable: cable.clone(),
@@ -345,6 +327,8 @@ fn changes_undo_and_every_what_round_trip() {
             from: 90.0,
             to: 100.0,
             desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0,
         },
     ] {
         let change = Change {
@@ -376,7 +360,7 @@ fn knob_values_travel_as_the_numbers_people_meant() {
 
 #[test]
 fn change_ops_are_the_flood_guarded_ones() {
-    assert!(Request::Tempo { bpm: 90.0 }.is_change());
+    assert!(Request::tempo(90.0).is_change());
     assert!(!Request::Look.is_change());
     assert!(!Request::Subscribe.is_change());
     // Whether the wall is heard is not a change to the wall.
@@ -559,12 +543,7 @@ fn the_rack_has_its_shape_and_older_walls_and_consoles_still_read() {
     let line: RequestLine =
         serde_json::from_value(json!({"id":7,"op":"add","kind":"lfo"})).unwrap();
     assert!(matches!(line.request, Request::Add { place: None, .. }));
-    let with = Request::Add {
-        alias: None,
-        kind: "lfo".to_string(),
-        name: None,
-        place: Some(Place::end_of(3)),
-    };
+    let with = Request::add("lfo".to_string(), None, Some(Place::end_of(3)), None);
     assert_eq!(
         serde_json::to_value(RequestLine {
             id: 7,
@@ -877,12 +856,7 @@ fn a_request_says_which_wall_it_is_for() {
     let line = RequestLine {
         id: 3,
         wall: Some(41),
-        request: Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: 800.0,
-            glide_beats: None,
-        },
+        request: Request::turn("vcf1".to_string(), "cutoff".to_string(), 800.0, None),
         comment: None,
     };
     let wire = serde_json::to_value(&line).unwrap();
@@ -896,30 +870,11 @@ fn a_request_says_which_wall_it_is_for() {
     assert_eq!(old.wall, None);
     // Only requests naming modules or cables are checked.
     let names = [
-        Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: 1.0,
-            glide_beats: None,
-        },
-        Request::Patch {
-            from: "a1.out".to_string(),
-            to: "b1.in".to_string(),
-            amount: None,
-        },
-        Request::Unpatch {
-            cable: Some(1),
-            to: None,
-        },
-        Request::Add {
-            alias: None,
-            kind: "lfo".to_string(),
-            name: None,
-            place: None,
-        },
-        Request::Remove {
-            module: "lfo1".to_string(),
-        },
+        Request::turn("vcf1".to_string(), "cutoff".to_string(), 1.0, None),
+        Request::patch("a1.out".to_string(), "b1.in".to_string(), None),
+        Request::unpatch(Some(1), None),
+        Request::add("lfo".to_string(), None, None, None),
+        Request::remove("lfo1".to_string()),
         Request::Arrange {
             module: "lfo1".to_string(),
             row: 0,
@@ -936,7 +891,7 @@ fn a_request_says_which_wall_it_is_for() {
     for other in [
         Request::Look,
         Request::Undo { change: 3 },
-        Request::Tempo { bpm: 90.0 },
+        Request::tempo(90.0),
         Request::Record { on: true },
         Request::Load {
             name: "jam".to_string(),

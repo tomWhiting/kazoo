@@ -117,6 +117,8 @@ pub(super) fn turn_of(seq: u64, module: &str, knob: &str, from: f64, to: f64) ->
             from,
             to,
             glide_beats: 0.0,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear,
         },
     )
 }
@@ -230,12 +232,7 @@ pub(super) fn ask(wall: &mut Wall, request: &Request) -> Option<u64> {
 }
 
 pub(super) fn turn_request(module: &str, knob: &str, value: f64, glide: Option<f64>) -> Request {
-    Request::Turn {
-        module: module.into(),
-        knob: knob.into(),
-        value,
-        glide_beats: glide,
-    }
+    Request::turn(module.into(), knob.into(), value, glide)
 }
 
 /// Turns with glides, a patch, a patch that replaces it, an unpatch, an
@@ -246,42 +243,20 @@ pub(super) fn mixed_changes(wall: &mut Wall) {
     for (from, amount) in [("lfo1.out", 0.3), ("vco1.out", 0.2)] {
         ask(
             wall,
-            &Request::Patch {
-                from: from.into(),
-                to: "vcf1.drive".into(),
-                amount: Some(amount),
-            },
+            &Request::patch(from.into(), "vcf1.drive".into(), Some(amount)),
         );
     }
-    ask(
-        wall,
-        &Request::Unpatch {
-            cable: None,
-            to: Some("vcf1.drive".into()),
-        },
-    );
-    ask(
-        wall,
-        &Request::Add {
-            alias: None,
-            kind: "vco".into(),
-            name: None,
-            place: None,
-        },
-    );
+    ask(wall, &Request::unpatch(None, Some("vcf1.drive".into())));
+    ask(wall, &Request::add("vco".into(), None, None, None));
     let added = wall.patch().to_file().modules.last().unwrap().id.clone();
     ask(
         wall,
-        &Request::Patch {
-            from: format!("{added}.out"),
-            to: "mix1.c".into(),
-            amount: Some(0.5),
-        },
+        &Request::patch(format!("{added}.out"), "mix1.c".into(), Some(0.5)),
     );
-    let removed = ask(wall, &Request::Remove { module: added }).unwrap();
+    let removed = ask(wall, &Request::remove(added)).unwrap();
     ask(wall, &Request::Undo { change: removed });
     ask(wall, &Request::Undo { change: 1 });
-    ask(wall, &Request::Tempo { bpm: 100.0 });
+    ask(wall, &Request::tempo(100.0));
 }
 
 pub(super) fn moved_wall(arrange: bool) -> (tempfile::TempDir, u64) {

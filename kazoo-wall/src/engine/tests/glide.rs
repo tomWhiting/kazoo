@@ -7,6 +7,7 @@ fn the_tempo_glides_a_sub_block_at_a_time() {
     control.send(Command::TempoGlide {
         bpm: 90.0,
         frames: 48_000,
+        wait_frames: 0,
     });
     render(&mut engine, SUB_BLOCK, &mut buffer);
     assert!((control.shared().bpm() - 119.98).abs() < 1e-9);
@@ -24,12 +25,14 @@ fn the_tempo_glides_a_sub_block_at_a_time() {
     control.send(Command::TempoGlide {
         bpm: 120.0,
         frames: 96,
+        wait_frames: 0,
     });
     render(&mut engine, SUB_BLOCK, &mut buffer);
     assert_eq!(control.shared().bpm().to_bits(), 100.0_f64.to_bits());
     control.send(Command::TempoGlide {
         bpm: 80.0,
         frames: 64,
+        wait_frames: 0,
     });
     render(&mut engine, SUB_BLOCK, &mut buffer);
     assert_eq!(control.shared().bpm().to_bits(), 90.0_f64.to_bits());
@@ -44,6 +47,7 @@ fn a_tempo_or_the_desk_stops_a_tempo_glide() {
     control.send(Command::TempoGlide {
         bpm: 90.0,
         frames: 48_000,
+        wait_frames: 0,
     });
     render(&mut engine, 24_000, &mut buffer);
     assert!((control.shared().bpm() - 105.0).abs() < 0.1);
@@ -87,6 +91,7 @@ fn a_tempo_glide_to_nonsense_is_ignored() {
     control.send(Command::TempoGlide {
         bpm: f64::NAN,
         frames: 48_000,
+        wait_frames: 0,
     });
     render(&mut engine, SUB_BLOCK, &mut buffer);
     assert_eq!(control.shared().bpm().to_bits(), 120.0_f64.to_bits());
@@ -96,6 +101,7 @@ fn a_tempo_glide_to_nonsense_is_ignored() {
     control.send(Command::TempoGlide {
         bpm: 1_000.0,
         frames: 64,
+        wait_frames: 0,
     });
     render(&mut engine, SUB_BLOCK, &mut buffer);
     assert_eq!(control.shared().bpm().to_bits(), 210.0_f64.to_bits());
@@ -106,7 +112,11 @@ fn a_tempo_glide_to_nonsense_is_ignored() {
         engine.tempo_left,
     );
     for bpm in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        control.send(Command::TempoGlide { bpm, frames: 0 });
+        control.send(Command::TempoGlide {
+            bpm,
+            frames: 0,
+            wait_frames: 0,
+        });
     }
     on_audio_thread(|| engine.drain_commands());
     assert_eq!(
@@ -126,6 +136,7 @@ fn a_tempo_glide_to_nonsense_is_ignored() {
     control.send(Command::TempoGlide {
         bpm: 0.0,
         frames: 33,
+        wait_frames: 0,
     });
     render(&mut engine, SUB_BLOCK, &mut buffer);
     assert!(control.shared().bpm() > MIN_BPM);
@@ -135,11 +146,13 @@ fn a_tempo_glide_to_nonsense_is_ignored() {
     control.send(Command::TempoGlide {
         bpm: 90.0,
         frames: 1_000,
+        wait_frames: 0,
     });
     render(&mut engine, SUB_BLOCK, &mut buffer);
     control.send(Command::TempoGlide {
         bpm: 100.0,
         frames: 0,
+        wait_frames: 0,
     });
     render(&mut engine, SUB_BLOCK, &mut buffer);
     assert_eq!(control.shared().bpm().to_bits(), 100.0_f64.to_bits());
@@ -226,6 +239,7 @@ fn gliding_allocates_nothing() {
     control.send(Command::TempoGlide {
         bpm: 90.0,
         frames: 96_000,
+        wait_frames: 0,
     });
     super::render(&mut engine, 48_000, &mut buffer);
     for slot in 1..=128 {

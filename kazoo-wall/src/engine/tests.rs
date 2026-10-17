@@ -8,6 +8,7 @@ mod cost;
 mod delays;
 mod glide;
 mod moments;
+mod scheduling;
 mod sparse;
 mod unheard;
 
@@ -169,6 +170,8 @@ fn random_patching_never_allocates_on_the_audio_thread() {
                     knob,
                     target: spec.knobs[knob].denormalise(rng.unit()),
                     glide_frames: pick(&mut rng, 20_000) as u32,
+                    wait_frames: 0,
+                    curve: crate::protocol::GlideCurve::Linear,
                 });
             }
             5 | 6 if !model.slots.is_empty() => {
@@ -318,6 +321,8 @@ fn knobs_glide_evenly_along_their_travel() {
         knob: 0,
         target: 200.0,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     let mut buffer = Vec::new();
     render(&mut engine, 480, &mut buffer);
@@ -326,6 +331,8 @@ fn knobs_glide_evenly_along_their_travel() {
         knob: 0,
         target: 3_200.0,
         glide_frames: 4_800,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     render(&mut engine, 2_400, &mut buffer);
     // Half way along a logarithmic cutoff is the geometric middle, 800 Hz,
@@ -341,6 +348,8 @@ fn knobs_glide_evenly_along_their_travel() {
         knob: 0,
         target: 300.0,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     render(&mut engine, 1, &mut buffer);
     let moving = control.knob(3, 0).unwrap();
@@ -362,6 +371,8 @@ fn a_glide_reaches_the_module_frame_by_frame() {
         knob: 0,
         target: 0.0,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     let mut buffer = Vec::new();
     render(&mut engine, 480, &mut buffer);
@@ -370,6 +381,8 @@ fn a_glide_reaches_the_module_frame_by_frame() {
         knob: 0,
         target: 1.0,
         glide_frames: 4_800,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     let [frames, step] = sparse::watch_sweep(&mut control);
     render(&mut engine, 64, &mut buffer);
@@ -409,12 +422,16 @@ fn a_knob_jack_moves_the_knob() {
         knob: 2,
         target: 0.0,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     control.send(Command::Knob {
         slot: 0,
         knob: 3,
         target: 0.25,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     model.plug(&mut control, (0, 0, 0, crate::MAX_INPUTS + 3, 1.0));
     let mut buffer = Vec::new();
@@ -437,6 +454,8 @@ fn outs_feed_the_device_channels() {
         knob: 1,
         target: -1.0,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     // The pan takes a millisecond to get there.
     let mut settle = vec![0.0; 480 * 3];
@@ -491,12 +510,16 @@ fn nonsense_commands_are_counted_not_obeyed() {
         knob: 99,
         target: 1.0,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     control.send(Command::Knob {
         slot: 0,
         knob: 0,
         target: f32::NAN,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     // A slot no machine has the memory to make room for.
     control.send(Command::Insert {
@@ -538,6 +561,8 @@ fn the_engine_grows_far_past_its_first_room_without_allocating() {
         knob: 0,
         target: 0.5,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     let mut buffer = Vec::new();
     render(&mut engine, 4_800, &mut buffer);
@@ -998,6 +1023,8 @@ fn a_change_sent_during_the_hold_lands_after_the_swap_in_order() {
         knob: tune,
         target: 5.0,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     // A turn aimed at the old wall's module, sent after the swap, finds
     // its slot empty by the time it is taken in: nothing of the old wall
@@ -1007,6 +1034,8 @@ fn a_change_sent_during_the_hold_lands_after_the_swap_in_order() {
         knob: tune,
         target: 3.0,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     render(&mut engine, SUB_BLOCK * 4, &mut buffer);
     assert!(!engine.room.holds(2), "still held");
@@ -1034,6 +1063,8 @@ fn a_swap_too_big_for_the_ring_waits_in_order_unhush_and_all() {
             knob: tune,
             target: f32::from(u16::try_from(step % 12).unwrap()),
             glide_frames: 0,
+            wait_frames: 0,
+            curve: crate::protocol::GlideCurve::Linear,
         });
     }
     control.send(Command::Knob {
@@ -1041,6 +1072,8 @@ fn a_swap_too_big_for_the_ring_waits_in_order_unhush_and_all() {
         knob: tune,
         target: 7.0,
         glide_frames: 0,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     control.send(Command::Unhush);
     assert!(control.backlog() > 100, "{}", control.backlog());

@@ -159,6 +159,8 @@ impl Rig {
             from,
             to: value,
             glide_beats: 0.0,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear,
         };
         let change = make_change(file.last_seq + 1, what);
         self.wall.tree_test_apply(&file, change);
@@ -179,6 +181,8 @@ impl Rig {
                 from,
                 to: value,
                 glide_beats: 0.0,
+                after_beats: 0.0,
+                curve: crate::protocol::GlideCurve::Linear,
             }],
             comments: Vec::new(),
         };
@@ -704,6 +708,8 @@ fn imported_change_resolves() {
             from,
             to: 400.0,
             glide_beats: 0.0,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear,
         },
     );
     file.last_seq = 1;

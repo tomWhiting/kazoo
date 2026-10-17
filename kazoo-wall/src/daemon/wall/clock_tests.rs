@@ -17,12 +17,7 @@ fn wall(store: Option<Store>) -> Result<(Wall, Engine), WallError> {
 fn turn(wall: &mut Wall, value: f64) -> Result<Change, WallError> {
     let outcome = wall.request(
         "Tom",
-        &Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value,
-            glide_beats: Some(0.0),
-        },
+        &Request::turn("vcf1".to_string(), "cutoff".to_string(), value, Some(0.0)),
         Instant::now(),
     )?;
     outcome
@@ -194,7 +189,7 @@ fn a_tempo_change_keeps_the_line() -> TestResult {
     assert_eq!(second.tempo.to_bits(), 90.0_f64.to_bits());
     let (mut wall, mut engine) = wall(None)?;
     let first = turn(&mut wall, 800.0)?;
-    let changed = wall.request("Tom", &Request::Tempo { bpm: 90.0 }, Instant::now())?;
+    let changed = wall.request("Tom", &Request::tempo(90.0), Instant::now())?;
     let change = changed.change.ok_or("tempo made no change")?;
     assert_eq!(stamp(&change).tempo.to_bits(), 120.0_f64.to_bits());
     assert_eq!(stamp(&change).line, stamp(&first).line);
@@ -351,7 +346,7 @@ fn a_new_wall_and_an_undone_load_each_start_a_line() -> TestResult {
     assert_eq!(stamp(&undone).line, format!("{start}.3"));
     // The wall brought back is the empty one: a tempo change rides on it.
     let next = wall
-        .request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())?
+        .request("Tom", &Request::tempo(100.0), Instant::now())?
         .change
         .ok_or("the tempo made no change")?;
     assert_eq!(stamp(&next).line, format!("{start}.3"));
