@@ -118,7 +118,7 @@ The name on npm. `kzhz` stands. `npm/launcher.sh` can add another name in one ru
 
 ## Order
 
-**Amended, 18 Oct 2026 about 11:30.** Tom asked for the desk first (relayed by Buckley, 09:46 to 09:49). The order is now the one at the end of KZ-N03: N02 the one MCP, N03 the desk from the MCP, N04 instruments played from the MCP, N05 the local network, N06 the internet, N07 spins. The list below was the first order.
+**The amendment of about 11:30 is withdrawn (10:02).** It put the desk first on a relayed note that Buckley has since withdrawn. The order below stands until Tom says otherwise.
 
 1. **N02:** one MCP (§1) on today's Unix socket: `wall_walls` (this Mac only), `wall_join`, `wall_leave`, the `wall` argument on every tool, and the old flags kept for one release. This removes the identifying config straight away.
 2. **N03:** keys and pairing (§3), and Noise over TCP on the local network for the wall, plus DNS-SD (§2.2). This lets Tom use the old laptop's wall from this laptop with no SSH.
