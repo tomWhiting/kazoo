@@ -80,16 +80,14 @@ for wanted in "$@"; do
 
   echo "launcher.sh: trying $name (command $command)"
   log="$stage/publish.log"
-  status="$stage/status"
-  # The output is kept to read npm's reason; the sign-in link still shows.
-  {
-    if (cd "$stage" && npm publish --access public $dry); then
-      echo 0 >"$status"
-    else
-      echo $? >"$status"
-    fi
-  } 2>&1 | tee "$log"
-  if [ "$(cat "$status")" = 0 ]; then
+  # npm signs in through the browser only on a terminal, so it gets one
+  # (script); the output is kept as well, to read npm's reason.
+  if script -q "$log" sh -c 'cd "$1" && shift && npm publish "$@"' sh "$stage" --access public $dry; then
+    published=0
+  else
+    published=$?
+  fi
+  if [ "$published" = 0 ]; then
     if [ -n "$dry" ]; then
       echo "launcher.sh: (dry run) $name packs; npm judges the name only when it is published"
       continue
