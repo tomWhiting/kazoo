@@ -220,8 +220,11 @@ pub enum Request {
     Catalogue,
     /// Turn a knob, gliding over `glide_beats` (default 2, 0 to 64).
     Turn {
+        /// Beats (0 to 256, at the tempo when accepted) the knob rests
+        /// before it starts to glide; 0, the default, starts at once.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         after_beats: f64,
+        /// The glide's shape along the knob's travel; linear by default.
         #[serde(default, skip_serializing_if = "GlideCurve::is_linear")]
         curve: GlideCurve,
         /// Module id, e.g. `vcf1`.
@@ -236,10 +239,16 @@ pub enum Request {
     },
     /// Plug an output into an input, replacing any cable already in it.
     Patch {
+        /// Beats (0 to 256, at the tempo when accepted) the cable's sound
+        /// holds (a new cable is silent) before it fades; default 0.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         after_beats: f64,
+        /// Beats (0 to 64) the cable's amount fades over, linearly, after
+        /// its wait; 0, the default, takes it at once.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         fade_beats: f64,
+        /// Refused when present: a cable fades linearly, and a curve belongs
+        /// on a turn. Kept so the refusal can say so.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         curve: Option<serde_json::Value>,
         /// Output, e.g. `lfo1.out`.
@@ -252,6 +261,7 @@ pub enum Request {
     },
     /// Unplug a cable, by its number or by the input it is plugged into.
     Unpatch {
+        /// Refused when present: an unpatch happens at once.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_beats: Option<f64>,
         /// Cable number.
@@ -263,6 +273,7 @@ pub enum Request {
     },
     /// Add a module.
     Add {
+        /// Refused when present: an add happens at once.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_beats: Option<f64>,
         /// In a batch, a label later steps name this module by, as
@@ -298,6 +309,7 @@ pub enum Request {
     },
     /// Take a module away, with its cables.
     Remove {
+        /// Refused when present: a removal happens at once.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_beats: Option<f64>,
         /// Module id.
@@ -396,8 +408,13 @@ pub enum Request {
     },
     /// Set the tempo: asks the desk when the wall is on it.
     Tempo {
+        /// Beats (0 to 256, at the tempo when accepted) the tempo holds
+        /// before it moves; default 0. On the desk the daemon holds the
+        /// request back until then.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         after_beats: f64,
+        /// Beats (0 to 64) the wall's own clock glides over after the wait;
+        /// 0, the default, moves at once. Refused while following the desk.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         glide_beats: f64,
         /// Beats per minute, 20 to 300.
@@ -910,8 +927,10 @@ pub enum What {
     },
     /// A knob turned from one target to another.
     Turn {
+        /// Beats the knob rested before gliding; absent when 0.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         after_beats: f64,
+        /// The glide's shape; absent when linear.
         #[serde(default, skip_serializing_if = "GlideCurve::is_linear")]
         curve: GlideCurve,
         /// Module id.
@@ -927,8 +946,10 @@ pub enum What {
     },
     /// A cable plugged in.
     Patch {
+        /// Beats the cable's sound held before it faded; absent when 0.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         after_beats: f64,
+        /// Beats the cable faded in over; absent when 0.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         fade_beats: f64,
         /// The new cable.
@@ -1008,8 +1029,10 @@ pub enum What {
     /// (the wall follows, and saves, whatever the desk then plays). A desk
     /// that went away before sending it never changes tempo for it.
     Tempo {
+        /// Beats the tempo held before it moved; absent when 0.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         after_beats: f64,
+        /// Beats the wall's own clock glided over; absent when 0.
         #[serde(default, skip_serializing_if = "scheduling::is_zero")]
         glide_beats: f64,
         /// Beats per minute before.
