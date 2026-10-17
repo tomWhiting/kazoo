@@ -10,6 +10,10 @@ use kazoo_wall::protocol::Request;
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BatchArgs {
+    /// Which joined wall to ask, by its name from `wall_walls`: needed only
+    /// when this seat is on more than one.
+    #[serde(default)]
+    pub wall: Option<String>,
     /// What the changes are for, like a commit message: 1 to 200
     /// characters on one line (no newlines, tabs or other control
     /// characters). The tree shows the batch as one knot with this note.

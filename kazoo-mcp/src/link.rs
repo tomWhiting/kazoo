@@ -150,8 +150,13 @@ struct Connection {
 }
 
 impl Connection {
-    /// Connect to `socket` and say hello as `seat`.
-    async fn open(socket: &Path, seat: &str) -> Result<(Self, HelloResult), LinkError> {
+    /// Connect to `socket` and say hello as `seat`, or as a watcher (never
+    /// listed among the seats, never announced, and changing nothing).
+    async fn open(
+        socket: &Path,
+        seat: &str,
+        watcher: bool,
+    ) -> Result<(Self, HelloResult), LinkError> {
         let stream = UnixStream::connect(socket).await.map_err(|err| {
             if matches!(
                 err.kind(),
@@ -174,7 +179,7 @@ impl Connection {
             seat: seat.to_string(),
             client: CLIENT.to_string(),
             console: false,
-            watcher: false,
+            watcher,
         };
         let line = line_for(&mut connection.next_id, hello, (None, None))?;
         let answered = tokio::time::timeout(ANSWER_WITHIN, connection.exchange(&line)).await;
@@ -469,7 +474,7 @@ impl Wall {
             let (connection, reused) = match slot.take() {
                 Some(connection) if connection.looks_alive() => (slot.insert(connection), true),
                 Some(_) | None => {
-                    let (connection, _) = Connection::open(&self.socket, &self.seat).await?;
+                    let (connection, _) = Connection::open(&self.socket, &self.seat, false).await?;
                     (slot.insert(connection), false)
                 }
             };
@@ -578,12 +583,28 @@ pub async fn follow(socket: PathBuf, seat: String, feed: mpsc::UnboundedSender<F
     }
 }
 
+/// The name a look at a wall says hello with: a watcher's, never listed.
+const PEEK_AS: &str = "kazoo-mcp";
+
+/// Look at the wall on `socket` without joining it: say hello as a watcher
+/// and go. The seats in its answer are the others, never this look.
+///
+/// # Errors
+///
+/// [`LinkError::NotRunning`] while the daemon is down, and the others for a
+/// line that failed or a hello refused.
+pub async fn peek(socket: &Path) -> Result<HelloResult, LinkError> {
+    Connection::open(socket, PEEK_AS, true)
+        .await
+        .map(|(_, hello)| hello)
+}
+
 /// Connect, say hello and subscribe.
 async fn subscribe(
     socket: &Path,
     seat: &str,
 ) -> Result<(Connection, HelloResult, SubscribeResult), LinkError> {
-    let (mut connection, hello) = Connection::open(socket, seat).await?;
+    let (mut connection, hello) = Connection::open(socket, seat, false).await?;
     let line = line_for(&mut connection.next_id, Request::Subscribe, (None, None))?;
     let answered = tokio::time::timeout(ANSWER_WITHIN, connection.exchange(&line)).await;
     let value = match answered {

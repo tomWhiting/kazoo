@@ -28,13 +28,15 @@ use tokio::sync::mpsc;
 const NOT_RUNNING: &str = "the wall is not running (start it with `kazoo wall`)";
 
 /// Every tool.
-const TOOLS: [&str; 25] = [
+const TOOLS: [&str; 28] = [
     "wall_add",
     "wall_batch",
     "wall_catalogue",
     "wall_chain",
     "wall_go",
     "wall_group",
+    "wall_join",
+    "wall_leave",
     "wall_listen",
     "wall_load",
     "wall_log",
@@ -54,6 +56,7 @@ const TOOLS: [&str; 25] = [
     "wall_turn",
     "wall_undo",
     "wall_unpatch",
+    "wall_walls",
 ];
 
 /// A client that keeps every custom notification the server sends, and
@@ -214,6 +217,7 @@ fn channel_shape(
         "every meta value is a string: {meta:?}"
     );
     assert_eq!(meta["source"], "kazoo-wall");
+    assert_eq!(meta["wall"], "here", "the wall the seat joined: {meta:?}");
     assert!(content.starts_with("News from the wall:\n"), "{content}");
     assert!(
         content
@@ -1027,7 +1031,7 @@ async fn claude_codes_discover_opener_falls_back_to_the_handshake() {
 }
 
 #[test]
-fn a_missing_or_bad_seat_stops_with_a_message() {
+fn a_bad_seat_stops_with_a_message_and_none_is_needed() {
     // Never near the default socket or state, though these runs stop
     // before connecting.
     let (runtime, state) = dirs();
@@ -1048,12 +1052,12 @@ fn a_missing_or_bad_seat_stops_with_a_message() {
             String::from_utf8_lossy(&output.stderr).into_owned(),
         )
     };
+    // No seat is no fault: the bare server starts, on no wall, and ends
+    // here only because nobody speaks MCP to it.
     let (code, said) = run(&[], None);
-    assert_eq!(code, Some(2), "{said}");
-    assert!(
-        said.contains("--seat <Name>") && said.contains("KAZOO_SEAT"),
-        "{said}"
-    );
+    assert_ne!(code, Some(2), "{said}");
+    assert!(!said.contains("--seat"), "{said}");
+    assert!(said.contains("this Mac's wall at"), "{said}");
     let (code, said) = run(&["--seat", "bad/name"], None);
     assert_eq!(code, Some(2), "{said}");
     assert!(said.contains("not a valid seat name"), "{said}");
@@ -1066,3 +1070,5 @@ fn a_missing_or_bad_seat_stops_with_a_message() {
 
 #[path = "seat/batch.rs"]
 mod batch;
+#[path = "seat/joining.rs"]
+mod joining;

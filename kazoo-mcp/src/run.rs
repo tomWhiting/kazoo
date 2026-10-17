@@ -4,21 +4,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::ServiceExt as _;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
-use crate::channel;
 use crate::cli::{self, Invocation, Options};
-use crate::link::{self, Wall};
+use crate::link;
 use crate::tools::Seat;
+use crate::walls::{HERE, Walls};
 
 /// A seat's settings, with defaults applied when it starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
-    /// The seat's name: 1 to 24 of A-Z a-z 0-9 space _ . -.
-    pub seat: String,
+    /// The name to join this Mac's wall as at start (`--seat`, going);
+    /// `None` starts on no wall, for `wall_join`.
+    pub seat: Option<String>,
     /// The notification window in whole seconds, 1 to 3600; `None` uses 20.
     pub notify_every: Option<Duration>,
-    /// The wall's control socket; `None` uses its runtime directory.
+    /// This Mac's wall's control socket (`--socket`, going); `None` uses
+    /// its runtime directory.
     pub socket: Option<PathBuf>,
 }
 
@@ -117,15 +119,24 @@ async fn main_loop(args: Args) -> color_eyre::Result<()> {
         socket,
     } = cli::resolve(args).map_err(color_eyre::eyre::Error::msg)?;
     eprintln!(
-        "kazoo-mcp: seat {seat}, wall at {}, news at most every {} seconds",
+        "kazoo-mcp: this Mac's wall at {}, news at most every {} seconds",
         socket.display(),
         notify_every.as_secs()
     );
-    let (feed, heard) = mpsc::unbounded_channel();
     let (peer, session) = watch::channel(None);
-    let follower = tokio::spawn(link::follow(socket.clone(), seat.clone(), feed.clone()));
-    let notifier = tokio::spawn(channel::notify(seat.clone(), notify_every, heard, session));
-    let server = Seat::new(Arc::new(Wall::new(socket, seat)), feed, peer);
+    let walls = Arc::new(Walls::new(socket, notify_every, session));
+    if let Some(seat) = seat {
+        eprintln!(
+            "kazoo-mcp: --seat and {} are going: leave them out, and the seat joins with wall_join",
+            cli::SEAT_ENV
+        );
+        walls
+            .join(None, &seat)
+            .await
+            .map_err(color_eyre::eyre::Error::msg)?;
+        eprintln!("kazoo-mcp: on {HERE} as {seat}");
+    }
+    let server = Seat::new(Arc::clone(&walls), peer);
     let outcome = match server
         .serve((tokio::io::stdin(), tokio::io::stdout()))
         .await
@@ -137,8 +148,8 @@ async fn main_loop(args: Args) -> color_eyre::Result<()> {
             .map_err(|err| format!("the MCP session ended badly: {err}")),
         Err(err) => Err(format!("the MCP session would not start on stdio: {err}")),
     };
-    follower.abort();
-    notifier.abort();
+    // Every joined wall's event line and notifier stop with the seat.
+    drop(walls);
     outcome.map_err(color_eyre::eyre::Error::msg)
 }
 
@@ -155,7 +166,7 @@ mod tests {
     }
 
     pub(super) async fn stand_in(args: Args) -> color_eyre::Result<()> {
-        assert_eq!(args.seat, "Cassio");
+        assert_eq!(args.seat.as_deref(), Some("Cassio"));
         tokio::spawn(async { tokio::runtime::Handle::current() }).await?;
         Ok(())
     }
@@ -203,7 +214,7 @@ mod tests {
                 .map(String::from)
             ),
             Ok(Some(Args {
-                seat: "Cassio".to_owned(),
+                seat: Some("Cassio".to_owned()),
                 notify_every: Some(Duration::from_secs(3)),
                 socket: Some(PathBuf::from("/tmp/w.sock"))
             }))
@@ -211,7 +222,7 @@ mod tests {
         assert_eq!(
             parse_args(["--seat=Cassio"].map(String::from)),
             Ok(Some(Args {
-                seat: "Cassio".to_owned(),
+                seat: Some("Cassio".to_owned()),
                 notify_every: None,
                 socket: None
             }))
@@ -229,7 +240,7 @@ mod tests {
     fn run_builds_its_own_runtime() -> color_eyre::Result<()> {
         STAND_IN.set(true);
         let args = Args {
-            seat: "Cassio".to_owned(),
+            seat: Some("Cassio".to_owned()),
             notify_every: None,
             socket: None,
         };

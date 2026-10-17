@@ -21,15 +21,17 @@ mod tests {
             ..kazoo_wall::daemon::DaemonConfig::headless(runtime.path(), state.path())
         })
         .unwrap();
-        let wall = std::sync::Arc::new(crate::link::Wall::new(
-            daemon.socket().to_path_buf(),
-            "ChainTester".to_string(),
-        ));
-        let (feed, mut heard) = tokio::sync::mpsc::unbounded_channel();
         let (peer, receiver) = tokio::sync::watch::channel(None);
-        let seat = crate::tools::Seat::new(wall, feed, peer);
+        let walls = std::sync::Arc::new(crate::walls::Walls::new(
+            daemon.socket().to_path_buf(),
+            std::time::Duration::from_secs(20),
+            receiver.clone(),
+        ));
+        let mut heard = walls.join_heard(None, "ChainTester").await.unwrap();
+        let seat = crate::tools::Seat::new(walls, peer);
         let args = |action, name, modules| {
             rmcp::handler::server::wrapper::Parameters(crate::tools::ChainArgs {
+                wall: None,
                 action,
                 name,
                 modules,
