@@ -1,6 +1,6 @@
 [package]
 name = "kazoo-808"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.89"
 description = "TR-808 drum machine — all-synthesis, no samples"
@@ -11,8 +11,8 @@ repository = "https://github.com/tomWhiting/kazoo"
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host", version = "=0.2.0" }
-kazoo-core = { version = "=0.2.0", path = "../kazoo-core" }
+kazoo-host = { path = "../kazoo-host", version = "=0.2.1" }
+kazoo-core = { version = "=0.2.1", path = "../kazoo-core" }
 cpal = "0.17.1"
 crossbeam-channel = "0.5.15"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
