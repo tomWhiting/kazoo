@@ -29,6 +29,15 @@ if [ -z "$version" ]; then
   exit 1
 fi
 
+# A version is one commit: once its tag names another commit, what is here
+# is not that release, and must go out under a new version.
+if tagged=$(git -C "$root" rev-parse -q --verify "refs/tags/v$version^{commit}"); then
+  if [ "$tagged" != "$(git -C "$root" rev-parse HEAD)" ]; then
+    echo "publish.sh: v$version was released from $tagged, not this commit; bump the version" >&2
+    exit 1
+  fi
+fi
+
 for pair in aarch64-apple-darwin:arm64 x86_64-apple-darwin:x64; do
   target=${pair%%:*}
   arch=${pair##*:}
