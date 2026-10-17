@@ -31,14 +31,11 @@ impl HubAddress {
                         byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
                     })
             },
-            |host| {
-                host.strip_suffix(']')
-                    .is_some_and(|host| host.parse::<Ipv6Addr>().is_ok())
-            },
+            |host| host.strip_suffix(']').is_some_and(is_ipv6_host),
         );
         if !valid_host {
             return Err(invalid(
-                "desk host must be a hostname, IPv4, or IPv6 in brackets",
+                "desk host must be a hostname, IPv4, or IPv6 in brackets (with its interface after %, if link-local)",
             ));
         }
         Ok(Self::Tcp(text.to_owned()))
@@ -76,6 +73,39 @@ impl HubAddress {
     }
 }
 
+/// An IPv6 address, with the interface a link-local one is reached on
+/// after `%` (`fe80::1%en0`): 1 to 15 letters, digits, `.`, `_` or `-`.
+fn is_ipv6_host(host: &str) -> bool {
+    let (address, zone) = host
+        .split_once('%')
+        .map_or((host, None), |(a, z)| (a, Some(z)));
+    address.parse::<Ipv6Addr>().is_ok()
+        && zone.is_none_or(|zone| {
+            (1..=15).contains(&zone.len())
+                && zone
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
+}
+
+/// A parsed `host:port`'s host, without an IPv6 address's brackets, and its
+/// port: what the resolver is asked for.
+pub fn host_and_port(target: &str) -> io::Result<(&str, u16)> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("desk address {target} is not host:port"),
+        )
+    };
+    let (host, port) = target.rsplit_once(':').ok_or_else(invalid)?;
+    let port = port.parse::<u16>().map_err(|_| invalid())?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    Ok((host, port))
+}
+
 impl fmt::Display for HubAddress {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -94,7 +124,12 @@ mod tests {
 
     #[test]
     fn desk_addresses_parse_tcp_and_socket_forms() {
-        for text in ["tom-old.local:7700", "127.0.0.1:7700", "[::1]:7700"] {
+        for text in [
+            "tom-old.local:7700",
+            "127.0.0.1:7700",
+            "[::1]:7700",
+            "[fe80::1%en0]:7700",
+        ] {
             assert!(
                 matches!(HubAddress::parse(text).unwrap(), HubAddress::Tcp(value) if value == text)
             );
@@ -120,6 +155,9 @@ mod tests {
             "[no]:7700",
             "host name:7700",
             "host:0",
+            "[fe80::1%]:7700",
+            "[fe80::1%en 0]:7700",
+            "[fe80::1%abcdefghijklmnop]:7700",
             "/tmp/a\0b",
         ] {
             let error = HubAddress::parse(text).unwrap_err();
