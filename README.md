@@ -33,13 +33,13 @@ kzoo mouth              # the mouth synth
 kzoo 808                # an instrument: 808, 303, cs80, mini, juno, prophet, dx, string, glass, arp
 kzoo play               # text notation to notes or sound
 kzoo studio up <name>   # start the desk and instruments of ~/.kazoo/studio/<name>.toml
-kzoo mcp --seat <name>  # the wall for a Claude seat: an MCP server on stdio
+kzoo mcp                # the wall for a Claude seat: an MCP server on stdio
 ```
 
-To give a Claude seat the wall:
+To give a Claude seat the wall (every seat's config is the same line; the seat picks its name when it joins, with `wall_join`):
 
 ```sh
-claude mcp add kazoo -- kzoo mcp --seat <Name>
+claude mcp add kazoo -- kzoo mcp
 ```
 
 ## Building

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kazoo_wall::protocol::valid_name;
+use kazoo_wall::protocol::{reserved_name, valid_name};
 use rmcp::{Peer, RoleServer};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -69,7 +69,8 @@ impl On {
     /// Tell the notifier this seat made change `seq`, so the channel's
     /// `seq` is never behind this seat's own work.
     pub fn own(&self, seq: u64) {
-        if self.feed.send(Feed::Own(seq)).is_err() {
+        // A seat that has left has no notifier to tell, and nothing to say.
+        if self.feed.send(Feed::Own(seq)).is_err() && !self.wall.is_closed() {
             eprintln!("kazoo-mcp: the notifier has stopped; change #{seq} was not noted");
         }
     }
@@ -111,15 +112,15 @@ impl Walls {
     }
 
     /// The names of the walls this seat can reach.
-    const fn names() -> [&'static str; 1] {
-        [HERE]
+    const fn names() -> &'static [&'static str] {
+        &[HERE]
     }
 
     /// The walls this seat can reach, each looked at without joining it.
     pub async fn found(&self) -> Vec<Found> {
         let joined = self.joined_as().await;
         let mut found = Vec::new();
-        for name in Self::names() {
+        for &name in Self::names() {
             let (playing, seats) = match link::peek(&self.socket).await {
                 Ok(hello) => (Ok(()), hello.seats),
                 Err(LinkError::NotRunning) => (
@@ -150,14 +151,16 @@ impl Walls {
     }
 
     /// Join `wall` (the only one this seat can reach, when `None`) as
-    /// `seat`. Answers the wall's name.
+    /// `seat`.
     ///
     /// # Errors
     ///
-    /// A sentence: a name the wall would refuse, a wall this seat cannot
-    /// reach, or one it has joined already.
-    pub async fn join(&self, wall: Option<&str>, seat: &str) -> Result<String, String> {
-        self.join_with(wall, seat, true).await.map(|(name, _)| name)
+    /// A sentence: a name the wall would refuse or someone on it has, a
+    /// wall this seat cannot reach, or one it has joined already.
+    pub async fn join(&self, wall: Option<&str>, seat: &str) -> Result<Joining, String> {
+        self.join_with(wall, seat, true)
+            .await
+            .map(|(joining, _)| joining)
     }
 
     /// [`Self::join`] with no event line or notifier: what the seat tells
@@ -179,20 +182,53 @@ impl Walls {
         wall: Option<&str>,
         seat: &str,
         follow: bool,
-    ) -> Result<(String, Option<mpsc::UnboundedReceiver<Feed>>), String> {
+    ) -> Result<(Joining, Option<mpsc::UnboundedReceiver<Feed>>), String> {
         if !valid_name(seat) {
             return Err(format!(
                 "'{}' is not a name the wall takes: use 1 to 24 of A-Z a-z 0-9 space _ . -",
                 seat.escape_default()
             ));
         }
-        let name = Self::reachable(wall)?;
-        let mut joined = self.joined.lock().await;
-        if let Some(there) = joined.get(name) {
+        if reserved_name(seat) {
             return Err(format!(
-                "this seat is on {name} already, as {}: wall_leave it first to come back as another name",
-                there.seat
+                "'{seat}' is kept for the wall's own use: choose another name"
             ));
+        }
+        let name = Self::reachable(wall)?;
+        self.not_on(name).await?;
+        // The wall is asked with the lock let go, so the other tools play on.
+        let link = Arc::new(Wall::new(self.socket.clone(), seat.to_string()));
+        let joining = match link::peek(&self.socket).await {
+            Ok(hello) => {
+                if let Some(taken) = hello
+                    .seats
+                    .iter()
+                    .find(|other| other.eq_ignore_ascii_case(seat))
+                {
+                    return Err(format!(
+                        "someone is on {name} as {taken} already: choose another name"
+                    ));
+                }
+                match link.hello().await {
+                    Ok(hello) => Joining::Playing {
+                        wall: name.to_string(),
+                        seats: hello.seats,
+                        revision: hello.revision,
+                    },
+                    Err(LinkError::NotRunning) => self.waiting(name),
+                    Err(err) => return Err(err.to_string()),
+                }
+            }
+            Err(LinkError::NotRunning) => self.waiting(name),
+            Err(err) => return Err(err.to_string()),
+        };
+        let mut joined = self.joined.lock().await;
+        // Joined meanwhile, by a call alongside this one.
+        if let Some(there) = joined.get(name) {
+            let refused = already(name, &there.seat);
+            drop(joined);
+            link.close().await;
+            return Err(refused);
         }
         let (feed, heard) = mpsc::unbounded_channel();
         let (follower, notifier, heard) = if follow {
@@ -215,14 +251,31 @@ impl Walls {
             name.to_string(),
             Joined {
                 seat: seat.to_string(),
-                wall: Arc::new(Wall::new(self.socket.clone(), seat.to_string())),
+                wall: link,
                 feed,
                 follower,
                 notifier,
             },
         );
         drop(joined);
-        Ok((name.to_string(), heard))
+        Ok((joining, heard))
+    }
+
+    /// Refused when this seat is on `wall` already.
+    async fn not_on(&self, wall: &str) -> Result<(), String> {
+        self.joined
+            .lock()
+            .await
+            .get(wall)
+            .map_or(Ok(()), |there| Err(already(wall, &there.seat)))
+    }
+
+    /// A join to `wall`, which is not playing yet.
+    fn waiting(&self, wall: &str) -> Joining {
+        Joining::Waiting {
+            wall: wall.to_string(),
+            socket: self.socket.clone(),
+        }
     }
 
     /// Leave `wall` (the only one joined, when `None`). Answers the wall's
@@ -234,10 +287,22 @@ impl Walls {
     pub async fn leave(&self, wall: Option<&str>) -> Result<(String, String), String> {
         let mut joined = self.joined.lock().await;
         let name = Self::pick(&joined, wall)?;
-        joined
+        let left = joined
             .remove(&name)
-            .map(|left| (name.clone(), left.seat.clone()))
-            .ok_or_else(|| format!("this seat is not on {name}"))
+            .ok_or_else(|| format!("this seat is not on {name}"))?;
+        drop(joined);
+        // Its tasks stop as it drops; its connections close here, so the
+        // wall has seen the seat go by the time this answers.
+        left.wall.close().await;
+        Ok((name, left.seat.clone()))
+    }
+
+    /// Leave every wall, as the seat stops.
+    pub async fn leave_all(&self) {
+        let left = std::mem::take(&mut *self.joined.lock().await);
+        for joined in left.values() {
+            joined.wall.close().await;
+        }
     }
 
     /// The joined wall a tool asks: `wall`, or the only one joined.
@@ -283,17 +348,55 @@ impl Walls {
     /// `wall` among the walls this seat can reach, or the only one.
     fn reachable(wall: Option<&str>) -> Result<&'static str, String> {
         let names = Self::names();
-        let [only] = names;
-        wall.map_or(Ok(only), |wall| {
-            names.into_iter().find(|name| *name == wall).ok_or_else(|| {
-                format!(
-                    "there is no wall '{}' to join; wall_walls lists them ({})",
-                    wall.escape_default(),
-                    names.join(", ")
-                )
-            })
-        })
+        let listed = || names.join(", ");
+        match (wall, names) {
+            (Some(wall), _) => names
+                .iter()
+                .copied()
+                .find(|name| *name == wall)
+                .ok_or_else(|| {
+                    format!(
+                        "there is no wall '{}' to join; wall_walls lists them ({})",
+                        wall.escape_default(),
+                        listed()
+                    )
+                }),
+            (None, []) => Err("there is no wall this seat can reach".to_string()),
+            (None, [only]) => Ok(only),
+            (None, _) => Err(format!(
+                "there is more than one wall: say which with wall ({})",
+                listed()
+            )),
+        }
     }
+}
+
+/// A join refused because this seat is on `wall` as `seat` already.
+fn already(wall: &str, seat: &str) -> String {
+    format!(
+        "this seat is on {wall} already, as {seat}: wall_leave it first to come back as another name"
+    )
+}
+
+/// What a join found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Joining {
+    /// The wall answered.
+    Playing {
+        /// The wall's name.
+        wall: String,
+        /// Who is on it now, this seat included.
+        seats: Vec<String>,
+        /// Its latest change.
+        revision: u64,
+    },
+    /// The wall is not playing yet: the seat is on it as it starts.
+    Waiting {
+        /// The wall's name.
+        wall: String,
+        /// Where it is looked for.
+        socket: PathBuf,
+    },
 }
 
 #[cfg(test)]

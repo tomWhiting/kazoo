@@ -162,7 +162,7 @@ fn mcp_seat_comes_from_the_flag_or_the_environment_and_is_checked() {
     let options = kazoo_mcp::Args::from(args);
     assert_eq!(options.seat.as_deref(), Some("Waffles"));
     assert_eq!(options.notify_every, Some(Duration::from_secs(20)));
-    assert_eq!(options.socket, Some(kazoo_wall::paths::socket_path()));
+    assert_eq!(options.socket, None, "no socket given, none passed on");
     let err = Cli::try_parse_from(["kazoo", "mcp", "--seat", "bad/name"]).unwrap_err();
     assert!(err.to_string().contains("valid seat name"));
     assert!(Cli::try_parse_from(["kazoo", "mcp", "--seat", "Tom", "--notify-every", "0"]).is_err());

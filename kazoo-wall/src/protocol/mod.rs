@@ -90,6 +90,13 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'_' | b'.' | b'-'))
 }
 
+/// Whether `name` is kept for the wall's own use (`desk`, `kazoo-wall`, in
+/// any case): a seat may not take it.
+#[must_use]
+pub fn reserved_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("desk") || name.eq_ignore_ascii_case("kazoo-wall")
+}
+
 /// Whether a desk strip label fits the loop source contract.
 #[must_use]
 pub fn valid_from(name: &str) -> bool {

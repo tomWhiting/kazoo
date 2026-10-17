@@ -10,6 +10,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{Seat, bad, ok};
+use crate::walls::Joining;
 
 /// `wall_walls`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -67,13 +68,34 @@ impl Seat {
 
     #[tool(
         name = "wall_join",
-        description = "Go on a wall as a name of your choosing (as: 1 to 24 of A-Z a-z 0-9 space _ . -), so the tools play it and its news comes to you. wall is its name from wall_walls, needed only when there is more than one. A wall that is not playing yet can be joined: it is reached as it starts. Joining a wall this seat is on already is refused; wall_leave first to come back as another name."
+        description = "Go on a wall as a name of your choosing (as: 1 to 24 of A-Z a-z 0-9 space _ . -, not one someone on it has, nor desk or kazoo-wall), so the tools play it and its news comes to you. wall is its name from wall_walls, needed only when there is more than one. Answers who else is on it. A wall that is not playing yet can be joined: it is reached as it starts. Joining a wall this seat is on already is refused; wall_leave first to come back as another name."
     )]
     async fn wall_join(&self, Parameters(args): Parameters<JoinArgs>) -> CallToolResult {
         match self.walls.join(args.wall.as_deref(), &args.name).await {
-            Ok(wall) => ok(format!(
-                "On {wall} as {}. Call wall_look to see it.",
-                args.name
+            Ok(Joining::Playing {
+                wall,
+                seats,
+                revision,
+            }) => {
+                let others = seats
+                    .iter()
+                    .filter(|seat| **seat != args.name)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let with = if others.is_empty() {
+                    "nobody else on it".to_string()
+                } else {
+                    format!("with {}", others.join(", "))
+                };
+                ok(format!(
+                    "On {wall} as {}, {with}, at change {revision}. Call wall_look to see it.",
+                    args.name
+                ))
+            }
+            Ok(Joining::Waiting { wall, socket }) => ok(format!(
+                "On {wall} as {}, but it is not playing yet (at {}): this seat is on it as it starts.",
+                args.name,
+                socket.display()
             )),
             Err(why) => bad(why),
         }

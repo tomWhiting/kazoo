@@ -1,9 +1,10 @@
 //! The MCP surface: the tools a seat plays the wall with, their argument
 //! shapes, the words they answer in, and the server's handshake.
 //!
-//! Each tool is one method below: it builds the wall's request, asks
-//! through [`Wall`], and renders the answer (see [`crate::render`]). Adding
-//! a tool is adding one method.
+//! Each tool is one method below: it finds the joined wall it asks (an
+//! [`On`], from the seat's [`Walls`]), builds the wall's request, asks it,
+//! and renders the answer (see [`crate::render`]). Adding a tool is adding
+//! one method.
 
 mod batch;
 mod joining;
@@ -40,15 +41,16 @@ pub const SERVER_NAME: &str = "kazoo-mcp";
 
 /// What the session is told about this server.
 pub const INSTRUCTIONS: &str = "\
+wall_walls lists the walls you can reach; wall_join with a name of your choosing puts you on one. \
+Then wall_look first, as ever.
+
 The wall is a shared modular synth that plays forever. Tom and every Claude seat can reach up \
 at any time and turn a knob, move a cable, add a module or take one away; nothing is automated \
 and nothing is decided in advance about how it should sound. Every change is logged under the \
 seat that made it and can be undone.
 
 How to play:
-- wall_walls lists the walls you can reach; wall_join with a name of your choosing puts you on \
-one (every tool's wall says which, when you are on more than one). Then wall_look first, as ever.
-- wall_look first: every module with its knobs, every cable, the tempo, who is here and what \
+- wall_look: every module with its knobs, every cable, the tempo, who is here and what \
 it sounds like. wall_catalogue for what each kind of module does.
 - Ports are named module.port: outputs like lfo1.out, inputs like vcf1.in. Every knob is also \
 a jack, so a cable can go into vcf1.cutoff to move that knob.

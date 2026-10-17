@@ -41,25 +41,35 @@ async fn wall_undo_renders_replacements_and_notes_its_own_change() {
         });
         let fixture =
             serde_json::json!({"change": change, "backup": "kept-wall", "notes": ["kept tempo"]});
+        // The join looks first (a watcher's hello, seeing nobody), then
+        // says hello as Tom; the undo comes on Tom's connection.
         let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            for expected in ["hello", "undo"] {
-                let request: serde_json::Value =
-                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-                assert_eq!(request["op"], expected);
-                let result = if expected == "hello" {
-                    serde_json::json!({"daemon": "stub", "seat": "Tom", "console": false, "seats": ["Tom"], "revision": 0})
-                } else {
-                    fixture.clone()
-                };
-                let response =
-                    serde_json::json!({"id": request["id"], "ok": true, "result": result});
-                write
-                    .write_all(format!("{response}\n").as_bytes())
-                    .await
-                    .unwrap();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut lines = BufReader::new(read).lines();
+                while let Some(line) = lines.next_line().await.unwrap() {
+                    let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    let result = match request["op"].as_str() {
+                        Some("hello") if request["watcher"] == true => {
+                            serde_json::json!({"daemon": "stub", "seat": "kazoo-mcp", "console": false, "watcher": true, "seats": [], "revision": 0})
+                        }
+                        Some("hello") => {
+                            serde_json::json!({"daemon": "stub", "seat": "Tom", "console": false, "seats": ["Tom"], "revision": 0})
+                        }
+                        Some("undo") => fixture.clone(),
+                        other => panic!("the stand-in was asked {other:?}"),
+                    };
+                    let response =
+                        serde_json::json!({"id": request["id"], "ok": true, "result": result});
+                    write
+                        .write_all(format!("{response}\n").as_bytes())
+                        .await
+                        .unwrap();
+                    if request["op"] == "undo" {
+                        return;
+                    }
+                }
             }
         });
         let (seat, mut heard, receiver) = joined(socket, "Tom").await;

@@ -64,6 +64,9 @@ pub struct Options {
     pub notify_every: Duration,
     /// This Mac's wall's control socket.
     pub socket: PathBuf,
+    /// What is going among the settings given: one sentence each, said on
+    /// stderr as the seat starts.
+    pub going: Vec<String>,
 }
 
 /// Read the command line (`args` without the program name). `env_seat` is
@@ -130,10 +133,24 @@ pub fn parse(
 
 /// Apply defaults and validate settings supplied by another crate.
 pub fn resolve(args: Args) -> Result<Options, String> {
-    resolve_with(args, kazoo_wall::paths::socket_path)
+    let env_seat = match std::env::var(SEAT_ENV) {
+        Ok(seat) => Some(seat).filter(|seat| !seat.is_empty()),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(format!(
+                "{SEAT_ENV} is not valid text: use 1 to 24 of A-Z a-z 0-9 space _ . -"
+            ));
+        }
+    };
+    resolve_with(args, env_seat.as_deref(), kazoo_wall::paths::socket_path)
 }
 
-fn resolve_with(args: Args, default_socket: impl FnOnce() -> PathBuf) -> Result<Options, String> {
+/// [`resolve`], with `$KAZOO_SEAT` as `env_seat` (only to say it is going).
+fn resolve_with(
+    args: Args,
+    env_seat: Option<&str>,
+    default_socket: impl FnOnce() -> PathBuf,
+) -> Result<Options, String> {
     if let Some(seat) = args.seat.as_deref()
         && !valid_name(seat)
     {
@@ -154,10 +171,25 @@ fn resolve_with(args: Args, default_socket: impl FnOnce() -> PathBuf) -> Result<
     {
         return Err("--socket needs a path".to_owned());
     }
+    let mut going = Vec::new();
+    if env_seat.is_some() {
+        going.push(format!(
+            "{SEAT_ENV} is going: unset it, and the seat joins with wall_join"
+        ));
+    }
+    if args.seat.is_some() && args.seat.as_deref() != env_seat {
+        going.push("--seat is going: leave it out, and the seat joins with wall_join".to_string());
+    }
+    if args.socket.is_some() {
+        going.push(
+            "--socket is going: leave it out, and wall_walls finds this Mac's wall".to_string(),
+        );
+    }
     Ok(Options {
         seat: args.seat,
         notify_every: Duration::from_secs(notify_every),
         socket: args.socket.unwrap_or_else(default_socket),
+        going,
     })
 }
 
@@ -203,7 +235,10 @@ mod tests {
     fn serve(args: &[&str], env: Option<&str>) -> Options {
         match run(args, env) {
             Ok(Invocation::Serve(options)) => {
-                resolve_with(options, || PathBuf::from("/run/kazoo-wall.sock")).unwrap()
+                resolve_with(options, env.filter(|seat| !seat.is_empty()), || {
+                    PathBuf::from("/run/kazoo-wall.sock")
+                })
+                .unwrap()
             }
             other => panic!("not a seat: {other:?}"),
         }
@@ -229,6 +264,24 @@ mod tests {
             assert_eq!(options.seat, None);
             assert_eq!(options.notify_every, Duration::from_secs(20));
         }
+    }
+
+    #[test]
+    fn each_going_setting_is_said_on_its_own() {
+        assert!(serve(&[], None).going.is_empty());
+        assert_eq!(
+            serve(&["--seat", "Tom"], None).going,
+            ["--seat is going: leave it out, and the seat joins with wall_join"]
+        );
+        assert_eq!(
+            serve(&[], Some("Vesper")).going,
+            ["KAZOO_SEAT is going: unset it, and the seat joins with wall_join"]
+        );
+        assert_eq!(serve(&["--seat", "Tom"], Some("Vesper")).going.len(), 2);
+        assert_eq!(
+            serve(&["--socket", "/tmp/w.sock"], None).going,
+            ["--socket is going: leave it out, and wall_walls finds this Mac's wall"]
+        );
     }
 
     #[test]

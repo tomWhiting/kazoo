@@ -25,7 +25,7 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::channel::Feed;
 
@@ -62,6 +62,8 @@ pub enum LinkError {
     /// The connection failed after a change was sent: it may or may not
     /// have been made.
     Uncertain(String),
+    /// This seat has left the wall (`wall_leave`): nothing was sent.
+    Left,
 }
 
 impl fmt::Display for LinkError {
@@ -76,6 +78,7 @@ impl fmt::Display for LinkError {
             ),
             Self::Unsendable(why) => write!(f, "the request cannot be sent: {why}"),
             Self::Broken(why) => write!(f, "the line to the wall failed: {why}"),
+            Self::Left => f.write_str("this seat has left that wall: nothing was sent"),
             Self::Uncertain(why) => write!(
                 f,
                 "the line to the wall failed before it answered ({why}), so the change may \
@@ -365,6 +368,9 @@ pub struct Wall {
     /// has since been replaced is refused rather than landing on the new
     /// wall's modules.
     seen: AtomicU64,
+    /// Whether this seat has left the wall: nothing more is sent, and a
+    /// request on its way is cut off (see [`Self::close`]).
+    closed: watch::Sender<bool>,
 }
 
 /// [`Wall::seen`] before the seat has looked.
@@ -384,14 +390,48 @@ impl Wall {
     /// The line for `seat` to the daemon on `socket`. Nothing connects until
     /// the first request.
     #[must_use]
-    pub const fn new(socket: PathBuf, seat: String) -> Self {
+    pub fn new(socket: PathBuf, seat: String) -> Self {
         Self {
             socket,
             seat,
             connection: Mutex::const_new(None),
             speaking: Mutex::const_new(None),
             seen: AtomicU64::new(NOT_LOOKED),
+            closed: watch::Sender::new(false),
         }
+    }
+
+    /// Say hello on the tools' connection, opening it now, and answer the
+    /// wall's hello.
+    ///
+    /// # Errors
+    ///
+    /// [`LinkError::NotRunning`] while the daemon is down, [`LinkError::Wall`]
+    /// for a refused hello (a name taken for the wall's own use, say), and
+    /// [`LinkError::Left`] once this seat has left.
+    pub async fn hello(&self) -> Result<HelloResult, LinkError> {
+        if self.is_closed() {
+            return Err(LinkError::Left);
+        }
+        let (connection, hello) = Connection::open(&self.socket, &self.seat, false).await?;
+        *self.connection.lock().await = Some(connection);
+        Ok(hello)
+    }
+
+    /// Leave the wall: a request on its way is cut off, nothing more is
+    /// sent, and both connections are closed, so the wall sees the seat go.
+    pub async fn close(&self) {
+        self.closed.send_replace(true);
+        // Each lock waits for the request using it, which the flag has
+        // just cut off.
+        self.connection.lock().await.take();
+        self.speaking.lock().await.take();
+    }
+
+    /// Whether this seat has left the wall.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        *self.closed.borrow()
     }
 
     /// This seat has looked at wall `wall` (from `wall_look`): its changes
@@ -457,8 +497,31 @@ impl Wall {
         } else {
             &self.connection
         };
-        self.ask_on(&mut *connection.lock().await, &request, comment)
-            .await
+        let mut slot = connection.lock().await;
+        let mut closed = self.closed.subscribe();
+        if *closed.borrow_and_update() {
+            slot.take();
+            drop(slot);
+            return Err(LinkError::Left);
+        }
+        let changes = request.is_change();
+        let answered = tokio::select! {
+            answered = self.ask_on(&mut slot, &request, comment) => Some(answered),
+            _ = closed.wait_for(|closed| *closed) => None,
+        };
+        let answered = answered.unwrap_or_else(|| {
+            // Cut off mid-request: the connection is out of step.
+            slot.take();
+            Err(if changes {
+                LinkError::Uncertain(
+                    "this seat left the wall while the change was on its way".to_string(),
+                )
+            } else {
+                LinkError::Left
+            })
+        });
+        drop(slot);
+        answered
     }
 
     /// [`Self::ask_raw`] on the connection in `slot`.
@@ -740,6 +803,51 @@ mod tests {
         );
         assert!(!speak.is_finished());
         speak.abort();
+    }
+
+    #[tokio::test]
+    async fn leaving_cuts_off_a_request_on_its_way_and_sends_nothing_more() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("wall.sock");
+        tokio::spawn(stub(UnixListener::bind(&socket).unwrap()));
+        let wall = Arc::new(Wall::new(socket, "Tom".to_string()));
+        assert!(wall.hello().await.is_ok());
+        let speaking = Arc::clone(&wall);
+        // The stand-in never answers speak: it is still on its way.
+        let speak = tokio::spawn(async move {
+            speaking
+                .ask_raw(
+                    Request::Speak {
+                        module: "speak1".to_string(),
+                        text: "hello".to_string(),
+                        voice: None,
+                    },
+                    None,
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::timeout(Duration::from_secs(2), wall.close())
+            .await
+            .expect("closing waits for nothing but the cut");
+        let cut = tokio::time::timeout(Duration::from_secs(2), speak)
+            .await
+            .expect("the speak was cut off")
+            .unwrap();
+        assert_eq!(
+            cut.unwrap_err(),
+            LinkError::Uncertain(
+                "this seat left the wall while the change was on its way".to_string()
+            ),
+            "a change cut off may have been made"
+        );
+        assert!(wall.connection.lock().await.is_none());
+        assert!(wall.speaking.lock().await.is_none());
+        assert_eq!(
+            wall.ask_raw(Request::Look, None).await.unwrap_err(),
+            LinkError::Left
+        );
+        assert_eq!(wall.hello().await.unwrap_err(), LinkError::Left);
     }
 
     #[test]

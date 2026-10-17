@@ -396,7 +396,7 @@ impl From<McpArgs> for kazoo_mcp::Args {
         Self {
             seat: args.seat,
             notify_every: Some(Duration::from_secs(args.notify_every)),
-            socket: Some(args.socket.unwrap_or_else(kazoo_wall::paths::socket_path)),
+            socket: args.socket,
         }
     }
 }

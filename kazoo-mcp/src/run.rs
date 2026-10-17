@@ -117,6 +117,7 @@ async fn main_loop(args: Args) -> color_eyre::Result<()> {
         seat,
         notify_every,
         socket,
+        going,
     } = cli::resolve(args).map_err(color_eyre::eyre::Error::msg)?;
     eprintln!(
         "kazoo-mcp: this Mac's wall at {}, news at most every {} seconds",
@@ -125,11 +126,10 @@ async fn main_loop(args: Args) -> color_eyre::Result<()> {
     );
     let (peer, session) = watch::channel(None);
     let walls = Arc::new(Walls::new(socket, notify_every, session));
+    for going in going {
+        eprintln!("kazoo-mcp: {going}");
+    }
     if let Some(seat) = seat {
-        eprintln!(
-            "kazoo-mcp: --seat and {} are going: leave them out, and the seat joins with wall_join",
-            cli::SEAT_ENV
-        );
         walls
             .join(None, &seat)
             .await
@@ -148,8 +148,9 @@ async fn main_loop(args: Args) -> color_eyre::Result<()> {
             .map_err(|err| format!("the MCP session ended badly: {err}")),
         Err(err) => Err(format!("the MCP session would not start on stdio: {err}")),
     };
-    // Every joined wall's event line and notifier stop with the seat.
-    drop(walls);
+    // Off every wall, so each sees the seat go; the tasks still running for
+    // a call stop as the runtime does.
+    walls.leave_all().await;
     outcome.map_err(color_eyre::eyre::Error::msg)
 }
 

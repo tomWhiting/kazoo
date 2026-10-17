@@ -457,6 +457,15 @@ async fn the_handshake_declares_the_channel(client: &Client) {
             .is_some_and(|words| words.contains("module.port")),
         "the instructions teach how to play"
     );
+    assert!(
+        info.instructions
+            .as_deref()
+            .is_some_and(|words| words.starts_with(
+                "wall_walls lists the walls you can reach; wall_join with a name of your choosing \
+             puts you on one. Then wall_look first, as ever."
+            )),
+        "the instructions open with how to begin"
+    );
     let mut names = client
         .list_all_tools()
         .await
@@ -1064,6 +1073,23 @@ fn a_bad_seat_stops_with_a_message_and_none_is_needed() {
     let (code, said) = run(&[], Some("Tom!"));
     assert_eq!(code, Some(2), "{said}");
     assert!(said.contains("not a valid seat name"), "{said}");
+    // The going flags still join, and each says it is going.
+    let (_, said) = run(&["--seat", "Tom"], None);
+    assert!(
+        said.contains(
+            "kazoo-mcp: --seat is going: leave it out, and the seat joins with wall_join"
+        ),
+        "{said}"
+    );
+    assert!(said.contains("kazoo-mcp: on here as Tom"), "{said}");
+    let (_, said) = run(&[], Some("Tom"));
+    assert!(
+        said.contains(
+            "kazoo-mcp: KAZOO_SEAT is going: unset it, and the seat joins with wall_join"
+        ),
+        "{said}"
+    );
+    assert!(!said.contains("--seat is going"), "{said}");
     let (code, said) = run(&["--help"], None);
     assert_eq!(code, Some(0), "{said}");
 }
