@@ -864,7 +864,7 @@ mod tests {
             params_rejected: 3,
             ..kazoo_core::engine::EngineStatsSnapshot::default()
         };
-        let message = app.engine_health.observe(stats, Instant::now());
+        let message = app.engine_health.observe(stats, Instant::now(), None);
         assert!(message.is_some());
         let text = render_header(&app, 160);
         assert!(text.contains("\u{26a0} params 3 \u{b7} mic 28"), "{text}");

@@ -118,94 +118,131 @@ struct Counter {
     long: &'static str,
     /// Read this counter from a snapshot.
     read: fn(&EngineStatsSnapshot) -> u64,
+    /// Whether a rise in it is said with the first pYIN failure's reason.
+    says_pitch_failure: bool,
 }
 
 /// Every counter in [`EngineStatsSnapshot`], most serious first.
-const COUNTERS: [Counter; 17] = [
+const COUNTERS: [Counter; 20] = [
     Counter {
         short: "rec gaps",
         long: "recorded audio lost (the WAV file has gaps)",
         read: |s| s.disk_samples_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "rec errors",
         long: "recorder errors",
         read: |s| s.disk_errors,
+        says_pitch_failure: false,
     },
     Counter {
         short: "rec cmds",
         long: "recorder start/stop commands lost",
         read: |s| s.disk_commands_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "take gaps",
         long: "recorded samples lost (a take has gaps)",
         read: |s| s.take_samples_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "takes",
         long: "armed tracks that could not start recording",
         read: |s| s.takes_unavailable,
+        says_pitch_failure: false,
     },
     Counter {
         short: "clips",
         long: "clips that could not be placed",
         read: |s| s.clips_rejected,
+        says_pitch_failure: false,
     },
     Counter {
         short: "tracks",
         long: "tracks the engine refused",
         read: |s| s.tracks_rejected,
+        says_pitch_failure: false,
     },
     Counter {
         short: "synths",
         long: "synths, layers or effects the engine refused",
         read: |s| s.processors_rejected,
+        says_pitch_failure: false,
     },
     Counter {
         short: "cmds",
         long: "engine commands dropped",
         read: |s| s.commands_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "params",
         long: "parameter changes rejected",
         read: |s| s.params_rejected,
+        says_pitch_failure: false,
     },
     Counter {
         short: "mic",
         long: "mic samples dropped",
         read: |s| s.mic_samples_dropped,
+        says_pitch_failure: false,
+    },
+    Counter {
+        short: "pitch in",
+        long: "samples the voice judge missed",
+        read: |s| s.judge_samples_dropped,
+        says_pitch_failure: false,
+    },
+    Counter {
+        short: "pitch out",
+        long: "voice judge verdicts dropped",
+        read: |s| s.judge_results_dropped,
+        says_pitch_failure: false,
+    },
+    Counter {
+        short: "pyin",
+        long: "pYIN runs that failed, read as unvoiced (engine fault)",
+        read: |s| s.pitch_runs_failed,
+        says_pitch_failure: true,
     },
     Counter {
         short: "desk reqs",
         long: "transport requests the desk never got",
         read: |s| s.desk_requests_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "desk syncs",
         long: "desk transport syncs not followed",
         read: |s| s.desk_syncs_rejected,
+        says_pitch_failure: false,
     },
     Counter {
-        short: "pitch in",
-        long: "samples the pitch tracker missed",
+        short: "scope in",
+        long: "samples the spectrum display missed",
         read: |s| s.analysis_samples_dropped,
+        says_pitch_failure: false,
     },
     Counter {
-        short: "pitch out",
-        long: "pitch results dropped",
+        short: "scope out",
+        long: "spectrum or formant results dropped",
         read: |s| s.analysis_results_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "rt frees",
         long: "objects freed on the audio thread (engine fault)",
         read: |s| s.callback_frees,
+        says_pitch_failure: false,
     },
     Counter {
         short: "screen",
         long: "screen updates skipped",
         read: |s| s.display_frames_dropped,
+        says_pitch_failure: false,
     },
 ];
 
@@ -225,13 +262,25 @@ impl EngineHealth {
     /// Record the latest counters at `now`. When any rose since the last
     /// observation, returns a status-line message naming what was lost
     /// (worst first) and how much.
-    pub fn observe(&mut self, latest: EngineStatsSnapshot, now: Instant) -> Option<String> {
-        let mut rises = COUNTERS.iter().filter_map(|counter| {
-            let rise = (counter.read)(&latest).saturating_sub((counter.read)(&self.seen));
-            (rise > 0).then_some((counter, rise))
-        });
-        let (worst, amount) = rises.next()?;
-        let others = rises.count();
+    /// `pitch_failure` is why the judge's first pYIN run failed, if one has
+    /// ([`EngineHandle::first_pitch_failure`]); it is said with that counter.
+    ///
+    /// [`EngineHandle::first_pitch_failure`]: kazoo_core::engine::EngineHandle::first_pitch_failure
+    pub fn observe(
+        &mut self,
+        latest: EngineStatsSnapshot,
+        now: Instant,
+        pitch_failure: Option<&str>,
+    ) -> Option<String> {
+        let rises: Vec<(&Counter, u64)> = COUNTERS
+            .iter()
+            .filter_map(|counter| {
+                let rise = (counter.read)(&latest).saturating_sub((counter.read)(&self.seen));
+                (rise > 0).then_some((counter, rise))
+            })
+            .collect();
+        let (worst, amount) = *rises.first()?;
+        let others = rises.len() - 1;
         self.seen = latest;
         self.last_rise = Some(now);
         let more = match others {
@@ -239,7 +288,18 @@ impl EngineHealth {
             1 => " (+1 other problem, see header)".to_owned(),
             n => format!(" (+{n} other problems, see header)"),
         };
-        Some(format!("Engine: {amount} {}{more}", worst.long))
+        // The reason goes with a failed run whenever one rose, whether or not
+        // it is the worst: the header keeps the count, but only this says why.
+        // Said straight after the failure when it is the worst; after the
+        // others' note when it is not.
+        let (lead, tail) = match pitch_failure {
+            Some(why) if worst.says_pitch_failure => (format!(": {why}"), String::new()),
+            Some(why) if rises.iter().any(|(counter, _)| counter.says_pitch_failure) => {
+                (String::new(), format!("; pYIN failed: {why}"))
+            }
+            _ => (String::new(), String::new()),
+        };
+        Some(format!("Engine: {amount} {}{lead}{more}{tail}", worst.long))
     }
 
     /// Every non-zero counter as `(short name, total)`, worst first.
@@ -324,7 +384,10 @@ mod tests {
     fn clean_engine_reports_nothing() {
         let mut health = EngineHealth::default();
         let now = Instant::now();
-        assert_eq!(health.observe(EngineStatsSnapshot::default(), now), None);
+        assert_eq!(
+            health.observe(EngineStatsSnapshot::default(), now, None),
+            None
+        );
         assert_eq!(health.nonzero().count(), 0);
         assert!(!health.is_fresh(now));
     }
@@ -338,12 +401,12 @@ mod tests {
             ..EngineStatsSnapshot::default()
         };
         assert_eq!(
-            health.observe(first, now).as_deref(),
+            health.observe(first, now, None).as_deref(),
             Some("Engine: 28 mic samples dropped")
         );
         assert!(health.is_fresh(now));
         // Unchanged counters are not reported again, but stay visible.
-        assert_eq!(health.observe(first, now), None);
+        assert_eq!(health.observe(first, now, None), None);
         assert_eq!(health.nonzero().collect::<Vec<_>>(), vec![("mic", 28)]);
         assert!(!health.is_fresh(now + ERROR_LIFETIME));
 
@@ -353,7 +416,7 @@ mod tests {
             ..first
         };
         assert_eq!(
-            health.observe(second, now).as_deref(),
+            health.observe(second, now, None).as_deref(),
             Some("Engine: 2 mic samples dropped")
         );
     }
@@ -368,7 +431,7 @@ mod tests {
             ..EngineStatsSnapshot::default()
         };
         assert_eq!(
-            health.observe(latest, Instant::now()).as_deref(),
+            health.observe(latest, Instant::now(), None).as_deref(),
             Some(
                 "Engine: 512 recorded audio lost (the WAV file has gaps) \
                  (+2 other problems, see header)"
@@ -403,10 +466,93 @@ mod tests {
             takes_unavailable: 15,
             processors_rejected: 16,
             take_samples_dropped: 17,
+            judge_samples_dropped: 18,
+            judge_results_dropped: 19,
+            pitch_runs_failed: 20,
         };
         let mut read: Vec<u64> = COUNTERS.iter().map(|c| (c.read)(&latest)).collect();
         read.sort_unstable();
-        assert_eq!(read, (1..=17).collect::<Vec<u64>>());
+        assert_eq!(read, (1..=20).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn a_failed_pitch_run_is_reported() {
+        let mut health = EngineHealth::default();
+        let latest = EngineStatsSnapshot {
+            pitch_runs_failed: 1,
+            ..EngineStatsSnapshot::default()
+        };
+        assert!(!latest.is_clean());
+        assert_eq!(
+            health.observe(latest, Instant::now(), None).as_deref(),
+            Some("Engine: 1 pYIN runs that failed, read as unvoiced (engine fault)")
+        );
+        assert_eq!(health.nonzero().collect::<Vec<_>>(), vec![("pyin", 1)]);
+        // Said with its reason, when the engine has one.
+        let more = EngineStatsSnapshot {
+            pitch_runs_failed: 2,
+            ..latest
+        };
+        assert_eq!(
+            health
+                .observe(
+                    more,
+                    Instant::now(),
+                    Some("pyin's forward FFT: wrong length")
+                )
+                .as_deref(),
+            Some(
+                "Engine: 1 pYIN runs that failed, read as unvoiced (engine fault): \
+                 pyin's forward FFT: wrong length"
+            )
+        );
+        // Another counter's message carries it only when a run failed too.
+        let other = EngineStatsSnapshot {
+            mic_samples_dropped: 5,
+            ..more
+        };
+        assert_eq!(
+            health
+                .observe(other, Instant::now(), Some("ignored"))
+                .as_deref(),
+            Some("Engine: 5 mic samples dropped")
+        );
+        let both = EngineStatsSnapshot {
+            mic_samples_dropped: 6,
+            pitch_runs_failed: 3,
+            ..other
+        };
+        assert_eq!(
+            health
+                .observe(both, Instant::now(), Some("wrong length"))
+                .as_deref(),
+            Some(
+                "Engine: 1 mic samples dropped (+1 other problem, see header); \
+                 pYIN failed: wrong length"
+            )
+        );
+        // The worst, with another rise: the reason follows the failure.
+        let worst = EngineStatsSnapshot {
+            pitch_runs_failed: 4,
+            display_frames_dropped: 1,
+            ..both
+        };
+        assert_eq!(
+            health
+                .observe(worst, Instant::now(), Some("wrong length"))
+                .as_deref(),
+            Some(
+                "Engine: 1 pYIN runs that failed, read as unvoiced (engine fault): \
+                 wrong length (+1 other problem, see header)"
+            )
+        );
+        assert_eq!(
+            COUNTERS
+                .iter()
+                .filter(|counter| counter.says_pitch_failure)
+                .count(),
+            1
+        );
     }
 
     #[test]

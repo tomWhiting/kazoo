@@ -168,6 +168,8 @@ impl Rig {
             crate::voice::judge::OnsetConfig::default(),
         )
         .unwrap();
+        // As the engine does: the judge's counters are read with the rest.
+        counters.set_judge(judge_worker.counters()).unwrap();
         let (spectrum, spectrum_cons) = HeapRb::<Vec<f32>>::new(4).split();
         let (formants, formant_cons) = HeapRb::<Option<FormantData>>::new(4).split();
         let (commands, command_rx) = crossbeam_channel::bounded(64);

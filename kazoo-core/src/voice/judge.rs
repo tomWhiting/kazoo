@@ -7,7 +7,7 @@ use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
 };
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::thread::{JoinHandle, Thread};
@@ -54,9 +54,36 @@ struct JudgeStats {
     samples_dropped: AtomicU64,
     results_dropped: AtomicU64,
     pitch_runs_failed: AtomicU64,
+    /// Why the first failed pYIN run failed, set once by the worker.
+    first_pitch_failure: OnceLock<String>,
 }
-/// Ring overflow counters since this judge started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+
+/// A judge's counters, shared: what [`Judge::stats`] reads, for whoever
+/// reports on the judge (the engine's [`crate::engine::EngineStats`]).
+/// Reading takes no lock and allocates nothing.
+#[derive(Debug, Clone)]
+pub struct JudgeCounters(Arc<JudgeStats>);
+
+impl JudgeCounters {
+    /// The counters now.
+    #[must_use]
+    pub fn snapshot(&self) -> JudgeStatsSnapshot {
+        JudgeStatsSnapshot {
+            samples_dropped: self.0.samples_dropped.load(Ordering::Relaxed),
+            results_dropped: self.0.results_dropped.load(Ordering::Relaxed),
+            // Acquire: a rise seen here sees the reason stored before it.
+            pitch_runs_failed: self.0.pitch_runs_failed.load(Ordering::Acquire),
+        }
+    }
+
+    /// Why the first failed pYIN run failed, once one has.
+    #[must_use]
+    pub fn first_pitch_failure(&self) -> Option<&str> {
+        self.0.first_pitch_failure.get().map(String::as_str)
+    }
+}
+/// Overflow and failed-run counters since this judge started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JudgeStatsSnapshot {
     pub samples_dropped: u64,
     pub results_dropped: u64,
@@ -144,9 +171,16 @@ pub fn spawn(
                     }
                     let failed = detector.failed_runs();
                     if failed > failed_runs {
+                        if let Some(why) = detector.last_failure() {
+                            worker_stats
+                                .first_pitch_failure
+                                .get_or_init(|| why.to_owned());
+                        }
+                        // Release: the reason is published before the count,
+                        // so whoever sees the count rise can read why.
                         worker_stats
                             .pitch_runs_failed
-                            .fetch_add(failed - failed_runs, Ordering::Relaxed);
+                            .fetch_add(failed - failed_runs, Ordering::Release);
                         failed_runs = failed;
                     }
                     for event in onset.push_samples(samples) {
@@ -193,12 +227,15 @@ impl Judge {
     /// Read overflow counters without locking.
     #[must_use]
     pub fn stats(&self) -> JudgeStatsSnapshot {
-        JudgeStatsSnapshot {
-            samples_dropped: self.stats.samples_dropped.load(Ordering::Relaxed),
-            results_dropped: self.stats.results_dropped.load(Ordering::Relaxed),
-            pitch_runs_failed: self.stats.pitch_runs_failed.load(Ordering::Relaxed),
-        }
+        self.counters().snapshot()
     }
+
+    /// The counters, to read from elsewhere while the judge runs.
+    #[must_use]
+    pub fn counters(&self) -> JudgeCounters {
+        JudgeCounters(Arc::clone(&self.stats))
+    }
+
     /// Join after dropping the feed; a wake makes producer shutdown immediate.
     pub fn join(self) -> std::thread::Result<()> {
         self.handle.thread().unpark();

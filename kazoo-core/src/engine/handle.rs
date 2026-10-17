@@ -225,12 +225,19 @@ impl EngineHandle {
     }
 
     /// Current engine health counters: dropped samples, lost commands,
-    /// rejected parameters and clips, and disk failures. Every counter is
+    /// rejected parameters and clips, disk failures, and the voice judge's
+    /// own (samples missed, verdicts lost, failed pYIN runs). Every counter is
     /// zero while the engine has lost nothing; frontends should surface
     /// non-zero values.
     #[must_use]
     pub fn stats(&self) -> EngineStatsSnapshot {
         self.stats.snapshot()
+    }
+
+    /// Why the voice judge's first failed pYIN run failed, once one has.
+    #[must_use]
+    pub fn first_pitch_failure(&self) -> Option<&str> {
+        self.stats.first_pitch_failure()
     }
 
     /// Attach worker thread handles so they can be joined on shutdown.
