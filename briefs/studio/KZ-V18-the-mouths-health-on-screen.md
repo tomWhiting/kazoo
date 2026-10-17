@@ -16,7 +16,7 @@ The mouth's `Stats` counts these without showing them:
 - voice and audio refusals;
 - desk losses.
 
-Only the effect faults reach the screen, through `controls.rs`. The synth fault ends the session with "mouth synth refused its parameter table; output muted" (`run.rs`); V18 leaves that as it is. The session's `Judge` counts samples missed, verdicts dropped and pYIN runs failed, and nothing reads them. A judge falling behind is heard as pitch that lags or drops out, with nothing on screen to say why.
+The effect faults and refusals are read into the app (`controls.rs`) but never drawn either. The synth fault is the one that is seen: it ends the session with "mouth synth refused its parameter table; output muted" (`run.rs`), and V18 leaves that as it is. The session's `Judge` counts samples missed, verdicts dropped and pYIN runs failed, and nothing reads them. A judge falling behind is heard as pitch that lags or drops out, with nothing on screen to say why.
 
 ## Outcome
 
@@ -30,6 +30,14 @@ Only the effect faults reach the screen, through `controls.rs`. The synth fault 
   - every counter is covered, with a coverage test like kazoo-tui's;
   - a rise is reported once;
   - the judge's counters reach the line.
+
+## As built (17 Oct 2026)
+
+- `health.rs` holds `Losses`, all eleven counters read from `Stats` and the session judge's `JudgeCounters`, and `Health`.
+  - `observe` gives one message per rise: the worst rise and how much, how many others rose, and the first pYIN failure's reason. The reason sits straight after the failure when it is the worst rise, and after the others' note when it is not, as in kazoo-tui (KZ-V17).
+  - `summary` gives the totals, worst first. Heard losses come before seen ones: pitch in, mic, mic skip, fx, pyin, pitch out, desk audio, desk voice, desk sync, fx refused, screen.
+- `App::sync_stats` takes the judge's counters and shows a rise for ten seconds (`warn`). The footer leads with "lost: …" while any total is non-zero.
+- The session keeps `judge_counters`, which outlive the judge's join. The app's unread `fx_faults` and `fx_refused` fields are gone, because the health line carries them.
 
 ## Done when
 

@@ -15,7 +15,7 @@ use kazoo_core::host::link::{LinkSetup, connect_or_direct};
 use kazoo_core::io::mic::{Mic, MicRequest, MicTarget};
 use kazoo_core::ipc::link::HubLink;
 use kazoo_core::voice::VoiceFrame;
-use kazoo_core::voice::judge::{self, Judge, OnsetConfig};
+use kazoo_core::voice::judge::{self, Judge, JudgeCounters, OnsetConfig};
 use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
 use ringbuf::traits::{Consumer, Split};
 use ringbuf::{HeapCons, HeapRb};
@@ -197,7 +197,11 @@ pub fn run(args: Args) -> Result<()> {
         app.message(format!("mouse capture refused: {reason}"), Instant::now());
     }
     let result = event_loop(&mut session, &mut terminal, &mut app);
-    app.sync_stats(&session.stats, Instant::now());
+    app.sync_stats(
+        &session.stats,
+        Some(&session.judge_counters),
+        Instant::now(),
+    );
     app.save_if_due(Instant::now(), true);
     let stopped = session.stop();
     leave(result, terminal, stopped)
@@ -210,6 +214,8 @@ struct Session {
     mic: Option<Mic>,
     hub: Option<HubLink>,
     judge: Option<Judge>,
+    /// The judge's counters, read with the mouth's own; they outlive it.
+    judge_counters: JudgeCounters,
     commands: Sender<Command>,
     display: HeapCons<VoiceFrame>,
     stats: Arc<Stats>,
@@ -260,6 +266,7 @@ impl Session {
             output: None,
             mic: None,
             hub: Some(hub),
+            judge_counters: judge.counters(),
             judge: Some(judge),
             commands,
             display,
@@ -618,7 +625,7 @@ fn event_loop(
             };
             let link = link_state(session);
             let now = Instant::now();
-            app.sync_stats(&session.stats, now);
+            app.sync_stats(&session.stats, Some(&session.judge_counters), now);
             app.sync_loop(session.rate, now);
             session.loop_returns(app, now);
             app.save_if_due(now, false);

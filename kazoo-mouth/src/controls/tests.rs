@@ -605,16 +605,16 @@ fn a_queued_tempo_is_not_replaced_by_an_older_callback_snapshot() {
     let stats = Stats::default();
     stats.own_bpm.store(120.0_f64.to_bits(), Ordering::Relaxed);
     key(&mut app, &sender, KeyCode::Char('.'), false, now);
-    app.sync_stats(&stats, now);
+    app.sync_stats(&stats, None, now);
     assert_eq!(app.accepted.own_bpm.to_bits(), 121.0_f64.to_bits());
     key(&mut app, &sender, KeyCode::Char('.'), false, now);
     stats.own_bpm.store(121.0_f64.to_bits(), Ordering::Relaxed);
-    app.sync_stats(&stats, now);
+    app.sync_stats(&stats, None, now);
     assert_eq!(app.accepted.own_bpm.to_bits(), 122.0_f64.to_bits());
     stats.own_bpm.store(122.0_f64.to_bits(), Ordering::Relaxed);
-    app.sync_stats(&stats, now);
+    app.sync_stats(&stats, None, now);
     stats.own_bpm.store(150.0_f64.to_bits(), Ordering::Relaxed);
-    app.sync_stats(&stats, now);
+    app.sync_stats(&stats, None, now);
     assert_eq!(app.accepted.own_bpm.to_bits(), 150.0_f64.to_bits());
 }
 

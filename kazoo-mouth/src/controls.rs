@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Sender, TrySendError};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kazoo_core::synthesis::OscillatorShape;
+use kazoo_core::voice::judge::JudgeCounters;
 use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
 
 use crate::engine::fx::{FxSettings, Slot, harmony, mouth_default};
@@ -13,6 +14,7 @@ use crate::engine::looper::{
     BAR_CHOICES, LoopFeed, LoopGauges, LoopLength, Note, State, VOLUME_DEFAULT,
 };
 use crate::engine::{Command, Stats};
+use crate::health::{Health, Losses};
 use kazoo_fx::Curve;
 use ringbuf::traits::Producer;
 
@@ -340,8 +342,8 @@ pub struct App {
     pub selected_cell: usize,
     pub desk_bpm: Option<f64>,
     pub moving: u64,
-    pub fx_faults: u64,
-    pub fx_refused: u64,
+    /// What the mouth has lost, said as it rises and summed in the footer.
+    pub(crate) health: Health,
     pub settings_path: PathBuf,
     busy_until: Option<Instant>,
     dirty_at: Option<Instant>,
@@ -407,8 +409,7 @@ impl App {
             selected_cell: 0,
             desk_bpm: None,
             moving: 0,
-            fx_faults: 0,
-            fx_refused: 0,
+            health: Health::default(),
             settings_path: path,
             busy_until: None,
             dirty_at: None,
@@ -435,6 +436,11 @@ impl App {
 
     pub(crate) fn message(&mut self, message: String, now: Instant) {
         self.message = Some((message, now + Duration::from_secs(3)));
+    }
+
+    /// A loss, shown longer than a message: ten seconds.
+    pub(crate) fn warn(&mut self, message: String, now: Instant) {
+        self.message = Some((message, now + Duration::from_secs(10)));
     }
 
     pub(crate) const fn save_returned(&mut self) {
@@ -601,7 +607,13 @@ impl App {
         self.notes.get(index).map(String::as_str)
     }
 
-    pub fn sync_stats(&mut self, stats: &Stats, now: Instant) {
+    /// Read what the engine and the voice judge report, saying any loss
+    /// that rose.
+    pub fn sync_stats(&mut self, stats: &Stats, judge: Option<&JudgeCounters>, now: Instant) {
+        let failure = judge.and_then(JudgeCounters::first_pitch_failure);
+        if let Some(lost) = self.health.observe(Losses::read(stats, judge), failure) {
+            self.warn(lost, now);
+        }
         let bits = stats.desk_bpm.load(Ordering::Relaxed);
         self.desk_bpm = if bits == 0 {
             None
@@ -626,8 +638,6 @@ impl App {
         });
         self.mic_rms = f32::from_bits(stats.mic_rms.load(Ordering::Relaxed));
         self.output_rms = f32::from_bits(stats.output_rms.load(Ordering::Relaxed));
-        self.fx_faults = stats.fx_faults.load(Ordering::Relaxed);
-        self.fx_refused = stats.fx_refused.load(Ordering::Relaxed);
     }
 
     pub fn save_if_due(&mut self, now: Instant, quitting: bool) {

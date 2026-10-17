@@ -138,6 +138,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
         "busy: change not sent".to_owned()
     } else if let Some(notice) = app.notice(now) {
         notice.to_owned()
+    } else if let Some(lost) = app.health.summary() {
+        format!("lost: {lost} · {FOOTER} · {description}")
     } else {
         format!("{FOOTER} · {description}")
     };

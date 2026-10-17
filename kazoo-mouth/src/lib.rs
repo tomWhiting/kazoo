@@ -1,5 +1,6 @@
 mod controls;
 pub mod engine;
+mod health;
 mod run;
 pub mod score;
 pub mod synth;
