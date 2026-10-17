@@ -10,10 +10,23 @@ The 0.2.0 gate (17 Oct 2026) failed `a_paced_source_with_a_jittery_timer_is_plac
 
 ## Outcome
 
-- The test drives the desk's renders and the source's sends from one simulated clock. If the hub or the link reads `Instant::now()` directly, it takes the time from a clock the test owns instead.
-- The jitter stays as it is now: a 20 to 30 ms oversleep every 100 ms of simulated time.
+- The test's two timing loops run at real-time priority, through `kazoo_core::realtime::RealTime`:
+  - the source, which stands in for the wall's render thread;
+  - the desk loop, which stands in for the desk's audio callback.
+
+  In the studio both of those run real-time, and the hub thread and the link's worker already ask for it.
+- The jitter stays as it is now: a deliberate 20 to 30 ms oversleep every 100 ms. Load from the rest of the machine no longer adds to it, so the test measures the pacing and not the scheduler.
 - The assertions stand: more than 200 blocks, and exactly one resync.
-- It gives the same result under any load. Run it 50 times while the workspace suite runs, and it passes every time.
+
+## Decision
+
+The first plan was a simulated clock. That would need a seam through the hub's poll loop, the link's worker and its socket, three threads and two crates, to fake what production does with priority. The failure was a normal-priority loop starved by the suite's load, so the fix gives the test's loops the priority their production counterparts have.
+
+## Proof (17 Oct 2026, about 13:20, on Tom's Mac)
+
+- **Alone:** 20 of 20 passed.
+- **Under load,** with all 10 cores held busy (`yes` on each): 20 of 20 passed.
+- **Control:** under the same load, the test as it was on main (8ce4fd5) passed 17 of 20.
 
 ## Done when
 

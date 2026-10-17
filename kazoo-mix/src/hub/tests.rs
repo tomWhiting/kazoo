@@ -705,7 +705,13 @@ fn a_paced_source_with_a_jittery_timer_is_placed_once_and_stays_placed() {
     // A source like the headless wall: render what the desk says is owed,
     // on its own timer until the desk says; and every tenth of a second,
     // oversleep by 20 to 30 ms, as a busy machine does.
+    // Both loops run at real-time priority, as the wall's render thread and
+    // the desk's audio callback do: the jitter measured is the source's own,
+    // not whatever else the machine is doing (the hub and the link's worker
+    // ask for real time already).
     let source = thread::spawn(move || {
+        let promoted = kazoo_core::realtime::RealTime::promote(Duration::from_micros(5_333))
+            .expect("the source is scheduled as real-time");
         let block = vec![0.1_f32; 512];
         let started = Instant::now();
         let mut sent = 0_u64;
@@ -730,8 +736,11 @@ fn a_paced_source_with_a_jittery_timer_is_placed_once_and_stays_placed() {
                 thread::sleep(Duration::from_micros(500));
             }
         }
+        promoted.demote().expect("the source leaves real time");
     });
     // The desk plays in real time: a 256-frame buffer every 5⅓ ms.
+    let desk = kazoo_core::realtime::RealTime::promote(Duration::from_micros(5_333))
+        .expect("the desk is scheduled as real-time");
     let started = Instant::now();
     let buffer = Duration::from_secs_f64(256.0 / f64::from(RATE));
     let mut buffers = 0_u32;
@@ -743,6 +752,7 @@ fn a_paced_source_with_a_jittery_timer_is_placed_once_and_stays_placed() {
         rig.render();
         buffers += 1;
     }
+    desk.demote().expect("the desk leaves real time");
     running.store(false, Ordering::Release);
     source.join().unwrap();
     let snapshot = rig.hub.snapshot();
