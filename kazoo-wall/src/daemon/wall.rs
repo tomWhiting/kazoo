@@ -8,6 +8,7 @@ mod batch;
 mod chains;
 mod cost;
 mod delay_lines;
+mod desk_scheduling;
 mod loops;
 mod moments;
 mod scheduling;
@@ -564,6 +565,7 @@ pub struct Wall {
     clock_line: ClockLine,
     desk: Option<HubLink>,
     desk_tempo: tempo_sync::DeskTempo,
+    pending_desk_tempo: Option<desk_scheduling::Pending>,
     log: VecDeque<Change>,
     next_seq: u64,
     /// The latest change made (and logged): what `revision` says. Behind
@@ -1394,6 +1396,7 @@ impl Wall {
             engine,
             clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
             desk_tempo: tempo_sync::DeskTempo::default(),
+            pending_desk_tempo: None,
             desk_go_waiting: BTreeMap::new(),
             desk_go_settled: Vec::new(),
             desk,
@@ -2357,6 +2360,7 @@ impl Wall {
     /// into the engine, move the fingerprints, and remember it. Returns
     /// the change and, if the fingerprints moved, the event saying how.
     fn apply(&mut self, change: Change) -> (Change, Option<Event>) {
+        self.cancel_pending_desk_tempo(&change);
         self.accept_take(&change);
         if change.undoes.is_some() || !matches!(change.what, What::Take { .. }) {
             self.mirror(&change.what);
@@ -2815,6 +2819,7 @@ impl Wall {
         // touched goes back as it was.
         let before = self.before(request);
         let (held, swaps) = (self.held(), self.swaps_sent);
+        let acceptance_bpm = clamp_bpm(self.engine.shared().bpm());
         let outcome = self.answer((seat, console), request, now);
         if std::mem::take(&mut self.unmade) {
             self.put_back(before);
@@ -2845,7 +2850,11 @@ impl Wall {
             // The latest turn of a knob is the one that counts.
             self.settling.insert((module, knob), due);
         }
-        outcome
+        outcome.inspect(|outcome| {
+            if let Some(change) = &outcome.change {
+                self.schedule_desk_tempo(change, now, acceptance_bpm);
+            }
+        })
     }
 
     /// What of the patch `request` may touch before its change is logged,
@@ -3605,7 +3614,7 @@ impl Wall {
             undoes,
         )?;
         self.record(&change)?;
-        if desk {
+        if desk && timing.0 == 0.0 {
             // Tempos are 20-300 BPM: exact enough in f32.
             let asked = self
                 .desk
@@ -5119,6 +5128,7 @@ impl Wall {
     /// if it is due. Returns the events to tell everyone: faults, and the
     /// changes the daemon made on its own.
     pub fn tick(&mut self, now: Instant) -> Vec<Event> {
+        self.tick_desk_tempo(now);
         self.tick_tree();
         let shared = self.engine.shared();
         self.clock_line

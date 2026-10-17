@@ -279,10 +279,18 @@ impl Wall {
             return Ok(());
         };
         let tempo = changes.iter().rev().find_map(|change| match change {
-            What::Tempo { to, desk: true, .. } => Some(*to),
+            What::Tempo {
+                to,
+                desk: true,
+                after_beats,
+                ..
+            } => Some((*to, *after_beats)),
             _ => None,
         });
-        if let Some(bpm) = tempo {
+        if let Some((bpm, after_beats)) = tempo {
+            if after_beats > 0.0 {
+                return Ok(());
+            }
             let result = self.desk.as_ref().map_or(
                 Err(kazoo_core::ipc::link::RequestError::NotConnected),
                 |link| link.request_tempo(bpm as f32),

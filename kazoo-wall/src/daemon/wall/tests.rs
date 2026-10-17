@@ -18,6 +18,7 @@ use moments::land;
 
 mod batch;
 mod delay_lines;
+mod desk_scheduling;
 mod scheduling;
 mod tempo;
 
