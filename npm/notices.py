@@ -1,30 +1,38 @@
 #!/usr/bin/env python3
 """The third-party notices for one kzoo build: every crate compiled into the
-program for a target, with its licence and the licence texts it ships.
+program for a target, with the licence texts that cover it.
 
-    notices.py <repository root> <target triple>  > THIRD-PARTY-NOTICES
+    notices.py <repository root> <target triple> <output file>
 
-Reads `cargo metadata` for the target (nothing is built), walks kzoo's
-normal dependencies (what is linked into the program, proc-macros included;
-not build scripts' or tests'), and leaves out the workspace's own crates,
-whose licence is the package's LICENSE. Vendored code inside the workspace
-carries its own notice in `npm/vendored-notices.txt`, appended last.
+The crates are what `cargo tree -p kzoo -e normal --target <triple>` builds,
+less the workspace's own (their licence is the package's LICENSE) and less
+proc-macros, which run while building and are not in the program. Nothing
+is built.
 
-A crate that ships no licence text is noticed under the licence it
-declares: MIT where it offers MIT, with its authors as the copyright holders
-(the MIT text is short and written out each time); otherwise Apache-2.0 or
-MPL-2.0, whose full texts (`npm/licences/`) are appended once. A crate with
-neither is a failure, named, so a release never goes out with a notice
-missing. MPL-2.0 code is used unmodified from crates.io, where its source is
-published; each such crate's notice says where.
+Each crate's licence expression must be covered by texts: those the crate
+ships (LICENSE*, COPYING*, NOTICE*, ...), recognised by their wording, and
+for a crate that ships none, the upstream texts kept in `npm/licences/upstream/`
+for its exact version (`npm/licences/upstream.json`). Apache-2.0 and MPL-2.0
+are covered by their full texts, appended once. Every crate under MPL-2.0 is
+noted with where its source is published, and must come from crates.io,
+unmodified. Code vendored into kzoo's own crates is noticed from
+`npm/vendored-notices.txt`.
+
+Anything not covered fails the run, naming each crate, and nothing is
+written: the output appears whole or not at all.
 """
 
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 
+CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
 TEXT_NAMES = ("LICENSE", "LICENCE", "COPYING", "NOTICE", "COPYRIGHT", "UNLICENSE")
+# Licences whose full text is appended once, so a crate under one is covered.
+APPENDED = ("Apache-2.0", "MPL-2.0")
 
 MIT = """Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -45,43 +53,110 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-# Licences whose full text is appended once, for crates that ship none.
-APPENDED = ("Apache-2.0", "MPL-2.0")
+# Wording that marks a licence's text, by SPDX id.
+SIGNS = {
+    "MIT": ["Permission is hereby granted, free of charge"],
+    "Apache-2.0": ["TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION", "Apache License"],
+    "MPL-2.0": ["Mozilla Public License"],
+    "BSD-3-Clause": ["Redistribution and use in source and binary forms", "Neither the name"],
+    "BSD-2-Clause": ["Redistribution and use in source and binary forms", "Redistributions in binary form"],
+    "BSD-1-Clause": ["Redistribution and use in source and binary forms", "Redistributions of source code"],
+    "ISC": ["Permission to use, copy, modify, and/or distribute this software for any"],
+    "0BSD": ["Permission to use, copy, modify, and/or distribute this software for any"],
+    "Zlib": ["This software is provided 'as-is'"],
+    "Unlicense": ["This is free and unencumbered software released into the public domain"],
+    "BSL-1.0": ["Boost Software License"],
+    "WTFPL": ["DO WHAT THE FUCK YOU WANT"],
+    "Unicode-3.0": ["UNICODE LICENSE V3"],
+    "Unicode-DFS-2016": ["UNICODE, INC. LICENSE AGREEMENT - DATA FILES AND SOFTWARE"],
+    "LLVM-exception": ["LLVM Exceptions to the Apache 2.0 License"],
+}
 
 
-def metadata(root, target):
-    out = subprocess.run(
-        [
-            "cargo", "metadata", "--locked", "--format-version", "1",
-            "--filter-platform", target,
-            "--manifest-path", os.path.join(root, "Cargo.toml"),
-        ],
+def fail(message):
+    sys.stderr.write("notices.py: " + message + "\n")
+    sys.exit(1)
+
+
+def run(root, *args):
+    return subprocess.run(
+        ["cargo", *args, "--manifest-path", os.path.join(root, "Cargo.toml")],
         check=True, capture_output=True, text=True,
     ).stdout
-    return json.loads(out)
 
 
-def linked(meta):
-    """Every package kzoo links, by id, following normal dependencies."""
-    packages = {p["id"]: p for p in meta["packages"]}
-    nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
-    root = next(p["id"] for p in meta["packages"] if p["name"] == "kzoo")
-    seen, stack = set(), [root]
-    while stack:
-        node = nodes[stack.pop()]
-        if node["id"] in seen:
-            continue
-        seen.add(node["id"])
-        for dep in node["deps"]:
-            if any(kind["kind"] is None for kind in dep["dep_kinds"]):
-                stack.append(dep["pkg"])
-    members = set(meta["workspace_members"])
-    return [packages[i] for i in sorted(seen - members, key=lambda i: (packages[i]["name"], packages[i]["version"]))]
+def built(root, target):
+    """(name, version) of every package `cargo tree` builds into kzoo."""
+    tree = run(root, "tree", "--locked", "-p", "kzoo", "-e", "normal",
+               "--target", target, "--prefix", "none", "-f", "{p}")
+    found = set()
+    for line in tree.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].startswith("v"):
+            found.add((parts[0], parts[1][1:]))
+    if not found:
+        fail("cargo tree listed nothing for kzoo")
+    return found
 
 
-def texts(package):
-    """The licence texts a crate ships: its `license-file`, then any file in
-    its root whose name starts with one of TEXT_NAMES."""
+def identify(text):
+    """The licences a text is the text of, by its wording."""
+    flat = " ".join(text.split())
+    return {spdx for spdx, signs in SIGNS.items() if all(" ".join(s.split()) in flat for s in signs)}
+
+
+def options(expression):
+    """The ways an SPDX expression can be met, each a set of ids (a WITH
+    exception is an id of its own), or None if it cannot be read."""
+    tokens = re.findall(r"\(|\)|[A-Za-z0-9.+-]+", expression.replace("/", " OR "))
+    position = 0
+
+    def peek():
+        return tokens[position] if position < len(tokens) else None
+
+    def take():
+        nonlocal position
+        position += 1
+        return tokens[position - 1]
+
+    def either():
+        ways = both()
+        while peek() == "OR":
+            take()
+            ways = ways + both()
+        return ways
+
+    def both():
+        ways = one()
+        while peek() == "AND":
+            take()
+            right = one()
+            ways = [a | b for a in ways for b in right]
+        return ways
+
+    def one():
+        if peek() == "(":
+            take()
+            ways = either()
+            if take() != ")":
+                raise ValueError(expression)
+            return ways
+        name = take()
+        if name in ("AND", "OR", "WITH", ")"):
+            raise ValueError(expression)
+        if peek() == "WITH":
+            take()
+            return [{name, take()}]
+        return [{name}]
+
+    try:
+        ways = either()
+    except (IndexError, ValueError):
+        return None
+    return ways if position == len(tokens) else None
+
+
+def shipped(package):
     folder = os.path.dirname(package["manifest_path"])
     found = []
     if package.get("license_file"):
@@ -93,81 +168,112 @@ def texts(package):
     return found
 
 
-def options(package):
-    """The licences a crate's SPDX expression lets it be used under, one of
-    which is enough; None when the expression joins licences with AND."""
-    expression = (package.get("license") or "").replace("/", " OR ")
-    if " AND " in expression or "(" in expression:
-        return None
-    return [option.strip() for option in expression.split(" OR ") if option.strip()]
+def read(path):
+    with open(path, encoding="utf-8", errors="replace") as text:
+        return text.read().rstrip() + "\n"
 
 
-def declared(package):
-    """The licence a crate that ships no text is noticed under, or None."""
-    offered = options(package) or []
-    for choice in ("MIT",) + APPENDED:
-        if choice in offered:
-            return choice
-    return None
+def upstream(root):
+    with open(os.path.join(root, "npm", "licences", "upstream.json"), encoding="utf-8") as text:
+        entries = json.load(text)["entries"]
+    by_crate = {}
+    for entry in entries:
+        for crate in entry["crates"]:
+            by_crate[crate] = entry
+    return by_crate
 
 
 def main():
-    root, target = sys.argv[1], sys.argv[2]
-    crates = linked(metadata(root, target))
-    missing = [
-        f'{p["name"]} {p["version"]} ({p.get("license")})'
-        for p in crates
-        if not texts(p) and declared(p) is None
-    ]
-    if missing:
-        sys.stderr.write("notices.py: no licence text shipped by: " + ", ".join(missing) + "\n")
-        sys.exit(1)
-    out = sys.stdout
-    used = set()
-    out.write(
-        "Third-party notices for kzoo, the program in this package, built for "
-        f"{target}.\n\nkzoo is free software under the GNU Affero General Public "
-        "License, version 3 or later (see LICENSE). It is built with the "
-        f"{len(crates)} crates below, each under its own licence, whose texts "
-        "follow its name.\n"
-    )
-    for package in crates:
-        out.write("\n" + "=" * 78 + "\n")
-        out.write(f'{package["name"]} {package["version"]}\n')
-        out.write(f'Licence: {package.get("license") or "see the text below"}\n')
-        if package.get("repository"):
-            out.write(f'Source: {package["repository"]}\n')
-        shipped = texts(package)
-        for path in shipped:
-            out.write("\n--- " + os.path.basename(path) + " ---\n\n")
-            with open(path, encoding="utf-8", errors="replace") as text:
-                out.write(text.read().rstrip() + "\n")
-        if shipped:
+    root, target, output = sys.argv[1], sys.argv[2], sys.argv[3]
+    meta = json.loads(run(root, "metadata", "--locked", "--format-version", "1",
+                          "--filter-platform", target))
+    members = set(meta["workspace_members"])
+    packages = {(p["name"], p["version"]): p for p in meta["packages"]}
+    kept = upstream(root)
+    crates, problems, used = [], [], set()
+    for key in sorted(built(root, target)):
+        package = packages.get(key)
+        if package is None:
+            problems.append(f"{key[0]} {key[1]}: built but not in cargo metadata")
             continue
-        choice = declared(package)
-        holders = ", ".join(package["authors"]) or f'the {package["name"]} developers'
-        if choice == "MIT":
-            out.write(f"\nUsed under the MIT License.\n\nCopyright (c) {holders}\n\n{MIT}")
-        else:
-            used.add(choice)
-            out.write(f"\nUsed under the {choice} licence, Copyright (c) {holders}; its text is at the end of this file.\n")
-            if choice == "MPL-2.0":
+        if package["id"] in members:
+            continue
+        if any("proc-macro" in kind for t in package["targets"] for kind in t["kind"]):
+            continue
+        crates.append(package)
+
+    entries = []
+    for package in crates:
+        name, version = package["name"], package["version"]
+        label = f"{name} {version} ({package.get('license')})"
+        texts = [(os.path.basename(path), read(path)) for path in shipped(package)]
+        entry = None
+        if not texts:
+            entry = kept.get(f"{name}@{version}")
+            if entry is None:
+                problems.append(f"{label}: ships no licence text and none is kept for it")
+                continue
+            folder = os.path.join(root, "npm", "licences", "upstream")
+            texts = [(file, read(os.path.join(folder, file))) for file in entry["files"]]
+        have = set().union(*(identify(text) for _, text in texts)) | set(APPENDED)
+        if entry is not None and entry["licence"] == "MIT" and not entry["files"]:
+            have.add("MIT")
+        ways = options(package.get("license") or "")
+        if ways is None:
+            problems.append(f"{label}: its licence expression cannot be read")
+            continue
+        met = [way for way in ways if way <= have]
+        if not met:
+            problems.append(f"{label}: no way to meet it is covered by {sorted(have)}")
+            continue
+        mpl = any("MPL" in spdx for way in ways for spdx in way)
+        if mpl and package.get("source") != CRATES_IO:
+            problems.append(f"{label}: MPL code from {package.get('source')}, not crates.io")
+            continue
+        used |= set(APPENDED) & set().union(*met)
+        entries.append((package, texts, entry, mpl))
+
+    if problems:
+        fail("the notices cannot be written:\n  " + "\n  ".join(problems))
+
+    folder = os.path.dirname(os.path.abspath(output))
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=folder, delete=False) as out:
+        out.write(
+            f"Third-party notices for kzoo, the program in this package, built for {target}.\n\n"
+            "kzoo is free software under the GNU Affero General Public License, version 3 or "
+            f"later (see LICENSE). Compiled into it are the {len(entries)} crates below, each "
+            "under its own licence, whose texts follow its name, and the vendored code at the "
+            "end. Procedural macros, which run while it is built and are not part of it, are "
+            "left out.\n"
+        )
+        for package, texts, entry, mpl in entries:
+            out.write("\n" + "=" * 78 + "\n")
+            out.write(f'{package["name"]} {package["version"]}\n')
+            out.write(f'Licence: {package.get("license")}\n')
+            if package.get("repository"):
+                out.write(f'Source: {package["repository"]}\n')
+            if mpl:
                 out.write(
                     "Used unmodified. Its Source Code Form is published at "
-                    f'https://crates.io/crates/{package["name"]}/{package["version"]}'
-                    + (f' and {package["repository"]}' if package.get("repository") else "")
-                    + ".\n"
+                    f'https://crates.io/crates/{package["name"]}/{package["version"]}.\n'
                 )
-    vendored = os.path.join(root, "npm", "vendored-notices.txt")
-    out.write("\n" + "=" * 78 + "\n")
-    with open(vendored, encoding="utf-8") as text:
-        out.write(text.read().rstrip() + "\n")
-    for choice in APPENDED:
-        if choice in used:
-            out.write("\n" + "=" * 78 + "\n")
-            out.write(f"The {choice} licence, as named above\n\n")
-            with open(os.path.join(root, "npm", "licences", choice + ".txt"), encoding="utf-8") as text:
-                out.write(text.read().rstrip() + "\n")
+            if entry is not None:
+                out.write(f'The crate ships no licence text; kept from {entry["source"]}.\n')
+                if entry.get("copyright"):
+                    out.write(f'{entry["copyright"]}\n')
+                if not entry["files"]:
+                    out.write(f"\nUsed under the MIT License.\n\n{MIT}")
+            for file, text in texts:
+                out.write(f"\n--- {file} ---\n\n{text}")
+        out.write("\n" + "=" * 78 + "\n")
+        out.write(read(os.path.join(root, "npm", "vendored-notices.txt")))
+        for spdx in APPENDED:
+            if spdx in used:
+                out.write("\n" + "=" * 78 + "\n")
+                out.write(f"The {spdx} licence, as named above\n\n")
+                out.write(read(os.path.join(root, "npm", "licences", spdx + ".txt")))
+    os.chmod(out.name, 0o644)
+    os.replace(out.name, output)
 
 
 if __name__ == "__main__":
