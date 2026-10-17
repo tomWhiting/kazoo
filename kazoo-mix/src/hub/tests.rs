@@ -28,6 +28,21 @@ use crate::test_support::floats_equal;
 
 const RATE: u32 = 48_000;
 
+/// Schedule the calling thread as real-time for work every `period`, as the
+/// thread it stands in for is in the studio. A test that times one must not
+/// run it at normal priority: it would measure whatever else the machine is
+/// doing. Any process may ask on macOS; on Linux the process needs
+/// `RLIMIT_RTPRIO` above 0 or `CAP_SYS_NICE`, and without it the test says so
+/// and stops rather than measure the scheduler.
+fn real_time(period: Duration, stands_for: &str) -> kazoo_core::realtime::RealTime {
+    kazoo_core::realtime::RealTime::promote(period).unwrap_or_else(|why| {
+        panic!(
+            "{stands_for} runs real-time in the studio, so it must here: {why} \
+             (on Linux, give the process RLIMIT_RTPRIO above 0 or CAP_SYS_NICE)"
+        )
+    })
+}
+
 /// A hub on a private socket, with the desk's callback run by hand.
 struct Rig {
     hub: Hub,
@@ -80,8 +95,14 @@ impl Rig {
     /// Run one 256-frame desk callback; returns its left channel.
     fn render(&mut self) -> Vec<f32> {
         let mut data = vec![0.0_f32; 512];
-        self.callback.process(&mut data);
+        self.render_into(&mut data);
         data.into_iter().step_by(2).collect()
+    }
+
+    /// Run one desk callback into `data`, interleaved stereo, allocating
+    /// nothing: for a loop that stands in for the real callback.
+    fn render_into(&mut self, data: &mut [f32]) {
+        self.callback.process(data);
     }
 
     /// Run the desk until `done` holds, or fail after five seconds: longer
@@ -687,6 +708,15 @@ fn a_registration_cut_short_inside_its_pace_is_refused() {
     assert_eq!(rig.hub.snapshot().instruments, 0);
 }
 
+/// Stops a test's own thread when dropped, however the test ends.
+struct Stop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Stop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 #[test]
 fn a_paced_source_with_a_jittery_timer_is_placed_once_and_stays_placed() {
     use kazoo_core::host::link::connect_config_or_direct;
@@ -702,11 +732,21 @@ fn a_paced_source_with_a_jittery_timer_is_placed_once_and_stays_placed() {
     .unwrap();
     let running = Arc::new(AtomicBool::new(true));
     let source_running = Arc::clone(&running);
+    // Whatever way the test ends, a panic included, the source stops.
+    let stop = Stop(Arc::clone(&running));
     // A source like the headless wall: render what the desk says is owed,
     // on its own timer until the desk says; and every tenth of a second,
-    // oversleep by 20 to 30 ms, as a busy machine does.
+    // oversleep by 20 to 30 ms, as a busy machine does. It runs real-time,
+    // as the wall's render thread does, with the wall's period (four
+    // 256-frame blocks a wake); the desk below runs real-time as its audio
+    // callback does. The hub and the link's worker ask for real time
+    // already. So the jitter is the source's own, not the machine's.
     let source = thread::spawn(move || {
         let block = vec![0.1_f32; 512];
+        let promoted = real_time(
+            Duration::from_secs_f64(4.0 * 256.0 / f64::from(RATE)),
+            "the wall's render thread",
+        );
         let started = Instant::now();
         let mut sent = 0_u64;
         let mut next_hiccup = started + Duration::from_millis(100);
@@ -730,20 +770,24 @@ fn a_paced_source_with_a_jittery_timer_is_placed_once_and_stays_placed() {
                 thread::sleep(Duration::from_micros(500));
             }
         }
+        promoted.demote().expect("the source leaves real time");
     });
     // The desk plays in real time: a 256-frame buffer every 5⅓ ms.
-    let started = Instant::now();
     let buffer = Duration::from_secs_f64(256.0 / f64::from(RATE));
+    let mut data = vec![0.0_f32; 512];
+    let desk = real_time(buffer, "the desk's audio callback");
+    let started = Instant::now();
     let mut buffers = 0_u32;
     while started.elapsed() < Duration::from_millis(1_500) {
         let due = started + buffer * buffers;
         if let Some(wait) = due.checked_duration_since(Instant::now()) {
             thread::sleep(wait);
         }
-        rig.render();
+        rig.render_into(&mut data);
         buffers += 1;
     }
-    running.store(false, Ordering::Release);
+    desk.demote().expect("the desk leaves real time");
+    drop(stop);
     source.join().unwrap();
     let snapshot = rig.hub.snapshot();
     assert!(snapshot.blocks > 200, "{snapshot:?}");

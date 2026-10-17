@@ -3,6 +3,20 @@ use crate::ipc::protocol::FrameHeader;
 
 const BLOCKS: usize = 10_000;
 
+/// Schedule the calling thread as real-time for work every `period`, as the
+/// instrument thread it stands in for is. A test that times the link from a
+/// thread at normal priority measures whatever else the machine is doing.
+/// Any process may ask on macOS; on Linux the process needs `RLIMIT_RTPRIO`
+/// above 0 or `CAP_SYS_NICE`, and without it the test says so and stops.
+fn real_time(period: Duration, stands_for: &str) -> crate::realtime::RealTime {
+    crate::realtime::RealTime::promote(period).unwrap_or_else(|why| {
+        panic!(
+            "{stands_for} runs real-time in the studio, so it must here: {why} \
+             (on Linux, give the process RLIMIT_RTPRIO above 0 or CAP_SYS_NICE)"
+        )
+    })
+}
+
 struct Connection {
     link: HubLink,
     audio: HubLinkAudio,
@@ -54,6 +68,24 @@ impl Connection {
             );
             // Measure bytes arriving, without a second thread's scheduling delay.
             std::hint::spin_loop();
+        }
+    }
+
+    /// As [`Self::read_frame`], for a thread promoted to real time: it waits
+    /// in short sleeps, so it never holds the core the link's worker needs
+    /// (at equal FIFO priority on one CPU) or uses more of its period than
+    /// macOS allows.
+    fn read_frame_sleeping(&mut self) -> FrameHeader {
+        let start = Instant::now();
+        loop {
+            if let Some(header) = self.buffer.try_read_frame(&mut self.stream).unwrap() {
+                return header;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "no frame received"
+            );
+            std::thread::sleep(Duration::from_micros(100));
         }
     }
 }
@@ -144,14 +176,18 @@ fn a_queued_block_wakes_the_link_thread_at_once() {
 #[test]
 fn a_ui_request_is_carried_without_waiting_for_the_tick() {
     let mut connection = Connection::new();
+    // The side timing it stands in for the hub, which runs real-time.
+    let promoted = real_time(Duration::from_millis(2), "the hub thread");
+    let mut slowest = Duration::ZERO;
     for _ in 0..10 {
         let start = Instant::now();
         connection.link.request_tempo(100.0).unwrap();
-        let header = connection.read_frame();
-        let elapsed = start.elapsed();
+        let header = connection.read_frame_sleeping();
+        slowest = slowest.max(start.elapsed());
         assert_eq!(header.msg_type, MSG_TRANSPORT_REQUEST);
-        assert!(elapsed < Duration::from_millis(1), "elapsed={elapsed:?}");
     }
+    promoted.demote().expect("the timing side leaves real time");
+    assert!(slowest < Duration::from_millis(1), "slowest={slowest:?}");
 }
 
 #[test]
@@ -165,6 +201,9 @@ fn an_idle_link_still_reads_the_hubs_messages_within_a_tick() {
         beat: 2.0,
     };
     sync.encode(connection.buffer.payload_mut());
+    // The instrument's side, timing it, runs real-time as an instrument's
+    // audio thread does; it waits in short sleeps, not a spin.
+    let promoted = real_time(LINK_TICK, "an instrument's audio thread");
     let start = Instant::now();
     connection
         .buffer
@@ -184,11 +223,15 @@ fn an_idle_link_still_reads_the_hubs_messages_within_a_tick() {
             start.elapsed() < 2 * LINK_TICK,
             "no sync within two link ticks"
         );
-        std::hint::spin_loop();
+        std::thread::sleep(Duration::from_micros(100));
     }
+    let elapsed = start.elapsed();
+    promoted
+        .demote()
+        .expect("the instrument's side leaves real time");
     assert!(
-        start.elapsed() < 2 * LINK_TICK,
-        "sync exceeded two link ticks"
+        elapsed < 2 * LINK_TICK,
+        "sync exceeded two link ticks: {elapsed:?}"
     );
 }
 

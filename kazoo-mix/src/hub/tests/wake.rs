@@ -39,9 +39,14 @@ fn a_transport_anchor_still_reaches_an_instrument_within_the_tick_budget() {
     rig.until("the strip to be patched in", |rig| {
         rig.shared.channel_readout(0).connected
     });
+    // The instrument's side, timing the anchor, runs real-time as an
+    // instrument's audio thread does; it waits in short sleeps, not a spin,
+    // and renders into a buffer made before it promotes.
+    let mut data = vec![0.0_f32; 512];
+    let promoted = real_time(Duration::from_millis(1), "an instrument's audio thread");
     let start = Instant::now();
     rig.shared.set_playing(true);
-    rig.render();
+    rig.render_into(&mut data);
     loop {
         if let Some(HubMessage::TransportSync(sync)) = client.try_recv().unwrap() {
             if sync.state == TRANSPORT_PLAYING {
@@ -52,11 +57,15 @@ fn a_transport_anchor_still_reaches_an_instrument_within_the_tick_budget() {
             start.elapsed() < Duration::from_millis(50),
             "anchor not forwarded"
         );
-        thread::yield_now();
+        thread::sleep(Duration::from_micros(100));
     }
+    let elapsed = start.elapsed();
+    promoted
+        .demote()
+        .expect("the instrument's side leaves real time");
     assert!(
-        start.elapsed() < Duration::from_millis(50),
-        "anchor arrived late"
+        elapsed < Duration::from_millis(50),
+        "anchor arrived late: {elapsed:?}"
     );
 }
 
