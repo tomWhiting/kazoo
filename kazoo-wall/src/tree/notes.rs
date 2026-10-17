@@ -55,26 +55,50 @@ pub(super) fn body(
     }))
 }
 
-pub fn whole<'a>(
-    state: &Path,
-    history: impl Iterator<Item = &'a Change>,
-    files: &mut super::Files,
-) {
-    for change in history {
-        let mut added = Vec::new();
-        append(state, change, &mut added);
-        for (path, bytes) in added {
-            if let Some(bytes) = bytes {
-                files.insert(path, bytes);
-            }
-        }
-    }
+/// What the daemon's log says of each change in `healed` that has notes:
+/// healing folds it into a whole moment, so it never gets a commit of its
+/// own, and a batch's notes go only on its own commit (never under another
+/// change's). Its notes stay in the store, read by `notes` (`wall_notes`).
+pub fn healed<'a>(healed: impl Iterator<Item = &'a Change>) -> Vec<String> {
+    healed
+        .filter(|change| !change.notes.is_empty())
+        .map(|change| {
+            let names = change
+                .notes
+                .iter()
+                .map(|note| note.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "kazoo-wall: change {seq} is healed into a whole moment with no commit of its own, so its notes ({names}) are not on the tree; wall_notes {seq} reads them from the store",
+                seq = change.seq
+            )
+        })
+        .collect()
 }
 
-pub fn wall_only(files: &super::Files) -> super::Files {
-    files
-        .iter()
-        .filter(|(path, _)| !valid_path(path))
-        .map(|(path, bytes)| (path.clone(), bytes.clone()))
-        .collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notes_a_healed_batch_is_named_with_its_notes() {
+        let change = |seq: u64, notes: serde_json::Value| -> Change {
+            serde_json::from_value(serde_json::json!({"seq":seq,"at":"2026-10-17T00:00:00Z","seat":"Tom","summary":"s","notes":notes,"what":{"op":"tempo","from":120.0,"to":130.0,"desk":false}})).unwrap()
+        };
+        let changes = [
+            change(4, serde_json::json!([])),
+            change(
+                5,
+                serde_json::json!([{"name":"description.md","bytes":3,"sha256":"x"},{"name":"proof.md","bytes":3,"sha256":"y"}]),
+            ),
+        ];
+        assert_eq!(
+            healed(changes.iter()),
+            vec![
+                "kazoo-wall: change 5 is healed into a whole moment with no commit of its own, so its notes (description.md, proof.md) are not on the tree; wall_notes 5 reads them from the store"
+                    .to_string()
+            ]
+        );
+    }
 }

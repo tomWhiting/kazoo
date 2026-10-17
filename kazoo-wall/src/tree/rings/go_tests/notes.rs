@@ -46,7 +46,10 @@ fn notes_live_tree_and_import_preserve_batch_content() {
 }
 
 #[test]
-fn notes_healing_reads_store_before_whole_snapshot() {
+fn notes_a_healed_batch_keeps_its_notes_in_the_store_not_on_the_start() {
+    // A batch the tree never held is healed into the start, a whole moment
+    // with no commit of its own: its notes go on no commit, and read back
+    // from the store as ever.
     let state = tempfile::tempdir().unwrap();
     let live = tempfile::tempdir().unwrap();
     git::plant(live.path()).unwrap();
@@ -55,14 +58,14 @@ fn notes_healing_reads_store_before_whole_snapshot() {
     let made = ask(&mut wall, &request).change.unwrap();
     wall.attach_tree(TreeHandle::attach(live.path()).unwrap());
     ask(&mut wall, &Request::Tree { recent: None });
+    let read: Request =
+        serde_json::from_value(serde_json::json!({"op":"notes","seq":made.seq})).unwrap();
+    let answer = wall.request("Tom", &read, Instant::now()).unwrap().result;
+    assert_eq!(answer["attachments"][0]["text"], "QED");
     wall.close(Instant::now());
-    assert_eq!(
-        command(
-            live.path(),
-            &["show", &format!("HEAD:notes/{}/proof.md", made.seq)]
-        ),
-        "QED"
-    );
+    let files = raw_files(live.path(), "HEAD");
+    assert!(files.contains("wall.toml"), "{files}");
+    assert!(!files.contains("notes/"), "{files}");
 }
 
 /// Every commit of `tree`'s trunk, oldest first, as git keeps it, with its
@@ -146,4 +149,38 @@ fn notes_an_import_without_a_store_file_leaves_the_commit_without_it() {
     assert!(!files.contains("proof.md"), "{files}");
     let body = command(imported.path(), &["show", "-s", "--format=%B", "HEAD"]);
     assert!(body.contains("Kazoo-Attachment: proof.md (3)"), "{body}");
+}
+
+#[test]
+fn notes_of_a_healed_batch_never_land_on_another_changes_commit() {
+    // The tree is detached at a moment that already holds the wall as it
+    // is after a batch with notes and its undo, both owed: the start is not
+    // committed, and the next change's commit is the first the tree gets.
+    // The batch has no commit of its own, so its notes go on none.
+    let tree = tempfile::tempdir().unwrap();
+    git::plant(tree.path()).unwrap();
+    let first = tempfile::tempdir().unwrap();
+    let (_first_engine, mut wall) = real_wall(first.path());
+    wall.attach_tree(TreeHandle::attach(tree.path()).unwrap());
+    ask(&mut wall, &Request::Tree { recent: None });
+    wall.close(Instant::now());
+    drop(wall);
+    let start = command(tree.path(), &["rev-parse", "HEAD"]);
+    command(tree.path(), &["update-ref", "--no-deref", "HEAD", &start]);
+    let state = tempfile::tempdir().unwrap();
+    let (_engine, mut wall) = real_wall(state.path());
+    let request: Request = serde_json::from_value(serde_json::json!({"op":"batch","note":"Proof","description":"Why","attachments":[{"name":"proof.md","text":"QED"}],"changes":[{"op":"tempo","bpm":140.0}]})).unwrap();
+    let made = ask(&mut wall, &request).change.unwrap();
+    ask(&mut wall, &Request::Undo { change: made.seq });
+    wall.attach_tree(TreeHandle::attach(tree.path()).unwrap());
+    ask(
+        &mut wall,
+        &super::super::fixtures::turn_request("vcf1", "cutoff", 333.0, None),
+    );
+    ask(&mut wall, &Request::Tree { recent: None });
+    wall.close(Instant::now());
+    let head = command(tree.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(head, start, "the turn has a commit of its own");
+    let files = raw_files(tree.path(), &head);
+    assert!(!files.contains("notes/"), "{files}");
 }

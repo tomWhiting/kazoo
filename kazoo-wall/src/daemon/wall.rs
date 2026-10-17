@@ -2484,25 +2484,18 @@ impl Wall {
             })
             .map(|change| change.seq)
             .collect();
-        let mut files = match crate::tree::to_files(&self.patch.to_file()) {
+        let files = match crate::tree::to_files(&self.patch.to_file()) {
             Ok(files) => files,
             Err(err) => {
                 self.tree_failed(&err);
                 return;
             }
         };
-        let mirror = files.clone();
-        if let Some(store) = &self.store {
-            crate::tree::notes::whole(
-                store.dir(),
-                history.iter().filter(|change| {
-                    change.seq >= first_owed
-                        && change.seq <= self.made
-                        && !abandoned.contains(&change.seq)
-                }),
-                &mut files,
-            );
-        }
+        // A batch folded into this whole moment has no commit of its own,
+        // and its notes go on no other change's (KZ-T13): the log says so.
+        let healed = crate::tree::notes::healed(history.iter().filter(|change| {
+            change.seq >= first_owed && change.seq <= self.made && !abandoned.contains(&change.seq)
+        }));
         let shared = self.engine.shared();
         let clock = self
             .clock_line
@@ -2514,7 +2507,7 @@ impl Wall {
                 }
                 self.moved_to = None;
             }
-            self.tree_mirror = mirror;
+            self.tree_mirror = files.clone();
             let accepted = tree.offer(crate::tree::thread::TreeItem::Whole {
                 kind,
                 changes,
@@ -2525,6 +2518,9 @@ impl Wall {
             });
             if accepted {
                 tree.resync = false;
+                for line in healed {
+                    eprintln!("{line}");
+                }
             }
         }
     }
