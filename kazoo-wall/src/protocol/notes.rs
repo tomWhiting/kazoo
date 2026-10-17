@@ -1,33 +1,54 @@
+//! A batch's description and attachments (KZ-T13): what a seat sends, the
+//! references the log keeps, the answer that reads them back, and the
+//! limits every one of them is held to.
+
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
 use super::{ErrorCode, WallError};
 
+/// A named text sent with a batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Attachment {
+    /// Its name ([`valid_name`]), unique in the batch ignoring case.
     pub name: String,
+    /// Its text: 1 to 64 KiB of UTF-8, line feeds and tabs its only
+    /// control characters.
     pub text: String,
 }
 
+/// A note as the log keeps it: the text itself is in the notes store, in
+/// the file named by its SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteRef {
+    /// `description.md` for the description, or the attachment's name.
     pub name: String,
+    /// The text's length in bytes.
     pub bytes: usize,
+    /// The text's SHA-256, in lowercase hex.
     pub sha256: String,
 }
 
+/// The answer to `notes`: a change's notes, read from the store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotesResult {
+    /// The change.
     pub seq: u64,
+    /// The batch's note.
     pub note: String,
+    /// Its description, unless it had none or the store has lost it.
     pub description: Option<String>,
+    /// Its attachments the store still holds, in the order sent.
     pub attachments: Vec<Attachment>,
+    /// The names of the notes the store no longer holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,
 }
 
+/// Whether `name` may name an attachment: 1 to 64 of `A-Z a-z 0-9 . _ -`,
+/// not starting with a dot.
 #[must_use]
 pub fn valid_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
@@ -37,6 +58,11 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
+/// Hold a batch's description and attachments to their limits.
+///
+/// # Errors
+///
+/// `bad_request`, saying which limit, when any is past it.
 pub fn validate(description: Option<&str>, attachments: &[Attachment]) -> Result<(), WallError> {
     let bad = |why| WallError::new(ErrorCode::BadRequest, why);
     if attachments.len() > 8 {

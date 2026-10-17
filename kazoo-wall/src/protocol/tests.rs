@@ -424,7 +424,7 @@ fn fingerprints_have_their_shape_and_old_snapshots_still_read() {
         "daemon":"kazoo-wall 0.1.0","seat":"Cassio","console":false,"seats":["Cassio"],"revision":230
     }))
     .unwrap();
-    assert!(!hello.watcher);
+    assert!(!hello.role.watcher);
     let snapshot: Snapshot = serde_json::from_value(json!({
         "revision":1,"tempo":90.0,"beat":0.0,"clock":"own","on_desk":false,"seats":[],
         "modules":[],"cables":[],"levels":{"peak_l":-120.0,"peak_r":-120.0},"listen":null,

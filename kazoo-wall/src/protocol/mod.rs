@@ -276,8 +276,13 @@ pub enum Request {
         /// The sender's words: 1 to 200 characters after trimming, one line
         /// with no control or direction characters.
         note: String,
+        /// What the batch is and why, in markdown: 1 to 8 KiB of UTF-8 on
+        /// any number of lines ([`notes::validate`]). Kept in the notes
+        /// store, never in the log line.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
+        /// Up to 8 named texts that go with it, such as a proof or a score
+        /// ([`notes::validate`]). Kept as the description is.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<Attachment>,
         /// One or more adds, removes, turns, patches, unpatches or tempos.
@@ -456,7 +461,10 @@ pub enum Request {
     },
     /// Stop the daemon. Console only.
     Shutdown,
+    /// Read change `seq`'s description and attachments back from the notes
+    /// store ([`NotesResult`]); `not_found` when it has none.
     Notes {
+        /// The change.
         seq: u64,
     },
 }
@@ -715,6 +723,8 @@ pub enum ErrorCode {
     UnknownMoment,
     /// A permanent mark with that name already exists.
     MarkExists,
+    /// What was asked for is not there: a change with no notes, or no such
+    /// change.
     NotFound,
 }
 
@@ -830,6 +840,8 @@ pub struct Change {
     /// The sender's comment on it ([`RequestLine::comment`]), trimmed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    /// A batch's notes, by name, size and SHA-256, the description first
+    /// (as `description.md`): their texts are in the notes store.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<NoteRef>,
 }
@@ -1326,18 +1338,21 @@ pub struct HelloResult {
     pub daemon: String,
     /// The seat, as accepted.
     pub seat: String,
+    /// Whether this connection is a console and whether it is a watcher.
     #[serde(flatten)]
     pub role: HelloRole,
     /// Seats online now, this one included (unless it is a watcher).
     pub seats: Vec<String>,
     /// The latest change's sequence number.
     pub revision: u64,
-
     /// Whether the wall keeps comments on changes ([`RequestLine::comment`],
     /// a batch's step comments). A wall older than them leaves this out,
     /// and would drop them without a word: a client checks it first.
     #[serde(default)]
     pub comments: bool,
+    /// Whether the wall keeps a batch's description and attachments
+    /// (KZ-T13). A wall older than them leaves this out and would drop
+    /// them without a word: a client sends none to it.
     #[serde(default)]
     pub notes: bool,
 }
