@@ -152,7 +152,7 @@ fn play_flags_become_play_args() {
 }
 
 #[test]
-fn mcp_seat_comes_from_the_flag_or_the_environment_and_is_checked() {
+fn mcp_seat_comes_from_the_flag_and_the_environment_is_left_to_the_seat() {
     let Command::Mcp(args) = Cli::try_parse_from(["kazoo", "mcp", "--seat", "Waffles"])
         .unwrap()
         .command
@@ -167,17 +167,19 @@ fn mcp_seat_comes_from_the_flag_or_the_environment_and_is_checked() {
     assert!(err.to_string().contains("valid seat name"));
     assert!(Cli::try_parse_from(["kazoo", "mcp", "--seat", "Tom", "--notify-every", "0"]).is_err());
     if std::env::var_os("KAZOO_CLI_ENV_PROBE").is_some() {
+        // kzoo leaves KAZOO_SEAT for the seat to read, so the seat can say
+        // that it, and not the flag, is going.
         let Command::Mcp(args) = Cli::try_parse_from(["kazoo", "mcp"]).unwrap().command else {
             panic!("expected mcp from environment");
         };
-        assert_eq!(args.seat.as_deref(), Some("Vesper"));
+        assert_eq!(args.seat, None);
         println!("environment seat verified");
         return;
     }
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "cli::tests::mcp_seat_comes_from_the_flag_or_the_environment_and_is_checked",
+            "cli::tests::mcp_seat_comes_from_the_flag_and_the_environment_is_left_to_the_seat",
             "--nocapture",
         ])
         .env("KAZOO_CLI_ENV_PROBE", "1")

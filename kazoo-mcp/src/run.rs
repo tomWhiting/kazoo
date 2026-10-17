@@ -9,13 +9,14 @@ use tokio::sync::watch;
 use crate::cli::{self, Invocation, Options};
 use crate::link;
 use crate::tools::Seat;
-use crate::walls::{HERE, Walls};
+use crate::walls::{Asked, HERE, Walls};
 
 /// A seat's settings, with defaults applied when it starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
-    /// The name to join this Mac's wall as at start (`--seat`, going);
-    /// `None` starts on no wall, for `wall_join`.
+    /// The name given with `--seat` (going), to join this Mac's wall as at
+    /// start. `KAZOO_SEAT`, also going, is read as the seat starts, and the
+    /// flag wins. Neither starts the seat on no wall, for `wall_join`.
     pub seat: Option<String>,
     /// The notification window in whole seconds, 1 to 3600; `None` uses 20.
     pub notify_every: Option<Duration>,
@@ -58,7 +59,7 @@ fn parse_invocation(args: impl IntoIterator<Item = String>) -> Result<Invocation
             ));
         }
     };
-    cli::parse(args, env_seat)
+    cli::parse(args, env_seat.as_deref())
 }
 
 /// Print help or version output, or serve a seat from command-line arguments.
@@ -129,12 +130,15 @@ async fn main_loop(args: Args) -> color_eyre::Result<()> {
     for going in going {
         eprintln!("kazoo-mcp: {going}");
     }
+    // The going --seat keeps an old config playing: a join that fails is
+    // said, and the seat starts on no wall, for wall_join.
     if let Some(seat) = seat {
-        walls
-            .join(None, &seat)
-            .await
-            .map_err(color_eyre::eyre::Error::msg)?;
-        eprintln!("kazoo-mcp: on {HERE} as {seat}");
+        match walls.join(None, &seat, Asked::AtStart).await {
+            Ok(_) => eprintln!("kazoo-mcp: on {HERE} as {seat}"),
+            Err(why) => eprintln!(
+                "kazoo-mcp: could not join {HERE} as {seat} ({why}); this seat starts on no wall"
+            ),
+        }
     }
     let server = Seat::new(Arc::clone(&walls), peer);
     let outcome = match server

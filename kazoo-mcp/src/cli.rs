@@ -78,7 +78,7 @@ pub struct Options {
 /// no value, a seat name the wall would refuse, or a window out of range.
 pub fn parse(
     args: impl IntoIterator<Item = String>,
-    env_seat: Option<String>,
+    env_seat: Option<&str>,
 ) -> Result<Invocation, String> {
     let args: Vec<String> = args.into_iter().collect();
     if args
@@ -109,14 +109,18 @@ pub fn parse(
             }
         }
     }
-    let seat = seat.or_else(|| env_seat.filter(|seat| !seat.is_empty()));
-    if let Some(seat) = seat.as_deref()
-        && !valid_name(seat)
+    // The flag is kept apart from $KAZOO_SEAT, so each says it is going;
+    // both are checked here, and the flag wins when the seat starts.
+    for seat in [seat.as_deref(), env_seat.filter(|seat| !seat.is_empty())]
+        .into_iter()
+        .flatten()
     {
-        return Err(format!(
-            "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
-            seat.escape_default()
-        ));
+        if !valid_name(seat) {
+            return Err(format!(
+                "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
+                seat.escape_default()
+            ));
+        }
     }
     let notify_every = notify_every
         .map(|text| seconds(&text).map(Duration::from_secs))
@@ -151,13 +155,13 @@ fn resolve_with(
     env_seat: Option<&str>,
     default_socket: impl FnOnce() -> PathBuf,
 ) -> Result<Options, String> {
-    if let Some(seat) = args.seat.as_deref()
-        && !valid_name(seat)
-    {
-        return Err(format!(
-            "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
-            seat.escape_default()
-        ));
+    for seat in [args.seat.as_deref(), env_seat].into_iter().flatten() {
+        if !valid_name(seat) {
+            return Err(format!(
+                "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
+                seat.escape_default()
+            ));
+        }
     }
     let notify_every = args
         .notify_every
@@ -177,7 +181,7 @@ fn resolve_with(
             "{SEAT_ENV} is going: unset it, and the seat joins with wall_join"
         ));
     }
-    if args.seat.is_some() && args.seat.as_deref() != env_seat {
+    if args.seat.is_some() {
         going.push("--seat is going: leave it out, and the seat joins with wall_join".to_string());
     }
     if args.socket.is_some() {
@@ -186,7 +190,7 @@ fn resolve_with(
         );
     }
     Ok(Options {
-        seat: args.seat,
+        seat: args.seat.or_else(|| env_seat.map(str::to_string)),
         notify_every: Duration::from_secs(notify_every),
         socket: args.socket.unwrap_or_else(default_socket),
         going,
@@ -226,10 +230,7 @@ mod tests {
     use super::*;
 
     fn run(args: &[&str], env: Option<&str>) -> Result<Invocation, String> {
-        parse(
-            args.iter().map(|arg| (*arg).to_string()),
-            env.map(str::to_string),
-        )
+        parse(args.iter().map(|arg| (*arg).to_string()), env)
     }
 
     fn serve(args: &[&str], env: Option<&str>) -> Options {
@@ -277,7 +278,14 @@ mod tests {
             serve(&[], Some("Vesper")).going,
             ["KAZOO_SEAT is going: unset it, and the seat joins with wall_join"]
         );
-        assert_eq!(serve(&["--seat", "Tom"], Some("Vesper")).going.len(), 2);
+        assert_eq!(
+            serve(&["--seat", "Tom"], Some("Tom")).going,
+            [
+                "KAZOO_SEAT is going: unset it, and the seat joins with wall_join",
+                "--seat is going: leave it out, and the seat joins with wall_join",
+            ],
+            "each source used says so, even naming the same seat"
+        );
         assert_eq!(
             serve(&["--socket", "/tmp/w.sock"], None).going,
             ["--socket is going: leave it out, and wall_walls finds this Mac's wall"]

@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{Seat, bad, ok};
-use crate::walls::Joining;
+use crate::walls::{Asked, Joining, Left};
 
 /// `wall_walls`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -71,7 +71,11 @@ impl Seat {
         description = "Go on a wall as a name of your choosing (as: 1 to 24 of A-Z a-z 0-9 space _ . -, not one someone on it has, nor desk or kazoo-wall), so the tools play it and its news comes to you. wall is its name from wall_walls, needed only when there is more than one. Answers who else is on it. A wall that is not playing yet can be joined: it is reached as it starts. Joining a wall this seat is on already is refused; wall_leave first to come back as another name."
     )]
     async fn wall_join(&self, Parameters(args): Parameters<JoinArgs>) -> CallToolResult {
-        match self.walls.join(args.wall.as_deref(), &args.name).await {
+        match self
+            .walls
+            .join(args.wall.as_deref(), &args.name, Asked::ByTool)
+            .await
+        {
             Ok(Joining::Playing {
                 wall,
                 seats,
@@ -107,7 +111,18 @@ impl Seat {
     )]
     async fn wall_leave(&self, Parameters(args): Parameters<LeaveArgs>) -> CallToolResult {
         match self.walls.leave(args.wall.as_deref()).await {
-            Ok((wall, seat)) => ok(format!("Off {wall}, where this seat was {seat}.")),
+            Ok(Left {
+                wall,
+                seat,
+                gone: true,
+            }) => ok(format!("Off {wall}, where this seat was {seat}.")),
+            Ok(Left {
+                wall,
+                seat,
+                gone: false,
+            }) => ok(format!(
+                "Off {wall}, where this seat was {seat}; the wall still lists {seat}, so another connection is on it as that name."
+            )),
             Err(why) => bad(why),
         }
     }

@@ -11,7 +11,7 @@ use rmcp::ServiceExt as _;
 use rmcp::transport::TokioChildProcess;
 use tokio::sync::mpsc;
 
-use super::{Client, Ears, call, dirs, start, stop, works};
+use super::{Client, Ears, call, dirs, seat, start, stop, works};
 
 /// How long a watcher waits for news before the test fails.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -167,9 +167,13 @@ async fn the_bare_seat_finds_joins_plays_and_leaves() {
     assert!(failed);
     assert_eq!(why, JOIN_FIRST);
 
-    // And back on as another name.
-    works(&client, "wall_join", serde_json::json!({"as": "Nova Two"})).await;
-    assert_eq!(next_seat(&mut watcher), ("Nova Two".to_string(), true));
+    // And straight back on as the same name: the wall no longer lists it.
+    let joined = works(&client, "wall_join", serde_json::json!({"as": "Nova"})).await;
+    assert!(
+        joined.starts_with("On here as Nova, with Watch"),
+        "{joined}"
+    );
+    assert_eq!(next_seat(&mut watcher), ("Nova".to_string(), true));
     client.cancel().await.unwrap();
     stop(daemon);
 }
@@ -229,4 +233,17 @@ async fn every_tool_takes_a_wall() {
         );
     }
     client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_old_seat_config_still_plays_under_a_name_already_on_the_wall() {
+    let (runtime, state) = dirs();
+    let daemon = start(runtime.path(), state.path());
+    let (_watcher, _) = watching(daemon.socket());
+    // `--seat Watch`, as two sessions sharing one config would run it.
+    let (client, _notifications) = seat(daemon.socket(), "Watch", 1, None).await;
+    let look = works(&client, "wall_look", serde_json::json!({})).await;
+    assert!(look.starts_with("The wall at revision "), "{look}");
+    client.cancel().await.unwrap();
+    stop(daemon);
 }

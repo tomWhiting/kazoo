@@ -189,7 +189,8 @@ pub struct ServeArgs {
 pub struct McpArgs {
     /// Going: join this Mac's wall as this name at start. Leave it out: the
     /// seat joins a wall by name with `wall_join`.
-    #[arg(long, env = "KAZOO_SEAT", value_parser = seat_name)]
+    /// (`KAZOO_SEAT`, also going, is read by the seat itself, so each says it is going.)
+    #[arg(long, value_parser = seat_name)]
     pub seat: Option<String>,
     /// News of other seats' changes comes at most once per this many seconds.
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u64).range(1..=3_600))]

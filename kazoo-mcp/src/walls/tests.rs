@@ -28,8 +28,8 @@ fn joined(socket: &Path, seat: &str) -> Joined {
         seat: seat.to_string(),
         wall: Arc::new(Wall::new(socket.to_path_buf(), seat.to_string())),
         feed,
-        follower: tokio::spawn(async {}),
-        notifier: tokio::spawn(async {}),
+        follower: None,
+        notifier: None,
     }
 }
 
@@ -69,25 +69,28 @@ async fn a_join_is_checked_kept_and_left() {
     let (_dir, walls, _session) = nowhere();
     assert!(
         walls
-            .join(None, "no/slash")
+            .join(None, "no/slash", Asked::ByTool)
             .await
             .unwrap_err()
             .contains("is not a name the wall takes")
     );
     assert_eq!(
-        walls.join(Some("elsewhere"), "Nova").await.unwrap_err(),
+        walls
+            .join(Some("elsewhere"), "Nova", Asked::ByTool)
+            .await
+            .unwrap_err(),
         "there is no wall 'elsewhere' to join; wall_walls lists them (here)"
     );
     for kept in ["desk", "Kazoo-Wall"] {
         assert_eq!(
-            walls.join(None, kept).await.unwrap_err(),
+            walls.join(None, kept, Asked::ByTool).await.unwrap_err(),
             format!("'{kept}' is kept for the wall's own use: choose another name")
         );
     }
     // A wall not yet playing can be joined: its link waits for it.
     let _heard = walls.join_heard(None, "Nova").await.unwrap();
     assert_eq!(
-        walls.join(None, "Other").await.unwrap_err(),
+        walls.join(None, "Other", Asked::ByTool).await.unwrap_err(),
         "this seat is on here already, as Nova: wall_leave it first to come back as another name"
     );
     assert_eq!(walls.found().await[0].joined_as.as_deref(), Some("Nova"));
@@ -99,7 +102,12 @@ async fn a_join_is_checked_kept_and_left() {
     );
     assert_eq!(
         walls.leave(None).await.unwrap(),
-        (HERE.to_string(), "Nova".to_string())
+        Left {
+            wall: HERE.to_string(),
+            seat: "Nova".to_string(),
+            gone: true,
+        },
+        "a wall not playing lists nobody"
     );
     assert!(walls.on(None).await.is_err());
     // Back on, as another name.
@@ -140,15 +148,15 @@ async fn a_seat_tells_its_notifier_of_its_own_changes() {
 async fn leaving_stops_the_wall_s_event_line_and_notifier() {
     let (_dir, walls, _session) = nowhere();
     assert_eq!(
-        walls.join(None, "Nova").await.unwrap(),
+        walls.join(None, "Nova", Asked::ByTool).await.unwrap(),
         Joining::Waiting {
             wall: HERE.to_string(),
             socket: walls.socket.clone(),
         }
     );
     let joined = walls.joined.lock().await;
-    let follower = joined[HERE].follower.abort_handle();
-    let notifier = joined[HERE].notifier.abort_handle();
+    let follower = joined[HERE].follower.as_ref().unwrap().abort_handle();
+    let notifier = joined[HERE].notifier.as_ref().unwrap().abort_handle();
     let link = Arc::clone(&joined[HERE].wall);
     drop(joined);
     assert!(!follower.is_finished());
@@ -157,13 +165,21 @@ async fn leaving_stops_the_wall_s_event_line_and_notifier() {
         "the notifier waits on the live session"
     );
     walls.leave(None).await.unwrap();
+    // The leave waited for them: both have stopped by the time it answers.
+    assert!(follower.is_finished(), "the event line stopped");
+    assert!(notifier.is_finished(), "the notifier stopped");
     assert!(link.is_closed());
     assert_eq!(link.hello().await.unwrap_err(), LinkError::Left);
-    for _ in 0..100 {
-        if follower.is_finished() && notifier.is_finished() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("the event line or the notifier kept going after the seat left");
+}
+
+#[tokio::test]
+async fn the_seat_s_own_join_at_start_takes_its_name_as_it_always_did() {
+    let (_dir, walls, _session) = nowhere();
+    // Reserved names and bad names are refused either way; a wall not
+    // playing is joined as one not yet playing.
+    assert!(walls.join(None, "desk", Asked::AtStart).await.is_err());
+    assert!(matches!(
+        walls.join(None, "Cally", Asked::AtStart).await,
+        Ok(Joining::Waiting { .. })
+    ));
 }

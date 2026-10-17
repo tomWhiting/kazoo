@@ -5,6 +5,11 @@
 //! event line ([`link::follow`]) and its notifier ([`channel::notify`]).
 //! `wall_leave` stops them. Every other tool asks the wall it names, or the
 //! only one joined.
+//!
+//! Known limits: the name is checked against the seats on the wall by a
+//! look just before the hello, so another seat can take it in between; and
+//! a join to a wall not yet playing cannot check the name until the wall
+//! starts.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -40,20 +45,76 @@ pub struct Found {
     pub joined_as: Option<String>,
 }
 
+/// How long a leave waits to see the wall no longer list the seat.
+const GONE_WITHIN: Duration = Duration::from_secs(2);
+
+/// How often a leave looks meanwhile.
+const LOOK_EVERY: Duration = Duration::from_millis(50);
+
 /// A wall joined: its link, and the event line and notifier running for it.
 struct Joined {
     seat: String,
     wall: Arc<Wall>,
     feed: mpsc::UnboundedSender<Feed>,
-    follower: JoinHandle<()>,
-    notifier: JoinHandle<()>,
+    follower: Option<JoinHandle<()>>,
+    notifier: Option<JoinHandle<()>>,
+}
+
+impl Joined {
+    /// Stop the event line and the notifier and wait until they have, so
+    /// their connection is closed, then close the tools' connections.
+    async fn stop(mut self) {
+        for task in [self.follower.take(), self.notifier.take()]
+            .into_iter()
+            .flatten()
+        {
+            task.abort();
+            // An aborted task ends cancelled, and holds nothing now; one
+            // that ended otherwise is said.
+            if let Err(err) = task.await
+                && !err.is_cancelled()
+            {
+                eprintln!("kazoo-mcp: a task for the wall ended badly: {err}");
+            }
+        }
+        self.wall.close().await;
+    }
 }
 
 impl Drop for Joined {
     fn drop(&mut self) {
-        self.follower.abort();
-        self.notifier.abort();
+        for task in [self.follower.take(), self.notifier.take()]
+            .into_iter()
+            .flatten()
+        {
+            task.abort();
+        }
     }
+}
+
+/// How a join was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    /// By `wall_join`: a name someone on the wall has is refused, and a
+    /// wall that cannot be looked at refuses the join.
+    ByTool,
+    /// By the going `--seat` at start, which must keep playing as it did:
+    /// the name is the seat's own, as ever, and a wall that cannot be
+    /// looked at is joined as one not yet playing.
+    AtStart,
+}
+
+/// What a leave found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Left {
+    /// The wall's name.
+    pub wall: String,
+    /// The name this seat was on it as.
+    pub seat: String,
+    /// Whether the wall stopped listing the name within [`GONE_WITHIN`]
+    /// (or is not playing): when it did not, another connection is on it
+    /// as that name.
+    pub gone: bool,
 }
 
 /// One joined wall, for one tool call: its link, and the line on which the
@@ -83,6 +144,8 @@ pub struct Walls {
     notify_every: Duration,
     peer: watch::Receiver<Option<Peer<RoleServer>>>,
     joined: Mutex<BTreeMap<String, Joined>>,
+    /// Held for the whole of a join or a leave, so two never cross.
+    joining: Mutex<()>,
 }
 
 impl std::fmt::Debug for Walls {
@@ -108,6 +171,7 @@ impl Walls {
             notify_every,
             peer,
             joined: Mutex::new(BTreeMap::new()),
+            joining: Mutex::new(()),
         }
     }
 
@@ -157,8 +221,13 @@ impl Walls {
     ///
     /// A sentence: a name the wall would refuse or someone on it has, a
     /// wall this seat cannot reach, or one it has joined already.
-    pub async fn join(&self, wall: Option<&str>, seat: &str) -> Result<Joining, String> {
-        self.join_with(wall, seat, true)
+    pub async fn join(
+        &self,
+        wall: Option<&str>,
+        seat: &str,
+        asked: Asked,
+    ) -> Result<Joining, String> {
+        self.join_with(wall, seat, asked, true)
             .await
             .map(|(joining, _)| joining)
     }
@@ -171,7 +240,7 @@ impl Walls {
         wall: Option<&str>,
         seat: &str,
     ) -> Result<mpsc::UnboundedReceiver<Feed>, String> {
-        let (_, heard) = self.join_with(wall, seat, false).await?;
+        let (_, heard) = self.join_with(wall, seat, Asked::ByTool, false).await?;
         heard.ok_or_else(|| "the join kept its feed".to_string())
     }
 
@@ -181,6 +250,7 @@ impl Walls {
         &self,
         wall: Option<&str>,
         seat: &str,
+        asked: Asked,
         follow: bool,
     ) -> Result<(Joining, Option<mpsc::UnboundedReceiver<Feed>>), String> {
         if !valid_name(seat) {
@@ -195,15 +265,18 @@ impl Walls {
             ));
         }
         let name = Self::reachable(wall)?;
+        // One join or leave at a time; the tools, which take only `joined`,
+        // play on meanwhile.
+        let turn = self.joining.lock().await;
         self.not_on(name).await?;
-        // The wall is asked with the lock let go, so the other tools play on.
         let link = Arc::new(Wall::new(self.socket.clone(), seat.to_string()));
-        let joining = match link::peek(&self.socket).await {
-            Ok(hello) => {
-                if let Some(taken) = hello
-                    .seats
-                    .iter()
-                    .find(|other| other.eq_ignore_ascii_case(seat))
+        let joining = match (link::peek(&self.socket).await, asked) {
+            (Ok(hello), _) => {
+                if asked == Asked::ByTool
+                    && let Some(taken) = hello
+                        .seats
+                        .iter()
+                        .find(|other| other.eq_ignore_ascii_case(seat))
                 {
                     return Err(format!(
                         "someone is on {name} as {taken} already: choose another name"
@@ -219,17 +292,16 @@ impl Walls {
                     Err(err) => return Err(err.to_string()),
                 }
             }
-            Err(LinkError::NotRunning) => self.waiting(name),
-            Err(err) => return Err(err.to_string()),
+            (Err(LinkError::NotRunning), _) => self.waiting(name),
+            (Err(err), Asked::AtStart) => {
+                eprintln!(
+                    "kazoo-mcp: {name} could not be looked at ({err}); joining it as one not yet playing"
+                );
+                self.waiting(name)
+            }
+            (Err(err), Asked::ByTool) => return Err(err.to_string()),
         };
         let mut joined = self.joined.lock().await;
-        // Joined meanwhile, by a call alongside this one.
-        if let Some(there) = joined.get(name) {
-            let refused = already(name, &there.seat);
-            drop(joined);
-            link.close().await;
-            return Err(refused);
-        }
         let (feed, heard) = mpsc::unbounded_channel();
         let (follower, notifier, heard) = if follow {
             let follower = tokio::spawn(link::follow(
@@ -243,9 +315,9 @@ impl Walls {
                 heard,
                 self.peer.clone(),
             ));
-            (follower, notifier, None)
+            (Some(follower), Some(notifier), None)
         } else {
-            (tokio::spawn(async {}), tokio::spawn(async {}), Some(heard))
+            (None, None, Some(heard))
         };
         joined.insert(
             name.to_string(),
@@ -258,6 +330,7 @@ impl Walls {
             },
         );
         drop(joined);
+        drop(turn);
         Ok((joining, heard))
     }
 
@@ -284,25 +357,55 @@ impl Walls {
     /// # Errors
     ///
     /// A sentence: no wall joined, or not this one.
-    pub async fn leave(&self, wall: Option<&str>) -> Result<(String, String), String> {
+    pub async fn leave(&self, wall: Option<&str>) -> Result<Left, String> {
+        let turn = self.joining.lock().await;
         let mut joined = self.joined.lock().await;
         let name = Self::pick(&joined, wall)?;
         let left = joined
             .remove(&name)
             .ok_or_else(|| format!("this seat is not on {name}"))?;
         drop(joined);
-        // Its tasks stop as it drops; its connections close here, so the
-        // wall has seen the seat go by the time this answers.
-        left.wall.close().await;
-        Ok((name, left.seat.clone()))
+        let seat = left.seat.clone();
+        // Every connection under the name closed, then the wall looked at
+        // until it lists the name no more.
+        left.stop().await;
+        let gone = self.gone(&seat).await;
+        drop(turn);
+        Ok(Left {
+            wall: name,
+            seat,
+            gone,
+        })
+    }
+
+    /// Whether the wall stops listing `seat` within [`GONE_WITHIN`], or
+    /// is not playing.
+    async fn gone(&self, seat: &str) -> bool {
+        let deadline = tokio::time::Instant::now() + GONE_WITHIN;
+        loop {
+            match link::peek(&self.socket).await {
+                Ok(hello) if hello.seats.iter().any(|other| other == seat) => {}
+                Ok(_) | Err(LinkError::NotRunning) => return true,
+                Err(err) => {
+                    eprintln!("kazoo-mcp: the wall could not be looked at after a leave: {err}");
+                    return false;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(LOOK_EVERY).await;
+        }
     }
 
     /// Leave every wall, as the seat stops.
     pub async fn leave_all(&self) {
+        let turn = self.joining.lock().await;
         let left = std::mem::take(&mut *self.joined.lock().await);
-        for joined in left.values() {
-            joined.wall.close().await;
+        for joined in left.into_values() {
+            joined.stop().await;
         }
+        drop(turn);
     }
 
     /// The joined wall a tool asks: `wall`, or the only one joined.
