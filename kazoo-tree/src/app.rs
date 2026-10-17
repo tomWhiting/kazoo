@@ -524,6 +524,11 @@ impl App {
 
     /// A key.
     pub fn key(&mut self, key: KeyEvent) {
+        // Ctrl-C quits whatever card is open.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.quit = true;
+            return;
+        }
         if let Some(notes) = &mut self.notes {
             if notes.key(key.code) == Keyed::Closed {
                 self.notes = None;
@@ -554,7 +559,6 @@ impl App {
             KeyCode::Right if !shift => self.step_into_branch(),
             KeyCode::Left if !shift => self.step_out_of_branch(),
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
             KeyCode::Char('?') => {
                 self.help = true;
                 self.help_top = 0;
@@ -771,7 +775,6 @@ impl App {
         }
     }
 
-    /// Put the selected moment's whole commit on the terminal's clipboard.
     /// Open the selected batch's notes on their card, or say why not.
     fn open_notes(&mut self) {
         let Some(m) = self.selected else {
@@ -784,6 +787,7 @@ impl App {
         }
     }
 
+    /// Put the selected moment's whole commit on the terminal's clipboard.
     fn copy_selected(&mut self) {
         match self.selected {
             Some(m) => {

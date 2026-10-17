@@ -289,6 +289,25 @@ pub(crate) fn file_at(dir: &Path, commit: &str, path: &str) -> Result<Vec<u8>, H
     answer_bytes(&command, output, None)
 }
 
+/// The size in bytes of `path` in `commit`, asked of git without reading
+/// it.
+///
+/// # Errors
+///
+/// [`HistoryError::Git`] when git cannot run or the commit has no such
+/// file, and [`HistoryError::Broken`] when git's answer is not a size.
+pub(crate) fn file_size(dir: &Path, commit: &str, path: &str) -> Result<u64, HistoryError> {
+    let mut command = git(dir, "cat-file");
+    command.arg("-s").arg(format!("{commit}:{path}"));
+    let answer = run(&mut command)?;
+    answer.trim().parse::<u64>().map_err(|err| {
+        HistoryError::Broken(format!(
+            "git gave the size of {path} as {}: {err}",
+            clean(answer.trim())
+        ))
+    })
+}
+
 /// Run `command` with `input` on its standard input. The input is written
 /// from its own thread, so a long list of tips can never wait on git
 /// while git waits on its answer being read.
@@ -957,6 +976,10 @@ fn note_of(value: &str) -> Result<Note, String> {
         .strip_suffix(')')
         .and_then(|value| value.rsplit_once(" ("))
         .ok_or_else(wrong)?;
+    // Digits only, as the wall writes it: never `+5`.
+    if bytes.is_empty() || !bytes.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(wrong());
+    }
     let bytes = bytes.parse::<u64>().map_err(|_| wrong())?;
     let named = (1..=64).contains(&name.len())
         && !name.starts_with('.')
