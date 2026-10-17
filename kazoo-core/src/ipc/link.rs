@@ -126,11 +126,14 @@ pub const PACE_STALE: Duration = Duration::from_millis(250);
 /// Where the link looks for the hub.
 #[derive(Debug, Clone)]
 pub enum HubAddress {
-    /// The hub kazoo-mix advertises through its PID file.
+    /// The desk named by `KAZOO_DESK` (parsed as [`HubAddress::parse`]
+    /// reads it; one that does not parse is refused, never replaced), or,
+    /// when that is unset, the hub kazoo-mix advertises through its PID file.
     Discover,
     /// A specific socket.
     Socket(PathBuf),
-    /// A desk reached by host and port.
+    /// A desk reached over TCP, as `host:port`: a name, IPv4, or IPv6 in
+    /// brackets.
     Tcp(String),
 }
 
