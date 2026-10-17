@@ -448,3 +448,29 @@ fn tree_prints_at_a_size_or_walks() {
         })
     );
 }
+
+#[test]
+fn mix_listen_is_shown_in_help_and_reaches_the_desk() {
+    let error = Cli::try_parse_from(["kzoo", "mix", "--help"]).unwrap_err();
+    assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+    assert!(error.to_string().contains("--listen <LISTEN>"), "{error}");
+    for address in ["0.0.0.0:7700", "[::]:7700"] {
+        let Command::Mix(args) = Cli::try_parse_from(["kzoo", "mix", "--listen", address])
+            .unwrap()
+            .command
+        else {
+            panic!("not the desk");
+        };
+        let desk: kazoo_mix::Args = args.into();
+        assert_eq!(desk.listen, Some(address.parse().unwrap()));
+        assert!(!desk.demo);
+    }
+    let Command::Mix(args) = Cli::try_parse_from(["kzoo", "mix"]).unwrap().command else {
+        panic!("not the desk");
+    };
+    assert_eq!(kazoo_mix::Args::from(args).listen, None);
+    for bad in ["old.local:7700", "7700", "0.0.0.0"] {
+        let error = Cli::try_parse_from(["kzoo", "mix", "--listen", bad]).unwrap_err();
+        assert!(error.to_string().contains("--listen"), "{error}");
+    }
+}

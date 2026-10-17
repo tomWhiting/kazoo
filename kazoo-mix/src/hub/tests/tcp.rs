@@ -559,3 +559,61 @@ fn a_unix_socket_that_cannot_be_claimed_is_named_and_nothing_listens() {
     std::net::TcpListener::bind(port).unwrap();
     drop(callback);
 }
+
+#[test]
+fn an_ipv6_listen_address_takes_a_registration() {
+    let mut rig = Rig::with_network(
+        [false; DESK_CHANNELS],
+        SharedState::new(),
+        Some("[::1]:0".parse().unwrap()),
+        RATE,
+    );
+    let address = rig.hub.listen_addr().unwrap();
+    assert!(address.is_ipv6() && address.ip().is_loopback(), "{address}");
+    assert_ne!(address.port(), 0);
+    let mut peer = Peer::connect(address);
+    assert_eq!(peer.registered.strip_index, 0);
+    assert!(matches!(rig.notice(), HubNotice::Joined { slot: 0, .. }));
+    assert_eq!(network_lead(&mut rig), NETWORK_LEAD_START);
+    rig.until("the TCP strip", |rig| {
+        rig.shared.channel_readout(0).connected
+    });
+    peer.audio(0, 256, &[0.25; 512]);
+    counted(&rig, 1);
+}
+
+#[test]
+fn a_storm_of_silent_connections_is_bounded_and_instruments_still_plug_in() {
+    let mut rig = rig();
+    let address = rig.hub.listen_addr().unwrap();
+    // Twice the desk's strips connect and never register.
+    let silent: Vec<TcpStream> = (0..2 * DESK_CHANNELS)
+        .map(|_| TcpStream::connect(address).unwrap())
+        .collect();
+    // The next is told why it cannot wait, in the protocol's own bytes,
+    // and let go.
+    let mut late = TcpStream::connect(address).unwrap();
+    late.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let mut frame = FrameBuffer::new();
+    let header = frame.read_frame(&mut late).unwrap();
+    assert_eq!(header.msg_type, MSG_REFUSED);
+    let reason = std::str::from_utf8(&frame.payload()[..header.payload_len as usize]).unwrap();
+    assert!(reason.contains("waiting to register"), "{reason}");
+    let mut rest = Vec::new();
+    assert_eq!(std::io::Read::read_to_end(&mut late, &mut rest).unwrap(), 0);
+    match rig.notice() {
+        HubNotice::Refused {
+            name, told: true, ..
+        } => {
+            assert_eq!(name, late.local_addr().unwrap().to_string());
+        }
+        other => panic!("expected the refusal, got {other:?}"),
+    }
+    // An instrument on the desk's own socket still plugs in and plays.
+    let mut client = rig.connect("kazoo-local", RATE).unwrap();
+    assert!(matches!(rig.notice(), HubNotice::Joined { slot: 0, .. }));
+    rig.until("the strip", |rig| rig.shared.channel_readout(0).connected);
+    client.send_audio(0, 256, &[0.0; 512]).unwrap();
+    counted(&rig, 1);
+    drop(silent);
+}
