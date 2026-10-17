@@ -44,6 +44,7 @@ pub mod follow;
 pub mod link;
 pub mod outbox;
 pub mod protocol;
+pub mod stream;
 pub mod types;
 pub mod voice;
 

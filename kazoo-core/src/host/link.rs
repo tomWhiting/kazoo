@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crate::ipc::client::HubIpcClient;
-use crate::ipc::discovery;
-use crate::ipc::link::{HubAddress, HubLink, HubLinkAudio, LinkConfig, start_link};
+use crate::ipc::link::{HubLink, HubLinkAudio, LinkConfig, start_link};
 use ringbuf::traits::Consumer;
+
+mod registration;
 
 pub use crate::ipc::client::HubMessage as HubEvent;
 pub use crate::ipc::link::VoiceRx;
@@ -150,12 +150,7 @@ fn connect_with(config: LinkConfig, mut sleep: impl FnMut(Duration)) -> Result<L
     validate(&config)?;
     let register = config.register()?;
     for attempt in 0..3 {
-        let socket = match &config.address {
-            HubAddress::Discover => discovery::hub_socket(),
-            HubAddress::Socket(path) => Ok(path.clone()),
-        };
-        let result = socket
-            .and_then(|path| HubIpcClient::register_with_timeout(&path, &register, RETRY_DELAY));
+        let result = registration::connect(&config.address, &register, RETRY_DELAY);
         match result {
             Ok(client) => {
                 let (control, audio) = start_link(config, Some(client), true)?;

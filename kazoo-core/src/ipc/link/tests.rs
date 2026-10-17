@@ -1,5 +1,6 @@
 mod shutdown;
 mod streams;
+mod tcp;
 mod transport;
 mod voice;
 mod wake;

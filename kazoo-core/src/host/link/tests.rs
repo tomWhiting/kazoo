@@ -1,4 +1,5 @@
 use super::*;
+use crate::ipc::link::HubAddress;
 use crate::ipc::protocol::FrameBuffer;
 use crate::ipc::types::{MSG_REFUSED, MSG_REGISTER, MSG_REGISTERED, MSG_SHUTDOWN, RegisteredMsg};
 use ringbuf::traits::{Producer, Split};

@@ -1,6 +1,6 @@
 //! IPC client: instrument-side connection to the hub.
 //!
-//! [`HubIpcClient`] manages a single Unix domain socket connection to the
+//! [`HubIpcClient`] manages a single Unix or TCP connection to the
 //! hub (kazoo-mix). It handles registration, sending audio and control
 //! messages, and receiving transport, note and shutdown messages.
 //!
@@ -10,11 +10,12 @@
 //! [`super::link`] provides the callback-safe side.
 
 use std::io::{self, Write};
-use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
+use super::link::HubAddress;
 use super::outbox::{Outbox, OutboxError};
 use super::protocol::{self, FrameBuffer};
+use super::stream::HubStream;
 use super::types::{
     self, DeskHealthMsg, DeskPaceMsg, MSG_AUDIO, MSG_DESK_HEALTH, MSG_DESK_PACE, MSG_NOTE_EVENT,
     MSG_PARAMETER_CHANGE, MSG_REFUSED, MSG_REGISTER, MSG_REGISTERED, MSG_SHUTDOWN,
@@ -66,9 +67,9 @@ pub enum HubRead<'a> {
 
 /// Client connection from an instrument to the hub.
 ///
-/// Owns a Unix domain socket, a receive buffer and an [`Outbox`] for sends.
+/// Owns a desk stream, a receive buffer and an [`Outbox`] for sends.
 pub struct HubIpcClient {
-    stream: UnixStream,
+    stream: HubStream,
     write_buf: FrameBuffer,
     read_buf: FrameBuffer,
     outbox: Outbox,
@@ -109,9 +110,8 @@ impl HubIpcClient {
     /// Connect to the hub, perform the registration handshake, and return
     /// a ready-to-use client.
     ///
-    /// Finds the hub's socket via [`super::discovery::hub_socket`]. If no
-    /// hub is running there, the connection is refused and an error
-    /// returned.
+    /// Uses [`HubAddress::Discover`]: `KAZOO_DESK` selects a TCP address or
+    /// socket path before local discovery. An invalid override is refused.
     ///
     /// # Arguments
     ///
@@ -125,8 +125,8 @@ impl HubIpcClient {
         sample_rate: u32,
         buffer_size: u32,
     ) -> io::Result<Self> {
-        let socket_path = super::discovery::hub_socket()?;
-        Self::connect_to(&socket_path, name, channel_count, sample_rate, buffer_size)
+        let reg = RegisterMsg::new(name, channel_count, sample_rate, buffer_size);
+        Self::register_with_timeout(&HubAddress::Discover, &reg, REGISTRATION_TIMEOUT)
     }
 
     /// Connect to the hub at the given socket path.
@@ -148,11 +148,15 @@ impl HubIpcClient {
     /// registration: how an instrument that renders on a timer asks the
     /// desk to pace it (see [`RegisterMsg::pace_lead_frames`]).
     pub fn register_at(socket_path: &std::path::Path, reg: &RegisterMsg) -> io::Result<Self> {
-        Self::register_with_timeout(socket_path, reg, REGISTRATION_TIMEOUT)
+        Self::register_with_timeout(
+            &HubAddress::Socket(socket_path.to_path_buf()),
+            reg,
+            REGISTRATION_TIMEOUT,
+        )
     }
 
     pub(crate) fn register_with_timeout(
-        socket_path: &std::path::Path,
+        address: &HubAddress,
         reg: &RegisterMsg,
         timeout: Duration,
     ) -> io::Result<Self> {
@@ -160,7 +164,7 @@ impl HubIpcClient {
             reg.check_streams()
                 .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
         }
-        let stream = UnixStream::connect(socket_path)?;
+        let mut stream = HubStream::connect(address, timeout)?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
 
@@ -173,11 +177,11 @@ impl HubIpcClient {
         // Send Register message.
         let mut write_buf = FrameBuffer::new();
         let len = reg.encode(write_buf.payload_mut());
-        write_buf.write_frame(MSG_REGISTER, 0, len, &mut &stream)?;
+        write_buf.write_frame(MSG_REGISTER, 0, len, &mut stream)?;
 
         // Read Registered response.
         let mut read_buf = FrameBuffer::new();
-        let header = read_buf.read_frame(&mut &stream)?;
+        let header = read_buf.read_frame(&mut stream)?;
         let len = header.payload_len as usize;
         if header.msg_type == MSG_REFUSED {
             let reason = String::from_utf8_lossy(&read_buf.payload()[..len]).into_owned();
@@ -582,6 +586,7 @@ impl HubIpcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixStream;
 
     #[test]
     fn connect_to_nonexistent_socket_fails() {

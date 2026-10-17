@@ -8,9 +8,18 @@ use kazoo_wall::daemon::{AudioMode, DaemonConfig, DeskMode, ServeCommand};
 #[derive(Debug, Parser)]
 #[command(name = "kazoo", version, about, long_about = None, propagate_version = true)]
 pub struct Cli {
+    /// Desk host:port, or a socket path containing /.
+    #[arg(long, global = true, value_name = "ADDRESS", value_parser = desk_address)]
+    pub desk: Option<String>,
     /// The studio command to run.
     #[command(subcommand)]
     pub command: Command,
+}
+
+fn desk_address(text: &str) -> Result<String, String> {
+    kazoo_core::ipc::link::HubAddress::parse(text)
+        .map(|_| text.to_owned())
+        .map_err(|error| error.to_string())
 }
 
 /// The desk, wall, seat and instruments available in the studio.

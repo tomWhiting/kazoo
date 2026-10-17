@@ -45,7 +45,6 @@ use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 
 use super::client::{HubIpcClient, HubMessage};
-use super::discovery;
 use super::outbox::OutboxError;
 use super::protocol::{AUDIO_PAYLOAD_HEADER, FrameHeader, HEADER_SIZE, encode_header};
 use super::types::{
@@ -60,6 +59,7 @@ use super::types::{
 use crate::realtime::{NotRealTime, RealTime};
 use crate::sanitize_sample;
 
+mod address;
 mod audio;
 mod voice;
 pub use voice::{VOICE_RING, VoiceLinkStats, VoiceRx};
@@ -130,6 +130,8 @@ pub enum HubAddress {
     Discover,
     /// A specific socket.
     Socket(PathBuf),
+    /// A desk reached by host and port.
+    Tcp(String),
 }
 
 /// How the instrument describes itself to the hub.
@@ -439,7 +441,7 @@ pub struct LinkStatus {
 }
 
 /// How `last_refusal` begins when the desk itself refused the instrument:
-/// this, the instrument's name, `": "`, then the desk's reason.
+/// this, the instrument's name and optional address, `": "`, then the desk's reason.
 pub(crate) const DESK_REFUSED: &str = "the desk refused ";
 
 impl LinkStatus {

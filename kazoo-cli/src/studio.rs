@@ -42,6 +42,7 @@ use serde::Deserialize;
 
 use crate::cli::{Cli, Command, StudioCommand};
 
+mod desk;
 mod tmux;
 
 /// The desk and instruments named in a studio session file.
@@ -165,13 +166,12 @@ pub fn commands(
             runtime.display()
         ));
     }
-    let environment = shell_command([format!(
-        "XDG_RUNTIME_DIR={}",
+    let environment = desk::pane_environment(
         runtime
             .to_str()
-            .ok_or_else(|| eyre!("XDG_RUNTIME_DIR is not valid UTF-8"))?
-    )
-    .as_str()])?;
+            .ok_or_else(|| eyre!("XDG_RUNTIME_DIR is not valid UTF-8"))?,
+        std::env::var_os("KAZOO_DESK").as_deref(),
+    )?;
     let pane = |child: &str| format!("exec /usr/bin/env {environment} {child}");
     let session = format!("kazoo-{name}");
     // `=` asks tmux for an exact session name, never a prefix. In a pane or
