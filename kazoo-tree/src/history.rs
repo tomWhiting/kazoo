@@ -116,6 +116,19 @@ pub struct Batch {
     /// (`Kazoo-Step-Comment: k: …`), on the batch's own moment: a part
     /// carries its own as the moment's comment.
     pub comments: Vec<(usize, String)>,
+    /// The notes sent with it (`Kazoo-Attachment: name (bytes)`, KZ-T13),
+    /// on the batch's own moment: their texts are in its commit at
+    /// `notes/<seq>/<name>`, read when asked for ([`crate::notes`]).
+    pub notes: Vec<Note>,
+}
+
+/// One note sent with a batch: its name and its size in bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    /// Its name, such as `description.md` or `proof.md`.
+    pub name: String,
+    /// Its size in bytes, as the wall wrote it.
+    pub bytes: u64,
 }
 
 impl Batch {
@@ -190,7 +203,7 @@ const BODY_END: char = '\u{1f}';
 /// only the wall's own trailers (never the whole message: a `Kazoo-Change`
 /// trailer holds a page of JSON, and a million of them would be most of
 /// the read).
-const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,key=Kazoo-Note,key=Kazoo-Step,key=Kazoo-Part,key=Kazoo-Comment,key=Kazoo-Step-Comment,unfold)%x1f";
+const LOG_FORMAT: &str = "--format=%x1e%H%x00%P%x00%ct%x00%an%x00%s%x00%(trailers:key=Kazoo-Kind,key=Kazoo-Seq,key=Kazoo-Beat,key=Kazoo-Tempo,key=Kazoo-Sound,key=Kazoo-Note,key=Kazoo-Step,key=Kazoo-Part,key=Kazoo-Comment,key=Kazoo-Step-Comment,key=Kazoo-Attachment,unfold)%x1f";
 
 /// Git as the tree reads it: the wall's own way to run git, with the
 /// person's own settings that would change what `log` says held fixed.
@@ -259,6 +272,40 @@ fn answer_bytes(
         )));
     }
     Ok(output.stdout)
+}
+
+/// The bytes of `path` in `commit`, read with the tree's own git.
+///
+/// # Errors
+///
+/// [`HistoryError::Git`] when git cannot run or the commit has no such
+/// file.
+pub(crate) fn file_at(dir: &Path, commit: &str, path: &str) -> Result<Vec<u8>, HistoryError> {
+    let mut command = git(dir, "cat-file");
+    command.arg("blob").arg(format!("{commit}:{path}"));
+    let output = command
+        .output()
+        .map_err(|err| HistoryError::Git(format!("git could not run: {err}")))?;
+    answer_bytes(&command, output, None)
+}
+
+/// The size in bytes of `path` in `commit`, asked of git without reading
+/// it.
+///
+/// # Errors
+///
+/// [`HistoryError::Git`] when git cannot run or the commit has no such
+/// file, and [`HistoryError::Broken`] when git's answer is not a size.
+pub(crate) fn file_size(dir: &Path, commit: &str, path: &str) -> Result<u64, HistoryError> {
+    let mut command = git(dir, "cat-file");
+    command.arg("-s").arg(format!("{commit}:{path}"));
+    let answer = run(&mut command)?;
+    answer.trim().parse::<u64>().map_err(|err| {
+        HistoryError::Broken(format!(
+            "git gave the size of {path} as {}: {err}",
+            clean(answer.trim())
+        ))
+    })
 }
 
 /// Run `command` with `input` on its standard input. The input is written
@@ -740,7 +787,7 @@ const fn is_format(c: char) -> bool {
 
 /// The trailers the tree reads from a moment's commit; the wall writes
 /// others (`Kazoo-Gap`, `Kazoo-Clock` and the like) that it has no use for.
-const TRAILERS: [&str; 10] = [
+const TRAILERS: [&str; 11] = [
     "Kazoo-Kind",
     "Kazoo-Seq",
     "Kazoo-Beat",
@@ -751,6 +798,7 @@ const TRAILERS: [&str; 10] = [
     "Kazoo-Part",
     "Kazoo-Comment",
     "Kazoo-Step-Comment",
+    "Kazoo-Attachment",
 ];
 
 /// One log record as a moment. `index` finds a parent's place, `alive_at`
@@ -809,12 +857,13 @@ fn moment(
         comment,
         steps,
         step_comments,
+        notes,
     } = Read::trailers(trailers, &mut problems);
     let batch = batch_of(
         &kind,
         &summary,
         (note, part),
-        (steps, step_comments),
+        (steps, step_comments, notes),
         &mut problems,
     );
     let before = parent.map_or_else(|| (0, Kinds::default(), Tint::default()), &alive_at);
@@ -852,13 +901,15 @@ struct Read {
     comment: Option<String>,
     steps: Vec<String>,
     step_comments: Vec<(usize, String)>,
+    notes: Vec<Note>,
 }
 
 impl Read {
     /// Each trailer the tree reads, by its key in any case (git's own
     /// trailers are), the first of each kept: a second is said in
-    /// `problems`, never put over the first. `Kazoo-Step` and
-    /// `Kazoo-Step-Comment` are the ones that come many times.
+    /// `problems`, never put over the first. `Kazoo-Step`,
+    /// `Kazoo-Step-Comment` and `Kazoo-Attachment` are the ones that come
+    /// many times.
     fn trailers(trailers: &str, problems: &mut Vec<String>) -> Self {
         let mut read = Self::default();
         let mut given: HashSet<&'static str> = HashSet::new();
@@ -873,7 +924,11 @@ impl Read {
                 continue;
             };
             let value = value.trim();
-            if key != "Kazoo-Step" && key != "Kazoo-Step-Comment" && !given.insert(key) {
+            let many = matches!(
+                key,
+                "Kazoo-Step" | "Kazoo-Step-Comment" | "Kazoo-Attachment"
+            );
+            if !many && !given.insert(key) {
                 problems.push(format!(
                     "its {key} is given more than once; the first is kept, and this one is not: {}",
                     clean(value)
@@ -894,11 +949,53 @@ impl Read {
                         read.step_comments.push(step);
                     }
                 }
+                "Kazoo-Attachment" => {
+                    if let Some(note) = keep(problems, note_of(value)) {
+                        read.notes.push(note);
+                    }
+                }
                 _ => read.steps.push(clean(value)),
             }
         }
         read
     }
+}
+
+/// A note sent with a batch, `name (bytes)`: a name the wall takes
+/// (1 to 64 of `A-Z a-z 0-9 . _ -`, not starting with a dot), since it
+/// names a file in the moment's commit.
+fn note_of(value: &str) -> Result<Note, String> {
+    let wrong = || {
+        format!(
+            "its Kazoo-Attachment does not read as name (bytes): {}",
+            clean(value)
+        )
+    };
+    let (name, bytes) = value
+        .trim()
+        .strip_suffix(')')
+        .and_then(|value| value.rsplit_once(" ("))
+        .ok_or_else(wrong)?;
+    // Digits only, as the wall writes it: never `+5`.
+    if bytes.is_empty() || !bytes.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(wrong());
+    }
+    let bytes = bytes.parse::<u64>().map_err(|_| wrong())?;
+    let named = (1..=64).contains(&name.len())
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    if !named {
+        return Err(format!(
+            "its Kazoo-Attachment names a note no wall would: {}",
+            clean(name)
+        ));
+    }
+    Ok(Note {
+        name: name.to_owned(),
+        bytes,
+    })
 }
 
 /// A step's comment on a batch's own moment, `k: text` with `k` from 1.
@@ -949,7 +1046,7 @@ fn batch_of(
     kind: &str,
     summary: &str,
     (note, part): (Option<String>, Option<(usize, usize)>),
-    (steps, comments): (Vec<String>, Vec<(usize, String)>),
+    (steps, comments, notes): (Vec<String>, Vec<(usize, String)>, Vec<Note>),
     problems: &mut Vec<String>,
 ) -> Option<Box<Batch>> {
     if kind == "part" && part.is_none() {
@@ -974,8 +1071,26 @@ fn batch_of(
                 "a batch step's comment on a moment that is not a batch: {step}: {comment}"
             ));
         }
+        for note in notes {
+            problems.push(format!(
+                "a note on a moment that is not a batch: {}",
+                note.name
+            ));
+        }
         return None;
     }
+    // The notes go on the batch's own moment, never on a part.
+    let notes = if kind == "part" {
+        for note in notes {
+            problems.push(format!(
+                "a note on a batch's part, not on the batch's own moment: {}",
+                note.name
+            ));
+        }
+        Vec::new()
+    } else {
+        notes
+    };
     if steps.is_empty() {
         problems.push("a batch whose changes are not listed (no Kazoo-Step)".to_owned());
     }
@@ -998,11 +1113,28 @@ fn batch_of(
             ));
         }
     }
+    // Names are unique in a batch, whatever their case (a Mac's files
+    // are): a second of one is said, and read once.
+    let mut named = HashSet::new();
+    let notes = notes
+        .into_iter()
+        .filter(|note| {
+            let first = named.insert(note.name.to_ascii_lowercase());
+            if !first {
+                problems.push(format!(
+                    "the note {} is listed more than once; it is read once",
+                    note.name
+                ));
+            }
+            first
+        })
+        .collect();
     Some(Box::new(Batch {
         note,
         steps,
         part,
         comments,
+        notes,
     }))
 }
 

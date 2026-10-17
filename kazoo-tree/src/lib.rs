@@ -13,6 +13,7 @@ pub mod growth;
 pub mod history;
 pub mod lanes;
 pub mod ledger;
+pub mod notes;
 pub mod render;
 #[cfg(test)]
 mod test_support;
@@ -405,6 +406,9 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
         if app.help {
             help(app, area, buf);
         }
+        if let Some(notes) = &mut app.notes {
+            notes::draw(notes, area, buf);
+        }
         return;
     }
     if wide {
@@ -446,6 +450,9 @@ pub fn frame_of(app: &mut App, area: Rect, buf: &mut Buffer) {
     app.fire.keep_chrome(area, parts, buf);
     if app.help {
         help(app, area, buf);
+    }
+    if let Some(notes) = &mut app.notes {
+        notes::draw(notes, area, buf);
     }
 }
 

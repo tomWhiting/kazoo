@@ -20,6 +20,7 @@ fn app(history: History) -> App {
         selected: None,
         help: false,
         help_top: 0,
+        notes: None,
         yank: None,
         said: String::new(),
         area: (80, 30),

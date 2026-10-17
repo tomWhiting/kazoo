@@ -1669,6 +1669,7 @@ dependencies = [
  "signal-hook",
  "tempfile",
  "toml",
+ "unicode-segmentation",
  "unicode-width",
 ]
 
