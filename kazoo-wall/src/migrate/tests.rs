@@ -149,12 +149,12 @@ fn peak_through(patch: &Patch, out: &str) -> f32 {
     let mut wall = Wall::new(patch.clone(), control, None, Vec::new(), None);
     for other in ["out1", "out2"] {
         let level = if other == out { 1.0 } else { 0.0 };
-        let turn = crate::protocol::Request::Turn {
-            module: other.to_string(),
-            knob: "level".to_string(),
-            value: level,
-            glide_beats: Some(0.0),
-        };
+        let turn = crate::protocol::Request::turn(
+            other.to_string(),
+            "level".to_string(),
+            level,
+            Some(0.0),
+        );
         wall.request("Test", &turn, Instant::now()).unwrap();
     }
     let mut buffer = vec![0.0_f32; 4_800 * 2];

@@ -141,9 +141,23 @@ fn notes_failed_store_changes_nothing() {
 
 #[test]
 fn notes_step_limit_remains_4096() {
-    let changes = vec![Request::Tempo { bpm: 140.0 }; 4096];
+    let changes = vec![
+        Request::Tempo {
+            bpm: 140.0,
+            after_beats: 0.0,
+            glide_beats: 0.0,
+        };
+        4096
+    ];
     assert!(crate::protocol::batch::validate("limit", &changes, &[]).is_ok());
-    let changes = vec![Request::Tempo { bpm: 140.0 }; 4097];
+    let changes = vec![
+        Request::Tempo {
+            bpm: 140.0,
+            after_beats: 0.0,
+            glide_beats: 0.0,
+        };
+        4097
+    ];
     assert!(crate::protocol::batch::validate("limit", &changes, &[]).is_err());
 }
 

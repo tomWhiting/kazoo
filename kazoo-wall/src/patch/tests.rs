@@ -66,6 +66,8 @@ fn turns_clamp_and_report_what_changed() {
             from: 0.2,
             to: 0.95,
             glide_beats: DEFAULT_GLIDE_BEATS,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear
         }
     );
     let what = patch.turn("vcf1", "cutoff", 800.0, Some(1_000.0)).unwrap();
@@ -97,7 +99,9 @@ fn one_cable_per_jack_and_patching_replaces() {
         .plug("vco1.out", "vcf1.cutoff", Some(-3.0), None)
         .unwrap();
     match what {
-        What::Patch { cable, replaced } => {
+        What::Patch {
+            cable, replaced, ..
+        } => {
             assert_eq!(cable.id, 3);
             assert!((cable.amount + 1.0).abs() < 1e-9);
             assert_eq!(replaced.unwrap().from, "lfo1.out");
@@ -264,7 +268,9 @@ fn undo_says_so_when_it_no_longer_applies() {
         code(patch.undo(&What::Tempo {
             from: 1.0,
             to: 2.0,
-            desk: false
+            desk: false,
+            after_beats: 0.0,
+            glide_beats: 0.0
         })),
         ErrorCode::Internal
     );

@@ -26,20 +26,11 @@ fn change(wall: &mut Wall, request: &Request, changes: &mut usize, now: Instant)
 }
 
 fn add(kind: &str) -> Request {
-    Request::Add {
-        alias: None,
-        kind: kind.to_owned(),
-        name: None,
-        place: None,
-    }
+    Request::add(kind.to_owned(), None, None, None)
 }
 
 const fn patch(from: String, to: String) -> Request {
-    Request::Patch {
-        from,
-        to,
-        amount: None,
-    }
+    Request::patch(from, to, None)
 }
 
 fn build_requests(count: usize) -> Vec<(String, Request)> {

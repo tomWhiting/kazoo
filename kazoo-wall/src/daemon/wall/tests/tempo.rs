@@ -35,7 +35,9 @@ fn the_wall_logs_the_desks_tempo() {
         What::Tempo {
             from: 120.0,
             to: 96.0,
-            desk: true
+            desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0
         }
     );
     assert_eq!(changes[0].summary, "the desk moved the tempo to 96 BPM");
@@ -81,7 +83,9 @@ fn a_desk_drag_is_one_change_with_the_first_before_and_last_after() {
         What::Tempo {
             from: 120.0,
             to: 100.0,
-            desk: true
+            desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0
         }
     );
 }
@@ -231,7 +235,9 @@ fn linked_go(accept: bool, turn_while_waiting: bool) {
                 == What::Tempo {
                     from: 96.0,
                     to: 120.0,
-                    desk: true
+                    desk: true,
+                    after_beats: 0.0,
+                    glide_beats: 0.0
                 }));
     }
     wall.close(now);
@@ -266,7 +272,7 @@ fn a_wall_asked_tempo_is_logged_once() {
     let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
     wall.tick(Instant::now());
     let change = wall
-        .request("Tom", &Request::Tempo { bpm: 110.0 }, Instant::now())
+        .request("Tom", &Request::tempo(110.0), Instant::now())
         .unwrap()
         .change
         .unwrap();
@@ -304,7 +310,9 @@ fn a_first_sync_and_a_restarted_desk_are_logged() {
         What::Tempo {
             from: 100.0,
             to: 120.0,
-            desk: true
+            desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0
         }
     );
     wall.sync_desk_tempo(120.005, Instant::now());
@@ -352,7 +360,7 @@ fn a_desk_change_before_the_asked_tick_starts_from_the_logged_tempo() {
     patch.tempo = 120.0;
     let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
     wall.sync_desk_tempo(120.0, Instant::now());
-    wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
+    wall.request("Tom", &Request::tempo(100.0), Instant::now())
         .unwrap();
     wall.sync_desk_tempo(105.0, Instant::now());
     wall.finish_desk_tempo();
@@ -362,7 +370,9 @@ fn a_desk_change_before_the_asked_tick_starts_from_the_logged_tempo() {
         What::Tempo {
             from: 100.0,
             to: 105.0,
-            desk: true
+            desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0
         }
     );
 }
@@ -377,7 +387,7 @@ fn the_desk_race_log_replays_through_rings_without_a_mismatch() {
     let initial = patch.to_file();
     let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
     wall.sync_desk_tempo(120.0, Instant::now());
-    wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
+    wall.request("Tom", &Request::tempo(100.0), Instant::now())
         .unwrap();
     wall.sync_desk_tempo(105.0, Instant::now());
     wall.finish_desk_tempo();
@@ -433,7 +443,9 @@ fn a_matched_desk_report_does_not_rewind_the_latest_logged_ask() {
         What::Tempo {
             from: 110.0,
             to: 105.0,
-            desk: true
+            desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0
         }
     );
 }
@@ -472,7 +484,9 @@ fn a_subthreshold_first_sync_keeps_the_next_log_continuous() {
         What::Tempo {
             from: 120.0,
             to: 125.0,
-            desk: true
+            desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0
         }
     );
 }
@@ -487,7 +501,7 @@ fn a_tick_before_the_desk_hears_an_ask_logs_nothing() {
     let mut patch = seed().unwrap();
     patch.tempo = 120.0;
     let mut wall = Wall::new(patch, control, Some(link), Vec::new(), None);
-    wall.request("Tom", &Request::Tempo { bpm: 100.0 }, Instant::now())
+    wall.request("Tom", &Request::tempo(100.0), Instant::now())
         .unwrap();
     for _ in 0..3 {
         let events = wall.tick(Instant::now());
@@ -635,14 +649,18 @@ fn a_batch_tempo_on_the_desk_starts_from_what_plays_as_a_single_tempo_does() {
             What::Tempo {
                 from: 120.0,
                 to: 105.0,
-                desk: true
+                desk: true,
+                after_beats: 0.0,
+                glide_beats: 0.0
             },
             What::Batch {
                 note: "faster".to_string(),
                 changes: vec![What::Tempo {
                     from: 105.0,
                     to: 100.0,
-                    desk: true
+                    desk: true,
+                    after_beats: 0.0,
+                    glide_beats: 0.0
                 }],
                 comments: Vec::new(),
             },
@@ -671,7 +689,9 @@ fn an_out_and_back_desk_gesture_logs_nothing() {
         What::Tempo {
             from: 120.0,
             to: 125.0,
-            desk: true
+            desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0
         }
     );
 }
@@ -692,7 +712,9 @@ fn a_desk_gesture_with_a_net_move_of_point_zero_four_logs_nothing() {
         What::Tempo {
             from: 120.0,
             to: 125.0,
-            desk: true
+            desk: true,
+            after_beats: 0.0,
+            glide_beats: 0.0
         }
     );
 }

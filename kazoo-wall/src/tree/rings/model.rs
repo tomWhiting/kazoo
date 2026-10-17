@@ -406,7 +406,9 @@ impl Model {
             What::Turn { .. } | What::Tempo { .. } => {
                 self.forward_value(what, change, result);
             }
-            What::Patch { cable, replaced } => {
+            What::Patch {
+                cable, replaced, ..
+            } => {
                 if !self.ends(cable) {
                     result.unknown = Some(format!(
                         "change {seq} patches cable {} whose end is missing",
@@ -626,7 +628,9 @@ impl Model {
                 }
                 ok
             }
-            What::Patch { cable, replaced } => {
+            What::Patch {
+                cable, replaced, ..
+            } => {
                 if !self.file.cables.iter().any(|c| cable_same(c, cable)) {
                     return false;
                 }

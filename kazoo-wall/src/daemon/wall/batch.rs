@@ -30,7 +30,7 @@ fn resolve(value: &mut String, labels: &BTreeMap<String, String>) -> Result<(), 
 fn resolved(request: &Request, labels: &BTreeMap<String, String>) -> Result<Request, WallError> {
     let mut request = request.clone();
     match &mut request {
-        Request::Turn { module, .. } | Request::Remove { module } => resolve(module, labels)?,
+        Request::Turn { module, .. } | Request::Remove { module, .. } => resolve(module, labels)?,
         Request::Patch { from, to, .. } => {
             resolve(from, labels)?;
             resolve(to, labels)?;
@@ -60,6 +60,7 @@ impl Wall {
             name,
             place,
             alias,
+            ..
         } = request
         else {
             return Err(error(
@@ -291,10 +292,18 @@ impl Wall {
             return Ok(());
         };
         let tempo = changes.iter().rev().find_map(|change| match change {
-            What::Tempo { to, desk: true, .. } => Some(*to),
+            What::Tempo {
+                to,
+                desk: true,
+                after_beats,
+                ..
+            } => Some((*to, *after_beats)),
             _ => None,
         });
-        if let Some(bpm) = tempo {
+        if let Some((bpm, after_beats)) = tempo {
+            if after_beats > 0.0 {
+                return Ok(());
+            }
             let result = self.desk.as_ref().map_or(
                 Err(kazoo_core::ipc::link::RequestError::NotConnected),
                 |link| link.request_tempo(bpm as f32),
@@ -313,6 +322,8 @@ impl Wall {
     /// Mirror a batch's changes into the engine in order, each module
     /// added as its add made it, so a later turn of it glides as asked.
     pub(super) fn mirror_batch(&mut self, changes: &[What]) {
+        let earlier = self.motion_bpm;
+        self.motion_bpm = Some(self.engine.shared().bpm());
         for change in changes {
             if let What::Add { module } | What::Restore { module, .. } = change {
                 if let Some(mut added) = self.patch.module(&module.id).cloned() {
@@ -330,6 +341,7 @@ impl Wall {
                 self.mirror(change);
             }
         }
+        self.motion_bpm = earlier;
     }
 }
 
@@ -360,7 +372,13 @@ fn tempo_as_now(inverse: What, now: f64, desk: bool) -> What {
             What::Tempo { from, to, .. } => {
                 let from = if first { now } else { from };
                 first = false;
-                What::Tempo { from, to, desk }
+                What::Tempo {
+                    from,
+                    to,
+                    desk,
+                    after_beats: 0.0,
+                    glide_beats: 0.0,
+                }
             }
             other => other,
         })

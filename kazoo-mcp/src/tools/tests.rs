@@ -127,12 +127,12 @@ async fn a_listed_save_tag_looks_up_that_moment() {
         .unwrap()
         .0;
     assert_eq!(tag, save.tag);
-    wall.ask::<ChangeResult>(Request::Turn {
-        module: "vcf1".into(),
-        knob: "cutoff".into(),
-        value: 1234.0,
-        glide_beats: Some(0.0),
-    })
+    wall.ask::<ChangeResult>(Request::turn(
+        "vcf1".into(),
+        "cutoff".into(),
+        1234.0,
+        Some(0.0),
+    ))
     .await
     .unwrap();
     // The mark's answer waits until the tree has recorded the turn.
@@ -223,7 +223,7 @@ fn a_batch_carries_each_steps_comment_beside_it() {
     assert_eq!(comments, [Some("half-time".to_string()), None]);
     assert_eq!(
         changes[0],
-        Request::Tempo { bpm: 70.0 },
+        Request::tempo(70.0),
         "the step is the single tool's"
     );
     let none: super::batch::BatchArgs = serde_json::from_value(serde_json::json!({
@@ -435,4 +435,29 @@ fn notes_schema_roundtrip_preserves_texts_and_readback() {
             .unwrap()
             .contains("read back with wall_notes")
     );
+}
+
+#[test]
+fn scheduling_schema_round_trip() {
+    let args: BatchArgs = serde_json::from_value(serde_json::json!({"note":"a swell","changes":[
+        {"op":"turn","module":"out3","knob":"level","value":0.6,"after_beats":8,"glide_beats":16,"curve":"ease_in"},
+        {"op":"patch","from":"vco1.out","to":"out3.in","after_beats":4,"fade_beats":2},
+        {"op":"tempo","bpm":90,"after_beats":2,"glide_beats":4}
+    ]})).unwrap();
+    let wire = serde_json::to_value(args.request().unwrap()).unwrap();
+    assert_eq!(wire["changes"][0]["curve"], "ease_in");
+    assert_eq!(wire["changes"][0]["after_beats"], 8.0);
+    assert_eq!(wire["changes"][1]["fade_beats"], 2.0);
+    let turn: TurnArgs = serde_json::from_value(serde_json::json!({"module":"out3","knob":"level","value":0.6,"after_beats":8,"curve":"s_curve"})).unwrap();
+    assert_eq!(turn.module, "out3");
+    for tool in Seat::tool_router().list_all() {
+        if ["wall_turn", "wall_patch", "wall_tempo"].contains(&tool.name.as_ref()) {
+            let schema = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+            assert!(
+                schema["properties"]["after_beats"].is_object(),
+                "{}",
+                tool.name
+            );
+        }
+    }
 }

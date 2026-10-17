@@ -240,19 +240,14 @@ fn voices_and_rhythms_are_patchable_by_their_ports() {
     let mut wall = Wall::new(Patch::empty(120.0), control, None, Vec::new(), None);
     let now = Instant::now();
     for kind in ["kick", "euclid"] {
-        let add = Request::Add {
-            alias: None,
-            kind: kind.to_string(),
-            name: None,
-            place: None,
-        };
+        let add = Request::add(kind.to_string(), None, None, None);
         wall.request("Tom", &add, now).unwrap();
     }
-    let patch = Request::Patch {
-        from: "euclid1.gate".to_string(),
-        to: "kick1.trigger".to_string(),
-        amount: None,
-    };
+    let patch = Request::patch(
+        "euclid1.gate".to_string(),
+        "kick1.trigger".to_string(),
+        None,
+    );
     assert!(wall.request("Tom", &patch, now).is_ok());
     let look = wall.snapshot();
     let kick = look.modules.iter().find(|m| m.id == "kick1").unwrap();

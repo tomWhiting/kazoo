@@ -57,6 +57,8 @@ pub struct Route {
     /// sees this amount on it: 0 takes it at once. A cable new to its line
     /// (see `tag`) with a glide above 0 starts silent and comes in over it.
     pub glide: u32,
+    /// Frames held before the amount starts moving.
+    pub wait: u32,
 }
 
 impl Route {
@@ -72,6 +74,7 @@ impl Route {
             delay: 0,
             gate: false,
             glide: 0,
+            wait: 0,
         }
     }
 }

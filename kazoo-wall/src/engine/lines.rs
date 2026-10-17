@@ -94,6 +94,8 @@ pub(super) struct Tap {
     gain_step: f32,
     /// Frames left to reach `aim`; 0 at rest.
     gain_left: u32,
+    gain_wait: u32,
+    source: Option<(u32, u8)>,
 }
 
 impl Tap {
@@ -109,13 +111,19 @@ impl Tap {
         aim: 0.0,
         gain_step: 0.0,
         gain_left: 0,
+        gain_wait: 0,
+        source: None,
     };
 }
 
 impl Tap {
     pub(super) fn carry_direct(&mut self, route: &Route, source: &Block, out: &mut Block) {
         if self.tag != route.tag {
-            let gain = if route.glide > 0 { 0.0 } else { route.amount };
+            let gain = if route.glide > 0 || route.wait > 0 {
+                0.0
+            } else {
+                route.amount
+            };
             *self = Self {
                 tag: route.tag,
                 gain,
@@ -129,15 +137,28 @@ impl Tap {
     }
 
     fn prepare_gain(&mut self, route: &Route) {
+        let source = Some((route.slot, route.port));
+        if self.source != source {
+            self.gain = if route.glide > 0 || route.wait > 0 {
+                0.0
+            } else {
+                route.amount
+            };
+            self.aim = self.gain;
+            self.gain_left = 0;
+            self.gain_wait = 0;
+            self.source = source;
+        }
         if route.amount.to_bits() != self.aim.to_bits() {
-            if route.glide == 0 {
+            self.gain_wait = route.wait;
+            if route.glide == 0 && route.wait == 0 {
                 self.gain = route.amount;
                 self.aim = route.amount;
                 self.gain_left = 0;
             } else {
                 // Frame counts are close enough in f32 for the line;
                 // computing from the aim makes the last frame exact.
-                self.gain_step = (route.amount - self.gain) / route.glide as f32;
+                self.gain_step = (route.amount - self.gain) / route.glide.max(1) as f32;
                 self.gain_left = route.glide;
                 self.aim = route.amount;
             }
@@ -146,7 +167,11 @@ impl Tap {
 
     fn scale(&mut self, out: &mut Block) {
         for sample in out.iter_mut() {
-            if self.gain_left > 0 {
+            if self.gain_wait > 0 {
+                self.gain_wait -= 1;
+            } else if self.gain_left == 0 {
+                self.gain = self.aim;
+            } else {
                 self.gain_left -= 1;
                 // Frame counts are close enough in f32 for the line;
                 // the final frame has none left and lands on the aim.
@@ -240,7 +265,11 @@ impl Line {
             samples.fill(0.0);
             self.joining = false;
             self.awaiting_route = false;
-            let gain = if route.glide > 0 { 0.0 } else { route.amount };
+            let gain = if route.glide > 0 || route.wait > 0 {
+                0.0
+            } else {
+                route.amount
+            };
             tap = Tap {
                 tag: route.tag,
                 at: f64::from(route.delay),
@@ -266,6 +295,8 @@ impl Line {
             tap.aim = previous.aim;
             tap.gain_step = previous.gain_step;
             tap.gain_left = previous.gain_left;
+            tap.gain_wait = previous.gain_wait;
+            tap.source = previous.source;
         }
         tap.prepare_gain(&route);
         for (frame, sample) in source.iter().enumerate() {

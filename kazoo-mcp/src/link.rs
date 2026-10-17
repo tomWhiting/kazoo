@@ -669,12 +669,7 @@ mod tests {
         // The stub's hello says nothing of comments: a wall older than them.
         tokio::spawn(stub(UnixListener::bind(&socket).unwrap()));
         let wall = Wall::new(socket, "Tom".to_string());
-        let turn = Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: 500.0,
-            glide_beats: None,
-        };
+        let turn = Request::turn("vcf1".to_string(), "cutoff".to_string(), 500.0, None);
         let refused = wall
             .ask_raw(turn.clone(), Some("darker"))
             .await
@@ -761,12 +756,7 @@ mod tests {
     #[test]
     fn requests_too_long_for_the_protocol_are_not_sent() {
         let mut next = 7;
-        let huge = Request::Add {
-            alias: None,
-            kind: "x".repeat(kazoo_wall::protocol::MAX_LINE),
-            name: None,
-            place: None,
-        };
+        let huge = Request::add("x".repeat(kazoo_wall::protocol::MAX_LINE), None, None, None);
         assert!(matches!(
             line_for(&mut next, huge, (None, None)),
             Err(LinkError::Unsendable(_))

@@ -37,6 +37,8 @@ fn change(seq: u64, go: bool) -> Change {
             from: 400.0,
             to: 500.0,
             glide_beats: 0.0,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear,
         }
     };
     Change {

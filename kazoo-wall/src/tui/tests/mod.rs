@@ -163,6 +163,8 @@ pub fn change(seq: u64, seat: &str, summary: &str, undoes: Option<u64>) -> Chang
             from: 420.0,
             to: 800.0,
             glide_beats: 4.0,
+            after_beats: 0.0,
+            curve: crate::protocol::GlideCurve::Linear,
         },
         summary: summary.to_string(),
         undoes,

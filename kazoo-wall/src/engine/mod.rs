@@ -29,6 +29,7 @@ mod desk_tempo;
 mod fixed;
 mod line_commands;
 mod moments;
+mod scheduling;
 pub use moments::TimedSwap;
 pub mod lines;
 pub mod master;
@@ -156,6 +157,10 @@ pub enum Command {
         target: f32,
         /// How long it takes; 0 is at once.
         glide_frames: u32,
+        /// Frames held before the glide starts.
+        wait_frames: u32,
+        /// Shape along the knob's normalised travel.
+        curve: crate::protocol::GlideCurve,
     },
     /// Set the wall's own tempo. While following a playing desk, the desk's
     /// next change overrides it.
@@ -175,6 +180,8 @@ pub enum Command {
         bpm: f64,
         /// How long it takes.
         frames: u32,
+        /// Frames held before the tempo starts moving.
+        wait_frames: u32,
     },
     /// Fade the master out over [`SWAP_FADE_SECONDS`], and hold every
     /// command after this one until it is silent: the commands between a
@@ -528,8 +535,13 @@ struct Glide {
     value: f32,
     position: f32,
     target: f32,
-    step: f32,
     remaining: u32,
+    wait: u32,
+    start: f32,
+    end: f32,
+    total: u32,
+    gone: u32,
+    curve: crate::protocol::GlideCurve,
 }
 
 impl Glide {
@@ -538,8 +550,13 @@ impl Glide {
             value,
             position,
             target: value,
-            step: 0.0,
             remaining: 0,
+            wait: 0,
+            start: position,
+            end: position,
+            total: 0,
+            gone: 0,
+            curve: crate::protocol::GlideCurve::Linear,
         }
     }
 
@@ -553,22 +570,31 @@ impl Glide {
         let Some(spec) = spec.filter(|_| self.remaining > 0) else {
             return Sweep::REST;
         };
-        // At most SUB_BLOCK (32): exact in f32.
-        let frames = self.remaining.min(SUB_BLOCK as u32);
-        let sweep = Sweep {
-            from: self.position,
-            step: self.step,
-            frames,
-        };
+        let wait = self.wait.min(SUB_BLOCK as u32);
+        self.wait -= wait;
+        let frames = self.remaining.min(SUB_BLOCK as u32 - wait);
+        let from = self.position;
+        if frames == 0 {
+            return Sweep::REST;
+        }
+        let held = self.value;
+        self.gone += frames;
         self.remaining -= frames;
+        let progress = self.gone as f32 / self.total.max(1) as f32;
+        self.position = (self.end - self.start).mul_add(self.curve.position(progress), self.start);
         if self.remaining == 0 {
             self.value = self.target;
-            self.position = spec.normalise(self.target);
+            self.position = self.end;
         } else {
-            self.position = self.step.mul_add(frames as f32, self.position);
             self.value = spec.denormalise(self.position);
         }
-        sweep
+        Sweep {
+            from,
+            step: (self.position - from) / frames as f32,
+            frames: frames + wait,
+            wait,
+            held,
+        }
     }
 }
 
@@ -609,6 +635,8 @@ pub struct Engine {
     tempo_step: f64,
     /// Frames left until the wall tempo reaches its aim.
     tempo_left: u32,
+    tempo_wait: u32,
+    tempo_jump: bool,
     beat: f64,
     origin: f64,
     wall_beat: Option<f64>,
@@ -702,19 +730,11 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         eprintln!("kazoo-wall: catalogue left out {skipped}");
     }
     let bpm = clamp_bpm(config.bpm);
-    let beat = if config.beat.is_finite() {
-        config.beat
-    } else {
-        0.0
-    };
+    let beat = scheduling::finite(config.beat);
     // The wall carries on from its origin only when it has one: an engine
     // that starts the wall reads the song position itself, as before
     // origins were kept.
-    let origin = if config.origin.is_finite() {
-        config.origin
-    } else {
-        0.0
-    };
+    let origin = scheduling::finite(config.origin);
     let wall_beat = (origin.abs() > 0.0).then_some(beat - origin);
     let sample_rate = config.sample_rate.max(8_000);
     let (command_tx, command_rx) = HeapRb::<Command>::new(COMMAND_BACKLOG).split();
@@ -766,6 +786,8 @@ pub fn engine(config: EngineConfig, hub: Option<HubLinkAudio>) -> (Engine, Engin
         tempo_aim: bpm,
         tempo_step: 0.0,
         tempo_left: 0,
+        tempo_wait: 0,
+        tempo_jump: false,
         beat,
         origin,
         wall_beat,
@@ -1011,25 +1033,39 @@ impl Engine {
                 knob,
                 target,
                 glide_frames,
-            } => self.knob(slot, knob, target, glide_frames),
+                wait_frames,
+                curve,
+            } => self.knob(slot, knob, target, (glide_frames, wait_frames), curve),
             Command::Tempo(bpm) => {
                 self.bpm = clamp_bpm(bpm);
+                self.tempo_aim = self.bpm;
+                self.tempo_step = 0.0;
                 self.tempo_left = 0;
+                self.tempo_wait = 0;
+                self.tempo_jump = false;
                 self.shared.bpm.store(self.bpm.to_bits(), Ordering::Relaxed);
             }
             Command::DeskTempo { bpm, seq } => self.ask_desk_tempo(bpm, seq),
             Command::TempoGlide { bpm, .. } if !bpm.is_finite() => {
                 self.shared.ignored.fetch_add(1, Ordering::Relaxed);
             }
-            Command::TempoGlide { bpm, frames } => {
-                if frames == 0 {
-                    self.bpm = clamp_bpm(bpm);
-                    self.tempo_left = 0;
-                    self.shared.bpm.store(self.bpm.to_bits(), Ordering::Relaxed);
+            Command::TempoGlide {
+                bpm,
+                frames,
+                wait_frames,
+            } => {
+                self.tempo_aim = clamp_bpm(bpm);
+                self.tempo_step = if frames == 0 {
+                    0.0
                 } else {
-                    self.tempo_aim = clamp_bpm(bpm);
-                    self.tempo_step = (self.tempo_aim - self.bpm) / f64::from(frames);
-                    self.tempo_left = frames;
+                    (self.tempo_aim - self.bpm) / f64::from(frames)
+                };
+                self.tempo_left = frames;
+                self.tempo_wait = wait_frames;
+                self.tempo_jump = frames == 0 && wait_frames > 0;
+                if frames == 0 && wait_frames == 0 {
+                    self.bpm = self.tempo_aim;
+                    self.shared.bpm.store(self.bpm.to_bits(), Ordering::Relaxed);
                 }
             }
             Command::Swap(swap) => self.queue_swap(swap),
@@ -1065,6 +1101,7 @@ impl Engine {
     /// cable table than under `old` (another source or port, another
     /// amount, or a cable plugged or unplugged), and which.
     fn rewire(&mut self, old: &CableTable) {
+        self.reset_changed_taps(old);
         let source = |route: Option<Route>| {
             route.map(|route| (route.slot, route.port, route.amount.to_bits()))
         };
@@ -1148,7 +1185,14 @@ impl Engine {
         self.retire(Retired::Room(room));
     }
 
-    fn knob(&mut self, slot: usize, knob: usize, target: f32, glide_frames: u32) {
+    fn knob(
+        &mut self,
+        slot: usize,
+        knob: usize,
+        target: f32,
+        timing: (u32, u32),
+        curve: crate::protocol::GlideCurve,
+    ) {
         let min_glide = self.min_glide;
         let Some((page, at)) = self
             .room
@@ -1161,10 +1205,15 @@ impl Engine {
         let spec = page.kinds[at].and_then(|kind| kind.spec().knobs.get(knob));
         let glide = &mut page.glides[at][knob];
         if let Some(spec) = spec {
-            let frames = glide_frames.max(min_glide);
+            let frames = timing.0.max(min_glide);
             // Frame counts are far below 2^24 per sub-step: close enough in
             // f32, and the last step lands exactly on the target.
-            glide.step = (spec.normalise(target) - glide.position) / frames as f32;
+            glide.start = glide.position;
+            glide.end = spec.normalise(target);
+            glide.total = frames;
+            glide.gone = 0;
+            glide.wait = timing.1;
+            glide.curve = curve;
             glide.target = target;
             glide.remaining = frames;
         } else {
@@ -1237,13 +1286,32 @@ impl Engine {
             self.drain_commands();
         }
         let desk_changed = self.follow_desk();
-        (self.bpm, self.tempo_left) = glide_tempo(
-            self.bpm,
-            self.tempo_aim,
-            self.tempo_step,
-            self.tempo_left,
-            self.following_desk || desk_changed,
-        );
+        let desk = self.following_desk || desk_changed;
+        if desk {
+            self.tempo_wait = 0;
+            self.tempo_jump = false;
+            self.tempo_left = 0;
+            self.tempo_aim = self.bpm;
+            self.tempo_step = 0.0;
+        } else {
+            let waited = self.tempo_wait.min(SUB_BLOCK as u32);
+            self.tempo_wait -= waited;
+            let frames = SUB_BLOCK as u32 - waited;
+            if frames > 0 {
+                if self.tempo_jump && self.tempo_wait == 0 {
+                    self.bpm = self.tempo_aim;
+                    self.tempo_jump = false;
+                } else {
+                    (self.bpm, self.tempo_left) = tempo_frames(
+                        self.bpm,
+                        self.tempo_aim,
+                        self.tempo_step,
+                        self.tempo_left,
+                        frames,
+                    );
+                }
+            }
+        }
         self.land_swap(desk_changed);
         let song = Tick::new(self.sample_rate, self.bpm, self.beat);
         self.carry_len = self.frames_to_swap(song.beat_step);
@@ -1471,8 +1539,15 @@ pub fn glide_tempo(bpm: f64, aim: f64, step: f64, left: u32, desk: bool) -> (f64
     if desk || left == 0 {
         return (bpm, 0);
     }
+    tempo_frames(bpm, aim, step, left, SUB_BLOCK as u32)
+}
+
+fn tempo_frames(bpm: f64, aim: f64, step: f64, left: u32, budget: u32) -> (f64, u32) {
+    if left == 0 {
+        return (bpm, 0);
+    }
     // SUB_BLOCK is 32: lossless.
-    let frames = left.min(SUB_BLOCK as u32);
+    let frames = left.min(budget);
     let left = left - frames;
     let bpm = if left == 0 {
         aim

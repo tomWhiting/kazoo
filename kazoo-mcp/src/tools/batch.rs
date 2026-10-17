@@ -62,6 +62,12 @@ pub enum BatchChange {
     },
     /// As `wall_turn`.
     Turn {
+        /// Beats to hold before the sound starts at the acceptance tempo: 0 to 256, default 0.
+        #[serde(default)]
+        after_beats: f64,
+        /// Shape in knob position: `linear` (default), `ease_in`, `ease_out` or `s_curve`.
+        #[serde(default)]
+        curve: super::scheduling::GlideCurve,
         /// The module's id, e.g. `vcf1`, or `@label` for one added earlier
         /// in this batch.
         module: String,
@@ -80,6 +86,12 @@ pub enum BatchChange {
     },
     /// As `wall_patch`.
     Patch {
+        /// Beats to hold before the sound starts at the acceptance tempo: 0 to 256, default 0.
+        #[serde(default)]
+        after_beats: f64,
+        /// Beats for a linear cable fade after its wait: 0 to 64, default 0.
+        #[serde(default)]
+        fade_beats: f64,
         /// The output to plug from, as `module.port`, e.g. `lfo1.out` or
         /// `@osc.out`.
         from: String,
@@ -107,6 +119,12 @@ pub enum BatchChange {
     },
     /// As `wall_tempo`.
     Tempo {
+        /// Beats to hold before the sound starts at the acceptance tempo: 0 to 256, default 0.
+        #[serde(default)]
+        after_beats: f64,
+        /// Beats for the tempo to move linearly after its wait: 0 to 64, default 0.
+        #[serde(default)]
+        glide_beats: f64,
         /// Beats per minute, 20 to 300.
         bpm: f64,
         /// Why this step, in a line (1 to 200 characters): shown on its

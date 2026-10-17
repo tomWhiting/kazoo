@@ -38,12 +38,8 @@ fn a_real_walls_log_grows_to_the_wall_it_kept() {
     let through = wall.patch().last_seq;
     for seq in through + 1..=120 {
         let bpm = 100.0 + f64::from(u32::try_from(seq).unwrap());
-        wall.request(
-            &format!("Seat{seq}"),
-            &Request::Tempo { bpm },
-            Instant::now(),
-        )
-        .unwrap();
+        wall.request(&format!("Seat{seq}"), &Request::tempo(bpm), Instant::now())
+            .unwrap();
     }
     wall.close(Instant::now());
     let file = crate::migrate::read(&fs::read(state.path().join("patch.json")).unwrap())
@@ -124,6 +120,8 @@ fn a_tempo_the_desk_moved_is_a_gap_and_the_walk_goes_on() {
             from: 92.0,
             to: 60.0,
             desk: false,
+            after_beats: 0.0,
+            glide_beats: 0.0,
         },
     );
     changes[8] = change(
@@ -132,6 +130,8 @@ fn a_tempo_the_desk_moved_is_a_gap_and_the_walk_goes_on() {
             from: 120.0,
             to: 80.0,
             desk: false,
+            after_beats: 0.0,
+            glide_beats: 0.0,
         },
     );
     changes[4] = turn(5, 303.0, 305.0);

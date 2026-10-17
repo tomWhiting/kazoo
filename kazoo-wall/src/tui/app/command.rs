@@ -514,7 +514,7 @@ impl App {
                 wants(1)?;
                 let module = self.on_wall(args[0])?;
                 self.say(Tone::Info, format!("removing {module} (z undoes it)…"), now);
-                self.jobs.push(Job::Call(Request::Remove { module }));
+                self.jobs.push(Job::Call(Request::remove(module)));
             }
             "patch" => {
                 wants(2)?;
@@ -523,10 +523,8 @@ impl App {
             "unplug" => {
                 wants(1)?;
                 let cable = self.cable_for(args[0])?;
-                self.jobs.push(Job::Call(Request::Unpatch {
-                    cable: Some(cable),
-                    to: None,
-                }));
+                self.jobs
+                    .push(Job::Call(Request::unpatch(Some(cable), None)));
             }
             "turn" => {
                 wants(2)?;
@@ -653,11 +651,8 @@ impl App {
             },
         };
         self.say(Tone::Info, "plugging in…".to_string(), now);
-        self.jobs.push(Job::Call(Request::Patch {
-            from,
-            to,
-            amount: Some(amount),
-        }));
+        self.jobs
+            .push(Job::Call(Request::patch(from, to, Some(amount))));
         Ok(())
     }
 

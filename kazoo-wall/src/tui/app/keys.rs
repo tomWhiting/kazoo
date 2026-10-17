@@ -643,7 +643,7 @@ impl App {
             KeyCode::Enter => {
                 match text.parse::<f64>() {
                     Ok(bpm) if (20.0..=300.0).contains(&bpm) => {
-                        self.jobs.push(Job::Call(Request::Tempo { bpm }));
+                        self.jobs.push(Job::Call(Request::tempo(bpm)));
                     }
                     Ok(_) | Err(_) => self.say(
                         Tone::Trouble,
@@ -821,12 +821,8 @@ impl App {
             .as_ref()
             .map_or_else(String::new, |place| format!(" {}", self.place_words(place)));
         self.say(Tone::Info, format!("adding {kind}{words}…"), now);
-        self.jobs.push(Job::Call(Request::Add {
-            alias: None,
-            kind,
-            name,
-            place,
-        }));
+        self.jobs
+            .push(Job::Call(Request::add(kind, name, place, None)));
     }
 
     /// Where `place` is, in words: `to row 2 after vcf1`, `at the start of
@@ -915,7 +911,7 @@ impl App {
 
     fn confirm_remove(&mut self, key: KeyEvent, module: String, now: Instant) -> Mode {
         if matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter) {
-            self.jobs.push(Job::Call(Request::Remove { module }));
+            self.jobs.push(Job::Call(Request::remove(module)));
         } else {
             self.say(Tone::Info, format!("{module} stays on the wall"), now);
         }
@@ -1115,11 +1111,8 @@ impl App {
             KeyCode::Char('_') => nudge(-AMOUNT_FINE),
             KeyCode::Char('i') => -amount,
             KeyCode::Enter => {
-                self.jobs.push(Job::Call(Request::Patch {
-                    from,
-                    to,
-                    amount: Some(amount),
-                }));
+                self.jobs
+                    .push(Job::Call(Request::patch(from, to, Some(amount))));
                 self.say(Tone::Info, "plugging in…".to_string(), now);
                 return Mode::Normal;
             }
@@ -1138,10 +1131,9 @@ impl App {
             Focus::Cables => {
                 let cable = self.cables().get(self.cable_cursor).map(|cable| cable.id);
                 match cable {
-                    Some(cable) => self.jobs.push(Job::Call(Request::Unpatch {
-                        cable: Some(cable),
-                        to: None,
-                    })),
+                    Some(cable) => self
+                        .jobs
+                        .push(Job::Call(Request::unpatch(Some(cable), None))),
                     None => self.say(Tone::Trouble, "there are no cables".to_string(), now),
                 }
             }
@@ -1157,10 +1149,9 @@ impl App {
                     .find(|cable| cable.to == to)
                     .map(|cable| cable.id);
                 match cable {
-                    Some(cable) => self.jobs.push(Job::Call(Request::Unpatch {
-                        cable: Some(cable),
-                        to: None,
-                    })),
+                    Some(cable) => self
+                        .jobs
+                        .push(Job::Call(Request::unpatch(Some(cable), None))),
                     None => self.say(
                         Tone::Trouble,
                         format!(

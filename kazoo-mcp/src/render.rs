@@ -1396,6 +1396,8 @@ mod tests {
                 from: 92.0,
                 to: 96.0,
                 desk: false,
+                after_beats: 0.0,
+                glide_beats: 0.0,
             },
             summary: "Waffles added lfo3".to_string(),
             undoes: Some(57),

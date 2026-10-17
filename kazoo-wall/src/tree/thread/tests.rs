@@ -69,12 +69,7 @@ fn wall() -> (Wall, Engine) {
 }
 
 fn turn(value: f64) -> Request {
-    Request::Turn {
-        module: "vcf1".into(),
-        knob: "cutoff".into(),
-        value,
-        glide_beats: Some(4.0),
-    }
+    Request::turn("vcf1".into(), "cutoff".into(), value, Some(4.0))
 }
 
 fn ask(wall: &mut Wall, request: &Request, now: Instant) -> Change {
@@ -177,17 +172,8 @@ fn every_change_is_one_commit_with_its_trailers() {
     wall.attach_tree(thread::TreeHandle::attach(dir.path()).unwrap());
     let requests = [
         turn(400.0),
-        Request::Patch {
-            from: "lfo1.out".into(),
-            to: "vcf1.cutoff".into(),
-            amount: Some(0.2),
-        },
-        Request::Add {
-            alias: None,
-            kind: "vco".into(),
-            name: None,
-            place: None,
-        },
+        Request::patch("lfo1.out".into(), "vcf1.cutoff".into(), Some(0.2)),
+        Request::add("vco".into(), None, None, None),
     ];
     let changes: Vec<_> = requests
         .iter()
@@ -249,15 +235,8 @@ fn each_commit_holds_the_wall_after_its_change() {
     let mut saved = vec![wall.patch().to_file()];
     for request in [
         turn(401.0),
-        Request::Add {
-            alias: None,
-            kind: "vco".into(),
-            name: None,
-            place: None,
-        },
-        Request::Remove {
-            module: "vco2".into(),
-        },
+        Request::add("vco".into(), None, None, None),
+        Request::remove("vco2".into()),
     ] {
         ask(&mut wall, &request, Instant::now());
         saved.push(wall.patch().to_file());

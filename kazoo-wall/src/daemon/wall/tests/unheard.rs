@@ -50,13 +50,7 @@ fn a_module_reaching_nothing_is_unheard_and_said_so() {
             )
         })
         .unwrap();
-    ask(
-        &mut wall,
-        &Request::Remove {
-            module: "out1".to_string(),
-        },
-    )
-    .unwrap();
+    ask(&mut wall, &Request::remove("out1".to_string())).unwrap();
     let expected: Vec<String> = wall
         .patch
         .modules()
@@ -67,12 +61,7 @@ fn a_module_reaching_nothing_is_unheard_and_said_so() {
     assert_eq!(look.timing.unheard, expected);
     ask(
         &mut wall,
-        &Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: 200.0,
-            glide_beats: Some(1.0),
-        },
+        &Request::turn("vcf1".to_string(), "cutoff".to_string(), 200.0, Some(1.0)),
     )
     .unwrap();
     let before = wall.engine.shared().frames();
@@ -162,13 +151,7 @@ fn an_unheard_speaker_given_too_many_words_says_why_it_takes_none() {
     assert!(speak_often(&mut wall, &mut engine, &script, 12).is_none());
     // Unheard, its player takes none: the refusal says why, and that
     // waiting will not help.
-    ask(
-        &mut wall,
-        &Request::Remove {
-            module: "out1".to_string(),
-        },
-    )
-    .unwrap();
+    ask(&mut wall, &Request::remove("out1".to_string())).unwrap();
     assert_eq!(wall.snapshot().timing.unheard, ["speak1"]);
     let refused = speak_often(&mut wall, &mut engine, &script, 12).unwrap();
     assert_eq!(refused.code, ErrorCode::NotAllowed, "{refused:?}");
@@ -253,10 +236,7 @@ fn a_held_back_cable_heard_again_plays_nothing_from_before_it_was_unheard() {
     // silent for its delay, not replaying what it held when it went unheard.
     ask(
         &mut wall,
-        &Request::Unpatch {
-            cable: None,
-            to: Some("readout1.in".to_string()),
-        },
+        &Request::unpatch(None, Some("readout1.in".to_string())),
     )
     .unwrap();
     assert_eq!(wall.snapshot().timing.unheard, ["vco1", "klon1", "mix1"]);

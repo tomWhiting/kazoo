@@ -8,9 +8,11 @@ mod batch;
 mod chains;
 mod cost;
 mod delay_lines;
+mod desk_scheduling;
 mod loops;
 mod moments;
 mod notes;
+mod scheduling;
 mod storage;
 pub(super) mod unheard;
 
@@ -565,6 +567,7 @@ pub struct Wall {
     clock_line: ClockLine,
     desk: Option<HubLink>,
     desk_tempo: tempo_sync::DeskTempo,
+    pending_desk_tempo: Option<desk_scheduling::Pending>,
     log: VecDeque<Change>,
     next_seq: u64,
     /// The latest change made (and logged): what `revision` says. Behind
@@ -618,6 +621,8 @@ pub struct Wall {
     heard_units: usize,
     /// The tag of every cable that has needed delay.
     lined: BTreeMap<u32, u32>,
+    cable_motion: BTreeMap<u32, (u32, u32)>,
+    motion_bpm: Option<f64>,
     /// Destinations recorded as lines are placed, until they are retired.
     line_places: BTreeMap<u32, (usize, usize)>,
     /// Destinations of cables in the last table sent.
@@ -1378,6 +1383,8 @@ impl Wall {
             unheard: Vec::new(),
             heard_units: 0,
             lined: BTreeMap::new(),
+            cable_motion: BTreeMap::new(),
+            motion_bpm: None,
             line_places: BTreeMap::new(),
             sent_cables: BTreeMap::new(),
             #[cfg(test)]
@@ -1393,6 +1400,7 @@ impl Wall {
             engine,
             clock_line: ClockLine::new(crate::chance::fresh_wall_seed()),
             desk_tempo: tempo_sync::DeskTempo::default(),
+            pending_desk_tempo: None,
             desk_go_waiting: BTreeMap::new(),
             desk_go_settled: Vec::new(),
             desk,
@@ -1569,6 +1577,7 @@ impl Wall {
         self.restart_load_watch();
         self.rack = Rack::default();
         self.lined.clear();
+        self.cable_motion.clear();
         self.line_places.clear();
         self.sent_cables.clear();
         // What the old engine's modules measured is gone with them.
@@ -1618,6 +1627,7 @@ impl Wall {
         self.speech.replace_wall();
         self.loops.replace_wall();
         self.lined.clear();
+        self.cable_motion.clear();
         self.line_places.clear();
         self.sent_cables.clear();
         self.settled.clear();
@@ -1817,11 +1827,7 @@ impl Wall {
                 continue;
             };
             let tag = self.lined.get(&cable.id).copied().unwrap_or(0);
-            let route = Route {
-                delay: self.timing.delays.get(&cable.id).copied().unwrap_or(0),
-                gate: carries_gate(&kinds, cable),
-                ..Route::new(from, port, cable.amount, tag)
-            };
+            let route = self.motion_route(cable, &kinds, (from, port, tag));
             if table.set(to, jack, Some(route)) {
                 routed.insert(cable.id, (to, jack));
             } else {
@@ -1835,6 +1841,7 @@ impl Wall {
         self.apply_line_delays(&mut table, &routed);
         self.engine.send(Command::Cables(Box::new(table)));
         self.engine.send(Command::Order(Box::new(order)));
+        self.cable_motion.retain(|id, _| routed.contains_key(id));
         self.sent_cables = routed;
         self.tables_sent = self.tables_sent.wrapping_add(1);
         self.note_rewiring();
@@ -2034,40 +2041,26 @@ impl Wall {
                 from,
                 to,
                 glide_beats,
+                after_beats,
+                curve,
+            } => self.mirror_turn_motion(
+                module,
+                knob,
+                (*from, *to),
+                (*glide_beats, *after_beats, *curve),
+            ),
+            What::Patch {
+                cable,
+                replaced,
+                after_beats,
+                fade_beats,
             } => {
-                let slot = self.rack.slot_of(module);
-                let index = self
-                    .patch
-                    .module(module)
-                    .and_then(|m| m.kind.spec().knob_index(knob));
-                if let (Some(slot), Some(knob)) = (slot, index) {
-                    let seconds = glide_beats * 60.0 / self.engine.shared().bpm();
-                    let rate = f64::from(self.engine.sample_rate().max(1));
-                    // `max` turns a NaN (a nonsense logged glide) into none.
-                    let frames = (seconds * rate).max(0.0).min(f64::from(u32::MAX));
-                    self.engine.send(Command::Knob {
-                        slot,
-                        knob,
-                        // Knob targets are held to f32 ranges.
-                        target: *to as f32,
-                        glide_frames: frames as u32,
-                    });
-                    // An effect's latency may follow its knobs: measure it
-                    // again once this one has settled.
-                    let spec = self
-                        .patch
-                        .module(module)
-                        .filter(|m| matches!(m.kind.spec().build, Builder::Effect(_)))
-                        .and_then(|m| m.kind.spec().knobs.get(knob));
-                    if let Some(spec) = spec {
-                        let landing = landing(spec, *from, *to);
-                        // Finite and at most u32::MAX / rate seconds.
-                        let settles = Duration::from_secs_f64(frames * landing / rate);
-                        self.turned.push((module.clone(), knob, settles));
-                    }
-                }
+                self.mirror_patch_motion(cable, replaced.as_ref(), (*after_beats, *fade_beats));
             }
-            What::Patch { .. } | What::Unpatch { .. } => self.send_tables(),
+            What::Unpatch { cable, .. } => {
+                self.cable_motion.remove(&cable.id);
+                self.send_tables();
+            }
             What::Add { module } | What::Restore { module, .. } => {
                 if let Some(module) = self.patch.module(&module.id).cloned() {
                     // A new speaker has no words yet; a speaker brought
@@ -2111,10 +2104,20 @@ impl Wall {
             | What::Resumed { .. }
             | What::SetAside { .. }
             | What::Unknown => {}
-            What::Tempo { to, desk, .. } => {
+            What::Tempo {
+                to,
+                desk,
+                after_beats,
+                glide_beats,
+                ..
+            } => {
                 self.patch.tempo = *to;
                 if !desk {
-                    self.engine.send(Command::Tempo(*to));
+                    self.engine.send(Command::TempoGlide {
+                        bpm: *to,
+                        frames: self.beat_frames(*glide_beats),
+                        wait_frames: self.beat_frames(*after_beats),
+                    });
                 }
             }
             // The patch is the new wall already.
@@ -2382,6 +2385,7 @@ impl Wall {
     /// into the engine, move the fingerprints, and remember it. Returns
     /// the change and, if the fingerprints moved, the event saying how.
     fn apply(&mut self, change: Change) -> (Change, Option<Event>) {
+        self.cancel_pending_desk_tempo(&change);
         self.accept_take(&change);
         if change.undoes.is_some() || !matches!(change.what, What::Take { .. }) {
             self.mirror(&change.what);
@@ -2851,6 +2855,7 @@ impl Wall {
         // touched goes back as it was.
         let before = self.before(request);
         let (held, swaps) = (self.held(), self.swaps_sent);
+        let acceptance_bpm = clamp_bpm(self.engine.shared().bpm());
         let outcome = self.answer((seat, console), request, now);
         if std::mem::take(&mut self.unmade) {
             self.put_back(before);
@@ -2881,7 +2886,11 @@ impl Wall {
             // The latest turn of a knob is the one that counts.
             self.settling.insert((module, knob), due);
         }
-        outcome
+        outcome.inspect(|outcome| {
+            if let Some(change) = &outcome.change {
+                self.schedule_desk_tempo(change, now, acceptance_bpm);
+            }
+        })
     }
 
     /// What of the patch `request` may touch before its change is logged,
@@ -2999,14 +3008,11 @@ impl Wall {
     }
 
     /// Answer `request` from `seat`, once it has passed the flood check.
-    fn answer(
-        &mut self,
-        (seat, console): (&str, bool),
-        request: &Request,
-        now: Instant,
-    ) -> Result<Outcome, WallError> {
+    /// The answer to a request that only reads the wall, or `None` for one
+    /// that changes it.
+    fn read_only(&mut self, request: &Request, now: Instant) -> Option<Result<Outcome, WallError>> {
         let read = unchanged;
-        match request {
+        Some(match request {
             Request::Look => encode(&self.snapshot()).map(read),
             Request::Catalogue => encode(&catalogue()).map(read),
             Request::Listen => encode(&ListenResult {
@@ -3023,19 +3029,33 @@ impl Wall {
             }
             Request::Notes { seq } => self.notes(*seq).and_then(|notes| encode(&notes)).map(read),
             Request::Log { before, limit } => encode(&self.log_page(*before, *limit)).map(read),
-            Request::Turn {
-                module,
-                knob,
-                value,
-                glide_beats,
-            } => {
-                let what = self.patch.turn(module, knob, *value, *glide_beats)?;
-                self.changed(seat, what, None, None, None)
-            }
-            Request::Patch { from, to, amount } => self.plug(seat, from, to, *amount),
-            Request::Unpatch { cable, to } => self.unpatch(seat, *cable, to.as_deref()),
+            _ => return None,
+        })
+    }
+
+    fn answer(
+        &mut self,
+        (seat, console): (&str, bool),
+        request: &Request,
+        now: Instant,
+    ) -> Result<Outcome, WallError> {
+        scheduling::validate(request)?;
+        if let Some(read) = self.read_only(request, now) {
+            return read;
+        }
+        match request {
+            Request::Turn { .. } => self.scheduled_turn(seat, request),
+            Request::Patch {
+                from,
+                to,
+                amount,
+                after_beats,
+                fade_beats,
+                ..
+            } => self.scheduled_patch(seat, (from, to), *amount, (*after_beats, *fade_beats)),
+            Request::Unpatch { cable, to, .. } => self.unpatch(seat, *cable, to.as_deref()),
             Request::Add { .. } => self.batch_add(seat, request),
-            Request::Remove { module } => {
+            Request::Remove { module, .. } => {
                 let what = self.patch.remove(module, &[])?;
                 self.changed(seat, what, None, None, None)
             }
@@ -3078,7 +3098,11 @@ impl Wall {
             Request::ChainAdd { name } => self.chain_add(seat, name, now),
             Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change, now),
-            Request::Tempo { bpm } => self.tempo(seat, *bpm, None, now),
+            Request::Tempo {
+                bpm,
+                after_beats,
+                glide_beats,
+            } => self.tempo_timed(seat, *bpm, None, now, (*after_beats, *glide_beats)),
             Request::Loop { module, op } => self.loop_change(seat, module, op),
             Request::Speak {
                 module,
@@ -3103,6 +3127,15 @@ impl Wall {
             | Request::Shutdown => Err(error(
                 ErrorCode::Internal,
                 "connection requests are handled by the connection",
+            )),
+            Request::Look
+            | Request::Catalogue
+            | Request::Listen
+            | Request::Probe { .. }
+            | Request::Notes { .. }
+            | Request::Log { .. } => Err(error(
+                ErrorCode::Internal,
+                "a request that only reads is answered by read_only",
             )),
         }
     }
@@ -3583,6 +3616,17 @@ impl Wall {
         undoes: Option<u64>,
         now: Instant,
     ) -> Result<Outcome, WallError> {
+        self.tempo_timed(seat, bpm, undoes, now, (0.0, 0.0))
+    }
+
+    fn tempo_timed(
+        &mut self,
+        seat: &str,
+        bpm: f64,
+        undoes: Option<u64>,
+        now: Instant,
+        timing: (f64, f64),
+    ) -> Result<Outcome, WallError> {
         if !bpm.is_finite() {
             return Err(error(ErrorCode::BadRequest, "the tempo must be a number"));
         }
@@ -3605,6 +3649,8 @@ impl Wall {
                     from,
                     to: bpm,
                     desk,
+                    after_beats: timing.0,
+                    glide_beats: timing.1,
                 },
                 undoes,
                 None,
@@ -3627,11 +3673,13 @@ impl Wall {
                 from,
                 to: bpm,
                 desk,
+                after_beats: timing.0,
+                glide_beats: timing.1,
             },
             undoes,
         )?;
         self.record(&change)?;
-        if desk {
+        if desk && timing.0 == 0.0 {
             // Tempos are 20-300 BPM: exact enough in f32.
             let asked = self
                 .desk
@@ -5145,6 +5193,7 @@ impl Wall {
     /// if it is due. Returns the events to tell everyone: faults, and the
     /// changes the daemon made on its own.
     pub fn tick(&mut self, now: Instant) -> Vec<Event> {
+        self.tick_desk_tempo(now);
         self.tick_tree();
         let shared = self.engine.shared();
         self.clock_line

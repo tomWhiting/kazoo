@@ -103,8 +103,9 @@ impl Tick {
 ///
 /// Knobs glide in knob position (0 to 1 along their travel), so a glide on
 /// a logarithmic knob such as a cutoff moves by even musical steps. Frame
-/// `f` of the sub-block sits at position `from + step × (f + 1)` while `f`
-/// is below `frames`; from there on the knob rests on its value.
+/// `f` holds `held` while below `wait`, then follows position
+/// `from + step × (f + 1 - wait)` until `frames`. The last moving frame
+/// and the rest of the block use the knob's exact ending value.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Sweep {
     /// Knob position just before the sub-block's first frame.
@@ -113,6 +114,10 @@ pub struct Sweep {
     pub step: f32,
     /// Frames of this sub-block still gliding; 0 when the knob is at rest.
     pub frames: u32,
+    /// Frames held before moving within this sub-block.
+    pub wait: u32,
+    /// Exact knob value held during the wait.
+    pub held: f32,
 }
 
 impl Sweep {
@@ -121,6 +126,8 @@ impl Sweep {
         from: 0.0,
         step: 0.0,
         frames: 0,
+        wait: 0,
+        held: 0.0,
     };
 }
 
@@ -185,8 +192,13 @@ impl Io<'_> {
         };
         let sweep = self.sweeps.get(index).copied().unwrap_or(Sweep::REST);
         // Frame is below SUB_BLOCK: exact.
-        let value = if (frame as u32) < sweep.frames {
-            spec.denormalise(sweep.step.mul_add((frame + 1) as f32, sweep.from))
+        let value = if (frame as u32) < sweep.wait {
+            sweep.held
+        } else if (frame as u32 + 1) < sweep.frames {
+            spec.denormalise(sweep.step.mul_add(
+                ((frame as u32 + 1).saturating_sub(sweep.wait)) as f32,
+                sweep.from,
+            ))
         } else {
             value
         };

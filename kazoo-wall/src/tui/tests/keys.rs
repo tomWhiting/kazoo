@@ -94,12 +94,12 @@ fn a_turn_goes_from_the_target_with_the_chosen_glide_once_the_key_rests() {
     app.tick(start + TURN_SETTLE);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: expected,
-            glide_beats: Some(4.0),
-        }]
+        vec![Request::turn(
+            "vcf1".to_string(),
+            "cutoff".to_string(),
+            expected,
+            Some(4.0)
+        )]
     );
     // Shown ahead of the wall until the wall catches up.
     assert_eq!(app.ahead("vcf1", "cutoff"), Some(expected));
@@ -173,12 +173,12 @@ fn enter_types_a_value_or_a_named_position() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Turn {
-            module: "vcf1".to_string(),
-            knob: "cutoff".to_string(),
-            value: 1200.0,
-            glide_beats: Some(2.0),
-        }]
+        vec![Request::turn(
+            "vcf1".to_string(),
+            "cutoff".to_string(),
+            1200.0,
+            Some(2.0)
+        )]
     );
     // Out of range is held to the range; nonsense is refused.
     press(&mut app, KeyCode::Enter);
@@ -238,7 +238,12 @@ fn patching_picks_an_output_then_an_input_then_the_amount() {
     assert!(app.take_jobs().is_empty(), "nothing is sent until the end");
     press(&mut app, KeyCode::Enter);
     let sent = calls(&mut app);
-    let [Request::Patch { from, to, amount }] = &sent[..] else {
+    let [
+        Request::Patch {
+            from, to, amount, ..
+        },
+    ] = &sent[..]
+    else {
         panic!("expected one patch, got {sent:?}");
     };
     assert_eq!(from, "lfo1.out");
@@ -348,12 +353,7 @@ fn removing_a_module_asks_first() {
     assert!(app.take_jobs().is_empty());
     press(&mut app, KeyCode::Char('x'));
     press(&mut app, KeyCode::Char('y'));
-    assert_eq!(
-        calls(&mut app),
-        vec![Request::Remove {
-            module: "vco1".to_string()
-        }]
-    );
+    assert_eq!(calls(&mut app), vec![Request::remove("vco1".to_string())]);
 }
 
 #[test]
@@ -392,10 +392,10 @@ fn tempo_is_typed_and_checked() {
     press(&mut app, KeyCode::Char('t'));
     type_text(&mut app, "96.5");
     press(&mut app, KeyCode::Enter);
-    assert_eq!(calls(&mut app), vec![Request::Tempo { bpm: 96.5 }]);
+    assert_eq!(calls(&mut app), vec![Request::tempo(96.5)]);
     super::answer(
         &mut app,
-        Request::Tempo { bpm: 96.5 },
+        Request::tempo(96.5),
         &TempoResult {
             bpm: 96.5,
             desk: false,
@@ -466,12 +466,7 @@ fn adding_picks_a_kind_optionally_named_and_selects_it_when_it_arrives() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Add {
-            alias: None,
-            kind: "lfo".to_string(),
-            name: None,
-            place: None,
-        }]
+        vec![Request::add("lfo".to_string(), None, None, None)]
     );
 
     press(&mut app, KeyCode::Char('a'));
@@ -483,23 +478,18 @@ fn adding_picks_a_kind_optionally_named_and_selects_it_when_it_arrives() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Add {
-            alias: None,
-            kind: "vco".to_string(),
-            name: Some("wob".to_string()),
-            place: None,
-        }]
+        vec![Request::add(
+            "vco".to_string(),
+            Some("wob".to_string()),
+            None,
+            None
+        )]
     );
 
     // The new module is selected once the wall shows it.
     changed(
         &mut app,
-        Request::Add {
-            alias: None,
-            kind: "vco".to_string(),
-            name: Some("wob".to_string()),
-            place: None,
-        },
+        Request::add("vco".to_string(), Some("wob".to_string()), None, None),
         change(59, "Tom", "Tom added vco2 (wob)", None),
         Some("vco2"),
     );
@@ -517,13 +507,7 @@ fn unplugging_takes_the_cable_in_the_knob_or_the_one_chosen() {
     let mut app = connected();
     select(&mut app, "vcf1", "cutoff");
     press(&mut app, KeyCode::Char('u'));
-    assert_eq!(
-        calls(&mut app),
-        vec![Request::Unpatch {
-            cable: Some(2),
-            to: None
-        }]
-    );
+    assert_eq!(calls(&mut app), vec![Request::unpatch(Some(2), None)]);
     select(&mut app, "vcf1", "resonance");
     press(&mut app, KeyCode::Char('u'));
     assert!(
@@ -535,13 +519,7 @@ fn unplugging_takes_the_cable_in_the_knob_or_the_one_chosen() {
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char('u'));
-    assert_eq!(
-        calls(&mut app),
-        vec![Request::Unpatch {
-            cable: Some(3),
-            to: None
-        }]
-    );
+    assert_eq!(calls(&mut app), vec![Request::unpatch(Some(3), None)]);
 }
 
 #[test]
@@ -549,9 +527,7 @@ fn the_wall_s_refusals_reach_the_status_line() {
     let mut app = connected();
     app.on_reply(
         Reply::Answer {
-            request: Request::Remove {
-                module: "vco9".to_string(),
-            },
+            request: Request::remove("vco9".to_string()),
             outcome: Err(Failure {
                 code: Some(ErrorCode::UnknownModule),
                 message: "there is no module vco9".to_string(),
@@ -916,12 +892,7 @@ fn a_module_added_in_the_rack_view_is_brought_into_sight() {
     app.on_reply(Reply::Snapshot(Box::new(many(14))), Instant::now());
     render(&mut app, 120, 40);
     assert_eq!(app.rack.pan.x, 0);
-    let add = Request::Add {
-        alias: None,
-        kind: "lfo".to_string(),
-        name: None,
-        place: None,
-    };
+    let add = Request::add("lfo".to_string(), None, None, None);
     changed(
         &mut app,
         add,
@@ -1276,7 +1247,7 @@ fn z_puts_the_latest_move_back_then_undoes_from_the_log() {
     press(&mut app, KeyCode::Char('t'));
     type_text(&mut app, "100");
     press(&mut app, KeyCode::Enter);
-    assert_eq!(calls(&mut app), vec![Request::Tempo { bpm: 100.0 }]);
+    assert_eq!(calls(&mut app), vec![Request::tempo(100.0)]);
     press(&mut app, KeyCode::Char('z'));
     assert_eq!(calls(&mut app), vec![Request::Undo { change: 58 }]);
 }
@@ -1328,12 +1299,7 @@ fn typing_in_the_picker_finds_a_kind() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Add {
-            alias: None,
-            kind: "quant".to_string(),
-            name: None,
-            place: None,
-        }]
+        vec![Request::add("quant".to_string(), None, None, None)]
     );
     // Nothing matching says so, and waits.
     press(&mut app, KeyCode::Char('a'));
@@ -1381,12 +1347,12 @@ fn in_the_rack_view_a_goes_after_the_selected_module_and_says_where() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(
         calls(&mut app),
-        vec![Request::Add {
-            alias: None,
-            kind: "noise".to_string(),
-            name: Some("hiss".to_string()),
-            place: Some(place),
-        }]
+        vec![Request::add(
+            "noise".to_string(),
+            Some("hiss".to_string()),
+            Some(place),
+            None
+        )]
     );
     assert!(
         app.status(Instant::now())

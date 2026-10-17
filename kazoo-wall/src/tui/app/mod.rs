@@ -1527,12 +1527,12 @@ impl App {
     }
 
     fn send_turn(&mut self, module: String, knob: String, value: f64, glide: f64, now: Instant) {
-        self.jobs.push(Job::Call(Request::Turn {
-            module: module.clone(),
-            knob: knob.clone(),
+        self.jobs.push(Job::Call(Request::turn(
+            module.clone(),
+            knob.clone(),
             value,
-            glide_beats: Some(glide),
-        }));
+            Some(glide),
+        )));
         self.sent
             .retain(|turn| !(turn.module == module && turn.knob == knob));
         self.sent.push(SentTurn {
@@ -1649,14 +1649,14 @@ pub fn describe(request: &Request) -> String {
         Request::ChainAdd { name } => format!("add chain {name}"),
         Request::Chains => "list chains".to_string(),
         Request::Add { kind, .. } => format!("add {kind}"),
-        Request::Remove { module } => format!("remove {module}"),
+        Request::Remove { module, .. } => format!("remove {module}"),
         Request::Arrange { module, .. } => format!("move {module}"),
         Request::Group {
             group, join: true, ..
         } => format!("group {group}"),
         Request::Group { group, .. } => format!("ungroup {group}"),
         Request::Undo { change } => format!("undo change {change}"),
-        Request::Tempo { bpm } => format!("tempo {}", format::bpm(*bpm)),
+        Request::Tempo { bpm, .. } => format!("tempo {}", format::bpm(*bpm)),
         Request::Monitor { on: true } => "hear the wall".to_string(),
         Request::Monitor { on: false } => "silence the wall".to_string(),
         Request::Record { on: true } => "record the wall".to_string(),

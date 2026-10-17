@@ -473,6 +473,8 @@ fn a_patch_json_past_the_limits_with_the_log_ahead_starts_within_them() {
                 from: 92.0,
                 to: 100.0,
                 desk: false,
+                after_beats: 0.0,
+                glide_beats: 0.0,
             },
             undoes: None,
             clock: None,

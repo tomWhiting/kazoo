@@ -597,11 +597,7 @@ impl App {
                 return;
             }
         };
-        self.jobs.push(Job::Call(Request::Patch {
-            from,
-            to,
-            amount: None,
-        }));
+        self.jobs.push(Job::Call(Request::patch(from, to, None)));
         self.say(Tone::Info, "plugging in…".to_string(), now);
     }
 
@@ -640,10 +636,8 @@ impl App {
         });
         match cable {
             Some(cable) => {
-                self.jobs.push(Job::Call(Request::Unpatch {
-                    cable: Some(cable),
-                    to: None,
-                }));
+                self.jobs
+                    .push(Job::Call(Request::unpatch(Some(cable), None)));
                 self.say(Tone::Info, format!("unplugging cable {cable}…"), now);
             }
             None => self.say(

@@ -2039,6 +2039,8 @@ mod tests {
                 from: 90.0,
                 to: 100.0,
                 desk: false,
+                after_beats: 0.0,
+                glide_beats: 0.0,
             },
             summary: format!("change {seq}"),
             undoes: None,

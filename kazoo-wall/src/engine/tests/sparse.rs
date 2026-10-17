@@ -34,6 +34,8 @@ pub(super) fn watch_sweep(control: &mut EngineControl) -> [Arc<AtomicU32>; 2] {
         knob: 0,
         target: 1.0,
         glide_frames: 4_800,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     [frames, step]
 }
@@ -131,6 +133,8 @@ fn a_resting_knob_is_not_advanced() {
         knob: 0,
         target: 200.0,
         glide_frames: 1_000,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     on_audio_thread(|| engine.drain_commands());
     let (page, at) = engine.room.page(3).unwrap();
@@ -151,6 +155,8 @@ fn a_resting_knob_is_not_advanced() {
         knob: 0,
         target: 400.0,
         glide_frames: 1_000,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     model.add(&mut control, 3, Kind::VCF);
     on_audio_thread(|| engine.drain_commands());
@@ -220,6 +226,8 @@ fn a_sweep_never_leaks_to_the_next_module() {
         knob: 3,
         target: 1.0,
         glide_frames: 1_000,
+        wait_frames: 0,
+        curve: crate::protocol::GlideCurve::Linear,
     });
     render(&mut engine, SUB_BLOCK, &mut Vec::new());
     assert_eq!(calls.load(Ordering::Relaxed), 1);
