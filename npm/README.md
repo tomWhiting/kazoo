@@ -1,9 +1,11 @@
 # npm packages for kzoo
 
-- `kzoo`: the launcher `npx kzoo` runs. It finds the build for this machine
+- `@tomwhiting/kzoo` (in `kzoo/`): the launcher `npx @tomwhiting/kzoo` runs.
+  npm refuses the bare name `kzoo` as too like `koa` and `zod`; the command
+  it installs is still `kzoo` (and `kazoo`). It finds the build for this machine
   and runs it with the same arguments.
 - `kzoo-darwin-arm64`, `kzoo-darwin-x64`: the program itself for each Mac
-  (`bin/kzoo`), installed by `kzoo` as an optional dependency for the
+  (`bin/kzoo`), installed by the launcher as an optional dependency for the
   matching machine only. Each carries `LICENSE` and `THIRD-PARTY-NOTICES`.
 
 A release goes to crates.io first, then npm, from one commit:
@@ -12,10 +14,12 @@ A release goes to crates.io first, then npm, from one commit:
    commit `v<version>` and pushes the tag. It then publishes every crate at
    the workspace's version, waiting out crates.io's limits.
 2. `npm/publish.sh`, from that tagged commit (main at the tag, or the tag
-   checked out), does the rest:
+   checked out) or a later one on main that changes only the npm packaging
+   (`npm/` and the READMEs), does the rest:
    1. It checks that the checkout is clean and on origin/main. The tag
-      `v<version>` must name it, and so must crates.io's record of where
-      kzoo `<version>` came from.
+      `v<version>` must name it or a commit it follows by packaging changes
+      only, and crates.io's record of where kzoo `<version>` came from must
+      name the tagged commit.
    2. It writes each platform's `THIRD-PARTY-NOTICES` with `notices.py`,
       covering every crate compiled into that build. That run stops if any
       of them has a licence it cannot cover.
@@ -27,8 +31,8 @@ A release goes to crates.io first, then npm, from one commit:
    5. It checks each tarball:
       - the program, executable, and the notices in each platform package;
       - the licence in all three;
-      - the README in `kzoo`.
-   6. It publishes the two platform packages, then `kzoo`. Any already out
+      - the README in the launcher.
+   6. It publishes the two platform packages, then the launcher. Any already out
       at this version are passed over.
 
 `npm/publish.sh --dry-run` does all of it up to `npm publish --dry-run`. It

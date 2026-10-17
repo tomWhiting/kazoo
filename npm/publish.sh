@@ -48,12 +48,23 @@ if git -C "$root" fetch -q --tags origin; then
 else
   refuse "could not fetch from origin, so the tags and main are unchecked"
 fi
-# A version is one commit: the one tagged, which crates.io has too.
+# A version's program is one commit: the one tagged, which crates.io has
+# too. A later commit may change only the npm packaging (npm/) and the
+# READMEs, never what the program is built from.
 if tagged=$(git -C "$root" rev-parse -q --verify "refs/tags/v$version^{commit}"); then
   if [ "$tagged" != "$head" ]; then
-    refuse "v$version was released from $tagged, not this commit; check out v$version, or bump the version"
+    if ! git -C "$root" merge-base --is-ancestor "$tagged" "$head"; then
+      refuse "v$version was released from $tagged, which this commit does not follow; check out v$version, or bump the version"
+    elif changed=$(git -C "$root" diff --name-only "$tagged" "$head" -- . ':(exclude)npm' ':(exclude,glob)**/README.md'); then
+      if [ -n "$changed" ]; then
+        refuse "since v$version ($tagged) this commit changes more than the npm packaging: $(printf '%s ' $changed); bump the version"
+      fi
+    else
+      refuse "could not compare this commit with v$version ($tagged)"
+    fi
   fi
 else
+  tagged=$head
   refuse "v$version is not tagged; release the crates first (release/crates.sh)"
 fi
 crate=$(mktemp)
@@ -68,8 +79,8 @@ git = json.load(sys.stdin)["git"]
 print("" if git.get("dirty") else git["sha1"])' 2>/dev/null); then
       if [ -z "$published" ]; then
         refuse "crates.io's kzoo $version was published from a checkout with changes"
-      elif [ "$published" != "$head" ]; then
-        refuse "crates.io has kzoo $version from $published, not this commit"
+      elif [ "$published" != "$tagged" ]; then
+        refuse "crates.io has kzoo $version from $published, not $tagged"
       fi
     else
       refuse "crates.io's kzoo $version does not say which commit it came from"
@@ -155,8 +166,9 @@ done
 # A package already out at this version is passed over, so a release that
 # stopped part way is finished by running this again.
 for package in kzoo-darwin-arm64 kzoo-darwin-x64 kzoo; do
-  if [ -z "$dry" ] && npm view "$package@$version" version >/dev/null 2>&1; then
-    echo "publish.sh: $package $version is out already"
+  name=$(cd "$here/$package" && npm pkg get name | tr -d '"')
+  if [ -z "$dry" ] && npm view "$name@$version" version >/dev/null 2>&1; then
+    echo "publish.sh: $name $version is out already"
     continue
   fi
   (cd "$here/$package" && npm publish --access public $dry)

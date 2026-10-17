@@ -15,13 +15,13 @@ Everything is real synthesis, not samples.
 kazoo is one command, `kzoo`, also installed as `kazoo`. It runs on macOS (Apple silicon or Intel).
 
 ```sh
-npm install -g kzoo            # or try it once: npx kzoo wall
-cargo install kzoo             # from source, with Rust 1.89 or later
+npm install -g @tomwhiting/kzoo    # or try it once: npx @tomwhiting/kzoo wall
+cargo install kzoo                 # from source, with Rust 1.89 or later
 ```
 
 Install it (rather than run it through `npx`) for anything that keeps running: `npx` runs from npm's cache, and the wall and the studio start programs from where `kzoo` is.
 
-Only the `kzoo` package, on npm and crates.io, is this project, together with the `kazoo-*` crates it is built from.
+Only `@tomwhiting/kzoo` (and its `kzoo-darwin-*` builds) on npm and `kzoo` on crates.io are this project, together with the `kazoo-*` crates it is built from.
 
 ## Commands
 

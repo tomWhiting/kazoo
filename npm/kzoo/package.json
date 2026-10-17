@@ -1,5 +1,5 @@
 {
-  "name": "kzoo",
+  "name": "@tomwhiting/kzoo",
   "version": "0.3.0",
   "description": "kazoo: a shared modular synth that never stops, a desk, instruments and a mouth synth, in the terminal",
   "license": "AGPL-3.0-or-later",
