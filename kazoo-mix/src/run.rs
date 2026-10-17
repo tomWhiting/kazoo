@@ -135,6 +135,9 @@ pub fn run(args: Args) -> Result<()> {
     })?;
     let mouse = terminal_guard.mouse_captured();
 
+    // Read once, off the audio path: where the desk listens, and this
+    // machine's addresses to reach it by.
+    let listening = hub.listen_addr().map(network::listening);
     let result = run_desk(
         &mut terminal_guard,
         &audio,
@@ -142,6 +145,7 @@ pub fn run(args: Args) -> Result<()> {
         demo.as_ref(),
         mouse,
         &mut tempo,
+        listening.as_deref(),
     );
 
     let flushed = tempo.flush(audio.shared.transport());
@@ -171,6 +175,7 @@ fn run_desk(
     demo: Option<&DemoEightOhEight>,
     mouse: bool,
     tempo: &mut TempoStore,
+    listening: Option<&str>,
 ) -> Result<()> {
     let mut desk = Desk::new();
     let mut news = HubNews::default();
@@ -192,7 +197,7 @@ fn run_desk(
         if redraw {
             let (note, note_alert) =
                 status_line(tempo.status_warning(now), || news.line(hub, demo));
-            let note = network::note(note, hub.listen_addr());
+            let note = network::note(note, listening);
             let status = StatusInfo {
                 sample_rate: audio.sample_rate,
                 channels: audio.channels,

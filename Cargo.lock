@@ -1565,6 +1565,7 @@ dependencies = [
  "kazoo-808",
  "kazoo-core",
  "kazoo-host",
+ "nix 0.31.3",
  "ratatui",
  "ringbuf",
  "rustix",
@@ -1972,6 +1973,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
