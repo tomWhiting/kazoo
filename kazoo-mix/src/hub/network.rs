@@ -314,7 +314,12 @@ mod tests {
             "fe80::",
             "febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
             "::ffff:192.168.1.1",
+            "::ffff:192.168.1.5",
             "::ffff:100.64.0.1",
+            "::ffff:127.0.0.1",
+            "fd00::",
+            "fd12:3456:789a::1",
+            "fe80::1",
         ] {
             let peer = SocketAddr::new(ip.parse().unwrap(), 7700);
             assert_eq!(check_peer(peer), Ok(()), "{peer}");
@@ -344,6 +349,9 @@ mod tests {
             "fe7f::",
             "fec0::",
             "::ffff:8.8.8.8",
+            "::ffff:172.32.0.0",
+            "::ffff:100.128.0.0",
+            "ff02::1",
         ] {
             let peer = SocketAddr::new(ip.parse().unwrap(), 7700);
             let error = check_peer(peer).unwrap_err().to_string();
