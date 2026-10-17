@@ -43,6 +43,10 @@ kzoo 0.1.0 went to crates.io on 17 Oct 2026, but a plain `cargo install kzoo` co
 ## Done when
 
 - The workspace gate is green, apart from two known failures, which are excluded with this reason: `early_meets_its_targets` and `a_sweep_is_one_onset_per_note` are KZ-R04's open measurement targets, parked as a lane of their own. They fail on main, they failed identically when 0.1.0 was published, and none of this release's changes touch them.
+
+The 0.2.0 gate (17 Oct 2026, 11:44 to 12:08, on main at dc840cf): clippy, fmt and ast-grep clean; doc tests pass; nextest 4905 of 4908.
+- The R04 pair is the two named above.
+- The third is kazoo-mix's `a_paced_source_with_a_jittery_timer_is_placed_once_and_stays_placed`. It passed five times in five run alone straight after. It runs the hub against the real clock, so under the full suite's load the desk's own render loop oversleeps as well, and it sees a second resync. It is older than this release, and nothing in this release touches kazoo-mix's hub. KZ-D22 makes it deterministic.
 - All 23 crates are on crates.io at 0.2.0, and tag v0.2.0 is pushed.
 - A plain `cargo install kzoo` resolves from crates.io.
 - npm follows as soon as Tom's `npm login` works.
