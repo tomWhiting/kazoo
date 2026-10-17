@@ -22,12 +22,14 @@ impl HubStream {
         match address {
             HubAddress::Socket(path) => UnixStream::connect(path).map(Self::Unix),
             HubAddress::Tcp(target) => {
-                let addresses = target.to_socket_addrs().map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!("cannot resolve desk {target}: {error}"),
-                    )
-                })?;
+                let addresses = super::link::host_and_port(target)
+                    .and_then(|host_port| host_port.to_socket_addrs())
+                    .map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!("cannot resolve desk {target}: {error}"),
+                        )
+                    })?;
                 let mut failures = Vec::new();
                 let mut kind = io::ErrorKind::AddrNotAvailable;
                 for address in addresses {

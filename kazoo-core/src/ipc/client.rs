@@ -65,6 +65,10 @@ pub enum HubRead<'a> {
 // HubIpcClient
 // ---------------------------------------------------------------------------
 
+/// The least time a registration over the network is given to connect
+/// and for each step of its handshake.
+pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Client connection from an instrument to the hub.
 ///
 /// Owns a desk stream, a receive buffer and an [`Outbox`] for sends.
@@ -155,6 +159,9 @@ impl HubIpcClient {
         )
     }
 
+    /// Registers with the desk at `address`, waiting at most `timeout` (at
+    /// least [`NETWORK_TIMEOUT`] for a desk over the network) to connect
+    /// and for each read and write of the handshake.
     pub(crate) fn register_with_timeout(
         address: &HubAddress,
         reg: &RegisterMsg,
@@ -164,6 +171,13 @@ impl HubIpcClient {
             reg.check_streams()
                 .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
         }
+        // Over the network a registration gets at least NETWORK_TIMEOUT:
+        // Wi-Fi's power saving can hold a packet a few hundred milliseconds.
+        let timeout = if matches!(address, HubAddress::Tcp(_)) {
+            timeout.max(NETWORK_TIMEOUT)
+        } else {
+            timeout
+        };
         let mut stream = HubStream::connect(address, timeout)?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;

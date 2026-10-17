@@ -60,6 +60,7 @@ use crate::realtime::{NotRealTime, RealTime};
 use crate::sanitize_sample;
 
 mod address;
+pub(crate) use address::host_and_port;
 mod audio;
 mod voice;
 pub use voice::{VOICE_RING, VoiceLinkStats, VoiceRx};
