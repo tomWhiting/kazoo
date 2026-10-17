@@ -23,7 +23,7 @@ The Opus review of KZ-V16 (17 Oct 2026) found that the voice judge counts what i
   - `first_pitch_failure` gives the reason.
   - The processing rig attaches its own judge's counters, as the engine does.
 - **On screen.** kazoo-tui's counters read "pitch in", "pitch out" and "pyin", placed right after "mic": these change what the synth plays.
-  - "pyin" is marked an engine fault, since a validated configuration never fails a run. When it is the worst problem, its message ends with the first failure's reason.
+  - "pyin" is marked an engine fault, since a validated configuration never fails a run. Whenever it rises, the status message ends with the first failure's reason, even when another counter is the worst. The counter is marked by a field of its own, and the reason is published before the count (release and acquire).
   - The analysis thread's two counters had "pitch" labels, but that thread now feeds only the spectrum and formant display. They are now "scope in" and "scope out", and their docs say so.
 - **Tests.**
   - A real judge's ring, offered 4900 samples at once while empty, counts exactly 100 missed, read through `EngineStats`.

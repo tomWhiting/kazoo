@@ -71,7 +71,8 @@ impl JudgeCounters {
         JudgeStatsSnapshot {
             samples_dropped: self.0.samples_dropped.load(Ordering::Relaxed),
             results_dropped: self.0.results_dropped.load(Ordering::Relaxed),
-            pitch_runs_failed: self.0.pitch_runs_failed.load(Ordering::Relaxed),
+            // Acquire: a rise seen here sees the reason stored before it.
+            pitch_runs_failed: self.0.pitch_runs_failed.load(Ordering::Acquire),
         }
     }
 
@@ -81,7 +82,7 @@ impl JudgeCounters {
         self.0.first_pitch_failure.get().map(String::as_str)
     }
 }
-/// Ring overflow counters since this judge started.
+/// Overflow and failed-run counters since this judge started.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JudgeStatsSnapshot {
     pub samples_dropped: u64,
@@ -175,9 +176,11 @@ pub fn spawn(
                                 .first_pitch_failure
                                 .get_or_init(|| why.to_owned());
                         }
+                        // Release: the reason is published before the count,
+                        // so whoever sees the count rise can read why.
                         worker_stats
                             .pitch_runs_failed
-                            .fetch_add(failed - failed_runs, Ordering::Relaxed);
+                            .fetch_add(failed - failed_runs, Ordering::Release);
                         failed_runs = failed;
                     }
                     for event in onset.push_samples(samples) {

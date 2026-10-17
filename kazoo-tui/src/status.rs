@@ -118,6 +118,8 @@ struct Counter {
     long: &'static str,
     /// Read this counter from a snapshot.
     read: fn(&EngineStatsSnapshot) -> u64,
+    /// Whether a rise in it is said with the first pYIN failure's reason.
+    says_pitch_failure: bool,
 }
 
 /// Every counter in [`EngineStatsSnapshot`], most serious first.
@@ -126,101 +128,121 @@ const COUNTERS: [Counter; 20] = [
         short: "rec gaps",
         long: "recorded audio lost (the WAV file has gaps)",
         read: |s| s.disk_samples_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "rec errors",
         long: "recorder errors",
         read: |s| s.disk_errors,
+        says_pitch_failure: false,
     },
     Counter {
         short: "rec cmds",
         long: "recorder start/stop commands lost",
         read: |s| s.disk_commands_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "take gaps",
         long: "recorded samples lost (a take has gaps)",
         read: |s| s.take_samples_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "takes",
         long: "armed tracks that could not start recording",
         read: |s| s.takes_unavailable,
+        says_pitch_failure: false,
     },
     Counter {
         short: "clips",
         long: "clips that could not be placed",
         read: |s| s.clips_rejected,
+        says_pitch_failure: false,
     },
     Counter {
         short: "tracks",
         long: "tracks the engine refused",
         read: |s| s.tracks_rejected,
+        says_pitch_failure: false,
     },
     Counter {
         short: "synths",
         long: "synths, layers or effects the engine refused",
         read: |s| s.processors_rejected,
+        says_pitch_failure: false,
     },
     Counter {
         short: "cmds",
         long: "engine commands dropped",
         read: |s| s.commands_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "params",
         long: "parameter changes rejected",
         read: |s| s.params_rejected,
+        says_pitch_failure: false,
     },
     Counter {
         short: "mic",
         long: "mic samples dropped",
         read: |s| s.mic_samples_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "pitch in",
         long: "samples the voice judge missed",
         read: |s| s.judge_samples_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "pitch out",
         long: "voice judge verdicts dropped",
         read: |s| s.judge_results_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "pyin",
         long: "pYIN runs that failed, read as unvoiced (engine fault)",
         read: |s| s.pitch_runs_failed,
+        says_pitch_failure: true,
     },
     Counter {
         short: "desk reqs",
         long: "transport requests the desk never got",
         read: |s| s.desk_requests_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "desk syncs",
         long: "desk transport syncs not followed",
         read: |s| s.desk_syncs_rejected,
+        says_pitch_failure: false,
     },
     Counter {
         short: "scope in",
         long: "samples the spectrum display missed",
         read: |s| s.analysis_samples_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "scope out",
         long: "spectrum or formant results dropped",
         read: |s| s.analysis_results_dropped,
+        says_pitch_failure: false,
     },
     Counter {
         short: "rt frees",
         long: "objects freed on the audio thread (engine fault)",
         read: |s| s.callback_frees,
+        says_pitch_failure: false,
     },
     Counter {
         short: "screen",
         long: "screen updates skipped",
         read: |s| s.display_frames_dropped,
+        says_pitch_failure: false,
     },
 ];
 
@@ -250,12 +272,15 @@ impl EngineHealth {
         now: Instant,
         pitch_failure: Option<&str>,
     ) -> Option<String> {
-        let mut rises = COUNTERS.iter().filter_map(|counter| {
-            let rise = (counter.read)(&latest).saturating_sub((counter.read)(&self.seen));
-            (rise > 0).then_some((counter, rise))
-        });
-        let (worst, amount) = rises.next()?;
-        let others = rises.count();
+        let rises: Vec<(&Counter, u64)> = COUNTERS
+            .iter()
+            .filter_map(|counter| {
+                let rise = (counter.read)(&latest).saturating_sub((counter.read)(&self.seen));
+                (rise > 0).then_some((counter, rise))
+            })
+            .collect();
+        let (worst, amount) = *rises.first()?;
+        let others = rises.len() - 1;
         self.seen = latest;
         self.last_rise = Some(now);
         let more = match others {
@@ -263,11 +288,19 @@ impl EngineHealth {
             1 => " (+1 other problem, see header)".to_owned(),
             n => format!(" (+{n} other problems, see header)"),
         };
+        // The reason goes with a failed run whenever one rose, whether or not
+        // it is the worst: the header keeps the count, but only this says why.
         let why = match pitch_failure {
-            Some(why) if worst.short == "pyin" => format!(": {why}"),
+            Some(why) if rises.iter().any(|(counter, _)| counter.says_pitch_failure) => {
+                if worst.says_pitch_failure {
+                    format!(": {why}")
+                } else {
+                    format!("; pYIN failed: {why}")
+                }
+            }
             _ => String::new(),
         };
-        Some(format!("Engine: {amount} {}{why}{more}", worst.long))
+        Some(format!("Engine: {amount} {}{more}{why}", worst.long))
     }
 
     /// Every non-zero counter as `(short name, total)`, worst first.

@@ -16,7 +16,7 @@ The mouth's `Stats` counts these without showing them:
 - voice and audio refusals;
 - desk losses.
 
-Only the effect faults reach the screen, through `controls.rs`. The session's `Judge` counts samples missed, verdicts dropped and pYIN runs failed, and nothing reads them. A judge falling behind is heard as pitch that lags or drops out, with nothing on screen to say why.
+Only the effect faults reach the screen, through `controls.rs`. The synth fault ends the session with "mouth synth refused its parameter table; output muted" (`run.rs`); V18 leaves that as it is. The session's `Judge` counts samples missed, verdicts dropped and pYIN runs failed, and nothing reads them. A judge falling behind is heard as pitch that lags or drops out, with nothing on screen to say why.
 
 ## Outcome
 
