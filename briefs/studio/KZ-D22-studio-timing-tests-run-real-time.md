@@ -52,6 +52,10 @@ The jitter test's control failed as the gate did. The other three's controls did
 
 An earlier, weaker run (about 13:20) used 10 cores held busy by normal-priority load. The jitter test passed 20 of 20 alone and 20 of 20 under that load, against 17 of 20 for the old test.
 
+## Checks (17 Oct 2026, after the second Opus review)
+
+For kazoo-mix and kazoo-core: fmt, clippy and ast-grep are clean. nextest passed 1438 of 1440, failing only the R04 pair named in KZ-G04. The file was renamed from `KZ-D22-the-jittery-timer-test-keeps-its-own-time.md` when the plan changed, so the name says what was done.
+
 ## Done when
 
-clippy, nextest, fmt and ast-grep pass for kazoo-mix, and an Opus review finds nothing open.
+clippy, nextest, fmt and ast-grep pass for kazoo-mix and kazoo-core, and an Opus review finds nothing open.

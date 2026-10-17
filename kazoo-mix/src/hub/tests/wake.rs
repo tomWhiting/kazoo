@@ -40,11 +40,13 @@ fn a_transport_anchor_still_reaches_an_instrument_within_the_tick_budget() {
         rig.shared.channel_readout(0).connected
     });
     // The instrument's side, timing the anchor, runs real-time as an
-    // instrument's audio thread does; it waits in short sleeps, not a spin.
+    // instrument's audio thread does; it waits in short sleeps, not a spin,
+    // and renders into a buffer made before it promotes.
+    let mut data = vec![0.0_f32; 512];
     let promoted = real_time(Duration::from_millis(1), "an instrument's audio thread");
     let start = Instant::now();
     rig.shared.set_playing(true);
-    rig.render();
+    rig.render_into(&mut data);
     loop {
         if let Some(HubMessage::TransportSync(sync)) = client.try_recv().unwrap() {
             if sync.state == TRANSPORT_PLAYING {

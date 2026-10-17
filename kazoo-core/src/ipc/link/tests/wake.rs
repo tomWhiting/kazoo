@@ -70,6 +70,24 @@ impl Connection {
             std::hint::spin_loop();
         }
     }
+
+    /// As [`Self::read_frame`], for a thread promoted to real time: it waits
+    /// in short sleeps, so it never holds the core the link's worker needs
+    /// (at equal FIFO priority on one CPU) or uses more of its period than
+    /// macOS allows.
+    fn read_frame_sleeping(&mut self) -> FrameHeader {
+        let start = Instant::now();
+        loop {
+            if let Some(header) = self.buffer.try_read_frame(&mut self.stream).unwrap() {
+                return header;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "no frame received"
+            );
+            std::thread::sleep(Duration::from_micros(100));
+        }
+    }
 }
 
 impl Drop for Connection {
@@ -164,7 +182,7 @@ fn a_ui_request_is_carried_without_waiting_for_the_tick() {
     for _ in 0..10 {
         let start = Instant::now();
         connection.link.request_tempo(100.0).unwrap();
-        let header = connection.read_frame();
+        let header = connection.read_frame_sleeping();
         slowest = slowest.max(start.elapsed());
         assert_eq!(header.msg_type, MSG_TRANSPORT_REQUEST);
     }
