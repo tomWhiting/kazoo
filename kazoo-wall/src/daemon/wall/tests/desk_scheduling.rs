@@ -222,7 +222,7 @@ fn a_scheduled_desk_tempo_refusal_is_reported_once() {
         events
             .iter()
             .any(|event| matches!(event, Event::Notice { summary }
-        if summary.contains("scheduled tempo") && summary.contains("NotConnected")))
+        if summary.contains("scheduled tempo of 150 BPM") && summary.contains("it had gone away")))
     );
     let events = wall.tick(now + Duration::from_secs(3));
     assert!(
