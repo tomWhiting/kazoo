@@ -213,3 +213,7 @@ START KZ-D20 base=cd69e4d branch=lane/kz-D20 df=75GB at 05:04
 START KZ-T05b base=cd69e4d branch=lane/kz-T05b df=74GB at 05:04
 START KZ-T04h base=c511676 branch=lane/kz-T04h df=43GB at 06:55
 START KZ-D19 base=2335f84 branch=lane/kz-D19 df=48GB at 07:45
+START KZ-D23a base=7e41e52 branch=lane/kz-D23a df=74GB at 18:04
+START KZ-T12 base=7e41e52 branch=lane/kz-T12 df=74GB at 18:05
+START KZ-T13 base=ebf600f branch=lane/kz-T13 df=71GB at 18:06
+START KZ-D23b base=7e41e52 branch=lane/kz-D23b df=53GB at 18:22
