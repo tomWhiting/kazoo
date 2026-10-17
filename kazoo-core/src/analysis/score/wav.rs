@@ -3,9 +3,9 @@
 use std::path::Path;
 
 use hound::{SampleFormat, WavReader};
-use pyin::{Framing, PYINExecutor, PadMode};
 
 use super::{SCORE_STEP, Take};
+use crate::analysis::pyin::{Framing, Pyin, Settings};
 use crate::voice::TrackSettings;
 
 fn config_error(path: &Path, reason: impl std::fmt::Display) -> crate::Error {
@@ -108,22 +108,25 @@ pub fn read_take_with_settings(path: &Path, settings: TrackSettings) -> crate::R
     // a pitch move at most 35.92 octaves a second, in whole semitones per
     // frame; at one frame per 32-sample step that rounds to none, so the path
     // could only change pitch through an unvoiced frame (a slide lagged, every
-    // step dropped out), and its cost (frames x states squared) was 16 times
-    // this. Each step is then read between the two frames around its centre.
-    let mut executor = PYINExecutor::new(
-        f64::from(config.min_frequency),
-        f64::from(config.max_frequency),
-        spec.sample_rate,
-        config.frame_length,
-        None,
-        Some(config.hop_length),
-        None,
-    );
-    let (_, f0, voiced, _) =
-        executor.pyin(&input, f64::NAN, Framing::Center(PadMode::Constant(0.0)));
-    let frames: Vec<Option<f64>> = f0
+    // step dropped out), and it would have run 16 times as many frames. Each
+    // step is then read between the two frames around its centre.
+    let mut tracker = Pyin::new(Settings {
+        hop_length: config.hop_length,
+        ..Settings::plain(
+            f64::from(config.min_frequency),
+            f64::from(config.max_frequency),
+            spec.sample_rate,
+            config.frame_length,
+        )
+    })
+    .map_err(|error| config_error(path, error))?;
+    let track = tracker
+        .track(&input, f64::NAN, Framing::Center(0.0))
+        .map_err(|error| config_error(path, error))?;
+    let frames: Vec<Option<f64>> = track
+        .f0
         .into_iter()
-        .zip(voiced)
+        .zip(track.voiced)
         .map(|(hz, voiced)| (voiced && hz.is_finite() && hz > 0.0).then_some(hz))
         .collect();
     let truth: Vec<_> = (0..samples.len().div_ceil(SCORE_STEP))

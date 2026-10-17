@@ -103,6 +103,7 @@ pub fn run(serve: ServeCommand) -> color_eyre::Result<()> {
     let mut guard = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
         mouse: true,
         key_release_events: false,
+        panics: kazoo_host::terminal::Panics::AnyThread,
     })
     .map_err(|err| color_eyre::eyre::eyre!("the terminal could not be used: {err}"))?;
     if let Some(why) = guard.mouse_refused() {

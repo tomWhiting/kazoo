@@ -19,20 +19,13 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 
-use std::io::{self, Stdout, Write as _};
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use crossterm::cursor::Show;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -140,17 +133,29 @@ pub fn run(dir: PathBuf) -> io::Result<()> {
             number,
         )?);
     }
-    let walked = Screen::enter().and_then(|mut screen| {
-        let walked = walk(&mut app, &mut screen.terminal, &reader, &caught);
-        let left = screen.leave();
-        match (walked, left) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
-            (Err(walk), Err(leave)) => Err(io::Error::other(format!(
-                "{walk}; and the terminal could not be put back: {leave}"
-            ))),
-        }
-    });
+    // Only this thread's panics put the terminal back: a panic on the
+    // reader is caught there and said in the footer, and the walk goes on.
+    let options = kazoo_host::terminal::Options {
+        mouse: true,
+        key_release_events: false,
+        panics: kazoo_host::terminal::Panics::ThisThread,
+    };
+    let walked = kazoo_host::terminal::enter_with(options)
+        .map_err(io::Error::other)
+        .and_then(|mut terminal| {
+            if let Some(why) = terminal.mouse_refused() {
+                app.said = format!("the terminal refused the mouse ({why}); the keys still work");
+            }
+            let walked = walk(&mut app, &mut terminal, &reader, &caught);
+            let left = terminal.leave();
+            match (walked, left) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
+                (Err(walk), Err(leave)) => Err(io::Error::other(format!(
+                    "{walk}; and the terminal could not be put back: {leave}"
+                ))),
+            }
+        });
     for id in signals {
         if !signal_hook::low_level::unregister(id) {
             eprintln!("kazoo tree: a signal's handler had already gone");
@@ -254,110 +259,11 @@ fn panic_words(panic: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "with no words".to_owned())
 }
 
-/// A panic hook, as the standard library keeps one.
-type Hook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
-
-/// The terminal held for the tree: raw, on the alternate screen, with the
-/// mouse, and a panic hook that puts it back. Left on every way out:
-/// `leave`, a drop after an error, or a panic; the panic hook that was
-/// there before is put back on leaving.
-struct Screen {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
-    previous: Arc<Hook>,
-    left: bool,
-}
-
-impl Screen {
-    fn enter() -> io::Result<Self> {
-        enable_raw_mode()?;
-        let previous: Arc<Hook> = Arc::new(std::panic::take_hook());
-        let before = Arc::clone(&previous);
-        let screen = std::thread::current().id();
-        std::panic::set_hook(Box::new(move |info| {
-            // Only the screen's own thread puts the terminal back: a panic
-            // on the reader is caught there and said in the footer, and the
-            // screen goes on. Its words are not written over the screen.
-            if std::thread::current().id() == screen {
-                restore();
-                before(info);
-            }
-        }));
-        let mut stdout = io::stdout();
-        if let Err(err) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
-            restore();
-            put_back(&previous);
-            return Err(err);
-        }
-        match Terminal::new(CrosstermBackend::new(stdout)) {
-            Ok(terminal) => Ok(Self {
-                terminal,
-                previous,
-                left: false,
-            }),
-            Err(err) => {
-                restore();
-                put_back(&previous);
-                Err(err)
-            }
-        }
-    }
-
-    fn leave(mut self) -> io::Result<()> {
-        let shown = self.terminal.show_cursor();
-        let left = execute!(
-            self.terminal.backend_mut(),
-            DisableMouseCapture,
-            LeaveAlternateScreen
-        );
-        let raw = disable_raw_mode();
-        put_back(&self.previous);
-        // Left: Drop need not leave a second time.
-        self.left = true;
-        shown.and(left).and(raw)
-    }
-}
-
-impl Drop for Screen {
-    fn drop(&mut self) {
-        if !self.left {
-            restore();
-            put_back(&self.previous);
-        }
-    }
-}
-
-/// Put back the panic hook that was there before. Not while panicking: the
-/// hooks cannot be changed then, and ours has already put the terminal
-/// back.
-fn put_back(previous: &Arc<Hook>) {
-    if std::thread::panicking() {
-        return;
-    }
-    let ours = std::panic::take_hook();
-    drop(ours);
-    let previous = Arc::clone(previous);
-    std::panic::set_hook(Box::new(move |info| previous(info)));
-}
-
-/// Put the terminal back as it was, from anywhere: the cursor shown, the
-/// mouse let go, the alternate screen left, raw mode off. Each step is
-/// tried even when one before it failed; the failures are written to
-/// stderr, which is all there is left to tell at that point.
-fn restore() {
-    let mut stdout = io::stdout();
-    if let Err(err) = execute!(stdout, Show, DisableMouseCapture, LeaveAlternateScreen) {
-        eprintln!("kazoo tree: the terminal could not be put back: {err}");
-    }
-    if let Err(err) = disable_raw_mode() {
-        eprintln!("kazoo tree: raw mode could not be left: {err}");
-    }
-}
-
 /// Walk the tree until quit or a signal: draw only when something
 /// changed, take keys and the mouse, and show each tree the reader sends.
 fn walk(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut kazoo_host::terminal::Terminal,
     reader: &Reader,
     stop: &AtomicUsize,
 ) -> io::Result<()> {
