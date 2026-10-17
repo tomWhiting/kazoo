@@ -59,12 +59,16 @@ fi
 crate=$(mktemp)
 trap 'rm -f "$crate"' EXIT
 code=$(curl -sSL -A "$agent" -o "$crate" -w '%{http_code}' \
-  "https://static.crates.io/crates/kzoo/kzoo-$version.crate" || echo unreachable)
+  "https://static.crates.io/crates/kzoo/kzoo-$version.crate" || true)
 case $code in
   200)
     if published=$(tar -xzOf "$crate" "kzoo-$version/.cargo_vcs_info.json" 2>/dev/null |
-      python3 -I -c 'import json, sys; print(json.load(sys.stdin)["git"]["sha1"])' 2>/dev/null); then
-      if [ "$published" != "$head" ]; then
+      python3 -I -c 'import json, sys
+git = json.load(sys.stdin)["git"]
+print("" if git.get("dirty") else git["sha1"])' 2>/dev/null); then
+      if [ -z "$published" ]; then
+        refuse "crates.io's kzoo $version was published from a checkout with changes"
+      elif [ "$published" != "$head" ]; then
         refuse "crates.io has kzoo $version from $published, not this commit"
       fi
     else
@@ -74,8 +78,11 @@ case $code in
   403 | 404)
     refuse "crates.io has no kzoo $version yet; release the crates first (release/crates.sh)"
     ;;
+  000 | '')
+    refuse "could not reach crates.io, so where kzoo $version came from is unchecked"
+    ;;
   *)
-    refuse "could not reach crates.io ($code), so where kzoo $version came from is unchecked"
+    refuse "crates.io answered $code, so where kzoo $version came from is unchecked"
     ;;
 esac
 

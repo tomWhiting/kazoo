@@ -66,8 +66,11 @@ source_of() {
     echo "crates.sh: could not fetch $1 $version from crates.io to check its commit" >&2
     exit 1
   fi
+  # A crate published from a checkout with changes is from no commit.
   tar -xzOf "$file" "$1-$version/.cargo_vcs_info.json" 2>/dev/null |
-    python3 -I -c 'import json, sys; print(json.load(sys.stdin)["git"]["sha1"])' 2>/dev/null || true
+    python3 -I -c 'import json, sys
+git = json.load(sys.stdin)["git"]
+print("" if git.get("dirty") else git["sha1"])' 2>/dev/null || true
   rm -f "$file"
 }
 
@@ -98,6 +101,19 @@ for name in $crates; do
     fi
   fi
 done
+# Every crate packaged and built from its package before the tag, so a
+# crate that cannot be published is found while the version is still free.
+skip_unpublished=""
+for name in $unpublished; do
+  skip_unpublished="$skip_unpublished --exclude $name"
+done
+if ! nice -n 10 lockf -k "$HOME/.kazoo-cargo.lock" \
+  cargo package --workspace --locked $skip_unpublished -j 4 \
+  --target-dir "$root/target" --manifest-path "$root/Cargo.toml"; then
+  echo "crates.sh: a crate does not package and build; nothing is tagged or published" >&2
+  exit 1
+fi
+
 if ! git -C "$root" rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
   git -C "$root" tag -a "v$version" -m "kzoo $version" "$head"
 fi
@@ -125,7 +141,7 @@ while :; do
   fi
   # $skip unquoted: each exclusion is its own word.
   if nice -n 10 lockf -k "$HOME/.kazoo-cargo.lock" \
-    cargo publish --workspace --locked $skip -j 4 \
+    cargo publish --workspace --locked --no-verify $skip -j 4 \
     --target-dir "$root/target" --manifest-path "$root/Cargo.toml" > "$log" 2>&1; then
     continue
   fi

@@ -15,8 +15,10 @@ kzoo 0.1.0 went to crates.io on 17 Oct 2026, but a plain `cargo install kzoo` co
   - kazoo-core's `JudgeStatsSnapshot` and `EngineStatsSnapshot` gain public fields (KZ-V16, KZ-V17), and neither struct is `#[non_exhaustive]`.
 - **The tag, then crates.io.** `release/crates.sh` releases from a clean main that is origin/main.
   - Any crate already on crates.io at this version must have come from this commit; it reads each crate's `.cargo_vcs_info.json` to check.
+  - It packages every crate and builds each from its package (`cargo package --workspace`) before anything else, so a crate that cannot be published is found while the version is still free.
   - It tags the commit `v<version>` and pushes the tag before anything is published, so a rerun from another commit is refused. A tag naming another commit is refused.
-  - It then publishes each crate in dependency order (`cargo publish --workspace`), passing over any already out at this version.
+  - It then publishes each crate in dependency order (`cargo publish --workspace --no-verify`, already verified), passing over any already out at this version.
+  - A crate published from a checkout with changes (`"dirty": true`) counts as from no commit, here and in npm/publish.sh.
   - When crates.io's limit is hit, it waits as long as crates.io says and goes on.
   - When the index lags a publish, it waits and looks again, up to ten times.
 - **npm, from the tag.** `npm/publish.sh` publishes the commit tagged `v<version>`: main at the tag, or the tag checked out.
