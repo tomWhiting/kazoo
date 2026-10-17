@@ -1,6 +1,6 @@
 [package]
 name = "kzoo"
-version = "0.2.1"
+version = "0.3.0"
 default-run = "kzoo"
 edition = "2024"
 rust-version = "1.89"
@@ -28,26 +28,26 @@ name = "kazoo"
 path = "src/bin/kazoo.rs"
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host", version = "=0.2.1" }
+kazoo-host = { path = "../kazoo-host", version = "=0.3.0" }
 clap = { version = "4.5", features = ["derive", "env"] }
 color-eyre = "0.6.5"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
-kazoo-core = { path = "../kazoo-core", version = "=0.2.1" }
-kazoo-mix = { path = "../kazoo-mix", version = "=0.2.1" }
-kazoo-wall = { path = "../kazoo-wall", version = "=0.2.1" }
-kazoo-mcp = { path = "../kazoo-mcp", version = "=0.2.1" }
-kazoo-808 = { path = "../kazoo-808", version = "=0.2.1" }
-kazoo-303 = { path = "../kazoo-303", version = "=0.2.1" }
-kazoo-cs80 = { path = "../kazoo-cs80", version = "=0.2.1" }
-kazoo-mini = { path = "../kazoo-mini", version = "=0.2.1" }
-kazoo-juno = { path = "../kazoo-juno", version = "=0.2.1" }
-kazoo-prophet = { path = "../kazoo-prophet", version = "=0.2.1" }
-kazoo-dx = { path = "../kazoo-dx", version = "=0.2.1" }
-kazoo-string = { path = "../kazoo-string", version = "=0.2.1" }
-kazoo-glass = { path = "../kazoo-glass", version = "=0.2.1" }
-kazoo-arp = { path = "../kazoo-arp", version = "=0.2.1" }
-kazoo-play = { path = "../kazoo-play", version = "=0.2.1" }
-kazoo-tui = { path = "../kazoo-tui", version = "=0.2.1" }
-kazoo-mouth = { path = "../kazoo-mouth", version = "=0.2.1" }
-kazoo-tree = { path = "../kazoo-tree", version = "=0.2.1" }
+kazoo-core = { path = "../kazoo-core", version = "=0.3.0" }
+kazoo-mix = { path = "../kazoo-mix", version = "=0.3.0" }
+kazoo-wall = { path = "../kazoo-wall", version = "=0.3.0" }
+kazoo-mcp = { path = "../kazoo-mcp", version = "=0.3.0" }
+kazoo-808 = { path = "../kazoo-808", version = "=0.3.0" }
+kazoo-303 = { path = "../kazoo-303", version = "=0.3.0" }
+kazoo-cs80 = { path = "../kazoo-cs80", version = "=0.3.0" }
+kazoo-mini = { path = "../kazoo-mini", version = "=0.3.0" }
+kazoo-juno = { path = "../kazoo-juno", version = "=0.3.0" }
+kazoo-prophet = { path = "../kazoo-prophet", version = "=0.3.0" }
+kazoo-dx = { path = "../kazoo-dx", version = "=0.3.0" }
+kazoo-string = { path = "../kazoo-string", version = "=0.3.0" }
+kazoo-glass = { path = "../kazoo-glass", version = "=0.3.0" }
+kazoo-arp = { path = "../kazoo-arp", version = "=0.3.0" }
+kazoo-play = { path = "../kazoo-play", version = "=0.3.0" }
+kazoo-tui = { path = "../kazoo-tui", version = "=0.3.0" }
+kazoo-mouth = { path = "../kazoo-mouth", version = "=0.3.0" }
+kazoo-tree = { path = "../kazoo-tree", version = "=0.3.0" }

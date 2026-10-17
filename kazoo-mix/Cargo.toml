@@ -1,6 +1,6 @@
 [package]
 name = "kazoo-mix"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
 description = "The kazoo desk: the studio hub every instrument plays into, with its mixer"
@@ -11,12 +11,12 @@ repository = "https://github.com/tomWhiting/kazoo"
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host", version = "=0.2.1" }
+kazoo-host = { path = "../kazoo-host", version = "=0.3.0" }
 color-eyre = "0.6.5"
 cpal = "0.17.1"
 crossterm = "0.29.0"
-kazoo-core = { path = "../kazoo-core", version = "=0.2.1" }
-kazoo-808 = { path = "../kazoo-808", version = "=0.2.1" }
+kazoo-core = { path = "../kazoo-core", version = "=0.3.0" }
+kazoo-808 = { path = "../kazoo-808", version = "=0.3.0" }
 nix = { version = "0.31.3", features = ["net"] }
 ratatui = "0.30.0"
 ringbuf = "0.4.8"
