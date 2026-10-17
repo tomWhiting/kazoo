@@ -1138,3 +1138,81 @@ fn a_spanning_jack_round_trips_and_an_unknown_law_still_reads() {
         assert!(serde_json::from_value::<KnobInfo>(value).is_err(), "{law}");
     }
 }
+
+#[test]
+fn timing_is_written_only_when_asked_and_old_lines_read_as_before() -> Result<(), serde_json::Error>
+{
+    // Log lines from before KZ-T12: no timing fields. They read as untimed,
+    // and are written back exactly as they were.
+    for what in [
+        json!({"op":"turn","module":"vcf1","knob":"cutoff","from":420.0,"to":800.0,"glide_beats":4.0}),
+        json!({"op":"patch","cable":{"id":12,"from":"lfo1.out","to":"vcf1.cutoff","amount":0.4}}),
+        json!({"op":"tempo","from":92.0,"to":96.0,"desk":false}),
+    ] {
+        let read: What = serde_json::from_value(what.clone())?;
+        match &read {
+            What::Turn {
+                after_beats, curve, ..
+            } => assert!(*after_beats == 0.0 && curve.is_linear()),
+            What::Patch {
+                after_beats,
+                fade_beats,
+                ..
+            } => assert!(*after_beats == 0.0 && *fade_beats == 0.0),
+            What::Tempo {
+                after_beats,
+                glide_beats,
+                ..
+            } => assert!(*after_beats == 0.0 && *glide_beats == 0.0),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(serde_json::to_value(&read)?, what);
+    }
+    // Requests from older seats and consoles: the same.
+    for (line, request) in [
+        (
+            json!({"op":"turn","module":"vcf1","knob":"cutoff","value":800.0}),
+            Request::turn("vcf1".to_string(), "cutoff".to_string(), 800.0, None),
+        ),
+        (
+            json!({"op":"patch","from":"lfo1.out","to":"vcf1.cutoff"}),
+            Request::patch("lfo1.out".to_string(), "vcf1.cutoff".to_string(), None),
+        ),
+        (json!({"op":"tempo","bpm":96.0}), Request::tempo(96.0)),
+        (
+            json!({"op":"unpatch","cable":3}),
+            Request::unpatch(Some(3), None),
+        ),
+        (
+            json!({"op":"remove","module":"lfo1"}),
+            Request::remove("lfo1".to_string()),
+        ),
+        (
+            json!({"op":"add","kind":"lfo"}),
+            Request::add("lfo".to_string(), None, None, None),
+        ),
+    ] {
+        assert_eq!(serde_json::from_value::<Request>(line.clone())?, request);
+        assert_eq!(serde_json::to_value(&request)?, line);
+    }
+    // Timed changes carry their timing through the wire and the log.
+    for what in [
+        json!({"op":"turn","module":"out3","knob":"level","from":0.0,"to":0.6,"glide_beats":16.0,"after_beats":8.0,"curve":"ease_in"}),
+        json!({"op":"turn","module":"out3","knob":"level","from":0.0,"to":0.6,"glide_beats":16.0,"curve":"s_curve"}),
+        json!({"op":"patch","cable":{"id":12,"from":"lfo1.out","to":"vcf1.cutoff","amount":0.4},"after_beats":4.0,"fade_beats":2.0}),
+        json!({"op":"tempo","from":92.0,"to":96.0,"desk":false,"after_beats":2.0,"glide_beats":4.0}),
+    ] {
+        let read: What = serde_json::from_value(what.clone())?;
+        assert_eq!(serde_json::to_value(&read)?, what);
+    }
+    for request in [
+        json!({"op":"turn","module":"vcf1","knob":"cutoff","value":800.0,"glide_beats":2.0,"after_beats":8.0,"curve":"ease_out"}),
+        json!({"op":"patch","from":"lfo1.out","to":"vcf1.cutoff","amount":0.5,"after_beats":4.0,"fade_beats":2.0}),
+        json!({"op":"tempo","bpm":96.0,"after_beats":2.0,"glide_beats":4.0}),
+    ] {
+        let read: Request = serde_json::from_value(request.clone())?;
+        assert_eq!(serde_json::to_value(&read)?, request);
+        round_trip_request(read);
+    }
+    Ok(())
+}

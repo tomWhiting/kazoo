@@ -195,3 +195,27 @@ fn undo_of_a_waiting_turn_is_immediate_and_linear() {
         (what["to"].as_f64().unwrap() as f32).to_bits()
     );
 }
+
+#[test]
+fn timed_patch_and_tempo_summaries_say_when_and_how_long() {
+    let patch: What = serde_json::from_value(serde_json::json!({"op":"patch","cable":{"id":12,"from":"lfo1.out","to":"vcf1.cutoff","amount":0.4},"after_beats":4,"fade_beats":2})).unwrap();
+    let untimed: What = serde_json::from_value(serde_json::json!({"op":"patch","cable":{"id":12,"from":"lfo1.out","to":"vcf1.cutoff","amount":0.4}})).unwrap();
+    assert_eq!(
+        crate::change::describe(&patch),
+        format!("{} after 4 beats over 2 beats", crate::change::describe(&untimed))
+    );
+    let tempo: What = serde_json::from_value(
+        serde_json::json!({"op":"tempo","from":92,"to":96,"desk":false,"after_beats":1}),
+    )
+    .unwrap();
+    assert_eq!(
+        crate::change::describe(&tempo),
+        "set the tempo 92 BPM → 96 BPM after 1 beat"
+    );
+    let turn: What = serde_json::from_value(serde_json::json!({"op":"turn","module":"out3","knob":"level","from":0,"to":0.6,"glide_beats":0,"after_beats":8})).unwrap();
+    assert!(
+        crate::change::describe(&turn).ends_with(" after 8 beats at once"),
+        "{}",
+        crate::change::describe(&turn)
+    );
+}
