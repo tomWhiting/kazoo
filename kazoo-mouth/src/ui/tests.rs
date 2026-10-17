@@ -663,3 +663,64 @@ fn a_narrow_header_keeps_every_word_of_the_mic_and_the_desk() {
         );
     }
 }
+
+/// The health row sits in the header, wrapped to the width and red while
+/// it rises: on the smallest screen the mouth draws, its words are whole and
+/// every key is still in the footer.
+#[test]
+fn the_health_row_wraps_in_the_header_and_leaves_the_footer_alone() {
+    use crate::health::Losses;
+    use ratatui::style::Color;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    let display = Display::new(RATE);
+    let now = Instant::now();
+    let losses = Losses {
+        mic_dropped: 28,
+        display_dropped: 3,
+        judge: kazoo_core::voice::judge::JudgeStatsSnapshot {
+            pitch_runs_failed: 1,
+            ..Default::default()
+        },
+        ..Losses::default()
+    };
+    let why = "pyin's forward FFT: the input and output buffers are the wrong length";
+    app.observe_losses(losses, Some(why), now);
+    let buffer = render(&app, &display, 80, 24, now);
+    let screen = text(&buffer);
+    let joined: String = screen.lines().map(str::trim_end).collect();
+    assert!(
+        joined.contains(&format!(
+            "28 mic samples dropped (+2 others); pYIN failed: {why}"
+        )),
+        "{screen}"
+    );
+    let footer = screen.lines().last().unwrap();
+    for key in ["Tab", "↑↓", "←→", "w", "Space", "?"] {
+        assert!(footer.contains(key), "{footer}");
+    }
+    assert!(!footer.contains("lost"), "{footer}");
+    let row = screen
+        .lines()
+        .position(|line| line.contains("28 mic samples dropped"))
+        .unwrap();
+    let start = usize::from(buffer.area.width) * row;
+    assert_eq!(buffer.content[start].fg, Color::Red, "fresh is red");
+
+    // Once settled, the totals stay, amber.
+    let later = now + crate::health::RISE_LIFETIME;
+    let buffer = render(&app, &display, 80, 24, later);
+    let screen = text(&buffer);
+    let row = screen
+        .lines()
+        .position(|line| line.contains("lost so far: mic 28 · pyin 1 · screen 3"))
+        .unwrap_or_else(|| panic!("{screen}"));
+    let start = usize::from(buffer.area.width) * row;
+    assert_eq!(buffer.content[start].fg, Color::Yellow, "settled is amber");
+}
+
+#[test]
+fn nothing_lost_draws_no_health_row() {
+    let app = App::new(QuantiseSettings::default(), false);
+    let screen = text(&render(&app, &Display::new(RATE), 120, 40, Instant::now()));
+    assert!(!screen.contains("lost"), "{screen}");
+}

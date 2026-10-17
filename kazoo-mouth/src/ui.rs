@@ -37,6 +37,9 @@ fn rows_of(text: &str, width: usize) -> Vec<String> {
 mod tests;
 
 const DIM: Color = Color::DarkGray;
+/// The health row while a loss is rising, and once it has settled.
+const LOSS_FRESH: Color = Color::Red;
+const LOSS_HELD: Color = Color::Yellow;
 const BRIGHT: Color = Color::Cyan;
 const SCALE_LINE: Color = Color::Rgb(45, 45, 50);
 const FOOTER: &str = "Tab ↑↓ ←→ w Space b d ?";
@@ -96,12 +99,21 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     // Cut at the width, not at words, so the rows counted are the rows drawn.
     let width = usize::from(area.width);
     let breakdown = app.latency.breakdown();
-    let header: Vec<Line<'_>> = [title.as_str(), link, mic.as_str()]
+    let mut header: Vec<Line<'_>> = [title.as_str(), link, mic.as_str()]
         .into_iter()
         .chain(app.plots.latency_open.then_some(breakdown.as_str()))
         .flat_map(|text| rows_of(text, width))
         .map(Line::from)
         .collect();
+    // What the mouth has lost: a row of its own, red while it rises.
+    if let Some(row) = app.health.row(now, app.pitch_failure.as_deref()) {
+        let colour = if row.fresh { LOSS_FRESH } else { LOSS_HELD };
+        header.extend(
+            rows_of(&row.text, width)
+                .into_iter()
+                .map(|text| Line::styled(text, Style::default().fg(colour))),
+        );
+    }
     let header_rows = u16::try_from(header.len())
         .unwrap_or(u16::MAX)
         .min(area.height.saturating_sub(5));
@@ -138,8 +150,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
         "busy: change not sent".to_owned()
     } else if let Some(notice) = app.notice(now) {
         notice.to_owned()
-    } else if let Some(lost) = app.health.summary() {
-        format!("lost: {lost} · {FOOTER} · {description}")
     } else {
         format!("{FOOTER} · {description}")
     };

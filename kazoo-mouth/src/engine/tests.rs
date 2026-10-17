@@ -81,7 +81,12 @@ impl FakeHub {
 impl DeskOut for FakeHub {
     fn send_voice(&mut self, frame: &VoiceFrame) -> bool {
         self.voice.push(*frame);
-        true
+        // A desk that is not there takes nothing, as the real link does.
+        self.connected
+    }
+
+    fn carries_voice(&self) -> bool {
+        self.connected
     }
 
     fn send_audio(&mut self, frames: u32, samples: &[f32]) -> bool {
@@ -447,6 +452,20 @@ fn backlog_keeps_the_newest_block_and_display_keeps_the_oldest() -> Result<()> {
     assert_eq!(frames[0].at, 64);
     assert_eq!(frames[1023].at, 65_536);
     assert!(rig.stats.display_dropped.load(Ordering::Relaxed) > 0);
+    rig.finish();
+    Ok(())
+}
+
+/// Playing direct is not a loss: with no desk, the frames it does not take
+/// count against nothing.
+#[test]
+fn playing_direct_counts_no_voice_refused() -> Result<()> {
+    let mut rig = Rig::new(false, BLOCK)?;
+    let input = sine(220.0, 20_000);
+    let output = play(&mut rig, &input);
+    assert!(output.iter().all(|sample| sample.is_finite()));
+    assert!(!rig.engine.desk().voice.is_empty(), "frames were offered");
+    assert_eq!(rig.stats.voice_refused.load(Ordering::Relaxed), 0);
     rig.finish();
     Ok(())
 }

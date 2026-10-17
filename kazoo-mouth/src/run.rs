@@ -23,6 +23,7 @@ use ringbuf::{HeapCons, HeapRb};
 use crate::controls::{Action, App, settings};
 use crate::engine::looper::{LoopFeed, LoopOut};
 use crate::engine::{Command, EngineSetup, MouthEngine, Stats};
+use crate::health::Losses;
 use crate::ui::{self, Display};
 
 #[cfg(test)]
@@ -197,14 +198,37 @@ pub fn run(args: Args) -> Result<()> {
         app.message(format!("mouse capture refused: {reason}"), Instant::now());
     }
     let result = event_loop(&mut session, &mut terminal, &mut app);
-    app.sync_stats(
+    app.sync_stats(&session.stats, Instant::now());
+    app.save_if_due(Instant::now(), true);
+    // The desk's counters go with the link, so they are read before it is.
+    let desk = session.hub.as_ref().map(HubLink::status);
+    let stopped = session.stop();
+    // Now the judge has been joined, its counters are final.
+    let losses = Losses::read(
         &session.stats,
-        Some(&session.judge_counters),
+        &session.judge_counters,
+        false,
+        desk.as_ref(),
+    );
+    app.observe_losses(
+        losses,
+        session.judge_counters.first_pitch_failure(),
         Instant::now(),
     );
-    app.save_if_due(Instant::now(), true);
-    let stopped = session.stop();
-    leave(result, terminal, stopped)
+    let left = leave(result, terminal, stopped);
+    // Said once the terminal is back, where it stays on the screen.
+    let report = app.health.report(app.pitch_failure.as_deref());
+    let said = say(session.after.drain(..).chain(report));
+    combine(left, said)
+}
+
+/// Lines for the terminal once it is back, each on stderr.
+fn say(lines: impl Iterator<Item = String>) -> Result<()> {
+    let mut err = io::stderr().lock();
+    for line in lines {
+        writeln!(err, "{line}").wrap_err("writing to stderr")?;
+    }
+    Ok(())
 }
 
 struct Session {
@@ -224,6 +248,9 @@ struct Session {
     writers: Vec<std::thread::JoinHandle<()>>,
     saved: crossbeam_channel::Receiver<String>,
     saved_tx: Sender<String>,
+    /// What to say once the terminal is left: written while the screen is
+    /// up, it would vanish with it.
+    after: Vec<String>,
 }
 
 impl Session {
@@ -276,6 +303,7 @@ impl Session {
             writers: Vec::new(),
             saved,
             saved_tx,
+            after: Vec::new(),
         };
         let mut engine = MouthEngine::with_settings(
             EngineSetup {
@@ -307,7 +335,7 @@ impl Session {
             Arc::new(move |offered, accepted| {
                 stats
                     .mic_dropped
-                    .fetch_add((offered - accepted) as u64, Ordering::Relaxed);
+                    .fetch_add(offered.saturating_sub(accepted) as u64, Ordering::Relaxed);
             }),
             notices,
         )?);
@@ -329,11 +357,18 @@ impl Session {
             })
         });
         drop(self.hub.take());
-        let reported = kazoo_core::host::link::exit_report().map_or_else(
-            || Ok(()),
-            |report| writeln!(io::stderr().lock(), "{report}").map_err(Into::into),
-        );
-        combine(writers, combine(joined, reported))
+        self.after.extend(kazoo_core::host::link::exit_report());
+        combine(writers, joined)
+    }
+
+    /// What the session has lost so far, for the health row.
+    fn losses(&self) -> Losses {
+        Losses::read(
+            &self.stats,
+            &self.judge_counters,
+            self.judge.as_ref().is_some_and(Judge::is_finished),
+            self.hub.as_ref().map(HubLink::status).as_ref(),
+        )
     }
 
     fn join_writers(&mut self) -> Result<()> {
@@ -341,7 +376,7 @@ impl Session {
         for handle in self.writers.drain(..) {
             // Draining reports before joining leaves room for every worker to finish.
             for message in self.saved.try_iter() {
-                eprintln!("kazoo-mouth: {message}");
+                self.after.push(format!("kazoo-mouth: {message}"));
             }
             if let Err(panic) = handle.join() {
                 drop(panic);
@@ -349,7 +384,7 @@ impl Session {
             }
         }
         for message in self.saved.try_iter() {
-            eprintln!("kazoo-mouth: {message}");
+            self.after.push(format!("kazoo-mouth: {message}"));
         }
         result
     }
@@ -517,8 +552,12 @@ fn save_loop(directory: &Path, samples: &[f32], rate: u32, seconds: u64) -> io::
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // Here the terminal has been left, or the program is unwinding.
         if let Err(error) = self.stop() {
             eprintln!("kazoo-mouth: stopping audio failed: {error}");
+        }
+        for line in self.after.drain(..) {
+            eprintln!("{line}");
         }
     }
 }
@@ -551,6 +590,38 @@ fn combine(first: Result<()>, second: Result<()>) -> Result<()> {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Err(first), Err(second)) => Err(eyre!("{first:#}; also: {second:#}")),
+    }
+}
+
+/// Each part of the delay from the voice to the speaker, as far as it is known.
+fn latency(session: &Session) -> ui::latency::Latency {
+    let rate = f64::from(session.rate);
+    ui::latency::Latency {
+        input: session.mic.as_ref().and_then(Mic::input_latency_ms),
+        resampler: session
+            .mic
+            .as_ref()
+            .and_then(Mic::resampler_delay_frames)
+            .map(|frames| frames as f64 * 1000.0 / rate),
+        block: session
+            .output
+            .as_ref()
+            .map(|output| output.buffer_frames().min(4096) as f64 * 1000.0 / rate),
+        effects: Some(session.stats.fx_latency.load(Ordering::Relaxed) as f64 * 1000.0 / rate),
+        device_buffers_only: kazoo_core::host::audio::LATENCY_COVERS
+            == kazoo_core::host::audio::LatencyCovers::BufferOnly,
+        output: if session
+            .hub
+            .as_ref()
+            .is_some_and(|hub| hub.status().connected)
+        {
+            None
+        } else {
+            session
+                .output
+                .as_ref()
+                .and_then(|output| output.health().latency_ms())
+        },
     }
 }
 
@@ -593,39 +664,15 @@ fn event_loop(
                     app.spectrum.update(app.scope.voice(), session.rate);
                 }
             }
-            let rate = f64::from(session.rate);
-            app.latency = ui::latency::Latency {
-                input: session.mic.as_ref().and_then(Mic::input_latency_ms),
-                resampler: session
-                    .mic
-                    .as_ref()
-                    .and_then(Mic::resampler_delay_frames)
-                    .map(|frames| frames as f64 * 1000.0 / rate),
-                block: session
-                    .output
-                    .as_ref()
-                    .map(|output| output.buffer_frames().min(4096) as f64 * 1000.0 / rate),
-                effects: Some(
-                    session.stats.fx_latency.load(Ordering::Relaxed) as f64 * 1000.0 / rate,
-                ),
-                device_buffers_only: kazoo_core::host::audio::LATENCY_COVERS
-                    == kazoo_core::host::audio::LatencyCovers::BufferOnly,
-                output: if session
-                    .hub
-                    .as_ref()
-                    .is_some_and(|hub| hub.status().connected)
-                {
-                    None
-                } else {
-                    session
-                        .output
-                        .as_ref()
-                        .and_then(|output| output.health().latency_ms())
-                },
-            };
+            app.latency = latency(session);
             let link = link_state(session);
             let now = Instant::now();
-            app.sync_stats(&session.stats, Some(&session.judge_counters), now);
+            app.sync_stats(&session.stats, now);
+            app.observe_losses(
+                session.losses(),
+                session.judge_counters.first_pitch_failure(),
+                now,
+            );
             app.sync_loop(session.rate, now);
             session.loop_returns(app, now);
             app.save_if_due(now, false);

@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Sender, TrySendError};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kazoo_core::synthesis::OscillatorShape;
-use kazoo_core::voice::judge::JudgeCounters;
 use kazoo_core::voice::quantise::{NOTE_NAMES, QuantiseSettings, SCALE_NAMES};
 
 use crate::engine::fx::{FxSettings, Slot, harmony, mouth_default};
@@ -14,7 +13,7 @@ use crate::engine::looper::{
     BAR_CHOICES, LoopFeed, LoopGauges, LoopLength, Note, State, VOLUME_DEFAULT,
 };
 use crate::engine::{Command, Stats};
-use crate::health::{Health, Losses};
+use crate::health::Health;
 use kazoo_fx::Curve;
 use ringbuf::traits::Producer;
 
@@ -22,6 +21,9 @@ pub mod panels;
 pub mod settings;
 mod voice;
 use crate::synth::SynthSettings;
+
+/// How long a message stays in the footer.
+const MESSAGE_LIFETIME: Duration = Duration::from_secs(3);
 
 #[cfg(test)]
 mod tests;
@@ -342,8 +344,10 @@ pub struct App {
     pub selected_cell: usize,
     pub desk_bpm: Option<f64>,
     pub moving: u64,
-    /// What the mouth has lost, said as it rises and summed in the footer.
+    /// What the mouth has lost, for the header's health row.
     pub(crate) health: Health,
+    /// Why the voice judge's first pYIN run failed, once one has.
+    pub(crate) pitch_failure: Option<String>,
     pub settings_path: PathBuf,
     busy_until: Option<Instant>,
     dirty_at: Option<Instant>,
@@ -410,6 +414,7 @@ impl App {
             desk_bpm: None,
             moving: 0,
             health: Health::default(),
+            pitch_failure: None,
             settings_path: path,
             busy_until: None,
             dirty_at: None,
@@ -435,12 +440,7 @@ impl App {
     }
 
     pub(crate) fn message(&mut self, message: String, now: Instant) {
-        self.message = Some((message, now + Duration::from_secs(3)));
-    }
-
-    /// A loss, shown longer than a message: ten seconds.
-    pub(crate) fn warn(&mut self, message: String, now: Instant) {
-        self.message = Some((message, now + Duration::from_secs(10)));
+        self.message = Some((message, now + MESSAGE_LIFETIME));
     }
 
     pub(crate) const fn save_returned(&mut self) {
@@ -607,13 +607,21 @@ impl App {
         self.notes.get(index).map(String::as_str)
     }
 
-    /// Read what the engine and the voice judge report, saying any loss
-    /// that rose.
-    pub fn sync_stats(&mut self, stats: &Stats, judge: Option<&JudgeCounters>, now: Instant) {
-        let failure = judge.and_then(JudgeCounters::first_pitch_failure);
-        if let Some(lost) = self.health.observe(Losses::read(stats, judge), failure) {
-            self.warn(lost, now);
+    /// Take the losses the session read at `now` for the health row, and
+    /// the first pYIN failure's reason once there is one.
+    pub fn observe_losses(
+        &mut self,
+        losses: crate::health::Losses,
+        pitch_failure: Option<&str>,
+        now: Instant,
+    ) {
+        self.health.observe(losses, now);
+        if self.pitch_failure.is_none() {
+            self.pitch_failure = pitch_failure.map(str::to_owned);
         }
+    }
+
+    pub fn sync_stats(&mut self, stats: &Stats, now: Instant) {
         let bits = stats.desk_bpm.load(Ordering::Relaxed);
         self.desk_bpm = if bits == 0 {
             None
