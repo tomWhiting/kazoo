@@ -17,6 +17,7 @@ use crate::growth::Growth;
 use crate::history::{History, HistoryError, Snapshot};
 use crate::lanes::{self, Lanes};
 use crate::ledger::Ledger;
+use crate::notes::{Keyed, Notes};
 use crate::render::{self, Day, Gesture, Level, MAX_SCALE, View};
 
 /// Zoom per key press or wheel notch.
@@ -61,6 +62,8 @@ pub struct App {
     /// The help card's first line on screen, when it is taller than the
     /// screen.
     pub help_top: usize,
+    /// The selected batch's notes, on their card, while it is open (`n`).
+    pub notes: Option<Notes>,
     /// Text to put on the terminal's clipboard at the next turn of the
     /// loop (`y`).
     pub yank: Option<String>,
@@ -268,6 +271,7 @@ impl App {
             selected: None,
             help: false,
             help_top: 0,
+            notes: None,
             yank: None,
             said: String::new(),
             area: (0, 0),
@@ -520,6 +524,12 @@ impl App {
 
     /// A key.
     pub fn key(&mut self, key: KeyEvent) {
+        if let Some(notes) = &mut self.notes {
+            if notes.key(key.code) == Keyed::Closed {
+                self.notes = None;
+            }
+            return;
+        }
         if self.help {
             match key.code {
                 KeyCode::Char('?' | 'q') | KeyCode::Esc => self.help = false,
@@ -550,6 +560,7 @@ impl App {
                 self.help_top = 0;
             }
             KeyCode::Char('y') => self.copy_selected(),
+            KeyCode::Char('n') => self.open_notes(),
             KeyCode::Enter | KeyCode::Char('g') => self.go_now(),
             KeyCode::Char('b') => self.fire.toggle().clone_into(&mut self.said),
             KeyCode::Char('f') => {
@@ -761,6 +772,18 @@ impl App {
     }
 
     /// Put the selected moment's whole commit on the terminal's clipboard.
+    /// Open the selected batch's notes on their card, or say why not.
+    fn open_notes(&mut self) {
+        let Some(m) = self.selected else {
+            "nothing is selected to read the notes of".clone_into(&mut self.said);
+            return;
+        };
+        match Notes::read(&self.dir, &self.history.moments[m]) {
+            Ok(notes) => self.notes = Some(notes),
+            Err(why) => self.said = why,
+        }
+    }
+
     fn copy_selected(&mut self) {
         match self.selected {
             Some(m) => {
@@ -823,6 +846,16 @@ impl App {
 
     /// A mouse event over the picture (`col`, `row` inside it).
     pub fn mouse(&mut self, event: MouseEvent) {
+        // Over the notes card, the wheel scrolls the page and nothing
+        // reaches the tree under it.
+        if let Some(notes) = &mut self.notes {
+            match event.kind {
+                MouseEventKind::ScrollUp => notes.top = notes.top.saturating_sub(3),
+                MouseEventKind::ScrollDown => notes.top += 3,
+                _ => {}
+            }
+            return;
+        }
         let (cols, rows) = self.area;
         let inside = event.column < cols && event.row < rows;
         if self.shown == Shown::Lanes {
@@ -907,6 +940,9 @@ impl App {
         }
         if let Some(comment) = &moment.comment {
             lines.push(("why".to_owned(), comment.clone()));
+        }
+        if let Some(batch) = moment.batch.as_deref() {
+            lines.extend(crate::notes::listed(batch));
         }
         lines.push(("who".to_owned(), moment.seat.clone()));
         lines.push(("when".to_owned(), local_time(moment.time)));
@@ -1007,6 +1043,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("v", "the tree, or lanes: one row a moment"),
             ("y", "copy the selected moment's commit"),
+            ("n", "read the selected batch's notes (←→ page)"),
             ("Enter, g", "put the wall at the selected moment"),
             ("f", "follow: the wall goes where you stop (off)"),
             ("b", "the wall's moment ablaze, or put out (on)"),
