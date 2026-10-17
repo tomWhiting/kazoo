@@ -58,15 +58,26 @@ else
 fi
 crate=$(mktemp)
 trap 'rm -f "$crate"' EXIT
-if curl -fsSL -A "$agent" -o "$crate" "https://static.crates.io/crates/kzoo/kzoo-$version.crate"; then
-  published=$(tar -xzOf "$crate" "kzoo-$version/.cargo_vcs_info.json" |
-    python3 -I -c 'import json, sys; print(json.load(sys.stdin)["git"]["sha1"])')
-  if [ "$published" != "$head" ]; then
-    refuse "crates.io has kzoo $version from $published, not this commit"
-  fi
-else
-  refuse "crates.io has no kzoo $version yet; release the crates first (release/crates.sh)"
-fi
+code=$(curl -sSL -A "$agent" -o "$crate" -w '%{http_code}' \
+  "https://static.crates.io/crates/kzoo/kzoo-$version.crate" || echo unreachable)
+case $code in
+  200)
+    if published=$(tar -xzOf "$crate" "kzoo-$version/.cargo_vcs_info.json" 2>/dev/null |
+      python3 -I -c 'import json, sys; print(json.load(sys.stdin)["git"]["sha1"])' 2>/dev/null); then
+      if [ "$published" != "$head" ]; then
+        refuse "crates.io has kzoo $version from $published, not this commit"
+      fi
+    else
+      refuse "crates.io's kzoo $version does not say which commit it came from"
+    fi
+    ;;
+  403 | 404)
+    refuse "crates.io has no kzoo $version yet; release the crates first (release/crates.sh)"
+    ;;
+  *)
+    refuse "could not reach crates.io ($code), so where kzoo $version came from is unchecked"
+    ;;
+esac
 
 # The notices first: quick, and a release with one missing stops before
 # the long builds. Written whole or not at all.
@@ -90,8 +101,10 @@ for pair in aarch64-apple-darwin:arm64 x86_64-apple-darwin:x64; do
   cp "$root/target/$target/release/kzoo" "$package/bin/kzoo"
   chmod 755 "$package/bin/kzoo"
   # Only the system's own libraries: anything else is not on the
-  # machines it is installed on.
-  foreign=$(otool -L "$package/bin/kzoo" | tail -n +2 | awk '{print $1}' |
+  # machines it is installed on. otool runs on its own, so its failure
+  # stops the release.
+  libraries=$(otool -L "$package/bin/kzoo")
+  foreign=$(printf '%s\n' "$libraries" | tail -n +2 | awk '{print $1}' |
     grep -v -e '^/usr/lib/' -e '^/System/Library/' || true)
   if [ -n "$foreign" ]; then
     echo "publish.sh: $target links libraries outside the system: $foreign" >&2

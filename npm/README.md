@@ -8,17 +8,17 @@
 
 A release goes to crates.io first, then npm, from one commit:
 
-1. `release/crates.sh`, from a clean main that is origin/main, publishes
-   every crate at the workspace's version, waiting out crates.io's limits.
-   It then tags the commit `v<version>` and pushes the tag.
+1. `release/crates.sh`, from a clean main that is origin/main, tags the
+   commit `v<version>` and pushes the tag. It then publishes every crate at
+   the workspace's version, waiting out crates.io's limits.
 2. `npm/publish.sh`, from that tagged commit (main at the tag, or the tag
    checked out), does the rest:
    1. It checks that the checkout is clean and on origin/main. The tag
       `v<version>` must name it, and so must crates.io's record of where
       kzoo `<version>` came from.
-   2. It writes each platform's `THIRD-PARTY-NOTICES` with `notices.py`.
-      That run stops if any crate linked into that build has a licence it
-      cannot cover.
+   2. It writes each platform's `THIRD-PARTY-NOTICES` with `notices.py`,
+      covering every crate compiled into that build. That run stops if any
+      of them has a licence it cannot cover.
    3. It builds `kzoo` in release for `aarch64-apple-darwin` and
       `x86_64-apple-darwin`. Each build must link only the system's
       libraries, and is signed ad hoc and verified.

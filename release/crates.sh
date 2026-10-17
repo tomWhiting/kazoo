@@ -1,7 +1,7 @@
 #!/bin/sh
-# Publish every kazoo crate to crates.io at the workspace's version, then
-# tag the commit they came from as v<version> and push the tag. npm follows
-# from that tag (npm/publish.sh).
+# Tag this commit v<version> and push the tag, then publish every kazoo
+# crate to crates.io at the workspace's version from it. npm follows from
+# that tag (npm/publish.sh).
 #
 #   release/crates.sh
 #
@@ -57,6 +57,20 @@ for p in json.load(sys.stdin)["packages"]:
     if p.get("publish") == []:
         print(p["name"])')
 
+# The commit crates.io records crate $1 at this version came from, from its
+# .cargo_vcs_info.json; empty if it says none.
+source_of() {
+  file=$(mktemp)
+  if ! curl -fsSL -A "$agent" -o "$file" "https://static.crates.io/crates/$1/$1-$version.crate"; then
+    rm -f "$file"
+    echo "crates.sh: could not fetch $1 $version from crates.io to check its commit" >&2
+    exit 1
+  fi
+  tar -xzOf "$file" "$1-$version/.cargo_vcs_info.json" 2>/dev/null |
+    python3 -I -c 'import json, sys; print(json.load(sys.stdin)["git"]["sha1"])' 2>/dev/null || true
+  rm -f "$file"
+}
+
 # Whether crates.io has crate $1 at this version, from its sparse index.
 out() {
   name=$1
@@ -72,8 +86,26 @@ version = sys.argv[1]
 sys.exit(0 if any(json.loads(line)["vers"] == version for line in sys.stdin if line.strip()) else 1)' "$version"
 }
 
+# One version, one commit. Any crate already out at this version must have
+# come from this commit; and the tag is made and pushed before anything
+# else goes out, so a rerun from another commit is refused above.
+for name in $crates; do
+  if out "$name"; then
+    from=$(source_of "$name")
+    if [ "$from" != "$head" ]; then
+      echo "crates.sh: $name $version is on crates.io from ${from:-an unknown commit}, not $head; bump the version" >&2
+      exit 1
+    fi
+  fi
+done
+if ! git -C "$root" rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+  git -C "$root" tag -a "v$version" -m "kzoo $version" "$head"
+fi
+git -C "$root" push -q origin "v$version"
+
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
+lagged=0
 while :; do
   skip=""
   for name in $unpublished; do
@@ -98,6 +130,19 @@ while :; do
     continue
   fi
   grep -E "Published|^error" "$log" | head -5
+  # The index can lag a publish: a crate it does not show yet is tried
+  # again and is refused as already there. Give the index time and look.
+  if grep -q "already exists" "$log"; then
+    lagged=$((lagged + 1))
+    if [ "$lagged" -gt 10 ]; then
+      echo "crates.sh: crates.io still says a crate exists that its index does not show:" >&2
+      cat "$log" >&2
+      exit 1
+    fi
+    echo "crates.sh: crates.io has a crate the index did not show yet; waiting 30s"
+    sleep 30
+    continue
+  fi
   after=$(sed -n 's/.*try again after \(.* GMT\).*/\1/p' "$log" | head -n 1)
   if [ -z "$after" ]; then
     echo "crates.sh: cargo publish failed, not on a rate limit:" >&2
@@ -112,8 +157,4 @@ while :; do
   fi
 done
 
-if ! git -C "$root" rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
-  git -C "$root" tag -a "v$version" -m "kzoo $version" "$head"
-fi
-git -C "$root" push origin "v$version"
 echo "crates.sh: kzoo $version is on crates.io, tagged v$version at $head"
