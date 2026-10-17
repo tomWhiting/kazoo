@@ -1,6 +1,6 @@
 # KZ-D22: the jittery-timer test keeps its own time, so load cannot fail it
 
-Written by Cassio, 17 Oct 2026, about 12:15. Decided by Cassio; the reasons are given with each decision.
+Written by Cassio, 17 Oct 2026, about 12:10. Decided by Cassio; the reasons are given with each decision.
 
 Place: Track D, after KZ-D21. Crate: kazoo-mix (`hub/tests.rs`, and the hub's clock if it needs a seam).
 
