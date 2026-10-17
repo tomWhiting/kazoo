@@ -231,14 +231,13 @@ impl EngineHandle {
     /// non-zero values.
     #[must_use]
     pub fn stats(&self) -> EngineStatsSnapshot {
-        let mut snapshot = self.stats.snapshot();
-        if let Some(handles) = &self.thread_handles {
-            let judge = handles.judge.stats();
-            snapshot.judge_samples_dropped = judge.samples_dropped;
-            snapshot.judge_results_dropped = judge.results_dropped;
-            snapshot.pitch_runs_failed = judge.pitch_runs_failed;
-        }
-        snapshot
+        self.stats.snapshot()
+    }
+
+    /// Why the voice judge's first failed pYIN run failed, once one has.
+    #[must_use]
+    pub fn first_pitch_failure(&self) -> Option<&str> {
+        self.stats.first_pitch_failure()
     }
 
     /// Attach worker thread handles so they can be joined on shutdown.

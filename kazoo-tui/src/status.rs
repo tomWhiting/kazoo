@@ -178,6 +178,21 @@ const COUNTERS: [Counter; 20] = [
         read: |s| s.mic_samples_dropped,
     },
     Counter {
+        short: "pitch in",
+        long: "samples the voice judge missed",
+        read: |s| s.judge_samples_dropped,
+    },
+    Counter {
+        short: "pitch out",
+        long: "voice judge verdicts dropped",
+        read: |s| s.judge_results_dropped,
+    },
+    Counter {
+        short: "pyin",
+        long: "pYIN runs that failed, read as unvoiced (engine fault)",
+        read: |s| s.pitch_runs_failed,
+    },
+    Counter {
         short: "desk reqs",
         long: "transport requests the desk never got",
         read: |s| s.desk_requests_dropped,
@@ -188,29 +203,14 @@ const COUNTERS: [Counter; 20] = [
         read: |s| s.desk_syncs_rejected,
     },
     Counter {
-        short: "pitch in",
-        long: "samples the pitch tracker missed",
+        short: "scope in",
+        long: "samples the spectrum display missed",
         read: |s| s.analysis_samples_dropped,
     },
     Counter {
-        short: "pitch out",
-        long: "pitch results dropped",
+        short: "scope out",
+        long: "spectrum or formant results dropped",
         read: |s| s.analysis_results_dropped,
-    },
-    Counter {
-        short: "judge in",
-        long: "samples the voice judge missed",
-        read: |s| s.judge_samples_dropped,
-    },
-    Counter {
-        short: "judge out",
-        long: "voice judge verdicts dropped",
-        read: |s| s.judge_results_dropped,
-    },
-    Counter {
-        short: "pyin",
-        long: "pYIN runs that failed (read as unvoiced)",
-        read: |s| s.pitch_runs_failed,
     },
     Counter {
         short: "rt frees",
@@ -240,7 +240,16 @@ impl EngineHealth {
     /// Record the latest counters at `now`. When any rose since the last
     /// observation, returns a status-line message naming what was lost
     /// (worst first) and how much.
-    pub fn observe(&mut self, latest: EngineStatsSnapshot, now: Instant) -> Option<String> {
+    /// `pitch_failure` is why the judge's first pYIN run failed, if one has
+    /// ([`EngineHandle::first_pitch_failure`]); it is said with that counter.
+    ///
+    /// [`EngineHandle::first_pitch_failure`]: kazoo_core::engine::EngineHandle::first_pitch_failure
+    pub fn observe(
+        &mut self,
+        latest: EngineStatsSnapshot,
+        now: Instant,
+        pitch_failure: Option<&str>,
+    ) -> Option<String> {
         let mut rises = COUNTERS.iter().filter_map(|counter| {
             let rise = (counter.read)(&latest).saturating_sub((counter.read)(&self.seen));
             (rise > 0).then_some((counter, rise))
@@ -254,7 +263,11 @@ impl EngineHealth {
             1 => " (+1 other problem, see header)".to_owned(),
             n => format!(" (+{n} other problems, see header)"),
         };
-        Some(format!("Engine: {amount} {}{more}", worst.long))
+        let why = match pitch_failure {
+            Some(why) if worst.short == "pyin" => format!(": {why}"),
+            _ => String::new(),
+        };
+        Some(format!("Engine: {amount} {}{why}{more}", worst.long))
     }
 
     /// Every non-zero counter as `(short name, total)`, worst first.
@@ -339,7 +352,10 @@ mod tests {
     fn clean_engine_reports_nothing() {
         let mut health = EngineHealth::default();
         let now = Instant::now();
-        assert_eq!(health.observe(EngineStatsSnapshot::default(), now), None);
+        assert_eq!(
+            health.observe(EngineStatsSnapshot::default(), now, None),
+            None
+        );
         assert_eq!(health.nonzero().count(), 0);
         assert!(!health.is_fresh(now));
     }
@@ -353,12 +369,12 @@ mod tests {
             ..EngineStatsSnapshot::default()
         };
         assert_eq!(
-            health.observe(first, now).as_deref(),
+            health.observe(first, now, None).as_deref(),
             Some("Engine: 28 mic samples dropped")
         );
         assert!(health.is_fresh(now));
         // Unchanged counters are not reported again, but stay visible.
-        assert_eq!(health.observe(first, now), None);
+        assert_eq!(health.observe(first, now, None), None);
         assert_eq!(health.nonzero().collect::<Vec<_>>(), vec![("mic", 28)]);
         assert!(!health.is_fresh(now + ERROR_LIFETIME));
 
@@ -368,7 +384,7 @@ mod tests {
             ..first
         };
         assert_eq!(
-            health.observe(second, now).as_deref(),
+            health.observe(second, now, None).as_deref(),
             Some("Engine: 2 mic samples dropped")
         );
     }
@@ -383,7 +399,7 @@ mod tests {
             ..EngineStatsSnapshot::default()
         };
         assert_eq!(
-            health.observe(latest, Instant::now()).as_deref(),
+            health.observe(latest, Instant::now(), None).as_deref(),
             Some(
                 "Engine: 512 recorded audio lost (the WAV file has gaps) \
                  (+2 other problems, see header)"
@@ -436,10 +452,39 @@ mod tests {
         };
         assert!(!latest.is_clean());
         assert_eq!(
-            health.observe(latest, Instant::now()).as_deref(),
-            Some("Engine: 1 pYIN runs that failed (read as unvoiced)")
+            health.observe(latest, Instant::now(), None).as_deref(),
+            Some("Engine: 1 pYIN runs that failed, read as unvoiced (engine fault)")
         );
         assert_eq!(health.nonzero().collect::<Vec<_>>(), vec![("pyin", 1)]);
+        // Said with its reason, when the engine has one.
+        let more = EngineStatsSnapshot {
+            pitch_runs_failed: 2,
+            ..latest
+        };
+        assert_eq!(
+            health
+                .observe(
+                    more,
+                    Instant::now(),
+                    Some("pyin's forward FFT: wrong length")
+                )
+                .as_deref(),
+            Some(
+                "Engine: 1 pYIN runs that failed, read as unvoiced (engine fault): \
+                 pyin's forward FFT: wrong length"
+            )
+        );
+        // Another counter's message never carries it.
+        let other = EngineStatsSnapshot {
+            mic_samples_dropped: 5,
+            ..more
+        };
+        assert_eq!(
+            health
+                .observe(other, Instant::now(), Some("ignored"))
+                .as_deref(),
+            Some("Engine: 5 mic samples dropped")
+        );
     }
 
     #[test]

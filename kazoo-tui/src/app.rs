@@ -477,10 +477,11 @@ impl App {
         self.display = self.engine.poll_display().clone();
         self.frame_count = self.frame_count.wrapping_add(1);
         self.desk = DeskView::of(self.engine.desk_link());
-        if let Some(message) = self
-            .engine_health
-            .observe(self.engine.stats(), Instant::now())
-        {
+        if let Some(message) = self.engine_health.observe(
+            self.engine.stats(),
+            Instant::now(),
+            self.engine.first_pitch_failure(),
+        ) {
             self.status.error(message);
         }
 

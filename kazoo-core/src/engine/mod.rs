@@ -249,6 +249,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle> {
         onset_config(&config),
     )?;
     let stats = Arc::new(EngineStats::new());
+    stats.set_judge(judge.counters())?;
 
     // The desk link is created before the streams so its audio half can be
     // moved into the output callback with the rest of the processing state.

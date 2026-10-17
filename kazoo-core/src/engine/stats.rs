@@ -8,6 +8,7 @@
 
 use crate::host::audio::StreamHealth;
 use crate::io::mic::{MicShared, MicStatus};
+use crate::voice::judge::JudgeCounters;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -20,6 +21,8 @@ use std::sync::{Arc, OnceLock};
 pub struct EngineStats {
     audio_health: OnceLock<StreamHealth>,
     mic: OnceLock<Arc<MicShared>>,
+    /// The voice judge's own counters, read with the engine's.
+    judge: OnceLock<JudgeCounters>,
     mic_samples_dropped: AtomicU64,
     analysis_samples_dropped: AtomicU64,
     analysis_results_dropped: AtomicU64,
@@ -49,10 +52,12 @@ pub struct EngineStatsSnapshot {
     pub mic: MicStatus,
     /// Mic samples lost because the input → output ring buffer was full.
     pub mic_samples_dropped: u64,
-    /// Samples lost because the analysis thread fell behind.
+    /// Samples lost because the analysis thread (the spectrum and formant
+    /// display) fell behind.
     pub analysis_samples_dropped: u64,
-    /// Pitch / spectrum / formant results lost because the output callback
-    /// had not drained the previous ones.
+    /// Spectrum and formant results lost because the output callback had not
+    /// drained the previous ones. Only the display reads them; pitch is the
+    /// judge's.
     pub analysis_results_dropped: u64,
     /// Recorded master-bus samples lost because the disk thread fell behind.
     /// Any non-zero value means the recorded WAV file has gaps.
@@ -101,7 +106,8 @@ pub struct EngineStatsSnapshot {
     /// the ones before.
     pub judge_results_dropped: u64,
     /// pYIN runs that failed in the voice judge, each read as an unvoiced
-    /// frame. A validated configuration never fails one.
+    /// frame. A validated configuration never fails one, so any is an
+    /// engine fault; [`EngineStats::first_pitch_failure`] says why.
     pub pitch_runs_failed: u64,
 }
 
@@ -149,6 +155,20 @@ impl EngineStats {
         self.audio_health
             .set(health)
             .map_err(|_| crate::Error::Config("audio health already initialized".into()))
+    }
+
+    pub(super) fn set_judge(&self, counters: JudgeCounters) -> crate::Result<()> {
+        self.judge
+            .set(counters)
+            .map_err(|_| crate::Error::Config("judge counters already attached".into()))
+    }
+
+    /// Why the voice judge's first failed pYIN run failed, once one has.
+    #[must_use]
+    pub fn first_pitch_failure(&self) -> Option<&str> {
+        self.judge
+            .get()
+            .and_then(JudgeCounters::first_pitch_failure)
     }
 
     pub(super) fn set_mic(&self, shared: Arc<MicShared>) -> crate::Result<()> {
@@ -269,6 +289,11 @@ impl EngineStats {
     #[must_use]
     pub fn snapshot(&self) -> EngineStatsSnapshot {
         let load = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        let judge = self
+            .judge
+            .get()
+            .map(JudgeCounters::snapshot)
+            .unwrap_or_default();
         EngineStatsSnapshot {
             mic: self
                 .mic
@@ -291,10 +316,9 @@ impl EngineStats {
             takes_unavailable: load(&self.takes_unavailable),
             take_samples_dropped: load(&self.take_samples_dropped),
             callback_frees: load(&self.callback_frees),
-            // The judge keeps its own counters; the handle adds them.
-            judge_samples_dropped: 0,
-            judge_results_dropped: 0,
-            pitch_runs_failed: 0,
+            judge_samples_dropped: judge.samples_dropped,
+            judge_results_dropped: judge.results_dropped,
+            pitch_runs_failed: judge.pitch_runs_failed,
         }
     }
 }
