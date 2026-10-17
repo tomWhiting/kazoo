@@ -112,7 +112,7 @@ Today a batch carries a note of 200 characters on one line. That is room for a t
 
 **Summaries.** A batch with notes adds, after its count of changes:
 
-> , with notes: description.md, proof.md (12 KB)
+> , with notes description.md and proof.md (12 KB)
 
 This shows in the console's log, in the seats' news (`channel.rs`) and in `wall_log`.
 

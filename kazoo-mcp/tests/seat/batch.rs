@@ -41,7 +41,7 @@ async fn batch_tool_lists_label_id_and_notifies_other_seat_once() {
             );
             assert!(content.contains("2 changes"), "{content}");
             assert!(
-                content.contains("with notes: description.md, proof.md"),
+                content.contains("with notes description.md and proof.md"),
                 "{content}"
             );
             break;

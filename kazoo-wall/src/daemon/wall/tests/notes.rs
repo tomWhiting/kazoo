@@ -89,7 +89,7 @@ fn notes_store_read_summary_undo_and_missing() {
         result["change"]["summary"]
             .as_str()
             .unwrap()
-            .contains(", with notes: description.md, proof.md, same.txt")
+            .contains(", with notes description.md, proof.md and same.txt")
     );
     let read: Request =
         serde_json::from_value(serde_json::json!({"op":"notes","seq":seq})).unwrap();
@@ -181,7 +181,7 @@ fn notes_summary_follows_the_change_count() {
     .unwrap();
     let summary = made["change"]["summary"].as_str().unwrap();
     assert!(
-        summary.contains("(1 change, with notes: description.md, proof.md (12 KB):"),
+        summary.contains("(1 change, with notes description.md and proof.md (12 KB):"),
         "{summary}"
     );
 }

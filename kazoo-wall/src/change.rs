@@ -549,6 +549,9 @@ fn described_batch(
     format!("\"{note}\" ({count}: {list})")
 }
 
+/// What a batch's summary says of its notes, after its count of changes:
+/// `, with notes description.md and proof.md (12 KB)`, each note's size
+/// given from a kilobyte up; nothing when it has none.
 #[must_use]
 pub fn notes_summary(notes: &[crate::protocol::NoteRef]) -> String {
     if notes.is_empty() {
@@ -563,9 +566,14 @@ pub fn notes_summary(notes: &[crate::protocol::NoteRef]) -> String {
                 note.name.clone()
             }
         })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(", with notes: {names}")
+        .collect::<Vec<_>>();
+    // "a, b and c", so the colon after them is the list of changes' own.
+    let names = match names.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    format!(", with notes {names}")
 }
 
 #[cfg(test)]
