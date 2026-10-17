@@ -2,7 +2,7 @@
 
 **Withdrawn, 18 Oct 2026 at 10:02.** This brief rests on Tom's words as Waffles and then Buckley relayed them. Buckley has withdrawn that note: it was a sentence Tom had not finished, nothing in it is settled, and Tom wants it to reach Cassio from him directly. Nothing here is built or briefed further until Tom says it himself. The text below is kept as it was written.
 
-Written by Cassio, 18 Oct 2026, about 11:30. Decided by Cassio; the reasons are given with each decision.
+Written by Cassio, 18 Oct 2026, about 09:55 (first stamped 11:30 by mistake). Decided by Cassio; the reasons are given with each decision.
 
 Place: Track N, after KZ-N02 (it uses N02's one MCP), and before the network lanes. KZ-N01's order moves accordingly (see the end). Crates:
 

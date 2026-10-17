@@ -118,7 +118,7 @@ The name on npm. `kzhz` stands. `npm/launcher.sh` can add another name in one ru
 
 ## Order
 
-**The amendment of about 11:30 is withdrawn (10:02).** It put the desk first on a relayed note that Buckley has since withdrawn. The order below stands until Tom says otherwise.
+**The amendment of about 09:55 is withdrawn (10:02).** It put the desk first on a relayed note that Buckley has since withdrawn. The order below stands until Tom says otherwise.
 
 1. **N02:** one MCP (§1) on today's Unix socket: `wall_walls` (this Mac only), `wall_join`, `wall_leave`, the `wall` argument on every tool, and the old flags kept for one release. This removes the identifying config straight away.
 2. **N03:** keys and pairing (§3), and Noise over TCP on the local network for the wall, plus DNS-SD (§2.2). This lets Tom use the old laptop's wall from this laptop with no SSH.
