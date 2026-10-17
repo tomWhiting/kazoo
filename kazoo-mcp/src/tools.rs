@@ -253,7 +253,7 @@ pub struct TempoArgs {
     /// Beats to hold before the sound starts, counted at the acceptance tempo: 0 to 256, default 0.
     #[serde(default)]
     pub after_beats: f64,
-    /// Beats for the tempo to move linearly after its wait: 0 to 64, default 0.
+    /// Beats for the tempo to move linearly after its wait, on the wall's own clock only (refused while it follows the desk): 0 to 64, default 0.
     #[serde(default)]
     pub glide_beats: f64,
     /// Beats per minute, 20 to 300. When the wall is following the kazoo-mix
@@ -972,7 +972,7 @@ impl Seat {
 
     #[tool(
         name = "wall_tempo",
-        description = "Set the tempo in BPM (20 to 300). On its own clock after_beats holds the tempo, then glide_beats moves it linearly (both default 0); while it follows the kazoo-mix desk, the desk is asked and changes the tempo for everyone."
+        description = "Set the tempo in BPM (20 to 300). after_beats holds the tempo first (default 0). On its own clock glide_beats then moves it linearly (default 0); while it follows the kazoo-mix desk, the desk is asked and changes the tempo for everyone at once, and glide_beats is refused."
     )]
     async fn wall_tempo(&self, Parameters(args): Parameters<TempoArgs>) -> CallToolResult {
         match self

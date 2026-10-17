@@ -3567,6 +3567,15 @@ impl Wall {
         }
         let bpm = clamp_bpm(bpm);
         let desk = self.desk.as_ref().is_some_and(HubLink::is_connected);
+        // The desk takes one tempo and moves to it at once: a glide asked of
+        // it would be logged as one and jump.
+        if desk && timing.1 > 0.0 {
+            return Err(error(
+                ErrorCode::BadRequest,
+                "the desk moves its tempo at once; glide_beats is for the wall's own clock \
+                 (after_beats still holds the desk's tempo back)",
+            ));
+        }
         // What plays now: on the desk, the desk's; off it, the wall's own
         // as last changed (the engine hears a change a block later, and
         // through a load's fade later still).

@@ -232,3 +232,29 @@ fn a_scheduled_desk_tempo_refusal_is_reported_once() {
         if summary.contains("scheduled tempo")))
     );
 }
+
+#[test]
+fn a_desk_tempo_glide_is_refused_and_never_asked() {
+    // The desk takes one tempo and moves to it at once: a glide asked of
+    // it would be logged and summarised as "over N beats" yet jump, so it
+    // is refused, alone or in a batch, and nothing is logged or asked.
+    for batch in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut wall, _engine, mut stream) = linked(dir.path());
+        let step = serde_json::json!({"op":"tempo", "bpm":150, "after_beats":2, "glide_beats":4});
+        let request: Request = serde_json::from_value(if batch {
+            serde_json::json!({"op":"batch", "note":"a desk glide", "changes":[step]})
+        } else {
+            step
+        })
+        .unwrap();
+        let now = Instant::now();
+        let refused = wall.request("Tom", &request, now).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::BadRequest, "{refused:?}");
+        assert!(refused.message.contains("glide_beats"), "{refused:?}");
+        assert!(wall.log.is_empty());
+        assert_eq!(wall.patch.tempo.to_bits(), 120.0_f64.to_bits());
+        wall.tick(now + Duration::from_secs(10));
+        assert!(requests(&wall, &mut stream).is_empty());
+    }
+}
