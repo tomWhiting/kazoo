@@ -19,7 +19,7 @@ The full workspace gate of 17 Oct 2026 failed kazoo-host's `programs_use_one_ter
 
 - kazoo-host's `Options` gains `panics: Panics`.
   - `Panics::AnyThread`, the default, keeps today's behaviour: any panic puts the terminal back and is reported.
-  - With `Panics::ThisThread`, only a panic on the thread that entered does that. For a panic on another thread, from entering until the terminal is wholly put back (raw mode off), the hook neither restores nor reports anything; the program must catch it on that thread and say it.
+  - With `Panics::ThisThread`, only a panic on the thread that entered does that. For a panic on another thread, from entering until the restore has finished (raw mode off, the cursor shown), the hook neither restores nor reports anything; the program must catch it on that thread and say it.
   - The owner is a token: each such entry takes a fresh one, and the entering thread keeps it in a thread-local. The hook takes no lock. The owner is cleared at the end of the restore, so a reader that panics while the screen is being left still writes nothing over it.
   - The hook's decision is a function of its own (`on_panic`), with its own test.
   - That is what kazoo-tree did on its own: its reader thread's panics are caught and shown in the footer while the walk goes on.

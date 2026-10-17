@@ -492,9 +492,18 @@ mod tests {
             .expect("the thread ran");
         assert!(elsewhere(), "an earlier owner owns nothing");
 
-        // Put back wholly: every thread's panic restores and is reported.
+        // Put back wholly by the restore itself: every thread's panic
+        // restores and is reported again. The test's stdout is a pipe, where
+        // leaving raw mode that was never entered does nothing.
         own(Panics::ThisThread);
-        OWNER.store(0, Ordering::Release);
+        ACTIVE.store(true, Ordering::Release);
+        assert!(thread::spawn(elsewhere).join().expect("the thread ran"));
+        restore().expect("restoring into a pipe");
+        assert_eq!(
+            OWNER.load(Ordering::Acquire),
+            0,
+            "the restore gave the panics back"
+        );
         let other = thread::spawn(elsewhere).join().expect("the thread ran");
         assert!(!other, "after leaving, any thread's panic is reported");
 
