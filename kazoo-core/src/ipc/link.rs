@@ -45,7 +45,6 @@ use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 
 use super::client::{HubIpcClient, HubMessage};
-use super::discovery;
 use super::outbox::OutboxError;
 use super::protocol::{AUDIO_PAYLOAD_HEADER, FrameHeader, HEADER_SIZE, encode_header};
 use super::types::{
@@ -60,6 +59,8 @@ use super::types::{
 use crate::realtime::{NotRealTime, RealTime};
 use crate::sanitize_sample;
 
+mod address;
+pub(crate) use address::host_and_port;
 mod audio;
 mod voice;
 pub use voice::{VOICE_RING, VoiceLinkStats, VoiceRx};
@@ -126,10 +127,15 @@ pub const PACE_STALE: Duration = Duration::from_millis(250);
 /// Where the link looks for the hub.
 #[derive(Debug, Clone)]
 pub enum HubAddress {
-    /// The hub kazoo-mix advertises through its PID file.
+    /// The desk named by `KAZOO_DESK` (parsed as [`HubAddress::parse`]
+    /// reads it; one that does not parse is refused, never replaced), or,
+    /// when that is unset, the hub kazoo-mix advertises through its PID file.
     Discover,
     /// A specific socket.
     Socket(PathBuf),
+    /// A desk reached over TCP, as `host:port`: a name, IPv4, or IPv6 in
+    /// brackets.
+    Tcp(String),
 }
 
 /// How the instrument describes itself to the hub.
@@ -439,7 +445,7 @@ pub struct LinkStatus {
 }
 
 /// How `last_refusal` begins when the desk itself refused the instrument:
-/// this, the instrument's name, `": "`, then the desk's reason.
+/// this, the instrument's name and optional address, `": "`, then the desk's reason.
 pub(crate) const DESK_REFUSED: &str = "the desk refused ";
 
 impl LinkStatus {

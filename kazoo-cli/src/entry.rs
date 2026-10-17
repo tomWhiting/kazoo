@@ -7,6 +7,8 @@ use clap::{CommandFactory, FromArgMatches};
 
 use crate::cli::{Cli, Command, TreeCommand, WallCommand, console_serve};
 
+mod desk;
+
 /// Run the program as `name` (`kzoo` or `kazoo`: the name its help and
 /// errors use), with this process's arguments.
 #[must_use]
@@ -18,6 +20,12 @@ pub fn main(name: &'static str) -> ExitCode {
             .format(&mut Cli::command().name(name).bin_name(name))
             .exit(),
     };
+    if let Some(address) = cli.desk.as_deref()
+        && let Err(error) = desk::apply(address)
+    {
+        eprintln!("{name}: cannot select desk {address}: {error}");
+        return ExitCode::FAILURE;
+    }
     if let Err(err) = kazoo_host::reports::install() {
         eprintln!("{name}: {err}");
         return ExitCode::FAILURE;

@@ -12,6 +12,21 @@ const COMMANDS: [&str; 17] = [
 ];
 
 #[test]
+fn desk_flag_is_global_and_validates_the_address() {
+    for args in [
+        vec!["kzoo", "--desk", "old.local:7700", "mouth"],
+        vec!["kzoo", "mouth", "--desk", "/tmp/desk.sock"],
+        vec!["kzoo", "--desk", "[::1]:7700", "wall", "serve"],
+    ] {
+        assert!(Cli::try_parse_from(args).is_ok());
+    }
+    for address in ["bad", ":7700", "host:no"] {
+        let error = Cli::try_parse_from(["kzoo", "--desk", address, "mouth"]).unwrap_err();
+        assert!(error.to_string().contains("--desk"));
+    }
+}
+
+#[test]
 fn every_instrument_is_a_subcommand() {
     for name in COMMANDS {
         let mut args = vec!["kazoo", name];

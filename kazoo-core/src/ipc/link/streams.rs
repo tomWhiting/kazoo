@@ -4,8 +4,7 @@ use super::{
     Arc, Duration, HubAddress, HubIpcClient, HubLink, HubMessage, LinkConfig, LinkState,
     LinkWorker, MAX_LINK_BLOCK_FRAMES, MAX_RETRY_INTERVAL, MAX_STREAMS, NO_STRIP, Ordering,
     Producer, RATE_REFUSAL_RETRY, RETRY_INTERVAL, RegisterMsg, Request, RequestError,
-    STREAM_NAME_LEN, SYNC_NOW, StreamAddMsg, StreamId, StreamSpec, ToAudio, TransportSyncMsg,
-    discovery, io,
+    STREAM_NAME_LEN, SYNC_NOW, StreamAddMsg, StreamId, StreamSpec, ToAudio, TransportSyncMsg, io,
 };
 use std::sync::{Mutex, MutexGuard};
 
@@ -180,15 +179,12 @@ impl HubLink {
 
 impl LinkWorker {
     pub(super) fn try_connect(&mut self) -> Duration {
-        let socket = match &self.config.address {
-            HubAddress::Discover => match discovery::hub_socket() {
-                Ok(socket) => socket,
-                Err(err) => {
-                    self.set_refusal(Some(format!("cannot find the desk: {err}")));
-                    return RETRY_INTERVAL;
-                }
-            },
-            HubAddress::Socket(path) => path.clone(),
+        let address = match self.config.address.resolve() {
+            Ok(address) => address,
+            Err(err) => {
+                self.set_refusal(Some(format!("cannot find the desk: {err}")));
+                return RETRY_INTERVAL;
+            }
         };
         // Hold the snapshot until connected is published so UI additions cannot
         // fall between registration and the connected request queue.
@@ -200,7 +196,7 @@ impl LinkWorker {
         // add for a stream it has seated, or remove one added again since.
         self.discard_backlog();
         let register = self.config.register_streams(&streams);
-        match HubIpcClient::register_with_timeout(&socket, &register, Duration::from_millis(250)) {
+        match HubIpcClient::register_with_timeout(&address, &register, Duration::from_millis(250)) {
             Ok(mut client) => {
                 // Registration implies contiguous ids. Surviving ids beyond a
                 // removed slot are re-announced explicitly to preserve their ids.
@@ -252,14 +248,22 @@ impl LinkWorker {
             {
                 // No desk: a refusal from a desk that was there does not
                 // outlive it. Any other reason stays as it was said.
-                if self.refused_by_desk() {
-                    self.set_refusal(Some(format!("no desk at {}", socket.display())));
+                if self.refused_by_desk() || matches!(address, HubAddress::Tcp(_)) {
+                    self.set_refusal(Some(format!("no desk at {address}: {err}")));
                 }
                 self.refusal_delay = RETRY_INTERVAL;
                 RETRY_INTERVAL
             }
             Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-                let refusal = format!("{}{}: {err}", super::DESK_REFUSED, self.config.name);
+                let refusal = if matches!(address, HubAddress::Tcp(_)) {
+                    format!(
+                        "{}{} at {address}: {err}",
+                        super::DESK_REFUSED,
+                        self.config.name
+                    )
+                } else {
+                    format!("{}{}: {err}", super::DESK_REFUSED, self.config.name)
+                };
                 let for_rate = super::desk_reason(&refusal)
                     .and_then(super::refused_desk_rate)
                     .is_some();
@@ -275,8 +279,7 @@ impl LinkWorker {
             }
             Err(err) => {
                 self.set_refusal(Some(format!(
-                    "could not plug into the desk at {}: {err}",
-                    socket.display()
+                    "could not plug into the desk at {address}: {err}"
                 )));
                 RETRY_INTERVAL
             }
