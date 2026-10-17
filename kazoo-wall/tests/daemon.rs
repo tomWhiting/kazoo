@@ -12,6 +12,8 @@ use kazoo_wall::daemon::{Daemon, DaemonConfig};
 use kazoo_wall::protocol::client::{Subscription, WallClient};
 use kazoo_wall::protocol::{ErrorCode, Event, MAX_LINE, Place, Response, What};
 
+#[path = "daemon/plant.rs"]
+mod plant;
 #[path = "daemon/tree_isolation.rs"]
 mod tree_isolation;
 

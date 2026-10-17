@@ -78,6 +78,10 @@ pub struct DaemonConfig {
     pub recordings: PathBuf,
     /// The tree to attach, selected explicitly for headless tests.
     pub tree_dir: Option<PathBuf>,
+    /// Whether the daemon plants the tree at `tree_dir` as it starts when
+    /// there is none there (see `plant_tree`). On for every daemon that plays for
+    /// people; off for test walls, which are made without one.
+    pub plant_tree: bool,
     /// The reel store for tests; standard daemons use the configured reel root.
     pub reels_dir: Option<PathBuf>,
     /// Whether the wall refuses more work while rendering takes most of the
@@ -103,6 +107,7 @@ impl DaemonConfig {
             socket: paths::socket_path(),
             state_dir,
             tree_dir,
+            plant_tree: true,
             reels_dir: None,
             audio: AudioMode::Device { sample_rate: None },
             desk: DeskMode::Discover,
@@ -120,6 +125,7 @@ impl DaemonConfig {
             socket: runtime_dir.join(SOCKET_NAME),
             state_dir: state_dir.to_path_buf(),
             tree_dir: Some(state_dir.join("tree")),
+            plant_tree: false,
             reels_dir: Some(state_dir.join("reels")),
             audio: AudioMode::Headless {
                 sample_rate: 48_000,
@@ -159,9 +165,12 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// Start a daemon: load the patch (seeding one if there is none, and
-    /// setting aside one that cannot be read), claim the socket, and start
-    /// playing. Returns once the socket is accepting connections.
+    /// Start a daemon: claim the socket, plant the tree when `plant_tree`
+    /// is set and there is none (growing it from a long change log takes
+    /// a while, once, and connections wait meanwhile), load the patch
+    /// (seeding one if there is none, and setting aside one that cannot
+    /// be read), and start playing. Returns once the socket is accepting
+    /// connections.
     ///
     /// # Errors
     ///
@@ -190,6 +199,15 @@ impl Daemon {
             socket: &config.socket,
             inode: socket_inode,
             kept: false,
+        };
+        // Before the state is opened: growing the tree reads the log under
+        // the store's lock, which the wall then holds while it plays.
+        let planting = if config.plant_tree {
+            tree_dir
+                .as_deref()
+                .map(|dir| plant_tree(&config.state_dir, dir))
+        } else {
+            None
         };
         let Prepared {
             store,
@@ -220,8 +238,10 @@ impl Daemon {
             build: Box::new(move |engine, link| {
                 let mut wall =
                     Wall::new_with_reels(patch, engine, link, changes, Some(store), reels_dir);
-                if let Some(dir) = &tree_dir {
-                    wall.find_tree(dir);
+                match (&tree_dir, planting) {
+                    (Some(_), Some(Planting::Failed(why))) => wall.tree_unplanted(why),
+                    (Some(dir), _) => wall.find_tree(dir),
+                    (None, _) => {}
                 }
                 wall.set_recordings_dir(recordings);
                 wall.set_load_guard(load_guard);
@@ -247,6 +267,165 @@ impl Daemon {
             stop,
             control: Some(control),
         })
+    }
+}
+
+/// What a starting wall did about its tree (see [`plant_tree`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Planting {
+    /// A tree with a trunk was there already.
+    Kept,
+    /// The tree was grown from the change log.
+    Grown,
+    /// An empty tree was planted, to grow from this start.
+    Empty,
+    /// Another wall or an import held the state, so nothing was done; a
+    /// tree that is there is attached as ever.
+    Left,
+    /// There is no tree, for this reason; the wall plays without one.
+    Failed(String),
+}
+
+/// Plant the wall's tree at `dir` when it has none, so nobody has to:
+/// grown from the change log in `state` as `kazoo wall tree import` grows
+/// it, or planted empty when the log gives no wall to grow from (a new
+/// wall, or one whose past cannot be worked out), to grow from this start.
+/// A tree that is there with a trunk is left as it is. Whatever happens is
+/// said in the daemon's log; a failure leaves nothing half planted.
+fn plant_tree(state: &Path, dir: &Path) -> Planting {
+    let planting = match grow_tree(state, dir) {
+        Ok(planting) => planting,
+        Err(why) => Planting::Failed(why),
+    };
+    match &planting {
+        Planting::Kept | Planting::Grown => {}
+        Planting::Left => eprintln!(
+            "kazoo-wall: another wall or a tree import is using the wall's state, so the tree is left as it is"
+        ),
+        Planting::Empty => eprintln!(
+            "kazoo-wall: the tree is planted at {}, and grows from this start",
+            dir.display()
+        ),
+        Planting::Failed(why) => {
+            eprintln!("kazoo-wall: there is no tree: {why}; the wall plays without it");
+        }
+    }
+    planting
+}
+
+fn grow_tree(state: &Path, dir: &Path) -> Result<Planting, String> {
+    let unreadable =
+        |err: &dyn fmt::Display| format!("the tree at {} cannot be read ({err})", dir.display());
+    if crate::tree::git::is_bare(dir).map_err(|err| unreadable(&err))?
+        && crate::tree::rings::reference(dir, "refs/heads/trunk")
+            .map_err(|err| unreadable(&err))?
+            .is_some()
+    {
+        return Ok(Planting::Kept);
+    }
+    // What was there: a failure may take away only what it left.
+    let before = match fs::read_dir(dir) {
+        Ok(mut entries) => {
+            if entries.next().is_none() {
+                Before::Empty
+            } else {
+                Before::Occupied
+            }
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Before::Absent,
+        Err(err) => return Err(unreadable(&err)),
+    };
+    if let Some(parent) = dir.parent() {
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
+            .map_err(|err| format!("{} cannot be made ({err})", parent.display()))?;
+    }
+    if !state.is_dir() {
+        return plant_empty(dir);
+    }
+    eprintln!(
+        "kazoo-wall: growing the tree at {} from the change log (once; the wall answers when it is grown)",
+        dir.display()
+    );
+    match crate::tree::rings::grow(state, dir, false) {
+        Ok(rings) => {
+            for line in rings.report.lines() {
+                eprintln!("kazoo-wall: tree: {line}");
+            }
+            Ok(Planting::Grown)
+        }
+        Err(crate::tree::rings::RingsError::EmptyLog) => plant_empty(dir),
+        Err(crate::tree::rings::RingsError::WallRunning) => Ok(Planting::Left),
+        Err(crate::tree::rings::RingsError::NoWall(why)) => {
+            clear(dir, before)?;
+            eprintln!("kazoo-wall: the changes already in the log cannot go into the tree ({why})");
+            plant_empty(dir)
+        }
+        Err(err) => Err(failed(dir, before, &err)),
+    }
+}
+
+/// An empty tree at `dir`, unless one is planted there already.
+fn plant_empty(dir: &Path) -> Result<Planting, String> {
+    if !crate::tree::git::is_bare(dir)
+        .map_err(|err| format!("the tree at {} cannot be read ({err})", dir.display()))?
+    {
+        crate::tree::git::plant(dir)
+            .map_err(|err| format!("the tree cannot be planted at {} ({err})", dir.display()))?;
+    }
+    Ok(Planting::Empty)
+}
+
+/// What was at the tree's place before the wall tried to grow it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Before {
+    /// Nothing: whatever is there now, a failure left.
+    Absent,
+    /// An empty directory (made by someone, perhaps a mount point): it
+    /// stays, and only what is in it now goes.
+    Empty,
+    /// Something: it is never touched.
+    Occupied,
+}
+
+/// Why growing failed, with what it left at `dir` taken away.
+fn failed(dir: &Path, before: Before, err: &crate::tree::rings::RingsError) -> String {
+    let why = format!("the tree could not be grown from the change log ({err})");
+    match clear(dir, before) {
+        Ok(()) => why,
+        Err(also) => format!("{why}; {also}"),
+    }
+}
+
+/// Take away what a failed grow left at `dir`, as `before` allows.
+fn clear(dir: &Path, before: Before) -> Result<(), String> {
+    let cannot = |err: io::Error| {
+        format!(
+            "what it left at {} cannot be taken away ({err})",
+            dir.display()
+        )
+    };
+    match before {
+        Before::Occupied => Ok(()),
+        Before::Absent => match fs::remove_dir_all(dir) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(cannot(err)),
+        },
+        Before::Empty => {
+            for entry in fs::read_dir(dir).map_err(cannot)? {
+                let path = entry.map_err(cannot)?.path();
+                let removed = if path.is_dir() && !path.is_symlink() {
+                    fs::remove_dir_all(&path)
+                } else {
+                    fs::remove_file(&path)
+                };
+                removed.map_err(cannot)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -719,6 +898,9 @@ pub fn launch_detached(
         format!("the daemon did not answer in time; see {}", log.display()),
     ))
 }
+
+#[cfg(test)]
+mod plant_tests;
 
 #[cfg(test)]
 mod tests {

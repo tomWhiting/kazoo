@@ -46,6 +46,8 @@ pub enum RingsError {
     HasTrunk(String),
     /// No line in the tree grows from the import's last ring.
     Diverged(String),
+    /// The log has no readable changes: a new wall.
+    EmptyLog,
     /// The log and the wall's files give no wall to grow from.
     NoWall(String),
     /// Git failed, with KZ-T02b's sentence.
@@ -63,6 +65,9 @@ impl fmt::Display for RingsError {
             Self::NotATree(s) | Self::NotTrunk(s) | Self::HasTrunk(s) | Self::Diverged(s) | Self::NoWall(s) => {
                 f.write_str(s)
             }
+            Self::EmptyLog => f.write_str(
+                "the wall's log has no readable changes; no first rings can be grown",
+            ),
             Self::Tree(e) => e.fmt(f),
             Self::Read(e) => write!(f, "the wall's history could not be read: {e}"),
         }
@@ -129,7 +134,7 @@ fn git_text(tree: &Path, command: &str, args: &[&str]) -> Result<String, TreeErr
 }
 
 /// The commit `name` names, or `None` when there is no such ref.
-fn reference(tree: &Path, name: &str) -> Result<Option<String>, TreeError> {
+pub(crate) fn reference(tree: &Path, name: &str) -> Result<Option<String>, TreeError> {
     let output = git_output(
         tree,
         "rev-parse",
@@ -741,11 +746,7 @@ fn beginning<'a>(
     proofs: &'a Proofs,
     abandoned: &BTreeSet<u64>,
 ) -> Result<(Model, bool, &'a Evidence), RingsError> {
-    let first = changes.first().ok_or_else(|| {
-        RingsError::NoWall(
-            "the wall's log has no readable changes; no first rings can be grown".into(),
-        )
-    })?;
+    let first = changes.first().ok_or(RingsError::EmptyLog)?;
     let evidence = proofs
         .at(first.seq.saturating_sub(1))
         .or_else(|| proofs.files.iter().find(|e| e.after >= first.seq))
@@ -793,9 +794,7 @@ fn beginning<'a>(
 fn run(tree: &Path, log: Log<'_>) -> Result<(Rings, String), RingsError> {
     let changes = log.changes;
     let (Some(first), Some(last)) = (changes.first(), changes.last()) else {
-        return Err(RingsError::NoWall(
-            "the wall's log has no readable changes; no first rings can be grown".into(),
-        ));
+        return Err(RingsError::EmptyLog);
     };
     let (model, known, evidence) = beginning(changes, log.proofs, log.abandoned)?;
     if !git::is_bare(tree)? {

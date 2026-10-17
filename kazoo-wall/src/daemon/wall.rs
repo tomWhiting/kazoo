@@ -2428,8 +2428,8 @@ impl Wall {
         (change, moved)
     }
 
-    /// Attach the tree in `dir` when it is a planted bare repository; the
-    /// daemon never plants one. A failure is kept for the snapshot and
+    /// Attach the tree in `dir` when it is a planted bare repository (the
+    /// daemon plants it as it starts: see `plant_tree`). A failure is kept for the snapshot and
     /// said in the daemon's log; the wall plays on.
     pub fn find_tree(&mut self, dir: &std::path::Path) {
         match crate::tree::git::is_bare(dir) {
@@ -2443,6 +2443,11 @@ impl Wall {
         if let Some(err) = &self.tree_error {
             eprintln!("kazoo-wall: the tree could not attach: {err}");
         }
+    }
+
+    /// Play without a tree, for `why` (the daemon could not plant one).
+    pub fn tree_unplanted(&mut self, why: String) {
+        self.tree_error = Some(why);
     }
 
     /// Take `handle` as the wall's tree: the mirror becomes the wall's

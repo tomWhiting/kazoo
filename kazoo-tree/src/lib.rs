@@ -69,7 +69,7 @@ fn planted(dir: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         format!(
-            "no tree at {}: the wall plants one with `kazoo wall tree import` (once, with the wall stopped)",
+            "no tree at {} yet: the wall plants it as it starts, so start the wall (kzoo wall), or restart one that is playing (kzoo wall stop, then kzoo wall); the wall says why if it cannot",
             dir.display()
         ),
     ))

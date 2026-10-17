@@ -2239,8 +2239,8 @@ mod tests;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TreeHealth {
-    /// Whether a planted tree is attached (`~/.kazoo/tree`, planted by
-    /// KZ-T03 or `tree::git::plant`; the daemon never plants one).
+    /// Whether a planted tree is attached (`~/.kazoo/tree`, which the
+    /// daemon plants as it starts, or `kazoo wall tree import` grows).
     pub planted: bool,
     /// The last change the tree durably holds.
     pub through: Option<u64>,

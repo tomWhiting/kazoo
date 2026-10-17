@@ -152,7 +152,12 @@ impl Wall {
         let Some(tree) = &self.tree else {
             return Err(error(
                 ErrorCode::Internal,
-                "this wall keeps no tree yet (kazoo wall tree import plants it); nothing was changed",
+                format!(
+                    "this wall keeps no tree yet ({}); nothing was changed",
+                    self.tree_error
+                        .as_deref()
+                        .unwrap_or("it plants one as it starts")
+                ),
             ));
         };
         if let Some(why) = tree.health().error {

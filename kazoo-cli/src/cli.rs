@@ -142,7 +142,7 @@ pub enum StudioCommand {
 /// Operations on the shared wall.
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub enum WallCommand {
-    /// Plant the tree and grow its trunk from the wall's change log (once, with the wall stopped).
+    /// Grow the tree's trunk from the wall's change log by hand, with the wall stopped (the wall does this itself as it starts).
     Tree {
         #[command(subcommand)]
         command: TreeCommand,
@@ -158,7 +158,7 @@ pub enum WallCommand {
 /// Operations on the wall's lasting history.
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub enum TreeCommand {
-    /// Plant the tree and grow its trunk from the wall's change log (once, with the wall stopped).
+    /// Grow the tree's trunk from the wall's change log by hand, with the wall stopped (the wall does this itself as it starts).
     Import(ImportArgs),
 }
 
