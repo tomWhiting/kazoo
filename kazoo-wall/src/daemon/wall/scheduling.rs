@@ -191,6 +191,9 @@ impl Wall {
             .round() as u32
     }
 
+    /// Plug a cable for `seat`: checked, then the room for it, then
+    /// plugged, its sound held `timing.0` beats and faded in over
+    /// `timing.1` (both checked by [`validate`]).
     pub(super) fn scheduled_patch(
         &mut self,
         seat: &str,
@@ -198,28 +201,27 @@ impl Wall {
         amount: Option<f64>,
         timing: (f64, f64),
     ) -> Result<Outcome, WallError> {
-        if timing.0 <= 0.0 && timing.1 <= 0.0 {
-            return self.plug(seat, ends.0, ends.1, amount);
-        }
         let growth = super::Growth {
             cables: usize::from(self.patch.check_plug(ends.0, ends.1, amount)?),
             ..super::Growth::NONE
         };
         self.room_to_grow(growth)?;
         let mut what = self.patch.plug(ends.0, ends.1, amount, None)?;
-        if let crate::protocol::What::Patch {
+        let crate::protocol::What::Patch {
+            cable,
             after_beats,
             fade_beats,
             ..
         } = &mut what
-        {
-            *after_beats = timing.0;
-            *fade_beats = timing.1;
-        }
-        let cable = match &what {
-            crate::protocol::What::Patch { cable, .. } => Some(cable.id),
-            _ => None,
+        else {
+            return Err(error(
+                ErrorCode::Internal,
+                "a patch did not produce a patch record",
+            ));
         };
+        *after_beats = timing.0;
+        *fade_beats = timing.1;
+        let cable = Some(cable.id);
         self.changed(seat, what, None, None, cable)
     }
 }

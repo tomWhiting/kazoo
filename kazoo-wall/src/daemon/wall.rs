@@ -3075,30 +3075,6 @@ impl Wall {
         }
     }
 
-    /// Plug output `from` into jack `to` for `seat`. The request is checked
-    /// first, then the room for it, and only then is the patch changed. A
-    /// cable into a jack already in use replaces it: no more work than
-    /// before.
-    fn plug(
-        &mut self,
-        seat: &str,
-        from: &str,
-        to: &str,
-        amount: Option<f64>,
-    ) -> Result<Outcome, WallError> {
-        let growth = Growth {
-            cables: usize::from(self.patch.check_plug(from, to, amount)?),
-            ..Growth::NONE
-        };
-        self.room_to_grow(growth)?;
-        let what = self.patch.plug(from, to, amount, None)?;
-        let cable = match &what {
-            What::Patch { cable, .. } => Some(cable.id),
-            _ => None,
-        };
-        self.changed(seat, what, None, None, cable)
-    }
-
     /// Add a module of `kind` for `seat`: checked, then the room for it,
     /// then added.
     fn add(

@@ -202,7 +202,10 @@ fn timed_patch_and_tempo_summaries_say_when_and_how_long() {
     let untimed: What = serde_json::from_value(serde_json::json!({"op":"patch","cable":{"id":12,"from":"lfo1.out","to":"vcf1.cutoff","amount":0.4}})).unwrap();
     assert_eq!(
         crate::change::describe(&patch),
-        format!("{} after 4 beats over 2 beats", crate::change::describe(&untimed))
+        format!(
+            "{} after 4 beats over 2 beats",
+            crate::change::describe(&untimed)
+        )
     );
     let tempo: What = serde_json::from_value(
         serde_json::json!({"op":"tempo","from":92,"to":96,"desk":false,"after_beats":1}),
