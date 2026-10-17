@@ -116,6 +116,9 @@ pub struct MouthArgs {
 /// Desk startup options.
 #[derive(Debug, Args, PartialEq, Eq)]
 pub struct MixArgs {
+    /// Listen for instruments on a local network IP address and port.
+    #[arg(long)]
+    pub listen: Option<std::net::SocketAddr>,
     /// Put a built-in 808 pattern on strip 1.
     #[arg(long)]
     pub demo: bool,
@@ -317,7 +320,10 @@ impl From<MouthArgs> for kazoo_mouth::Args {
 
 impl From<MixArgs> for kazoo_mix::Args {
     fn from(args: MixArgs) -> Self {
-        Self { demo: args.demo }
+        Self {
+            demo: args.demo,
+            listen: args.listen,
+        }
     }
 }
 

@@ -28,6 +28,7 @@
 //! instrument as well as heard.
 
 mod instrument;
+mod network;
 mod refusals;
 pub(crate) mod tempo;
 use tempo::initial_song;
@@ -37,7 +38,8 @@ pub(crate) mod tests;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::net::{SocketAddr, TcpListener};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
@@ -51,6 +53,7 @@ use rustix::io::Errno;
 use kazoo_core::audio_transport::{AudioRingConfig, audio_block_ring};
 use kazoo_core::ipc::discovery;
 use kazoo_core::ipc::protocol::{FrameBuffer, FrameHeader, HEADER_SIZE, encode_header};
+use kazoo_core::ipc::stream::HubStream;
 use kazoo_core::ipc::types::{
     MSG_NOTE_EVENT, MSG_REFUSED, MSG_REGISTER, MSG_REGISTERED, MSG_SHUTDOWN, MSG_TRANSPORT_SYNC,
     PROTOCOL_VERSION, RegisterMsg, RegisteredMsg, SYNC_NOW, TRANSPORT_PAUSED, TRANSPORT_PLAYING,
@@ -106,6 +109,8 @@ pub const PATCH_CAPACITY: usize = 2 * DESK_CHANNELS;
 pub struct HubConfig {
     /// Socket the hub listens on.
     pub socket: PathBuf,
+    /// Optional network listener; absent by default.
+    pub listen: Option<SocketAddr>,
     /// Write the PID file instruments use to find the hub. Off for a hub on
     /// a private socket (tests).
     pub advertise: bool,
@@ -122,6 +127,7 @@ impl HubConfig {
         Self {
             socket: discovery::default_socket_path(),
             advertise: true,
+            listen: None,
             sample_rate,
             reserved,
         }
@@ -333,6 +339,7 @@ pub struct Hub {
     notices: Receiver<HubNotice>,
     stats: Arc<HubStats>,
     socket: PathBuf,
+    listen: Option<SocketAddr>,
     /// Whether the hub thread is scheduled as real-time, once it has asked.
     real_time: Arc<OnceLock<Result<(), NotRealTime>>>,
 }
@@ -374,6 +381,7 @@ impl Hub {
             Err(err) => return Err(err.into()),
         };
         listener.set_nonblocking(true)?;
+        let (network, listen) = network::bind_claimed(config.listen, &config.socket)?;
         if config.advertise {
             discovery::write_pid_file(&config.socket)?;
         }
@@ -382,7 +390,9 @@ impl Hub {
         let stats = Arc::new(HubStats::default());
         let (notice_tx, notices) = sync_channel(NOTICE_BACKLOG);
         let socket = config.socket.clone();
-        let mut server = Server::new(listener, config, shared, patchbay, notice_tx, &stats);
+        let mut server = Server::new(
+            listener, network, config, shared, patchbay, notice_tx, &stats,
+        );
         let thread_running = Arc::clone(&running);
         let real_time = Arc::new(OnceLock::new());
         let promoted = Arc::clone(&real_time);
@@ -415,6 +425,7 @@ impl Hub {
             notices,
             stats,
             socket,
+            listen,
             real_time,
         })
     }
@@ -483,7 +494,7 @@ impl Drop for Hub {
 /// A connection that has not registered yet.
 #[derive(Debug)]
 struct Pending {
-    stream: UnixStream,
+    stream: HubStream,
     read_buf: FrameBuffer,
     deadline: Instant,
 }
@@ -504,6 +515,7 @@ enum Strip {
 /// State owned by the hub thread.
 struct Server {
     listener: UnixListener,
+    network: Option<TcpListener>,
     config: HubConfig,
     shared: Arc<SharedState>,
     patchbay: PatchbayHub,
@@ -526,12 +538,13 @@ struct Server {
     leaving: Vec<(usize, LeaveReason)>,
 }
 
-/// Space for the listener, every instrument, and twice as many pending streams.
-const MAX_POLLED: usize = 1 + DESK_CHANNELS + 2 * DESK_CHANNELS;
+/// Space for both listeners, every instrument, and twice as many pending streams.
+const MAX_POLLED: usize = 2 + DESK_CHANNELS + 2 * DESK_CHANNELS;
 
 impl Server {
     fn new(
         listener: UnixListener,
+        network: Option<TcpListener>,
         config: HubConfig,
         shared: Arc<SharedState>,
         patchbay: PatchbayHub,
@@ -549,6 +562,7 @@ impl Server {
         let song = VecDeque::from([initial_song(&shared)]);
         Self {
             listener,
+            network,
             config,
             shared,
             patchbay,
@@ -588,6 +602,10 @@ impl Server {
         let mut fds: [PollFd<'_>; MAX_POLLED] =
             std::array::from_fn(|_| PollFd::new(&self.listener, PollFlags::IN));
         let mut n = 1;
+        if let Some(network) = &self.network {
+            fds[n] = PollFd::new(network, PollFlags::IN);
+            n += 1;
+        }
         for instrument in &self.instruments {
             fds[n] = PollFd::new(&instrument.stream, PollFlags::IN);
             n += 1;
@@ -609,6 +627,7 @@ impl Server {
         // new registers.
         self.collect_patch_events();
         self.accept();
+        self.accept_tcp();
         self.register_pending();
         self.read_instruments();
         self.follow_song();
@@ -647,7 +666,7 @@ impl Server {
             match self.listener.accept() {
                 Ok((stream, _)) => match stream.set_nonblocking(true) {
                     Ok(()) => self.pending.push(Pending {
-                        stream,
+                        stream: HubStream::Unix(stream),
                         read_buf: FrameBuffer::new(),
                         deadline: Instant::now() + REGISTRATION_TIMEOUT,
                     }),
@@ -753,7 +772,7 @@ impl Server {
 
     /// Tell a connection why it cannot plug in, and the desk that it could
     /// not. The connection closes when `stream` is dropped.
-    fn refuse(&mut self, stream: &UnixStream, name: String, reason: RefuseReason) {
+    fn refuse(&mut self, stream: &HubStream, name: String, reason: RefuseReason) {
         let text = reason.to_string();
         let mut end = text.len().min(REFUSAL_BYTES);
         while !text.is_char_boundary(end) {

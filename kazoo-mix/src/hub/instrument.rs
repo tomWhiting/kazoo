@@ -2,7 +2,6 @@
 //! clock that places its audio on the studio timeline.
 
 use std::io;
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use kazoo_core::audio_transport::{AudioBlockProducer, AudioRingPushError};
@@ -10,6 +9,7 @@ use kazoo_core::ipc::protocol::{
     AUDIO_PAYLOAD_HEADER, FrameBuffer, FrameHeader, decode_audio_frame_count,
     decode_audio_stream_frame,
 };
+use kazoo_core::ipc::stream::HubStream;
 use kazoo_core::ipc::types::{
     DeskHealthMsg, DeskPaceMsg, MSG_AUDIO, MSG_DESK_HEALTH, MSG_DESK_PACE, MSG_NOTE_EVENT,
     MSG_SHUTDOWN, MSG_TRANSPORT_REQUEST, NoteEventMsg, TransportRequestMsg,
@@ -117,7 +117,7 @@ impl std::fmt::Display for ProtocolError {
 /// A registered instrument.
 #[derive(Debug)]
 pub struct Instrument {
-    pub stream: UnixStream,
+    pub stream: HubStream,
     pub id: [u8; 16],
     pub name: String,
     pub slot: usize,
@@ -156,7 +156,7 @@ impl Instrument {
     /// Wrap a registered connection.
     #[must_use]
     pub fn new(
-        stream: UnixStream,
+        stream: HubStream,
         registration: Registration,
         read_buf: FrameBuffer,
         producer: AudioBlockProducer,

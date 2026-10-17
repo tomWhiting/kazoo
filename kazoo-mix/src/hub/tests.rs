@@ -2,10 +2,12 @@
 //! real audio callback path (patchbay, engine, shared state).
 
 mod named_link;
+mod tcp;
 pub mod tempo;
 mod transport;
 mod wake;
 
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -63,6 +65,14 @@ impl Rig {
     }
 
     fn with_shared(reserved: [bool; DESK_CHANNELS], shared: SharedState) -> Self {
+        Self::with_network(reserved, shared, None)
+    }
+
+    fn with_network(
+        reserved: [bool; DESK_CHANNELS],
+        shared: SharedState,
+        listen: Option<SocketAddr>,
+    ) -> Self {
         let shared = Arc::new(shared);
         let (hub_end, callback_end) = patchbay(PATCH_CAPACITY);
         let socket = unique_socket();
@@ -70,6 +80,7 @@ impl Rig {
             HubConfig {
                 socket: socket.clone(),
                 advertise: false,
+                listen,
                 sample_rate: RATE,
                 reserved,
             },
@@ -233,6 +244,7 @@ fn a_second_hub_on_the_same_socket_is_refused() {
         HubConfig {
             socket: rig.socket.clone(),
             advertise: false,
+            listen: None,
             sample_rate: RATE,
             reserved: [false; DESK_CHANNELS],
         },
