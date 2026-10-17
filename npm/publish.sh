@@ -30,7 +30,9 @@ if [ -z "$version" ]; then
 fi
 
 # A version is one commit: once its tag names another commit, what is here
-# is not that release, and must go out under a new version.
+# is not that release, and must go out under a new version. The tags are
+# fetched first, so one made from another clone is seen too.
+git -C "$root" fetch -q --tags origin
 if tagged=$(git -C "$root" rev-parse -q --verify "refs/tags/v$version^{commit}"); then
   if [ "$tagged" != "$(git -C "$root" rev-parse HEAD)" ]; then
     echo "publish.sh: v$version was released from $tagged, not this commit; bump the version" >&2
