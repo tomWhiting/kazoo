@@ -111,10 +111,20 @@ pub struct Left {
     pub wall: String,
     /// The name this seat was on it as.
     pub seat: String,
-    /// Whether the wall stopped listing the name within [`GONE_WITHIN`]
-    /// (or is not playing): when it did not, another connection is on it
-    /// as that name.
-    pub gone: bool,
+    /// Whether the wall was seen to stop listing the name.
+    pub gone: Gone,
+}
+
+/// Whether the wall was seen to let a seat go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Gone {
+    /// It no longer lists the name, or is not playing.
+    Yes,
+    /// It still lists the name after [`GONE_WITHIN`]: another connection
+    /// is on it as that name.
+    StillListed,
+    /// It could not be looked at, for this reason.
+    Unseen(String),
 }
 
 /// One joined wall, for one tool call: its link, and the line on which the
@@ -282,14 +292,24 @@ impl Walls {
                         "someone is on {name} as {taken} already: choose another name"
                     ));
                 }
-                match link.hello().await {
-                    Ok(hello) => Joining::Playing {
+                match (link.hello().await, asked) {
+                    (Ok(hello), _) => Joining::Playing {
                         wall: name.to_string(),
                         seats: hello.seats,
                         revision: hello.revision,
                     },
-                    Err(LinkError::NotRunning) => self.waiting(name),
-                    Err(err) => return Err(err.to_string()),
+                    (Err(LinkError::NotRunning), _) => self.waiting(name),
+                    // A refusal is the wall's word on this name: said either way.
+                    (Err(err @ LinkError::Wall(_)), _) | (Err(err), Asked::ByTool) => {
+                        return Err(err.to_string());
+                    }
+                    // At start the line keeps trying, as it always did.
+                    (Err(err), Asked::AtStart) => {
+                        eprintln!(
+                            "kazoo-mcp: {name} did not answer the hello ({err}); joining it as one not yet playing"
+                        );
+                        self.waiting(name)
+                    }
                 }
             }
             (Err(LinkError::NotRunning), _) => self.waiting(name),
@@ -378,21 +398,17 @@ impl Walls {
         })
     }
 
-    /// Whether the wall stops listing `seat` within [`GONE_WITHIN`], or
-    /// is not playing.
-    async fn gone(&self, seat: &str) -> bool {
+    /// Whether the wall stops listing `seat` within [`GONE_WITHIN`].
+    async fn gone(&self, seat: &str) -> Gone {
         let deadline = tokio::time::Instant::now() + GONE_WITHIN;
         loop {
             match link::peek(&self.socket).await {
                 Ok(hello) if hello.seats.iter().any(|other| other == seat) => {}
-                Ok(_) | Err(LinkError::NotRunning) => return true,
-                Err(err) => {
-                    eprintln!("kazoo-mcp: the wall could not be looked at after a leave: {err}");
-                    return false;
-                }
+                Ok(_) | Err(LinkError::NotRunning) => return Gone::Yes,
+                Err(err) => return Gone::Unseen(err.to_string()),
             }
             if tokio::time::Instant::now() >= deadline {
-                return false;
+                return Gone::StillListed;
             }
             tokio::time::sleep(LOOK_EVERY).await;
         }

@@ -105,7 +105,7 @@ async fn a_join_is_checked_kept_and_left() {
         Left {
             wall: HERE.to_string(),
             seat: "Nova".to_string(),
-            gone: true,
+            gone: Gone::Yes,
         },
         "a wall not playing lists nobody"
     );
@@ -182,4 +182,56 @@ async fn the_seat_s_own_join_at_start_takes_its_name_as_it_always_did() {
         walls.join(None, "Cally", Asked::AtStart).await,
         Ok(Joining::Waiting { .. })
     ));
+}
+
+/// A stand-in wall on `socket` that answers every hello as given (`None`
+/// closes the line at once, unanswered).
+fn stand_in(socket: &Path, hello: Option<serde_json::Value>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let Some(hello) = hello.clone() else {
+                drop(stream);
+                continue;
+            };
+            tokio::spawn(async move {
+                let (read, mut write) = stream.into_split();
+                let mut lines = BufReader::new(read).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let asked: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    let answer =
+                        serde_json::json!({"id": asked["id"], "ok": true, "result": hello});
+                    if write
+                        .write_all(format!("{answer}\n").as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+}
+
+#[tokio::test]
+async fn a_name_still_listed_after_a_leave_is_said() {
+    let (dir, walls, _session) = nowhere();
+    stand_in(
+        &dir.path().join("kazoo-wall.sock"),
+        Some(
+            serde_json::json!({"daemon": "stub", "seat": "kazoo-mcp", "watcher": true, "seats": ["Nova"], "revision": 0}),
+        ),
+    );
+    assert_eq!(walls.gone("Nova").await, Gone::StillListed);
+    assert_eq!(walls.gone("Other").await, Gone::Yes);
+}
+
+#[tokio::test]
+async fn a_wall_that_cannot_be_looked_at_after_a_leave_is_said() {
+    let (dir, walls, _session) = nowhere();
+    stand_in(&dir.path().join("kazoo-wall.sock"), None);
+    assert!(matches!(walls.gone("Nova").await, Gone::Unseen(why) if !why.is_empty()));
 }

@@ -109,18 +109,17 @@ pub fn parse(
             }
         }
     }
-    // The flag is kept apart from $KAZOO_SEAT, so each says it is going;
-    // both are checked here, and the flag wins when the seat starts.
-    for seat in [seat.as_deref(), env_seat.filter(|seat| !seat.is_empty())]
-        .into_iter()
-        .flatten()
+    // The flag is kept apart from $KAZOO_SEAT, so each says it is going.
+    // Only the one used is checked: the flag wins, as it always did.
+    if let Some(seat) = seat
+        .as_deref()
+        .or_else(|| env_seat.filter(|seat| !seat.is_empty()))
+        && !valid_name(seat)
     {
-        if !valid_name(seat) {
-            return Err(format!(
-                "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
-                seat.escape_default()
-            ));
-        }
+        return Err(format!(
+            "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
+            seat.escape_default()
+        ));
     }
     let notify_every = notify_every
         .map(|text| seconds(&text).map(Duration::from_secs))
@@ -155,13 +154,13 @@ fn resolve_with(
     env_seat: Option<&str>,
     default_socket: impl FnOnce() -> PathBuf,
 ) -> Result<Options, String> {
-    for seat in [args.seat.as_deref(), env_seat].into_iter().flatten() {
-        if !valid_name(seat) {
-            return Err(format!(
-                "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
-                seat.escape_default()
-            ));
-        }
+    if let Some(seat) = args.seat.as_deref().or(env_seat)
+        && !valid_name(seat)
+    {
+        return Err(format!(
+            "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
+            seat.escape_default()
+        ));
     }
     let notify_every = args
         .notify_every
@@ -265,6 +264,14 @@ mod tests {
             assert_eq!(options.seat, None);
             assert_eq!(options.notify_every, Duration::from_secs(20));
         }
+    }
+
+    #[test]
+    fn a_bad_kazoo_seat_never_stops_a_good_flag() {
+        let options = serve(&["--seat", "Tom"], Some("Tom!"));
+        assert_eq!(options.seat.as_deref(), Some("Tom"));
+        assert_eq!(options.going.len(), 2, "both are still said to be going");
+        assert!(run(&[], Some("Tom!")).is_err(), "used, it is checked");
     }
 
     #[test]

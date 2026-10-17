@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{Seat, bad, ok};
-use crate::walls::{Asked, Joining, Left};
+use crate::walls::{Asked, Gone, Joining, Left};
 
 /// `wall_walls`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -111,18 +111,15 @@ impl Seat {
     )]
     async fn wall_leave(&self, Parameters(args): Parameters<LeaveArgs>) -> CallToolResult {
         match self.walls.leave(args.wall.as_deref()).await {
-            Ok(Left {
-                wall,
-                seat,
-                gone: true,
-            }) => ok(format!("Off {wall}, where this seat was {seat}.")),
-            Ok(Left {
-                wall,
-                seat,
-                gone: false,
-            }) => ok(format!(
-                "Off {wall}, where this seat was {seat}; the wall still lists {seat}, so another connection is on it as that name."
-            )),
+            Ok(Left { wall, seat, gone }) => ok(match gone {
+                Gone::Yes => format!("Off {wall}, where this seat was {seat}."),
+                Gone::StillListed => format!(
+                    "Off {wall}, where this seat was {seat}; the wall still lists {seat}, so another connection is on it as that name."
+                ),
+                Gone::Unseen(why) => format!(
+                    "Off {wall}, where this seat was {seat}; whether the wall has let {seat} go could not be seen ({why})."
+                ),
+            }),
             Err(why) => bad(why),
         }
     }
