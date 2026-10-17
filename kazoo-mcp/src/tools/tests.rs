@@ -1,4 +1,26 @@
 use super::*;
+use crate::channel::Feed;
+use crate::link::Wall;
+
+/// A seat on the wall at `socket` as `name`, with no event line or
+/// notifier: what it tells the notifier comes out of the receiver.
+pub(super) async fn joined(
+    socket: std::path::PathBuf,
+    name: &str,
+) -> (
+    Seat,
+    tokio::sync::mpsc::UnboundedReceiver<crate::channel::Feed>,
+    watch::Receiver<Option<Peer<RoleServer>>>,
+) {
+    let (peer, receiver) = watch::channel(None);
+    let walls = Arc::new(Walls::new(
+        socket,
+        std::time::Duration::from_secs(20),
+        receiver.clone(),
+    ));
+    let heard = walls.join_heard(None, name).await.unwrap();
+    (Seat::new(walls, peer), heard, receiver)
+}
 
 #[tokio::test]
 async fn wall_undo_renders_replacements_and_notes_its_own_change() {
@@ -19,32 +41,41 @@ async fn wall_undo_renders_replacements_and_notes_its_own_change() {
         });
         let fixture =
             serde_json::json!({"change": change, "backup": "kept-wall", "notes": ["kept tempo"]});
+        // The join looks first (a watcher's hello, seeing nobody), then
+        // says hello as Tom; the undo comes on Tom's connection.
         let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            for expected in ["hello", "undo"] {
-                let request: serde_json::Value =
-                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-                assert_eq!(request["op"], expected);
-                let result = if expected == "hello" {
-                    serde_json::json!({"daemon": "stub", "seat": "Tom", "console": false, "seats": ["Tom"], "revision": 0})
-                } else {
-                    fixture.clone()
-                };
-                let response =
-                    serde_json::json!({"id": request["id"], "ok": true, "result": result});
-                write
-                    .write_all(format!("{response}\n").as_bytes())
-                    .await
-                    .unwrap();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut lines = BufReader::new(read).lines();
+                while let Some(line) = lines.next_line().await.unwrap() {
+                    let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    let result = match request["op"].as_str() {
+                        Some("hello") if request["watcher"] == true => {
+                            serde_json::json!({"daemon": "stub", "seat": "kazoo-mcp", "console": false, "watcher": true, "seats": [], "revision": 0})
+                        }
+                        Some("hello") => {
+                            serde_json::json!({"daemon": "stub", "seat": "Tom", "console": false, "seats": ["Tom"], "revision": 0})
+                        }
+                        Some("undo") => fixture.clone(),
+                        other => panic!("the stand-in was asked {other:?}"),
+                    };
+                    let response =
+                        serde_json::json!({"id": request["id"], "ok": true, "result": result});
+                    write
+                        .write_all(format!("{response}\n").as_bytes())
+                        .await
+                        .unwrap();
+                    if request["op"] == "undo" {
+                        return;
+                    }
+                }
             }
         });
-        let (feed, mut heard) = mpsc::unbounded_channel();
-        let (peer, receiver) = watch::channel(None);
-        let seat = Seat::new(Arc::new(Wall::new(socket, "Tom".into())), feed, peer);
+        let (seat, mut heard, receiver) = joined(socket, "Tom").await;
         let result = seat
             .wall_undo(Parameters(UndoArgs {
+                wall: None,
                 change: 2,
                 comment: None,
             }))
@@ -264,13 +295,15 @@ fn every_tool_that_makes_a_change_takes_a_comment() {
 }
 
 /// Every tool, in the router's order.
-const TOOLS: [&str; 25] = [
+const TOOLS: [&str; 28] = [
     "wall_add",
     "wall_batch",
     "wall_catalogue",
     "wall_chain",
     "wall_go",
     "wall_group",
+    "wall_join",
+    "wall_leave",
     "wall_listen",
     "wall_load",
     "wall_log",
@@ -290,6 +323,7 @@ const TOOLS: [&str; 25] = [
     "wall_turn",
     "wall_undo",
     "wall_unpatch",
+    "wall_walls",
 ];
 
 #[test]
@@ -337,7 +371,7 @@ fn arguments_are_strict() {
     let unpatch: UnpatchArgs = serde_json::from_str(r#"{"to":"vcf1.cutoff"}"#).unwrap();
     assert_eq!(unpatch.to.as_deref(), Some("vcf1.cutoff"));
     assert_eq!(unpatch.cable, None);
-    assert!(serde_json::from_str::<NoArgs>("{}").is_ok());
+    assert!(serde_json::from_str::<WallArgs>("{}").is_ok());
     assert!(
         serde_json::from_str::<RecordArgs>("{}").is_err(),
         "on is required"

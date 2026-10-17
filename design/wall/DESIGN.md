@@ -326,7 +326,7 @@ Change summaries are built only from sanitised ids, names, numbers and units. A 
 
 ## kazoo-mcp
 
-- Run as `kazoo-mcp --seat <Name>`, or with `KAZOO_SEAT` set. With no seat it exits with an error saying how to set one.
+- Run as `kazoo-mcp`, with nothing naming the seat or the wall (KZ-N02). It starts on no wall; `wall_walls` lists the walls it can reach, `wall_join {as}` puts it on one under a name the model chooses, and `wall_leave` takes it off. `--seat`, `KAZOO_SEAT` and `--socket` still join this Mac's wall at start for one release, and say they are going.
 - It connects to the daemon's socket and reconnects every 2 s while the daemon is down; tools answer "the wall is not running (start it with `kazoo-wall`)".
 - It never starts the daemon itself.
 - It supports MCP protocol versions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25, following dot-seat, because 2026-07-28 cannot carry channel notifications.
@@ -363,7 +363,7 @@ Seats have no `wall_delete_save` and no way to save over a save: destroying a sa
 **Setup, documented in the crate README:**
 
 ```
-claude mcp add kazoo -- /path/to/kazoo-mcp --seat <Name>
+claude mcp add kazoo -- /path/to/kazoo-mcp
 claude --dangerously-load-development-channels server:kazoo
 ```
 

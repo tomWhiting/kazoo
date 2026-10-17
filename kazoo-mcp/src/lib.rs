@@ -8,6 +8,7 @@ mod link;
 mod render;
 mod run;
 mod tools;
+mod walls;
 
 pub use run::{Args, USAGE, cli, parse_args, run};
 

@@ -81,6 +81,8 @@ struct Line {
 #[derive(Debug)]
 pub struct News {
     seat: String,
+    /// The wall this news is from, as the seat joined it (KZ-N02).
+    wall: Option<String>,
     seats: Vec<String>,
     seq: u64,
     lines: Vec<Line>,
@@ -93,11 +95,20 @@ pub struct News {
 }
 
 impl News {
+    /// The same news, from the wall this seat joined as `wall`: its
+    /// notifications carry the wall's name in their meta.
+    #[must_use]
+    pub fn with_wall(mut self, wall: String) -> Self {
+        self.wall = Some(wall);
+        self
+    }
+
     /// Nothing yet, for `seat`.
     #[must_use]
     pub const fn new(seat: String) -> Self {
         Self {
             seat,
+            wall: None,
             seats: Vec::new(),
             seq: 0,
             lines: Vec::new(),
@@ -383,14 +394,18 @@ impl News {
             .map(String::as_str)
             .collect::<Vec<_>>()
             .join(",");
-        json!({
+        let mut params = json!({
             "content": content,
             "meta": {
                 "source": SOURCE,
                 "seq": self.seq.to_string(),
                 "seats": seats,
             },
-        })
+        });
+        if let Some(wall) = &self.wall {
+            params["meta"]["wall"] = json!(wall);
+        }
+        params
     }
 
     /// The notification went out at `now`: start afresh.
@@ -454,12 +469,12 @@ fn clean_to(summary: &str, limit: usize) -> String {
 /// session's transport does. Nothing is sent before the session has said it
 /// is initialised (`peer` is `None` until then); news waits meanwhile.
 pub async fn notify(
-    seat: String,
+    (seat, wall): (String, String),
     window: Duration,
     mut feed: mpsc::UnboundedReceiver<Feed>,
     mut peer: watch::Receiver<Option<Peer<RoleServer>>>,
 ) {
-    let mut news = News::new(seat);
+    let mut news = News::new(seat).with_wall(wall);
     loop {
         let session = peer.borrow().clone();
         let due = session.as_ref().and_then(|_| news.due(window));
@@ -591,6 +606,18 @@ mod tests {
         assert_eq!(
             news.due(WINDOW),
             Some(sent + Duration::from_secs(1) + WINDOW)
+        );
+    }
+
+    #[test]
+    fn news_from_a_joined_wall_names_it_in_the_meta() {
+        let t0 = Instant::now();
+        let mut news = News::new("Waffles".to_string()).with_wall("here".to_string());
+        news.take(up(&["Waffles", "Tom"]), t0);
+        news.take(change(41, "Tom", "Tom set the tempo to 96 BPM"), t0);
+        assert_eq!(
+            news.params()["meta"],
+            json!({"source": "kazoo-wall", "seq": "41", "seats": "Waffles,Tom", "wall": "here"})
         );
     }
 

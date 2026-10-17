@@ -187,13 +187,15 @@ pub struct ServeArgs {
 /// Settings for a seat's stdio MCP server.
 #[derive(Debug, Args, PartialEq, Eq)]
 pub struct McpArgs {
-    /// Who this seat is on the wall: 1 to 24 of A-Z a-z 0-9 space _ . -.
-    #[arg(long, env = "KAZOO_SEAT", value_parser = seat_name)]
-    pub seat: String,
+    /// Going: join this Mac's wall as this name at start. Leave it out: the
+    /// seat joins a wall by name with `wall_join`.
+    /// (`KAZOO_SEAT`, also going, is read by the seat itself, so each says it is going.)
+    #[arg(long, value_parser = seat_name)]
+    pub seat: Option<String>,
     /// News of other seats' changes comes at most once per this many seconds.
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u64).range(1..=3_600))]
     pub notify_every: u64,
-    /// The wall's control socket (default: kazoo-wall.sock in kazoo's runtime directory).
+    /// Going: the wall's control socket a --seat join uses (default: kazoo-wall.sock in kazoo's runtime directory).
     #[arg(long)]
     pub socket: Option<PathBuf>,
 }
@@ -395,7 +397,7 @@ impl From<McpArgs> for kazoo_mcp::Args {
         Self {
             seat: args.seat,
             notify_every: Some(Duration::from_secs(args.notify_every)),
-            socket: Some(args.socket.unwrap_or_else(kazoo_wall::paths::socket_path)),
+            socket: args.socket,
         }
     }
 }

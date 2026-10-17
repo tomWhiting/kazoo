@@ -794,7 +794,7 @@ impl Control {
         console: bool,
         watcher: bool,
     ) -> Response {
-        if seat.eq_ignore_ascii_case("desk") || seat.eq_ignore_ascii_case("kazoo-wall") {
+        if crate::protocol::reserved_name(seat) {
             return Response::failure(
                 id,
                 WallError::new(

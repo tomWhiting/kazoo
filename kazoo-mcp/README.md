@@ -13,28 +13,36 @@ npm install -g kzhz                  # or: cargo install kzoo
 kazoo wall                           # opens the TUI and starts the daemon if none is running
 ```
 
-**Each seat** registers the server under its own name, then starts Claude with the channel loaded:
+**Each seat** registers the same server, with nothing in it about who or where, then starts Claude with the channel loaded:
 
 ```sh
-claude mcp add kazoo -- kazoo mcp --seat <Name>
+claude mcp add kazoo -- kazoo mcp
 claude --dangerously-load-development-channels server:kazoo
 ```
 
+The seat starts on no wall and with no name. `wall_walls` lists the walls it can reach, and `wall_join {as}` puts it on one as a name it chooses there and then.
+
 About the setup:
-- The seat name can also come from `KAZOO_SEAT`. A name is 1 to 24 characters from `A-Z a-z 0-9 space _ . -`. With no name, or a name the wall would refuse, `kazoo mcp` exits with status 2 and says why.
+- A name is 1 to 24 characters from `A-Z a-z 0-9 space _ . -`. `desk` and `kazoo-wall` are kept for the wall's own use, and a name someone on the wall already has is refused. The check is a look just before the join, so another seat can take the name in between; a join to a wall not yet playing checks it only once the wall starts.
 - `--notify-every <secs>` sets the shortest gap between two notifications. The default is 20 s, and the range is 1 to 3600.
-- `--socket <path>` points at another daemon's socket. The default is `kazoo-wall.sock` in kazoo's runtime directory; `KAZOO_WALL_RUNTIME_DIR` moves that directory, as it does for the daemon.
+- This Mac's wall is `kazoo-wall.sock` in kazoo's runtime directory; `KAZOO_WALL_RUNTIME_DIR` moves that directory, as it does for the daemon.
+- Going, and kept for one release: `--seat <Name>` (or `KAZOO_SEAT`) joins this Mac's wall as that name at start, as it always did (a name already on the wall is not refused there), and `--socket <path>` names the socket that join uses. Each says on stderr that it is going. A join that fails is said, and the seat starts on no wall.
 - Without the `--dangerously-load-development-channels` flag, the tools still work but no notifications arrive. Claude Code ignores the flag in `-p` mode, so channels need an interactive session.
 - The server supports MCP revisions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25. Revision 2026-07-28 cannot carry channel messages, so a client that asks for it is answered with 2025-11-25.
 
-While the daemon is down, every tool answers ``the wall is not running (start it with `kazoo wall`)``. The event line tries to reconnect every 2 s. A tool call connects as soon as the daemon is back.
+Until the seat joins a wall, every tool but `wall_walls`, `wall_join` and `wall_leave` answers "join a wall first: wall_walls lists them, and wall_join {as} joins one". Once joined, while the daemon is down, every tool answers ``the wall is not running (start it with `kazoo wall`)``. The event line tries to reconnect every 2 s. A tool call connects as soon as the daemon is back.
 
 ## Tools
 
 Ports are named `module.port`, for example `lfo1.out` or `vcf1.in`. Every knob is also a jack by its own name, so `lfo1.out` into `vcf1.cutoff` moves the cutoff. Every effect has the mix on `left` and `right` and the effect alone on `wet_left` and `wet_right`, so `plate1.wet_left` into `pitch1.left` shifts only a reverb's tail.
 
+Every other tool below also takes `wall?`: which joined wall to ask, by its name from `wall_walls`. It is needed only when the seat is on more than one.
+
 | Tool | Arguments | What it does |
 |---|---|---|
+| `wall_walls` | none | Lists the walls this seat can reach: each one's name, where it is, whether it is playing, who is on it, and the name this seat is on it as. Looking joins nothing and is never announced. |
+| `wall_join` | `as`, `wall?` | Goes on a wall as the name given, and answers who else is on it. A wall not playing yet can be joined: the seat is on it as it starts. |
+| `wall_leave` | `wall?` | Goes off a wall. Its news stops, and it answers once the wall no longer lists the seat (or says that another connection is still on it as that name). |
 | `wall_look` | none | Shows the whole wall as a listing: tempo and position, clock source, seats here, master peaks, the latest listening, faults, every module with its hands (each seat's share of the module's fingerprints, largest first, e.g. `(hands: Tom 62%, Waffles 30%)`) and each knob as `name=value (as read) [min..max]` (`a→b` while gliding), and every cable as `#id from → to amount`. |
 | `wall_catalogue` | `kind?` | Lists each module kind with its family, what it does, and its knobs (range, unit, default, travel, jack law, named positions). It also lists inputs and outputs with what they carry (audio, gate, cv). `kind` narrows the list to one kind (`vcf`) or one family (`drive`). |
 | `wall_turn` | `module`, `knob`, `value`, `glide_beats?` | Turns a knob to `value`, given in the knob's own unit. It glides there over `glide_beats` (default 2, 0 jumps, at most 64). The value is held to the knob's range. |

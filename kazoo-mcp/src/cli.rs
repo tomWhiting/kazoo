@@ -1,5 +1,7 @@
-//! The command line: who this seat is, how often it is told, and where the
-//! wall's socket is.
+//! The command line: how often the seat is told. It says nothing about
+//! who the seat is or where the wall is: a seat joins a wall by name with
+//! `wall_join` (KZ-N02). `--seat`, `KAZOO_SEAT` and `--socket` still join
+//! at start, for one release, and say they are going.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -8,7 +10,8 @@ use kazoo_wall::protocol::valid_name;
 
 use crate::run::Args;
 
-/// The environment variable naming the seat when `--seat` is not given.
+/// The environment variable naming the seat when `--seat` is not given
+/// (going: see the module's words).
 pub const SEAT_ENV: &str = "KAZOO_SEAT";
 
 /// The notification window when `--notify-every` is not given, in seconds.
@@ -21,17 +24,21 @@ pub const MAX_NOTIFY_EVERY: u64 = 3_600;
 pub const USAGE: &str = "\
 kazoo-mcp: the wall for a Claude seat, an MCP server on stdio
 
-usage: kazoo mcp --seat <Name> [--notify-every <secs>] [--socket <path>]
-       kazoo-mcp --seat <Name> [--notify-every <secs>] [--socket <path>]
+usage: kazoo mcp [--notify-every <secs>]
+       kazoo-mcp [--notify-every <secs>]
 
-  --seat <Name>          who this seat is on the wall: 1 to 24 of
-                         A-Z a-z 0-9 space _ . - (or set KAZOO_SEAT)
   --notify-every <secs>  news of other seats' changes comes at most once
                          per this many seconds (default 20, 1 to 3600)
-  --socket <path>        the wall's control socket (default: kazoo-wall.sock
-                         in kazoo's runtime directory)
   -h, --help             this text
   --version              the version
+
+The seat starts on no wall and with no name: wall_walls lists the walls
+it can reach, and wall_join {as} puts it on one as a name it chooses.
+
+Going, and kept for one release:
+  --seat <Name>          join this Mac's wall as this name at start
+                         (or set KAZOO_SEAT)
+  --socket <path>        the wall's control socket that join uses
 
 It never starts the wall: run `kazoo wall` for that.
 ";
@@ -50,12 +57,16 @@ pub enum Invocation {
 /// A seat's settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
-    /// The seat's name, already checked.
-    pub seat: String,
+    /// The name to join this Mac's wall as at start, already checked
+    /// (`--seat` or `KAZOO_SEAT`, both going); `None` joins nothing.
+    pub seat: Option<String>,
     /// The shortest time between two notifications of other seats' changes.
     pub notify_every: Duration,
-    /// The wall's control socket.
+    /// This Mac's wall's control socket.
     pub socket: PathBuf,
+    /// What is going among the settings given: one sentence each, said on
+    /// stderr as the seat starts.
+    pub going: Vec<String>,
 }
 
 /// Read the command line (`args` without the program name). `env_seat` is
@@ -64,11 +75,10 @@ pub struct Options {
 /// # Errors
 ///
 /// A sentence for the person at the terminal: an unknown flag, a flag with
-/// no value, no seat, a seat name the wall would refuse, or a window out of
-/// range.
+/// no value, a seat name the wall would refuse, or a window out of range.
 pub fn parse(
     args: impl IntoIterator<Item = String>,
-    env_seat: Option<String>,
+    env_seat: Option<&str>,
 ) -> Result<Invocation, String> {
     let args: Vec<String> = args.into_iter().collect();
     if args
@@ -99,15 +109,13 @@ pub fn parse(
             }
         }
     }
-    let seat = seat
+    // The flag is kept apart from $KAZOO_SEAT, so each says it is going.
+    // Only the one used is checked: the flag wins, as it always did.
+    if let Some(seat) = seat
+        .as_deref()
         .or_else(|| env_seat.filter(|seat| !seat.is_empty()))
-        .ok_or_else(|| {
-            format!(
-                "kazoo-mcp needs to know which seat it is: run it as `kazoo-mcp --seat <Name>` \
-                 or set {SEAT_ENV}"
-            )
-        })?;
-    if !valid_name(&seat) {
+        && !valid_name(seat)
+    {
         return Err(format!(
             "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
             seat.escape_default()
@@ -128,14 +136,30 @@ pub fn parse(
 
 /// Apply defaults and validate settings supplied by another crate.
 pub fn resolve(args: Args) -> Result<Options, String> {
-    resolve_with(args, kazoo_wall::paths::socket_path)
+    let env_seat = match std::env::var(SEAT_ENV) {
+        Ok(seat) => Some(seat).filter(|seat| !seat.is_empty()),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(format!(
+                "{SEAT_ENV} is not valid text: use 1 to 24 of A-Z a-z 0-9 space _ . -"
+            ));
+        }
+    };
+    resolve_with(args, env_seat.as_deref(), kazoo_wall::paths::socket_path)
 }
 
-fn resolve_with(args: Args, default_socket: impl FnOnce() -> PathBuf) -> Result<Options, String> {
-    if !valid_name(&args.seat) {
+/// [`resolve`], with `$KAZOO_SEAT` as `env_seat` (only to say it is going).
+fn resolve_with(
+    args: Args,
+    env_seat: Option<&str>,
+    default_socket: impl FnOnce() -> PathBuf,
+) -> Result<Options, String> {
+    if let Some(seat) = args.seat.as_deref().or(env_seat)
+        && !valid_name(seat)
+    {
         return Err(format!(
             "'{}' is not a valid seat name: use 1 to 24 of A-Z a-z 0-9 space _ . -",
-            args.seat.escape_default()
+            seat.escape_default()
         ));
     }
     let notify_every = args
@@ -150,10 +174,25 @@ fn resolve_with(args: Args, default_socket: impl FnOnce() -> PathBuf) -> Result<
     {
         return Err("--socket needs a path".to_owned());
     }
+    let mut going = Vec::new();
+    if env_seat.is_some() {
+        going.push(format!(
+            "{SEAT_ENV} is going: unset it, and the seat joins with wall_join"
+        ));
+    }
+    if args.seat.is_some() {
+        going.push("--seat is going: leave it out, and the seat joins with wall_join".to_string());
+    }
+    if args.socket.is_some() {
+        going.push(
+            "--socket is going: leave it out, and wall_walls finds this Mac's wall".to_string(),
+        );
+    }
     Ok(Options {
-        seat: args.seat,
+        seat: args.seat.or_else(|| env_seat.map(str::to_string)),
         notify_every: Duration::from_secs(notify_every),
         socket: args.socket.unwrap_or_else(default_socket),
+        going,
     })
 }
 
@@ -190,16 +229,16 @@ mod tests {
     use super::*;
 
     fn run(args: &[&str], env: Option<&str>) -> Result<Invocation, String> {
-        parse(
-            args.iter().map(|arg| (*arg).to_string()),
-            env.map(str::to_string),
-        )
+        parse(args.iter().map(|arg| (*arg).to_string()), env)
     }
 
     fn serve(args: &[&str], env: Option<&str>) -> Options {
         match run(args, env) {
             Ok(Invocation::Serve(options)) => {
-                resolve_with(options, || PathBuf::from("/run/kazoo-wall.sock")).unwrap()
+                resolve_with(options, env.filter(|seat| !seat.is_empty()), || {
+                    PathBuf::from("/run/kazoo-wall.sock")
+                })
+                .unwrap()
             }
             other => panic!("not a seat: {other:?}"),
         }
@@ -208,20 +247,64 @@ mod tests {
     #[test]
     fn a_seat_comes_from_the_flag_or_the_environment() {
         let options = serve(&["--seat", "Waffles"], None);
-        assert_eq!(options.seat, "Waffles");
+        assert_eq!(options.seat.as_deref(), Some("Waffles"));
         assert_eq!(options.notify_every, Duration::from_secs(20));
         assert_eq!(options.socket, PathBuf::from("/run/kazoo-wall.sock"));
-        assert_eq!(serve(&[], Some("Vesper")).seat, "Vesper");
-        assert_eq!(serve(&["--seat=Tom"], Some("Vesper")).seat, "Tom");
+        assert_eq!(serve(&[], Some("Vesper")).seat.as_deref(), Some("Vesper"));
+        assert_eq!(
+            serve(&["--seat=Tom"], Some("Vesper")).seat.as_deref(),
+            Some("Tom")
+        );
     }
 
     #[test]
-    fn no_seat_says_how_to_set_one() {
+    fn the_bare_command_names_nobody() {
         for env in [None, Some("")] {
-            let err = run(&[], env).unwrap_err();
-            assert!(err.contains("--seat <Name>"), "{err}");
-            assert!(err.contains(SEAT_ENV), "{err}");
+            let options = serve(&[], env);
+            assert_eq!(options.seat, None);
+            assert_eq!(options.notify_every, Duration::from_secs(20));
         }
+    }
+
+    #[test]
+    fn a_bad_kazoo_seat_never_stops_a_good_flag() {
+        let options = serve(&["--seat", "Tom"], Some("Tom!"));
+        assert_eq!(options.seat.as_deref(), Some("Tom"));
+        assert_eq!(options.going.len(), 2, "both are still said to be going");
+        assert!(run(&[], Some("Tom!")).is_err(), "used, it is checked");
+    }
+
+    #[test]
+    fn each_going_setting_is_said_on_its_own() {
+        assert!(serve(&[], None).going.is_empty());
+        assert_eq!(
+            serve(&["--seat", "Tom"], None).going,
+            ["--seat is going: leave it out, and the seat joins with wall_join"]
+        );
+        assert_eq!(
+            serve(&[], Some("Vesper")).going,
+            ["KAZOO_SEAT is going: unset it, and the seat joins with wall_join"]
+        );
+        assert_eq!(
+            serve(&["--seat", "Tom"], Some("Tom")).going,
+            [
+                "KAZOO_SEAT is going: unset it, and the seat joins with wall_join",
+                "--seat is going: leave it out, and the seat joins with wall_join",
+            ],
+            "each source used says so, even naming the same seat"
+        );
+        assert_eq!(
+            serve(&["--socket", "/tmp/w.sock"], None).going,
+            ["--socket is going: leave it out, and wall_walls finds this Mac's wall"]
+        );
+    }
+
+    #[test]
+    fn the_usage_leads_with_the_bare_command_and_names_the_going_flags() {
+        assert!(USAGE.contains("usage: kazoo mcp [--notify-every <secs>]\n"));
+        assert!(USAGE.contains("wall_join"));
+        let going = USAGE.split_once("Going").expect("the going flags").1;
+        assert!(going.contains("--seat") && going.contains("--socket"));
     }
 
     #[test]
@@ -233,10 +316,7 @@ mod tests {
             "tab\there",
         ] {
             let err = run(&["--seat", bad], None).unwrap_err();
-            assert!(
-                err.contains("valid seat name") || err.contains("needs to know"),
-                "{err}"
-            );
+            assert!(err.contains("valid seat name"), "{err}");
         }
     }
 
