@@ -130,8 +130,8 @@ const COUNTERS: [Counter; 13] = [
     },
     Counter {
         short: "desk audio",
-        one: "audio block the desk link dropped",
-        many: "audio blocks the desk link dropped",
+        one: "audio block the desk link dropped (a lost backlog counts once)",
+        many: "audio blocks the desk link dropped (a lost backlog counts once)",
         read: |l| l.desk_blocks_dropped,
         says_pitch_failure: false,
     },
@@ -220,6 +220,9 @@ pub struct Row {
 #[derive(Debug, Clone, Default)]
 pub struct Health {
     seen: Losses,
+    /// Whether the judge was ever seen stopped: the losses read after it is
+    /// joined cannot tell, and the report must still say so.
+    judge_stopped: bool,
     /// The totals when the rise being said began, and when it ends.
     rising: Option<(Losses, Instant)>,
 }
@@ -240,20 +243,25 @@ impl Health {
             self.rising = Some((since, now + RISE_LIFETIME));
         }
         self.seen = latest;
+        self.judge_stopped |= latest.judge_stopped;
     }
 
     /// The row: the rise being said, or the totals, or nothing at all when
     /// nothing is lost and the judge runs.
     #[must_use]
     pub fn row(&self, now: Instant, pitch_failure: Option<&str>) -> Option<Row> {
-        let stopped = self
-            .seen
-            .judge_stopped
-            .then_some("the voice judge has stopped");
+        let stopped = self.judge_stopped.then_some("the voice judge has stopped");
         if let Some((since, until)) = self.rising
             && now < until
         {
-            let rise = describe(&since, &self.seen, pitch_failure);
+            let mut rise = describe(&since, &self.seen, pitch_failure);
+            // The others are named in the totals, which stay in sight
+            // however long the losses keep rising.
+            if rises(&since, &self.seen).len() > 1
+                && let Some(totals) = self.totals()
+            {
+                rise = format!("{rise} · lost so far: {totals}");
+            }
             let text = stopped.map_or_else(|| rise.clone(), |stopped| format!("{stopped}; {rise}"));
             return Some(Row { text, fresh: true });
         }
@@ -266,7 +274,7 @@ impl Health {
         };
         Some(Row {
             text,
-            fresh: self.seen.judge_stopped,
+            fresh: self.judge_stopped,
         })
     }
 
@@ -288,12 +296,12 @@ impl Health {
     #[must_use]
     pub fn report(&self, pitch_failure: Option<&str>) -> Option<String> {
         let all = describe_all(&Losses::default(), &self.seen, pitch_failure);
-        let stopped = self.seen.judge_stopped.then_some("the voice judge stopped");
+        let stopped = self.judge_stopped.then_some("the voice judge stopped");
         match (stopped, all) {
             (None, None) => None,
-            (Some(stopped), None) => Some(format!("kazoo mouth: {stopped}")),
-            (None, Some(all)) => Some(format!("kazoo mouth lost: {all}")),
-            (Some(stopped), Some(all)) => Some(format!("kazoo mouth: {stopped}; lost: {all}")),
+            (Some(stopped), None) => Some(format!("kazoo-mouth: {stopped}")),
+            (None, Some(all)) => Some(format!("kazoo-mouth: lost {all}")),
+            (Some(stopped), Some(all)) => Some(format!("kazoo-mouth: {stopped}; lost {all}")),
         }
     }
 }

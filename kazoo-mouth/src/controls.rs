@@ -13,7 +13,7 @@ use crate::engine::looper::{
     BAR_CHOICES, LoopFeed, LoopGauges, LoopLength, Note, State, VOLUME_DEFAULT,
 };
 use crate::engine::{Command, Stats};
-use crate::health::Health;
+use crate::health::{Health, Losses};
 use kazoo_fx::Curve;
 use ringbuf::traits::Producer;
 
@@ -609,12 +609,7 @@ impl App {
 
     /// Take the losses the session read at `now` for the health row, and
     /// the first pYIN failure's reason once there is one.
-    pub fn observe_losses(
-        &mut self,
-        losses: crate::health::Losses,
-        pitch_failure: Option<&str>,
-        now: Instant,
-    ) {
+    pub fn observe_losses(&mut self, losses: Losses, pitch_failure: Option<&str>, now: Instant) {
         self.health.observe(losses, now);
         if self.pitch_failure.is_none() {
             self.pitch_failure = pitch_failure.map(str::to_owned);

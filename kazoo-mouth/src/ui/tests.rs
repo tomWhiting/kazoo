@@ -665,8 +665,8 @@ fn a_narrow_header_keeps_every_word_of_the_mic_and_the_desk() {
 }
 
 /// The health row sits in the header, wrapped to the width and red while
-/// it rises: on the smallest screen the mouth draws, its words are whole and
-/// every key is still in the footer.
+/// it rises: on an 80 by 24 screen its words are whole, the footer is whole,
+/// and the rest of the header still fits.
 #[test]
 fn the_health_row_wraps_in_the_header_and_leaves_the_footer_alone() {
     use crate::health::Losses;
@@ -695,10 +695,19 @@ fn the_health_row_wraps_in_the_header_and_leaves_the_footer_alone() {
         "{screen}"
     );
     let footer = screen.lines().last().unwrap();
-    for key in ["Tab", "↑↓", "←→", "w", "Space", "?"] {
-        assert!(footer.contains(key), "{footer}");
-    }
+    assert!(footer.starts_with(super::FOOTER), "{footer}");
     assert!(!footer.contains("lost"), "{footer}");
+    // The health row takes three rows here; the rest still fit.
+    let health_rows = screen
+        .lines()
+        .filter(|line| {
+            line.contains("mic samples") || line.contains("FFT") || line.contains("length")
+        })
+        .count();
+    assert!(health_rows >= 2, "{screen}");
+    // The rest of the header still fits, after the health rows.
+    assert!(screen.contains("mic: "), "{screen}");
+    assert!(screen.contains("playing direct: no desk"), "{screen}");
     let row = screen
         .lines()
         .position(|line| line.contains("28 mic samples dropped"))
@@ -723,4 +732,24 @@ fn nothing_lost_draws_no_health_row() {
     let app = App::new(QuantiseSettings::default(), false);
     let screen = text(&render(&app, &Display::new(RATE), 120, 40, Instant::now()));
     assert!(!screen.contains("lost"), "{screen}");
+}
+
+/// On a short screen the header is cut from the bottom, so the health row,
+/// straight after the title, is the last of it to go.
+#[test]
+fn a_short_screen_keeps_the_health_row_before_the_latency() {
+    use crate::health::Losses;
+    let mut app = App::new(QuantiseSettings::default(), false);
+    app.plots.latency_open = true;
+    let now = Instant::now();
+    app.observe_losses(
+        Losses {
+            mic_dropped: 28,
+            ..Losses::default()
+        },
+        None,
+        now,
+    );
+    let screen = text(&render(&app, &Display::new(RATE), 80, 12, now));
+    assert!(screen.contains("28 mic samples dropped"), "{screen}");
 }

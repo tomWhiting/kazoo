@@ -87,7 +87,10 @@ fn the_worst_is_named_the_rest_counted_and_the_totals_worst_first() {
     );
     assert_eq!(
         text(&health, now, None).as_deref(),
-        Some("64 mic samples skipped to catch up (+2 others)")
+        Some(
+            "64 mic samples skipped to catch up (+2 others) · lost so far: mic skip 64 · \
+             pitch in 100 · screen 3"
+        )
     );
     assert_eq!(
         health.totals().as_deref(),
@@ -115,7 +118,10 @@ fn a_failed_pitch_run_is_said_with_its_reason_whenever_it_rises() {
     );
     assert_eq!(
         text(&worst, now, why).as_deref(),
-        Some("2 pYIN runs failed, read as unvoiced (engine fault): wrong length (+1 other)")
+        Some(
+            "2 pYIN runs failed, read as unvoiced (engine fault): wrong length (+1 other) · \
+             lost so far: pyin 2 · fx 1"
+        )
     );
     let mut behind = Health::default();
     behind.observe(
@@ -127,7 +133,10 @@ fn a_failed_pitch_run_is_said_with_its_reason_whenever_it_rises() {
     );
     assert_eq!(
         text(&behind, now, why).as_deref(),
-        Some("5 mic samples dropped (+1 other); pYIN failed: wrong length")
+        Some(
+            "5 mic samples dropped (+1 other); pYIN failed: wrong length · lost so far: \
+             mic 5 · pyin 1"
+        )
     );
     let mut none = Health::default();
     none.observe(losses(|l| l.mic_dropped = 5), now);
@@ -219,7 +228,7 @@ fn the_report_says_every_loss_of_the_session() {
     assert_eq!(
         health.report(Some("wrong length")).as_deref(),
         Some(
-            "kazoo mouth lost: 28 mic samples dropped, 1 pYIN run failed, read as unvoiced \
+            "kazoo-mouth: lost 28 mic samples dropped, 1 pYIN run failed, read as unvoiced \
              (engine fault); pYIN failed: wrong length"
         )
     );
@@ -264,4 +273,41 @@ fn losses_are_read_from_the_stats_the_desk_and_the_judge() {
     assert!(gone.judge_stopped);
     drop(feed);
     judge.join().expect("the judge exits");
+}
+
+/// Losses that keep rising never hide the others: the totals ride along.
+#[test]
+fn rising_for_half_a_minute_keeps_the_others_in_sight() {
+    let mut health = Health::default();
+    let start = Instant::now();
+    for step in 0..7_u64 {
+        let now = start + Duration::from_secs(5 * step);
+        health.observe(
+            losses(|l| {
+                l.desk_blocks_dropped = 100 * (step + 1);
+                l.mic_skipped = 64;
+                l.display_dropped = 3;
+            }),
+            now,
+        );
+        let row = health.row(now, None).expect("a loss is shown");
+        assert!(row.fresh);
+        assert!(row.text.contains("lost so far:"), "{}", row.text);
+        assert!(row.text.contains("mic skip 64"), "{}", row.text);
+        assert!(row.text.contains("screen 3"), "{}", row.text);
+    }
+}
+
+/// The report says a judge that stopped, though the last read, made after
+/// it is joined, cannot.
+#[test]
+fn a_judge_seen_stopped_is_in_the_report() {
+    let mut health = Health::default();
+    let now = Instant::now();
+    health.observe(losses(|l| l.judge_stopped = true), now);
+    health.observe(Losses::default(), now);
+    assert_eq!(
+        health.report(None).as_deref(),
+        Some("kazoo-mouth: the voice judge stopped")
+    );
 }

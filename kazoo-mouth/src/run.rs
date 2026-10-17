@@ -361,13 +361,14 @@ impl Session {
         combine(writers, joined)
     }
 
-    /// What the session has lost so far, for the health row.
-    fn losses(&self) -> Losses {
+    /// What the session has lost so far, for the health row, with the
+    /// desk's status as read this frame.
+    fn losses(&self, desk: Option<&kazoo_core::ipc::link::LinkStatus>) -> Losses {
         Losses::read(
             &self.stats,
             &self.judge_counters,
             self.judge.as_ref().is_some_and(Judge::is_finished),
-            self.hub.as_ref().map(HubLink::status).as_ref(),
+            desk,
         )
     }
 
@@ -594,7 +595,10 @@ fn combine(first: Result<()>, second: Result<()>) -> Result<()> {
 }
 
 /// Each part of the delay from the voice to the speaker, as far as it is known.
-fn latency(session: &Session) -> ui::latency::Latency {
+fn latency(
+    session: &Session,
+    desk: Option<&kazoo_core::ipc::link::LinkStatus>,
+) -> ui::latency::Latency {
     let rate = f64::from(session.rate);
     ui::latency::Latency {
         input: session.mic.as_ref().and_then(Mic::input_latency_ms),
@@ -610,11 +614,7 @@ fn latency(session: &Session) -> ui::latency::Latency {
         effects: Some(session.stats.fx_latency.load(Ordering::Relaxed) as f64 * 1000.0 / rate),
         device_buffers_only: kazoo_core::host::audio::LATENCY_COVERS
             == kazoo_core::host::audio::LatencyCovers::BufferOnly,
-        output: if session
-            .hub
-            .as_ref()
-            .is_some_and(|hub| hub.status().connected)
-        {
+        output: if desk.is_some_and(|desk| desk.connected) {
             None
         } else {
             session
@@ -664,12 +664,15 @@ fn event_loop(
                     app.spectrum.update(app.scope.voice(), session.rate);
                 }
             }
-            app.latency = latency(session);
-            let link = link_state(session);
+            // The desk's status, read once a frame: it takes a lock and
+            // copies a string.
+            let desk = session.hub.as_ref().map(HubLink::status);
+            app.latency = latency(session, desk.as_ref());
+            let link = link_state(desk.as_ref());
             let now = Instant::now();
             app.sync_stats(&session.stats, now);
             app.observe_losses(
-                session.losses(),
+                session.losses(desk.as_ref()),
                 session.judge_counters.first_pitch_failure(),
                 now,
             );
@@ -712,11 +715,8 @@ fn show_input_notice(app: &mut App, notices: &InputNotices, now: Instant) {
     }
 }
 
-fn link_state(session: &Session) -> String {
-    let Some(hub) = &session.hub else {
-        return "playing direct: no desk".into();
-    };
-    desk_status(&hub.status())
+fn link_state(desk: Option<&kazoo_core::ipc::link::LinkStatus>) -> String {
+    desk.map_or_else(|| "playing direct: no desk".into(), desk_status)
 }
 
 fn desk_status(state: &kazoo_core::ipc::link::LinkStatus) -> String {

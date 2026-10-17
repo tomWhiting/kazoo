@@ -84,3 +84,21 @@ fn the_judges_counters_are_read_with_the_engines() {
     drop(feed);
     judge.join().unwrap();
 }
+
+/// A judge whose feed is gone stops, and says so before it is joined.
+#[test]
+fn a_judge_whose_feed_is_gone_is_finished() {
+    let config = judge_config(&EngineConfig::default().pitch, 48_000);
+    let (feed, _results, judge) = judge::spawn(config, 128, OnsetConfig::default()).unwrap();
+    assert!(!judge.is_finished(), "a judge with a feed runs");
+    drop(feed);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !judge.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the judge never stopped"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    judge.join().unwrap();
+}

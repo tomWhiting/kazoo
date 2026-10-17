@@ -99,13 +99,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
     // Cut at the width, not at words, so the rows counted are the rows drawn.
     let width = usize::from(area.width);
     let breakdown = app.latency.breakdown();
-    let mut header: Vec<Line<'_>> = [title.as_str(), link, mic.as_str()]
-        .into_iter()
-        .chain(app.plots.latency_open.then_some(breakdown.as_str()))
-        .flat_map(|text| rows_of(text, width))
-        .map(Line::from)
-        .collect();
-    // What the mouth has lost: a row of its own, red while it rises.
+    let mut header: Vec<Line<'_>> = rows_of(&title, width).into_iter().map(Line::from).collect();
+    // What the mouth has lost: rows of their own, straight after the title
+    // so a short screen cuts the rest of the header first; red while a loss
+    // rises, amber once settled.
     if let Some(row) = app.health.row(now, app.pitch_failure.as_deref()) {
         let colour = if row.fresh { LOSS_FRESH } else { LOSS_HELD };
         header.extend(
@@ -114,6 +111,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, display: &Display, link: &str, now
                 .map(|text| Line::styled(text, Style::default().fg(colour))),
         );
     }
+    header.extend(
+        [link, mic.as_str()]
+            .into_iter()
+            .chain(app.plots.latency_open.then_some(breakdown.as_str()))
+            .flat_map(|text| rows_of(text, width))
+            .map(Line::from),
+    );
     let header_rows = u16::try_from(header.len())
         .unwrap_or(u16::MAX)
         .min(area.height.saturating_sub(5));

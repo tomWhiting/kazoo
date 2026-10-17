@@ -33,9 +33,9 @@ The effect faults and refusals are read into the app (`controls.rs`) but never d
 
 ## As built (17 Oct 2026), after the first Opus review
 
-- **A row of its own.** The health row sits in the header. It is wrapped to the width as the header is, red while a loss is rising and amber once settled. It never shares the footer or the message slot, so it can neither hide a message nor be hidden by one, and the footer's keys stay whole at 80 columns.
-- **One rise at a time.** A rise is said for ten seconds (`RISE_LIFETIME`). Later rises in that time add to it ("40 mic samples dropped"), and the ten seconds start again from the last one. After that the row holds the totals ("lost so far: mic 28 · pyin 1"), worst first.
-- **The voice judge.** A judge whose thread has stopped is said first, in red, for as long as the mouth plays. The first pYIN failure's reason is said with a failed run, after it when it is the worst, at the end when it is not.
+- **A row of its own.** The health row sits in the header, straight after the title, so a short screen cuts the link, mic and latency rows first. It is wrapped to the width as the header is, red while a loss is rising and amber once settled. It never shares the footer or the message slot, so it neither hides a message nor is hidden by one, and the footer's keys stay whole at 80 columns. When a long reason wraps to several rows, the panels below move down while the rise is said and back when it settles; at 80 by 24 everything still fits.
+- **One rise at a time.** A rise is said for ten seconds (`RISE_LIFETIME`). Later rises in that time add to it ("40 mic samples dropped"), and the ten seconds start again from the last one. When more than one counter rose, the totals ride along ("… (+2 others) · lost so far: …"), so the others stay in sight however long the losses keep rising. After that the row holds the totals ("lost so far: mic 28 · pyin 1"), worst first.
+- **The voice judge.** A judge whose thread has stopped is said first, in red, for as long as the mouth plays, and the end-of-session report says so too. The first pYIN failure's reason is said with a failed run, after it when it is the worst, at the end when it is not.
 - **The order.** What is heard comes before what is seen:
   1. mic, mic skip: a gap in the sound and in the judge's input both;
   2. desk audio: the desk link's dropped blocks, heard as silence when on the desk;
@@ -45,7 +45,7 @@ The effect faults and refusals are read into the app (`controls.rs`) but never d
   6. fx refused, screen.
 - **Counted only when it is a loss.**
   - **"desk voice"** counts a frame only when the desk is connected and carries the voice (`HubLinkAudio::carries_voice`) and its queue had no room. Playing direct, or to a desk too old for the voice, is not a loss; a test plays direct and counts none.
-  - **"desk audio" and "desk msgs"** are the link's own `blocks_dropped` and `messages_dropped`, read from `LinkStatus` on the UI thread.
+  - **"desk audio" and "desk msgs"** are the link's own `blocks_dropped` and `messages_dropped`, read from `LinkStatus` once a frame on the UI thread. That read takes the link's status lock; the audio thread takes none. A lost backlog counts once, and the label says so.
   - **"desk gone"** is what the engine counted as "audio refused": a block sent as the desk went away.
   - **"fx refused" and "pyin"** are marked engine faults.
   - **Grammar.** Each counter has a singular and a plural.
