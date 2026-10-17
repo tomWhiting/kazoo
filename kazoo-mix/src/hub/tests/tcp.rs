@@ -527,3 +527,35 @@ fn a_paced_network_stream_is_told_the_grown_lead() {
         }
     }
 }
+
+#[test]
+fn a_unix_socket_that_cannot_be_claimed_is_named_and_nothing_listens() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("not-a-directory");
+    std::fs::write(&file, b"").unwrap();
+    let socket = file.join("hub.sock");
+    // A port free a moment ago, to see the failed start left it free.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let (patches, callback) = patchbay(PATCH_CAPACITY);
+    let result = Hub::start(
+        HubConfig {
+            socket: socket.clone(),
+            listen: Some(port),
+            advertise: false,
+            sample_rate: RATE,
+            reserved: [false; DESK_CHANNELS],
+        },
+        Arc::new(SharedState::new()),
+        patches,
+    );
+    let Err(error) = result else {
+        panic!("a hub started on {}", socket.display());
+    };
+    let text = error.to_string();
+    assert!(text.contains(&socket.display().to_string()), "{text}");
+    std::net::TcpListener::bind(port).unwrap();
+    drop(callback);
+}

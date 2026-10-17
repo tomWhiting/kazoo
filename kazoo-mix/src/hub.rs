@@ -395,7 +395,15 @@ impl Hub {
                     socket: config.socket,
                 });
             }
-            Err(err) => return Err(err.into()),
+            Err(err) => {
+                return Err(HubStartError::Io(io::Error::new(
+                    err.kind(),
+                    format!(
+                        "cannot claim the desk's socket {}: {err}",
+                        config.socket.display()
+                    ),
+                )));
+            }
         };
         listener.set_nonblocking(true)?;
         let (network, listen) = network::bind_claimed(config.listen, &config.socket)?;
