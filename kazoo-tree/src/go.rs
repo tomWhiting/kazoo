@@ -49,7 +49,17 @@ impl Goes {
         let spawned = std::thread::Builder::new()
             .name("kazoo-tree-go".to_owned())
             .spawn(move || {
-                let words = go(&socket, &moment).unwrap_or_else(|why| why);
+                // A panic here is caught and said as the go's answer: the
+                // terminal's hook leaves this thread's panics to the tree.
+                let words = std::panic::catch_unwind(|| go(&socket, &moment))
+                    .unwrap_or_else(|panic| {
+                        Err(format!(
+                            "the go to {} panicked: {}",
+                            short(&moment),
+                            crate::panic_words(panic.as_ref())
+                        ))
+                    })
+                    .unwrap_or_else(|why| why);
                 // Nobody is left to tell once the screen has gone.
                 if tell.send(words).is_err() {
                     eprintln!(

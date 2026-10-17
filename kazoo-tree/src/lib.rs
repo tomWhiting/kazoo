@@ -19,15 +19,13 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 
-use std::io::{self, Stdout, Write as _};
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEventKind};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -265,7 +263,7 @@ fn panic_words(panic: &(dyn std::any::Any + Send)) -> String {
 /// changed, take keys and the mouse, and show each tree the reader sends.
 fn walk(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut kazoo_host::terminal::Terminal,
     reader: &Reader,
     stop: &AtomicUsize,
 ) -> io::Result<()> {

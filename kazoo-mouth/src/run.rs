@@ -25,8 +25,6 @@ use crate::engine::looper::{LoopFeed, LoopOut};
 use crate::engine::{Command, EngineSetup, MouthEngine, Stats};
 use crate::ui::{self, Display};
 
-mod finish;
-
 #[cfg(test)]
 mod tests;
 
@@ -202,7 +200,7 @@ pub fn run(args: Args) -> Result<()> {
     app.sync_stats(&session.stats, Instant::now());
     app.save_if_due(Instant::now(), true);
     let stopped = session.stop();
-    finish::finish(result, terminal, stopped)
+    leave(result, terminal, stopped)
 }
 
 struct Session {
@@ -522,11 +520,30 @@ fn device(name: Option<String>) -> DeviceChoice {
     name.map_or(DeviceChoice::Default, DeviceChoice::Named)
 }
 
+/// The terminal, left: kazoo-host's in the program, a stand-in in tests.
+trait Restore {
+    fn leave(self) -> io::Result<()>;
+}
+
+impl Restore for kazoo_host::terminal::Terminal {
+    fn leave(self) -> io::Result<()> {
+        Self::leave(self)
+    }
+}
+
+/// Leave the terminal whatever the run did, keeping every failure: the
+/// run's, the leave's, and the session's stop.
+fn leave(result: Result<()>, terminal: impl Restore, stopped: Result<()>) -> Result<()> {
+    let restored = terminal.leave().wrap_err("restoring the mouth terminal");
+    combine(combine(result, restored), stopped)
+}
+
+/// Both results, or both failures with every cause in each.
 fn combine(first: Result<()>, second: Result<()>) -> Result<()> {
     match (first, second) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(first), Err(second)) => Err(eyre!("{first}; also: {second}")),
+        (Err(first), Err(second)) => Err(eyre!("{first:#}; also: {second:#}")),
     }
 }
 

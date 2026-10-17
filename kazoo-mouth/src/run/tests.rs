@@ -153,20 +153,23 @@ fn a_saved_loop_is_a_float_wav_that_loops() -> color_eyre::Result<()> {
     Ok(())
 }
 
-/// The terminal, which let go of the mouse it took (kazoo-host's test of
-/// leaving checks that), is left on the way out whether the run failed or
-/// not, and a failure to leave is kept with the run's own.
+/// The terminal is left once on every way out, and every failure is kept
+/// with its cause: the run's, and a leave that failed. Letting go of the
+/// mouse is kazoo-host's, tested there (`leave_into`).
 #[test]
-fn the_terminal_is_left_on_exit() {
-    use super::finish::{Restore, finish};
+fn the_terminal_is_left_on_exit_and_every_failure_kept() {
+    use super::{Restore, leave};
     use std::cell::Cell;
     use std::rc::Rc;
     #[derive(Debug)]
-    struct Guard(Rc<Cell<usize>>, bool);
+    struct Guard {
+        left: Rc<Cell<usize>>,
+        refuses: bool,
+    }
     impl Restore for Guard {
         fn leave(self) -> std::io::Result<()> {
-            self.0.set(self.0.get() + 1);
-            if self.1 {
+            self.left.set(self.left.get() + 1);
+            if self.refuses {
                 Err(std::io::Error::other("injected restore error"))
             } else {
                 Ok(())
@@ -181,7 +184,11 @@ fn the_terminal_is_left_on_exit() {
         } else {
             Ok(())
         };
-        let result = finish(result, Guard(Rc::clone(&left), refused), Ok(()));
+        let guard = Guard {
+            left: Rc::clone(&left),
+            refuses: refused,
+        };
+        let result = leave(result, guard, Ok(()));
         assert_eq!(left.get(), 1, "left once");
         assert_eq!(result.is_err(), failed || refused);
         if let Err(error) = result {
@@ -192,6 +199,7 @@ fn the_terminal_is_left_on_exit() {
                 refused,
                 "{said}"
             );
+            assert_eq!(said.contains("injected restore error"), refused, "{said}");
         }
     }
 }
