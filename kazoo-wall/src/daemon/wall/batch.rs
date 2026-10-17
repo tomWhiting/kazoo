@@ -87,9 +87,20 @@ impl Wall {
         seat: &str,
         (note, comments): (&str, &[Option<String>]),
         requests: &[Request],
+        notes: (Option<&str>, &[crate::protocol::Attachment]),
         now: Instant,
     ) -> Result<Outcome, WallError> {
         let (note, comments) = validate(note, requests, comments)?;
+        crate::protocol::notes::validate(notes.0, notes.1)?;
+        let refs = if notes.0.is_some() || !notes.1.is_empty() {
+            self.store
+                .as_ref()
+                .ok_or_else(|| error(ErrorCode::Internal, "notes require a state store"))?
+                .write_notes(notes.0, notes.1)
+                .map_err(|err| error(ErrorCode::Internal, format!("write notes: {err}")))?
+        } else {
+            Vec::new()
+        };
         let note = note.to_string();
         // A desk move not yet heard by a tick is logged first, as before a
         // single tempo: the batch's tempo starts from what plays.
@@ -129,6 +140,7 @@ impl Wall {
         // reckon it: a module per add, a cable per cable that is new.
         let outcome = self.room_to_grow(growth_of(&changes)).and_then(|()| {
             self.patch = staged;
+            self.batch_notes = refs;
             self.changed(
                 seat,
                 What::Batch {
@@ -142,6 +154,7 @@ impl Wall {
             )
         });
         self.batch_before = None;
+        self.batch_notes.clear();
         match outcome {
             Ok(mut outcome) => {
                 outcome.result["steps"] = steps;

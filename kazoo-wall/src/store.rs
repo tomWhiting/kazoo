@@ -15,6 +15,7 @@
 //! `patch.json` (`patch.<label>.json`) are copied in as saves, once.
 
 mod chains;
+pub mod notes;
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -2030,6 +2031,7 @@ mod tests {
 
     fn change(seq: u64) -> Change {
         Change {
+            notes: Vec::new(),
             seq,
             at: "2026-09-26T00:00:00Z".to_string(),
             seat: "Tom".to_string(),
@@ -2753,6 +2755,7 @@ mod tests {
 
     fn a_load(seq: u64) -> Change {
         Change {
+            notes: Vec::new(),
             seq,
             at: "2026-10-09T03:30:05Z".to_string(),
             seat: "Tom".to_string(),

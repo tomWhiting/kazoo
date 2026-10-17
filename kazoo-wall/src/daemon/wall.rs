@@ -10,6 +10,7 @@ mod cost;
 mod delay_lines;
 mod loops;
 mod moments;
+mod notes;
 mod storage;
 pub(super) mod unheard;
 
@@ -554,6 +555,7 @@ pub struct Wall {
     chain_batch: Option<Vec<What>>,
     /// The wall before the batch being made, for its parts (KZ-T10c).
     batch_before: Option<crate::patch::PatchFile>,
+    batch_notes: Vec<crate::protocol::NoteRef>,
     /// The comment on the request being answered (see
     /// [`Self::request_commented`]), until its change takes it.
     comment: Option<String>,
@@ -1231,6 +1233,7 @@ pub fn resume(
         let last_logged = history.last().map_or(0, |change| change.seq);
         let seq = patch.last_seq.max(last_logged) + 1;
         let change = Change {
+            notes: Vec::new(),
             seq,
             at: utc_now(),
             seat: LOADER_SEAT.to_string(),
@@ -1364,6 +1367,7 @@ impl Wall {
             tree_buckets: HashMap::new(),
             chain_batch: None,
             batch_before: None,
+            batch_notes: Vec::new(),
             comment: None,
             speech: Speech::new(speech_cache),
             loops,
@@ -2180,6 +2184,26 @@ impl Wall {
         }
         let mut change = self.new_change(seat, what, undoes);
         change.comment = self.comment.take();
+        if undoes.is_none() && matches!(change.what, What::Batch { .. }) {
+            change.notes = std::mem::take(&mut self.batch_notes);
+            if !change.notes.is_empty() {
+                let What::Batch { changes, .. } = &change.what else {
+                    return Err(error(ErrorCode::Internal, "notes require a batch"));
+                };
+                let count = format!(
+                    "({} change{}",
+                    changes.len(),
+                    if changes.len() == 1 { "" } else { "s" }
+                );
+                let start = change.summary.rfind(&count).ok_or_else(|| {
+                    error(ErrorCode::Internal, "batch summary has no change count")
+                })?;
+                change.summary.insert_str(
+                    start + count.len(),
+                    &crate::change::notes_summary(&change.notes),
+                );
+            }
+        }
         Ok(change)
     }
 
@@ -2333,6 +2357,7 @@ impl Wall {
             .clock_line
             .stamp(shared.beat(), shared.bpm(), shared.following_desk());
         Change {
+            notes: Vec::new(),
             seq: self.next_seq,
             at: utc_now(),
             seat: seat.to_string(),
@@ -2466,6 +2491,11 @@ impl Wall {
                 return;
             }
         };
+        // A batch folded into this whole moment has no commit of its own,
+        // and its notes go on no other change's (KZ-T13): the log says so.
+        let healed = crate::tree::notes::healed(history.iter().filter(|change| {
+            change.seq >= first_owed && change.seq <= self.made && !abandoned.contains(&change.seq)
+        }));
         let shared = self.engine.shared();
         let clock = self
             .clock_line
@@ -2488,6 +2518,9 @@ impl Wall {
             });
             if accepted {
                 tree.resync = false;
+                for line in healed {
+                    eprintln!("{line}");
+                }
             }
         }
     }
@@ -2551,7 +2584,7 @@ impl Wall {
         let batch = crate::tree::rings::parts::steps(change)
             .and_then(|_| self.batch_before.take())
             .map(|before| (before, self.tree_mirror.clone()));
-        let diff = if go.is_some() {
+        let mut diff = if go.is_some() {
             Vec::new()
         } else {
             match crate::tree::thread::files_diff(&self.patch.to_file(), &mut self.tree_mirror) {
@@ -2562,6 +2595,9 @@ impl Wall {
                 }
             }
         };
+        if let Some(store) = &self.store {
+            crate::tree::notes::append(store.dir(), change, &mut diff);
+        }
         if let Some(tree) = self.tree.as_mut() {
             let item = match batch {
                 Some((before, mirror)) => crate::tree::thread::TreeItem::Batch {
@@ -2985,6 +3021,7 @@ impl Wall {
                     .and_then(|result| encode(&result))
                     .map(read)
             }
+            Request::Notes { seq } => self.notes(*seq).and_then(|notes| encode(&notes)).map(read),
             Request::Log { before, limit } => encode(&self.log_page(*before, *limit)).map(read),
             Request::Turn {
                 module,
@@ -3029,7 +3066,15 @@ impl Wall {
                 note,
                 changes,
                 comments,
-            } => self.batch(seat, (note, comments), changes, now),
+                description,
+                attachments,
+            } => self.batch(
+                seat,
+                (note, comments),
+                changes,
+                (description.as_deref(), attachments),
+                now,
+            ),
             Request::ChainAdd { name } => self.chain_add(seat, name, now),
             Request::Chains => self.chains(),
             Request::Undo { change } => self.undo((seat, console), *change, now),

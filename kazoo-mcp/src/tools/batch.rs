@@ -14,6 +14,15 @@ pub struct BatchArgs {
     /// characters on one line (no newlines, tabs or other control
     /// characters). The tree shows the batch as one knot with this note.
     pub note: String,
+    /// Markdown explaining what this batch is and why, up to 8 KiB.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// A longer text that goes with the change, such as a proof, a score or the reasoning; read back with `wall_notes`. Up to 8 texts of 64 KiB, 128 KiB together with description.
+    #[serde(default)]
+    #[schemars(
+        description = "a longer text that goes with the change, such as a proof, a score or the reasoning; read back with wall_notes. Up to 8 texts of 64 KiB, 128 KiB together with description."
+    )]
+    pub attachments: Vec<AttachmentArgs>,
     /// The changes, applied in this order as one change: all of them, or
     /// none if any is refused (the refusal names its step, from 0).
     pub changes: Vec<BatchChange>,
@@ -129,6 +138,15 @@ impl BatchArgs {
             .collect::<Result<Vec<Request>, _>>()?;
         Ok(Request::Batch {
             note: self.note,
+            description: self.description,
+            attachments: self
+                .attachments
+                .into_iter()
+                .map(|a| kazoo_wall::protocol::Attachment {
+                    name: a.name,
+                    text: a.text,
+                })
+                .collect(),
             changes,
             comments: if comments.iter().all(Option::is_none) {
                 Vec::new()
@@ -151,4 +169,13 @@ impl BatchChange {
             | Self::Tempo { comment, .. } => comment.as_deref(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentArgs {
+    /// A unique name ignoring case: 1 to 64 of A-Z a-z 0-9 . _ -, without a leading dot. description.md is reserved.
+    pub name: String,
+    /// UTF-8 text, up to 64 KiB; line feeds and tabs are allowed, other controls are refused.
+    pub text: String,
 }

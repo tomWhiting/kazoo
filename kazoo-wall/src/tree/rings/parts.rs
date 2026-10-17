@@ -42,6 +42,7 @@ pub fn batch_parts(before: &PatchFile, change: &Change) -> Result<Vec<Files>, Tr
         // The step as a change of its own, by the batch's seat, at its
         // time: never a copy of the whole batch for each step.
         let part = Change {
+            notes: Vec::new(),
             seq: change.seq,
             at: change.at.clone(),
             seat: change.seat.clone(),

@@ -307,6 +307,7 @@ fn a_go_answer_forgets_the_wall_and_says_where_it_went() {
         to.mark = Some("dawn".into());
         let result = LoadResult {
             change: Change {
+                notes: Vec::new(),
                 seq: 815,
                 at: "2026-10-13T10:00:00Z".into(),
                 seat: "Tom".into(),

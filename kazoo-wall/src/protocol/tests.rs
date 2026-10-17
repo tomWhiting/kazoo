@@ -192,6 +192,7 @@ fn responses_and_events_have_the_design_shape() {
         }
     );
     let change = Change {
+        notes: Vec::new(),
         seq: 58,
         at: "2026-09-26T12:00:01Z".to_string(),
         seat: "Tom".to_string(),
@@ -267,7 +268,8 @@ fn every_error_code_has_its_wire_name() {
             "not_allowed",
             "internal",
             "unknown_moment",
-            "mark_exists"
+            "mark_exists",
+            "not_found"
         ]
     );
 }
@@ -348,6 +350,7 @@ fn changes_undo_and_every_what_round_trip() {
         },
     ] {
         let change = Change {
+            notes: Vec::new(),
             seq: 1,
             at: "2026-09-26T00:00:00Z".to_string(),
             seat: "Tom".to_string(),
@@ -421,7 +424,7 @@ fn fingerprints_have_their_shape_and_old_snapshots_still_read() {
         "daemon":"kazoo-wall 0.1.0","seat":"Cassio","console":false,"seats":["Cassio"],"revision":230
     }))
     .unwrap();
-    assert!(!hello.watcher);
+    assert!(!hello.role.watcher);
     let snapshot: Snapshot = serde_json::from_value(json!({
         "revision":1,"tempo":90.0,"beat":0.0,"clock":"own","on_desk":false,"seats":[],
         "modules":[],"cables":[],"levels":{"peak_l":-120.0,"peak_r":-120.0},"listen":null,
@@ -831,6 +834,7 @@ fn a_load_names_the_save_its_wall_is_kept_in_and_nothing_more() {
         },
     );
     let load = Change {
+        notes: Vec::new(),
         seq: 12,
         at: "2026-10-09T03:30:05Z".to_string(),
         seat: "Tom".to_string(),

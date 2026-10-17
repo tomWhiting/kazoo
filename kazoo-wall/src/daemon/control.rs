@@ -836,11 +836,11 @@ impl Control {
             &HelloResult {
                 daemon: DAEMON.to_string(),
                 seat: seat.to_string(),
-                console,
+                role: crate::protocol::HelloRole { console, watcher },
                 seats: self.wall.seats(),
                 revision: self.wall.revision(),
-                watcher,
                 comments: true,
+                notes: true,
             },
         )
     }

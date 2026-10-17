@@ -306,7 +306,7 @@ fn step_comment(comments: &[Option<String>], index: usize) -> Option<&str> {
 
 /// The most parts a batch's moments can hold before its own: a request
 /// line holds fewer steps than this.
-const MOST_PARTS: usize = crate::protocol::MAX_LINE / 16;
+pub(crate) const MOST_PARTS: usize = 4096;
 
 /// The last logged change the tree holds at `rev`.
 ///
@@ -388,8 +388,9 @@ impl Commit {
             // line break would end the trailers.
             let note = one_line(note);
             let mut message = format!(
-                "{}: {note}\n\n{}Kazoo-Note: {note}\n",
+                "{}: {note}\n\n{}{}Kazoo-Note: {note}\n",
                 change.seat,
+                super::notes::body(change, &files)?,
                 trailers("batch", change.seq, change.clock.as_ref(), None)
             );
             for step in changes {
@@ -418,6 +419,13 @@ impl Commit {
                     message.push_str(&one_line(comment));
                     message.push('\n');
                 }
+            }
+            for note in &change.notes {
+                message.push_str("Kazoo-Attachment: ");
+                message.push_str(&one_line(&note.name));
+                message.push_str(" (");
+                message.push_str(&note.bytes.to_string());
+                message.push_str(")\n");
             }
             message.push_str("Kazoo-Change: ");
             message.push_str(&json);
@@ -644,10 +652,11 @@ impl Importer {
             self.write(format!("from {tip}\n").as_bytes())?;
         }
         if c.whole {
-            self.write(b"deleteall\n")?;
+            self.write(b"D modules\nD wall.toml\n")?;
         }
         for (path, bytes) in &c.files {
-            if path != "wall.toml"
+            if !super::notes::valid_path(path)
+                && path != "wall.toml"
                 && !path
                     .strip_prefix("modules/")
                     .and_then(|p| p.strip_suffix(".toml"))

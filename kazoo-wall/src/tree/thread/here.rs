@@ -573,7 +573,9 @@ fn blob_entries(listing: &[u8]) -> Result<Vec<(String, String)>, HereError> {
                 "the tree's file {path} is not an ordinary blob"
             )));
         }
-        entries.push((path.to_string(), parts[2].to_string()));
+        if !crate::tree::notes::valid_path(path) {
+            entries.push((path.to_string(), parts[2].to_string()));
+        }
     }
     Ok(entries)
 }

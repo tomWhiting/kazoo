@@ -97,6 +97,7 @@ pub(super) const fn at(seq: u64) -> u64 {
 
 pub(super) fn change(seq: u64, what: What) -> Change {
     Change {
+        notes: Vec::new(),
         seq,
         at: crate::change::utc(at(seq)),
         seat: "Tom".into(),

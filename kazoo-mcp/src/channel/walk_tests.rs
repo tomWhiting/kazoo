@@ -25,6 +25,7 @@ fn go(news: &mut News, seq: u64, seat: &str, moment: u64, now: Instant) {
     news.take(
         Feed::Event(Event::Change {
             change: Box::new(Change {
+                notes: Vec::new(),
                 seq,
                 at: "2026-10-15T00:00:00Z".to_string(),
                 seat: seat.to_string(),
@@ -159,6 +160,7 @@ fn a_save_load_is_urgent_and_splits_the_walk() {
     news.take(
         Feed::Event(Event::Change {
             change: Box::new(Change {
+                notes: Vec::new(),
                 seq: 43,
                 at: "2026-10-15T00:00:02Z".to_string(),
                 seat: "Cally".to_string(),
@@ -246,6 +248,7 @@ fn a_rested_walk_joins_ordinary_news_without_shortening_its_window() {
     news.take(
         Feed::Event(Event::Change {
             change: Box::new(Change {
+                notes: Vec::new(),
                 seq: 42,
                 at: "2026-10-15T00:00:01Z".to_string(),
                 seat: "Cally".to_string(),
@@ -315,6 +318,7 @@ fn a_fault_is_urgent_and_a_failed_walk_notification_keeps_its_count() {
 fn go_change(seq: u64, seat: &str, what: What, undoes: Option<u64>) -> Feed {
     Feed::Event(Event::Change {
         change: Box::new(Change {
+            notes: Vec::new(),
             seq,
             at: "2026-10-15T00:00:00Z".to_string(),
             seat: seat.to_string(),
@@ -339,6 +343,7 @@ fn replaced(seq: u64, seat: &str) -> Feed {
 fn tempo(seq: u64, seat: &str) -> Feed {
     Feed::Event(Event::Change {
         change: Box::new(Change {
+            notes: Vec::new(),
             seq,
             at: "2026-10-15T00:00:00Z".to_string(),
             seat: seat.to_string(),

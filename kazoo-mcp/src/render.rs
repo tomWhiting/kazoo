@@ -1388,6 +1388,7 @@ mod tests {
     #[test]
     fn changes_and_the_log_read_plainly() {
         let change = Change {
+            notes: Vec::new(),
             seq: 59,
             at: "2026-09-26T12:00:01Z".to_string(),
             seat: "Waffles".to_string(),
@@ -1431,6 +1432,7 @@ mod tests {
     #[test]
     fn recordings_answer_with_their_file() {
         let change = |on: bool, summary: &str| Change {
+            notes: Vec::new(),
             seq: 60,
             at: "2026-09-27T10:30:01Z".to_string(),
             seat: "Waffles".to_string(),
@@ -1887,6 +1889,7 @@ mod tests {
     fn a_load_says_the_wall_is_new_and_how_to_undo_it() {
         let result = LoadResult {
             change: Change {
+                notes: Vec::new(),
                 seq: 80,
                 at: "2026-09-29T02:00:00Z".to_string(),
                 seat: "Waffles".to_string(),
@@ -1941,3 +1944,6 @@ mod tests {
 mod tree;
 mod unheard;
 pub use tree::{marked, tree, went};
+
+mod notes;
+pub use notes::notes;

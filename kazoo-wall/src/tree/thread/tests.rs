@@ -651,6 +651,7 @@ fn the_tree_repacks_and_keeps_every_commit() {
             .insert("cutoff".into(), 400.0 + seq as f64);
         let diff = thread::files_diff(&file, &mut mirror).unwrap();
         let change = Change {
+            notes: Vec::new(),
             seq,
             at: "2026-10-13T21:04:11Z".into(),
             seat: "Tom".into(),
@@ -698,6 +699,7 @@ fn the_tree_repacks_and_keeps_every_commit() {
 #[test]
 fn stamps_read_back_exactly() {
     let change = Change {
+        notes: Vec::new(),
         seq: 7,
         at: "2026-10-13T21:04:11Z".into(),
         seat: "Tom W.".into(),
@@ -770,6 +772,7 @@ fn evening_tree_cost() {
         elapsed += started.elapsed();
         assert_eq!(files.len(), 2, "a turn changes its module and wall.toml");
         let change = Change {
+            notes: Vec::new(),
             seq: patch.last_seq,
             at: "2026-10-13T21:04:11Z".into(),
             seat: "Tom".into(),

@@ -464,6 +464,7 @@ fn a_patch_json_past_the_limits_with_the_log_ahead_starts_within_them() {
     let mut store = kazoo_wall::store::Store::open(state.path()).unwrap();
     store
         .append(&kazoo_wall::protocol::Change {
+            notes: Vec::new(),
             seq: 1,
             at: "2026-10-09T00:00:00Z".to_string(),
             seat: "Tom".to_string(),
@@ -646,7 +647,7 @@ fn a_watcher_sees_everything_and_changes_nothing() {
     assert_eq!(subscribed.seats, vec!["Tom"]);
     watcher.set_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut looking = WallClient::watch(&socket, "meridian", "a visualiser").unwrap();
-    assert!(looking.hello().watcher);
+    assert!(looking.hello().role.watcher);
     assert_eq!(looking.hello().seats, vec!["Tom"]);
     // Nobody was told a watcher arrived, and it is not among the seats.
     assert!(tom_events.next_event().unwrap_err().is_timeout());

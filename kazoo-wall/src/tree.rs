@@ -7,6 +7,7 @@
 //! for byte, with no I/O.
 
 pub mod git;
+pub(crate) mod notes;
 pub mod rings;
 pub mod thread;
 
@@ -684,7 +685,8 @@ fn parse<T: serde::de::DeserializeOwned>(files: &Files, path: &str) -> Result<T,
 /// Read a complete wall tree strictly, without I/O or catalogue migration.
 pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
     for path in files.keys() {
-        if path != "wall.toml"
+        if !notes::valid_path(path)
+            && path != "wall.toml"
             && !path
                 .strip_prefix("modules/")
                 .and_then(|s| s.strip_suffix(".toml"))
@@ -772,7 +774,7 @@ pub fn from_files(files: &Files) -> Result<PatchFile, TreeError> {
         });
     }
     for path in files.keys() {
-        if !expected.contains(path) {
+        if !notes::valid_path(path) && !expected.contains(path) {
             return Err(TreeError::UnknownFile(path.clone()));
         }
     }

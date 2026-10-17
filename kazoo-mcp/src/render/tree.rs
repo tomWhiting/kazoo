@@ -268,6 +268,7 @@ mod tests {
         destination.branch = None;
         let mut result = LoadResult {
             change: Change {
+                notes: Vec::new(),
                 seq: 80,
                 at: "2026-10-13T02:00:00Z".into(),
                 seat: "Waffles".into(),
@@ -314,6 +315,7 @@ mod tests {
     fn a_go_names_its_tree_backup_as_a_moment() {
         let result = LoadResult {
             change: Change {
+                notes: Vec::new(),
                 seq: 80,
                 at: "2026-10-15T00:00:00Z".into(),
                 seat: "Waffles".into(),
@@ -411,6 +413,7 @@ mod tests {
     fn a_go_to_trunk_carries_on_the_branch() {
         let result = LoadResult {
             change: Change {
+                notes: Vec::new(),
                 seq: 80,
                 at: moment().at,
                 seat: "Tom".into(),
@@ -482,6 +485,7 @@ mod tests {
         };
         let undone = |what: What| LoadResult {
             change: Change {
+                notes: Vec::new(),
                 seq: 81,
                 at: moment().at,
                 seat: "Waffles".into(),
