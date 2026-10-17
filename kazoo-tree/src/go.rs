@@ -76,11 +76,6 @@ impl Goes {
     }
 }
 
-/// Say `go` to the wall on `socket` for `moment`, and answer in words what
-/// happened, for the footer.
-///
-/// # Errors
-///
 /// What a go to `moment` comes to: the wall's answer, why it failed, or, if
 /// the go panicked, that it did and why. A panic is caught here because the
 /// terminal's hook leaves this thread's panics to the tree.
@@ -99,6 +94,11 @@ fn answer(
         .unwrap_or_else(|why| why)
 }
 
+/// Say `go` to the wall on `socket` for `moment`, and answer in words what
+/// happened, for the footer.
+///
+/// # Errors
+///
 /// In words, when the wall cannot be reached, refuses, or does not answer.
 pub fn go(socket: &Path, moment: &str) -> Result<String, String> {
     let shown = short(moment);
