@@ -97,3 +97,18 @@ fn goes_send_off_the_screen_and_come_back_in_words() {
     };
     assert!(words.contains("could not be reached"), "{words}");
 }
+
+/// A go that panics answers that it did, so the tree hears back and stops
+/// waiting on it; one that returns says what it returned.
+#[test]
+fn a_go_that_panics_says_so_as_its_answer() {
+    let moment = "0123456789abcdef0123456789abcdef01234567";
+    let panicked = answer(moment, || panic!("the socket went away"));
+    assert!(
+        panicked.contains("panicked: the socket went away"),
+        "{panicked}"
+    );
+    assert!(panicked.contains(short(moment)), "{panicked}");
+    assert_eq!(answer(moment, || Ok("at it".to_owned())), "at it");
+    assert_eq!(answer(moment, || Err("no wall".to_owned())), "no wall");
+}

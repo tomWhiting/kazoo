@@ -49,7 +49,7 @@ impl Goes {
         let spawned = std::thread::Builder::new()
             .name("kazoo-tree-go".to_owned())
             .spawn(move || {
-                let words = go(&socket, &moment).unwrap_or_else(|why| why);
+                let words = answer(&moment, || go(&socket, &moment));
                 // Nobody is left to tell once the screen has gone.
                 if tell.send(words).is_err() {
                     eprintln!(
@@ -74,6 +74,24 @@ impl Goes {
     pub fn heard(&self) -> Option<String> {
         self.told.try_iter().next()
     }
+}
+
+/// What a go to `moment` comes to: the wall's answer, why it failed, or, if
+/// the go panicked, that it did and why. A panic is caught here because the
+/// terminal's hook leaves this thread's panics to the tree.
+fn answer(
+    moment: &str,
+    go: impl FnOnce() -> Result<String, String> + std::panic::UnwindSafe,
+) -> String {
+    std::panic::catch_unwind(go)
+        .unwrap_or_else(|panic| {
+            Err(format!(
+                "the go to {} panicked: {}",
+                short(moment),
+                crate::panic_words(panic.as_ref())
+            ))
+        })
+        .unwrap_or_else(|why| why)
 }
 
 /// Say `go` to the wall on `socket` for `moment`, and answer in words what

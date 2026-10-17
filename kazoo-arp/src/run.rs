@@ -177,6 +177,7 @@ pub fn run(args: Args) -> color_eyre::Result<()> {
     let mut terminal = kazoo_host::terminal::enter_with(kazoo_host::terminal::Options {
         mouse: false,
         key_release_events: true,
+        panics: kazoo_host::terminal::Panics::AnyThread,
     })?;
     let (key_mode, key_mode_reason) = match terminal.key_releases() {
         kazoo_host::terminal::KeyReleases::Reported => (KeyMode::Hold, None),

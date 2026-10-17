@@ -8,12 +8,18 @@
 //! Whichever comes first does the work; the others find nothing to do, so
 //! a panic during the restore, or a drop after a leave, never runs it
 //! twice.
+//!
+//! A program that catches the panics of its other threads itself asks for
+//! [`Panics::ThisThread`]: the hook then neither restores the terminal for a
+//! panic on another thread nor reports it, from entering until the terminal
+//! is wholly put back. The program must catch it on that thread and say it.
 
+use std::cell::Cell;
 use std::fmt;
 use std::io::{self, IsTerminal, Stdout};
 use std::ops::{Deref, DerefMut};
 use std::sync::Once;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crossterm::cursor::Show;
 use crossterm::event::{
@@ -37,6 +43,18 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static PUSHED: AtomicBool = AtomicBool::new(false);
 /// Whether mouse capture was enabled and must be disabled.
 static MOUSE: AtomicBool = AtomicBool::new(false);
+/// The entry whose thread alone puts the terminal back on a panic, when the
+/// program asked for [`Panics::ThisThread`]; 0 for none. Each such entry
+/// takes a fresh token, so a thread that owned an earlier entry owns
+/// nothing now.
+static OWNER: AtomicU64 = AtomicU64::new(0);
+/// The last token handed out.
+static TOKENS: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// The token of the entry this thread made, 0 if none.
+    static OWNS: Cell<u64> = const { Cell::new(0) };
+}
 
 /// What a program asks of the terminal beyond raw mode and the alternate
 /// screen.
@@ -46,6 +64,21 @@ pub struct Options {
     pub mouse: bool,
     /// Ask for key-release events, which instruments need for note-offs.
     pub key_release_events: bool,
+    /// Whose panics put the terminal back.
+    pub panics: Panics,
+}
+
+/// Whose panics put the terminal back while it is entered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Panics {
+    /// A panic on any thread puts the terminal back and is reported.
+    #[default]
+    AnyThread,
+    /// Only a panic on the thread that entered the terminal does. For a panic
+    /// on another thread the hook neither restores nor reports, from entering
+    /// until the terminal is wholly put back: the program must catch it on
+    /// that thread and say it.
+    ThisThread,
 }
 
 /// Whether the terminal reports key releases, or why it does not.
@@ -188,6 +221,7 @@ pub fn enter_with(options: Options) -> Result<Terminal, Error> {
     }
     install_panic_hook();
     enable_raw_mode().map_err(Error::RawMode)?;
+    own(options.panics);
     ACTIVE.store(true, Ordering::Release);
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
         return Err(undone(Error::AlternateScreen(error)));
@@ -197,6 +231,10 @@ pub fn enter_with(options: Options) -> Result<Terminal, Error> {
     } else {
         KeyReleases::NotAsked
     };
+    // Marked before it is asked for: a capture that fails part way may have
+    // turned some of its modes on, and turning off modes never turned on is
+    // harmless.
+    MOUSE.store(options.mouse, Ordering::Release);
     let (mouse, mouse_refused) = if options.mouse {
         match capture_mouse(&mut stdout) {
             Ok(()) => (true, None),
@@ -205,7 +243,6 @@ pub fn enter_with(options: Options) -> Result<Terminal, Error> {
     } else {
         (false, None)
     };
-    MOUSE.store(mouse, Ordering::Release);
     match ratatui::Terminal::new(CrosstermBackend::new(stdout)) {
         Ok(inner) => Ok(Terminal {
             inner,
@@ -269,33 +306,91 @@ fn restore_once(active: &AtomicBool, undo: impl FnOnce() -> io::Result<()>) -> i
 
 fn undo() -> io::Result<()> {
     let mut stdout = io::stdout();
+    let left = leave_into(&mut stdout);
+    let raw = disable_raw_mode();
+    let cursor = execute!(stdout, Show);
+    // Only now is the screen wholly back: until here another thread's panic
+    // would still write over it.
+    OWNER.store(0, Ordering::Release);
+    left.and(raw).and(cursor)
+}
+
+/// Take the panics for this thread when `panics` asks for that, or give
+/// them to any thread.
+fn own(panics: Panics) {
+    let token = match panics {
+        Panics::AnyThread => 0,
+        Panics::ThisThread => TOKENS.fetch_add(1, Ordering::AcqRel) + 1,
+    };
+    // A thread being torn down has no locals left: it owns nothing.
+    if OWNS.try_with(|owns| owns.set(token)).is_err() {
+        OWNER.store(0, Ordering::Release);
+        return;
+    }
+    OWNER.store(token, Ordering::Release);
+}
+
+/// Write what leaves the screen: the keyboard flags popped and the mouse
+/// let go if they were taken, then the alternate screen left. Every step is
+/// attempted; the first failure is returned.
+fn leave_into(out: &mut impl io::Write) -> io::Result<()> {
     let pop = if PUSHED.swap(false, Ordering::AcqRel) {
-        execute!(stdout, PopKeyboardEnhancementFlags)
+        execute!(out, PopKeyboardEnhancementFlags)
     } else {
         Ok(())
     };
     let mouse = if MOUSE.swap(false, Ordering::AcqRel) {
-        execute!(stdout, DisableMouseCapture)
+        execute!(out, DisableMouseCapture)
     } else {
         Ok(())
     };
-    let screen = execute!(stdout, LeaveAlternateScreen);
-    let raw = disable_raw_mode();
-    let cursor = execute!(stdout, Show);
-    pop.and(mouse).and(screen).and(raw).and(cursor)
+    let screen = execute!(out, LeaveAlternateScreen);
+    pop.and(mouse).and(screen)
+}
+
+/// Whether a panic on the current thread is another thread's, while a
+/// program that catches those itself holds the terminal.
+fn elsewhere() -> bool {
+    let owner = OWNER.load(Ordering::Acquire);
+    owner != 0 && OWNS.try_with(Cell::get).unwrap_or(0) != owner
+}
+
+/// What the hook did with a panic.
+#[derive(Debug, PartialEq, Eq)]
+enum Panicked {
+    /// Another thread's, left to the program.
+    LeftToTheProgram,
+    /// The terminal was put back (or was not entered), and the panic goes on
+    /// to be reported; the restore's failure, if it failed.
+    Reported(Option<String>),
+}
+
+/// Decide a panic: another thread's is left alone, and any other puts the
+/// terminal back with `restore` before it is reported.
+fn on_panic(elsewhere: bool, restore: impl FnOnce() -> io::Result<()>) -> Panicked {
+    if elsewhere {
+        Panicked::LeftToTheProgram
+    } else {
+        Panicked::Reported(restore().err().map(|error| error.to_string()))
+    }
 }
 
 /// Restore the terminal before a panic is reported, then report it as the
-/// hook before would. Installed once per process.
+/// hook before would; a panic on another thread of a program that asked for
+/// [`Panics::ThisThread`] is left to that program. Installed once per
+/// process.
 fn install_panic_hook() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if let Err(error) = restore() {
-                eprintln!("kazoo: could not restore the terminal: {error}");
+        std::panic::set_hook(Box::new(move |info| match on_panic(elsewhere(), restore) {
+            Panicked::LeftToTheProgram => {}
+            Panicked::Reported(failed) => {
+                if let Some(error) = failed {
+                    eprintln!("kazoo: could not restore the terminal: {error}");
+                }
+                previous(info);
             }
-            previous(info);
         }));
     });
 }
@@ -304,6 +399,7 @@ fn install_panic_hook() {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    use std::thread;
 
     #[test]
     fn mouse_capture_failure_keeps_the_reason() {
@@ -351,7 +447,90 @@ mod tests {
             Options {
                 mouse: false,
                 key_release_events: false,
+                panics: Panics::AnyThread,
             }
+        );
+    }
+
+    #[test]
+    fn leaving_lets_go_of_what_it_took_once_and_always_leaves_the_screen() {
+        MOUSE.store(true, Ordering::Release);
+        PUSHED.store(true, Ordering::Release);
+        let mut out = Vec::new();
+        leave_into(&mut out).expect("written to memory");
+        let written = String::from_utf8(out).expect("escape codes are text");
+        assert!(written.contains("?1000l"), "{written:?}");
+        assert!(written.contains("?1003l"), "{written:?}");
+        assert!(written.contains("?1049l"), "{written:?}");
+        // The keyboard flags popped: CSI < 1 u.
+        assert!(written.contains("\u{1b}[<1u"), "{written:?}");
+        let mut again = Vec::new();
+        leave_into(&mut again).expect("written to memory");
+        let again = String::from_utf8(again).expect("escape codes are text");
+        assert!(
+            !again.contains("?1000l"),
+            "the mouse let go once: {again:?}"
+        );
+        assert!(!again.contains("[<1u"), "the flags popped once: {again:?}");
+        assert!(
+            again.contains("?1049l"),
+            "the screen left each time: {again:?}"
+        );
+    }
+
+    #[test]
+    fn another_threads_panic_is_the_programs_only_while_it_holds_the_terminal() {
+        assert!(!elsewhere(), "nothing is owned");
+        own(Panics::ThisThread);
+        assert!(!elsewhere(), "this thread entered");
+        let other = thread::spawn(elsewhere).join().expect("the thread ran");
+        assert!(other, "another thread's panic is the program's");
+
+        // A second entry by another thread owns it now; this one no longer.
+        thread::spawn(|| own(Panics::ThisThread))
+            .join()
+            .expect("the thread ran");
+        assert!(elsewhere(), "an earlier owner owns nothing");
+
+        // Put back wholly by the restore itself: every thread's panic
+        // restores and is reported again. The test's stdout is a pipe, where
+        // leaving raw mode that was never entered does nothing.
+        own(Panics::ThisThread);
+        ACTIVE.store(true, Ordering::Release);
+        assert!(thread::spawn(elsewhere).join().expect("the thread ran"));
+        restore().expect("restoring into a pipe");
+        assert_eq!(
+            OWNER.load(Ordering::Acquire),
+            0,
+            "the restore gave the panics back"
+        );
+        let other = thread::spawn(elsewhere).join().expect("the thread ran");
+        assert!(!other, "after leaving, any thread's panic is reported");
+
+        own(Panics::AnyThread);
+        let other = thread::spawn(elsewhere).join().expect("the thread ran");
+        assert!(!other, "any thread's panic restores");
+    }
+
+    #[test]
+    fn a_panic_is_left_restored_or_reported_with_its_failure() {
+        let restores = AtomicUsize::new(0);
+        let fine = || {
+            restores.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        };
+        assert_eq!(on_panic(true, fine), Panicked::LeftToTheProgram);
+        assert_eq!(
+            restores.load(Ordering::Relaxed),
+            0,
+            "left alone: no restore"
+        );
+        assert_eq!(on_panic(false, fine), Panicked::Reported(None));
+        assert_eq!(restores.load(Ordering::Relaxed), 1);
+        let failing = || Err(io::Error::other("the tty is gone"));
+        assert_eq!(
+            on_panic(false, failing),
+            Panicked::Reported(Some("the tty is gone".to_owned()))
         );
     }
 }
