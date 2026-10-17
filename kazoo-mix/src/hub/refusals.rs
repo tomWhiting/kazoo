@@ -39,7 +39,7 @@ impl Refusals {
                 entries.truncate(KEPT_MOST);
             }
             HubNotice::Joined { name, .. } => entries.retain(|entry| entry.name != *name),
-            HubNotice::Left { .. } | HubNotice::Fault(_) => {}
+            HubNotice::Left { .. } | HubNotice::Fault(_) | HubNotice::NetworkLead { .. } => {}
         }
     }
 

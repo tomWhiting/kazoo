@@ -30,8 +30,8 @@ const NEWS_SECONDS: u64 = 8;
 pub const USAGE: &str = "\
 kazoo-mix: the kazoo studio desk
 
-Usage: kazoo mix [--demo]
-       kazoo-mix [--demo]
+Usage: kazoo mix [--demo] [--listen <ip:port>]
+       kazoo-mix [--demo] [--listen <ip:port>]
 
 Start kazoo mix, then start instruments (kazoo 808, kazoo mini, kazoo cs80,
 kazoo dx, kazoo arp, kazoo mouth) in other terminals: each plugs into the next free strip
@@ -39,6 +39,7 @@ and follows the desk's tempo and play/stop.
 
 Options:
   --demo     put a built-in 808 pattern on strip 1
+  --listen <ip:port> accept instruments from the local network
   -h, --help show this help
 ";
 
@@ -47,6 +48,8 @@ Options:
 pub struct Args {
     /// Put a built-in 808 pattern on strip 1.
     pub demo: bool,
+    /// Listen for instruments on this IP address and port.
+    pub listen: Option<std::net::SocketAddr>,
 }
 
 /// Read the arguments after the program name. `Ok(None)` means help was
@@ -54,10 +57,25 @@ pub struct Args {
 /// the usage).
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, String> {
     let mut parsed = Args::default();
+    let args: Vec<_> = args.into_iter().collect();
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        return Ok(None);
+    }
     let mut unknown = None;
-    for arg in args {
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--demo" => parsed.demo = true,
+            "--listen" => {
+                let address = args.next().ok_or("--listen needs an IP address and port")?;
+                parsed.listen =
+                    Some(address.parse().map_err(|error| {
+                        format!("invalid --listen address `{address}`: {error}")
+                    })?);
+            }
             "-h" | "--help" => return Ok(None),
             _ => {
                 if unknown.is_none() {
@@ -97,11 +115,9 @@ pub fn run(args: Args) -> Result<()> {
         eprintln!("{warning}");
     }
     let (audio, patchbay) = MixerAudio::start(tempo.bpm)?;
-    let hub = Hub::start(
-        HubConfig::standard(audio.sample_rate, [false; DESK_CHANNELS]),
-        Arc::clone(&audio.shared),
-        patchbay,
-    )?;
+    let mut config = HubConfig::standard(audio.sample_rate, [false; DESK_CHANNELS]);
+    config.listen = args.listen;
+    let hub = Hub::start(config, Arc::clone(&audio.shared), patchbay)?;
     // The demo plugs into the hub like any instrument.
     let demo = if args.demo {
         Some(DemoEightOhEight::start(
@@ -176,6 +192,7 @@ fn run_desk(
         if redraw {
             let (note, note_alert) =
                 status_line(tempo.status_warning(now), || news.line(hub, demo));
+            let note = network::note(note, hub.listen_addr());
             let status = StatusInfo {
                 sample_rate: audio.sample_rate,
                 channels: audio.channels,
@@ -230,6 +247,7 @@ fn status_line(
     }
 }
 
+mod network;
 #[cfg(test)]
 mod tempo_tests;
 
@@ -379,13 +397,38 @@ mod tests {
 
     #[test]
     fn arguments_choose_the_demo_or_help() {
-        assert_eq!(parse(&[]), Ok(Some(Args { demo: false })));
-        assert_eq!(parse(&["--demo"]), Ok(Some(Args { demo: true })));
+        assert_eq!(
+            parse(&[]),
+            Ok(Some(Args {
+                demo: false,
+                listen: None
+            }))
+        );
+        assert_eq!(
+            parse(&["--demo"]),
+            Ok(Some(Args {
+                demo: true,
+                listen: None
+            }))
+        );
         assert_eq!(parse(&["--help"]), Ok(None));
         assert_eq!(parse(&["--demo", "-h"]), Ok(None));
         let err = parse(&["--nope"]).unwrap_err();
         assert!(err.contains("unknown option `--nope`"), "{err}");
         assert!(!err.contains(USAGE));
+    }
+
+    #[test]
+    fn listen_accepts_ip_ports_and_refuses_bad_values() {
+        for address in ["127.0.0.1:0", "[::1]:7700"] {
+            let parsed = parse(&["--demo", "--listen", address]).unwrap().unwrap();
+            assert_eq!(parsed.listen, Some(address.parse().unwrap()));
+            assert!(parsed.demo);
+        }
+        for value in ["localhost:7700", "127.0.0.1", "0.0.0.0:99999"] {
+            assert!(parse(&["--listen", value]).is_err());
+        }
+        assert!(parse(&["--listen"]).is_err());
     }
 
     #[test]
