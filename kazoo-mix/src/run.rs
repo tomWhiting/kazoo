@@ -38,9 +38,9 @@ kazoo dx, kazoo arp, kazoo mouth) in other terminals: each plugs into the next f
 and follows the desk's tempo and play/stop.
 
 Options:
-  --demo     put a built-in 808 pattern on strip 1
-  --listen <ip:port> accept instruments from the local network
-  -h, --help show this help
+  --demo              put a built-in 808 pattern on strip 1
+  --listen <ip:port>  accept instruments from the local network
+  -h, --help          show this help
 ";
 
 /// Command-line choices.
@@ -434,6 +434,25 @@ mod tests {
             assert!(parse(&["--listen", value]).is_err());
         }
         assert!(parse(&["--listen"]).is_err());
+    }
+
+    #[test]
+    fn the_options_line_up_in_the_help() {
+        let options = USAGE.split("Options:\n").nth(1).unwrap();
+        let columns: Vec<usize> = options
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let flag = line.trim_start().split("  ").next().unwrap();
+                let rest = &line[line.find(flag).unwrap() + flag.len()..];
+                line.len() - rest.trim_start().len()
+            })
+            .collect();
+        assert_eq!(columns.len(), 3, "{options}");
+        assert!(
+            columns.iter().all(|column| *column == columns[0]),
+            "{options}"
+        );
     }
 
     #[test]
