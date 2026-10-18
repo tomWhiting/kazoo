@@ -1,7 +1,9 @@
 //! TR-808 snare drum synthesis.
 //!
-//! Two bridged-T oscillators (476 Hz + 238 Hz) summed with
-//! HP-filtered white noise. Independent tone/snappy controls.
+//! Two sines (476 Hz and 238 Hz at tune 1, where the 808 has two bridged-T
+//! oscillators), crossfaded by tone, plus white noise through a one-pole
+//! high-pass at about 2 kHz. Decay sets the body's fall (50–500 ms) and
+//! snappy the noise's (20–500 ms), each to −60 dB.
 
 use super::Voice;
 

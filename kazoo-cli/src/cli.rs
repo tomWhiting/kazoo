@@ -65,12 +65,22 @@ pub enum Command {
     Arp(ArpArgs),
     /// Text notation to events or sound.
     Play(PlayArgs),
-    /// The mouth: sing or whistle into a synth, and drive every other instrument with your voice.
+    /// The mouth: sing or whistle into a synth, with effects and a looper on the desk.
     Mouth(MouthArgs),
     /// The voice tracker DAW (kazoo-tui).
     Tui,
-    /// The wall's tree: every moment it has been, grown as a tree you can walk.
+    /// The wall's tree: every moment it has been, grown as a tree you can walk (planted the first time, if the wall has played nothing).
     Tree(TreeArgs),
+    /// Set kazoo up in one go: the program to stay, the tree, the one MCP in Claude Code and Codex, and the kazoo skill.
+    Setup(SetupArgs),
+}
+
+/// How to set kazoo up.
+#[derive(Debug, Args, Default, PartialEq, Eq)]
+pub struct SetupArgs {
+    /// Say what setup would do, and change nothing.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// How to show the tree.
@@ -119,7 +129,7 @@ pub struct MixArgs {
     /// Listen for instruments on a local network IP address and port.
     #[arg(long)]
     pub listen: Option<std::net::SocketAddr>,
-    /// Put a built-in 808 pattern on strip 1.
+    /// Put a built-in 808 pattern on the next free strip.
     #[arg(long)]
     pub demo: bool,
 }

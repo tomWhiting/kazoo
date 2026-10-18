@@ -58,14 +58,13 @@ impl Goes {
                     );
                 }
             });
-        if let Err(err) = spawned {
-            if self
+        if let Err(err) = spawned
+            && self
                 .tell
                 .send(format!("the go could not be started: {err}"))
                 .is_err()
-            {
-                eprintln!("kazoo tree: the go could not be started: {err}");
-            }
+        {
+            eprintln!("kazoo tree: the go could not be started: {err}");
         }
     }
 

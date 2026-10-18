@@ -96,12 +96,12 @@ impl AudioCallback {
             transport.playing,
             f64::from(transport.bpm),
         );
-        if let Some(patchbay) = self.patchbay.as_mut() {
-            if patchbay.announce(anchor).is_err() {
-                // The hub is not taking changes: the instruments miss this
-                // one. Counted, and shown on the desk.
-                self.shared.note_engine_fault();
-            }
+        if let Some(patchbay) = self.patchbay.as_mut()
+            && patchbay.announce(anchor).is_err()
+        {
+            // The hub is not taking changes: the instruments miss this
+            // one. Counted, and shown on the desk.
+            self.shared.note_engine_fault();
         }
     }
 

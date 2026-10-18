@@ -41,7 +41,7 @@ pub struct Args {
 }
 
 pub const USAGE: &str =
-    "kazoo-mouth: sing or whistle into a synth, and drive every other instrument with your voice
+    "kazoo-mouth: sing or whistle into a synth, with effects and a looper on the desk
 
 usage: kazoo mouth [options]
        kazoo-mouth [options]
@@ -56,11 +56,11 @@ usage: kazoo mouth [options]
 
 Up/Down choose a control. Left/Right change it; Shift makes a big step.
 Space toggles the focused switch. w steps waveform. v toggles vibrato. s toggles silent. ? shows help.
-Tab/Shift-Tab walks panels. 1..5 select FX. [/] choose slot; b bypasses; {/} move; d resets a knob.
+Tab/Shift-Tab walks panels. 1..6 select FX. [/] choose slot; b bypasses; {/} move; d resets a knob.
 ,/. change own tempo by 1 BPM; </> by 10. The desk owns synced tempo.
 r records or punches; u undoes; C clears; l chooses length; o stops/starts.
 O cycles scope; k shows/hides spectrum; L shows latency breakdown.
--/= change loop volume; _/+ make a big step; w saves ~/.kazoo/mouth/loops/.
+-/= change loop volume; _/+ make a big step; W saves ~/.kazoo/mouth/loops/.
 Esc closes help or quits. Ctrl-C quits.
 ";
 

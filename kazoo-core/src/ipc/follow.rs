@@ -157,12 +157,12 @@ impl TransportFollower {
         }
         let mut newest: Option<Scheduled> = None;
         for slot in &mut self.pending {
-            if let Some(change) = *slot {
-                if due_frame(change.at) <= frame {
-                    *slot = None;
-                    if newest.is_none_or(|best| change.sequence > best.sequence) {
-                        newest = Some(change);
-                    }
+            if let Some(change) = *slot
+                && due_frame(change.at) <= frame
+            {
+                *slot = None;
+                if newest.is_none_or(|best| change.sequence > best.sequence) {
+                    newest = Some(change);
                 }
             }
         }

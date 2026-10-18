@@ -106,7 +106,7 @@ impl Metronome {
         if reached > previous {
             let whole = reached as u64;
             self.last_beat = Some(whole);
-            self.start_click(whole % u64::from(BEATS_PER_BAR) == 0);
+            self.start_click(whole.is_multiple_of(u64::from(BEATS_PER_BAR)));
         }
 
         if self.remaining == 0 {

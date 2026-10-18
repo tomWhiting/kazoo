@@ -1,6 +1,5 @@
 //! kazoo-tui on its own: the same instrument `kazoo tui` runs.
 
-fn main() -> color_eyre::Result<()> {
-    kazoo_host::reports::install()?;
-    kazoo_tui::cli(std::env::args().skip(1))
+fn main() -> std::process::ExitCode {
+    kazoo_host::reports::run("kazoo-tui", || kazoo_tui::cli(std::env::args().skip(1)))
 }

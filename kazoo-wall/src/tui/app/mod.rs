@@ -976,13 +976,14 @@ impl App {
     }
 
     fn on_feed(&mut self, state: LinkState) {
-        if let LinkState::Down { reason, .. } = &state {
-            if self.feed.is_up() && self.link.is_up() {
-                self.note(
-                    format!("the live feed dropped ({reason}); reconnecting"),
-                    LogTone::Note,
-                );
-            }
+        if let LinkState::Down { reason, .. } = &state
+            && self.feed.is_up()
+            && self.link.is_up()
+        {
+            self.note(
+                format!("the live feed dropped ({reason}); reconnecting"),
+                LogTone::Note,
+            );
         }
         self.feed = state;
     }
@@ -1568,11 +1569,11 @@ pub fn jack_names(module: &ModuleView) -> Vec<&str> {
         .collect()
 }
 
-fn has_outputs(module: &ModuleView) -> bool {
+const fn has_outputs(module: &ModuleView) -> bool {
     !module.outputs.is_empty()
 }
 
-fn has_jacks(module: &ModuleView) -> bool {
+const fn has_jacks(module: &ModuleView) -> bool {
     !module.inputs.is_empty() || !module.knobs.is_empty()
 }
 

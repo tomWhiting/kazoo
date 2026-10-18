@@ -120,7 +120,21 @@ pub fn parse_initial_key_repeat(text: &str) -> Result<Duration, String> {
         .clamp(Duration::from_millis(100), Duration::from_secs(2)))
 }
 
+/// The piano key a character is, whatever Shift did to it.
+///
+/// A letter is in lower case, and `:` is `;`. A held note is kept under
+/// this, so a key pressed with Shift and let go without it (or the other way
+/// round) still releases.
+#[must_use]
+pub const fn piano_char(key: char) -> char {
+    match key {
+        ':' => ';',
+        other => other.to_ascii_lowercase(),
+    }
+}
+
 /// Tracker-style piano: the home row is white keys, the row above is black keys.
+/// A shifted key plays as its own: Shift-`;` (`:`) as `;`, like the letters.
 #[must_use]
 pub const fn semitone(key: char) -> Option<u8> {
     Some(match key.to_ascii_lowercase() {
@@ -140,7 +154,7 @@ pub const fn semitone(key: char) -> Option<u8> {
         'o' => 13,
         'l' => 14,
         'p' => 15,
-        ';' => 16,
+        ';' | ':' => 16,
         _ => return None,
     })
 }
@@ -189,6 +203,33 @@ mod tests {
         assert_eq!(piano_key('x', Octave::DEFAULT), Some(PianoKey::OctaveUp));
         assert_eq!(piano_key('a', Octave::DEFAULT), Some(PianoKey::Note(48)));
         assert_eq!(piano_key('q', Octave::DEFAULT), None);
+    }
+
+    #[test]
+    fn a_shifted_key_plays_as_its_own() {
+        // Shift is full velocity in the juno and prophet: every key, the
+        // top E's `;` (shifted, `:`) included, still plays its note.
+        for key in PIANO.chars() {
+            let shifted = if key == ';' {
+                ':'
+            } else {
+                key.to_ascii_uppercase()
+            };
+            assert_eq!(
+                piano_key(shifted, Octave::DEFAULT),
+                piano_key(key, Octave::DEFAULT),
+                "{shifted}"
+            );
+            // A release looks the note up the same way, and the on-screen
+            // keyboard lights it by its semitone.
+            assert_eq!(
+                note(shifted, Octave::DEFAULT),
+                note(key, Octave::DEFAULT),
+                "{shifted}"
+            );
+            assert_eq!(semitone(shifted), semitone(key), "{shifted}");
+            assert_eq!(piano_char(shifted), key, "{shifted}");
+        }
     }
 
     #[test]

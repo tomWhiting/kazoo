@@ -272,10 +272,10 @@ impl App {
         match key.kind {
             KeyEventKind::Press | KeyEventKind::Repeat => self.handle_press(key),
             KeyEventKind::Release => {
-                if let KeyCode::Char(ch) = key.code {
-                    if let Some(note) = kazoo_host::keys::note(ch, self.octave) {
-                        self.release_note(note);
-                    }
+                if let KeyCode::Char(ch) = key.code
+                    && let Some(note) = kazoo_host::keys::note(ch, self.octave)
+                {
+                    self.release_note(note);
                 }
             }
         }
@@ -524,6 +524,26 @@ mod tests {
             rig.rx.try_recv(),
             Ok(AudioCommand::Arp(ArpCommand::NoteOn { midi_note: 60, .. }))
         ));
+    }
+
+    #[test]
+    fn a_key_released_with_shift_changed_still_releases() {
+        for (pressed, released) in [(':', ':'), (':', ';'), (';', ':'), ('A', 'a'), ('a', 'A')] {
+            let mut rig = rig(16, KeyMode::Hold);
+            let note = kazoo_host::keys::note(pressed, rig.app.octave).expect("a piano key");
+            press(&mut rig.app, KeyCode::Char(pressed));
+            assert!(
+                matches!(rig.rx.try_recv(), Ok(AudioCommand::Arp(ArpCommand::NoteOn { midi_note, .. })) if midi_note == note),
+                "{pressed}"
+            );
+            release(&mut rig.app, KeyCode::Char(released));
+            assert_eq!(
+                rig.rx.try_recv(),
+                Ok(AudioCommand::Arp(ArpCommand::NoteOff { midi_note: note })),
+                "{pressed} then {released}"
+            );
+            assert!(rig.app.held.iter().all(|held| !held), "{pressed}");
+        }
     }
 
     #[test]

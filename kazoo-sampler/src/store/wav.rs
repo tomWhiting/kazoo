@@ -158,13 +158,13 @@ impl Drop for TempWav {
         // Close the writer first; its own errors no longer matter since the
         // file is being thrown away.
         drop(self.writer.take());
-        if let Err(e) = fs::remove_file(&self.path) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                eprintln!(
-                    "kazoo-sampler: could not remove temporary file {}: {e}",
-                    self.path.display()
-                );
-            }
+        if let Err(e) = fs::remove_file(&self.path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "kazoo-sampler: could not remove temporary file {}: {e}",
+                self.path.display()
+            );
         }
     }
 }

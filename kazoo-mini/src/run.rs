@@ -191,10 +191,10 @@ fn event_loop(
 
         tui.draw(|f| ui::draw(f, app))?;
 
-        if event::poll(TICK_RATE)? {
-            if let Event::Key(key) = event::read()? {
-                handle_key_event(app, key, &mut channels.commands);
-            }
+        if event::poll(TICK_RATE)?
+            && let Event::Key(key) = event::read()?
+        {
+            handle_key_event(app, key, &mut channels.commands);
         }
 
         if app.should_quit {
@@ -299,6 +299,34 @@ mod tests {
     fn link() -> (CommandLink, Receiver<AudioCommand>) {
         let (tx, rx) = crossbeam_channel::bounded(16);
         (CommandLink::new(tx), rx)
+    }
+
+    #[test]
+    fn a_key_released_with_shift_changed_still_releases() {
+        for (pressed, released) in [(':', ':'), (':', ';'), (';', ':'), ('A', 'a'), ('a', 'A')] {
+            let (mut commands, rx) = link();
+            let mut app = App::new(44100);
+            let note = kazoo_host::keys::note(pressed, app.octave).expect("a piano key");
+            handle_key_event(
+                &mut app,
+                key(KeyCode::Char(pressed), KeyEventKind::Press),
+                &mut commands,
+            );
+            assert!(
+                matches!(rx.try_recv(), Ok(AudioCommand::NoteOn { note: n, .. }) if n == note),
+                "{pressed}"
+            );
+            handle_key_event(
+                &mut app,
+                key(KeyCode::Char(released), KeyEventKind::Release),
+                &mut commands,
+            );
+            assert!(
+                matches!(rx.try_recv(), Ok(AudioCommand::NoteOff { note: n }) if n == note),
+                "{pressed} then {released}"
+            );
+            assert!(app.held_notes.iter().all(|held| !held), "{pressed}");
+        }
     }
 
     #[test]

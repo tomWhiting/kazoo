@@ -819,10 +819,10 @@ impl HubLink {
                 shutdown::record_stuck();
                 return;
             }
-            if let Err(payload) = join.join() {
-                if !thread::panicking() {
-                    std::panic::resume_unwind(payload);
-                }
+            if let Err(payload) = join.join()
+                && !thread::panicking()
+            {
+                std::panic::resume_unwind(payload);
             }
         }
     }

@@ -635,16 +635,16 @@ pub fn log(page: &LogPage) -> String {
     for change in &page.changes {
         log_line(&mut out, change);
     }
-    if page.more {
-        if let Some(first) = page.changes.first() {
-            line(
-                &mut out,
-                format_args!(
-                    "Older changes exist: call wall_log with before={}.",
-                    first.seq
-                ),
-            );
-        }
+    if page.more
+        && let Some(first) = page.changes.first()
+    {
+        line(
+            &mut out,
+            format_args!(
+                "Older changes exist: call wall_log with before={}.",
+                first.seq
+            ),
+        );
     }
     out.trim_end().to_string()
 }

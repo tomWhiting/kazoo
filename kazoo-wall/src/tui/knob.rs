@@ -166,10 +166,10 @@ impl Travel {
 pub fn show(value: f64, unit: &str, labels: &[String], min: f64) -> String {
     if !labels.is_empty() {
         let index = (value - min).round();
-        if index >= 0.0 {
-            if let Some(label) = labels.get(index as usize) {
-                return label.clone();
-            }
+        if index >= 0.0
+            && let Some(label) = labels.get(index as usize)
+        {
+            return label.clone();
         }
     }
     let narrow = value as f32;

@@ -50,11 +50,14 @@ try {
   fail(`${name} is installed but holds no program it can run (${binary}): install it again.`);
 }
 
-// The program names itself as it was run: `kazoo` or `kzoo`.
+// The program names itself as it was run: `kazoo`, `kzhz` or `kzoo`.
 const ranAs = path.basename(process.argv[1] ?? "kzoo").replace(/\.js$/, "");
 const child = spawn(binary, process.argv.slice(2), {
   stdio: "inherit",
-  env: { ...process.env, KZOO_RUN_AS: ranAs === "kazoo" ? "kazoo" : "kzoo" },
+  env: {
+    ...process.env,
+    KZOO_RUN_AS: ranAs === "kazoo" || ranAs === "kzhz" ? ranAs : "kzoo",
+  },
 });
 
 // Ctrl-C goes to the whole foreground group, the program included: it

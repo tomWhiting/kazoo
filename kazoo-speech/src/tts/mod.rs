@@ -430,10 +430,10 @@ impl Tts {
         if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&request.sample_rate) {
             return Err(SpeechError::BadSampleRate(request.sample_rate));
         }
-        if let Some(pace) = request.words_per_minute {
-            if !(MIN_WORDS_PER_MINUTE..=MAX_WORDS_PER_MINUTE).contains(&pace) {
-                return Err(SpeechError::BadWordsPerMinute(pace));
-            }
+        if let Some(pace) = request.words_per_minute
+            && !(MIN_WORDS_PER_MINUTE..=MAX_WORDS_PER_MINUTE).contains(&pace)
+        {
+            return Err(SpeechError::BadWordsPerMinute(pace));
         }
         let voice = match &request.voice {
             Some(voice) => {

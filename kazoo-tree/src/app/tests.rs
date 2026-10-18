@@ -32,6 +32,10 @@ fn app(history: History) -> App {
         fire: crate::fire::Blaze::default(),
     };
     app.take(history);
+    // The first look is quiet, as `App::showing`'s is.
+    if !app.history.moments.is_empty() {
+        app.said.clear();
+    }
     app.selected = app.history.here;
     app
 }
@@ -513,4 +517,22 @@ fn the_path_between_two_moments_is_walked_by_limbs_not_moments() {
         history.path_between(history.limbs[0].moments[2], history.limbs[0].moments[7]),
         Some((0, 5))
     );
+}
+
+#[test]
+fn an_empty_tree_says_so_until_it_grows() {
+    let mut app = App::showing(PathBuf::from("/nonexistent"), Grown::of(History::default()));
+    assert_eq!(app.said, crate::NOTHING_YET);
+    // Read again with still nothing there, it says so again.
+    app.reload();
+    app.take(History::default());
+    assert_eq!(app.said, crate::NOTHING_YET);
+    app.take(grown(5, &[]));
+    assert_eq!(app.said, "grown: 5 moments");
+}
+
+#[test]
+fn a_tree_with_moments_opens_quietly() {
+    let app = App::showing(PathBuf::from("/nonexistent"), Grown::of(grown(5, &[])));
+    assert!(app.said.is_empty(), "{}", app.said);
 }

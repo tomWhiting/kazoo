@@ -358,10 +358,10 @@ impl News {
     pub fn due(&self, window: Duration) -> Option<Instant> {
         let ordinary = self.since.map(|since| {
             let mut due = if self.urgent { since } else { since + window };
-            if !self.urgent {
-                if let Some(sent) = self.last_sent {
-                    due = due.max(sent + window);
-                }
+            if !self.urgent
+                && let Some(sent) = self.last_sent
+            {
+                due = due.max(sent + window);
             }
             due
         });

@@ -18,10 +18,10 @@ impl<I: PartialEq> FactsCache<I> {
         identity: I,
         probe: impl FnOnce() -> Result<MicFacts>,
     ) -> Result<MicFacts> {
-        if let Some((opened, facts)) = &self.opened {
-            if *opened == identity {
-                return Ok(facts.clone());
-            }
+        if let Some((opened, facts)) = &self.opened
+            && *opened == identity
+        {
+            return Ok(facts.clone());
         }
         let facts = probe()?;
         self.opened = Some((identity, facts.clone()));

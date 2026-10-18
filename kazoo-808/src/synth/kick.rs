@@ -1,8 +1,10 @@
 //! TR-808 kick drum synthesis.
 //!
-//! Bridged-T bandpass filter excited into self-oscillation.
-//! Base frequency ~49 Hz, pitch sweep from ~130 Hz over 6ms on trigger.
-//! Exponential decay, 50-800ms range.
+//! A sine swept down to its base frequency, the sound the 808's bridged-T
+//! circuit makes ringing. Base frequency 49 Hz by default (tune 20–100 Hz);
+//! on trigger the pitch starts at 130 Hz and falls exponentially toward the
+//! base with a 6 ms time constant. Exponential amplitude decay, −60 dB over
+//! 50–800 ms (default 300 ms).
 
 use super::Voice;
 

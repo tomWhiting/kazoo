@@ -390,10 +390,10 @@ pub fn split_id(id: &str) -> Option<(&str, u32)> {
         Ok(number) if number > 0 && !text.starts_with('0') => Some(number),
         Ok(_) | Err(_) => None,
     };
-    if let Some((kind, digits)) = id.rsplit_once('_') {
-        if kind.ends_with(|c: char| c.is_ascii_digit()) {
-            return number(digits).map(|n| (kind, n));
-        }
+    if let Some((kind, digits)) = id.rsplit_once('_')
+        && kind.ends_with(|c: char| c.is_ascii_digit())
+    {
+        return number(digits).map(|n| (kind, n));
     }
     let kind = id.trim_end_matches(|c: char| c.is_ascii_digit());
     if kind.is_empty() || kind.ends_with('_') {
@@ -518,10 +518,10 @@ impl Patch {
     /// made). Nothing happens if the module has gone or the knobs do not
     /// fit it.
     pub fn put_knobs_back(&mut self, id: &str, knobs: &[f32]) {
-        if let Some(module) = self.module_mut(id) {
-            if module.knobs.len() == knobs.len() {
-                module.knobs.copy_from_slice(knobs);
-            }
+        if let Some(module) = self.module_mut(id)
+            && module.knobs.len() == knobs.len()
+        {
+            module.knobs.copy_from_slice(knobs);
         }
     }
 
@@ -673,13 +673,13 @@ impl Patch {
         }
         let (from_module, from_port) = self.output(from)?;
         let (to_module, to_jack) = self.input(to)?;
-        if let Some(id) = id {
-            if self.cable_at(id).is_ok() {
-                return Err(error(
-                    ErrorCode::NotAllowed,
-                    format!("cable {id} is already plugged in"),
-                ));
-            }
+        if let Some(id) = id
+            && self.cable_at(id).is_ok()
+        {
+            return Err(error(
+                ErrorCode::NotAllowed,
+                format!("cable {id} is already plugged in"),
+            ));
         }
         let existing = self
             .cables
@@ -793,10 +793,10 @@ impl Patch {
                 ),
             )
         })?;
-        if let Some(name) = name {
-            if !valid_name(name) {
-                return Err(bad_name(name));
-            }
+        if let Some(name) = name
+            && !valid_name(name)
+        {
+            return Err(bad_name(name));
         }
         Ok(found)
     }
@@ -986,19 +986,17 @@ impl Patch {
             .retired_loops
             .iter()
             .position(|retired| retired.module == module.id)
+            && let Some(retired) = self.retired_loops.remove(at)
         {
-            if let Some(retired) = self.retired_loops.remove(at) {
-                self.loops.insert(retired.module, retired.record);
-            }
+            self.loops.insert(retired.module, retired.record);
         }
         if let Some(at) = self
             .retired_speech
             .iter()
             .position(|retired| retired.module == module.id)
+            && let Some(retired) = self.retired_speech.remove(at)
         {
-            if let Some(retired) = self.retired_speech.remove(at) {
-                self.speech.insert(retired.module, retired.words);
-            }
+            self.speech.insert(retired.module, retired.words);
         }
         let place = place
             .cloned()
@@ -1818,10 +1816,10 @@ fn module_from_record(
             format!("'{}' is not a module id", printable(&record.id)),
         ));
     }
-    if let Some(name) = &record.name {
-        if !valid_name(name) {
-            return Err(bad_name(name));
-        }
+    if let Some(name) = &record.name
+        && !valid_name(name)
+    {
+        return Err(bad_name(name));
     }
     let spec = kind.spec();
     let ignored = record

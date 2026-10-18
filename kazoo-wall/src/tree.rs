@@ -8,6 +8,7 @@
 
 pub mod git;
 pub(crate) mod notes;
+pub mod plant;
 pub mod rings;
 pub mod thread;
 
@@ -809,10 +810,11 @@ impl Stamp {
             .map_or_else(|| message.trim_end(), |(_, block)| block)
             .lines()
         {
-            if let Some((key, value)) = line.split_once(": ") {
-                if key.starts_with("Kazoo-") && values.insert(key, value).is_some() {
-                    return Err(TreeError::Git(format!("duplicate trailer {key}")));
-                }
+            if let Some((key, value)) = line.split_once(": ")
+                && key.starts_with("Kazoo-")
+                && values.insert(key, value).is_some()
+            {
+                return Err(TreeError::Git(format!("duplicate trailer {key}")));
             }
         }
         let required = |key| {

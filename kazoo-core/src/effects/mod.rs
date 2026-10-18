@@ -229,13 +229,13 @@ impl EffectChain {
 
     /// Number of effects in the chain.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.effects.len()
     }
 
     /// Whether the chain has no effects.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.effects.is_empty()
     }
 }

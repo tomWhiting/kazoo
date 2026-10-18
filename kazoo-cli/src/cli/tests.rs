@@ -6,9 +6,9 @@ use kazoo_wall::daemon::{AudioMode, DaemonConfig, DeskMode};
 
 use super::{Cli, Command, WallCommand};
 
-const COMMANDS: [&str; 17] = [
+const COMMANDS: [&str; 18] = [
     "808", "303", "cs80", "mini", "juno", "prophet", "dx", "string", "glass", "arp", "play",
-    "mouth", "tui", "mix", "wall", "mcp", "tree",
+    "mouth", "tui", "mix", "wall", "mcp", "tree", "setup",
 ];
 
 #[test]
@@ -49,6 +49,7 @@ fn every_instrument_is_a_subcommand() {
             Command::Mouth(_) => name == "mouth",
             Command::Tui => name == "tui",
             Command::Tree(args) => name == "tree" && !args.print,
+            Command::Setup(args) => name == "setup" && !args.dry_run,
             Command::Mix(args) => name == "mix" && !args.demo,
             Command::Wall { command } => name == "wall" && command.is_none(),
             Command::Mcp(args) => name == "mcp" && args.seat.as_deref() == Some("Tom"),

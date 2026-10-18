@@ -178,7 +178,10 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>
                 }
             }
             "--channel" | "-c" => {
-                options.channel = parse_value::<u8>(&mut iter, "--channel")?.min(15);
+                options.channel = parse_value::<u8>(&mut iter, "--channel")?;
+                if options.channel > 15 {
+                    return Err("--channel must be 0 to 15".to_string());
+                }
             }
             "--format" => {
                 let value = iter
@@ -244,6 +247,16 @@ mod tests {
         };
         assert_eq!(Args::default(), expected);
         assert_eq!(parse_args([]), Ok(Some(expected)));
+    }
+
+    #[test]
+    fn a_channel_is_0_to_15() {
+        let channel = |value: &str| {
+            parse_args(["--channel", value].map(str::to_string)).map(|args| args.map(|a| a.channel))
+        };
+        assert_eq!(channel("15"), Ok(Some(15)));
+        assert_eq!(channel("0"), Ok(Some(0)));
+        assert_eq!(channel("16"), Err("--channel must be 0 to 15".to_string()));
     }
 
     #[test]

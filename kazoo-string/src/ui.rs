@@ -552,11 +552,11 @@ fn draw_help(frame: &mut Frame) {
             Style::new().fg(DIM),
         ),
         Line::styled(
-            "With kazoo-tui running, audio routes to the hub",
+            "With kazoo-mix running, audio routes to the desk",
             Style::new().fg(DIM),
         ),
         Line::styled(
-            "and hub note events (kazoo-arp) play this synth.",
+            "and the desk's note events (kazoo-arp) play this synth.",
             Style::new().fg(DIM),
         ),
         Line::raw(""),

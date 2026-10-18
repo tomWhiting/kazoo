@@ -94,7 +94,7 @@ pub struct CatalogueArgs {
     /// when this seat is on more than one.
     #[serde(default)]
     pub wall: Option<String>,
-    /// Only this kind (e.g. `vcf`) or family (e.g. `drive`). Leave it out
+    /// Only this kind (e.g. `vcf`) or family (e.g. `fx`). Leave it out
     /// for every kind.
     #[serde(default)]
     pub kind: Option<String>,
@@ -596,7 +596,7 @@ impl Seat {
 
     #[tool(
         name = "wall_catalogue",
-        description = "What each kind of module does: its knobs with ranges, units, defaults, travel and jack law, the named positions of stepped knobs, and its inputs and outputs with what they carry (audio, gate or cv). Every knob is also a jack by its name. Give kind to narrow it to one kind (e.g. vcf) or one family (e.g. drive); the whole catalogue is long."
+        description = "What each kind of module does: its knobs with ranges, units, defaults, travel and jack law, the named positions of stepped knobs, and its inputs and outputs with what they carry (audio, gate or cv). Every knob is also a jack by its name. Give kind to narrow it to one kind (e.g. vcf) or one family (synth, fx, perc, rhythm or speech); the whole catalogue is long."
     )]
     async fn wall_catalogue(&self, Parameters(args): Parameters<CatalogueArgs>) -> CallToolResult {
         let on = match self.walls.on(args.wall.as_deref()).await {
@@ -998,7 +998,7 @@ impl Seat {
 
     #[tool(
         name = "wall_loop",
-        description = "Erase a loop module's tape (undoable with wall_undo), or set which desk strip it records from (e.g. `mouth/dry` for Tom's voice; `null` to record what is patched into its left and right). To record, turn its `record` knob to 1 with wall_turn: it starts at the loop's next bar line and stops at the bar line after you turn it back to 0. Its `bars` and `beats` knobs set the length of a blank loop; two loops of unequal lengths (17 and 23 bars) drift against each other and meet again rarely."
+        description = "Erase a loop module's tape (undoable with wall_undo), or name a desk strip for it (e.g. `mouth/dry`; `null` clears it). The name is kept and shown, but recording from a desk strip is not built yet: a loop records what is patched into its left and right. To record, turn its `record` knob to 1 with wall_turn: it starts at the loop's next bar line and stops at the bar line after you turn it back to 0. Its `bars` and `beats` knobs set the length of a blank loop; two loops of unequal lengths (17 and 23 bars) drift against each other and meet again rarely."
     )]
     async fn wall_loop(&self, Parameters(args): Parameters<LoopArgs>) -> CallToolResult {
         let on = match self.walls.on(args.wall.as_deref()).await {

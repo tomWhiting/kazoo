@@ -61,6 +61,9 @@ pub fn tree_dir() -> io::Result<PathBuf> {
     })
 }
 
+/// What a tree that is planted but has not grown says.
+pub const NOTHING_YET: &str = "nothing in the tree yet: it grows as the wall plays";
+
 /// Refuse a folder with no tree in it, saying how one is planted.
 fn planted(dir: &Path) -> io::Result<()> {
     if dir.join("HEAD").exists() {
@@ -69,7 +72,7 @@ fn planted(dir: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         format!(
-            "no tree at {} yet: the wall plants it as it starts, so start the wall (kzoo wall), or restart one that is playing (kzoo wall stop, then kzoo wall); the wall says why if it cannot",
+            "no tree at {} yet: the tree's view plants one when the wall has played nothing, and the wall grows one from what it has played as it starts",
             dir.display()
         ),
     ))
@@ -85,6 +88,9 @@ pub fn print(dir: PathBuf, cols: u16, rows: u16) -> io::Result<String> {
     planted(&dir)?;
     let ledger = Ledger::of_tree(&dir);
     let mut app = App::open(dir, ledger).map_err(io::Error::other)?;
+    if app.history.moments.is_empty() {
+        return Ok(format!("{NOTHING_YET}\n"));
+    }
     let view = app.view(cols, rows);
     let scene = Scene {
         history: &app.history,

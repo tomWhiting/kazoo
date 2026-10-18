@@ -32,7 +32,7 @@ pub struct NotationEvent {
 impl NotationEvent {
     /// Whether this event is a rest.
     #[must_use]
-    pub fn is_rest(&self) -> bool {
+    pub const fn is_rest(&self) -> bool {
         self.notes.is_empty()
     }
 }
@@ -75,12 +75,19 @@ pub fn parse_notation(input: &str) -> Result<Vec<NotationEvent>, NotationError> 
 /// Parse text notation directly into timestamped note on/off events.
 ///
 /// `bpm` and `sample_rate` convert beat positions to absolute frame times.
+/// A `channel` above 15 is refused (at token 0): MIDI has 16.
 pub fn parse_note_events(
     input: &str,
     bpm: f64,
     sample_rate: u32,
     channel: u8,
 ) -> Result<Vec<NoteEvent>, NotationError> {
+    if channel > 15 {
+        return Err(NotationError {
+            token_index: 0,
+            message: format!("channel {channel} is not a MIDI channel (0 to 15)"),
+        });
+    }
     let events = parse_notation(input)?;
     let frames_per_beat = frames_per_beat(bpm, sample_rate);
     let mut out = Vec::new();
@@ -102,7 +109,7 @@ pub fn parse_note_events(
                 frame: end_frame,
                 source: None,
                 destination: None,
-                channel: channel.min(15),
+                channel,
                 kind: NoteEventKind::NoteOff {
                     note,
                     velocity: 0.0,
@@ -154,9 +161,13 @@ fn split_duration(token: &str) -> Result<(&str, f64), String> {
         return Err("missing note, chord, or rest before duration".to_string());
     }
 
-    let dotted = duration.ends_with('.');
+    let (duration, dotted) = duration
+        .strip_suffix('.')
+        .map_or((duration, false), |undotted| (undotted, true));
+    if duration.ends_with('.') {
+        return Err("a duration takes one dot at most, like /8.".to_string());
+    }
     let denominator = duration
-        .trim_end_matches('.')
         .parse::<u32>()
         .map_err(|_| "duration denominator must be a positive integer".to_string())?;
     if denominator == 0 {
@@ -272,14 +283,34 @@ mod tests {
     }
 
     #[test]
+    fn a_duration_takes_one_dot_at_most() {
+        for notation in ["c4/4..", "c4/8...", "c4/.."] {
+            let err = parse_notation(notation).unwrap_err();
+            assert!(
+                err.message.contains("one dot at most"),
+                "{notation}: {}",
+                err.message
+            );
+        }
+        assert!(parse_notation("c4/.").is_err());
+    }
+
+    #[test]
     fn converts_to_timestamped_note_events() {
-        let events = parse_note_events("c4/4 [e4 g4]/4", 120.0, 48_000, 20).unwrap();
+        let events = parse_note_events("c4/4 [e4 g4]/4", 120.0, 48_000, 15).unwrap();
 
         assert_eq!(events.len(), 6);
         assert_eq!(events[0].frame, 0);
         assert_eq!(events[1].frame, 24_000);
         assert_eq!(events[0].channel, 15);
         assert_eq!(events[2].frame, 24_000);
+    }
+
+    #[test]
+    fn a_channel_past_15_is_refused() {
+        let err = parse_note_events("c4/4", 120.0, 48_000, 16).unwrap_err();
+        assert_eq!(err.message, "channel 16 is not a MIDI channel (0 to 15)");
+        assert!(parse_note_events("c4/4", 120.0, 48_000, 0).is_ok());
     }
 
     #[test]

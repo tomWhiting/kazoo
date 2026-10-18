@@ -222,6 +222,16 @@ After a write or sync of the log fails, its file handle is never used again, and
 - an envelope on a VCA;
 - delay and reverb into `out`.
 
+### The tree plants itself (Tom, 18 Oct 2026: "the tree needs to just kind of plant itself")
+
+The tree (`~/.kazoo/tree`, a bare git repository beside the state) is never something a person has to make (`kazoo_wall::tree::plant`):
+
+- **A starting wall** plants it after claiming its socket and before opening the state. A tree that is there with a trunk is kept. Otherwise it is grown from the change log, as `kazoo wall tree import` grows it, under the state's lock. When the log gives no wall to grow from (no state, an empty log, or a past that cannot be worked out), it is planted empty, to grow from this start. When another wall or an import holds the state, nothing is done. A failure is said in the daemon's log and in `look`'s tree health, and the wall plays without a tree. What a failed grow left is taken away according to what was there before: nothing (all of it goes), an empty folder such as a mount point (it stays, emptied), or anything else (never touched).
+- **`kazoo tree`**, opened before any wall has grown the tree, plants it empty when the wall has logged nothing (no state, or an empty log), so the tree is there to look at from the first time. When the wall has played, the tree's view leaves the growing to the wall, which does it as it starts. The view never takes the state's lock, so it never holds up a wall that is starting.
+- **Planting empty** is held to one planter at a time by a lock beside the tree (`.<name>.planting.lock`, `flock`), never the state's lock. When a wall and the tree's view plant at once they take turns, and the second finds the first's tree and takes it as planted. Where nothing is, a failure takes away what it made. An empty folder that is there (a mount point) is planted in place, and emptied again if that fails. A folder with something in it that is not a tree is never touched: planting stops and says so.
+- **The view counts the wall as having played** when either log (`log.jsonl`, or `log.1.jsonl` after a rotation) holds anything.
+- A tree with nothing in it says so ("nothing in the tree yet: it grows as the wall plays"), and says how many moments have grown once some have.
+
 ## Control protocol
 
 The daemon listens on a Unix socket, `kazoo-wall.sock`. It lives in kazoo's runtime dir, the same dir and ownership rules as the desk socket in `kazoo_core::ipc::discovery`. Stale-socket handling works the same way.

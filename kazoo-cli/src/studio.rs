@@ -86,10 +86,10 @@ impl StudioFile {
                 session.instrument.len()
             ));
         }
-        if let Some(rate) = session.desk.rate {
-            if !(8_000..=384_000).contains(&rate) {
-                return Err(eyre!("desk.rate must be between 8000 and 384000 Hz"));
-            }
+        if let Some(rate) = session.desk.rate
+            && !(8_000..=384_000).contains(&rate)
+        {
+            return Err(eyre!("desk.rate must be between 8000 and 384000 Hz"));
         }
         for instrument in &session.instrument {
             let words = std::iter::once("kazoo")

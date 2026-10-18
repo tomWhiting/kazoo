@@ -437,10 +437,10 @@ impl Resolver {
         if input.len() > MAX_MOMENT {
             return Err(unknown(input));
         }
-        if input == "trunk" || input.starts_with("bud/") {
-            if let Some(commit) = branch_tip(tree, input)? {
-                return found(tree, commit, Some(input.into()), None);
-            }
+        if (input == "trunk" || input.starts_with("bud/"))
+            && let Some(commit) = branch_tip(tree, input)?
+        {
+            return found(tree, commit, Some(input.into()), None);
         }
         if full_id(input) {
             if let Some(commit) = commit_id(tree, input)? {
@@ -457,32 +457,33 @@ impl Resolver {
                 }
             }
         }
-        if input.starts_with("save/") {
-            if let Some(r) = refs
+        if input.starts_with("save/")
+            && let Some(r) = refs
                 .iter()
                 .find(|r| r.name.strip_prefix("refs/tags/") == Some(input))
-            {
-                return found(tree, r.commit.clone(), None, None);
-            }
+        {
+            return found(tree, r.commit.clone(), None, None);
         }
-        if let Some(digits) = input.strip_prefix('#') {
-            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
-                let n = digits.parse::<u64>().map_err(|_| unknown(input))?;
-                if self.seq.is_none() {
-                    self.seq = Some(changes(tree, None)?);
-                }
-                if let Some(commit) = self.seq.as_ref().and_then(|seq| seq.get(&n)) {
-                    return found(tree, commit.clone(), None, None);
-                }
-                return Err(HereError::UnknownMoment(format!(
-                    "change {n} has no moment of its own: a go, a change that did not happen, or one the tree has not taken yet"
-                )));
+        if let Some(digits) = input.strip_prefix('#')
+            && !digits.is_empty()
+            && digits.bytes().all(|b| b.is_ascii_digit())
+        {
+            let n = digits.parse::<u64>().map_err(|_| unknown(input))?;
+            if self.seq.is_none() {
+                self.seq = Some(changes(tree, None)?);
             }
+            if let Some(commit) = self.seq.as_ref().and_then(|seq| seq.get(&n)) {
+                return found(tree, commit.clone(), None, None);
+            }
+            return Err(HereError::UnknownMoment(format!(
+                "change {n} has no moment of its own: a go, a change that did not happen, or one the tree has not taken yet"
+            )));
         }
-        if (7..40).contains(&input.len()) && lower_hex(input) {
-            if let Some(commit) = commit_id(tree, input)? {
-                return found(tree, commit, None, None);
-            }
+        if (7..40).contains(&input.len())
+            && lower_hex(input)
+            && let Some(commit) = commit_id(tree, input)?
+        {
+            return found(tree, commit, None, None);
         }
         Err(unknown(input))
     }
@@ -849,17 +850,17 @@ impl super::Writer {
                 },
             )?);
             self.line = Line::On { branch, tip };
-        } else if self.importer.is_none() {
-            if let Line::On { branch, tip } = &self.line {
-                self.importer = Some(Importer::new(
-                    dir,
-                    &Planted {
-                        branch: format!("refs/heads/{branch}"),
-                        tip: tip.clone(),
-                        through: self.through,
-                    },
-                )?);
-            }
+        } else if self.importer.is_none()
+            && let Line::On { branch, tip } = &self.line
+        {
+            self.importer = Some(Importer::new(
+                dir,
+                &Planted {
+                    branch: format!("refs/heads/{branch}"),
+                    tip: tip.clone(),
+                    through: self.through,
+                },
+            )?);
         }
         Ok(())
     }
@@ -933,12 +934,12 @@ impl super::Writer {
             self.importer()?.tag(reference, commit)?;
             let mark = self.last.map_or(0, |(mark, _)| mark);
             let actual = self.importer()?.checkpoint(mark)?;
-            if let Line::On { tip: Some(tip), .. } = &self.line {
-                if actual != *tip {
-                    return Err(TreeError::Git(format!(
-                        "the tree's line is at {actual}, but the wall is at {tip}"
-                    )));
-                }
+            if let Line::On { tip: Some(tip), .. } = &self.line
+                && actual != *tip
+            {
+                return Err(TreeError::Git(format!(
+                    "the tree's line is at {actual}, but the wall is at {tip}"
+                )));
             }
         } else {
             let mut importer = Importer::new(

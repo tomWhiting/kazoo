@@ -273,14 +273,14 @@ impl FormantExtractor {
         // Deduplicate: merge formants that are very close together.
         let mut merged: Vec<(f32, f32)> = Vec::new();
         for (freq, bw) in &formants {
-            if let Some(last) = merged.last_mut() {
-                if (*freq - last.0).abs() < 50.0 {
-                    // Merge: keep the one with narrower bandwidth.
-                    if *bw < last.1 {
-                        *last = (*freq, *bw);
-                    }
-                    continue;
+            if let Some(last) = merged.last_mut()
+                && (*freq - last.0).abs() < 50.0
+            {
+                // Merge: keep the one with narrower bandwidth.
+                if *bw < last.1 {
+                    *last = (*freq, *bw);
                 }
+                continue;
             }
             merged.push((*freq, *bw));
         }

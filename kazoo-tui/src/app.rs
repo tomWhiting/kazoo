@@ -691,17 +691,17 @@ impl App {
 
     /// Toggle bypass on an effect in the selected track's chain.
     pub fn toggle_effect_bypass(&mut self, track_index: usize, effect_index: usize) {
-        if let Some(track) = self.tracks.get_mut(track_index) {
-            if let Some(effect) = track.effects.get_mut(effect_index) {
-                let new_bypassed = !effect.bypassed;
-                let result = self.engine.send_command(EngineCommand::SetEffectBypass {
-                    track_id: track.id,
-                    effect_index,
-                    bypassed: new_bypassed,
-                });
-                if self.status.report("Bypass effect", result) {
-                    effect.bypassed = new_bypassed;
-                }
+        if let Some(track) = self.tracks.get_mut(track_index)
+            && let Some(effect) = track.effects.get_mut(effect_index)
+        {
+            let new_bypassed = !effect.bypassed;
+            let result = self.engine.send_command(EngineCommand::SetEffectBypass {
+                track_id: track.id,
+                effect_index,
+                bypassed: new_bypassed,
+            });
+            if self.status.report("Bypass effect", result) {
+                effect.bypassed = new_bypassed;
             }
         }
     }
@@ -756,12 +756,12 @@ impl App {
     /// Blinks at approximately 2 Hz (toggles every 30 frames at 60 fps).
     #[must_use]
     pub const fn recording_blink_visible(&self) -> bool {
-        (self.frame_count / 30) % 2 == 0
+        (self.frame_count / 30).is_multiple_of(2)
     }
 
     /// The number of tracks.
     #[must_use]
-    pub fn track_count(&self) -> usize {
+    pub const fn track_count(&self) -> usize {
         self.tracks.len()
     }
 

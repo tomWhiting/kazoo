@@ -119,7 +119,7 @@ fn clicks(len: usize, spacing: usize, rate: f32) -> Vec<f32> {
     let mut envelope = 0.0f32;
     (0..len)
         .map(|n| {
-            if n >= spacing / 2 && (n - spacing / 2) % spacing == 0 && n + spacing < len {
+            if n >= spacing / 2 && (n - spacing / 2).is_multiple_of(spacing) && n + spacing < len {
                 envelope = 0.8;
             }
             envelope *= decay;

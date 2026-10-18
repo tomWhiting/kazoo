@@ -194,7 +194,7 @@ impl OnsetDetector {
         let mut sorted: Vec<f32> = self.flux_history[..count].to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mid = count / 2;
-        if count % 2 == 0 && count >= 2 {
+        if count.is_multiple_of(2) && count >= 2 {
             f32::midpoint(sorted[mid - 1], sorted[mid])
         } else {
             sorted[mid]

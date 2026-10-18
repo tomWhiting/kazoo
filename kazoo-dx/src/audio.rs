@@ -249,11 +249,11 @@ impl AudioEngine {
 
     fn play_from(&mut self, beat: f64) {
         self.playing = true;
-        if let Some(phrase) = self.phrase.as_mut() {
-            if phrase.play_from(beat) {
-                // A jump: notes from the old place must not ring on.
-                self.synth.release_source(Source::Phrase);
-            }
+        if let Some(phrase) = self.phrase.as_mut()
+            && phrase.play_from(beat)
+        {
+            // A jump: notes from the old place must not ring on.
+            self.synth.release_source(Source::Phrase);
         }
         self.publish();
     }

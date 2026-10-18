@@ -286,7 +286,7 @@ impl TimelineSource {
     }
 
     /// Whether the source holds nothing (and may be filled).
-    pub(super) fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         self.tracks.is_empty() && self.clips.is_empty()
     }
 

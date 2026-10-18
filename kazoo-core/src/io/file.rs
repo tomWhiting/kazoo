@@ -48,7 +48,7 @@ impl AudioBuffer {
 
     /// Number of complete frames (one sample per channel = one frame).
     #[must_use]
-    pub fn frame_count(&self) -> usize {
+    pub const fn frame_count(&self) -> usize {
         if self.channels == 0 {
             return 0;
         }

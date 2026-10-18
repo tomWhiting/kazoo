@@ -138,18 +138,18 @@ impl Sequencer {
     }
 
     pub fn toggle_accent(&mut self, step: usize) {
-        if let Some(step_data) = self.pattern.steps.get_mut(step) {
-            if step_data.active {
-                step_data.accent = !step_data.accent;
-            }
+        if let Some(step_data) = self.pattern.steps.get_mut(step)
+            && step_data.active
+        {
+            step_data.accent = !step_data.accent;
         }
     }
 
     pub fn toggle_slide(&mut self, step: usize) {
-        if let Some(step_data) = self.pattern.steps.get_mut(step) {
-            if step_data.active {
-                step_data.slide = !step_data.slide;
-            }
+        if let Some(step_data) = self.pattern.steps.get_mut(step)
+            && step_data.active
+        {
+            step_data.slide = !step_data.slide;
         }
     }
 

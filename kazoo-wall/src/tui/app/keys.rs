@@ -783,10 +783,10 @@ impl App {
                 // Typing stays in this category while it has a match;
                 // otherwise it goes to the first category that does.
                 let found = self.picker_for(&filter);
-                if !found.iter().any(|(group, _)| *group == tab) {
-                    if let Some((group, _)) = found.first() {
-                        tab = *group;
-                    }
+                if !found.iter().any(|(group, _)| *group == tab)
+                    && let Some((group, _)) = found.first()
+                {
+                    tab = *group;
                 }
                 0
             }

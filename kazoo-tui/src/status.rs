@@ -89,12 +89,14 @@ impl StatusLine {
     }
 
     fn post(&mut self, text: String, level: StatusLevel, now: Instant) {
-        if let Some(current) = self.current.as_mut() {
-            if current.level == level && current.text == text && current.is_live(now) {
-                current.repeats = current.repeats.saturating_add(1);
-                current.posted_at = now;
-                return;
-            }
+        if let Some(current) = self.current.as_mut()
+            && current.level == level
+            && current.text == text
+            && current.is_live(now)
+        {
+            current.repeats = current.repeats.saturating_add(1);
+            current.posted_at = now;
+            return;
         }
         self.current = Some(StatusMessage {
             text,

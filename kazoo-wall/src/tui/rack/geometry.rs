@@ -555,11 +555,11 @@ fn given(modules: &[ModuleView], rows: &[Vec<String>]) -> (Vec<(usize, usize)>, 
     for ids in rows {
         let before = sequence.len();
         for id in ids {
-            if let Some(&at) = index.get(id.as_str()) {
-                if !hung[at] {
-                    hung[at] = true;
-                    sequence.push((at, count));
-                }
+            if let Some(&at) = index.get(id.as_str())
+                && !hung[at]
+            {
+                hung[at] = true;
+                sequence.push((at, count));
             }
         }
         if sequence.len() > before {

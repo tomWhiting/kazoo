@@ -111,7 +111,7 @@ pub const fn track_color(index: usize) -> Color {
 /// Return the lane background for a track index (alternating even/odd).
 #[must_use]
 pub const fn lane_bg(index: usize) -> Color {
-    if index % 2 == 0 {
+    if index.is_multiple_of(2) {
         BG_PRIMARY
     } else {
         BG_LANE_ODD

@@ -609,10 +609,10 @@ mod tests {
             if n > RATE as usize && was_moving && hall.size.settled() {
                 settled_at = Some(n);
             }
-            if let Some(at) = settled_at {
-                if n >= at + (0.01 * RATE) as usize + super::CONTROL {
-                    break;
-                }
+            if let Some(at) = settled_at
+                && n >= at + (0.01 * RATE) as usize + super::CONTROL
+            {
+                break;
             }
         }
         let at = settled_at.expect("size reaches the target");

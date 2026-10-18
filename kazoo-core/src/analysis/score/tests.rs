@@ -754,13 +754,14 @@ fn voice_meets_its_targets() -> crate::Result<()> {
             for (step, (said, truth)) in recorded.said.iter().zip(&take.truth).enumerate() {
                 let start = step * SCORE_STEP;
                 let note = take.onsets.iter().rev().find(|&&onset| onset <= start);
-                if let (Some(&onset), Some(hz), Some(truth)) = (note, *said, *truth) {
-                    if start >= onset + settled && is_octave_error(hz, truth) {
-                        failures.push(format!(
-                            "{}: octave error {hz} Hz for {truth} Hz at sample {start}",
-                            take.name
-                        ));
-                    }
+                if let (Some(&onset), Some(hz), Some(truth)) = (note, *said, *truth)
+                    && start >= onset + settled
+                    && is_octave_error(hz, truth)
+                {
+                    failures.push(format!(
+                        "{}: octave error {hz} Hz for {truth} Hz at sample {start}",
+                        take.name
+                    ));
                 }
             }
         }
@@ -795,13 +796,13 @@ fn voice_gate_meets_its_targets() -> crate::Result<()> {
         }
         // The take's own count and the brief's must agree, and the gate
         // must count exactly that many.
-        if let Some((counted, expected)) = onsets {
-            if result.onsets_counted != counted || result.onsets_expected != expected {
-                failures.push(format!(
-                    "{} onsets, expected {expected}: {result:?}",
-                    take.name
-                ));
-            }
+        if let Some((counted, expected)) = onsets
+            && (result.onsets_counted != counted || result.onsets_expected != expected)
+        {
+            failures.push(format!(
+                "{} onsets, expected {expected}: {result:?}",
+                take.name
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

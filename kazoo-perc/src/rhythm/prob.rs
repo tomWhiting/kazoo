@@ -203,12 +203,13 @@ impl Prob {
         self.accent = self.fire && accent_roll < self.knobs.get(ACCENT);
         self.repeats = 0;
         self.since = 0;
-        if self.fire && ratchet_roll < self.knobs.get(RATCHET) {
-            if let Some(period) = self.meter.period() {
-                let repeats = self.knobs.count(REPEATS).clamp(2, 8) as u32;
-                self.slot = (period / repeats).max(2);
-                self.repeats = repeats;
-            }
+        if self.fire
+            && ratchet_roll < self.knobs.get(RATCHET)
+            && let Some(period) = self.meter.period()
+        {
+            let repeats = self.knobs.count(REPEATS).clamp(2, 8) as u32;
+            self.slot = (period / repeats).max(2);
+            self.repeats = repeats;
         }
     }
 }

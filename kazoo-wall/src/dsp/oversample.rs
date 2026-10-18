@@ -85,7 +85,11 @@ fn order_for(attenuation_db: f64, q: f64) -> usize {
     let power = 10f64.powf(-attenuation_db / 10.0);
     let a = power / (1.0 - power);
     let order = (a * a / 16.0).log(q).ceil().max(3.0) as usize;
-    if order % 2 == 0 { order + 1 } else { order }
+    if order.is_multiple_of(2) {
+        order + 1
+    } else {
+        order
+    }
 }
 
 fn coefficient_at(index: usize, k: f64, q: f64, order: usize) -> f64 {

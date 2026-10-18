@@ -353,10 +353,10 @@ impl App {
     fn add_pattern(&mut self) {
         if !self.sequencer.can_add_pattern() {
             self.notice = Some(Notice::PatternBankFull);
-        } else if self.commands.send(AudioCommand::AddPattern) {
-            if let Some(idx) = self.sequencer.add_pattern() {
-                self.sequencer.select_pattern(idx);
-            }
+        } else if self.commands.send(AudioCommand::AddPattern)
+            && let Some(idx) = self.sequencer.add_pattern()
+        {
+            self.sequencer.select_pattern(idx);
         }
     }
 

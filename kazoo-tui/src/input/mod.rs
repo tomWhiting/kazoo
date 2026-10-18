@@ -785,7 +785,7 @@ fn build_recording_workflow(app: &App) -> kazoo_core::transport::RecordingWorkfl
 // Tracks, volume and pan
 // ---------------------------------------------------------------------------
 
-fn select_adjacent_track(app: &mut App, forward: bool) {
+const fn select_adjacent_track(app: &mut App, forward: bool) {
     if app.tracks.is_empty() {
         return;
     }
@@ -1312,10 +1312,9 @@ fn move_file_browser_selection(app: &mut App, forward: bool) {
         ref mut selected,
         ..
     } = app.mode
+        && !entries.is_empty()
     {
-        if !entries.is_empty() {
-            *selected = wrap_index((*selected).min(entries.len() - 1), entries.len(), forward);
-        }
+        *selected = wrap_index((*selected).min(entries.len() - 1), entries.len(), forward);
     }
 }
 

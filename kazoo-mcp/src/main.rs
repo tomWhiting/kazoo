@@ -13,7 +13,7 @@ fn report(result: color_eyre::Result<()>) -> std::process::ExitCode {
             let invalid_input = why
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::InvalidInput);
-            eprintln!("kazoo-mcp: {why}");
+            eprintln!("kazoo-mcp: {why:#}");
             if invalid_input {
                 std::process::ExitCode::from(2)
             } else {

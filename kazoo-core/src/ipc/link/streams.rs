@@ -114,17 +114,17 @@ impl HubLink {
             .ok_or(RequestError::Full)?;
         let stream = id as StreamId;
         self.state.stream_live.fetch_or(1 << id, Ordering::Release);
-        if self.is_connected() {
-            if let Err(err) = self.request(Request::StreamAdd {
+        if self.is_connected()
+            && let Err(err) = self.request(Request::StreamAdd {
                 stream,
                 spec: StreamSpec::new(name, channels),
-            }) {
-                self.state
-                    .stream_live
-                    .fetch_and(!(1 << id), Ordering::Release);
-                drop(streams);
-                return Err(err);
-            }
+            })
+        {
+            self.state
+                .stream_live
+                .fetch_and(!(1 << id), Ordering::Release);
+            drop(streams);
+            return Err(err);
         }
         streams[id] = Some(StreamConfig {
             name: name.to_string(),

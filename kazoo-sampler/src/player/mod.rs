@@ -231,11 +231,11 @@ impl SamplePlayer {
     /// unplayed. Returns the sample back only if the retire queue is full;
     /// drain the reaper and try again.
     pub fn load(&mut self, sample: Arc<SampleData>) -> Result<(), Arc<SampleData>> {
-        if let Some(waiting) = self.pending.take() {
-            if let Err(waiting) = self.retire.try_push(waiting) {
-                self.pending = Some(waiting);
-                return Err(sample);
-            }
+        if let Some(waiting) = self.pending.take()
+            && let Err(waiting) = self.retire.try_push(waiting)
+        {
+            self.pending = Some(waiting);
+            return Err(sample);
         }
         self.pending = Some(sample);
         self.unload = false;
@@ -400,11 +400,11 @@ impl SamplePlayer {
             }
         }
         if self.unload {
-            if let Some(waiting) = self.pending.take() {
-                if let Err(waiting) = self.retire.try_push(waiting) {
-                    self.pending = Some(waiting);
-                    return;
-                }
+            if let Some(waiting) = self.pending.take()
+                && let Err(waiting) = self.retire.try_push(waiting)
+            {
+                self.pending = Some(waiting);
+                return;
             }
             self.unload = false;
             self.swap(None);

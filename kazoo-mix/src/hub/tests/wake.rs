@@ -48,10 +48,10 @@ fn a_transport_anchor_still_reaches_an_instrument_within_the_tick_budget() {
     rig.shared.set_playing(true);
     rig.render_into(&mut data);
     loop {
-        if let Some(HubMessage::TransportSync(sync)) = client.try_recv().unwrap() {
-            if sync.state == TRANSPORT_PLAYING {
-                break;
-            }
+        if let Some(HubMessage::TransportSync(sync)) = client.try_recv().unwrap()
+            && sync.state == TRANSPORT_PLAYING
+        {
+            break;
         }
         assert!(
             start.elapsed() < Duration::from_millis(50),

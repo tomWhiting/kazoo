@@ -243,7 +243,7 @@ fn local_rows(bins: usize, width: usize) -> Vec<Vec<(usize, f64)>> {
 /// A symmetric triangular window of `size` points (scipy's `triang`).
 fn triangle(size: usize) -> Vec<f64> {
     let half: Vec<f64> = (1..=size.div_ceil(2)).map(|n| n as f64).collect();
-    if size % 2 == 0 {
+    if size.is_multiple_of(2) {
         let half: Vec<f64> = half.iter().map(|n| (n * 2.0 - 1.0) / size as f64).collect();
         half.iter().chain(half.iter().rev()).copied().collect()
     } else {

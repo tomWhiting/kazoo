@@ -70,10 +70,12 @@ fn output(command: &mut Command) -> Result<Output, TreeError> {
 fn checked(command: &mut Command) -> Result<String, TreeError> {
     let result = output(command)?;
     if !result.status.success() {
+        // What git said, on one line: an error is said in one.
+        let said = String::from_utf8_lossy(&result.stderr);
+        let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
         return Err(TreeError::Git(format!(
-            "{command:?}: {}: {}",
-            result.status,
-            String::from_utf8_lossy(&result.stderr).trim()
+            "{command:?}: {}: {said}",
+            result.status
         )));
     }
     String::from_utf8(result.stdout)
@@ -88,7 +90,14 @@ fn checked(command: &mut Command) -> Result<String, TreeError> {
 /// `TreeError::Git` when git cannot be run, its version does not read, or
 /// it is older than [`MIN_GIT`].
 pub fn check_version() -> Result<(), TreeError> {
-    let text = checked(&mut git_command("version", None))?;
+    // On a Mac without the developer tools, `git` is there but only says
+    // they are missing.
+    let text = checked(&mut git_command("version", None)).map_err(|err| {
+        TreeError::Git(format!(
+            "the tree needs git {}.{} or later, and none here runs (xcode-select --install puts it in): {err}",
+            MIN_GIT.0, MIN_GIT.1
+        ))
+    })?;
     let version = text
         .strip_prefix("git version ")
         .ok_or_else(|| TreeError::Git(format!("unreadable git version: {text}")))?;
@@ -103,7 +112,8 @@ pub fn check_version() -> Result<(), TreeError> {
     let found = (number()?, number()?);
     if found < MIN_GIT {
         return Err(TreeError::Git(format!(
-            "{text}; the tree needs git 2.36 or later"
+            "{text}; the tree needs git {}.{} or later (xcode-select --install, or brew install git)",
+            MIN_GIT.0, MIN_GIT.1
         )));
     }
     Ok(())

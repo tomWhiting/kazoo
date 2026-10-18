@@ -159,13 +159,13 @@ fn run_event_loop(
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         // Poll for events with a timeout for smooth playback animation.
-        if event::poll(FRAME_POLL)? {
-            if let Event::Key(key) = event::read()? {
-                // Terminals with key-release reporting would otherwise run
-                // every action twice.
-                if key.kind != KeyEventKind::Release {
-                    app.handle_key(key);
-                }
+        if event::poll(FRAME_POLL)?
+            && let Event::Key(key) = event::read()?
+        {
+            // Terminals with key-release reporting would otherwise run
+            // every action twice.
+            if key.kind != KeyEventKind::Release {
+                app.handle_key(key);
             }
         }
     }

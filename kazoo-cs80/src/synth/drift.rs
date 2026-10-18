@@ -22,7 +22,7 @@ pub struct VoiceDrift {
     detune_cents: f32,
     /// Target detuning for smooth interpolation.
     detune_target: f32,
-    /// Envelope timing jitter factor [0.9, 1.1] — multiplied into envelope rates.
+    /// Envelope timing jitter factor [0.95, 1.05] — multiplied into envelope rates.
     timing_jitter: f32,
     /// Target timing jitter.
     timing_target: f32,

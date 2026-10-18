@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-303"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "cpal",
@@ -1396,7 +1396,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-808"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "cpal",
@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-arp"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "cpal",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-core"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_no_alloc",
  "audio_thread_priority",
@@ -1451,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-cs80"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "cpal",
@@ -1467,7 +1467,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-dx"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "cpal",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-fx"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_no_alloc",
  "criterion",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-glass"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_no_alloc",
  "color-eyre",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-host"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "crossterm",
@@ -1512,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-juno"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "cpal",
@@ -1526,7 +1526,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-mcp"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "kazoo-core",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-mini"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "cpal",
@@ -1555,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-mix"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_no_alloc",
  "color-eyre",
@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-mouth"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_no_alloc",
  "color-eyre",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-perc"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_no_alloc",
  "kazoo-fx",
@@ -1600,16 +1600,17 @@ dependencies = [
 
 [[package]]
 name = "kazoo-play"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "cpal",
  "kazoo-core",
+ "kazoo-host",
  "ringbuf",
 ]
 
 [[package]]
 name = "kazoo-prophet"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "cpal",
@@ -1623,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-sampler"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_no_alloc",
  "hound",
@@ -1634,7 +1635,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-speech"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_no_alloc",
  "hound",
@@ -1644,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-string"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "cpal",
@@ -1657,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-tree"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "chrono",
  "crossterm",
@@ -1676,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-tui"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "color-eyre",
  "crossbeam-channel",
@@ -1690,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "kazoo-wall"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_no_alloc",
  "chrono",
@@ -1716,8 +1717,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kzhz"
+version = "0.3.3"
+dependencies = [
+ "kzoo",
+]
+
+[[package]]
 name = "kzoo"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "clap",
  "color-eyre",
@@ -1740,7 +1748,10 @@ dependencies = [
  "kazoo-tree",
  "kazoo-tui",
  "kazoo-wall",
+ "rustix",
  "serde",
+ "serde_json",
+ "tempfile",
  "toml",
 ]
 

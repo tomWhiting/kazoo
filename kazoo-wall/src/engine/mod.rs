@@ -1345,13 +1345,14 @@ impl Engine {
         let mut left = [0.0; SUB_BLOCK];
         let mut right = [0.0; SUB_BLOCK];
         for &slot in self.order.outs() {
-            if let Some((page, at)) = self.room.page(slot as usize) {
-                if page.kinds[at] == Some(Kind::OUT) && page.modules[at].is_some() {
-                    let outputs = &page.outputs[at];
-                    for frame in 0..SUB_BLOCK {
-                        left[frame] += outputs[crate::dsp::FEED_LEFT][frame];
-                        right[frame] += outputs[crate::dsp::FEED_RIGHT][frame];
-                    }
+            if let Some((page, at)) = self.room.page(slot as usize)
+                && page.kinds[at] == Some(Kind::OUT)
+                && page.modules[at].is_some()
+            {
+                let outputs = &page.outputs[at];
+                for frame in 0..SUB_BLOCK {
+                    left[frame] += outputs[crate::dsp::FEED_LEFT][frame];
+                    right[frame] += outputs[crate::dsp::FEED_RIGHT][frame];
                 }
             }
         }
@@ -1735,11 +1736,11 @@ impl EngineControl {
         // A wall being put up holds everything but room for itself; what
         // passes it (that room, or the whole go) waits with a batch being
         // made, in order.
-        if !matches!(command, Command::Room(_)) {
-            if let Some(commands) = self.swap_commands.as_mut() {
-                commands.push_back(command);
-                return;
-            }
+        if !matches!(command, Command::Room(_))
+            && let Some(commands) = self.swap_commands.as_mut()
+        {
+            commands.push_back(command);
+            return;
         }
         if let Some(batch) = &mut self.batch {
             batch.commands.push(command);

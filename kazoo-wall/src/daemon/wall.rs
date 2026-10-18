@@ -1111,10 +1111,10 @@ fn walls_of<'a>(start: u64, changes: impl Iterator<Item = &'a Change> + Clone) -
                 // Every load puts up a wall of its own, under its number;
                 // undoing load L puts up a copy of the wall L replaced, as
                 // it stood just before L.
-                if let Some(undone) = change.undoes {
-                    if let Some(&replaced) = walls.made_to.get(&undone) {
-                        walls.copies.insert(change.seq, (replaced, undone));
-                    }
+                if let Some(undone) = change.undoes
+                    && let Some(&replaced) = walls.made_to.get(&undone)
+                {
+                    walls.copies.insert(change.seq, (replaced, undone));
                 }
                 walls.up = change.seq;
             }
@@ -1869,10 +1869,9 @@ impl Wall {
                 wirings.get_mut(cable.to_module.as_str()),
                 cable.to_jack,
                 self.rack.slot_of(&cable.from_module),
-            ) {
-                if let Some(entry) = wiring.get_mut(input) {
-                    *entry = Some((from, cable.from_port, cable.amount.to_bits()));
-                }
+            ) && let Some(entry) = wiring.get_mut(input)
+            {
+                *entry = Some((from, cable.from_port, cable.amount.to_bits()));
             }
         }
         let mut rewired = Vec::new();
@@ -2333,16 +2332,16 @@ impl Wall {
         while let Some((seat, what, comment)) = self.owed.front().cloned() {
             let mut change = self.new_change(&seat, what, None);
             change.comment = comment;
-            if let Some(store) = self.store.as_mut() {
-                if let Err(err) = store.append_synced(&change) {
-                    eprintln!(
-                        "kazoo-wall: the wall's own change ({}) could not be logged yet, and is \
+            if let Some(store) = self.store.as_mut()
+                && let Err(err) = store.append_synced(&change)
+            {
+                eprintln!(
+                    "kazoo-wall: the wall's own change ({}) could not be logged yet, and is \
                          written before any other: {err}",
-                        change.summary
-                    );
-                    self.log_error = Some(err.to_string());
-                    return paid;
-                }
+                    change.summary
+                );
+                self.log_error = Some(err.to_string());
+                return paid;
             }
             self.owed.pop_front();
             self.log_error = None;
@@ -2875,14 +2874,12 @@ impl Wall {
         // A refused load (no such save, a name that is not one, a save
         // changed since) replaced nothing, and costs none of the allowance;
         // one the disk refused did try.
-        if replaces {
-            if let Err(refused) = &outcome {
-                if refused.code != ErrorCode::Internal {
-                    if let Some(bucket) = self.load_buckets.get_mut(seat) {
-                        bucket.refund();
-                    }
-                }
-            }
+        if replaces
+            && let Err(refused) = &outcome
+            && refused.code != ErrorCode::Internal
+            && let Some(bucket) = self.load_buckets.get_mut(seat)
+        {
+            bucket.refund();
         }
         for (module, knob, settles) in std::mem::take(&mut self.turned) {
             let due = now
@@ -4482,14 +4479,14 @@ impl Wall {
             Ok(committed) => committed,
             Err(err) => {
                 // Not logged, so not started: the file (a moment long) goes.
-                if let Some(finished) = self.recorder.stop() {
-                    if let Err(gone) = std::fs::remove_file(&finished.path) {
-                        eprintln!(
-                            "kazoo-wall: the recording {} that could not be logged could not be \
+                if let Some(finished) = self.recorder.stop()
+                    && let Err(gone) = std::fs::remove_file(&finished.path)
+                {
+                    eprintln!(
+                        "kazoo-wall: the recording {} that could not be logged could not be \
                              removed: {gone}",
-                            finished.path.display()
-                        );
-                    }
+                        finished.path.display()
+                    );
                 }
                 return Err(err);
             }
@@ -5192,10 +5189,10 @@ impl Wall {
         self.settle(now);
         // The saves not read yet since the start, one a tick, so the first
         // listing finds them read (see `Store::list_saves`).
-        if let Some(store) = self.store.as_mut() {
-            if let Err(err) = store.warm_saves(1) {
-                eprintln!("kazoo-wall: the saves could not be read: {err}");
-            }
+        if let Some(store) = self.store.as_mut()
+            && let Err(err) = store.warm_saves(1)
+        {
+            eprintln!("kazoo-wall: the saves could not be read: {err}");
         }
         if let Some(finished) = self.recorder.poll() {
             self.carry_on(&finished, "the recording ended", false);

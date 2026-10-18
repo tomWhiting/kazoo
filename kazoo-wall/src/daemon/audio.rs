@@ -701,10 +701,10 @@ fn promote(rate: f64) -> Option<RealTime> {
 impl Drop for Headless {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(join) = self.join.take() {
-            if join.join().is_err() {
-                eprintln!("kazoo-wall: the render thread panicked");
-            }
+        if let Some(join) = self.join.take()
+            && join.join().is_err()
+        {
+            eprintln!("kazoo-wall: the render thread panicked");
         }
     }
 }

@@ -203,10 +203,10 @@ struct Backend {
 impl Drop for Backend {
     fn drop(&mut self) {
         self.listen_stop.store(true, Ordering::Release);
-        if let Some(join) = self.listen_join.take() {
-            if join.join().is_err() {
-                eprintln!("kazoo-wall: the listening thread panicked");
-            }
+        if let Some(join) = self.listen_join.take()
+            && join.join().is_err()
+        {
+            eprintln!("kazoo-wall: the listening thread panicked");
         }
     }
 }
@@ -893,16 +893,16 @@ impl Control {
             shut(&state.stream);
         }
         let seat = state.seat.filter(|_| !state.watcher);
-        if let Some(seat) = seat {
-            if self.wall.seat_left(&seat) {
-                eprintln!("kazoo-wall: {seat} left");
-                let event = Event::Seat {
-                    seat: seat.clone(),
-                    joined: false,
-                    seq: Some(self.wall.revision()),
-                };
-                self.broadcast(&event, Some(&seat));
-            }
+        if let Some(seat) = seat
+            && self.wall.seat_left(&seat)
+        {
+            eprintln!("kazoo-wall: {seat} left");
+            let event = Event::Seat {
+                seat: seat.clone(),
+                joined: false,
+                seq: Some(self.wall.revision()),
+            };
+            self.broadcast(&event, Some(&seat));
         }
     }
 
@@ -1176,10 +1176,10 @@ fn respond(id: u64, result: &impl serde::Serialize) -> Response {
 }
 
 fn shut(stream: &UnixStream) {
-    if let Err(err) = stream.shutdown(Shutdown::Both) {
-        if err.kind() != std::io::ErrorKind::NotConnected {
-            eprintln!("kazoo-wall: closing a connection failed: {err}");
-        }
+    if let Err(err) = stream.shutdown(Shutdown::Both)
+        && err.kind() != std::io::ErrorKind::NotConnected
+    {
+        eprintln!("kazoo-wall: closing a connection failed: {err}");
     }
 }
 

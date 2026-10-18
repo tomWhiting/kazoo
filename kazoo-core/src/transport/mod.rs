@@ -346,20 +346,20 @@ impl TransportClock {
         // Loop wrapping is disabled during count-in and auto-recording to
         // prevent the position from wrapping backwards before reaching the
         // count-in end or auto-stop boundary.
-        if matches!(self.count_in_state, CountInState::Inactive) {
-            if let Some((start, end)) = self.loop_region {
-                // Only wrap if we have actually reached or passed the end.
-                if self.position_samples >= end {
-                    // Calculate how far past the end we are, then wrap within
-                    // the loop region. This handles overshoots of any size.
-                    let loop_len = end - start;
-                    if loop_len > 0 {
-                        let overshoot = self.position_samples - end;
-                        self.position_samples = start + (overshoot % loop_len);
-                    } else {
-                        // Degenerate loop region (length 0) -- just sit at start.
-                        self.position_samples = start;
-                    }
+        if matches!(self.count_in_state, CountInState::Inactive)
+            && let Some((start, end)) = self.loop_region
+        {
+            // Only wrap if we have actually reached or passed the end.
+            if self.position_samples >= end {
+                // Calculate how far past the end we are, then wrap within
+                // the loop region. This handles overshoots of any size.
+                let loop_len = end - start;
+                if loop_len > 0 {
+                    let overshoot = self.position_samples - end;
+                    self.position_samples = start + (overshoot % loop_len);
+                } else {
+                    // Degenerate loop region (length 0) -- just sit at start.
+                    self.position_samples = start;
                 }
             }
         }

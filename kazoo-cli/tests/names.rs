@@ -37,6 +37,14 @@ fn kzoo_run_by_npm_as_kazoo_answers_to_kazoo() {
         .unwrap();
     let text = String::from_utf8_lossy(&help.stdout);
     assert!(text.contains("Usage: kazoo "), "{text}");
+    // And as kzhz, npm's own name.
+    let help = Command::new(env!("CARGO_BIN_EXE_kzoo"))
+        .arg("--help")
+        .env("KZOO_RUN_AS", "kzhz")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(text.contains("Usage: kzhz "), "{text}");
     // Anything else it is told is no name of its own.
     let help = Command::new(env!("CARGO_BIN_EXE_kzoo"))
         .arg("--help")

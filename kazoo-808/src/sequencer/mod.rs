@@ -150,13 +150,14 @@ impl Sequencer {
 
     /// Toggle a step on/off. Clears accent when deactivating.
     pub fn toggle_step(&mut self, voice: usize, step: usize) {
-        if let Some(pattern) = self.patterns.get_mut(self.current_pattern) {
-            if voice < VOICE_COUNT && step < STEPS_PER_PATTERN {
-                let step_data = &mut pattern.steps[voice][step];
-                step_data.active = !step_data.active;
-                if !step_data.active {
-                    step_data.accent = false;
-                }
+        if let Some(pattern) = self.patterns.get_mut(self.current_pattern)
+            && voice < VOICE_COUNT
+            && step < STEPS_PER_PATTERN
+        {
+            let step_data = &mut pattern.steps[voice][step];
+            step_data.active = !step_data.active;
+            if !step_data.active {
+                step_data.accent = false;
             }
         }
     }
@@ -164,22 +165,24 @@ impl Sequencer {
     /// Toggle accent on a step. Only works on active steps — accent on
     /// an inactive step makes no sense musically and is silently ignored.
     pub fn toggle_accent(&mut self, voice: usize, step: usize) {
-        if let Some(pattern) = self.patterns.get_mut(self.current_pattern) {
-            if voice < VOICE_COUNT && step < STEPS_PER_PATTERN {
-                let step_data = &mut pattern.steps[voice][step];
-                if step_data.active {
-                    step_data.accent = !step_data.accent;
-                }
+        if let Some(pattern) = self.patterns.get_mut(self.current_pattern)
+            && voice < VOICE_COUNT
+            && step < STEPS_PER_PATTERN
+        {
+            let step_data = &mut pattern.steps[voice][step];
+            if step_data.active {
+                step_data.accent = !step_data.accent;
             }
         }
     }
 
     /// Set velocity for a step.
     pub fn set_step_velocity(&mut self, voice: usize, step: usize, velocity: f32) {
-        if let Some(pattern) = self.patterns.get_mut(self.current_pattern) {
-            if voice < VOICE_COUNT && step < STEPS_PER_PATTERN {
-                pattern.steps[voice][step].velocity = velocity.clamp(0.0, 1.0);
-            }
+        if let Some(pattern) = self.patterns.get_mut(self.current_pattern)
+            && voice < VOICE_COUNT
+            && step < STEPS_PER_PATTERN
+        {
+            pattern.steps[voice][step].velocity = velocity.clamp(0.0, 1.0);
         }
     }
 
@@ -235,18 +238,18 @@ impl Sequencer {
             // Fire triggers for all active voices at this step.
             for (voice_idx, row) in pattern.steps.iter().enumerate() {
                 let step = &row[step_idx];
-                if step.active {
-                    if let Some(voice) = VoiceIndex::from_index(voice_idx) {
-                        // Apply per-voice accent amount: blend between normal
-                        // velocity and full accent based on accent_amounts.
-                        let velocity = if step.accent {
-                            let amt = drum_machine.accent_amounts[voice_idx];
-                            step.velocity.mul_add(1.0 - amt, ACCENT_VELOCITY * amt)
-                        } else {
-                            step.velocity
-                        };
-                        drum_machine.trigger(voice, velocity);
-                    }
+                if step.active
+                    && let Some(voice) = VoiceIndex::from_index(voice_idx)
+                {
+                    // Apply per-voice accent amount: blend between normal
+                    // velocity and full accent based on accent_amounts.
+                    let velocity = if step.accent {
+                        let amt = drum_machine.accent_amounts[voice_idx];
+                        step.velocity.mul_add(1.0 - amt, ACCENT_VELOCITY * amt)
+                    } else {
+                        step.velocity
+                    };
+                    drum_machine.trigger(voice, velocity);
                 }
             }
             Some(step_idx)
@@ -257,7 +260,7 @@ impl Sequencer {
 
     /// Whether the bank has room for another pattern.
     #[must_use]
-    pub fn can_add_pattern(&self) -> bool {
+    pub const fn can_add_pattern(&self) -> bool {
         self.patterns.len() < MAX_PATTERNS
     }
 
@@ -276,7 +279,7 @@ impl Sequencer {
     }
 
     /// Select a pattern by index (clamped to valid range).
-    pub fn select_pattern(&mut self, idx: usize) {
+    pub const fn select_pattern(&mut self, idx: usize) {
         if idx < self.patterns.len() {
             self.current_pattern = idx;
         }

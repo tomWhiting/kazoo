@@ -24,10 +24,9 @@ impl Store {
                 .file_name()
                 .to_str()
                 .and_then(|name| name.strip_suffix(".json"))
+                && valid_save_name(name)
             {
-                if valid_save_name(name) {
-                    names.push(name.to_string());
-                }
+                names.push(name.to_string());
             }
         }
         names.sort();

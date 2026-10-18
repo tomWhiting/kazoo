@@ -194,19 +194,19 @@ fn event_loop(
         tui.draw(|f| ui::draw(f, app))?;
 
         let timeout = frame_duration.saturating_sub(frame_start.elapsed());
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                match key.kind {
-                    KeyEventKind::Press => {
-                        app.shift_held = key.modifiers.contains(KeyModifiers::SHIFT);
-                        handle_key(app, key.code, key.modifiers, &mut channels.commands);
-                    }
-                    KeyEventKind::Release => {
-                        handle_key_release(app, key.code, &mut channels.commands);
-                    }
-                    // Auto-repeat: a held key is already sounding.
-                    KeyEventKind::Repeat => {}
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.kind {
+                KeyEventKind::Press => {
+                    app.shift_held = key.modifiers.contains(KeyModifiers::SHIFT);
+                    handle_key(app, key.code, key.modifiers, &mut channels.commands);
                 }
+                KeyEventKind::Release => {
+                    handle_key_release(app, key.code, &mut channels.commands);
+                }
+                // Auto-repeat: a held key is already sounding.
+                KeyEventKind::Repeat => {}
             }
         }
 
@@ -325,8 +325,10 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers, commands: &
     }
 }
 
-/// Index into `App::key_note_map` for an ASCII key, `None` otherwise.
+/// Index into `App::key_note_map` for an ASCII key, `None` otherwise: by
+/// the key, whatever Shift did to it.
 fn key_slot(ch: char) -> Option<usize> {
+    let ch = kazoo_host::keys::piano_char(ch);
     ch.is_ascii().then_some(ch as usize)
 }
 
@@ -369,11 +371,11 @@ fn load_preset(app: &mut App, commands: &mut CommandLink) {
 /// octave is changed while a key is held — the release sends note-off for
 /// the original note, not the one the key would map to at the new octave.
 fn handle_key_release(app: &mut App, code: KeyCode, commands: &mut CommandLink) {
-    if let KeyCode::Char(ch) = code {
-        if let Some(note) = key_slot(ch).and_then(|slot| app.key_note_map[slot].take()) {
-            app.note_off(note);
-            commands.note_off(note);
-        }
+    if let KeyCode::Char(ch) = code
+        && let Some(note) = key_slot(ch).and_then(|slot| app.key_note_map[slot].take())
+    {
+        app.note_off(note);
+        commands.note_off(note);
     }
 }
 
@@ -444,6 +446,28 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert!(matches!(got[0], AudioCommand::NoteOn { .. }));
         assert!(matches!(got[1], AudioCommand::NoteOff { .. }));
+    }
+
+    #[test]
+    fn a_key_pressed_with_shift_releases_without_it() {
+        for (shifted, plain, note) in [('A', 'a', 48), (':', ';', 64)] {
+            let (mut commands, rx) = link();
+            let mut app = App::new(44100.0);
+            handle_key(
+                &mut app,
+                KeyCode::Char(shifted),
+                KeyModifiers::SHIFT,
+                &mut commands,
+            );
+            handle_key_release(&mut app, KeyCode::Char(plain), &mut commands);
+            let got: Vec<AudioCommand> = rx.try_iter().collect();
+            assert!(
+                matches!(got.as_slice(), [AudioCommand::NoteOn { note: on, .. }, AudioCommand::NoteOff { note: off }] if *on == note && *off == note),
+                "{shifted}: {got:?}"
+            );
+            assert!(app.held_notes.iter().all(|held| !held), "{shifted}");
+            assert!(app.key_note_map.iter().all(Option::is_none), "{shifted}");
+        }
     }
 
     #[test]

@@ -434,13 +434,13 @@ impl Hub {
                 };
                 promoted.get_or_init(|| outcome);
                 server.run(&thread_running);
-                if let Some(priority) = priority {
-                    if let Err(why) = priority.demote() {
-                        // The thread ends next, which ends its priority too.
-                        server.notify(HubNotice::Fault(format!(
-                            "the hub could not return to normal priority: {why}"
-                        )));
-                    }
+                if let Some(priority) = priority
+                    && let Err(why) = priority.demote()
+                {
+                    // The thread ends next, which ends its priority too.
+                    server.notify(HubNotice::Fault(format!(
+                        "the hub could not return to normal priority: {why}"
+                    )));
                 }
             })?;
 
@@ -1012,10 +1012,8 @@ impl Server {
             } else {
                 instrument.id == note.target
             };
-            if wanted {
-                if let Err(err) = instrument.send(MSG_NOTE_EVENT, &note.payload) {
-                    leaving.push((index, leave_reason(&err)));
-                }
+            if wanted && let Err(err) = instrument.send(MSG_NOTE_EVENT, &note.payload) {
+                leaving.push((index, leave_reason(&err)));
             }
         }
     }
@@ -1191,18 +1189,18 @@ impl Server {
             thread::park_timeout(Duration::from_millis(1));
         }
         self.instruments.clear();
-        if let Err(err) = std::fs::remove_file(&self.config.socket) {
-            if err.kind() != io::ErrorKind::NotFound {
-                eprintln!(
-                    "kazoo-mix: could not remove the hub socket {}: {err}",
-                    self.config.socket.display()
-                );
-            }
+        if let Err(err) = std::fs::remove_file(&self.config.socket)
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "kazoo-mix: could not remove the hub socket {}: {err}",
+                self.config.socket.display()
+            );
         }
-        if self.config.advertise {
-            if let Err(err) = discovery::remove_own_pid_file() {
-                eprintln!("kazoo-mix: could not remove the hub PID file: {err}");
-            }
+        if self.config.advertise
+            && let Err(err) = discovery::remove_own_pid_file()
+        {
+            eprintln!("kazoo-mix: could not remove the hub PID file: {err}");
         }
     }
 }

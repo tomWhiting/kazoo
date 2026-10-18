@@ -256,12 +256,13 @@ fn a_glide_and_a_vibrato_come_through_without_steps() {
                     cents < tolerance,
                     "{ppm} ppm, window {index}: {cents} cents"
                 );
-                if let Some((old_actual, old_expected, old_jump)) = previous {
-                    if !jumped && !old_jump {
-                        let change = (1200.0 * (actual / old_actual).log2()).abs();
-                        let natural = (1200.0 * (expected / old_expected).log2()).abs();
-                        assert!(change <= natural + 2.0);
-                    }
+                if let Some((old_actual, old_expected, old_jump)) = previous
+                    && !jumped
+                    && !old_jump
+                {
+                    let change = (1200.0 * (actual / old_actual).log2()).abs();
+                    let natural = (1200.0 * (expected / old_expected).log2()).abs();
+                    assert!(change <= natural + 2.0);
                 }
                 previous = Some((actual, expected, jumped));
             }
@@ -441,7 +442,7 @@ fn round_trip(
         meter.play(&mut played);
         for (index, (target, source)) in input.iter_mut().zip(played).enumerate() {
             *target = if connected { cable[position] } else { 0.0 };
-            *target += if (cycle * BLOCK + index) % 2 == 0 {
+            *target += if (cycle * BLOCK + index).is_multiple_of(2) {
                 0.001
             } else {
                 -0.001

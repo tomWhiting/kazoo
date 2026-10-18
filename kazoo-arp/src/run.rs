@@ -271,10 +271,10 @@ fn run_event_loop(
 
         // Handle input events.
         let poll_time = frame_duration.saturating_sub(frame_start.elapsed());
-        if event::poll(poll_time)? {
-            if let Event::Key(key) = event::read()? {
-                app.handle_key(key);
-            }
+        if event::poll(poll_time)?
+            && let Event::Key(key) = event::read()?
+        {
+            app.handle_key(key);
         }
     }
     Ok(())

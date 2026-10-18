@@ -458,10 +458,11 @@ impl LoopModule {
             }
         }
         snap.copied = end;
-        if end == snap.len && self.free_slot() {
-            if let Some(snap) = self.snapshot.take() {
-                self.hand_back(LoopOut::Snapped(snap.job));
-            }
+        if end == snap.len
+            && self.free_slot()
+            && let Some(snap) = self.snapshot.take()
+        {
+            self.hand_back(LoopOut::Snapped(snap.job));
         }
     }
 
@@ -634,10 +635,12 @@ impl LoopModule {
     }
 
     fn write_cell(&mut self, k: usize, input: [f32; 2], keep: f32) {
-        if let Some(snap) = &mut self.snapshot {
-            if k >= snap.copied && k < snap.len && snap.job.tape[2 * k].is_nan() {
-                snap.job.tape[2 * k..2 * k + 2].copy_from_slice(&self.tape[2 * k..2 * k + 2]);
-            }
+        if let Some(snap) = &mut self.snapshot
+            && k >= snap.copied
+            && k < snap.len
+            && snap.job.tape[2 * k].is_nan()
+        {
+            snap.job.tape[2 * k..2 * k + 2].copy_from_slice(&self.tape[2 * k..2 * k + 2]);
         }
         for (ch, x) in input.iter().enumerate() {
             let old = self.tape[2 * k + ch];

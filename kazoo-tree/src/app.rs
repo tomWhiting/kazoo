@@ -283,6 +283,11 @@ impl App {
             fire: crate::fire::Blaze::default(),
         };
         app.show(grown);
+        // The first look says nothing about what is new, only when there
+        // is nothing yet.
+        if !app.history.moments.is_empty() {
+            app.said.clear();
+        }
         app.selected = app.history.here.or_else(|| {
             (0..app.history.moments.len()).max_by_key(|&m| (app.history.moments[m].time, m))
         });
@@ -322,12 +327,19 @@ impl App {
             self.lane_top = at;
         }
         let now = self.history.moments.len();
-        if before > now {
+        if now == 0 {
+            crate::NOTHING_YET.clone_into(&mut self.said);
+        } else if before == 0 {
+            self.said = match now {
+                1 => "grown: 1 moment".to_owned(),
+                n => format!("grown: {n} moments"),
+            };
+        } else if before > now {
             self.said = format!(
                 "read again whole: {} moments are no longer in the tree",
                 before - now
             );
-        } else if before > 0 {
+        } else {
             self.said = match new {
                 0 => "read again: nothing new".to_owned(),
                 1 => "read again: 1 new moment".to_owned(),
@@ -1072,6 +1084,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("◉", "where the wall is"),
             ("flames, sparks", "the moment the wall plays, ablaze"),
             ("◆ ▪", "a mark, a save's mark"),
+            ("❖", "a batch: one knot for its changes"),
             ("•", "a gesture or a moment (zoomed in)"),
             ("╴ Wed 14 Oct 2026", "a branch's day, or a new day"),
             ("✧", "a tip that grew in the last hour"),

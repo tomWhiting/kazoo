@@ -347,7 +347,7 @@ impl HubIpcClient {
 
     /// Bytes queued and not yet written.
     #[must_use]
-    pub fn pending_bytes(&self) -> usize {
+    pub const fn pending_bytes(&self) -> usize {
         self.outbox.waiting()
     }
 

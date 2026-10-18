@@ -97,18 +97,18 @@ impl Wall {
         &self,
         source: &Source,
     ) -> Result<(Kept, Option<Vec<u8>>), SaveError> {
-        if let Source::Moment { from, .. } | Source::Back { from, .. } = source {
-            if let Some((commit, kept)) = &self.tree_kept {
-                let fingerprint = self.patch.fingerprint();
-                if *commit == from.commit && !fingerprint.is_empty() && fingerprint == *kept {
-                    return Ok((
-                        Kept {
-                            name: format!("tree:{:.12}", from.commit),
-                            hash: fingerprint,
-                        },
-                        None,
-                    ));
-                }
+        if let Source::Moment { from, .. } | Source::Back { from, .. } = source
+            && let Some((commit, kept)) = &self.tree_kept
+        {
+            let fingerprint = self.patch.fingerprint();
+            if *commit == from.commit && !fingerprint.is_empty() && fingerprint == *kept {
+                return Ok((
+                    Kept {
+                        name: format!("tree:{:.12}", from.commit),
+                        hash: fingerprint,
+                    },
+                    None,
+                ));
             }
         }
         self.keeping(source.how())

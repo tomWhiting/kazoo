@@ -922,25 +922,25 @@ impl ModularNode for ClockNode {
             }
 
             // Trigger: 1.0 on the sample where phase wraps.
-            if let Some(trigger) = output_buffers.first_mut() {
-                if i < trigger.len() {
-                    trigger[i] = if wrapped || (prev_phase == 0.0 && i == 0) {
-                        1.0
-                    } else {
-                        0.0
-                    };
-                }
+            if let Some(trigger) = output_buffers.first_mut()
+                && i < trigger.len()
+            {
+                trigger[i] = if wrapped || (prev_phase == 0.0 && i == 0) {
+                    1.0
+                } else {
+                    0.0
+                };
             }
 
             // Gate: 1.0 while phase < gate_length.
-            if let Some(gate) = output_buffers.get_mut(1) {
-                if i < gate.len() {
-                    gate[i] = if self.phase < self.gate_length {
-                        1.0
-                    } else {
-                        0.0
-                    };
-                }
+            if let Some(gate) = output_buffers.get_mut(1)
+                && i < gate.len()
+            {
+                gate[i] = if self.phase < self.gate_length {
+                    1.0
+                } else {
+                    0.0
+                };
             }
         }
     }

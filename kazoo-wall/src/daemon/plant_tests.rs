@@ -2,10 +2,11 @@
 
 use std::path::Path;
 
-use super::{Before, Daemon, DaemonConfig, Planting, failed, plant_tree};
+use super::{Daemon, DaemonConfig, Planting, plant_tree};
 use crate::protocol::client::WallClient;
 use crate::store::{LOCK_FILE, LOG_FILE, Store};
 use crate::tree::git;
+use crate::tree::plant::{Before, failed};
 use crate::tree::rings::{RingsError, reference};
 
 /// A runtime directory short enough for a socket path, and a state one.

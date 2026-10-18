@@ -272,7 +272,7 @@ const OLD_WALL: &str = "the wall running is older than comments and would drop t
 
 /// Whether `request`, with `comment`, carries a comment: its own, or one
 /// on a step of a batch.
-fn commented(request: &Request, comment: Option<&str>) -> bool {
+const fn commented(request: &Request, comment: Option<&str>) -> bool {
     comment.is_some() || matches!(request, Request::Batch { comments, .. } if !comments.is_empty())
 }
 

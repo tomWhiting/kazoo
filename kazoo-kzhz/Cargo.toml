@@ -1,0 +1,21 @@
+[package]
+name = "kzhz"
+version = "0.3.3"
+edition = "2024"
+rust-version = "1.89"
+description = "kazoo by its npm name: the same program as kzoo (the desk, the wall, the seat and every instrument), installed as kzhz"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/tomWhiting/kazoo"
+readme = "../README.md"
+keywords = ["synthesizer", "audio", "music", "modular", "terminal"]
+categories = ["multimedia::audio", "command-line-utilities"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "kzhz"
+path = "src/main.rs"
+
+[dependencies]
+kzoo = { path = "../kazoo-cli", version = "=0.3.3" }

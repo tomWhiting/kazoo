@@ -1,6 +1,7 @@
 //! kazoo-string on its own: the same instrument `kazoo string` runs.
 
-fn main() -> color_eyre::Result<()> {
-    kazoo_host::reports::install()?;
-    kazoo_string::cli(std::env::args().skip(1))
+fn main() -> std::process::ExitCode {
+    kazoo_host::reports::run("kazoo-string", || {
+        kazoo_string::cli(std::env::args().skip(1))
+    })
 }

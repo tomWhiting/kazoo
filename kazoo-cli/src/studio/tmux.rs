@@ -310,19 +310,19 @@ pub(super) fn down(tmux: &Path, session: &str) -> Result<()> {
 
 /// SIGTERM the desk, wait for it, then kill whatever remains of the session.
 fn stop(tmux: &Path, session: &str, desk: Option<u32>) -> Result<()> {
-    if let Some(pid) = desk {
-        if desk_alive(tmux, session, pid)? {
-            let output = Command::new("/bin/kill")
-                .args(["-TERM", &pid.to_string()])
-                .output()
-                .wrap_err_with(|| format!("sending SIGTERM to studio desk PID {pid}"))?;
-            if !output.status.success() {
-                return Err(eyre!(
-                    "SIGTERM to desk PID {pid} exited {}: {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
+    if let Some(pid) = desk
+        && desk_alive(tmux, session, pid)?
+    {
+        let output = Command::new("/bin/kill")
+            .args(["-TERM", &pid.to_string()])
+            .output()
+            .wrap_err_with(|| format!("sending SIGTERM to studio desk PID {pid}"))?;
+        if !output.status.success() {
+            return Err(eyre!(
+                "SIGTERM to desk PID {pid} exited {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
         }
     }
     let lingering = match desk {

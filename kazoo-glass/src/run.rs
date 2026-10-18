@@ -456,13 +456,12 @@ fn run_event_loop(
         app.expire_held(cmd_tx);
         terminal.draw(|frame| ui::draw(frame, app))?;
 
-        if event::poll(Duration::from_millis(12))? {
-            if let Event::Key(key) = event::read()? {
-                if handle_key(app, key, cmd_tx) {
-                    app.release_all(cmd_tx);
-                    return Ok(());
-                }
-            }
+        if event::poll(Duration::from_millis(12))?
+            && let Event::Key(key) = event::read()?
+            && handle_key(app, key, cmd_tx)
+        {
+            app.release_all(cmd_tx);
+            return Ok(());
         }
     }
 }
@@ -475,7 +474,7 @@ fn handle_key(app: &mut App, key: KeyEvent, tx: &crossbeam_channel::Sender<Audio
     }
 
     if let KeyCode::Char(c) = key.code {
-        let c = c.to_ascii_lowercase();
+        let c = keys::piano_char(c);
         if let Some(piano) = keys::piano_key(c, app.octave) {
             if matches!(piano, PianoKey::OctaveDown | PianoKey::OctaveUp) {
                 if key.kind == KeyEventKind::Press && !ctrl {
@@ -600,6 +599,37 @@ mod tests {
             rx.try_recv(),
             Ok(AudioCommand::NoteOn { note: 60, .. })
         ));
+    }
+
+    #[test]
+    fn a_key_released_with_shift_changed_still_releases() {
+        for (pressed, released) in [(':', ':'), (':', ';'), (';', ':'), ('A', 'a'), ('a', 'A')] {
+            let (tx, rx) = crossbeam_channel::bounded(16);
+            let mut app = app();
+            let note = keys::note(pressed, app.octave).expect("a piano key");
+            let event =
+                |ch, kind| KeyEvent::new_with_kind(KeyCode::Char(ch), KeyModifiers::NONE, kind);
+            assert!(!handle_key(
+                &mut app,
+                event(pressed, KeyEventKind::Press),
+                &tx
+            ));
+            assert!(
+                matches!(rx.try_recv(), Ok(AudioCommand::NoteOn { note: n, .. }) if n == note),
+                "{pressed}"
+            );
+            assert!(!handle_key(
+                &mut app,
+                event(released, KeyEventKind::Release),
+                &tx
+            ));
+            assert_eq!(
+                rx.try_recv(),
+                Ok(AudioCommand::NoteOff { note }),
+                "{pressed}"
+            );
+            assert!(app.held.is_empty(), "{pressed} then {released}");
+        }
     }
 
     #[test]

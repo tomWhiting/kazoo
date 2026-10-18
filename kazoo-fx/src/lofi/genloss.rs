@@ -668,10 +668,10 @@ impl Effect for GenLoss {
     }
 
     fn set_param(&mut self, index: usize, value: f32) {
-        if let Some(spec) = PARAMS.get(index) {
-            if value.is_finite() {
-                self.knobs[index].set(spec.clamp(value));
-            }
+        if let Some(spec) = PARAMS.get(index)
+            && value.is_finite()
+        {
+            self.knobs[index].set(spec.clamp(value));
         }
     }
 

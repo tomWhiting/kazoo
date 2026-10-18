@@ -50,6 +50,7 @@ use crate::protocol::SOCKET_NAME;
 use crate::protocol::client::{ClientError, WallClient};
 use crate::seed::seed;
 use crate::store::{Loaded, Store};
+use crate::tree::plant::Planting;
 use wall::Wall;
 
 /// Whether and how the wall joins the kazoo-mix desk.
@@ -270,33 +271,13 @@ impl Daemon {
     }
 }
 
-/// What a starting wall did about its tree (see [`plant_tree`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Planting {
-    /// A tree with a trunk was there already.
-    Kept,
-    /// The tree was grown from the change log.
-    Grown,
-    /// An empty tree was planted, to grow from this start.
-    Empty,
-    /// Another wall or an import held the state, so nothing was done; a
-    /// tree that is there is attached as ever.
-    Left,
-    /// There is no tree, for this reason; the wall plays without one.
-    Failed(String),
-}
-
-/// Plant the wall's tree at `dir` when it has none, so nobody has to:
-/// grown from the change log in `state` as `kazoo wall tree import` grows
-/// it, or planted empty when the log gives no wall to grow from (a new
-/// wall, or one whose past cannot be worked out), to grow from this start.
-/// A tree that is there with a trunk is left as it is. Whatever happens is
-/// said in the daemon's log; a failure leaves nothing half planted.
+/// Plant the wall's tree at `dir` when it has none, so nobody has to (see
+/// [`crate::tree::plant::plant`]), saying in the daemon's log what was
+/// done.
 fn plant_tree(state: &Path, dir: &Path) -> Planting {
-    let planting = match grow_tree(state, dir) {
-        Ok(planting) => planting,
-        Err(why) => Planting::Failed(why),
-    };
+    let planting = crate::tree::plant::plant(state, dir, &mut |line| {
+        eprintln!("kazoo-wall: {line}");
+    });
     match &planting {
         Planting::Kept | Planting::Grown => {}
         Planting::Left => eprintln!(
@@ -313,122 +294,6 @@ fn plant_tree(state: &Path, dir: &Path) -> Planting {
     planting
 }
 
-fn grow_tree(state: &Path, dir: &Path) -> Result<Planting, String> {
-    let unreadable =
-        |err: &dyn fmt::Display| format!("the tree at {} cannot be read ({err})", dir.display());
-    if crate::tree::git::is_bare(dir).map_err(|err| unreadable(&err))?
-        && crate::tree::rings::reference(dir, "refs/heads/trunk")
-            .map_err(|err| unreadable(&err))?
-            .is_some()
-    {
-        return Ok(Planting::Kept);
-    }
-    // What was there: a failure may take away only what it left.
-    let before = match fs::read_dir(dir) {
-        Ok(mut entries) => {
-            if entries.next().is_none() {
-                Before::Empty
-            } else {
-                Before::Occupied
-            }
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Before::Absent,
-        Err(err) => return Err(unreadable(&err)),
-    };
-    if let Some(parent) = dir.parent() {
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)
-            .map_err(|err| format!("{} cannot be made ({err})", parent.display()))?;
-    }
-    if !state.is_dir() {
-        return plant_empty(dir);
-    }
-    eprintln!(
-        "kazoo-wall: growing the tree at {} from the change log (once; the wall answers when it is grown)",
-        dir.display()
-    );
-    match crate::tree::rings::grow(state, dir, false) {
-        Ok(rings) => {
-            for line in rings.report.lines() {
-                eprintln!("kazoo-wall: tree: {line}");
-            }
-            Ok(Planting::Grown)
-        }
-        Err(crate::tree::rings::RingsError::EmptyLog) => plant_empty(dir),
-        Err(crate::tree::rings::RingsError::WallRunning) => Ok(Planting::Left),
-        Err(crate::tree::rings::RingsError::NoWall(why)) => {
-            clear(dir, before)?;
-            eprintln!("kazoo-wall: the changes already in the log cannot go into the tree ({why})");
-            plant_empty(dir)
-        }
-        Err(err) => Err(failed(dir, before, &err)),
-    }
-}
-
-/// An empty tree at `dir`, unless one is planted there already.
-fn plant_empty(dir: &Path) -> Result<Planting, String> {
-    if !crate::tree::git::is_bare(dir)
-        .map_err(|err| format!("the tree at {} cannot be read ({err})", dir.display()))?
-    {
-        crate::tree::git::plant(dir)
-            .map_err(|err| format!("the tree cannot be planted at {} ({err})", dir.display()))?;
-    }
-    Ok(Planting::Empty)
-}
-
-/// What was at the tree's place before the wall tried to grow it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Before {
-    /// Nothing: whatever is there now, a failure left.
-    Absent,
-    /// An empty directory (made by someone, perhaps a mount point): it
-    /// stays, and only what is in it now goes.
-    Empty,
-    /// Something: it is never touched.
-    Occupied,
-}
-
-/// Why growing failed, with what it left at `dir` taken away.
-fn failed(dir: &Path, before: Before, err: &crate::tree::rings::RingsError) -> String {
-    let why = format!("the tree could not be grown from the change log ({err})");
-    match clear(dir, before) {
-        Ok(()) => why,
-        Err(also) => format!("{why}; {also}"),
-    }
-}
-
-/// Take away what a failed grow left at `dir`, as `before` allows.
-fn clear(dir: &Path, before: Before) -> Result<(), String> {
-    let cannot = |err: io::Error| {
-        format!(
-            "what it left at {} cannot be taken away ({err})",
-            dir.display()
-        )
-    };
-    match before {
-        Before::Occupied => Ok(()),
-        Before::Absent => match fs::remove_dir_all(dir) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(cannot(err)),
-        },
-        Before::Empty => {
-            for entry in fs::read_dir(dir).map_err(cannot)? {
-                let path = entry.map_err(cannot)?.path();
-                let removed = if path.is_dir() && !path.is_symlink() {
-                    fs::remove_dir_all(&path)
-                } else {
-                    fs::remove_file(&path)
-                };
-                removed.map_err(cannot)?;
-            }
-            Ok(())
-        }
-    }
-}
-
 /// A socket claimed by a daemon starting: removed again (if it is still
 /// the one it bound) unless the daemon started and keeps it.
 struct Claimed<'a> {
@@ -442,10 +307,10 @@ impl Drop for Claimed<'_> {
         if self.kept {
             return;
         }
-        if fs::metadata(self.socket).is_ok_and(|meta| meta.ino() == self.inode) {
-            if let Err(gone) = fs::remove_file(self.socket) {
-                eprintln!("kazoo-wall: the socket could not be removed: {gone}");
-            }
+        if fs::metadata(self.socket).is_ok_and(|meta| meta.ino() == self.inode)
+            && let Err(gone) = fs::remove_file(self.socket)
+        {
+            eprintln!("kazoo-wall: the socket could not be removed: {gone}");
         }
     }
 }

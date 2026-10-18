@@ -82,7 +82,7 @@ fn the_judge_folds_an_octave_slip() {
         .collect();
     let mut folded = None;
     for block in bait.chunks(64) {
-        if tracker.samples % 512 == 0 {
+        if tracker.samples.is_multiple_of(512) {
             tracker.judge(pitch(Some(150.0), 0.9));
         }
         tracker.process(block, |_| {});
@@ -118,28 +118,27 @@ fn a_hint_landing_is_not_a_leap() {
     let mut tracker = VoiceTracker::new(48_000);
     let mut hinted = None;
     for block in bait.chunks(64) {
-        if tracker.samples % 512 == 0 {
+        if tracker.samples.is_multiple_of(512) {
             tracker.judge(pitch(Some(150.0), 0.9));
         }
         tracker.process(block, |_| {});
         if tracker.fold != 0.0 && hinted.is_none() {
             hinted = Some((tracker.samples, tracker.last_leap));
         }
-        if let Some((at, last_leap)) = hinted {
-            if tracker
+        if let Some((at, last_leap)) = hinted
+            && tracker
                 .cycle
                 .estimate()
                 .is_some_and(|e| (1200.0 * (e.hz / 150.0).log2()).abs() < 10.0)
-            {
-                assert!(tracker.samples - at <= 480, "hint landed after 10 ms");
-                assert_eq!(
-                    tracker.last_leap, last_leap,
-                    "landing on the hinted period must not count as a sung leap"
-                );
-                tracker.reset();
-                assert_eq!(tracker.last_leap, 0);
-                return;
-            }
+        {
+            assert!(tracker.samples - at <= 480, "hint landed after 10 ms");
+            assert_eq!(
+                tracker.last_leap, last_leap,
+                "landing on the hinted period must not count as a sung leap"
+            );
+            tracker.reset();
+            assert_eq!(tracker.last_leap, 0);
+            return;
         }
     }
     panic!("no hint landed: {hinted:?}");

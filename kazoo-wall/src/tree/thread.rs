@@ -310,11 +310,11 @@ impl TreeHandle {
         let join = thread::Builder::new()
             .name("kazoo-wall-tree".into())
             .spawn(move || {
-                if let Some(latch) = latch {
-                    if let Err(err) = latch.recv() {
-                        eprintln!("kazoo-wall: tree test latch: {err}");
-                        return;
-                    }
+                if let Some(latch) = latch
+                    && let Err(err) = latch.recv()
+                {
+                    eprintln!("kazoo-wall: tree test latch: {err}");
+                    return;
                 }
                 worker(
                     &dir,
@@ -647,7 +647,7 @@ impl Writer {
                 tell(news, News::Gap { first, last });
             }
             self.checkpoints += 1;
-            if self.checkpoints % REPACK_EVERY == 0 {
+            if self.checkpoints.is_multiple_of(REPACK_EVERY) {
                 self.renew(dir)?;
             }
         }
@@ -768,15 +768,14 @@ impl Writer {
             } => {
                 self.checkpoint(dir, news)?;
                 self.accepted = generation;
-                if matches!(kind, WholeKind::Start) {
-                    if let Line::At { commit, .. } = &self.line {
-                        if here::files(dir, commit).map_err(tree_error)? == files {
-                            self.base = Some(files);
-                            self.through = Some(seq);
-                            tell(news, News::Committed { through: seq });
-                            return Ok(());
-                        }
-                    }
+                if matches!(kind, WholeKind::Start)
+                    && let Line::At { commit, .. } = &self.line
+                    && here::files(dir, commit).map_err(tree_error)? == files
+                {
+                    self.base = Some(files);
+                    self.through = Some(seq);
+                    tell(news, News::Committed { through: seq });
+                    return Ok(());
                 }
                 if matches!(kind, WholeKind::Gap)
                     && self.through.is_some_and(|through| seq <= through)
@@ -944,17 +943,17 @@ fn remember(
         }
         _ => {}
     }
-    if let Some((down, through)) = down {
-        if let Some(ticket) = item.ticket() {
-            tell(
-                news,
-                News::Answer {
-                    ticket,
-                    through: through.unwrap_or(0),
-                    answer: Err(HereError::Down(down.into())),
-                },
-            );
-        }
+    if let Some((down, through)) = down
+        && let Some(ticket) = item.ticket()
+    {
+        tell(
+            news,
+            News::Answer {
+                ticket,
+                through: through.unwrap_or(0),
+                answer: Err(HereError::Down(down.into())),
+            },
+        );
     }
 }
 

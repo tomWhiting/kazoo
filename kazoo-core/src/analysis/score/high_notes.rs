@@ -87,12 +87,13 @@ fn measure<T: TrackerUnderTest>(
     for (step, (said, truth)) in recorded.said.iter().zip(&take.truth).enumerate() {
         let start = step * SCORE_STEP;
         let note = take.onsets.iter().rev().find(|&&onset| onset <= start);
-        if let (Some(&onset), Some(hz), Some(truth)) = (note, *said, *truth) {
-            if start > onset + settled && is_octave_error(hz, truth) {
-                flips += 1;
-                if first_flip.is_none() {
-                    first_flip = Some((start, hz, truth));
-                }
+        if let (Some(&onset), Some(hz), Some(truth)) = (note, *said, *truth)
+            && start > onset + settled
+            && is_octave_error(hz, truth)
+        {
+            flips += 1;
+            if first_flip.is_none() {
+                first_flip = Some((start, hz, truth));
             }
         }
     }

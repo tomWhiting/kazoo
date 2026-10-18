@@ -378,7 +378,7 @@ impl ReelStore {
 
     /// Validate and durably store sample-exact stereo audio, deduplicated by hash.
     pub fn put(&self, rate: u32, samples: &[f32]) -> Result<ReelId, ReelError> {
-        if samples.len() % 2 != 0 {
+        if !samples.len().is_multiple_of(2) {
             return Err(ReelError::NotStereo);
         }
         let frames = samples.len() as u64 / 2;
@@ -394,13 +394,13 @@ impl ReelStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
-        if let Some(file) = existing {
-            if file.metadata()?.len() == wav_size(frames) {
-                // Refresh grace before the caller can publish its new pin list.
-                file.set_modified(SystemTime::now())?;
-                file.sync_all()?;
-                return Ok(id);
-            }
+        if let Some(file) = existing
+            && file.metadata()?.len() == wav_size(frames)
+        {
+            // Refresh grace before the caller can publish its new pin list.
+            file.set_modified(SystemTime::now())?;
+            file.sync_all()?;
+            return Ok(id);
         }
         atomic_write::<ReelError, _>(&path, |file| {
             let spec = hound::WavSpec {

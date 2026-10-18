@@ -78,17 +78,17 @@ impl Wall {
                 .patch
                 .loop_record(&take.module)
                 .and_then(|record| record.tape.clone());
-            if take.why == TakeWhy::Save {
-                if let Some(saving) = self.loop_work.saving.values().find(|saving| {
+            if take.why == TakeWhy::Save
+                && let Some(saving) = self.loop_work.saving.values().find(|saving| {
                     saving
                         .takes
                         .iter()
                         .any(|(_, ticket, _)| *ticket == Some(take.ticket))
-                }) {
-                    self.loop_work
-                        .names
-                        .insert((take.module.clone(), take.mark.frame), saving.name.clone());
-                }
+                })
+            {
+                self.loop_work
+                    .names
+                    .insert((take.module.clone(), take.mark.frame), saving.name.clone());
             }
             let written = self.written_after_take(
                 &take.module,
@@ -434,10 +434,10 @@ impl Wall {
                     Ok(outcome)
                 });
             for (_, ticket, _) in saving.takes {
-                if let Some(ticket) = ticket {
-                    if !self.loops.recordings.logged.remove(&ticket) {
-                        self.loops.cancel_take(ticket);
-                    }
+                if let Some(ticket) = ticket
+                    && !self.loops.recordings.logged.remove(&ticket)
+                {
+                    self.loops.cancel_take(ticket);
                 }
             }
             answers.push((ticket, answer));

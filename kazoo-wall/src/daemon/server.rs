@@ -224,10 +224,10 @@ fn write_loop(mut stream: UnixStream, queue: &Receiver<Outgoing>) {
         }
     }
     // The reader sees the end of its stream and reports the close.
-    if let Err(err) = stream.shutdown(Shutdown::Both) {
-        if err.kind() != io::ErrorKind::NotConnected {
-            eprintln!("kazoo-wall: closing a connection failed: {err}");
-        }
+    if let Err(err) = stream.shutdown(Shutdown::Both)
+        && err.kind() != io::ErrorKind::NotConnected
+    {
+        eprintln!("kazoo-wall: closing a connection failed: {err}");
     }
 }
 

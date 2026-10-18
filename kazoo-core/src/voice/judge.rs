@@ -164,10 +164,10 @@ pub fn spawn(
                 }
                 // A detector call returns its newest pitch only, so never span multiple hops.
                 for samples in buffer[..count].chunks(hop) {
-                    if let Some(estimate) = detector.push_samples(samples) {
-                        if output.try_push(JudgeResult::Pitch(estimate)).is_err() {
-                            worker_stats.results_dropped.fetch_add(1, Ordering::Relaxed);
-                        }
+                    if let Some(estimate) = detector.push_samples(samples)
+                        && output.try_push(JudgeResult::Pitch(estimate)).is_err()
+                    {
+                        worker_stats.results_dropped.fetch_add(1, Ordering::Relaxed);
                     }
                     let failed = detector.failed_runs();
                     if failed > failed_runs {

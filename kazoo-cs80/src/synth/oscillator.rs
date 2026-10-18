@@ -1,4 +1,5 @@
-//! CS-80 VCO: sawtooth, variable-width pulse (PWM), sine.
+//! CS-80 VCO: sawtooth, variable-width pulse (its width set by the PW knob:
+//! nothing modulates it), sine.
 //!
 //! Sine output is post-filter (injected after the HPF/LPF chain).
 //! Octave ranges: 32', 16', 8', 4'.
@@ -55,7 +56,8 @@ pub struct Oscillator {
     pub waveform: Waveform,
     /// Octave footage.
     pub octave_range: OctaveRange,
-    /// Pulse width for PWM [0.5, 0.9].
+    /// Pulse width, set by the PW knob (0.5–0.9 from the panel; the pulse is
+    /// clamped to 0.05–0.95).
     pub pulse_width: f32,
     /// Fine tune in cents [-100, +100].
     pub fine_tune_cents: f32,

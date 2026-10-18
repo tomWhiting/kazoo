@@ -90,14 +90,13 @@ pub fn run(mut io: AnalysisIo, config: &AnalysisConfig) {
 
         let samples = &read_buf[..num_read];
 
-        if let Some(spectrum_data) = spectrum_analyzer.push_samples(samples) {
-            if io
+        if let Some(spectrum_data) = spectrum_analyzer.push_samples(samples)
+            && io
                 .spectrum_prod
                 .try_push(spectrum_data.magnitudes_db)
                 .is_err()
-            {
-                io.stats.analysis_result_dropped();
-            }
+        {
+            io.stats.analysis_result_dropped();
         }
 
         let formant_result = formant_extractor.push_samples(samples);

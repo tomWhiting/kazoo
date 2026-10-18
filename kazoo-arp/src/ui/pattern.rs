@@ -60,7 +60,7 @@ pub fn draw_step_grid(frame: &mut Frame, area: Rect, app: &App) {
         let empty_lines = vec![
             Line::from(""),
             Line::from(Span::styled(
-                "  Hold notes (Z X C V B N M) to start the arpeggio",
+                "  Hold notes (a w s e d f … ;) to start the arpeggio",
                 Style::new().fg(DIM),
             )),
         ];

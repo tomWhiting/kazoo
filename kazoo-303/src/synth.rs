@@ -1,6 +1,7 @@
 //! Procedural 303-inspired bass synth voice.
 //!
-//! The signal path is oscillator -> accent VCA -> resonant low-pass -> soft clip.
+//! The signal path is oscillator -> accent gain -> drive -> resonant low-pass
+//! -> amp envelope -> soft clip.
 //! No sample playback is used anywhere in this module.
 
 use std::f32::consts::TAU;

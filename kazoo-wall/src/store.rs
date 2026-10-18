@@ -1199,13 +1199,13 @@ impl Store {
         });
         let tidy = |paths: &[&Path]| {
             for path in paths {
-                if let Err(err) = fs::remove_file(path) {
-                    if err.kind() != io::ErrorKind::NotFound {
-                        eprintln!(
-                            "kazoo-wall: {} could not be tidied away: {err}",
-                            path.display()
-                        );
-                    }
+                if let Err(err) = fs::remove_file(path)
+                    && err.kind() != io::ErrorKind::NotFound
+                {
+                    eprintln!(
+                        "kazoo-wall: {} could not be tidied away: {err}",
+                        path.display()
+                    );
                 }
             }
         };
@@ -1417,13 +1417,13 @@ impl Store {
             .collect();
         let tidy = || {
             for temporary in &temporaries {
-                if let Err(err) = fs::remove_file(temporary) {
-                    if err.kind() != io::ErrorKind::NotFound {
-                        eprintln!(
-                            "kazoo-wall: {} could not be tidied away: {err}",
-                            temporary.display()
-                        );
-                    }
+                if let Err(err) = fs::remove_file(temporary)
+                    && err.kind() != io::ErrorKind::NotFound
+                {
+                    eprintln!(
+                        "kazoo-wall: {} could not be tidied away: {err}",
+                        temporary.display()
+                    );
                 }
             }
         };
@@ -1694,11 +1694,11 @@ impl Store {
         if self.log_failed {
             self.reopen_log()?;
         }
-        if self.log_lines >= LOG_ROTATE_LINES {
-            if let Err(err) = self.rotate() {
-                self.log_failed = true;
-                return Err(err);
-            }
+        if self.log_lines >= LOG_ROTATE_LINES
+            && let Err(err) = self.rotate()
+        {
+            self.log_failed = true;
+            return Err(err);
         }
         Ok(())
     }
@@ -1854,13 +1854,13 @@ fn write_durably(
 /// Take a temporary file away again after a write failed, saying so if
 /// it cannot be (one never made is fine).
 fn tidy_away(temporary: &Path) {
-    if let Err(err) = fs::remove_file(temporary) {
-        if err.kind() != io::ErrorKind::NotFound {
-            eprintln!(
-                "kazoo-wall: {} could not be tidied away: {err}",
-                temporary.display()
-            );
-        }
+    if let Err(err) = fs::remove_file(temporary)
+        && err.kind() != io::ErrorKind::NotFound
+    {
+        eprintln!(
+            "kazoo-wall: {} could not be tidied away: {err}",
+            temporary.display()
+        );
     }
 }
 

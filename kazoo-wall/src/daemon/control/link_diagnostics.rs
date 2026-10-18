@@ -5,13 +5,11 @@ pub(super) fn report_refusal(
     outcome: Option<&Result<(), NotRealTime>>,
     mut log: impl FnMut(String),
 ) {
-    if !*told {
-        if let Some(Err(why)) = outcome {
-            log(format!(
-                "kazoo-wall: the desk link runs at normal priority ({why}); on a busy machine the desk may hear it jump"
-            ));
-            *told = true;
-        }
+    if !*told && let Some(Err(why)) = outcome {
+        log(format!(
+            "kazoo-wall: the desk link runs at normal priority ({why}); on a busy machine the desk may hear it jump"
+        ));
+        *told = true;
     }
 }
 

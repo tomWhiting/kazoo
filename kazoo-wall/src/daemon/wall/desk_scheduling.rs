@@ -48,21 +48,21 @@ impl Wall {
     }
 
     pub(super) fn schedule_desk_tempo(&mut self, change: &Change, now: Instant, bpm: f64) {
-        if let Some((target, true, after_beats)) = last_tempo(&change.what) {
-            if after_beats > 0.0 {
-                self.pending_desk_tempo = Some(Pending {
-                    seq: change.seq,
-                    bpm: target,
-                    // The accepted change owns this deadline; later desk
-                    // reports cannot change how long its beats lasted.
-                    // after_beats is checked to 0..=256 and bpm clamped to
-                    // 20..=300, so at most 768 s; anything else (never
-                    // expected) is due at once rather than never.
-                    due: now
-                        + Duration::try_from_secs_f64(after_beats * 60.0 / bpm)
-                            .unwrap_or(Duration::ZERO),
-                });
-            }
+        if let Some((target, true, after_beats)) = last_tempo(&change.what)
+            && after_beats > 0.0
+        {
+            self.pending_desk_tempo = Some(Pending {
+                seq: change.seq,
+                bpm: target,
+                // The accepted change owns this deadline; later desk
+                // reports cannot change how long its beats lasted.
+                // after_beats is checked to 0..=256 and bpm clamped to
+                // 20..=300, so at most 768 s; anything else (never
+                // expected) is due at once rather than never.
+                due: now
+                    + Duration::try_from_secs_f64(after_beats * 60.0 / bpm)
+                        .unwrap_or(Duration::ZERO),
+            });
         }
     }
 

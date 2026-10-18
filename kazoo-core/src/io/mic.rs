@@ -737,13 +737,13 @@ impl<B: MicBackend> Supervisor<B> {
                 facts.name
             )));
         }
-        if let Some(channel) = self.request.channel {
-            if channel == 0 || channel > facts.channels {
-                return Err(Error::Device(format!(
-                    "input device '{}' has {} channels; channel {channel} was asked for",
-                    facts.name, facts.channels
-                )));
-            }
+        if let Some(channel) = self.request.channel
+            && (channel == 0 || channel > facts.channels)
+        {
+            return Err(Error::Device(format!(
+                "input device '{}' has {} channels; channel {channel} was asked for",
+                facts.name, facts.channels
+            )));
         }
         let frames = rounded_frames(self.target.frames, facts.rate, self.target.rate, 32, 1_024)?;
         let resampler = if facts.rate == self.target.rate {

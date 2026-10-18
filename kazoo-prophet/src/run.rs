@@ -402,6 +402,26 @@ mod tests {
     }
 
     #[test]
+    fn a_key_released_with_shift_changed_still_releases() {
+        for (pressed, released) in [(':', ':'), (':', ';'), (';', ':'), ('A', 'a'), ('a', 'A')] {
+            let (tx, rx) = crossbeam_channel::bounded(16);
+            let mut app = App::new(48_000);
+            let note = keys::note(pressed, app.octave).expect("a piano key");
+            handle_key_press(&mut app, KeyCode::Char(pressed), KeyModifiers::SHIFT, &tx);
+            assert!(
+                matches!(rx.try_recv(), Ok(AudioCommand::NoteOn { note: n, .. }) if n == note),
+                "{pressed}"
+            );
+            handle_key_release(&mut app, KeyCode::Char(released), &tx);
+            assert!(
+                matches!(rx.try_recv(), Ok(AudioCommand::NoteOff { note: n }) if n == note),
+                "{pressed} then {released}"
+            );
+            assert!(app.held_notes.iter().all(Option::is_none), "{pressed}");
+        }
+    }
+
+    #[test]
     fn the_piano_is_the_shared_one() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let mut app = App::new(48_000);

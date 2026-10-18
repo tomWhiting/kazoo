@@ -213,10 +213,10 @@ fn place_words(to: &TreePlace) -> String {
         },
         |mark| format!("mark \"{mark}\""),
     );
-    if to.mark.is_some() || to.branch.is_some() {
-        if let Some(n) = to.change {
-            place = format!("{place}, after change {n}");
-        }
+    if (to.mark.is_some() || to.branch.is_some())
+        && let Some(n) = to.change
+    {
+        place = format!("{place}, after change {n}");
     }
     place
 }

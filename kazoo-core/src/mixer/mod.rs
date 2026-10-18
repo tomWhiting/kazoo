@@ -347,7 +347,7 @@ impl Track {
 
     /// Largest block, in samples, this track's buffers can process.
     #[must_use]
-    pub fn buffer_size(&self) -> usize {
+    pub const fn buffer_size(&self) -> usize {
         self.synth_buffer.len()
     }
 
@@ -476,7 +476,7 @@ impl Track {
 
     /// Number of synth layers on this track.
     #[must_use]
-    pub fn layer_count(&self) -> usize {
+    pub const fn layer_count(&self) -> usize {
         self.layers.len()
     }
 
@@ -815,7 +815,7 @@ impl Mixer {
 
     /// Number of tracks currently in the mixer.
     #[must_use]
-    pub fn track_count(&self) -> usize {
+    pub const fn track_count(&self) -> usize {
         self.tracks.len()
     }
 

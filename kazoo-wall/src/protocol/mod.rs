@@ -93,7 +93,7 @@ pub fn valid_name(name: &str) -> bool {
 /// Whether `name` is kept for the wall's own use (`desk`, `kazoo-wall`, in
 /// any case): a seat may not take it.
 #[must_use]
-pub fn reserved_name(name: &str) -> bool {
+pub const fn reserved_name(name: &str) -> bool {
     name.eq_ignore_ascii_case("desk") || name.eq_ignore_ascii_case("kazoo-wall")
 }
 
@@ -2247,7 +2247,8 @@ mod tests;
 #[serde(default)]
 pub struct TreeHealth {
     /// Whether a planted tree is attached (`~/.kazoo/tree`, which the
-    /// daemon plants as it starts, or `kazoo wall tree import` grows).
+    /// daemon plants as it starts, `kazoo tree` plants empty before any
+    /// wall has played, or `kazoo wall tree import` grows).
     pub planted: bool,
     /// The last change the tree durably holds.
     pub through: Option<u64>,

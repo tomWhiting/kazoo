@@ -292,13 +292,12 @@ impl VoiceTracker {
                 && self
                     .judge
                     .is_some_and(|p| p.voiced_probability >= JUDGE_MIN_PROB)
+                && let Some(judge_hz) = judge_hz
             {
-                if let Some(judge_hz) = judge_hz {
-                    let ratio = (judge_hz / estimate.hz).log2();
-                    let octave = ratio.round();
-                    if octave != 0.0 && (ratio - octave).abs() <= FOLD_WINDOW {
-                        fold = octave;
-                    }
+                let ratio = (judge_hz / estimate.hz).log2();
+                let octave = ratio.round();
+                if octave != 0.0 && (ratio - octave).abs() <= FOLD_WINDOW {
+                    fold = octave;
                 }
             }
             self.hz = estimate.hz * fold.exp2();

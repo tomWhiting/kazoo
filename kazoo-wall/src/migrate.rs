@@ -401,10 +401,10 @@ fn move_modules<'a>(
     let mut moved = BTreeMap::new();
     for module in &mut file.modules {
         for (kind, old, new) in RENAMED_KNOBS {
-            if module.kind == kind {
-                if let Some(value) = module.knobs.remove(old) {
-                    module.knobs.insert(new.to_string(), value);
-                }
+            if module.kind == kind
+                && let Some(value) = module.knobs.remove(old)
+            {
+                module.knobs.insert(new.to_string(), value);
             }
         }
         let Some(plan) = plans.iter().find(|plan| plan.old == module.kind) else {

@@ -38,7 +38,7 @@ kazoo dx, kazoo arp, kazoo mouth) in other terminals: each plugs into the next f
 and follows the desk's tempo and play/stop.
 
 Options:
-  --demo              put a built-in 808 pattern on strip 1
+  --demo              put a built-in 808 pattern on the next free strip
   --listen <ip:port>  accept instruments from the local network
   -h, --help          show this help
 ";
@@ -46,7 +46,7 @@ Options:
 /// Command-line choices.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Args {
-    /// Put a built-in 808 pattern on strip 1.
+    /// Put a built-in 808 pattern on the next free strip.
     pub demo: bool,
     /// Listen for instruments on this IP address and port.
     pub listen: Option<std::net::SocketAddr>,
@@ -285,22 +285,22 @@ impl HubNews {
                 true,
             );
         }
-        if let Some((notice, at)) = &self.latest {
-            if at.elapsed() < Duration::from_secs(NEWS_SECONDS) {
-                let alert = matches!(
-                    notice,
-                    HubNotice::Refused { .. }
-                        | HubNotice::Fault(_)
-                        | HubNotice::Left {
-                            reason: LeaveReason::Disconnected(_)
-                                | LeaveReason::Protocol(_)
-                                | LeaveReason::Stuck
-                                | LeaveReason::Engine(_),
-                            ..
-                        }
-                );
-                return (notice.to_string(), alert);
-            }
+        if let Some((notice, at)) = &self.latest
+            && at.elapsed() < Duration::from_secs(NEWS_SECONDS)
+        {
+            let alert = matches!(
+                notice,
+                HubNotice::Refused { .. }
+                    | HubNotice::Fault(_)
+                    | HubNotice::Left {
+                        reason: LeaveReason::Disconnected(_)
+                            | LeaveReason::Protocol(_)
+                            | LeaveReason::Stuck
+                            | LeaveReason::Engine(_),
+                        ..
+                    }
+            );
+            return (notice.to_string(), alert);
         }
         let (demo, demo_connected) =
             demo.map_or_else(|| (String::new(), false), |demo| demo_line(&demo.status()));

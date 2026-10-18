@@ -30,10 +30,11 @@ pub fn summarise_with(
     undoes: Option<u64>,
     kind_of: impl Fn(&str) -> Option<Kind>,
 ) -> String {
-    if let What::Tempo { to, desk: true, .. } = what {
-        if seat == "desk" && undoes.is_none() {
-            return format!("the desk moved the tempo to {}", format::bpm(*to));
-        }
+    if let What::Tempo { to, desk: true, .. } = what
+        && seat == "desk"
+        && undoes.is_none()
+    {
+        return format!("the desk moved the tempo to {}", format::bpm(*to));
     }
     let body = describe_with(what, undoes.is_some(), &kind_of);
     if matches!(what, What::Batch { .. }) && undoes.is_none() {
@@ -350,10 +351,10 @@ pub(crate) fn moment_words(to: &crate::protocol::TreePlace) -> String {
         },
         |mark| format!("mark \"{mark}\""),
     );
-    if to.mark.is_some() || to.branch.is_some() {
-        if let Some(change) = to.change {
-            place = format!("{place}, after change {change}");
-        }
+    if (to.mark.is_some() || to.branch.is_some())
+        && let Some(change) = to.change
+    {
+        place = format!("{place}, after change {change}");
     }
     place
 }

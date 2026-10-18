@@ -105,7 +105,7 @@ fn frame(at: u16) -> VoiceFrame {
         breath: 0.25,
         confidence: 0.75,
         gate: true,
-        onset: at % 2 == 0,
+        onset: at.is_multiple_of(2),
         voiced: true,
     }
 }

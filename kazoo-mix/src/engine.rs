@@ -322,7 +322,7 @@ impl MixerEngine {
 
     /// Number of channel slots.
     #[must_use]
-    pub fn channel_count(&self) -> usize {
+    pub const fn channel_count(&self) -> usize {
         self.channels.len()
     }
 

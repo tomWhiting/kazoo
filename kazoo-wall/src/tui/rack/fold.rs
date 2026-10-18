@@ -26,10 +26,10 @@ pub fn tiles(
     let mut order = Vec::with_capacity(modules.len());
     let mut seen = BTreeSet::new();
     for id in rows.into_iter().flatten().flatten() {
-        if let Some(&index) = indices.get(id.as_str()) {
-            if seen.insert(index) {
-                order.push(index);
-            }
+        if let Some(&index) = indices.get(id.as_str())
+            && seen.insert(index)
+        {
+            order.push(index);
         }
     }
     order.extend((0..modules.len()).filter(|index| !seen.contains(index)));

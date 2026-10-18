@@ -132,7 +132,6 @@ pub enum VoiceParam {
     Tone,
     Snappy,
     OpenDecay,
-    ClosedDecay,
     /// Per-voice accent sensitivity (0.0 = accent has no effect, 1.0 = full).
     AccentAmount,
 }
@@ -172,7 +171,6 @@ impl VoiceParam {
             Self::Tone => "Tone",
             Self::Snappy => "Snappy",
             Self::OpenDecay => "OH Decay",
-            Self::ClosedDecay => "CH Decay",
             Self::AccentAmount => "Accent",
         }
     }

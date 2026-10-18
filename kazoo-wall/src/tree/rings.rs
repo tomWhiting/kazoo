@@ -684,10 +684,10 @@ impl Walk<'_> {
         super::notes::append(self.log.state, change, &mut paths);
         let mut commit = Commit::change(change, paths)?;
         commit.whole = whole;
-        if !note.is_empty() {
-            if let Some((subject, body)) = commit.message.split_once("\n\n") {
-                commit.message = format!("{subject}\n\n{note}\n\n{body}");
-            }
+        if !note.is_empty()
+            && let Some((subject, body)) = commit.message.split_once("\n\n")
+        {
+            commit.message = format!("{subject}\n\n{note}\n\n{body}");
         }
         self.mark = self.importer.commit(&commit)?;
         self.remember(change.seq, &files, true);

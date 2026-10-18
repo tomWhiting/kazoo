@@ -102,7 +102,8 @@ impl CrossMod {
         if self.osc2_to_filter <= 0.0 {
             return 0.0;
         }
-        // Osc 2 modulates cutoff: at max depth, ±2 octaves of cutoff sweep
+        // Osc 2 moves the cutoff by up to ±1× itself at max depth: an octave
+        // up at the wave's peak, down towards nothing at its trough.
         osc2_output * self.osc2_to_filter * base_cutoff
     }
 
@@ -143,7 +144,7 @@ impl CrossMod {
         if !applies {
             return 0.0;
         }
-        // Filter wah: ±1 octave of cutoff at max
+        // Filter wah: up to ±1× the cutoff at max, an octave up at the peak.
         osc3_lfo_output * self.mod_wheel * base_cutoff
     }
 }

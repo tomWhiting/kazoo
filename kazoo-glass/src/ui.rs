@@ -529,7 +529,7 @@ fn draw_help(frame: &mut Frame) {
             Style::new().fg(DIM),
         ),
         Line::styled(
-            "and hub note events (kazoo-arp) play this synth.",
+            "and the desk's note events (kazoo-arp) play this synth.",
             Style::new().fg(DIM),
         ),
         Line::raw(""),

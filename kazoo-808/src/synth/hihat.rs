@@ -9,7 +9,8 @@ use super::Voice;
 /// Frequencies of the six metallic oscillators (Hz).
 const METAL_FREQS: [f32; 6] = [800.0, 540.0, 523.0, 370.0, 304.0, 205.0];
 
-/// Shared metallic oscillator bank used by hi-hats, cymbal, and cowbell.
+/// Shared metallic oscillator bank used by the hi-hats and the cymbal (the
+/// cowbell has two squares of its own).
 ///
 /// Six square-wave oscillators at inharmonic frequencies. The non-integer
 /// ratios create the characteristic metallic timbre of the TR-808.

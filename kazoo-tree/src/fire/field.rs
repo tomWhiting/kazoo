@@ -142,7 +142,7 @@ impl Field {
 
     /// How many sparks and wisps are alive.
     #[must_use]
-    pub fn spark_count(&self) -> usize {
+    pub const fn spark_count(&self) -> usize {
         self.flicks.len()
     }
 

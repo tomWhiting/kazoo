@@ -100,7 +100,7 @@ fn high_tone(phase: f64, noise: f64, harmonics: [f64; 3], breath: f64) -> f64 {
 }
 
 fn splice_phase(phase: f64, hz: f64, rate: u32, index: u32) -> f64 {
-    if index > 0 && index % (rate / 20).max(1) == 0 {
+    if index > 0 && index.is_multiple_of((rate / 20).max(1)) {
         (phase + TAU * hz * 128.0 / f64::from(rate)).rem_euclid(TAU)
     } else {
         phase

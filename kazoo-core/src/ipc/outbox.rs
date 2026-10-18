@@ -133,7 +133,7 @@ impl Outbox {
 
     /// Bytes queued and not yet written.
     #[must_use]
-    pub fn waiting(&self) -> usize {
+    pub const fn waiting(&self) -> usize {
         self.pending.len() - self.written
     }
 }

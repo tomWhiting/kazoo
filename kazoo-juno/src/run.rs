@@ -300,10 +300,10 @@ fn handle_key_press(
     };
     match piano {
         Some(PianoKey::Note(note)) => {
-            if let Some(key_index) = key_index(code) {
-                if app.key_note_map[key_index].is_some() {
-                    return;
-                }
+            if let Some(key_index) = key_index(code)
+                && app.key_note_map[key_index].is_some()
+            {
+                return;
             }
             let velocity = if modifiers.contains(KeyModifiers::SHIFT) {
                 1.0
@@ -367,9 +367,10 @@ fn handle_key_release(
     }
 }
 
+/// Where a held key's note is kept: by the key, whatever Shift did to it.
 const fn key_index(code: KeyCode) -> Option<usize> {
     if let KeyCode::Char(ch) = code {
-        let ascii = ch as u32;
+        let ascii = kazoo_host::keys::piano_char(ch) as u32;
         if ascii < 128 {
             return Some(ascii as usize);
         }
@@ -471,6 +472,28 @@ mod tests {
         ));
         assert!(!app.held_notes.contains(&Some(48)));
         assert_eq!(app.commands_dropped, 0);
+    }
+
+    #[test]
+    fn a_key_pressed_with_shift_releases_without_it() {
+        // Shift is the full-velocity gesture: letting go of Shift before the
+        // key must not leave the note sounding.
+        for (shifted, plain, note) in [('A', 'a', 48), (':', ';', 64)] {
+            let (tx, rx) = crossbeam_channel::bounded(4);
+            let mut app = App::new(48_000);
+            handle_key_press(&mut app, KeyCode::Char(shifted), KeyModifiers::SHIFT, &tx);
+            assert!(
+                matches!(rx.try_recv(), Ok(AudioCommand::NoteOn { note: n, .. }) if n == note),
+                "{shifted}"
+            );
+            handle_key_release(&mut app, KeyCode::Char(plain), &tx);
+            assert!(
+                matches!(rx.try_recv(), Ok(AudioCommand::NoteOff { note: n }) if n == note),
+                "{shifted}"
+            );
+            assert!(app.held_notes.iter().all(Option::is_none), "{shifted}");
+            assert!(app.key_note_map.iter().all(Option::is_none), "{shifted}");
+        }
     }
 
     #[test]

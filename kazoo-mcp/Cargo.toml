@@ -1,6 +1,6 @@
 [package]
 name = "kazoo-mcp"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.89"
 description = "The wall for Claude seats: an MCP server that plays kazoo-wall and tells a seat when others change it"
@@ -11,12 +11,12 @@ repository = "https://github.com/tomWhiting/kazoo"
 workspace = true
 
 [dependencies]
-kazoo-core = { path = "../kazoo-core", version = "=0.3.2" }
-kazoo-host = { path = "../kazoo-host", version = "=0.3.2" }
+kazoo-core = { path = "../kazoo-core", version = "=0.3.3" }
+kazoo-host = { path = "../kazoo-host", version = "=0.3.3" }
 color-eyre = "0.6.5"
 # The wall's protocol types, paths and name rules. The socket I/O is this
 # crate's own, on tokio.
-kazoo-wall = { path = "../kazoo-wall", version = "=0.3.2" }
+kazoo-wall = { path = "../kazoo-wall", version = "=0.3.3" }
 # The MCP server over stdio. Pinned the way dot-seat pins it, because the
 # Claude channel notification shape is tied to this release. 3.5.1 is the
 # first that lets a server/discover opener fall back to initialize: Claude

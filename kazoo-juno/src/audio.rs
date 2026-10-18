@@ -195,7 +195,7 @@ impl AudioEngine {
 
     fn publish_display(&mut self) {
         self.display_counter = self.display_counter.wrapping_add(1);
-        if self.display_counter % DISPLAY_INTERVAL != 0 {
+        if !self.display_counter.is_multiple_of(DISPLAY_INTERVAL) {
             return;
         }
         let snapshot = DisplaySnapshot {

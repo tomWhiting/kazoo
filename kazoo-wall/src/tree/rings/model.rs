@@ -216,15 +216,14 @@ impl Model {
         view.seed = self.file.seed;
         let (mut patch, _) = Patch::load(&view).map_err(TreeError::Git)?;
         for module in &view.modules {
-            if let Some(birth) = &module.birth {
-                if !patch.mark_birth(&module.id, birth.parse()?)
-                    && patch.module(&module.id).is_some()
-                {
-                    return Err(TreeError::Git(format!(
-                        "birth for {} was not marked",
-                        module.id
-                    )));
-                }
+            if let Some(birth) = &module.birth
+                && !patch.mark_birth(&module.id, birth.parse()?)
+                && patch.module(&module.id).is_some()
+            {
+                return Err(TreeError::Git(format!(
+                    "birth for {} was not marked",
+                    module.id
+                )));
             }
         }
         Ok((patch, view))
@@ -275,10 +274,10 @@ impl Model {
             let mut print_file = self.patch()?.0.to_file();
             let mut unmarked = change.what.clone();
             for (id, _) in crate::tree::stamp_births(&mut unmarked, change.seq, &change.at, 0, 0) {
-                if !self.births.contains_key(&(self.file.wall, id.clone())) {
-                    if let Some(module) = print_file.modules.iter_mut().find(|m| m.id == id) {
-                        module.birth = None;
-                    }
+                if !self.births.contains_key(&(self.file.wall, id.clone()))
+                    && let Some(module) = print_file.modules.iter_mut().find(|m| m.id == id)
+                {
+                    module.birth = None;
                 }
             }
             print_file.last_seq = 0;

@@ -24,6 +24,7 @@ members = [
     "kazoo-mcp",
     "kazoo-host",
     "kazoo-tree",
+    "kazoo-kzhz",
 ]
 resolver = "2"
 

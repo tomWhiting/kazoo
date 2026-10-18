@@ -244,11 +244,9 @@ impl Choice {
     /// Record a starting lag; false when that lag was already refined here.
     fn first_try(&mut self, lag: usize) -> bool {
         let seen = self.tried.iter().take(self.tried_count).any(|&t| t == lag);
-        if !seen {
-            if let Some(slot) = self.tried.get_mut(self.tried_count) {
-                *slot = lag;
-                self.tried_count += 1;
-            }
+        if !seen && let Some(slot) = self.tried.get_mut(self.tried_count) {
+            *slot = lag;
+            self.tried_count += 1;
         }
         !seen
     }
@@ -403,7 +401,7 @@ impl CycleTracker {
             self.early_push(previous, filtered);
         }
         self.schmitt(filtered);
-        if self.position % VOICE_HOP == 0 {
+        if self.position.is_multiple_of(VOICE_HOP) {
             self.retry_acquisition();
         }
         self.carry_glide();

@@ -30,7 +30,7 @@ mod theme;
 mod worker;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

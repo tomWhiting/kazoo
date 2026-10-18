@@ -151,10 +151,10 @@ impl CycleTracker {
                         right: centre,
                     }
                 });
-            if let Some(probe) = *slot {
-                if best.is_none_or(|(_, old)| probe.centre > old.centre) {
-                    best = Some((index, probe));
-                }
+            if let Some(probe) = *slot
+                && best.is_none_or(|(_, old)| probe.centre > old.centre)
+            {
+                best = Some((index, probe));
             }
         }
         let (index, probe) = best.filter(|(_, probe)| probe.centre >= EARLY_CLARITY)?;
@@ -189,15 +189,14 @@ impl CycleTracker {
         };
         let half_period = peak.period / 2.0;
         let half_window = self.window(lag_from(f64::from(half_period))?);
-        if let Some(half) = self.early_probe(half_period, half_window) {
-            if half.centre >= CLARITY_ON + HALF_MARGIN
-                && half.centre >= half.left
-                && half.centre >= half.right
-            {
-                peak.period = half.local();
-                peak.clarity = half.centre;
-                peak.window = half_window;
-            }
+        if let Some(half) = self.early_probe(half_period, half_window)
+            && half.centre >= CLARITY_ON + HALF_MARGIN
+            && half.centre >= half.left
+            && half.centre >= half.right
+        {
+            peak.period = half.local();
+            peak.clarity = half.centre;
+            peak.window = half_window;
         }
         (peak.period.is_finite()
             && peak.clarity.is_finite()

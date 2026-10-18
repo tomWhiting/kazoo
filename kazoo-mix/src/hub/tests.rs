@@ -335,10 +335,11 @@ fn tempo_and_play_state_reach_every_instrument_both_ways() {
     let mut heard = None;
     rig.until("a transport sync", |_| {
         while let Some(message) = client.try_recv().unwrap() {
-            if let HubMessage::TransportSync(sync) = message {
-                if floats_equal(sync.bpm, 96.0) && sync.state == TRANSPORT_PLAYING {
-                    heard = Some(sync);
-                }
+            if let HubMessage::TransportSync(sync) = message
+                && floats_equal(sync.bpm, 96.0)
+                && sync.state == TRANSPORT_PLAYING
+            {
+                heard = Some(sync);
             }
         }
         heard.is_some()
@@ -428,16 +429,16 @@ fn an_instrument_starts_on_the_very_frame_the_desk_does() {
                 .map(|(i, s)| (frame + i as u64, s)),
         );
         while let Some(message) = client.try_recv().unwrap() {
-            if let HubMessage::TransportSync(sync) = message {
-                if sync.state == TRANSPORT_PLAYING {
-                    assert!(
-                        sync.at_frame >= sent,
-                        "the change reached the instrument after its frame: {} < {sent}",
-                        sync.at_frame
-                    );
-                    assert!(floats_equal(sync.beat as f32, 0.0), "{sync:?}");
-                    impulse_at = Some(sync.at_frame);
-                }
+            if let HubMessage::TransportSync(sync) = message
+                && sync.state == TRANSPORT_PLAYING
+            {
+                assert!(
+                    sync.at_frame >= sent,
+                    "the change reached the instrument after its frame: {} < {sent}",
+                    sync.at_frame
+                );
+                assert!(floats_equal(sync.beat as f32, 0.0), "{sync:?}");
+                impulse_at = Some(sync.at_frame);
             }
         }
         let song = rig.callback.engine().song();

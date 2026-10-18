@@ -127,7 +127,7 @@ impl Line {
     }
 
     /// The longest delay [`Self::read`] can reach.
-    fn max_delay(&self) -> f32 {
+    const fn max_delay(&self) -> f32 {
         self.buffer.len().saturating_sub(2 * MOST_HALF + 2) as f32
     }
 

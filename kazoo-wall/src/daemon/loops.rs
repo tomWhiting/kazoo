@@ -202,13 +202,11 @@ impl Loops {
                 tape: Some(tape),
                 ..
             } = &change.what
-            {
-                if patch
+                && patch
                     .module(module)
                     .is_some_and(|module| module.kind == crate::catalogue::Kind::LOOP)
-                {
-                    newest.insert(module.clone(), (change.seq, tape.reel.clone()));
-                }
+            {
+                newest.insert(module.clone(), (change.seq, tape.reel.clone()));
             }
         }
     }

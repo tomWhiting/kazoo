@@ -278,7 +278,7 @@ impl Blaze {
     /// How many spent fires are kept to be lit again: for tests and
     /// measures.
     #[must_use]
-    pub fn spares(&self) -> usize {
+    pub const fn spares(&self) -> usize {
         self.spare.len()
     }
 
@@ -291,7 +291,7 @@ impl Blaze {
 
     /// How many moments the wall has left are still dying down.
     #[must_use]
-    pub fn dying(&self) -> usize {
+    pub const fn dying(&self) -> usize {
         self.dying.len()
     }
 

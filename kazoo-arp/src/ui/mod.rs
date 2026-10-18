@@ -225,7 +225,7 @@ fn draw_note_pool(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
     if pool.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
-            "  (no notes held \u{2014} play Z X C V B N M keys)",
+            "  (no notes held \u{2014} play the a w s e d f … ; keys)",
             Style::new().fg(DIM),
         )));
         f.render_widget(empty, inner);

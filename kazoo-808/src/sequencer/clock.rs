@@ -166,7 +166,7 @@ impl SequencerClock {
         let pair_duration = self.base_step_samples() * 2.0;
         let swing_ratio = self.swing / 100.0;
 
-        if step % 2 == 0 {
+        if step.is_multiple_of(2) {
             pair_duration * swing_ratio
         } else {
             pair_duration * (1.0 - swing_ratio)

@@ -185,7 +185,7 @@ mod tests {
         // A slow ramp through the threshold with noise ±0.02 on it.
         let noisy = |frame: usize| {
             let ramp = frame as f32 / 4_800.0 - 0.5;
-            let noise = if frame % 2 == 0 { 0.02 } else { -0.02 };
+            let noise = if frame.is_multiple_of(2) { 0.02 } else { -0.02 };
             ramp + noise
         };
         let rises = |hysteresis: f32| {

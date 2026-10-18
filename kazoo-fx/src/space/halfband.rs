@@ -61,7 +61,7 @@ impl Halfband {
         Self { side }
     }
 
-    fn pairs(&self) -> usize {
+    const fn pairs(&self) -> usize {
         self.side.len()
     }
 }

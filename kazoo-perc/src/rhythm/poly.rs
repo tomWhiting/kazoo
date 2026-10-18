@@ -120,7 +120,10 @@ impl Poly {
         let a = self.knobs.count(A).max(1) as u64;
         let b = self.knobs.count(B).max(1) as u64;
         let shift = self.knobs.count(SHIFT) as u64 % b;
-        self.fired = [self.count % a == 0, (self.count % b + b - shift) % b == 0];
+        self.fired = [
+            self.count.is_multiple_of(a),
+            (self.count % b + b - shift).is_multiple_of(b),
+        ];
         self.count = self.count.wrapping_add(1);
     }
 }

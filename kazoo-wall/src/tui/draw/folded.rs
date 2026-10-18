@@ -18,12 +18,13 @@ pub fn tile(buf: &mut Buffer, area: Rect, pan: Point, plate: &Plate, tile: &Tile
                 x: x + u32::try_from(offset).unwrap_or(u32::MAX / 2),
                 y,
             };
-            if let (Some(x), Some(y)) = (point.x.checked_sub(pan.x), point.y.checked_sub(pan.y)) {
-                if x < u32::from(area.width) && y < u32::from(area.height) {
-                    buf[(area.x + x as u16, area.y + y as u16)]
-                        .set_char(ch)
-                        .set_style(style);
-                }
+            if let (Some(x), Some(y)) = (point.x.checked_sub(pan.x), point.y.checked_sub(pan.y))
+                && x < u32::from(area.width)
+                && y < u32::from(area.height)
+            {
+                buf[(area.x + x as u16, area.y + y as u16)]
+                    .set_char(ch)
+                    .set_style(style);
             }
         }
     };

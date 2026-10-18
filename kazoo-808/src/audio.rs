@@ -321,11 +321,11 @@ impl AudioEngine {
                     }
                 }
                 HubMessage::NoteEvent(event) => {
-                    if event.event_type == NOTE_ON {
-                        if let Some(vi) = VoiceIndex::from_index(usize::from(event.note)) {
-                            let velocity = f32::from(event.velocity) / 127.0;
-                            self.drum_machine.trigger(vi, velocity);
-                        }
+                    if event.event_type == NOTE_ON
+                        && let Some(vi) = VoiceIndex::from_index(usize::from(event.note))
+                    {
+                        let velocity = f32::from(event.velocity) / 127.0;
+                        self.drum_machine.trigger(vi, velocity);
                     }
                 }
                 // The 808 exposes no hub-controllable parameters, and the

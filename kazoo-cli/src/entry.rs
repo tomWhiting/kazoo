@@ -1,4 +1,5 @@
-//! The program itself, shared by its two names (see `src/bin`).
+//! The program itself, shared by its three names, `kzoo`, `kazoo` and
+//! `kzhz` (see `src/bin` and the kzhz crate).
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -9,7 +10,7 @@ use crate::cli::{Cli, Command, TreeCommand, WallCommand, console_serve};
 
 mod desk;
 
-/// Run the program as `name` (`kzoo` or `kazoo`: the name its help and
+/// Run the program as `name` (`kzoo`, `kazoo` or `kzhz`: the name its help and
 /// errors use), with this process's arguments.
 #[must_use]
 pub fn main(name: &'static str) -> ExitCode {
@@ -64,24 +65,25 @@ pub fn main(name: &'static str) -> ExitCode {
         },
         Command::Mouth(args) => finish(kazoo_mouth::run(args.into())),
         Command::Tui => finish(kazoo_tui::run(kazoo_tui::Args::default())),
-        Command::Tree(args) => finish(tree(&args)),
+        Command::Tree(args) => finish(tree(name, &args)),
+        Command::Setup(args) => finish(crate::setup::run(name, &args)),
     }
 }
 
 /// The exit code for `result`, with its report said under the program's
-/// `name` when it failed.
+/// `name` when it failed (see [`kazoo_host::reports::finish`]).
 fn finish_as(name: &str, result: color_eyre::Result<()>) -> ExitCode {
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(report) => {
-            eprintln!("{name}: {report:?}");
-            ExitCode::FAILURE
-        }
-    }
+    kazoo_host::reports::finish(name, result)
 }
 
-fn tree(args: &crate::cli::TreeArgs) -> color_eyre::Result<()> {
+fn tree(name: &str, args: &crate::cli::TreeArgs) -> color_eyre::Result<()> {
     let dir = kazoo_tree::tree_dir()?;
+    let state = kazoo_wall::paths::state_dir()?;
+    if plant(name, &state, &dir, &kazoo_wall::paths::socket_path())? == TreeIs::ForTheWall {
+        return Err(color_eyre::eyre::eyre!(
+            "the tree grows from what the wall has played, and the wall grows it as it starts: start it ({name} wall)"
+        ));
+    }
     if args.print {
         let text = kazoo_tree::print(dir, args.cols, args.rows)?;
         let mut out = std::io::stdout().lock();
@@ -98,6 +100,107 @@ fn tree(args: &crate::cli::TreeArgs) -> color_eyre::Result<()> {
         kazoo_tree::run(dir)?;
     }
     Ok(())
+}
+
+/// What is to be done about the tree, as [`assess_tree`] finds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TreeIs {
+    /// A tree is there.
+    There,
+    /// No tree is there and no wall has played: one can be planted.
+    ToPlant,
+    /// No tree was there, and one has just been planted.
+    Planted,
+    /// The wall has played, and grows the tree from what it has played when
+    /// it next starts.
+    ForTheWall,
+}
+
+/// What is to be done about the tree at `dir`, for the wall whose state is
+/// `state` and whose socket is `socket`. A wall that is playing is asked
+/// about its tree: one playing without a tree, or still starting, is an
+/// error saying what to do, as planting a tree under it would never be
+/// grown.
+pub(crate) fn assess_tree(
+    name: &str,
+    state: &std::path::Path,
+    dir: &std::path::Path,
+    socket: &std::path::Path,
+) -> color_eyre::Result<TreeIs> {
+    tree_is(name, state, dir, || {
+        kazoo_wall::tree::plant::wall_tree(socket, Duration::from_secs(2))
+    })
+}
+
+/// [`assess_tree`], with `ask` saying what the wall says about its tree. It
+/// is asked only when there is no tree at `dir`.
+pub(crate) fn tree_is(
+    name: &str,
+    state: &std::path::Path,
+    dir: &std::path::Path,
+    ask: impl FnOnce() -> kazoo_wall::tree::plant::WallTree,
+) -> color_eyre::Result<TreeIs> {
+    use color_eyre::eyre::eyre;
+    use kazoo_wall::tree::plant::WallTree;
+    if kazoo_wall::tree::git::is_bare(dir)
+        .map_err(|err| eyre!("the tree at {} cannot be read ({err})", dir.display()))?
+    {
+        return Ok(TreeIs::There);
+    }
+    match ask() {
+        WallTree::NoWall => {}
+        WallTree::Planted => {
+            return Err(eyre!(
+                "the wall that is playing keeps its tree somewhere other than {}: run {name} tree with the KAZOO_TREE_DIR the wall was started with",
+                dir.display()
+            ));
+        }
+        WallTree::Starting => {
+            return Err(eyre!(
+                "a wall is starting, and plants the tree as it does: look again in a moment"
+            ));
+        }
+        WallTree::Unplanted(why) => {
+            let why = why.map_or_else(String::new, |why| format!(" ({why})"));
+            return Err(eyre!(
+                "the wall is playing without a tree{why}: stop it ({name} wall stop) and start it again ({name} wall), and it plants the tree as it starts"
+            ));
+        }
+        WallTree::Unclear(why) => {
+            return Err(eyre!(
+                "a wall is there but cannot be asked about its tree ({why}): look again in a moment"
+            ));
+        }
+    }
+    if kazoo_wall::tree::plant::has_played(state).map_err(|why| eyre!("{why}"))? {
+        Ok(TreeIs::ForTheWall)
+    } else {
+        Ok(TreeIs::ToPlant)
+    }
+}
+
+/// Plant the tree at `dir` when [`assess_tree`] finds it is to be planted,
+/// so it is there to look at before any wall has played. A tree that is
+/// there is never touched, and one the wall grows from what it has played
+/// is left to the wall. Says what it found.
+pub(crate) fn plant(
+    name: &str,
+    state: &std::path::Path,
+    dir: &std::path::Path,
+    socket: &std::path::Path,
+) -> color_eyre::Result<TreeIs> {
+    use kazoo_wall::tree::plant::ToLook;
+    match assess_tree(name, state, dir, socket)? {
+        TreeIs::ToPlant => {}
+        found => return Ok(found),
+    }
+    match kazoo_wall::tree::plant::plant_to_look(state, dir) {
+        // Someone else planted it while this looked.
+        ToLook::There => Ok(TreeIs::There),
+        ToLook::Planted => Ok(TreeIs::Planted),
+        ToLook::ForTheWall => Ok(TreeIs::ForTheWall),
+        ToLook::Failed(why) => Err(color_eyre::eyre::eyre!("{why}")),
+    }
 }
 
 fn wall(name: &str, command: Option<WallCommand>) -> color_eyre::Result<()> {
@@ -134,3 +237,6 @@ fn wall(name: &str, command: Option<WallCommand>) -> color_eyre::Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

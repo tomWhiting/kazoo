@@ -409,7 +409,7 @@ pub struct JamOptions {
     pub name: String,
     /// Tempo while not plugged into the desk.
     pub bpm: f64,
-    /// MIDI channel for driven notes.
+    /// MIDI channel for driven notes, 0 to 15 (more is refused).
     pub channel: u8,
     /// Note velocity, 0-127.
     pub velocity: u8,
@@ -423,9 +423,15 @@ pub struct JamOptions {
 ///
 /// # Errors
 ///
-/// Fails if the audio device or the desk link cannot be started, or the
-/// first phrase is not valid.
+/// Fails if the channel is past 15, the audio device or the desk link
+/// cannot be started, or the first phrase is not valid.
 pub fn run_jam(options: &JamOptions) -> Result<(), String> {
+    if options.channel > 15 {
+        return Err(format!(
+            "channel {} is not a MIDI channel (0 to 15)",
+            options.channel
+        ));
+    }
     let (device, config, channels) = open_output()?;
     let rate = config.sample_rate;
 
@@ -473,7 +479,7 @@ pub fn run_jam(options: &JamOptions) -> Result<(), String> {
         voices: [Voice::default(); VOICES],
         stereo: vec![0.0; MAX_BLOCK_FRAMES * 2],
         drive: options.drive,
-        channel: options.channel.min(15),
+        channel: options.channel,
         stats: Arc::clone(&stats),
         attack: 1.0 / (ATTACK_SECONDS * rate_f32),
         release: 1.0 / (RELEASE_SECONDS * rate_f32),
@@ -670,6 +676,22 @@ impl Reporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_jam_on_a_channel_past_15_is_refused_before_it_opens_anything() {
+        let options = JamOptions {
+            name: "kazoo-play".to_string(),
+            bpm: 120.0,
+            channel: 16,
+            velocity: 100,
+            drive: false,
+            phrase: None,
+        };
+        assert_eq!(
+            run_jam(&options),
+            Err("channel 16 is not a MIDI channel (0 to 15)".to_string())
+        );
+    }
 
     #[test]
     fn phrases_round_up_to_whole_bars() {

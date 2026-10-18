@@ -324,10 +324,10 @@ fn early_readings(
     let mut output = Vec::new();
     for (index, &sample) in take.samples.iter().enumerate() {
         tracker.push(sample);
-        if (index + 1) % crate::voice::VOICE_HOP == 0 {
-            if let Some(estimate) = tracker.estimate() {
-                output.push((index + 1, estimate));
-            }
+        if (index + 1) % crate::voice::VOICE_HOP == 0
+            && let Some(estimate) = tracker.estimate()
+        {
+            output.push((index + 1, estimate));
         }
     }
     output

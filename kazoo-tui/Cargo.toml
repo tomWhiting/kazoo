@@ -1,6 +1,6 @@
 [package]
 name = "kazoo-tui"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.89"
 description = "The kazoo voice tracker: a DAW in the terminal, driven by your voice"
@@ -11,11 +11,11 @@ repository = "https://github.com/tomWhiting/kazoo"
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host", version = "=0.3.2" }
+kazoo-host = { path = "../kazoo-host", version = "=0.3.3" }
 color-eyre = "0.6.5"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures = "0.3"
-kazoo-core = { version = "=0.3.2", path = "../kazoo-core" }
+kazoo-core = { version = "=0.3.3", path = "../kazoo-core" }
 ratatui = "0.30.0"
 tokio = { version = "1.49.0", features = ["full"] }
 

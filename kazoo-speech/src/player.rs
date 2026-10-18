@@ -685,11 +685,11 @@ impl SpeechPlayer {
 
     /// Pick up whatever the feed has sent, retiring replaced phrases.
     fn take_handovers(&mut self) {
-        if let Some(phrase) = self.stranded.take() {
-            if let Err(phrase) = self.retire.try_push(phrase) {
-                self.stranded = Some(phrase);
-                return;
-            }
+        if let Some(phrase) = self.stranded.take()
+            && let Err(phrase) = self.retire.try_push(phrase)
+        {
+            self.stranded = Some(phrase);
+            return;
         }
         while let Some(Handover { phrase, play }) = self.inbox.try_pop() {
             self.cut();

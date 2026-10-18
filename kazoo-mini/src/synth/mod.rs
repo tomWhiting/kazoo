@@ -275,9 +275,9 @@ impl MiniVoice {
 
         // Osc 3: may be in LFO mode (disconnected from keyboard tracking)
         let osc3_freq = if self.osc3.lfo_mode {
-            // Fixed LFO frequency based on fine tune knob
-            // Map fine tune -50..+50 to 0.1..20 Hz
-            let base_lfo = 2.0; // 2 Hz base rate
+            // A 2 Hz base, scaled by osc 3's range and tune as a
+            // keyboard pitch would be.
+            let base_lfo = 2.0;
             self.osc3.effective_frequency(base_lfo)
         } else {
             self.osc3.effective_frequency(pitch_freq)

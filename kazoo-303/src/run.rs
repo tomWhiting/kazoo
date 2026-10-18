@@ -267,13 +267,13 @@ fn run_event_loop(
         app.hub = Some(hub.status());
         terminal.draw(|frame| ui::draw(frame, app))?;
 
-        if event::poll(FRAME_POLL)? {
-            if let Event::Key(key) = event::read()? {
-                // Terminals with key-release reporting would otherwise run
-                // every action twice.
-                if key.kind != KeyEventKind::Release && handle_key_event(app, key, cmd_tx) {
-                    return Ok(());
-                }
+        if event::poll(FRAME_POLL)?
+            && let Event::Key(key) = event::read()?
+        {
+            // Terminals with key-release reporting would otherwise run
+            // every action twice.
+            if key.kind != KeyEventKind::Release && handle_key_event(app, key, cmd_tx) {
+                return Ok(());
             }
         }
     }

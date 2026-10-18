@@ -65,8 +65,9 @@ impl RoundTrip {
     pub fn play(&mut self, out: &mut [f32]) {
         let spacing = u64::from(self.rate) / 2;
         for sample in out {
-            let click =
-                self.played >= spacing && self.played <= spacing * 8 && self.played % spacing == 0;
+            let click = self.played >= spacing
+                && self.played <= spacing * 8
+                && self.played.is_multiple_of(spacing);
             *sample = if click { 0.25 } else { 0.0 };
             self.played += 1;
         }

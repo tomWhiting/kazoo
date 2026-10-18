@@ -142,7 +142,7 @@ pub(super) fn kind_share(kind: Kind, rate: u32) -> f32 {
 /// cables it had replaced (an unplugging or a removal that replugs). Every
 /// other change (a knob, a tempo, a plain unplugging or removal) only ever
 /// takes work away, and is never costed.
-pub(super) fn can_wake(what: &What) -> bool {
+pub(super) const fn can_wake(what: &What) -> bool {
     match what {
         What::Patch { .. }
         | What::Add { .. }

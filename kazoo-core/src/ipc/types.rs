@@ -236,7 +236,7 @@ impl RegisterMsg {
             || len == Self::PACED_WIRE_SIZE
             || (len >= Self::streamed_wire_size(1)
                 && len <= Self::streamed_wire_size(MAX_STREAMS)
-                && (len - 64) % STREAM_ENTRY_SIZE == 0)
+                && (len - 64).is_multiple_of(STREAM_ENTRY_SIZE))
     }
 
     /// Validate the stream list before connecting or seating it on the desk.

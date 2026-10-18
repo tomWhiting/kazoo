@@ -69,19 +69,20 @@ fn high_cycle_rows_preserve_the_octave() {
         let mut count = 0;
         for (index, &sample) in take.samples.iter().enumerate() {
             tracker.push(sample);
-            if index > 14_400 && index < take.samples.len() - 9600 && index % 32 == 0 {
-                if let Some(estimate) = tracker.estimate() {
-                    let truth = take.truth[index / 32].expect("body truth");
-                    let cents = 1200.0 * (estimate.hz / truth).log2();
-                    let octave = (cents / 1200.0).round();
-                    assert!(
-                        octave.abs() < f32::EPSILON
-                            || 1200.0_f32.mul_add(-octave, cents).abs() > 100.0,
-                        "{} {index}: {estimate:?}, truth {truth}",
-                        take.name
-                    );
-                    count += 1;
-                }
+            if index > 14_400
+                && index < take.samples.len() - 9600
+                && index % 32 == 0
+                && let Some(estimate) = tracker.estimate()
+            {
+                let truth = take.truth[index / 32].expect("body truth");
+                let cents = 1200.0 * (estimate.hz / truth).log2();
+                let octave = (cents / 1200.0).round();
+                assert!(
+                    octave.abs() < f32::EPSILON || 1200.0_f32.mul_add(-octave, cents).abs() > 100.0,
+                    "{} {index}: {estimate:?}, truth {truth}",
+                    take.name
+                );
+                count += 1;
             }
         }
         assert!(count > 4000, "{} voiced steps {count}", take.name);

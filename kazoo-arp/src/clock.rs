@@ -158,7 +158,7 @@ impl ClockDivision {
 #[must_use]
 pub fn step_beat(division: ClockDivision, swing: f64, step: u64) -> f64 {
     let pair_start = (step - step % 2) as f64;
-    let offset = if step % 2 == 0 {
+    let offset = if step.is_multiple_of(2) {
         0.0
     } else if division.swings() {
         2.0 * swing.clamp(MIN_SWING, MAX_SWING)

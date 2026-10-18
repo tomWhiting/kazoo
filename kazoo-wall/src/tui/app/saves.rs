@@ -384,14 +384,13 @@ impl App {
         for note in &result.notes {
             self.note(note.clone(), LogTone::Fault);
         }
-        if let Some(snapshot) = self.snapshot.as_mut() {
-            if snapshot
+        if let Some(snapshot) = self.snapshot.as_mut()
+            && snapshot
                 .save
                 .as_ref()
                 .is_some_and(|mark| mark.name == result.name)
-            {
-                snapshot.save = None;
-            }
+        {
+            snapshot.save = None;
         }
         self.refresh_saves();
     }

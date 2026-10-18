@@ -133,7 +133,7 @@ impl Capture {
         // A bounded retry leaves drawing to the next UI frame if a callback overlaps.
         for _ in 0..3 {
             let sequence = self.sequence.load(Ordering::SeqCst);
-            if sequence % 2 != 0 {
+            if !sequence.is_multiple_of(2) {
                 continue;
             }
             let end = self.end.load(Ordering::SeqCst);

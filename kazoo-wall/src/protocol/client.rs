@@ -114,7 +114,7 @@ impl WallClient {
         client: &str,
         console: bool,
     ) -> Result<Self, ClientError> {
-        Self::hello_as(socket, seat, client, console, false)
+        Self::hello_as(socket, seat, client, console, false, None)
     }
 
     /// Connect as a watcher named `name`: it sees everything, is never
@@ -124,7 +124,23 @@ impl WallClient {
     ///
     /// As [`Self::connect`].
     pub fn watch(socket: &Path, name: &str, client: &str) -> Result<Self, ClientError> {
-        Self::hello_as(socket, name, client, false, true)
+        Self::hello_as(socket, name, client, false, true, None)
+    }
+
+    /// [`Self::watch`], giving up on any read (the hello's answer too)
+    /// after `timeout`: a wall that is still starting has bound its socket
+    /// but answers nobody yet.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::connect`], and a timeout (see [`ClientError::is_timeout`]).
+    pub fn watch_within(
+        socket: &Path,
+        name: &str,
+        client: &str,
+        timeout: Duration,
+    ) -> Result<Self, ClientError> {
+        Self::hello_as(socket, name, client, false, true, Some(timeout))
     }
 
     fn hello_as(
@@ -133,8 +149,10 @@ impl WallClient {
         client: &str,
         console: bool,
         watcher: bool,
+        timeout: Option<Duration>,
     ) -> Result<Self, ClientError> {
         let stream = UnixStream::connect(socket)?;
+        stream.set_read_timeout(timeout)?;
         let writer = stream.try_clone()?;
         let mut wall = Self {
             reader: BufReader::new(stream),

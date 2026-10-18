@@ -108,7 +108,7 @@ impl DelayLine {
 
     /// The longest delay [`Self::read`] can reach, in samples.
     #[must_use]
-    pub fn max_delay(&self) -> usize {
+    pub const fn max_delay(&self) -> usize {
         self.buffer.len().saturating_sub(4)
     }
 

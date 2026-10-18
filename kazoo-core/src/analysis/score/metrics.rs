@@ -111,7 +111,7 @@ fn median(values: &[f32]) -> f32 {
         return f32::NAN;
     }
     let middle = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         values[middle - 1].midpoint(values[middle])
     } else {
         values[middle]

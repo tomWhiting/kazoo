@@ -231,13 +231,13 @@ impl Arpeggiator {
 
     /// Whether the pool has notes to arpeggiate.
     #[must_use]
-    pub fn has_notes(&self) -> bool {
+    pub const fn has_notes(&self) -> bool {
         !self.pitch_sorted.is_empty()
     }
 
     /// Number of held notes (before octave expansion).
     #[must_use]
-    pub fn note_count(&self) -> usize {
+    pub const fn note_count(&self) -> usize {
         self.pitch_sorted.len()
     }
 

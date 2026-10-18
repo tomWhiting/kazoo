@@ -190,14 +190,13 @@ impl CableTable {
                 *count = count.saturating_sub(1);
             }
         }
-        if let Some(new) = new {
-            if let Some(count) = self
+        if let Some(new) = new
+            && let Some(count) = self
                 .feeds
                 .get_mut(new.slot as usize)
                 .and_then(|ports| ports.get_mut(usize::from(new.port)))
-            {
-                *count = count.saturating_add(1);
-            }
+        {
+            *count = count.saturating_add(1);
         }
         true
     }
@@ -219,7 +218,7 @@ impl CableTable {
 
     /// Slots the table reaches.
     #[must_use]
-    pub fn slots(&self) -> usize {
+    pub const fn slots(&self) -> usize {
         self.routes.len()
     }
 
@@ -310,11 +309,11 @@ pub fn heard(slots: &[usize], edges: &[(usize, usize)], sinks: &[usize]) -> Vec<
     let mut marked = vec![false; pending.len()];
     let mut queue = VecDeque::with_capacity(pending.len());
     for sink in sinks {
-        if let Some(&sink) = index.get(sink) {
-            if !marked[sink] {
-                marked[sink] = true;
-                queue.push_back(sink);
-            }
+        if let Some(&sink) = index.get(sink)
+            && !marked[sink]
+        {
+            marked[sink] = true;
+            queue.push_back(sink);
         }
     }
     while let Some(to) = queue.pop_front() {

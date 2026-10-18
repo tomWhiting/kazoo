@@ -547,12 +547,11 @@ impl App {
                 // Let go where it hangs: nothing moves.
                 Some(_) => {}
                 None => {
-                    if self.rack.layout.density == Density::Overview {
-                        if let Some(index) =
+                    if self.rack.layout.density == Density::Overview
+                        && let Some(index) =
                             self.modules().iter().position(|view| view.id == module)
-                        {
-                            self.zoom_back(index, now);
-                        }
+                    {
+                        self.zoom_back(index, now);
                     }
                 }
             },

@@ -537,10 +537,10 @@ fn the_tree_runs_only_these_git_commands() {
     for source in [git_source, thread_source] {
         assert!(!source.contains("--force"));
         for line in source.lines() {
-            if let Some(rest) = line.split("git_command(").nth(1) {
-                if let Some(rest) = rest.strip_prefix('"') {
-                    subcommands.push(rest.split('"').next().unwrap().to_string());
-                }
+            if let Some(rest) = line.split("git_command(").nth(1)
+                && let Some(rest) = rest.strip_prefix('"')
+            {
+                subcommands.push(rest.split('"').next().unwrap().to_string());
             }
         }
         for literal in arg_literals(source) {
