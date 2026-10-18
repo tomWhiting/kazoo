@@ -1,6 +1,6 @@
 [package]
 name = "kazoo-play"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 rust-version = "1.89"
 description = "Phrases and notes for kazoo instruments, from the command line"
@@ -12,6 +12,6 @@ workspace = true
 
 [dependencies]
 cpal = "0.17.1"
-kazoo-core = { path = "../kazoo-core", version = "=0.3.3" }
-kazoo-host = { path = "../kazoo-host", version = "=0.3.3" }
+kazoo-core = { path = "../kazoo-core", version = "=0.3.4" }
+kazoo-host = { path = "../kazoo-host", version = "=0.3.4" }
 ringbuf = "0.4.8"

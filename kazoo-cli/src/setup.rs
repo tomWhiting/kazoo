@@ -436,15 +436,25 @@ fn program(name: &str, machine: &Machine, dry: bool) -> color_eyre::Result<Progr
             Err(why) => others.push((found, why)),
         }
     }
+    // One note for each way to remove them: one package owns all three
+    // names, and is named once.
     let other_notes = |skip: Option<&Path>| -> Vec<String> {
-        others
+        let kept: Vec<_> = others
             .iter()
             .filter(|(old, _)| skip.is_none_or(|bin| old.parent() != Some(bin)))
-            .map(|(old, what)| {
+            .cloned()
+            .collect();
+        removals(&kept)
+            .into_iter()
+            .map(|(how, copies)| {
+                let (are, run, names) = if copies.len() == 1 {
+                    ("is another kazoo", "runs", "its name")
+                } else {
+                    ("are another kazoo", "run", "their names")
+                };
                 format!(
-                    "note: {} ({what}) is another kazoo, not this version, and runs by its name instead of this one: {} to be sure",
-                    old.display(),
-                    how_to_remove(old)
+                    "note: {} {are}, not this version, and {run} by {names} instead of this one: {how} to be sure",
+                    copies.join(", ")
                 )
             })
             .collect()
@@ -457,21 +467,22 @@ fn program(name: &str, machine: &Machine, dry: bool) -> color_eyre::Result<Progr
     }
     let installer = Installer::of(machine).map_err(|why| eyre!("{why}"))?;
     let Some(installer) = installer else {
-        let found = if others.is_empty() {
-            "kazoo is not installed where this machine finds programs by name".to_owned()
+        let install = format!(
+            "npm install -g {NPM_PACKAGE}@{VERSION} (or {CARGO_INSTALL}), then {name} setup"
+        );
+        return Err(if others.is_empty() {
+            eyre!("kazoo is not installed where this machine finds programs by name: {install}")
         } else {
-            let others: Vec<String> = others
-                .iter()
-                .map(|(old, what)| format!("{} ({what})", old.display()))
+            // What is there first goes, or cargo refuses the new one.
+            let others: Vec<String> = removals(&others)
+                .into_iter()
+                .map(|(how, copies)| format!("{}: {how}", copies.join(", ")))
                 .collect();
-            format!(
-                "this is {VERSION}, and what is installed is not: {}",
-                others.join(", ")
+            eyre!(
+                "this is {VERSION}, and what is installed is not: {}; then {install}",
+                others.join("; ")
             )
-        };
-        return Err(eyre!(
-            "{found}: npm install -g {NPM_PACKAGE}@{VERSION} (or {CARGO_INSTALL}), then {name} setup"
-        ));
+        });
     };
     let line = installer.line();
     let bin = installer.global_bin()?;
@@ -512,6 +523,21 @@ fn program(name: &str, machine: &Machine, dry: bool) -> color_eyre::Result<Progr
         )),
         Err(why) => Err(eyre!("{line} finished, but {} {why}", path.display())),
     }
+}
+
+/// The old copies (each with what it said of its version), grouped by how
+/// each is removed, in the order found: `[(how, ["path (what)", ...])]`.
+fn removals(others: &[(PathBuf, String)]) -> Vec<(String, Vec<String>)> {
+    let mut grouped: Vec<(String, Vec<String>)> = Vec::new();
+    for (old, what) in others {
+        let how = how_to_remove(old);
+        let copy = format!("{} ({what})", old.display());
+        match grouped.iter_mut().find(|(seen, _)| *seen == how) {
+            Some((_, copies)) => copies.push(copy),
+            None => grouped.push((how, vec![copy])),
+        }
+    }
+    grouped
 }
 
 /// How to take away the program at `path`: with what installed it, when
@@ -674,7 +700,6 @@ fn version_within(program: &Path, wait: std::time::Duration) -> Result<String, S
     use std::process::Stdio;
     let mut child = Command::new(program)
         .arg("--version")
-        .env_remove("KZOO_RUN_AS")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

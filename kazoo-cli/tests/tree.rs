@@ -13,7 +13,6 @@ fn tree_print(home: &std::path::Path) -> std::process::Output {
         .env("KAZOO_WALL_RUNTIME_DIR", home.join("run"))
         .env_remove("KAZOO_TREE_DIR")
         .env_remove("KAZOO_WALL_STATE_DIR")
-        .env_remove("KZOO_RUN_AS")
         .output()
         .unwrap()
 }

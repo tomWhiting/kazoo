@@ -114,7 +114,7 @@ This applies to the wall's control and events, and to the desk's instrument audi
 
 ### 6. Out of scope for Track N
 
-The name on npm. `kzhz` stands. `npm/launcher.sh` can add another name in one run, whenever Tom says which.
+The name on npm. `kzhz` stands, and every install gives the same three commands (`kzhz`, `kzoo`, `kazoo`); another name would be a new package under `npm/`.
 
 ## Order
 

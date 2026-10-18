@@ -1,7 +1,7 @@
 {
   "name": "kzoo-darwin-x64",
-  "version": "0.3.3",
-  "description": "The kzoo program for macOS on Intel: installed by the kzoo package",
+  "version": "0.3.4",
+  "description": "The kzoo program for macOS on Intel: installed by the kzhz package",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/tomWhiting/kazoo",
   "repository": {

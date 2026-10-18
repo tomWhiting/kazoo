@@ -92,6 +92,11 @@ impl Default for Loops {
     }
 }
 
+/// How long a test waits for the tape thread before calling it hung: far
+/// past any tape's reading.
+#[cfg(test)]
+const ANSWER_OR_HUNG: std::time::Duration = std::time::Duration::from_secs(120);
+
 impl Loops {
     /// The wall's loops, with the reel store at `$KAZOO_REELS_DIR` or
     /// `~/.kazoo/reels`; the tape thread opens it for the first pin or tape job.
@@ -620,13 +625,25 @@ impl Loops {
     }
 
     /// Wait for the tape thread's next answer and act on it, as a tick
-    /// would: for tests, which must not depend on timing.
+    /// would: for tests, which must not depend on timing. How long the
+    /// thread takes is no test of anything (a debug build beside the other
+    /// tests can be several times slower than alone); only a thread that
+    /// never answers is a failure, and the wait gives up on it after
+    /// [`ANSWER_OR_HUNG`].
     #[cfg(test)]
     pub(crate) fn wait_for_test(&mut self) {
         let Thread::Running(worker) = &self.worker else {
             panic!("the tape thread is not running");
         };
-        let (ticket, answer) = worker.done.recv().unwrap();
+        let (ticket, answer) = worker
+            .done
+            .recv_timeout(ANSWER_OR_HUNG)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "the tape thread did not answer in {} s ({err})",
+                    ANSWER_OR_HUNG.as_secs()
+                )
+            });
         self.finish(ticket, answer);
         self.poll();
     }

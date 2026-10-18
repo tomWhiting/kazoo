@@ -1,6 +1,6 @@
 [package]
 name = "kzoo"
-version = "0.3.3"
+version = "0.3.4"
 default-run = "kzoo"
 edition = "2024"
 rust-version = "1.89"
@@ -18,7 +18,8 @@ workspace = true
 [lib]
 name = "kazoo"
 
-# One program by two names: `kzoo`, its public name, and `kazoo`.
+# One program by three names, the same from every install: `kzoo`, `kazoo`
+# and `kzhz` (its npm name).
 [[bin]]
 name = "kzoo"
 path = "src/bin/kzoo.rs"
@@ -27,32 +28,36 @@ path = "src/bin/kzoo.rs"
 name = "kazoo"
 path = "src/bin/kazoo.rs"
 
+[[bin]]
+name = "kzhz"
+path = "src/bin/kzhz.rs"
+
 [dependencies]
-kazoo-host = { path = "../kazoo-host", version = "=0.3.3" }
+kazoo-host = { path = "../kazoo-host", version = "=0.3.4" }
 clap = { version = "4.5", features = ["derive", "env"] }
 color-eyre = "0.6.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rustix = { version = "1.1.3", features = ["fs", "process"] }
 toml = "0.9"
-kazoo-core = { path = "../kazoo-core", version = "=0.3.3" }
-kazoo-mix = { path = "../kazoo-mix", version = "=0.3.3" }
-kazoo-wall = { path = "../kazoo-wall", version = "=0.3.3" }
-kazoo-mcp = { path = "../kazoo-mcp", version = "=0.3.3" }
-kazoo-808 = { path = "../kazoo-808", version = "=0.3.3" }
-kazoo-303 = { path = "../kazoo-303", version = "=0.3.3" }
-kazoo-cs80 = { path = "../kazoo-cs80", version = "=0.3.3" }
-kazoo-mini = { path = "../kazoo-mini", version = "=0.3.3" }
-kazoo-juno = { path = "../kazoo-juno", version = "=0.3.3" }
-kazoo-prophet = { path = "../kazoo-prophet", version = "=0.3.3" }
-kazoo-dx = { path = "../kazoo-dx", version = "=0.3.3" }
-kazoo-string = { path = "../kazoo-string", version = "=0.3.3" }
-kazoo-glass = { path = "../kazoo-glass", version = "=0.3.3" }
-kazoo-arp = { path = "../kazoo-arp", version = "=0.3.3" }
-kazoo-play = { path = "../kazoo-play", version = "=0.3.3" }
-kazoo-tui = { path = "../kazoo-tui", version = "=0.3.3" }
-kazoo-mouth = { path = "../kazoo-mouth", version = "=0.3.3" }
-kazoo-tree = { path = "../kazoo-tree", version = "=0.3.3" }
+kazoo-core = { path = "../kazoo-core", version = "=0.3.4" }
+kazoo-mix = { path = "../kazoo-mix", version = "=0.3.4" }
+kazoo-wall = { path = "../kazoo-wall", version = "=0.3.4" }
+kazoo-mcp = { path = "../kazoo-mcp", version = "=0.3.4" }
+kazoo-808 = { path = "../kazoo-808", version = "=0.3.4" }
+kazoo-303 = { path = "../kazoo-303", version = "=0.3.4" }
+kazoo-cs80 = { path = "../kazoo-cs80", version = "=0.3.4" }
+kazoo-mini = { path = "../kazoo-mini", version = "=0.3.4" }
+kazoo-juno = { path = "../kazoo-juno", version = "=0.3.4" }
+kazoo-prophet = { path = "../kazoo-prophet", version = "=0.3.4" }
+kazoo-dx = { path = "../kazoo-dx", version = "=0.3.4" }
+kazoo-string = { path = "../kazoo-string", version = "=0.3.4" }
+kazoo-glass = { path = "../kazoo-glass", version = "=0.3.4" }
+kazoo-arp = { path = "../kazoo-arp", version = "=0.3.4" }
+kazoo-play = { path = "../kazoo-play", version = "=0.3.4" }
+kazoo-tui = { path = "../kazoo-tui", version = "=0.3.4" }
+kazoo-mouth = { path = "../kazoo-mouth", version = "=0.3.4" }
+kazoo-tree = { path = "../kazoo-tree", version = "=0.3.4" }
 
 [dev-dependencies]
 tempfile = "3"

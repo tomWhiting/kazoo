@@ -1212,6 +1212,8 @@ fn a_program_that_cannot_be_stopped_is_never_waited_on() {
     let perm = || Err(std::io::Error::from_raw_os_error(1));
     let mut child = std::process::Command::new("sleep")
         .arg("30")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
     let started = std::time::Instant::now();
@@ -1229,7 +1231,11 @@ fn a_program_that_cannot_be_stopped_is_never_waited_on() {
     child.kill().unwrap();
     assert!(!reap(&mut child, Ok(()), Ok(())).unwrap().success());
     // One that has exited is reaped, whatever the kills said.
-    let mut done = std::process::Command::new("true").spawn().unwrap();
+    let mut done = std::process::Command::new("true")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
     // Seen to have exited, and left unreaped for `reap`.
     let exited = (0..400).any(|_| {
         let seen = matches!(
@@ -1332,4 +1338,59 @@ fn runners_in_their_own_folders_are_still_told_apart() {
     let link = bin.join("kzhz");
     std::os::unix::fs::symlink(&real, &link).unwrap();
     assert_eq!(how_to_remove(&link), "remove it (yarn global remove kzhz)");
+}
+
+#[test]
+fn one_package_owning_every_name_is_one_note_and_goes_first() {
+    let home = tempfile::tempdir().unwrap();
+    let cargo = home.path().join("cargo");
+    let bin = cargo.join("bin");
+    for name in ["kzhz", "kzoo", "kazoo"] {
+        fake(&bin, name, &format!("echo {name} 0.3.3"));
+    }
+    fs::write(
+        cargo.join(".crates2.json"),
+        r#"{"installs": {"kzhz 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)": {"bins": ["kazoo", "kzhz", "kzoo"]}}}"#,
+    )
+    .unwrap();
+    // The kzoo command, owned by the kzhz package, is that package's.
+    assert_eq!(
+        how_to_remove(&bin.join("kzoo")),
+        "remove it (cargo uninstall kzhz)"
+    );
+    // With none at this version and nothing to install with, one removal
+    // comes before the install, naming every copy it takes.
+    let on = machine(home.path(), &bin, "");
+    let why = program("kzoo", &on, false).unwrap_err().to_string();
+    assert_eq!(
+        why,
+        format!(
+            "this is {VERSION}, and what is installed is not: {0}/kzoo (version 0.3.3), {0}/kzhz (version 0.3.3), {0}/kazoo (version 0.3.3): remove it (cargo uninstall kzhz); then npm install -g kzhz@{VERSION} (or cargo install kzoo), then kzoo setup",
+            bin.display()
+        )
+    );
+    // Beside a current copy elsewhere, the three old ones are one note.
+    let current = home.path().join("current");
+    fake(&current, "kzoo", &format!("echo kzoo {VERSION}"));
+    let mut on = machine(home.path(), &current, "");
+    on.path.push(bin.clone());
+    let found = program("kzoo", &on, false).unwrap();
+    assert_eq!(found.path, current.join("kzoo"));
+    assert_eq!(found.notes.len(), 1, "{:?}", found.notes);
+    assert!(
+        found.notes[0].starts_with(&format!(
+            "note: {}/kzhz (version 0.3.3), {}/kazoo (version 0.3.3) are another kazoo",
+            bin.display(),
+            bin.display()
+        )),
+        "{:?}",
+        found.notes
+    );
+    assert!(
+        found.notes[0].ends_with(
+            "run by their names instead of this one: remove it (cargo uninstall kzhz) to be sure"
+        ),
+        "{:?}",
+        found.notes
+    );
 }

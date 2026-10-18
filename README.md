@@ -12,12 +12,12 @@ Everything is real synthesis, not samples.
 
 ## Install
 
-kazoo is one command, `kzoo`, also installed as `kazoo` (and, from npm, `kzhz`). It runs on macOS (Apple silicon or Intel).
+kazoo is one program with three names, `kzhz`, `kzoo` and `kazoo`: every install gives you all three, the same program. It runs on macOS (Apple silicon or Intel).
 
 ```sh
 npx kzhz setup                 # everything, in one go (or bunx kzhz setup)
 npm install -g kzhz            # just the program; try it once with npx kzhz wall
-cargo install kzoo             # from source, with Rust 1.89 or later (cargo install kzhz is the same, as kzhz)
+cargo install kzoo             # from source, with Rust 1.89 or later (or cargo install kzhz: the same)
 ```
 
 `kzoo setup` does the lot in the terminal, and says what it did at each step:
@@ -28,6 +28,8 @@ cargo install kzoo             # from source, with Rust 1.89 or later (cargo ins
 - puts the kazoo skill in `~/.claude/skills/kazoo` (or `$CLAUDE_CONFIG_DIR/skills/kazoo`): how to play the wall, every instrument, modular synthesis, and ways of working from Aphex Twin.
 
 Run it again any time: what is right already is left as it is, and what is out of date is put right. An entry or skill that is not kazoo's own is only reported, never changed. `kzoo setup --dry-run` says what it would do and changes nothing.
+
+Install one of the two cargo packages, not both: `kzoo` and `kzhz` own the same three commands, so cargo refuses the second. To switch, `cargo uninstall` the one you have first. From 0.3.3 with both installed, run `cargo uninstall kzhz` and then `cargo install kzoo`.
 
 Install it (rather than run it through `npx`) for anything that keeps running: `npx` runs from npm's cache, and the wall and the studio start programs from where `kzoo` is.
 
@@ -55,7 +57,7 @@ claude mcp add kazoo -- kzoo mcp
 ## Building
 
 ```sh
-cargo build --release -p kzoo   # target/release/kzoo and target/release/kazoo
+cargo build --release -p kzoo   # target/release/kzoo, kazoo and kzhz
 cargo nextest run --workspace
 ```
 

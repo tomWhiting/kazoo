@@ -1,14 +1,32 @@
 [package]
 name = "kzhz"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 rust-version = "1.89"
-description = "kazoo by its npm name: the same program as kzoo (the desk, the wall, the seat and every instrument), installed as kzhz"
+description = "kazoo by its npm name: the same program as kzoo (the desk, the wall, the seat and every instrument), with the same three commands: kzhz, kzoo and kazoo"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/tomWhiting/kazoo"
 readme = "../README.md"
 keywords = ["synthesizer", "audio", "music", "modular", "terminal"]
 categories = ["multimedia::audio", "command-line-utilities"]
+
+# Its own workspace (see the root Cargo.toml), with the same lints.
+[workspace]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 
 [lints]
 workspace = true
@@ -17,5 +35,13 @@ workspace = true
 name = "kzhz"
 path = "src/main.rs"
 
+[[bin]]
+name = "kzoo"
+path = "src/bin/kzoo.rs"
+
+[[bin]]
+name = "kazoo"
+path = "src/bin/kazoo.rs"
+
 [dependencies]
-kzoo = { path = "../kazoo-cli", version = "=0.3.3" }
+kzoo = { path = "../kazoo-cli", version = "=0.3.4" }

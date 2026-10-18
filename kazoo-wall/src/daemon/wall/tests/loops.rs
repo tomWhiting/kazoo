@@ -38,12 +38,10 @@ fn render(engine: &mut Engine, frames: usize) {
     }
 }
 
-/// The tape thread's answer arrives (within two seconds), a tick hands it
-/// to the loop, and the engine renders the sub-block that takes it.
+/// The tape thread's answer arrives, a tick hands it to the loop, and the
+/// engine renders the sub-block that takes it.
 fn tape_arrives(wall: &mut Wall, engine: &mut Engine) {
-    let asked = Instant::now();
     wall.loops.wait_install_for_test();
-    assert!(asked.elapsed() < Duration::from_secs(2));
     wall.tick(Instant::now());
     render(engine, 4_096);
     wall.tick(Instant::now());

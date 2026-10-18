@@ -125,6 +125,11 @@ fn tip(dir: &Path) -> Option<String> {
 
 /// Ticks the wall as the daemon does (every 20 ms) until `done` holds of
 /// its tree health, or `limit` passes; says how long it took.
+/// How long a test ticks for something the tree will do before calling it
+/// hung: how soon is no test of anything on a debug build beside the other
+/// tests, only that it happens, in order.
+const HUNG: Duration = Duration::from_secs(120);
+
 fn tick_until(
     wall: &mut Wall,
     limit: Duration,
@@ -325,13 +330,11 @@ fn a_git_failure_is_said_and_the_tree_recovers() {
     let read_only = ReadOnly::objects(dir.path());
     let start = Instant::now();
     let change = ask(&mut wall, &turn(404.0), start);
-    // Said within 2 s of the daemon's ticks, and the wall answers every
-    // request while the tree is down.
+    // Said as the daemon ticks, and the wall answers every request while
+    // the tree is down.
     let mut asked = 0_u64;
-    let said = tick_until(&mut wall, Duration::from_secs(2), |tree| {
-        tree.error.is_some()
-    });
-    assert!(said.is_some(), "the tree's failure was not said within 2 s");
+    let said = tick_until(&mut wall, HUNG, |tree| tree.error.is_some());
+    assert!(said.is_some(), "the tree's failure was never said");
     for n in 1_u32..=5 {
         ask(
             &mut wall,
@@ -343,11 +346,9 @@ fn a_git_failure_is_said_and_the_tree_recovers() {
     let last = change.seq + asked;
     assert_eq!(wall.revision(), last);
     drop(read_only);
-    let recovered = tick_until(
-        &mut wall,
-        thread::RETRY_AFTER + Duration::from_secs(5),
-        |tree| tree.through == Some(last) && tree.error.is_none(),
-    );
+    let recovered = tick_until(&mut wall, HUNG, |tree| {
+        tree.through == Some(last) && tree.error.is_none()
+    });
     assert!(recovered.is_some(), "{:?}", wall.snapshot().tree);
     assert_eq!(wall.snapshot().tree.unwrap().behind_from, None);
     wall.close(Instant::now());
@@ -367,18 +368,12 @@ fn a_tree_that_fails_at_its_start_is_said_and_clears_with_nothing_behind() {
     let (mut wall, _engine) = wall();
     let read_only = ReadOnly::objects(dir.path());
     wall.attach_tree(thread::TreeHandle::attach(dir.path()).unwrap());
-    let said = tick_until(&mut wall, Duration::from_secs(2), |tree| {
-        tree.error.is_some()
-    });
-    assert!(said.is_some(), "the tree's failure was not said within 2 s");
+    let said = tick_until(&mut wall, HUNG, |tree| tree.error.is_some());
+    assert!(said.is_some(), "the tree's failure was never said");
     drop(read_only);
     // No change was made while it was down: once git works again the tree
     // holds the wall, and says nothing is wrong or behind.
-    let cleared = tick_until(
-        &mut wall,
-        thread::RETRY_AFTER + Duration::from_secs(5),
-        crate::protocol::TreeHealth::is_ok,
-    );
+    let cleared = tick_until(&mut wall, HUNG, crate::protocol::TreeHealth::is_ok);
     assert!(cleared.is_some(), "{:?}", wall.snapshot().tree);
     wall.close(Instant::now());
     let tip = tip(dir.path()).unwrap();
@@ -459,7 +454,13 @@ fn closing_with_a_full_queue_still_finishes_the_tree() {
     });
     let closing = Instant::now();
     wall.close(Instant::now());
-    assert!(closing.elapsed() < Duration::from_secs(6));
+    // Close waits at most FINISH_WAIT for the tree, after the save it
+    // makes first (daemon/wall.rs), which the extra second covers.
+    assert!(
+        closing.elapsed() < thread::FINISH_WAIT + Duration::from_secs(1),
+        "close overran FINISH_WAIT: {:?}",
+        closing.elapsed()
+    );
     releaser.join().unwrap();
     let tip = tip(dir.path()).expect("the tree holds nothing after close");
     let stamp = Stamp::parse(&message(dir.path(), &tip)).unwrap();

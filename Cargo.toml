@@ -24,8 +24,10 @@ members = [
     "kazoo-mcp",
     "kazoo-host",
     "kazoo-tree",
-    "kazoo-kzhz",
 ]
+# kzhz owns the same three commands as kzoo (kzhz, kzoo, kazoo), so it is
+# its own workspace: built together, the two would write the same files.
+exclude = ["kazoo-kzhz"]
 resolver = "2"
 
 [workspace.lints.rust]

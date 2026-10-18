@@ -10,6 +10,27 @@ use crate::cli::{Cli, Command, TreeCommand, WallCommand, console_serve};
 
 mod desk;
 
+/// The name the `kzoo` command answers to: the name it was started by.
+///
+/// npm's launcher runs this one program for each of its three commands,
+/// starting it by the name that was typed (see npm/kzoo/bin/launch.js), so
+/// nothing is left in the environment for what it starts. Any other name
+/// is `kzoo`.
+#[must_use]
+pub fn kzoo_run_as() -> &'static str {
+    let started = std::env::args_os().next();
+    match started
+        .as_deref()
+        .map(std::path::Path::new)
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
+    {
+        Some("kazoo") => "kazoo",
+        Some("kzhz") => "kzhz",
+        Some(_) | None => "kzoo",
+    }
+}
+
 /// Run the program as `name` (`kzoo`, `kazoo` or `kzhz`: the name its help and
 /// errors use), with this process's arguments.
 #[must_use]

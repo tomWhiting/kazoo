@@ -165,7 +165,7 @@ for package in kzoo-darwin-arm64 kzoo-darwin-x64; do
 done
 (cd "$here/kzoo" && npm pack --dry-run --json) | node -e '
   const files = JSON.parse(require("fs").readFileSync(0, "utf8"))[0].files.map((f) => f.path);
-  for (const want of ["bin/kzoo.js", "LICENSE", "README.md"]) {
+  for (const want of ["bin/launch.js", "bin/kzhz.js", "bin/kzoo.js", "bin/kazoo.js", "LICENSE", "README.md"]) {
     if (!files.includes(want)) throw new Error(want + " is missing");
   }'
 

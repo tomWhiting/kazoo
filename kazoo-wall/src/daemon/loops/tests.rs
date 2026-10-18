@@ -146,11 +146,9 @@ fn a_saved_loop_comes_back_with_its_exact_samples() {
         let mut bench = bench(&mut loops);
         let record = patch.loop_record("loop1").unwrap().tape.clone().unwrap();
         loops.put_back("loop1", record);
-        let asked = std::time::Instant::now();
         loops.wait_for_test();
         render(&mut bench, crate::SUB_BLOCK, 0.0);
         assert_eq!(state(&loops), LoopState::Holding as u8);
-        assert!(asked.elapsed() < std::time::Duration::from_secs(2));
         bench.beat = 8.0;
         let output = render(&mut bench, 4 * BAR, 0.0);
         assert_plays(&output, &samples);

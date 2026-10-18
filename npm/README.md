@@ -3,10 +3,9 @@
 - `kzhz` (in `kzoo/`): the launcher `npx kzhz` runs. npm refuses the bare
   name `kzoo` as too like `koa` and `zod` (and `kzuu` as too like `bluu` and
   `zuul`). It installs the commands `kzhz`, `kzoo` and `kazoo`. 0.3.0 also
-  went out as `@tomwhiting/kzoo`, deprecated for `kzhz`.
-  `launcher.sh name...` publishes the same launcher under the first of those
-  names npm takes, with that name as one more command. It finds the build for this machine
-  and runs it with the same arguments.
+  went out as `@tomwhiting/kzoo`, deprecated for `kzhz`. It finds the build
+  for this machine and runs it with the same arguments. Every install of
+  kazoo (this, or cargo's `kzoo` or `kzhz`) gives the same three commands.
 - `kzoo-darwin-arm64`, `kzoo-darwin-x64`: the program itself for each Mac
   (`bin/kzoo`), installed by the launcher as an optional dependency for the
   matching machine only. Each carries `LICENSE` and `THIRD-PARTY-NOTICES`.

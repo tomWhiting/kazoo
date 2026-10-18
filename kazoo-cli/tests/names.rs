@@ -1,12 +1,14 @@
-//! One program by two names: each says its own in its help and version.
+//! One program by three names: each says its own in its help and version.
 
+use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 #[test]
-fn kzoo_and_kazoo_each_answer_to_their_own_name() {
+fn kzoo_kazoo_and_kzhz_each_answer_to_their_own_name() {
     for (program, name) in [
         (env!("CARGO_BIN_EXE_kzoo"), "kzoo"),
         (env!("CARGO_BIN_EXE_kazoo"), "kazoo"),
+        (env!("CARGO_BIN_EXE_kzhz"), "kzhz"),
     ] {
         let help = Command::new(program).arg("--help").output().unwrap();
         assert_eq!(help.status.code(), Some(0), "{name}");
@@ -32,7 +34,7 @@ fn kzoo_and_kazoo_each_answer_to_their_own_name() {
 fn kzoo_run_by_npm_as_kazoo_answers_to_kazoo() {
     let help = Command::new(env!("CARGO_BIN_EXE_kzoo"))
         .arg("--help")
-        .env("KZOO_RUN_AS", "kazoo")
+        .arg0("kazoo")
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&help.stdout);
@@ -40,7 +42,7 @@ fn kzoo_run_by_npm_as_kazoo_answers_to_kazoo() {
     // And as kzhz, npm's own name.
     let help = Command::new(env!("CARGO_BIN_EXE_kzoo"))
         .arg("--help")
-        .env("KZOO_RUN_AS", "kzhz")
+        .arg0("kzhz")
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&help.stdout);
@@ -48,7 +50,15 @@ fn kzoo_run_by_npm_as_kazoo_answers_to_kazoo() {
     // Anything else it is told is no name of its own.
     let help = Command::new(env!("CARGO_BIN_EXE_kzoo"))
         .arg("--help")
-        .env("KZOO_RUN_AS", "other")
+        .arg0("other")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(text.contains("Usage: kzoo "), "{text}");
+    // What 0.3.3's launcher left in the environment names nothing now.
+    let help = Command::new(env!("CARGO_BIN_EXE_kzoo"))
+        .arg("--help")
+        .env("KZOO_RUN_AS", "kzhz")
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&help.stdout);

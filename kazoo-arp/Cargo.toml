@@ -1,6 +1,6 @@
 [package]
 name = "kazoo-arp"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 rust-version = "1.89"
 description = "Jupiter-8 style arpeggiator — note scheduler for any synth"
@@ -11,8 +11,8 @@ repository = "https://github.com/tomWhiting/kazoo"
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host", version = "=0.3.3" }
-kazoo-core = { version = "=0.3.3", path = "../kazoo-core" }
+kazoo-host = { path = "../kazoo-host", version = "=0.3.4" }
+kazoo-core = { version = "=0.3.4", path = "../kazoo-core" }
 cpal = "0.17"
 crossbeam-channel = "0.5"
 crossterm = "0.29"
