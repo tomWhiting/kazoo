@@ -38,6 +38,13 @@ if [ -z "$version" ]; then
 fi
 head=$(git -C "$root" rev-parse HEAD)
 
+# npm answers a publish without a sign-in with a 404, after the whole build.
+# Ask first.
+if [ -z "$dry" ] && ! npm whoami >/dev/null 2>&1; then
+  echo "publish.sh: npm is not signed in on this Mac: run npm login, then this again" >&2
+  exit 1
+fi
+
 if [ -n "$(git -C "$root" status --porcelain)" ]; then
   refuse "the checkout has changes; release from a clean one"
 fi
