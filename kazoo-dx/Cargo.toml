@@ -1,6 +1,6 @@
 [package]
 name = "kazoo-dx"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.89"
 description = "Four-operator FM synth in the DX/TX81Z tradition — pure sine math, eight algorithms, eight voices"
@@ -11,8 +11,8 @@ repository = "https://github.com/tomWhiting/kazoo"
 workspace = true
 
 [dependencies]
-kazoo-host = { path = "../kazoo-host", version = "=0.3.1" }
-kazoo-core = { version = "=0.3.1", path = "../kazoo-core" }
+kazoo-host = { path = "../kazoo-host", version = "=0.3.2" }
+kazoo-core = { version = "=0.3.2", path = "../kazoo-core" }
 color-eyre = "0.6.5"
 cpal = "0.17"
 crossbeam-channel = "0.5"

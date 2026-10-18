@@ -1,6 +1,6 @@
 {
   "name": "kzhz",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "kazoo: a shared modular synth that never stops, a desk, instruments and a mouth synth, in the terminal",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/tomWhiting/kazoo",
@@ -30,8 +30,8 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "kzoo-darwin-arm64": "0.3.1",
-    "kzoo-darwin-x64": "0.3.1"
+    "kzoo-darwin-arm64": "0.3.2",
+    "kzoo-darwin-x64": "0.3.2"
   },
   "scripts": {
     "prepublishOnly": "test -f LICENSE && test -f README.md"
