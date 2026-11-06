@@ -1,0 +1,4 @@
+check: length rules portable
+compiles: check clippy clippy-kazoo-kzhz
+tested: compiles nextest nextest-kazoo-kzhz
+released: tested docs docs-kazoo-kzhz
