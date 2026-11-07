@@ -1,0 +1,160 @@
+Gate receipt
+gated-tree: 42a21bdc5cae29aa5cb3c8420ef85b1fb7df2869
+gated-commit: bfcc3b26988545152a0573c471849e5e11d12e08
+gate-report: 20261107T173648-1535237396
+gate-version: v1+9aa86990a944410b3160d48d54d6ea72a7e4f90f
+venue: rocketfish
+command: gate -commit bfcc3b26988545152a0573c471849e5e11d12e08
+clean: true
+overall: unproven
+length: failed - 137 findings
+rules: passed
+portable: failed - 4 findings
+clippy: unproven - clippy requires platform [mac]; this run is linux
+clippy-kazoo-kzhz: unproven - clippy-kazoo-kzhz requires platform [mac]; this run is linux
+nextest: unproven - nextest requires platform [mac]; this run is linux
+nextest-kazoo-kzhz: unproven - nextest-kazoo-kzhz requires platform [mac]; this run is linux
+docs: unproven - docs requires platform [mac]; this run is linux
+docs-kazoo-kzhz: unproven - docs-kazoo-kzhz requires platform [mac]; this run is linux
+Pre-existing reds at this unchanged main commit:
+length: length-over-500 ./kazoo-mouth/src/engine/looper.rs - 735 lines of code; limit 500
+length: length-over-500 ./kazoo-mouth/src/controls/settings.rs - 842 lines of code; limit 500
+length: length-over-500 ./kazoo-mouth/src/engine/fx.rs - 729 lines of code; limit 500
+length: length-over-500 ./kazoo-tree/src/growth.rs - 586 lines of code; limit 500
+length: length-over-500 ./kazoo-tree/src/render.rs - 965 lines of code; limit 500
+length: length-over-500 ./kazoo-tree/src/history.rs - 1428 lines of code; limit 500
+length: length-over-500 ./kazoo-tree/src/app.rs - 909 lines of code; limit 500
+length: length-over-500 ./kazoo-tree/src/lib.rs - 580 lines of code; limit 500
+length: length-over-500 ./kazoo-dx/src/run.rs - 740 lines of code; limit 500
+length: length-over-500 ./kazoo-dx/src/synth.rs - 869 lines of code; limit 500
+length: length-over-500 ./kazoo-mouth/src/controls.rs - 914 lines of code; limit 500
+length: length-over-500 ./kazoo-dx/src/audio.rs - 553 lines of code; limit 500
+length: length-over-500 ./kazoo-arp/src/engine.rs - 722 lines of code; limit 500
+length: length-over-500 ./kazoo-arp/src/clock.rs - 642 lines of code; limit 500
+length: length-over-500 ./kazoo-arp/src/app.rs - 593 lines of code; limit 500
+length: length-over-500 ./kazoo-arp/src/audio.rs - 802 lines of code; limit 500
+length: length-over-500 ./kazoo-perc/src/parts.rs - 512 lines of code; limit 500
+length: length-over-500 ./kazoo-mcp/src/channel.rs - 753 lines of code; limit 500
+length: length-over-500 ./kazoo-mcp/src/tools.rs - 999 lines of code; limit 500
+length: length-over-500 ./kazoo-mcp/src/link.rs - 733 lines of code; limit 500
+length: length-over-500 ./kazoo-808/src/audio.rs - 561 lines of code; limit 500
+length: length-over-500 ./kazoo-mouth/src/run.rs - 694 lines of code; limit 500
+length: length-over-500 ./kazoo-prophet/src/run.rs - 511 lines of code; limit 500
+length: length-over-500 ./kazoo-prophet/src/app.rs - 530 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/reels.rs - 592 lines of code; limit 500
+length: length-over-500 ./kazoo-303/src/sequencer.rs - 548 lines of code; limit 500
+length: length-over-500 ./kazoo-303/src/audio.rs - 581 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/io/mic.rs - 836 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/time/tape.rs - 621 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/host/audio.rs - 634 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/time/granular.rs - 506 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/time/parts.rs - 544 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/time/digital.rs - 510 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/shape/sidestep.rs - 506 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/mixer/mod.rs - 1696 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/lofi/radio.rs - 800 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/lofi/cassette.rs - 794 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/lofi/genloss.rs - 712 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/lofi/vhs.rs - 607 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/lofi/reel.rs - 582 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/lofi/parts.rs - 1116 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/space/plate.rs - 627 lines of code; limit 500
+length: length-over-500 ./kazoo-mcp/src/render.rs - 1805 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/space/spring.rs - 982 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/space/hall.rs - 612 lines of code; limit 500
+length: length-over-500 ./kazoo-juno/src/run.rs - 519 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/effects/filter.rs - 715 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/space/shimmer.rs - 711 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/space/resonator.rs - 772 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/drive/gate.rs - 571 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/drive/comp.rs - 673 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/drive/crush.rs - 833 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/drive/fold.rs - 676 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/drive/fuzz.rs - 611 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/drive/klon.rs - 560 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/drive/amp.rs - 749 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/drive/oversample.rs - 552 lines of code; limit 500
+length: length-over-500 ./kazoo-cli/src/setup.rs - 1231 lines of code; limit 500
+length: length-over-500 ./kazoo-mix/src/desk.rs - 1306 lines of code; limit 500
+length: length-over-500 ./kazoo-dx/src/ui.rs - 640 lines of code; limit 500
+length: length-over-500 ./kazoo-mix/src/ui.rs - 1686 lines of code; limit 500
+length: length-over-500 ./kazoo-mix/src/hub.rs - 1034 lines of code; limit 500
+length: length-over-500 ./kazoo-mix/src/shared.rs - 610 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/lib.rs - 884 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/synthesis/phase_vocoder.rs - 580 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/synthesis/pitch_tracked.rs - 775 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/synthesis/wavetable.rs - 593 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/synthesis/vocoder.rs - 763 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/synthesis/granular.rs - 663 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/daemon/wall/moments.rs - 640 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/daemon/mod.rs - 698 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/daemon/loops/pins.rs - 517 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/analysis/cycle.rs - 741 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/mixer/clip.rs - 658 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/daemon/wall.rs - 4270 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/daemon/audio.rs - 821 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/daemon/loops.rs - 544 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/daemon/control.rs - 1135 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tree.rs - 799 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/probe.rs - 847 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tree/thread/here.rs - 934 lines of code; limit 500
+length: length-over-500 ./kazoo-fx/src/lofi/vinyl.rs - 659 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/ipc/types.rs - 595 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/ipc/link.rs - 924 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tree/rings/model.rs - 662 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tree/git.rs - 672 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tree/thread.rs - 952 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/engine/reclaim.rs - 614 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/engine/mod.rs - 553 lines of code; limit 500
+length: length-over-500 ./kazoo-mix/src/engine.rs - 1667 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/engine/processing.rs - 1396 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/engine/command.rs - 506 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/engine/handle.rs - 926 lines of code; limit 500
+length: length-over-500 ./kazoo-core/src/transport/mod.rs - 1252 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/patch.rs - 1440 lines of code; limit 500
+length: length-over-500 ./kazoo-glass/src/run.rs - 758 lines of code; limit 500
+length: length-over-500 ./kazoo-glass/src/ui.rs - 619 lines of code; limit 500
+length: length-over-500 ./kazoo-glass/src/audio.rs - 657 lines of code; limit 500
+length: length-over-500 ./kazoo-speech/src/player.rs - 746 lines of code; limit 500
+length: length-over-500 ./kazoo-speech/src/tts/mod.rs - 595 lines of code; limit 500
+length: length-over-500 ./kazoo-speech/src/vocoder.rs - 909 lines of code; limit 500
+length: length-over-500 ./kazoo-string/src/run.rs - 735 lines of code; limit 500
+length: length-over-500 ./kazoo-cli/src/studio/tmux.rs - 545 lines of code; limit 500
+length: length-over-500 ./kazoo-string/src/ui.rs - 604 lines of code; limit 500
+length: length-over-500 ./kazoo-string/src/synth.rs - 550 lines of code; limit 500
+length: length-over-500 ./kazoo-string/src/audio.rs - 576 lines of code; limit 500
+length: length-over-500 ./kazoo-string/src/waveguide.rs - 540 lines of code; limit 500
+length: length-over-500 ./kazoo-tui/src/ui/tracking_view.rs - 767 lines of code; limit 500
+length: length-over-500 ./kazoo-tui/src/input/mod.rs - 3040 lines of code; limit 500
+length: length-over-500 ./kazoo-tui/src/ui/header.rs - 692 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/catalogue.rs - 1489 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/change.rs - 791 lines of code; limit 500
+length: length-over-500 ./kazoo-cs80/src/modular/nodes.rs - 1630 lines of code; limit 500
+length: length-over-500 ./kazoo-cs80/src/synth/envelope.rs - 535 lines of code; limit 500
+length: length-over-500 ./kazoo-cs80/src/ui/mod.rs - 601 lines of code; limit 500
+length: length-over-500 ./kazoo-cs80/src/app.rs - 671 lines of code; limit 500
+length: length-over-500 ./kazoo-play/src/jam.rs - 590 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/draw/panes.rs - 705 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/draw/wall.rs - 550 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/draw/overlay.rs - 858 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/app/tree.rs - 560 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/app/mouse.rs - 591 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/app/mod.rs - 1321 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/app/command.rs - 656 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/app/keys.rs - 1104 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/rack/geometry.rs - 828 lines of code; limit 500
+length: length-over-500 ./kazoo-tui/src/ui/mixing_desk.rs - 639 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tui/draw/rack.rs - 970 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/dsp/measure.rs - 894 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/protocol/mod.rs - 1248 lines of code; limit 500
+length: length-over-500 ./kazoo-tui/src/app.rs - 1056 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/dsp/looper.rs - 820 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/dsp/mod.rs - 648 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/dsp/scope.rs - 714 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/store.rs - 2500 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/tree/rings.rs - 955 lines of code; limit 500
+length: length-over-500 ./kazoo-wall/src/engine/mod.rs - 1370 lines of code; limit 500
+portable: portable-temporary-python design/wall/handoff/wall.py:2 - Use a platform runtime or state directory instead of a literal temporary path.
+portable: portable-retry-rust kazoo-string/src/waveguide.rs:153 - Act on the event that says the dependency is ready, never a timed wait-and-retry loop.
+portable: portable-retry-rust kazoo-string/src/waveguide.rs:176 - Act on the event that says the dependency is ready, never a timed wait-and-retry loop.
+portable: portable-retry-rust kazoo-core/src/host/link.rs:152 - Act on the event that says the dependency is ready, never a timed wait-and-retry loop.
