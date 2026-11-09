@@ -11,3 +11,15 @@
 .norn/
 .meridian/
 .lanes/
+
+# Buck2 outputs, vendored sources and machine-local bootstrap.
+/buck-out/
+/.buckconfig.local
+/toolchains/_local/
+/third-party/vendor/
+/nativelink-platform/
+/third-party/.cargo/
+/third-party/target/
+# Reindeer must see source files that Git excludes from commits.
+reindeer:!/third-party/vendor/
+reindeer:!/third-party/vendor/**

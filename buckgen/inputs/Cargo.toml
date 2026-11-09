@@ -1,0 +1,48 @@
+[workspace]
+members = [
+    "kazoo-cli",
+    "kazoo-core",
+    "kazoo-tui",
+    "kazoo-mouth",
+    "kazoo-mix",
+    "kazoo-808",
+    "kazoo-cs80",
+    "kazoo-mini",
+    "kazoo-prophet",
+    "kazoo-arp",
+    "kazoo-303",
+    "kazoo-juno",
+    "kazoo-play",
+    "kazoo-dx",
+    "kazoo-string",
+    "kazoo-glass",
+    "kazoo-fx",
+    "kazoo-wall",
+    "kazoo-perc",
+    "kazoo-sampler",
+    "kazoo-speech",
+    "kazoo-mcp",
+    "kazoo-host",
+    "kazoo-tree",
+]
+# kzhz owns the same three commands as kzoo (kzhz, kzoo, kazoo), so it is
+# its own workspace: built together, the two would write the same files.
+exclude = ["kazoo-kzhz"]
+resolver = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Allow these common pedantic false positives
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
