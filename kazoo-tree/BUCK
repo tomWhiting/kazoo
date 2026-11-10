@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_tree",
     crate_root = "kazoo-tree/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -255,6 +256,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/app.rs",
     name = "check-length-src__app.rs",
     port_config = "",
@@ -272,6 +274,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/colour.rs",
     name = "check-length-src__colour.rs",
     port_config = "",
@@ -289,6 +292,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/fire.rs",
     name = "check-length-src__fire.rs",
     port_config = "",
@@ -306,6 +310,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/fire/blaze.rs",
     name = "check-length-src__fire__blaze.rs",
     port_config = "",
@@ -323,6 +328,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/fire/field.rs",
     name = "check-length-src__fire__field.rs",
     port_config = "",
@@ -340,6 +346,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/fire/flicks.rs",
     name = "check-length-src__fire__flicks.rs",
     port_config = "",
@@ -357,6 +364,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/fire/fuel.rs",
     name = "check-length-src__fire__fuel.rs",
     port_config = "",
@@ -374,6 +382,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/fire/noise.rs",
     name = "check-length-src__fire__noise.rs",
     port_config = "",
@@ -391,6 +400,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/fire/paint.rs",
     name = "check-length-src__fire__paint.rs",
     port_config = "",
@@ -408,6 +418,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/fire/place.rs",
     name = "check-length-src__fire__place.rs",
     port_config = "",
@@ -425,6 +436,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/fire/shape.rs",
     name = "check-length-src__fire__shape.rs",
     port_config = "",
@@ -442,6 +454,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/go.rs",
     name = "check-length-src__go.rs",
     port_config = "",
@@ -459,6 +472,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/growth.rs",
     name = "check-length-src__growth.rs",
     port_config = "",
@@ -476,6 +490,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/history.rs",
     name = "check-length-src__history.rs",
     port_config = "",
@@ -493,6 +508,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/lanes.rs",
     name = "check-length-src__lanes.rs",
     port_config = "",
@@ -510,6 +526,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/ledger.rs",
     name = "check-length-src__ledger.rs",
     port_config = "",
@@ -527,6 +544,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -544,6 +562,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/notes.rs",
     name = "check-length-src__notes.rs",
     port_config = "",
@@ -561,6 +580,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-tree/src/render.rs",
     name = "check-length-src__render.rs",
     port_config = "",

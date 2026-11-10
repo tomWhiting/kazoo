@@ -1,0 +1,2 @@
+# Literal include! resources are declared action inputs.
+extra_srcs = ["src/html/benchmark_report.html.tt", "src/html/index.html.tt", "src/html/report_link.html.tt", "src/html/summary_report.html.tt"]

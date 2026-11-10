@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_mcp",
     crate_root = "kazoo-mcp/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -364,6 +365,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -482,6 +484,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/channel.rs",
     name = "check-length-src__channel.rs",
     port_config = "",
@@ -499,6 +502,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/channel/walk.rs",
     name = "check-length-src__channel__walk.rs",
     port_config = "",
@@ -516,6 +520,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/cli.rs",
     name = "check-length-src__cli.rs",
     port_config = "",
@@ -533,6 +538,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -550,6 +556,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/link.rs",
     name = "check-length-src__link.rs",
     port_config = "",
@@ -567,6 +574,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -584,6 +592,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/render.rs",
     name = "check-length-src__render.rs",
     port_config = "",
@@ -601,6 +610,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/render/cables.rs",
     name = "check-length-src__render__cables.rs",
     port_config = "",
@@ -618,6 +628,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/render/loops.rs",
     name = "check-length-src__render__loops.rs",
     port_config = "",
@@ -635,6 +646,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/render/notes.rs",
     name = "check-length-src__render__notes.rs",
     port_config = "",
@@ -652,6 +664,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/render/tree.rs",
     name = "check-length-src__render__tree.rs",
     port_config = "",
@@ -669,6 +682,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/render/unheard.rs",
     name = "check-length-src__render__unheard.rs",
     port_config = "",
@@ -686,6 +700,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",
@@ -703,6 +718,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/tools.rs",
     name = "check-length-src__tools.rs",
     port_config = "",
@@ -720,6 +736,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/tools/batch.rs",
     name = "check-length-src__tools__batch.rs",
     port_config = "",
@@ -737,6 +754,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/tools/joining.rs",
     name = "check-length-src__tools__joining.rs",
     port_config = "",
@@ -754,6 +772,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/tools/notes.rs",
     name = "check-length-src__tools__notes.rs",
     port_config = "",
@@ -771,6 +790,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/tools/scheduling.rs",
     name = "check-length-src__tools__scheduling.rs",
     port_config = "",
@@ -788,6 +808,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mcp/src/walls.rs",
     name = "check-length-src__walls.rs",
     port_config = "",

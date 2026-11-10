@@ -1,0 +1,2 @@
+# Preserve the Cargo build script.
+buildscript.run = true

@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_juno",
     crate_root = "kazoo-juno/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -334,6 +335,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/app.rs",
     name = "check-length-src__app.rs",
     port_config = "",
@@ -351,6 +353,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/audio.rs",
     name = "check-length-src__audio.rs",
     port_config = "",
@@ -368,6 +371,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -385,6 +389,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -402,6 +407,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",
@@ -419,6 +425,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/synth/chorus.rs",
     name = "check-length-src__synth__chorus.rs",
     port_config = "",
@@ -436,6 +443,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/synth/engine.rs",
     name = "check-length-src__synth__engine.rs",
     port_config = "",
@@ -453,6 +461,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/synth/envelope.rs",
     name = "check-length-src__synth__envelope.rs",
     port_config = "",
@@ -470,6 +479,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/synth/filter.rs",
     name = "check-length-src__synth__filter.rs",
     port_config = "",
@@ -487,6 +497,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/synth/mod.rs",
     name = "check-length-src__synth__mod.rs",
     port_config = "",
@@ -504,6 +515,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/synth/params.rs",
     name = "check-length-src__synth__params.rs",
     port_config = "",
@@ -521,6 +533,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/synth/voice.rs",
     name = "check-length-src__synth__voice.rs",
     port_config = "",
@@ -538,6 +551,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-juno/src/ui.rs",
     name = "check-length-src__ui.rs",
     port_config = "",

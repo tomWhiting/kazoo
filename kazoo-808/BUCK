@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_808",
     crate_root = "kazoo-808/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -354,6 +355,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/app.rs",
     name = "check-length-src__app.rs",
     port_config = "",
@@ -371,6 +373,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/audio.rs",
     name = "check-length-src__audio.rs",
     port_config = "",
@@ -388,6 +391,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -405,6 +409,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -422,6 +427,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",
@@ -439,6 +445,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/sequencer/clock.rs",
     name = "check-length-src__sequencer__clock.rs",
     port_config = "",
@@ -456,6 +463,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/sequencer/mod.rs",
     name = "check-length-src__sequencer__mod.rs",
     port_config = "",
@@ -473,6 +481,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/synth/clap.rs",
     name = "check-length-src__synth__clap.rs",
     port_config = "",
@@ -490,6 +499,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/synth/cowbell.rs",
     name = "check-length-src__synth__cowbell.rs",
     port_config = "",
@@ -507,6 +517,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/synth/hihat.rs",
     name = "check-length-src__synth__hihat.rs",
     port_config = "",
@@ -524,6 +535,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/synth/kick.rs",
     name = "check-length-src__synth__kick.rs",
     port_config = "",
@@ -541,6 +553,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/synth/mod.rs",
     name = "check-length-src__synth__mod.rs",
     port_config = "",
@@ -558,6 +571,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/synth/snare.rs",
     name = "check-length-src__synth__snare.rs",
     port_config = "",
@@ -575,6 +589,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/synth/tom.rs",
     name = "check-length-src__synth__tom.rs",
     port_config = "",
@@ -592,6 +607,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/ui/grid.rs",
     name = "check-length-src__ui__grid.rs",
     port_config = "",
@@ -609,6 +625,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/ui/mod.rs",
     name = "check-length-src__ui__mod.rs",
     port_config = "",
@@ -626,6 +643,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-808/src/ui/params.rs",
     name = "check-length-src__ui__params.rs",
     port_config = "",

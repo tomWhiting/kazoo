@@ -1,0 +1,3 @@
+# Literal include! resources are declared action inputs.
+# Literal include! resources are declared action inputs.
+extra_srcs = ["README.md", "examples/arithmetic/parser.rs", "examples/arithmetic/parser_ast.rs", "examples/arithmetic/parser_lexer.rs", "examples/c_expression/parser.rs", "examples/css/parser.rs", "examples/custom_error.rs", "examples/http/parser.rs", "examples/ini/parser.rs", "examples/json/parser_dispatch.rs", "examples/ndjson/main.rs", "examples/ndjson/parser.rs", "examples/s_expression/parser.rs", "examples/string/parser.rs"]

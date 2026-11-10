@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_play",
     crate_root = "kazoo-play/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -286,6 +287,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-play/src/args.rs",
     name = "check-length-src__args.rs",
     port_config = "",
@@ -303,6 +305,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-play/src/jam.rs",
     name = "check-length-src__jam.rs",
     port_config = "",
@@ -320,6 +323,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-play/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -337,6 +341,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-play/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -354,6 +359,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-play/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",

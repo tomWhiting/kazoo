@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_speech",
     crate_root = "kazoo-speech/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -158,6 +159,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -254,6 +256,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-speech/src/bank.rs",
     name = "check-length-src__bank.rs",
     port_config = "",
@@ -271,6 +274,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-speech/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -288,6 +292,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-speech/src/player.rs",
     name = "check-length-src__player.rs",
     port_config = "",
@@ -305,6 +310,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-speech/src/tts/cache.rs",
     name = "check-length-src__tts__cache.rs",
     port_config = "",
@@ -322,6 +328,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-speech/src/tts/mod.rs",
     name = "check-length-src__tts__mod.rs",
     port_config = "",
@@ -339,6 +346,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-speech/src/tts/voices.rs",
     name = "check-length-src__tts__voices.rs",
     port_config = "",
@@ -356,6 +364,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-speech/src/tts/worker.rs",
     name = "check-length-src__tts__worker.rs",
     port_config = "",
@@ -373,6 +382,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-speech/src/vocoder.rs",
     name = "check-length-src__vocoder.rs",
     port_config = "",

@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_fx",
     crate_root = "kazoo-fx/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -298,6 +299,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -428,6 +430,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -558,6 +561,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -688,6 +692,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -818,6 +823,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -948,6 +954,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -1115,6 +1122,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/benches/circuit_models.rs",
     name = "check-length-benches__circuit_models.rs",
     port_config = "",
@@ -1132,6 +1140,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/benches/models.rs",
     name = "check-length-benches__models.rs",
     port_config = "",
@@ -1149,6 +1158,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/bench.rs",
     name = "check-length-src__bench.rs",
     port_config = "",
@@ -1166,6 +1176,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/amp.rs",
     name = "check-length-src__drive__amp.rs",
     port_config = "",
@@ -1183,6 +1194,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/comp.rs",
     name = "check-length-src__drive__comp.rs",
     port_config = "",
@@ -1200,6 +1212,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/crush.rs",
     name = "check-length-src__drive__crush.rs",
     port_config = "",
@@ -1217,6 +1230,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/filter.rs",
     name = "check-length-src__drive__filter.rs",
     port_config = "",
@@ -1234,6 +1248,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/fold.rs",
     name = "check-length-src__drive__fold.rs",
     port_config = "",
@@ -1251,6 +1266,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/fuzz.rs",
     name = "check-length-src__drive__fuzz.rs",
     port_config = "",
@@ -1268,6 +1284,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/gate.rs",
     name = "check-length-src__drive__gate.rs",
     port_config = "",
@@ -1285,6 +1302,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/kit.rs",
     name = "check-length-src__drive__kit.rs",
     port_config = "",
@@ -1302,6 +1320,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/klon.rs",
     name = "check-length-src__drive__klon.rs",
     port_config = "",
@@ -1319,6 +1338,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/mod.rs",
     name = "check-length-src__drive__mod.rs",
     port_config = "",
@@ -1336,6 +1356,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/network.rs",
     name = "check-length-src__drive__network.rs",
     port_config = "",
@@ -1353,6 +1374,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/oversample.rs",
     name = "check-length-src__drive__oversample.rs",
     port_config = "",
@@ -1370,6 +1392,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/pair.rs",
     name = "check-length-src__drive__pair.rs",
     port_config = "",
@@ -1387,6 +1410,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/ringmod.rs",
     name = "check-length-src__drive__ringmod.rs",
     port_config = "",
@@ -1404,6 +1428,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/screamer.rs",
     name = "check-length-src__drive__screamer.rs",
     port_config = "",
@@ -1421,6 +1446,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/solve.rs",
     name = "check-length-src__drive__solve.rs",
     port_config = "",
@@ -1438,6 +1464,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/drive/triode.rs",
     name = "check-length-src__drive__triode.rs",
     port_config = "",
@@ -1455,6 +1482,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/dsp.rs",
     name = "check-length-src__dsp.rs",
     port_config = "",
@@ -1472,6 +1500,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -1489,6 +1518,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/cassette.rs",
     name = "check-length-src__lofi__cassette.rs",
     port_config = "",
@@ -1506,6 +1536,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/genloss.rs",
     name = "check-length-src__lofi__genloss.rs",
     port_config = "",
@@ -1523,6 +1554,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/magnetic.rs",
     name = "check-length-src__lofi__magnetic.rs",
     port_config = "",
@@ -1540,6 +1572,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/mod.rs",
     name = "check-length-src__lofi__mod.rs",
     port_config = "",
@@ -1557,6 +1590,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/parts.rs",
     name = "check-length-src__lofi__parts.rs",
     port_config = "",
@@ -1574,6 +1608,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/radio.rs",
     name = "check-length-src__lofi__radio.rs",
     port_config = "",
@@ -1591,6 +1626,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/reel.rs",
     name = "check-length-src__lofi__reel.rs",
     port_config = "",
@@ -1608,6 +1644,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/sampler12.rs",
     name = "check-length-src__lofi__sampler12.rs",
     port_config = "",
@@ -1625,6 +1662,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/vhs.rs",
     name = "check-length-src__lofi__vhs.rs",
     port_config = "",
@@ -1642,6 +1680,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/lofi/vinyl.rs",
     name = "check-length-src__lofi__vinyl.rs",
     port_config = "",
@@ -1659,6 +1698,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/shape/blep.rs",
     name = "check-length-src__shape__blep.rs",
     port_config = "",
@@ -1676,6 +1716,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/shape/mod.rs",
     name = "check-length-src__shape__mod.rs",
     port_config = "",
@@ -1693,6 +1734,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/shape/sidestep.rs",
     name = "check-length-src__shape__sidestep.rs",
     port_config = "",
@@ -1710,6 +1752,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/shape/svf.rs",
     name = "check-length-src__shape__svf.rs",
     port_config = "",
@@ -1727,6 +1770,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/eq.rs",
     name = "check-length-src__space__eq.rs",
     port_config = "",
@@ -1744,6 +1788,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/halfband.rs",
     name = "check-length-src__space__halfband.rs",
     port_config = "",
@@ -1761,6 +1806,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/hall.rs",
     name = "check-length-src__space__hall.rs",
     port_config = "",
@@ -1778,6 +1824,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/kit.rs",
     name = "check-length-src__space__kit.rs",
     port_config = "",
@@ -1795,6 +1842,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/line.rs",
     name = "check-length-src__space__line.rs",
     port_config = "",
@@ -1812,6 +1860,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/matched.rs",
     name = "check-length-src__space__matched.rs",
     port_config = "",
@@ -1829,6 +1878,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/mod.rs",
     name = "check-length-src__space__mod.rs",
     port_config = "",
@@ -1846,6 +1896,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/plate.rs",
     name = "check-length-src__space__plate.rs",
     port_config = "",
@@ -1863,6 +1914,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/resonator.rs",
     name = "check-length-src__space__resonator.rs",
     port_config = "",
@@ -1880,6 +1932,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/shimmer.rs",
     name = "check-length-src__space__shimmer.rs",
     port_config = "",
@@ -1897,6 +1950,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/spring.rs",
     name = "check-length-src__space__spring.rs",
     port_config = "",
@@ -1914,6 +1968,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/spring/chains.rs",
     name = "check-length-src__space__spring__chains.rs",
     port_config = "",
@@ -1931,6 +1986,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/spring/coil.rs",
     name = "check-length-src__space__spring__coil.rs",
     port_config = "",
@@ -1948,6 +2004,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/space/spring/reset.rs",
     name = "check-length-src__space__spring__reset.rs",
     port_config = "",
@@ -1965,6 +2022,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/bbd.rs",
     name = "check-length-src__time__bbd.rs",
     port_config = "",
@@ -1982,6 +2040,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/chorus.rs",
     name = "check-length-src__time__chorus.rs",
     port_config = "",
@@ -1999,6 +2058,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/digital.rs",
     name = "check-length-src__time__digital.rs",
     port_config = "",
@@ -2016,6 +2076,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/flanger.rs",
     name = "check-length-src__time__flanger.rs",
     port_config = "",
@@ -2033,6 +2094,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/formant.rs",
     name = "check-length-src__time__formant.rs",
     port_config = "",
@@ -2050,6 +2112,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/granular.rs",
     name = "check-length-src__time__granular.rs",
     port_config = "",
@@ -2067,6 +2130,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/mod.rs",
     name = "check-length-src__time__mod.rs",
     port_config = "",
@@ -2084,6 +2148,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/parts.rs",
     name = "check-length-src__time__parts.rs",
     port_config = "",
@@ -2101,6 +2166,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/phaser.rs",
     name = "check-length-src__time__phaser.rs",
     port_config = "",
@@ -2118,6 +2184,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/pitch.rs",
     name = "check-length-src__time__pitch.rs",
     port_config = "",
@@ -2135,6 +2202,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/pitch/keep.rs",
     name = "check-length-src__time__pitch__keep.rs",
     port_config = "",
@@ -2152,6 +2220,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/pitch/taps.rs",
     name = "check-length-src__time__pitch__taps.rs",
     port_config = "",
@@ -2169,6 +2238,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/shift.rs",
     name = "check-length-src__time__shift.rs",
     port_config = "",
@@ -2186,6 +2256,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/tape.rs",
     name = "check-length-src__time__tape.rs",
     port_config = "",
@@ -2203,6 +2274,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/time/trem.rs",
     name = "check-length-src__time__trem.rs",
     port_config = "",
@@ -2220,6 +2292,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-fx/src/wet.rs",
     name = "check-length-src__wet.rs",
     port_config = "",

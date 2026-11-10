@@ -324,6 +324,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -399,6 +400,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-kzhz/src/bin/kazoo.rs",
     name = "check-length-src__bin__kazoo.rs",
     port_config = "",
@@ -416,6 +418,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-kzhz/src/bin/kzoo.rs",
     name = "check-length-src__bin__kzoo.rs",
     port_config = "",
@@ -433,6 +436,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-kzhz/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",

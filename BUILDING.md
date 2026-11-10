@@ -21,8 +21,7 @@ Bootstrap requires Rust, Go, Reindeer, tokei, ast-grep, a native C/C++ toolchain
 and Python supported by the shared bootstrap. Host paths and helper binaries
 are generated into ignored local files.
 
-Then, from this checkout, using the provisioned Reindeer and NativeLink Buck2
-launcher:
+Then, from this checkout, using the provisioned Reindeer and Buck2:
 
 ```sh
 reindeer --third-party-dir third-party vendor
@@ -38,7 +37,6 @@ result. `//:check-generated` checks both the generator and Reindeer output for
 drift without rewriting files.
 
 NativeLink cache and worker-pool configuration comes from deployment discovery
-and stays machine-local. The shared scaffold alone selects the prelude's local
-executor; it does not establish a NativeLink deployment. Provision the discovery
-launcher before build/test verification. A missing deployment is a blocker,
-not permission to substitute local execution.
+and stays machine-local. Use the discovery launcher when selecting the cache
+and pool. The shared scaffold selects local execution, which is also supported
+on the build machine.

@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo",
     crate_root = "kazoo-cli/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -768,6 +769,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -862,6 +864,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -956,6 +959,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -1050,6 +1054,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -1178,6 +1183,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/bin/kazoo.rs",
     name = "check-length-src__bin__kazoo.rs",
     port_config = "",
@@ -1195,6 +1201,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/bin/kzhz.rs",
     name = "check-length-src__bin__kzhz.rs",
     port_config = "",
@@ -1212,6 +1219,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/bin/kzoo.rs",
     name = "check-length-src__bin__kzoo.rs",
     port_config = "",
@@ -1229,6 +1237,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/cli.rs",
     name = "check-length-src__cli.rs",
     port_config = "",
@@ -1246,6 +1255,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/entry.rs",
     name = "check-length-src__entry.rs",
     port_config = "",
@@ -1263,6 +1273,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/entry/desk.rs",
     name = "check-length-src__entry__desk.rs",
     port_config = "",
@@ -1280,6 +1291,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -1297,6 +1309,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/setup.rs",
     name = "check-length-src__setup.rs",
     port_config = "",
@@ -1314,6 +1327,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/studio.rs",
     name = "check-length-src__studio.rs",
     port_config = "",
@@ -1331,6 +1345,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/studio/desk.rs",
     name = "check-length-src__studio__desk.rs",
     port_config = "",
@@ -1348,6 +1363,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cli/src/studio/tmux.rs",
     name = "check-length-src__studio__tmux.rs",
     port_config = "",

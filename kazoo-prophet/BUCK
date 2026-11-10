@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_prophet",
     crate_root = "kazoo-prophet/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -342,6 +343,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/app.rs",
     name = "check-length-src__app.rs",
     port_config = "",
@@ -359,6 +361,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/audio.rs",
     name = "check-length-src__audio.rs",
     port_config = "",
@@ -376,6 +379,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -393,6 +397,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -410,6 +415,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",
@@ -427,6 +433,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/synth/engine.rs",
     name = "check-length-src__synth__engine.rs",
     port_config = "",
@@ -444,6 +451,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/synth/envelope.rs",
     name = "check-length-src__synth__envelope.rs",
     port_config = "",
@@ -461,6 +469,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/synth/filter.rs",
     name = "check-length-src__synth__filter.rs",
     port_config = "",
@@ -478,6 +487,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/synth/mod.rs",
     name = "check-length-src__synth__mod.rs",
     port_config = "",
@@ -495,6 +505,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/synth/noise.rs",
     name = "check-length-src__synth__noise.rs",
     port_config = "",
@@ -512,6 +523,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/synth/oscillator.rs",
     name = "check-length-src__synth__oscillator.rs",
     port_config = "",
@@ -529,6 +541,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/synth/params.rs",
     name = "check-length-src__synth__params.rs",
     port_config = "",
@@ -546,6 +559,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/synth/status.rs",
     name = "check-length-src__synth__status.rs",
     port_config = "",
@@ -563,6 +577,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/synth/voice.rs",
     name = "check-length-src__synth__voice.rs",
     port_config = "",
@@ -580,6 +595,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-prophet/src/ui.rs",
     name = "check-length-src__ui.rs",
     port_config = "",

@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_core",
     crate_root = "kazoo-core/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -609,9 +610,11 @@ rust_binary(
     },
     name = "example-voice_score",
     named_deps = {
+        "assert_no_alloc": "//third-party:assert_no_alloc",
         "audio_thread_priority": "//third-party:audio_thread_priority",
         "audioadapter_buffers": "//third-party:audioadapter_buffers",
         "cpal": "//third-party:cpal",
+        "criterion": "//third-party:criterion",
         "crossbeam_channel": "//third-party:crossbeam_channel",
         "dasp_sample": "//third-party:dasp_sample",
         "fundsp": "//third-party:fundsp",
@@ -626,6 +629,7 @@ rust_binary(
         "serde": "//third-party:serde",
         "sha2": "//third-party:sha2",
         "symphonia": "//third-party:symphonia",
+        "tempfile": "//third-party:tempfile",
         "thiserror": "//third-party:thiserror"
     },
     srcs = [],
@@ -705,6 +709,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/benches/link_path.rs",
     name = "check-length-benches__link_path.rs",
     port_config = "",
@@ -722,6 +727,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/benches/voice.rs",
     name = "check-length-benches__voice.rs",
     port_config = "",
@@ -739,6 +745,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/examples/voice_score.rs",
     name = "check-length-examples__voice_score.rs",
     port_config = "",
@@ -756,6 +763,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/cycle.rs",
     name = "check-length-src__analysis__cycle.rs",
     port_config = "",
@@ -773,6 +781,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/cycle/early.rs",
     name = "check-length-src__analysis__cycle__early.rs",
     port_config = "",
@@ -790,6 +799,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/cycle/level.rs",
     name = "check-length-src__analysis__cycle__level.rs",
     port_config = "",
@@ -807,6 +817,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/cycle/motion.rs",
     name = "check-length-src__analysis__cycle__motion.rs",
     port_config = "",
@@ -824,6 +835,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/envelope.rs",
     name = "check-length-src__analysis__envelope.rs",
     port_config = "",
@@ -841,6 +853,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/formant.rs",
     name = "check-length-src__analysis__formant.rs",
     port_config = "",
@@ -858,6 +871,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/mod.rs",
     name = "check-length-src__analysis__mod.rs",
     port_config = "",
@@ -875,6 +889,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/onset.rs",
     name = "check-length-src__analysis__onset.rs",
     port_config = "",
@@ -892,6 +907,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/pitch.rs",
     name = "check-length-src__analysis__pitch.rs",
     port_config = "",
@@ -909,6 +925,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/pyin/hmm.rs",
     name = "check-length-src__analysis__pyin__hmm.rs",
     port_config = "",
@@ -926,6 +943,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/pyin/mod.rs",
     name = "check-length-src__analysis__pyin__mod.rs",
     port_config = "",
@@ -943,6 +961,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/pyin/prior.rs",
     name = "check-length-src__analysis__pyin__prior.rs",
     port_config = "",
@@ -960,6 +979,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/pyin/yin.rs",
     name = "check-length-src__analysis__pyin__yin.rs",
     port_config = "",
@@ -977,6 +997,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/score.rs",
     name = "check-length-src__analysis__score.rs",
     port_config = "",
@@ -994,6 +1015,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/score/fused.rs",
     name = "check-length-src__analysis__score__fused.rs",
     port_config = "",
@@ -1011,6 +1033,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/score/gate.rs",
     name = "check-length-src__analysis__score__gate.rs",
     port_config = "",
@@ -1028,6 +1051,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/score/instrument.rs",
     name = "check-length-src__analysis__score__instrument.rs",
     port_config = "",
@@ -1045,6 +1069,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/score/metrics.rs",
     name = "check-length-src__analysis__score__metrics.rs",
     port_config = "",
@@ -1062,6 +1087,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/score/signals.rs",
     name = "check-length-src__analysis__score__signals.rs",
     port_config = "",
@@ -1079,6 +1105,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/score/wav.rs",
     name = "check-length-src__analysis__score__wav.rs",
     port_config = "",
@@ -1096,6 +1123,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/analysis/spectrum.rs",
     name = "check-length-src__analysis__spectrum.rs",
     port_config = "",
@@ -1113,6 +1141,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/audio_transport.rs",
     name = "check-length-src__audio_transport.rs",
     port_config = "",
@@ -1130,6 +1159,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/effects/chorus.rs",
     name = "check-length-src__effects__chorus.rs",
     port_config = "",
@@ -1147,6 +1177,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/effects/delay.rs",
     name = "check-length-src__effects__delay.rs",
     port_config = "",
@@ -1164,6 +1195,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/effects/distortion.rs",
     name = "check-length-src__effects__distortion.rs",
     port_config = "",
@@ -1181,6 +1213,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/effects/filter.rs",
     name = "check-length-src__effects__filter.rs",
     port_config = "",
@@ -1198,6 +1231,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/effects/formant_shift.rs",
     name = "check-length-src__effects__formant_shift.rs",
     port_config = "",
@@ -1215,6 +1249,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/effects/mod.rs",
     name = "check-length-src__effects__mod.rs",
     port_config = "",
@@ -1232,6 +1267,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/effects/reverb.rs",
     name = "check-length-src__effects__reverb.rs",
     port_config = "",
@@ -1249,6 +1285,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/analysis_thread.rs",
     name = "check-length-src__engine__analysis_thread.rs",
     port_config = "",
@@ -1266,6 +1303,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/command.rs",
     name = "check-length-src__engine__command.rs",
     port_config = "",
@@ -1283,6 +1321,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/disk.rs",
     name = "check-length-src__engine__disk.rs",
     port_config = "",
@@ -1300,6 +1339,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/display.rs",
     name = "check-length-src__engine__display.rs",
     port_config = "",
@@ -1317,6 +1357,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/handle.rs",
     name = "check-length-src__engine__handle.rs",
     port_config = "",
@@ -1334,6 +1375,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/host_health.rs",
     name = "check-length-src__engine__host_health.rs",
     port_config = "",
@@ -1351,6 +1393,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/midi.rs",
     name = "check-length-src__engine__midi.rs",
     port_config = "",
@@ -1368,6 +1411,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/mod.rs",
     name = "check-length-src__engine__mod.rs",
     port_config = "",
@@ -1385,6 +1429,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/processing.rs",
     name = "check-length-src__engine__processing.rs",
     port_config = "",
@@ -1402,6 +1447,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/processing/voice.rs",
     name = "check-length-src__engine__processing__voice.rs",
     port_config = "",
@@ -1419,6 +1465,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/reclaim.rs",
     name = "check-length-src__engine__reclaim.rs",
     port_config = "",
@@ -1436,6 +1483,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/engine/stats.rs",
     name = "check-length-src__engine__stats.rs",
     port_config = "",
@@ -1453,6 +1501,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/audio.rs",
     name = "check-length-src__host__audio.rs",
     port_config = "",
@@ -1470,6 +1519,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/audio/input_pick.rs",
     name = "check-length-src__host__audio__input_pick.rs",
     port_config = "",
@@ -1487,6 +1537,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/audio/input_pick/notices.rs",
     name = "check-length-src__host__audio__input_pick__notices.rs",
     port_config = "",
@@ -1504,6 +1555,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/audio_callback.rs",
     name = "check-length-src__host__audio_callback.rs",
     port_config = "",
@@ -1521,6 +1573,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/audio_latency.rs",
     name = "check-length-src__host__audio_latency.rs",
     port_config = "",
@@ -1538,6 +1591,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/audio_open.rs",
     name = "check-length-src__host__audio_open.rs",
     port_config = "",
@@ -1555,6 +1609,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/link.rs",
     name = "check-length-src__host__link.rs",
     port_config = "",
@@ -1572,6 +1627,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/link/registration.rs",
     name = "check-length-src__host__link__registration.rs",
     port_config = "",
@@ -1589,6 +1645,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/live.rs",
     name = "check-length-src__host__live.rs",
     port_config = "",
@@ -1606,6 +1663,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/live/ring.rs",
     name = "check-length-src__host__live__ring.rs",
     port_config = "",
@@ -1623,6 +1681,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/live/round_trip.rs",
     name = "check-length-src__host__live__round_trip.rs",
     port_config = "",
@@ -1640,6 +1699,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/host/mod.rs",
     name = "check-length-src__host__mod.rs",
     port_config = "",
@@ -1657,6 +1717,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/io/channel_adapt.rs",
     name = "check-length-src__io__channel_adapt.rs",
     port_config = "",
@@ -1674,6 +1735,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/io/device.rs",
     name = "check-length-src__io__device.rs",
     port_config = "",
@@ -1691,6 +1753,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/io/file.rs",
     name = "check-length-src__io__file.rs",
     port_config = "",
@@ -1708,6 +1771,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/io/mic.rs",
     name = "check-length-src__io__mic.rs",
     port_config = "",
@@ -1725,6 +1789,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/io/mic/watch.rs",
     name = "check-length-src__io__mic__watch.rs",
     port_config = "",
@@ -1742,6 +1807,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/io/mod.rs",
     name = "check-length-src__io__mod.rs",
     port_config = "",
@@ -1759,6 +1825,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/io/recorder.rs",
     name = "check-length-src__io__recorder.rs",
     port_config = "",
@@ -1776,6 +1843,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/io/resample.rs",
     name = "check-length-src__io__resample.rs",
     port_config = "",
@@ -1793,6 +1861,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/client.rs",
     name = "check-length-src__ipc__client.rs",
     port_config = "",
@@ -1810,6 +1879,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/discovery.rs",
     name = "check-length-src__ipc__discovery.rs",
     port_config = "",
@@ -1827,6 +1897,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/follow.rs",
     name = "check-length-src__ipc__follow.rs",
     port_config = "",
@@ -1844,6 +1915,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/link.rs",
     name = "check-length-src__ipc__link.rs",
     port_config = "",
@@ -1861,6 +1933,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/link/address.rs",
     name = "check-length-src__ipc__link__address.rs",
     port_config = "",
@@ -1878,6 +1951,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/link/audio.rs",
     name = "check-length-src__ipc__link__audio.rs",
     port_config = "",
@@ -1895,6 +1969,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/link/priority.rs",
     name = "check-length-src__ipc__link__priority.rs",
     port_config = "",
@@ -1912,6 +1987,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/link/shutdown.rs",
     name = "check-length-src__ipc__link__shutdown.rs",
     port_config = "",
@@ -1929,6 +2005,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/link/streams.rs",
     name = "check-length-src__ipc__link__streams.rs",
     port_config = "",
@@ -1946,6 +2023,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/link/voice.rs",
     name = "check-length-src__ipc__link__voice.rs",
     port_config = "",
@@ -1963,6 +2041,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/link/wire.rs",
     name = "check-length-src__ipc__link__wire.rs",
     port_config = "",
@@ -1980,6 +2059,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/mod.rs",
     name = "check-length-src__ipc__mod.rs",
     port_config = "",
@@ -1997,6 +2077,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/outbox.rs",
     name = "check-length-src__ipc__outbox.rs",
     port_config = "",
@@ -2014,6 +2095,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/protocol.rs",
     name = "check-length-src__ipc__protocol.rs",
     port_config = "",
@@ -2031,6 +2113,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/stream.rs",
     name = "check-length-src__ipc__stream.rs",
     port_config = "",
@@ -2048,6 +2131,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/types.rs",
     name = "check-length-src__ipc__types.rs",
     port_config = "",
@@ -2065,6 +2149,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/types/streams.rs",
     name = "check-length-src__ipc__types__streams.rs",
     port_config = "",
@@ -2082,6 +2167,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/ipc/voice.rs",
     name = "check-length-src__ipc__voice.rs",
     port_config = "",
@@ -2099,6 +2185,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -2116,6 +2203,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/mixer/clip.rs",
     name = "check-length-src__mixer__clip.rs",
     port_config = "",
@@ -2133,6 +2221,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/mixer/mod.rs",
     name = "check-length-src__mixer__mod.rs",
     port_config = "",
@@ -2150,6 +2239,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/notation.rs",
     name = "check-length-src__notation.rs",
     port_config = "",
@@ -2167,6 +2257,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/protocol.rs",
     name = "check-length-src__protocol.rs",
     port_config = "",
@@ -2184,6 +2275,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/realtime.rs",
     name = "check-length-src__realtime.rs",
     port_config = "",
@@ -2201,6 +2293,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/reels.rs",
     name = "check-length-src__reels.rs",
     port_config = "",
@@ -2218,6 +2311,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/synthesis/granular.rs",
     name = "check-length-src__synthesis__granular.rs",
     port_config = "",
@@ -2235,6 +2329,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/synthesis/mod.rs",
     name = "check-length-src__synthesis__mod.rs",
     port_config = "",
@@ -2252,6 +2347,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/synthesis/phase_vocoder.rs",
     name = "check-length-src__synthesis__phase_vocoder.rs",
     port_config = "",
@@ -2269,6 +2365,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/synthesis/pitch_tracked.rs",
     name = "check-length-src__synthesis__pitch_tracked.rs",
     port_config = "",
@@ -2286,6 +2383,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/synthesis/pitch_tracked/carrier.rs",
     name = "check-length-src__synthesis__pitch_tracked__carrier.rs",
     port_config = "",
@@ -2303,6 +2401,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/synthesis/vocoder.rs",
     name = "check-length-src__synthesis__vocoder.rs",
     port_config = "",
@@ -2320,6 +2419,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/synthesis/vocoder/external.rs",
     name = "check-length-src__synthesis__vocoder__external.rs",
     port_config = "",
@@ -2337,6 +2437,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/synthesis/wavetable.rs",
     name = "check-length-src__synthesis__wavetable.rs",
     port_config = "",
@@ -2354,6 +2455,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/transport/metronome.rs",
     name = "check-length-src__transport__metronome.rs",
     port_config = "",
@@ -2371,6 +2473,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/transport/mod.rs",
     name = "check-length-src__transport__mod.rs",
     port_config = "",
@@ -2388,6 +2491,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/voice/api.rs",
     name = "check-length-src__voice__api.rs",
     port_config = "",
@@ -2405,6 +2509,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/voice/gate.rs",
     name = "check-length-src__voice__gate.rs",
     port_config = "",
@@ -2422,6 +2527,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/voice/gate_settings.rs",
     name = "check-length-src__voice__gate_settings.rs",
     port_config = "",
@@ -2439,6 +2545,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/voice/judge.rs",
     name = "check-length-src__voice__judge.rs",
     port_config = "",
@@ -2456,6 +2563,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/voice/mod.rs",
     name = "check-length-src__voice__mod.rs",
     port_config = "",
@@ -2473,6 +2581,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/voice/profile.rs",
     name = "check-length-src__voice__profile.rs",
     port_config = "",
@@ -2490,6 +2599,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/voice/quantise.rs",
     name = "check-length-src__voice__quantise.rs",
     port_config = "",
@@ -2507,6 +2617,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-core/src/voice/tracker.rs",
     name = "check-length-src__voice__tracker.rs",
     port_config = "",

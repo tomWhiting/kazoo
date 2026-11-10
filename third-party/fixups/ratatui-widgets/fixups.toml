@@ -1,0 +1,2 @@
+# Literal include! resources are declared action inputs.
+extra_srcs = ["tests/block/merge_exact.txt", "tests/block/merge_fuzzy.txt", "tests/block/merge_replace.txt"]

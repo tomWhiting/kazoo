@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_perc",
     crate_root = "kazoo-perc/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -184,6 +185,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -256,6 +258,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -328,6 +331,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -437,6 +441,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -454,6 +459,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/parts.rs",
     name = "check-length-src__parts.rs",
     port_config = "",
@@ -471,6 +477,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/rhythm/burst.rs",
     name = "check-length-src__rhythm__burst.rs",
     port_config = "",
@@ -488,6 +495,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/rhythm/euclid.rs",
     name = "check-length-src__rhythm__euclid.rs",
     port_config = "",
@@ -505,6 +513,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/rhythm/grids.rs",
     name = "check-length-src__rhythm__grids.rs",
     port_config = "",
@@ -522,6 +531,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/rhythm/mod.rs",
     name = "check-length-src__rhythm__mod.rs",
     port_config = "",
@@ -539,6 +549,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/rhythm/poly.rs",
     name = "check-length-src__rhythm__poly.rs",
     port_config = "",
@@ -556,6 +567,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/rhythm/prob.rs",
     name = "check-length-src__rhythm__prob.rs",
     port_config = "",
@@ -573,6 +585,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/clap.rs",
     name = "check-length-src__voices__clap.rs",
     port_config = "",
@@ -590,6 +603,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/conga.rs",
     name = "check-length-src__voices__conga.rs",
     port_config = "",
@@ -607,6 +621,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/cowbell.rs",
     name = "check-length-src__voices__cowbell.rs",
     port_config = "",
@@ -624,6 +639,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/cymbal.rs",
     name = "check-length-src__voices__cymbal.rs",
     port_config = "",
@@ -641,6 +657,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/hat.rs",
     name = "check-length-src__voices__hat.rs",
     port_config = "",
@@ -658,6 +675,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/kick.rs",
     name = "check-length-src__voices__kick.rs",
     port_config = "",
@@ -675,6 +693,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/membrane.rs",
     name = "check-length-src__voices__membrane.rs",
     port_config = "",
@@ -692,6 +711,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/metal.rs",
     name = "check-length-src__voices__metal.rs",
     port_config = "",
@@ -709,6 +729,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/mod.rs",
     name = "check-length-src__voices__mod.rs",
     port_config = "",
@@ -726,6 +747,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/modal.rs",
     name = "check-length-src__voices__modal.rs",
     port_config = "",
@@ -743,6 +765,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/noiseperc.rs",
     name = "check-length-src__voices__noiseperc.rs",
     port_config = "",
@@ -760,6 +783,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/rim.rs",
     name = "check-length-src__voices__rim.rs",
     port_config = "",
@@ -777,6 +801,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/shaker.rs",
     name = "check-length-src__voices__shaker.rs",
     port_config = "",
@@ -794,6 +819,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/snare.rs",
     name = "check-length-src__voices__snare.rs",
     port_config = "",
@@ -811,6 +837,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-perc/src/voices/tom.rs",
     name = "check-length-src__voices__tom.rs",
     port_config = "",

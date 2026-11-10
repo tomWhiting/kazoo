@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_303",
     crate_root = "kazoo-303/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -306,6 +307,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-303/src/audio.rs",
     name = "check-length-src__audio.rs",
     port_config = "",
@@ -323,6 +325,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-303/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -340,6 +343,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-303/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -357,6 +361,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-303/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",
@@ -374,6 +379,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-303/src/sequencer.rs",
     name = "check-length-src__sequencer.rs",
     port_config = "",
@@ -391,6 +397,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-303/src/synth.rs",
     name = "check-length-src__synth.rs",
     port_config = "",
@@ -408,6 +415,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-303/src/ui.rs",
     name = "check-length-src__ui.rs",
     port_config = "",

@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_mouth",
     crate_root = "kazoo-mouth/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -452,6 +453,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/controls.rs",
     name = "check-length-src__controls.rs",
     port_config = "",
@@ -469,6 +471,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/controls/panels.rs",
     name = "check-length-src__controls__panels.rs",
     port_config = "",
@@ -486,6 +489,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/controls/settings.rs",
     name = "check-length-src__controls__settings.rs",
     port_config = "",
@@ -503,6 +507,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/controls/voice.rs",
     name = "check-length-src__controls__voice.rs",
     port_config = "",
@@ -520,6 +525,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/engine.rs",
     name = "check-length-src__engine.rs",
     port_config = "",
@@ -537,6 +543,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/engine/capture.rs",
     name = "check-length-src__engine__capture.rs",
     port_config = "",
@@ -554,6 +561,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/engine/fx.rs",
     name = "check-length-src__engine__fx.rs",
     port_config = "",
@@ -571,6 +579,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/engine/fx/harmony.rs",
     name = "check-length-src__engine__fx__harmony.rs",
     port_config = "",
@@ -588,6 +597,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/engine/looper.rs",
     name = "check-length-src__engine__looper.rs",
     port_config = "",
@@ -605,6 +615,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/engine/meters.rs",
     name = "check-length-src__engine__meters.rs",
     port_config = "",
@@ -622,6 +633,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/health.rs",
     name = "check-length-src__health.rs",
     port_config = "",
@@ -639,6 +651,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -656,6 +669,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -673,6 +687,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",
@@ -690,6 +705,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/score.rs",
     name = "check-length-src__score.rs",
     port_config = "",
@@ -707,6 +723,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/synth.rs",
     name = "check-length-src__synth.rs",
     port_config = "",
@@ -724,6 +741,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/synth/voice.rs",
     name = "check-length-src__synth__voice.rs",
     port_config = "",
@@ -741,6 +759,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/ui.rs",
     name = "check-length-src__ui.rs",
     port_config = "",
@@ -758,6 +777,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/ui/board.rs",
     name = "check-length-src__ui__board.rs",
     port_config = "",
@@ -775,6 +795,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/ui/fx.rs",
     name = "check-length-src__ui__fx.rs",
     port_config = "",
@@ -792,6 +813,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/ui/latency.rs",
     name = "check-length-src__ui__latency.rs",
     port_config = "",
@@ -809,6 +831,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/ui/looper.rs",
     name = "check-length-src__ui__looper.rs",
     port_config = "",
@@ -826,6 +849,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/ui/pitch.rs",
     name = "check-length-src__ui__pitch.rs",
     port_config = "",
@@ -843,6 +867,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/ui/scope.rs",
     name = "check-length-src__ui__scope.rs",
     port_config = "",
@@ -860,6 +885,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/ui/spectrum.rs",
     name = "check-length-src__ui__spectrum.rs",
     port_config = "",
@@ -877,6 +903,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mouth/src/ui/trail.rs",
     name = "check-length-src__ui__trail.rs",
     port_config = "",

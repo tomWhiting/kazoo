@@ -1,0 +1,4 @@
+# Preserve the Cargo build script.
+buildscript.run = true
+# Literal include! resources are declared action inputs.
+extra_srcs = ["README.md"]

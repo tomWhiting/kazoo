@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_mini",
     crate_root = "kazoo-mini/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -362,6 +363,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/app.rs",
     name = "check-length-src__app.rs",
     port_config = "",
@@ -379,6 +381,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/audio.rs",
     name = "check-length-src__audio.rs",
     port_config = "",
@@ -396,6 +399,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/command.rs",
     name = "check-length-src__command.rs",
     port_config = "",
@@ -413,6 +417,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/input.rs",
     name = "check-length-src__input.rs",
     port_config = "",
@@ -430,6 +435,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -447,6 +453,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -464,6 +471,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/params.rs",
     name = "check-length-src__params.rs",
     port_config = "",
@@ -481,6 +489,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",
@@ -498,6 +507,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/synth/envelope.rs",
     name = "check-length-src__synth__envelope.rs",
     port_config = "",
@@ -515,6 +525,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/synth/glide.rs",
     name = "check-length-src__synth__glide.rs",
     port_config = "",
@@ -532,6 +543,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/synth/ladder.rs",
     name = "check-length-src__synth__ladder.rs",
     port_config = "",
@@ -549,6 +561,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/synth/mixer.rs",
     name = "check-length-src__synth__mixer.rs",
     port_config = "",
@@ -566,6 +579,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/synth/mod.rs",
     name = "check-length-src__synth__mod.rs",
     port_config = "",
@@ -583,6 +597,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/synth/oscillator.rs",
     name = "check-length-src__synth__oscillator.rs",
     port_config = "",
@@ -600,6 +615,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/synth/xmod.rs",
     name = "check-length-src__synth__xmod.rs",
     port_config = "",
@@ -617,6 +633,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/ui/envelopes.rs",
     name = "check-length-src__ui__envelopes.rs",
     port_config = "",
@@ -634,6 +651,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/ui/filter.rs",
     name = "check-length-src__ui__filter.rs",
     port_config = "",
@@ -651,6 +669,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/ui/mod.rs",
     name = "check-length-src__ui__mod.rs",
     port_config = "",
@@ -668,6 +687,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/ui/monitor.rs",
     name = "check-length-src__ui__monitor.rs",
     port_config = "",
@@ -685,6 +705,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/ui/oscillators.rs",
     name = "check-length-src__ui__oscillators.rs",
     port_config = "",
@@ -702,6 +723,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mini/src/ui/performance.rs",
     name = "check-length-src__ui__performance.rs",
     port_config = "",

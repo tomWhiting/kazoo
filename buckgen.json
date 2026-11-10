@@ -1,5 +1,10 @@
 {
   "_cargo": {
-    "workspaces": ["kazoo-kzhz/Cargo.toml"]
+    "workspaces": [
+      "kazoo-kzhz/Cargo.toml"
+    ]
+  },
+  "_checks": {
+    "length_include_test_modules": true
   }
 }

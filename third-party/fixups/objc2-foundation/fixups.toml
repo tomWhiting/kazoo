@@ -1,0 +1,2 @@
+# Literal include! resources are declared action inputs.
+extra_srcs = ["examples/basic_usage.rs", "examples/speech_synthesis.rs"]

@@ -1,0 +1,4 @@
+# Preserve the Cargo build script.
+buildscript.run = true
+# Literal include! resources are declared action inputs.
+extra_srcs = ["CHANGELOG.md", "examples/class_with_lifetime.rs", "examples/encode_core_graphics.rs", "examples/encode_nsstring.rs", "examples/encode_nsuinteger.rs", "examples/encode_opaque_type.rs", "examples/hello_world_app.rs", "examples/introspection.rs", "src/topics/about_generated/CHANGELOG.md", "src/topics/about_generated/README.md", "src/topics/about_generated/cargo_features.md", "src/topics/about_generated/deref.md", "src/topics/about_generated/list_data.md", "src/topics/about_generated/list_unsupported.md", "src/topics/alternatives.md", "src/topics/crate_interop.md", "src/topics/cross_compiling.md", "src/topics/interior_mutability.md", "src/topics/kvo.md", "src/topics/layered_safety.md", "src/topics/migrating_from_objc.md", "src/topics/mvc.md", "src/topics/run_loop.md", "src/topics/swift.md", "src/topics/weak_property.md"]

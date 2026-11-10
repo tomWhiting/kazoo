@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_cs80",
     crate_root = "kazoo-cs80/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -378,6 +379,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/app.rs",
     name = "check-length-src__app.rs",
     port_config = "",
@@ -395,6 +397,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/audio.rs",
     name = "check-length-src__audio.rs",
     port_config = "",
@@ -412,6 +415,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/command.rs",
     name = "check-length-src__command.rs",
     port_config = "",
@@ -429,6 +433,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/input.rs",
     name = "check-length-src__input.rs",
     port_config = "",
@@ -446,6 +451,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -463,6 +469,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -480,6 +487,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/modular/graph.rs",
     name = "check-length-src__modular__graph.rs",
     port_config = "",
@@ -497,6 +505,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/modular/mod.rs",
     name = "check-length-src__modular__mod.rs",
     port_config = "",
@@ -514,6 +523,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/modular/node.rs",
     name = "check-length-src__modular__node.rs",
     port_config = "",
@@ -531,6 +541,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/modular/nodes.rs",
     name = "check-length-src__modular__nodes.rs",
     port_config = "",
@@ -548,6 +559,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/preset.rs",
     name = "check-length-src__preset.rs",
     port_config = "",
@@ -565,6 +577,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",
@@ -582,6 +595,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/synth/drift.rs",
     name = "check-length-src__synth__drift.rs",
     port_config = "",
@@ -599,6 +613,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/synth/envelope.rs",
     name = "check-length-src__synth__envelope.rs",
     port_config = "",
@@ -616,6 +631,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/synth/filter.rs",
     name = "check-length-src__synth__filter.rs",
     port_config = "",
@@ -633,6 +649,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/synth/layer.rs",
     name = "check-length-src__synth__layer.rs",
     port_config = "",
@@ -650,6 +667,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/synth/lfo.rs",
     name = "check-length-src__synth__lfo.rs",
     port_config = "",
@@ -667,6 +685,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/synth/mod.rs",
     name = "check-length-src__synth__mod.rs",
     port_config = "",
@@ -684,6 +703,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/synth/oscillator.rs",
     name = "check-length-src__synth__oscillator.rs",
     port_config = "",
@@ -701,6 +721,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/synth/ring_mod.rs",
     name = "check-length-src__synth__ring_mod.rs",
     port_config = "",
@@ -718,6 +739,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/synth/voice.rs",
     name = "check-length-src__synth__voice.rs",
     port_config = "",
@@ -735,6 +757,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-cs80/src/ui/mod.rs",
     name = "check-length-src__ui__mod.rs",
     port_config = "",

@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_mix",
     crate_root = "kazoo-mix/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -448,6 +449,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/benches/desk_callback.rs",
     name = "check-length-benches__desk_callback.rs",
     port_config = "",
@@ -465,6 +467,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/callback.rs",
     name = "check-length-src__callback.rs",
     port_config = "",
@@ -482,6 +485,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/controls.rs",
     name = "check-length-src__controls.rs",
     port_config = "",
@@ -499,6 +503,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/desk.rs",
     name = "check-length-src__desk.rs",
     port_config = "",
@@ -516,6 +521,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/engine.rs",
     name = "check-length-src__engine.rs",
     port_config = "",
@@ -533,6 +539,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/engine/tempo.rs",
     name = "check-length-src__engine__tempo.rs",
     port_config = "",
@@ -550,6 +557,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/eq.rs",
     name = "check-length-src__eq.rs",
     port_config = "",
@@ -567,6 +575,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/hub.rs",
     name = "check-length-src__hub.rs",
     port_config = "",
@@ -584,6 +593,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/hub/instrument.rs",
     name = "check-length-src__hub__instrument.rs",
     port_config = "",
@@ -601,6 +611,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/hub/network.rs",
     name = "check-length-src__hub__network.rs",
     port_config = "",
@@ -618,6 +629,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/hub/refusals.rs",
     name = "check-length-src__hub__refusals.rs",
     port_config = "",
@@ -635,6 +647,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/hub/tempo.rs",
     name = "check-length-src__hub__tempo.rs",
     port_config = "",
@@ -652,6 +665,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -669,6 +683,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/main.rs",
     name = "check-length-src__main.rs",
     port_config = "",
@@ -686,6 +701,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/meters.rs",
     name = "check-length-src__meters.rs",
     port_config = "",
@@ -703,6 +719,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/metronome.rs",
     name = "check-length-src__metronome.rs",
     port_config = "",
@@ -720,6 +737,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/patchbay.rs",
     name = "check-length-src__patchbay.rs",
     port_config = "",
@@ -737,6 +755,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/run.rs",
     name = "check-length-src__run.rs",
     port_config = "",
@@ -754,6 +773,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/run/network.rs",
     name = "check-length-src__run__network.rs",
     port_config = "",
@@ -771,6 +791,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/shared.rs",
     name = "check-length-src__shared.rs",
     port_config = "",
@@ -788,6 +809,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/shared/tempo.rs",
     name = "check-length-src__shared__tempo.rs",
     port_config = "",
@@ -805,6 +827,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/song.rs",
     name = "check-length-src__song.rs",
     port_config = "",
@@ -822,6 +845,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/source.rs",
     name = "check-length-src__source.rs",
     port_config = "",
@@ -839,6 +863,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/studio_clock.rs",
     name = "check-length-src__studio_clock.rs",
     port_config = "",
@@ -856,6 +881,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/tap.rs",
     name = "check-length-src__tap.rs",
     port_config = "",
@@ -873,6 +899,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/tempo_store.rs",
     name = "check-length-src__tempo_store.rs",
     port_config = "",
@@ -890,6 +917,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/ui.rs",
     name = "check-length-src__ui.rs",
     port_config = "",
@@ -907,6 +935,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/ui/refusals.rs",
     name = "check-length-src__ui__refusals.rs",
     port_config = "",
@@ -924,6 +953,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-mix/src/worker.rs",
     name = "check-length-src__worker.rs",
     port_config = "",

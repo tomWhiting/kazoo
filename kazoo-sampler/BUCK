@@ -22,6 +22,7 @@ noop_test_toolchain(
 rust_library(
     crate = "kazoo_sampler",
     crate_root = "kazoo-sampler/src/lib.rs",
+    doctests = True,
     edition = "2024",
     env = {
         "CARGO": "cargo",
@@ -173,6 +174,7 @@ workspace_rust_test(
         "CARGO_TARGET_TMPDIR": "buckgen/tmp"
     },
     features = [],
+    framework = True,
     mapped_srcs = {
         "//buckgen/inputs:input-0": "Cargo.lock",
         "//buckgen/inputs:input-1": "Cargo.toml",
@@ -269,6 +271,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/error.rs",
     name = "check-length-src__error.rs",
     port_config = "",
@@ -286,6 +289,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/lib.rs",
     name = "check-length-src__lib.rs",
     port_config = "",
@@ -303,6 +307,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/name.rs",
     name = "check-length-src__name.rs",
     port_config = "",
@@ -320,6 +325,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/onset.rs",
     name = "check-length-src__onset.rs",
     port_config = "",
@@ -337,6 +343,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/player/envelope.rs",
     name = "check-length-src__player__envelope.rs",
     port_config = "",
@@ -354,6 +361,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/player/mod.rs",
     name = "check-length-src__player__mod.rs",
     port_config = "",
@@ -371,6 +379,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/player/params.rs",
     name = "check-length-src__player__params.rs",
     port_config = "",
@@ -388,6 +397,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/player/playback.rs",
     name = "check-length-src__player__playback.rs",
     port_config = "",
@@ -405,6 +415,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/player/voice.rs",
     name = "check-length-src__player__voice.rs",
     port_config = "",
@@ -422,6 +433,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/recorder/mod.rs",
     name = "check-length-src__recorder__mod.rs",
     port_config = "",
@@ -439,6 +451,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/recorder/tap.rs",
     name = "check-length-src__recorder__tap.rs",
     port_config = "",
@@ -456,6 +469,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/recorder/writer.rs",
     name = "check-length-src__recorder__writer.rs",
     port_config = "",
@@ -473,6 +487,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/resample.rs",
     name = "check-length-src__resample.rs",
     port_config = "",
@@ -490,6 +505,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/sample.rs",
     name = "check-length-src__sample.rs",
     port_config = "",
@@ -507,6 +523,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/store/mod.rs",
     name = "check-length-src__store__mod.rs",
     port_config = "",
@@ -524,6 +541,7 @@ file_check(
 )
 file_check(
     kind = "length",
+    length_include_test_modules = True,
     logical = "kazoo-sampler/src/store/wav.rs",
     name = "check-length-src__store__wav.rs",
     port_config = "",
